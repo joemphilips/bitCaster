@@ -46,7 +46,7 @@ vi.mock("@cashu/cashu-ts", () => {
     }
 
     async getKeys() {
-      return { keysets: [{ id: "k", unit: "sat", keys: {} }] };
+      return { keysets: [{ id: KEYSET_ID, unit: "sat", keys: {} }] };
     }
   }
 
@@ -65,6 +65,7 @@ vi.mock("@cashu/cashu-ts", () => {
 
 const initialAddMint = useWalletStore.getState()._addMint;
 const initialAddMintWithoutActivating = useWalletStore.getState()._addMintWithoutActivating;
+const KEYSET_ID = `01${"11".repeat(32)}`;
 
 // Reset store state before each test
 beforeEach(() => {
@@ -277,7 +278,7 @@ describe("useWalletStore", () => {
         "sat",
       );
 
-      await expect(counterSource.reserve("keyset-1", 1)).rejects.toThrow(
+      await expect(counterSource.reserve(KEYSET_ID, 1)).rejects.toThrow(
         /counter recovery is incomplete/,
       );
     });
@@ -306,7 +307,7 @@ describe("useWalletStore", () => {
 
       setActiveBrowserWalletProfile(bip39.generate().join(" "));
 
-      await expect(oldCounterSource.reserve("keyset-1", 1)).rejects.toThrow(
+      await expect(oldCounterSource.reserve(KEYSET_ID, 1)).rejects.toThrow(
         /wallet profile changed/,
       );
     });

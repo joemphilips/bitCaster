@@ -15,6 +15,12 @@ import {
 } from "@bitcaster/client-sdk/durableCustodyProofOperation";
 import { createDurableCustodyProofOperation } from "@bitcaster/client-sdk/durableCustodyProofOperationRecord";
 import {
+  assertDurableCustodyMintOperationAuthority,
+  prepareDurableCustodyMintOperationAuthority,
+  type DurableCustodyVerifiedMintResult,
+} from "@bitcaster/client-sdk/durableCustodyMintResult";
+import { locateSeedDerivedProofLineage } from "@bitcaster/client-sdk/durableSeedDerivedProofLineage";
+import {
   deserializeDurableCustodyProofArtifact,
   serializeDurableCustodyProofArtifact,
 } from "@bitcaster/client-sdk/durableCustodyProofMaterial";
@@ -159,6 +165,171 @@ export async function createBrowserRangeSourceBinding(
         ...artifacts,
       },
     }),
+  };
+}
+
+export function createBrowserRangeConsolidationBinding(
+  scope: DurableCustodyScope,
+  preparation: PersistedCtfRangeOrderPreparation,
+  operation: DurableCustodyProofOperationInput,
+) {
+  const authority = prepareDurableCustodyMintOperationAuthority({
+    operation,
+    keysets: rangeConsolidationKeysets(preparation, operation),
+  });
+  return {
+    authority,
+    artifacts: {
+      requestBody: authority.exactRequest,
+      output: authority.exactOutput,
+      privateMaterial: authority.exactAuthority,
+    },
+    record: createDurableCustodyProofOperation({
+      scope,
+      operation,
+      facts: authority.facts,
+      inventoryAccountId: null,
+      exactBoundary: {
+        method: "POST",
+        path: "/v1/swap",
+        idempotencyKey: operation.operationId,
+        requestBody: authority.exactRequest,
+        output: authority.exactOutput,
+        privateMaterial: authority.exactAuthority,
+      },
+    }),
+  };
+}
+
+export function browserRangeConsolidationOperationFromSnapshot(
+  record: DurableCustodyRecord,
+  artifacts: readonly { reference: { artifactId: string }; artifact: { artifact: unknown } }[],
+): DurableCustodyProofOperationInput {
+  const reference = record.operation.privateMaterial.exactPrivateMaterial;
+  const row = findArtifact(
+    artifacts,
+    reference.artifactId,
+    "range consolidation private authority",
+  );
+  const operation = assertDurableCustodyMintOperationAuthority(
+    record,
+    prepareDurableCustodyExactArtifact(row.artifact.artifact),
+  ).operation;
+  if (operation.operationId !== record.operation.retainedOperationKey) {
+    throw new Error("range consolidation private authority is foreign");
+  }
+  return operation;
+}
+
+export function browserRangeConsolidationSuccessorProofRows(input: {
+  readonly record: DurableCustodyRecord;
+  readonly preparation: PersistedCtfRangeOrderPreparation;
+  readonly operation: DurableCustodyProofOperationInput;
+  readonly prepared: DurableCustodyVerifiedMintResult;
+  readonly seed: Uint8Array;
+  readonly receivedAtMs: number;
+}): StagedBrowserCustodyProof[] {
+  const outputPlan = rangeConsolidationOutputPlan(input.operation);
+  const locators = locateSeedDerivedProofLineage({
+    seed: input.seed,
+    keysetId: input.preparation.offerKeyset.id,
+    counterStart: outputPlan.counterStart,
+    counterCount: outputPlan.counterCount,
+    proofs: input.prepared.proofs.map(({ proof }) => ({ id: proof.id, secret: proof.secret })),
+  });
+  const bySecret = new Map(locators.map((locator) => [locator.secret, locator]));
+  const asset = browserRangeSourceAsset(input.preparation);
+  return input.prepared.proofs.map(({ proof }) => {
+    const derivationLocator = bySecret.get(proof.secret);
+    if (derivationLocator === undefined) {
+      throw new Error("range consolidation successor locator is missing");
+    }
+    return {
+      proof: createBrowserCustodyProofRow({
+        scopeId: input.record.scope.scopeId,
+        normalizedMint: input.operation.mintUrl,
+        unit: "msat",
+        proof,
+        asset,
+        receivedAtMs: input.receivedAtMs,
+      }),
+      expectedRevision: null,
+      derivationLocator: {
+        schemaVersion: derivationLocator.schemaVersion,
+        kind: derivationLocator.kind,
+        keysetId: derivationLocator.keysetId,
+        counter: derivationLocator.counter,
+      },
+      conditionalKeyset: preparationConditionalKeyset(input.preparation, proof),
+    };
+  });
+}
+
+function rangeConsolidationKeysets(
+  preparation: PersistedCtfRangeOrderPreparation,
+  operation: DurableCustodyProofOperationInput,
+) {
+  const keysets = exactCtfRangeOrderPreparationMintKeysets(preparation);
+  const ids = new Set([
+    ...operation.inputs.map(({ id }) => id),
+    ...Object.values(operation.outputs).flatMap((outputs) =>
+      outputs.map(({ blindedMessage }) => blindedMessage.id),
+    ),
+  ]);
+  const sourceAsset = browserRangeSourceAsset(preparation);
+  return [...ids].map((id) => {
+    if (id !== preparation.offerKeyset.id || !/^01[0-9a-f]{64}$/.test(id)) {
+      throw new Error("range consolidation keyset authority is foreign");
+    }
+    const keyset = keysets.get(id);
+    if (keyset === undefined) throw new Error("range consolidation keyset authority is missing");
+    return {
+      canonicalMintUrl: keyset.canonicalMintUrl,
+      id: keyset.id,
+      unit: keyset.unit,
+      keys: keyset.keys,
+      inputFeePpk: keyset.inputFeePpk,
+      finalExpiry: keyset.finalExpiry,
+      identity:
+        sourceAsset.kind === "regular"
+          ? ({ kind: "regular" } as const)
+          : {
+              kind: "conditional" as const,
+              conditionId: sourceAsset.conditionId,
+              outcomeCollection: sourceAsset.outcomeCollection,
+              outcomeCollectionId: conditionalKeysetCollectionId(preparation),
+            },
+    };
+  });
+}
+
+function conditionalKeysetCollectionId(preparation: PersistedCtfRangeOrderPreparation): string {
+  const keyset = preparation.offerKeyset as PersistedCtfRangeOrderPreparation["offerKeyset"] & {
+    outcomeCollectionId?: unknown;
+  };
+  if (typeof keyset.outcomeCollectionId !== "string") {
+    throw new Error("range consolidation conditional keyset authority is missing");
+  }
+  return keyset.outcomeCollectionId;
+}
+
+function rangeConsolidationOutputPlan(operation: DurableCustodyProofOperationInput): {
+  counterStart: number;
+  counterCount: number;
+} {
+  const plan = operation.metadata?.outputPlan;
+  if (
+    typeof plan !== "object" ||
+    plan === null ||
+    Array.isArray(plan) ||
+    !Number.isSafeInteger((plan as { counterStart?: unknown }).counterStart) ||
+    !Number.isSafeInteger((plan as { counterCount?: unknown }).counterCount)
+  ) {
+    throw new Error("range consolidation output plan is invalid");
+  }
+  return {
+    counterStart: (plan as { counterStart: number }).counterStart,
+    counterCount: (plan as { counterCount: number }).counterCount,
   };
 }
 

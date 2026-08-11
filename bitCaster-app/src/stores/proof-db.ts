@@ -535,6 +535,10 @@ export class BitcasterDB extends Dexie {
       custodyProofs:
         "&[scopeId+proofId], [scopeId+selectability], [scopeId+selectability+proofId], [scopeId+normalizedMint+unit+selectability], [scopeId+conditionId+outcomeCollection+selectability], [scopeId+normalizedMint+unit+keysetId+selectability], [scopeId+normalizedMint+unit+assetKind+selectability], [scopeId+normalizedMint+unit+conditionId+outcomeCollection+selectability], [scopeId+normalizedMint+unit+assetKind+selectability+curve+amount+proofId]",
     });
+    this.version(16).stores({
+      custodyProofs:
+        "&[scopeId+proofId], [scopeId+selectability], [scopeId+selectability+proofId], [scopeId+normalizedMint+unit+selectability], [scopeId+conditionId+outcomeCollection+selectability], [scopeId+normalizedMint+unit+keysetId+selectability], [scopeId+normalizedMint+unit+assetKind+selectability], [scopeId+normalizedMint+unit+conditionId+outcomeCollection+selectability], [scopeId+normalizedMint+unit+assetKind+selectability+curve+amount+proofId], [scopeId+normalizedMint+unit+keysetId+assetKind+selectability+curve+amount+proofId], [scopeId+normalizedMint+unit+keysetId+conditionId+outcomeCollection+selectability+curve+amount+proofId]",
+    });
     this.encryptedWalletBackupEnrollmentResults = this.table(
       "encryptedWalletBackupWalletEnrollmentResults",
     );
@@ -619,6 +623,136 @@ export async function getUnitProofs(
 export const BOUNDED_CANONICAL_REGULAR_PROOF_LIMIT_MAX = 512;
 export const MARKET_FUNDING_INPUT_PROOF_LIMIT_MAX = BOUNDED_CANONICAL_REGULAR_PROOF_LIMIT_MAX;
 export const PARTICIPATION_SCORE_INPUT_PROOF_LIMIT_MAX = BOUNDED_CANONICAL_REGULAR_PROOF_LIMIT_MAX;
+export const BOUNDED_CANONICAL_RANGE_PROOF_LIMIT_MAX = 512;
+
+/** Read canonical selectable V2 proofs for one exact range source asset and keyset. */
+export async function getBoundedCanonicalRangeProofsForKeyset(
+  mintUrl: string,
+  options: {
+    scopeId: string;
+    unit: CashuProofUnit | string;
+    keysetId: string;
+    asset:
+      | { kind: "regular" }
+      | { kind: "conditional"; conditionId: string; outcomeCollection: string };
+  },
+  database: BitcasterDB = db,
+): Promise<StoredProof[]> {
+  const unit = parseCashuProofUnit(options.unit);
+  if (!unit) throw new Error(`Unsupported Cashu proof unit '${options.unit}'`);
+  if (!/^01[0-9a-f]{64}$/.test(options.keysetId)) {
+    throw new Error("Range proof selection requires a V2 keyset");
+  }
+  const normalizedMint = normalizeUrl(mintUrl);
+  const rows = await canonicalRangeProofQuery(database, {
+    ...options,
+    normalizedMint,
+    unit,
+  })
+    .reverse()
+    .limit(BOUNDED_CANONICAL_RANGE_PROOF_LIMIT_MAX)
+    .toArray();
+  return rows
+    .map(decodeBrowserCustodyProofRow)
+    .flatMap((row) => {
+      const proof = canonicalRangeProof(row, options, normalizedMint, unit);
+      return proof === null ? [] : [proof];
+    })
+    .sort(
+      (left, right) =>
+        amountToNumber(right.amount) - amountToNumber(left.amount) ||
+        left.secret.localeCompare(right.secret),
+    );
+}
+
+function canonicalRangeProofQuery(
+  database: BitcasterDB,
+  options: Parameters<typeof getBoundedCanonicalRangeProofsForKeyset>[1] & {
+    normalizedMint: string;
+    unit: CashuProofUnit;
+  },
+) {
+  const common = [options.scopeId, options.normalizedMint, options.unit, options.keysetId] as const;
+  if (options.asset.kind === "regular") {
+    return database.custodyProofs
+      .where("[scopeId+normalizedMint+unit+keysetId+assetKind+selectability+curve+amount+proofId]")
+      .between(
+        [...common, "regular", "selectable", "secp256k1", 0, ""],
+        [...common, "regular", "selectable", "secp256k1", Number.MAX_SAFE_INTEGER, "\uffff"],
+        true,
+        true,
+      );
+  }
+  return database.custodyProofs
+    .where(
+      "[scopeId+normalizedMint+unit+keysetId+conditionId+outcomeCollection+selectability+curve+amount+proofId]",
+    )
+    .between(
+      [
+        ...common,
+        options.asset.conditionId,
+        options.asset.outcomeCollection,
+        "selectable",
+        "secp256k1",
+        0,
+        "",
+      ],
+      [
+        ...common,
+        options.asset.conditionId,
+        options.asset.outcomeCollection,
+        "selectable",
+        "secp256k1",
+        Number.MAX_SAFE_INTEGER,
+        "\uffff",
+      ],
+      true,
+      true,
+    );
+}
+
+function canonicalRangeProof(
+  row: BrowserCustodyProofRow,
+  options: Parameters<typeof getBoundedCanonicalRangeProofsForKeyset>[1],
+  normalizedMint: string,
+  unit: CashuProofUnit,
+): StoredProof | null {
+  if (
+    row.scopeId !== options.scopeId ||
+    row.normalizedMint !== normalizedMint ||
+    row.unit !== unit ||
+    row.keysetId !== options.keysetId ||
+    row.selectability !== "selectable" ||
+    row.curve !== "secp256k1"
+  ) {
+    throw new Error("canonical range proof selector row is invalid");
+  }
+  if (options.asset.kind === "regular") {
+    if (row.assetKind !== "regular" || row.conditionId !== null || row.outcomeCollection !== null) {
+      return null;
+    }
+  } else if (
+    row.assetKind !== "conditional" ||
+    row.conditionId !== options.asset.conditionId ||
+    row.outcomeCollection !== options.asset.outcomeCollection
+  ) {
+    return null;
+  }
+  const { proof: material } = decodeDurableCustodyProofMaterialRecord(row);
+  return {
+    ...deserializeDurableCustodyProofArtifact({ schemaVersion: 1, ...material }),
+    mintUrl: row.normalizedMint,
+    baseAsset: row.baseAsset,
+    unit: row.unit,
+    ...(row.assetKind === "conditional"
+      ? {
+          conditionId: row.conditionId!,
+          outcomeCollection: row.outcomeCollection!,
+          marketId: `${row.conditionId}-${row.outcomeCollection}`,
+        }
+      : {}),
+  } satisfies StoredProof;
+}
 
 /** Read one bounded largest-first regular candidate set across canonical V2 keysets. */
 export async function getBoundedCanonicalRegularProofs(
@@ -707,112 +841,6 @@ async function getBoundedCanonicalV2Proofs(
         amountToNumber(right.amount) - amountToNumber(left.amount) ||
         left.secret.localeCompare(right.secret),
     );
-}
-
-export async function getSelectableUnitProofsForKeyset(
-  mintUrl: string,
-  options: {
-    unit: CashuProofUnit | string;
-    keysetId: string;
-    conditional: boolean;
-    limit: number;
-  },
-): Promise<StoredProof[]> {
-  const unit = parseCashuProofUnit(options.unit);
-  if (!unit) throw new Error(`Unsupported Cashu proof unit '${options.unit}'`);
-  if (!Number.isSafeInteger(options.limit) || options.limit < 1 || options.limit > 256) {
-    throw new Error("Range proof selection limit is invalid");
-  }
-  const selected: StoredProof[] = [];
-  await db.proofs
-    .where("[mintUrl+unit+id]")
-    .equals([normalizeUrl(mintUrl), unit, options.keysetId])
-    .each((row) => {
-      const proof = normalizeStoredProof(row);
-      if (!isSpendableStoredProof(proof) || isCtfProof(proof) !== options.conditional) {
-        return;
-      }
-      selected.push(proof);
-      selected.sort(
-        (left, right) =>
-          amountToNumber(right.amount) - amountToNumber(left.amount) ||
-          left.secret.localeCompare(right.secret),
-      );
-      if (selected.length > options.limit) selected.pop();
-    });
-  return selected;
-}
-
-export async function getProofAmountInventoryForKeyset(
-  mintUrl: string,
-  options: {
-    unit: CashuProofUnit | string;
-    keysetId: string;
-    conditional: boolean;
-  },
-): Promise<readonly { amount: string; count: number }[]> {
-  const unit = parseCashuProofUnit(options.unit);
-  if (!unit) throw new Error(`Unsupported Cashu proof unit '${options.unit}'`);
-  const counts = new Map<number, number>();
-  await db.proofs
-    .where("[mintUrl+unit+id]")
-    .equals([normalizeUrl(mintUrl), unit, options.keysetId])
-    .each((row) => {
-      const proof = normalizeStoredProof(row);
-      if (!isSpendableStoredProof(proof) || isCtfProof(proof) !== options.conditional) return;
-      const amount = amountToNumber(row.amount);
-      const count = (counts.get(amount) ?? 0) + 1;
-      if (!Number.isSafeInteger(count)) throw new Error("Proof amount count is too large");
-      counts.set(amount, count);
-    });
-  return [...counts]
-    .sort(([left], [right]) => right - left)
-    .map(([amount, count]) => ({ amount: String(amount), count }));
-}
-
-export async function getSelectableUnitProofsForAmounts(
-  mintUrl: string,
-  options: {
-    unit: CashuProofUnit | string;
-    keysetId: string;
-    conditional: boolean;
-    amounts: readonly string[];
-  },
-): Promise<StoredProof[]> {
-  const unit = parseCashuProofUnit(options.unit);
-  if (!unit) throw new Error(`Unsupported Cashu proof unit '${options.unit}'`);
-  if (options.amounts.length < 1 || options.amounts.length > 256) {
-    throw new Error("Proof amount selection limit is invalid");
-  }
-  const wanted = new Map<number, number>();
-  for (const rawAmount of options.amounts) {
-    if (!/^[1-9][0-9]*$/.test(rawAmount)) throw new Error("Proof amount selection is invalid");
-    const amount = Number(rawAmount);
-    if (!Number.isSafeInteger(amount)) throw new Error("Proof amount selection is invalid");
-    wanted.set(amount, (wanted.get(amount) ?? 0) + 1);
-  }
-  const selected: StoredProof[] = [];
-  await db.proofs
-    .where("[mintUrl+unit+id]")
-    .equals([normalizeUrl(mintUrl), unit, options.keysetId])
-    .each((row) => {
-      const proof = normalizeStoredProof(row);
-      if (!isSpendableStoredProof(proof) || isCtfProof(proof) !== options.conditional) return;
-      const amount = amountToNumber(row.amount);
-      const remaining = wanted.get(amount) ?? 0;
-      if (remaining < 1) return;
-      selected.push(proof);
-      if (remaining === 1) wanted.delete(amount);
-      else wanted.set(amount, remaining - 1);
-    });
-  if (wanted.size > 0 || selected.length !== options.amounts.length) {
-    throw new Error("Proof inventory changed after consolidation planning");
-  }
-  return selected.sort(
-    (left, right) =>
-      amountToNumber(right.amount) - amountToNumber(left.amount) ||
-      left.secret.localeCompare(right.secret),
-  );
 }
 
 export async function selectAndReserveUnitProofs(

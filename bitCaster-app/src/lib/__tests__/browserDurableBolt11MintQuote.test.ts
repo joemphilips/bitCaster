@@ -72,7 +72,9 @@ import {
 const SCOPE = "scope-browser-bolt11";
 const MINT_URL = "https://mint.test";
 const UNIT = "sat";
-const PROOFS = [{ id: "keyset", amount: 100, secret: "output-1", C: "proof-C" }] as never;
+const KEYSET_ID = `01${"11".repeat(32)}`;
+const FOREIGN_KEYSET_ID = `01${"22".repeat(32)}`;
+const PROOFS = [{ id: KEYSET_ID, amount: 100, secret: "output-1", C: "proof-C" }] as never;
 const databases: BitcasterDB[] = [];
 
 beforeEach(() => {
@@ -90,7 +92,7 @@ beforeEach(() => {
     expiry: 50,
   });
   mocks.wallet.prepareMint.mockImplementation(async (_method, _amount, _quote, options) => {
-    options?.onCountersReserved?.({ keysetId: "keyset", start: 7, count: 1 });
+    options?.onCountersReserved?.({ keysetId: KEYSET_ID, start: 7, count: 1 });
     return mintPreview("quote-1", "output-1");
   });
   mocks.wallet.checkMintQuote.mockResolvedValue({ state: "UNPAID" });
@@ -140,7 +142,7 @@ describe("browser durable BOLT11 mint quote coordinator", () => {
     expect(row?.recoveryState).toBe("pending");
     expect(operation?.state).toBe("prepared");
     expect(operation?.metadata).toMatchObject({
-      keysetId: "keyset",
+      keysetId: KEYSET_ID,
       counterStart: 7,
       counterCount: 1,
     });
@@ -153,7 +155,7 @@ describe("browser durable BOLT11 mint quote coordinator", () => {
         operationId: quote.walletMintOperationId,
         kind: "wallet-mint",
         mintUrl: MINT_URL,
-        inputs: [{ id: "foreign" }] as never,
+        inputs: [{ id: FOREIGN_KEYSET_ID }] as never,
         outputs: {},
       },
       mocks.context().database,
@@ -168,7 +170,7 @@ describe("browser durable BOLT11 mint quote coordinator", () => {
   it("rejects a repeated quote with a conflicting deterministic output plan", async () => {
     await createBrowserDurableBolt11MintQuote({ amount: 100, mintUrl: MINT_URL, unit: UNIT });
     mocks.wallet.prepareMint.mockImplementationOnce(async (_method, _amount, _quote, options) => {
-      options?.onCountersReserved?.({ keysetId: "keyset", start: 8, count: 1 });
+      options?.onCountersReserved?.({ keysetId: KEYSET_ID, start: 8, count: 1 });
       return mintPreview("quote-1", "output-conflict");
     });
 
@@ -414,12 +416,12 @@ describe("browser durable BOLT11 mint quote coordinator", () => {
 });
 
 function mintPreview(quote: string, output: string) {
-  const data = OutputData.createSingleData("100", "keyset", output, 3n);
+  const data = OutputData.createSingleData("100", KEYSET_ID, output, 3n);
   return {
     method: "bolt11",
     payload: { quote, outputs: [data.blindedMessage] },
     outputData: [data],
-    keysetId: "keyset",
+    keysetId: KEYSET_ID,
     quote: { quote, expiry: 50 },
   } as never;
 }

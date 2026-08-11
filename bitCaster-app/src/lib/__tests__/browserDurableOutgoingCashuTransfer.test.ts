@@ -40,6 +40,8 @@ import {
 } from "../browserDurableOutgoingCashuTransfer";
 import {
   BitcasterDB,
+  BOUNDED_CANONICAL_RANGE_PROOF_LIMIT_MAX,
+  getBoundedCanonicalRangeProofsForKeyset,
   getBoundedCanonicalSatProofs,
   getBoundedCanonicalRegularProofs,
   MARKET_FUNDING_INPUT_PROOF_LIMIT_MAX,
@@ -168,6 +170,165 @@ describe("browser durable outgoing Cashu store", () => {
     ]);
   });
 
+  it("selects range proofs only from the exact canonical custody authority", async () => {
+    const database = createDatabase();
+    const exact = custodyProof(SELECTOR_SCOPE_ID, "msat", {
+      secret: "range-exact",
+      amount: 8,
+      id: KEYSET_ID,
+    });
+    const locked = custodyProof(SELECTOR_SCOPE_ID, "msat", {
+      secret: "range-locked",
+      amount: 16,
+      id: KEYSET_ID,
+    });
+    const spent = custodyProof(SELECTOR_SCOPE_ID, "msat", {
+      secret: "range-spent",
+      amount: 32,
+      id: KEYSET_ID,
+    });
+    const foreignScope = custodyProof(
+      browserWalletScope(new Uint8Array(64).fill(9)).scopeId,
+      "msat",
+      {
+        secret: "range-foreign-scope",
+        amount: 64,
+        id: KEYSET_ID,
+      },
+    );
+    const foreignAsset = createBrowserCustodyProofRow({
+      scopeId: SELECTOR_SCOPE_ID,
+      normalizedMint: MINT,
+      unit: "msat",
+      proof: {
+        id: KEYSET_ID,
+        amount: Amount.from(128),
+        secret: "range-foreign-asset",
+        C: `02${"1".repeat(64)}`,
+      },
+      asset: { kind: "conditional", conditionId: "condition", outcomeCollection: "YES" },
+      receivedAtMs: 0,
+    });
+    await database.custodyProofs.bulkPut([
+      exact,
+      { ...locked, selectability: "locked", reservationOperationId: "operation" },
+      { ...spent, selectability: "spent" },
+      foreignScope,
+      foreignAsset,
+    ]);
+    await database.proofs.put({
+      secret: "range-legacy-only",
+      amount: 256,
+      id: KEYSET_ID,
+      C: `02${"1".repeat(64)}`,
+      mintUrl: MINT,
+      baseAsset: "sat",
+      unit: "msat",
+    });
+
+    const selected = await getBoundedCanonicalRangeProofsForKeyset(
+      MINT,
+      {
+        scopeId: SELECTOR_SCOPE_ID,
+        unit: "msat",
+        keysetId: KEYSET_ID,
+        asset: { kind: "regular" },
+      },
+      database,
+    );
+
+    expect(selected.map(({ secret }) => secret)).toEqual(["range-exact"]);
+  });
+
+  it("selects the largest exact-keyset proof beyond the first 512 primary keys", async () => {
+    const database = createDatabase();
+    const smallCandidates = Array.from({ length: 1_500 }, (_, index) =>
+      custodyProof(SELECTOR_SCOPE_ID, "msat", {
+        secret: `range-small-${index.toString().padStart(4, "0")}`,
+        amount: 1,
+        id: KEYSET_ID,
+      }),
+    );
+    const large = Array.from({ length: 64 }, (_, index) =>
+      custodyProof(SELECTOR_SCOPE_ID, "msat", {
+        secret: `range-large-${index.toString().padStart(2, "0")}`,
+        amount: 10_000,
+        id: KEYSET_ID,
+      }),
+    ).sort((left, right) => right.proofId.localeCompare(left.proofId))[0]!;
+    const preceding = smallCandidates
+      .filter(({ proofId }) => proofId < large.proofId)
+      .sort((left, right) => left.proofId.localeCompare(right.proofId))
+      .slice(0, BOUNDED_CANONICAL_RANGE_PROOF_LIMIT_MAX);
+    expect(preceding).toHaveLength(BOUNDED_CANONICAL_RANGE_PROOF_LIMIT_MAX);
+    await database.custodyProofs.bulkPut([...preceding, large]);
+
+    const selected = await getBoundedCanonicalRangeProofsForKeyset(
+      MINT,
+      {
+        scopeId: SELECTOR_SCOPE_ID,
+        unit: "msat",
+        keysetId: KEYSET_ID,
+        asset: { kind: "regular" },
+      },
+      database,
+    );
+
+    expect(selected).toHaveLength(BOUNDED_CANONICAL_RANGE_PROOF_LIMIT_MAX);
+    expect(amountToNumber(selected[0]!.amount)).toBe(10_000);
+  }, 15_000);
+
+  it("selects one exact conditional range asset and rejects a V3 keyset", async () => {
+    const database = createDatabase();
+    const conditional = (outcomeCollection: string, secret: string) =>
+      createBrowserCustodyProofRow({
+        scopeId: SELECTOR_SCOPE_ID,
+        normalizedMint: MINT,
+        unit: "msat",
+        proof: {
+          id: KEYSET_ID,
+          amount: Amount.from(4),
+          secret,
+          C: `02${"1".repeat(64)}`,
+        },
+        asset: { kind: "conditional", conditionId: "condition", outcomeCollection },
+        receivedAtMs: 0,
+      });
+    await database.custodyProofs.bulkPut([
+      conditional("YES", "range-yes"),
+      conditional("NO", "range-no"),
+    ]);
+
+    await expect(
+      getBoundedCanonicalRangeProofsForKeyset(
+        MINT,
+        {
+          scopeId: SELECTOR_SCOPE_ID,
+          unit: "msat",
+          keysetId: KEYSET_ID,
+          asset: {
+            kind: "conditional",
+            conditionId: "condition",
+            outcomeCollection: "YES",
+          },
+        },
+        database,
+      ),
+    ).resolves.toMatchObject([{ secret: "range-yes" }]);
+    await expect(
+      getBoundedCanonicalRangeProofsForKeyset(
+        MINT,
+        {
+          scopeId: SELECTOR_SCOPE_ID,
+          unit: "msat",
+          keysetId: `02${"1".repeat(64)}`,
+          asset: { kind: "regular" },
+        },
+        database,
+      ),
+    ).rejects.toThrow("requires a V2 keyset");
+  });
+
   it("reads one bounded custody page without scanning higher-sorted legacy history", async () => {
     const database = createDatabase();
     await database.proofs.bulkPut(
@@ -231,19 +392,14 @@ describe("browser durable outgoing Cashu store", () => {
     expect(selected.map(({ secret }) => secret)).toEqual(["old", "active"]);
   });
 
-  it("fails closed when canonical custody contains a non-V2 selectable proof", async () => {
-    const database = createDatabase();
-    await database.custodyProofs.put(
+  it("does not admit a non-V2 proof into canonical custody", () => {
+    expect(() =>
       custodyProof(SELECTOR_SCOPE_ID, "sat", {
         secret: "legacy",
         amount: 16,
         id: "00legacy",
       }),
-    );
-
-    await expect(
-      getBoundedCanonicalSatProofs(MINT, { scopeId: SELECTOR_SCOPE_ID }, database),
-    ).rejects.toThrow(/V2 keyset/);
+    ).toThrow(/V2 keyset/);
   });
 
   it("does not depend on advertised historical keyset lists", async () => {
@@ -1089,7 +1245,7 @@ function transferForScope(
     1,
     new Uint8Array(64).fill(7),
     transferId.charCodeAt(0),
-    "0000000000000001",
+    KEYSET_ID,
   );
   return createDurableOutgoingCashuTransfer({
     transferId,
@@ -1102,10 +1258,10 @@ function transferForScope(
       preview: {
         amount: Amount.from(1),
         fees: Amount.zero(),
-        keysetId: "0000000000000001",
+        keysetId: KEYSET_ID,
         inputs: [
           {
-            id: "0000000000000001",
+            id: KEYSET_ID,
             amount: Amount.from(1),
             secret: `input-${transferId}`,
             C: "02" + "1".repeat(64),

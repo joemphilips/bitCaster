@@ -599,7 +599,7 @@ describe("asset monitoring reporter", () => {
 function proof(overrides: ProofOverrides = {}): StoredProof {
   const { amount = 1, ...rest } = overrides;
   return {
-    id: "00" + "a".repeat(14),
+    id: keysetId(),
     amount: Amount.from(amount),
     secret: "secret",
     C: "02",
@@ -630,7 +630,7 @@ function custodyProof(stored: StoredProof) {
 }
 
 function keysetId(): string {
-  return `00${"a".repeat(14)}`;
+  return `01${"a".repeat(64)}`;
 }
 
 function alternateKeysetId(): string {

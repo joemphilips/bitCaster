@@ -16,11 +16,7 @@ import { createEncryptedWalletBackupV2AssetIdentity } from "@bitcaster/client-sd
 import { toSeed } from "@/lib/bip39";
 import { browserWalletScopeIdFromMnemonic } from "@/lib/browserWalletProfile";
 import type { MarketDetail } from "@/types/market-detail";
-import {
-  getProofAmountInventoryForKeyset,
-  getSelectableUnitProofsForAmounts,
-  db,
-} from "@/stores/proof-db";
+import { getBoundedCanonicalRangeProofsForKeyset, db } from "@/stores/proof-db";
 import { getWalletForMnemonicUnit } from "@/stores/wallet";
 import {
   BrowserCtfRangeOrderCoordinator,
@@ -33,6 +29,7 @@ import { readCtfRangePreparation } from "@/stores/ctf-range-order-db";
 import { recordBrowserCtfRangeMessage } from "@/stores/ctf-range-order-messages";
 import { recoverBrowserFundedAsset } from "./browserFundedAssetRecovery";
 import { activeBrowserWalletScopeId } from "./browserWalletProfile";
+import { browserRangeSourceAsset } from "./browserCtfRangeOrderSource";
 
 const MINT_METADATA_CACHE_TTL_MS = 30_000;
 const MINT_METADATA_CACHE_LIMIT = 64;
@@ -73,11 +70,13 @@ export async function previewBrowserCtfRangeOrderFees(input: {
   readonly ticket: TradeTicket;
   readonly mintUrl: string;
 }): Promise<BrowserCtfRangeOrderFeePreview> {
+  const scopeId = activeBrowserWalletScopeId();
+  if (scopeId === null) throw new Error("The active wallet profile is unavailable.");
   const { preparation } = await loadBrowserRangePreparation({
     ...input,
     clientOrderId: crypto.randomUUID(),
   });
-  const plan = await loadBrowserRangeConsolidationPlan(preparation);
+  const plan = await loadBrowserRangeConsolidationPlan(preparation, scopeId);
   if (plan.kind !== "ready") {
     throw new BrowserCtfRangeOrderError(
       plan.kind === "insufficient" ? "insufficient-funds" : "source-preparation-failed",
@@ -146,15 +145,8 @@ async function consolidateBrowserRangeSource(input: {
   expectedConsolidationFeeSubunits: number;
 }) {
   const plan = await recoverRangeSourcePlan(input);
-  const consolidationFee = safeFeeSubunits(plan.consolidationFee);
-  if (input.expectedConsolidationFeeSubunits !== consolidationFee) {
-    throw new BrowserCtfRangeOrderError(
-      "source-preparation-failed",
-      "Wallet proof fees changed. Review the updated trade cost and try again.",
-    );
-  }
-  await executeConsolidationRounds(input, plan);
-  return selectedRangeSourceProofs(input, plan.selectedInputs);
+  const finalPlan = await executeConsolidationRounds(input, plan);
+  return selectedRangeSourceProofs(input, finalPlan.selectedInputs);
 }
 
 async function recoverRangeSourcePlan(input: {
@@ -170,7 +162,7 @@ async function recoverRangeSourcePlan(input: {
     mnemonic: input.mnemonic,
     asset: rangeSourceAsset(input.preparation),
     requiredAmount: rangeSourceRequiredAmount(input.preparation),
-    loadPlan: () => loadBrowserRangeConsolidationPlan(input.preparation),
+    loadPlan: () => loadBrowserRangeConsolidationPlan(input.preparation, input.scopeId),
     isCurrentProfile: () => activeBrowserWalletScopeId() === input.scopeId,
   });
   switch (recovery.kind) {
@@ -178,7 +170,7 @@ async function recoverRangeSourcePlan(input: {
       return readyRangeSourcePlan(recovery.plan);
     case "recovered":
       return postRecoveryRangeSourcePlan(
-        await loadBrowserRangeConsolidationPlan(input.preparation),
+        await loadBrowserRangeConsolidationPlan(input.preparation, input.scopeId),
       );
     case "persistent-error":
       throw assetRecoveryFailed();
@@ -232,10 +224,18 @@ async function executeConsolidationRounds(
     coordinator: BrowserCtfRangeOrderCoordinator;
     seed: Uint8Array;
     preparation: ReturnType<typeof buildBrowserCtfRangeOrderPreparation>;
+    scopeId: string;
+    expectedConsolidationFeeSubunits: number;
   },
-  plan: Extract<Awaited<ReturnType<typeof loadBrowserRangeConsolidationPlan>>, { kind: "ready" }>,
-) {
-  for (const [round, plannedRound] of plan.consolidationRounds.entries()) {
+  plan: ReadyRangeSourcePlan,
+): Promise<ReadyRangeSourcePlan> {
+  let current = plan;
+  let round = 0;
+  let committedFeeSubunits = 0;
+  while (current.consolidationRounds.length > 0) {
+    if (round >= BROWSER_CONSOLIDATION_ROUNDS_MAX) throw rangeSourcePlanError("round-limit");
+    assertApprovedConsolidationFee(input, committedFeeSubunits, current);
+    const plannedRound = current.consolidationRounds[0]!;
     const proofs = await selectedRangeSourceProofs(input, plannedRound.inputs);
     await input.coordinator.consolidateRound({
       seed: input.seed,
@@ -244,19 +244,39 @@ async function executeConsolidationRounds(
       inputs: proofs,
       plannedRound,
     });
+    committedFeeSubunits = safeFeeSubunits(
+      (BigInt(committedFeeSubunits) + BigInt(safeFeeSubunits(plannedRound.fee))).toString(),
+    );
+    current = readyRangeSourcePlan(
+      await loadBrowserRangeConsolidationPlan(input.preparation, input.scopeId),
+    );
+    round += 1;
+  }
+  assertApprovedConsolidationFee(input, committedFeeSubunits, current);
+  return current;
+}
+
+function assertApprovedConsolidationFee(
+  input: { expectedConsolidationFeeSubunits: number },
+  committedFeeSubunits: number,
+  plan: ReadyRangeSourcePlan,
+): void {
+  const total = safeFeeSubunits(
+    (BigInt(committedFeeSubunits) + BigInt(safeFeeSubunits(plan.consolidationFee))).toString(),
+  );
+  if (total !== input.expectedConsolidationFeeSubunits) {
+    throw new BrowserCtfRangeOrderError(
+      "source-preparation-failed",
+      "Wallet proof fees changed. Review the updated trade cost and try again.",
+    );
   }
 }
 
 function selectedRangeSourceProofs(
-  input: { preparation: ReturnType<typeof buildBrowserCtfRangeOrderPreparation> },
+  input: { preparation: ReturnType<typeof buildBrowserCtfRangeOrderPreparation>; scopeId: string },
   amounts: readonly string[],
 ) {
-  return getSelectableUnitProofsForAmounts(input.preparation.mintUrl, {
-    unit: "msat",
-    keysetId: input.preparation.offerKeyset.id,
-    conditional: input.preparation.side === "Sell",
-    amounts,
-  });
+  return selectCanonicalRangeProofAmounts(input, amounts);
 }
 
 function rangeSourceAsset(preparation: ReturnType<typeof buildBrowserCtfRangeOrderPreparation>) {
@@ -365,17 +385,68 @@ function loadCachedAdmissionPolicy(
 
 async function loadBrowserRangeConsolidationPlan(
   preparation: ReturnType<typeof buildBrowserCtfRangeOrderPreparation>,
+  scopeId: string,
 ) {
-  const inventory = await getProofAmountInventoryForKeyset(preparation.mintUrl, {
+  const proofs = await getBoundedCanonicalRangeProofsForKeyset(preparation.mintUrl, {
+    scopeId,
     unit: "msat",
     keysetId: preparation.offerKeyset.id,
-    conditional: preparation.side === "Sell",
+    asset: browserRangeSourceAsset(preparation),
   });
+  const inventory = proofAmountInventory(proofs);
   return planCtfRangeSourceConsolidation({
     preparation,
     inventory,
     maxRounds: BROWSER_CONSOLIDATION_ROUNDS_MAX,
   });
+}
+
+async function selectCanonicalRangeProofAmounts(
+  input: { preparation: ReturnType<typeof buildBrowserCtfRangeOrderPreparation>; scopeId: string },
+  amounts: readonly string[],
+) {
+  if (amounts.length < 1 || amounts.length > 256) {
+    throw new Error("Proof amount selection limit is invalid");
+  }
+  const wanted = new Map<number, number>();
+  for (const value of amounts) {
+    const amount = Number(value);
+    if (!/^[1-9][0-9]*$/.test(value) || !Number.isSafeInteger(amount)) {
+      throw new Error("Proof amount selection is invalid");
+    }
+    wanted.set(amount, (wanted.get(amount) ?? 0) + 1);
+  }
+  const proofs = await getBoundedCanonicalRangeProofsForKeyset(input.preparation.mintUrl, {
+    scopeId: input.scopeId,
+    unit: "msat",
+    keysetId: input.preparation.offerKeyset.id,
+    asset: browserRangeSourceAsset(input.preparation),
+  });
+  const selected = proofs.filter((proof) => {
+    const amount = Number(proof.amount);
+    const remaining = wanted.get(amount) ?? 0;
+    if (remaining < 1) return false;
+    if (remaining === 1) wanted.delete(amount);
+    else wanted.set(amount, remaining - 1);
+    return true;
+  });
+  if (wanted.size > 0 || selected.length !== amounts.length) {
+    throw new Error("Proof inventory changed after consolidation planning");
+  }
+  return selected;
+}
+
+function proofAmountInventory(proofs: readonly { amount: unknown }[]) {
+  const counts = new Map<number, number>();
+  for (const proof of proofs) {
+    const amount = Number(proof.amount);
+    if (!Number.isSafeInteger(amount) || amount < 1)
+      throw new Error("Range proof amount is invalid");
+    counts.set(amount, (counts.get(amount) ?? 0) + 1);
+  }
+  return [...counts]
+    .sort(([left], [right]) => right - left)
+    .map(([amount, count]) => ({ amount: String(amount), count }));
 }
 
 function safeFeeSubunits(value: string): number {

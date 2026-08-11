@@ -11,9 +11,11 @@ import {
 } from "@bitcaster/client-sdk/ctfRangeOrderJournal";
 import {
   appendCtfRangePreparationConsolidation,
+  appendCtfRangePreparationConsolidationInTransaction,
   bindCtfRangePreparationCapability,
   hasSubmittedCtfRangeOrder,
   insertCtfRangePreparation,
+  insertCtfRangePreparationInTransaction,
   pageActiveCtfRangePreparations,
   readActiveCtfRangePreparationByClientOrderId,
   readCtfRangePreparationConsolidations,
@@ -206,6 +208,28 @@ describe("browser CTF range order journal", () => {
     await expect(
       readCtfRangePreparationConsolidations(input.scopeId, input.rangeOperationId, database),
     ).resolves.toEqual([link]);
+  });
+
+  it("aborts a composed write when its explicit transaction misses a required table", async () => {
+    const database = createDatabase();
+    const input = identity("range-current-transaction", "client-current-transaction", 40);
+    const link = {
+      scopeId: input.scopeId,
+      rangeOperationId: input.rangeOperationId,
+      round: 0,
+      operationId: `${input.sourceOperationId}:consolidation:0`,
+      reservationId: `ctf-range-consolidation:${input.sourceOperationId}:consolidation:0`,
+    };
+
+    await expect(
+      database.transaction("rw", database.ctfRangePreparations, async (transaction) => {
+        await insertCtfRangePreparationInTransaction(transaction, input, database);
+        await appendCtfRangePreparationConsolidationInTransaction(transaction, link, database);
+      }),
+    ).rejects.toThrow(/does not cover required tables/);
+
+    expect(await database.ctfRangePreparations.count()).toBe(0);
+    expect(await database.ctfRangePreparationConsolidations.count()).toBe(0);
   });
 });
 

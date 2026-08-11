@@ -236,7 +236,7 @@ function custodyProof(
       normalizedMint: "https://mint.example",
       unit: "msat",
       proof: {
-        id: `00${"22".repeat(32)}`,
+        id: `01${"22".repeat(32)}`,
         amount: Amount.from(amount),
         secret,
         C: `02${"33".repeat(32)}`,

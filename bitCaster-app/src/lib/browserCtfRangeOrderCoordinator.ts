@@ -24,6 +24,12 @@ import {
 } from "@bitcaster/client-sdk/durableCustodyProofOperation";
 import { bindDurableCustodyProofOperation } from "@bitcaster/client-sdk/durableCustodyProofOperationRecord";
 import {
+  prepareDurableCustodyVerifiedMintResult,
+  readDurableCustodyVerifiedMintResult,
+  stageDurableCustodyPreparedMintResult,
+  type DurableCustodyVerifiedMintResult,
+} from "@bitcaster/client-sdk/durableCustodyMintResult";
+import {
   classifyDurableCtfRangeRecovery,
   createDeterministicDurableCtfRangeRefundOutputsWithLocators,
   createDurableCtfRangeRefundOperation,
@@ -108,6 +114,8 @@ import {
   browserPersistedSourceResult,
   browserRangeJournalIdentity,
   browserRangeCapabilityRequestFromSnapshot,
+  browserRangeConsolidationOperationFromSnapshot,
+  browserRangeConsolidationSuccessorProofRows,
   browserRangeOperationFromSnapshot,
   browserRangeRefundProofRows,
   browserRangeRefundStoredProofs,
@@ -119,6 +127,7 @@ import {
   browserSourceResultFromSnapshot,
   browserWalletScope,
   completeBrowserRangeOperation,
+  createBrowserRangeConsolidationBinding,
   createBrowserRangeBinding,
   createBrowserRangeSourceBinding,
   requireBrowserCustodyOperation,
@@ -127,20 +136,18 @@ import {
 import { createBrowserWalletCounterSource } from "../stores/wallet";
 import {
   bindCtfRangePreparationCapability,
-  appendCtfRangePreparationConsolidation,
-  insertCtfRangePreparation,
+  appendCtfRangePreparationConsolidationInTransaction,
+  insertCtfRangePreparationInTransaction,
   pageActiveCtfRangePreparations,
   readActiveCtfRangePreparationByClientOrderId,
   readCtfRangePreparation,
   readCtfRangePreparationConsolidations,
   transitionCtfRangePreparation,
+  transitionCtfRangePreparationInTransaction,
 } from "../stores/ctf-range-order-db";
 import {
   db,
-  getProofOperation,
-  markProofOperationCompleted,
   normalizeAndValidateStoredProof,
-  prepareProofOperation,
   storedProofFromRow,
   storedProofRow,
   type BitcasterDB,
@@ -360,12 +367,14 @@ export class BrowserCtfRangeOrderCoordinator {
     await withWalletProfileLock(
       scope.scopeId,
       () =>
-        this.#withScopeOwner(scope, async () => {
-          const operation = await this.#prepareAndPersistConsolidation(input, scope);
+        this.#withScopeOwner(scope, async (owner) => {
+          const binding = await this.#prepareAndPersistConsolidation(input, scope, owner);
           await this.#completeAndCommitConsolidation(
+            scope,
+            owner,
             input.preparation,
-            operation,
-            operation.operationId,
+            binding,
+            input.seed,
           );
         }),
       this.#lockManager,
@@ -741,7 +750,8 @@ export class BrowserCtfRangeOrderCoordinator {
       readonly plannedRound: ProofConsolidationRound;
     },
     scope: DurableCustodyScope,
-  ): Promise<DurableCustodyProofOperationInput> {
+    owner: DurableCustodyOwnerAuthorization,
+  ): Promise<ReturnType<typeof createBrowserRangeConsolidationBinding>> {
     const operationId = `${input.preparation.sourceOperationId}:consolidation:${input.round}`;
     let operation: DurableCustodyProofOperationInput;
     try {
@@ -766,58 +776,66 @@ export class BrowserCtfRangeOrderCoordinator {
     } catch (error) {
       throw rangeError("source-preparation-failed", error);
     }
-    await this.#persistPreparedConsolidation(scope, input.preparation, input.round, operation);
-    return operation;
+    const binding = createBrowserRangeConsolidationBinding(scope, input.preparation, operation);
+    await this.#persistPreparedConsolidation(scope, owner, input.preparation, input.round, binding);
+    return binding;
   }
 
   async #persistPreparedConsolidation(
     scope: DurableCustodyScope,
+    owner: DurableCustodyOwnerAuthorization,
     preparation: PersistedCtfRangeOrderPreparation,
     round: number,
-    operation: DurableCustodyProofOperationInput,
+    binding: ReturnType<typeof createBrowserRangeConsolidationBinding>,
   ): Promise<void> {
-    const validated = validateCtfRangeConsolidationOperation(operation);
-    const reservationId = operation.operationId;
-    const predecessors = operation.inputs.map(
+    const operation = binding.authority.authority.operation;
+    validateCtfRangeConsolidationOperation(operation);
+    const reservationId = binding.record.operation.operationId;
+    const stagedPredecessors = operation.inputs.map(
       (proof) =>
         browserSourceProofRows(
           scope,
           preparation,
           { authorization: [proof as Proof], keep: [] },
           this.#now(),
-        )[0]!.proof,
+        )[0]!,
     );
+    const predecessors = stagedPredecessors.map(({ proof }) => proof);
     try {
-      await this.#database.transaction("rw", this.#transactionTables(true), async () => {
-        await insertCtfRangePreparation(
+      await this.#database.transaction("rw", this.#transactionTables(true), async (tx) => {
+        await insertCtfRangePreparationInTransaction(
+          tx,
           await this.#journalIdentity(scope, preparation),
           this.#database,
         );
-        await prepareProofOperation(
-          {
-            operationId: operation.operationId,
-            kind: rangeConsolidationKind(operation.kind),
-            mintUrl: operation.mintUrl,
-            inputs: operation.inputs as Proof[],
-            outputs: { consolidated: serializeOutputDataArray(validated.outputs) },
-            metadata: {
-              ...structuredClone(operation.metadata),
-              exactOperation: structuredClone(operation),
-            },
-          },
-          this.#database,
-        );
-        await appendCtfRangePreparationConsolidation(
+        await appendCtfRangePreparationConsolidationInTransaction(
+          tx,
           {
             scopeId: scope.scopeId,
             rangeOperationId: preparation.operationId,
             round,
-            operationId: operation.operationId,
+            operationId: reservationId,
             reservationId,
           },
           this.#database,
         );
-        await this.#reserveLegacySourceProofs(
+        await this.#custody.transactInCurrentTransaction(
+          tx,
+          browserCustodySelection(scope, browserOwnerAt(owner, this.#now()), reservationId, null),
+          (transaction) =>
+            bindDurableCustodyProofOperation(transaction, binding.record, binding.artifacts),
+          {
+            predecessorProofs: { [reservationId]: predecessors },
+            conditionalKeysets: Object.fromEntries(
+              stagedPredecessors.flatMap((staged) =>
+                staged.conditionalKeyset === undefined
+                  ? []
+                  : [[staged.proof.proofId, staged.conditionalKeyset]],
+              ),
+            ),
+          },
+        );
+        await this.#reserveLegacyConsolidationProofs(
           scope,
           preparation,
           reservationId,
@@ -831,10 +849,18 @@ export class BrowserCtfRangeOrderCoordinator {
   }
 
   async #completeAndCommitConsolidation(
+    scope: DurableCustodyScope,
+    owner: DurableCustodyOwnerAuthorization,
     preparation: PersistedCtfRangeOrderPreparation,
-    operation: DurableCustodyProofOperationInput,
-    reservationId: string,
+    binding: ReturnType<typeof createBrowserRangeConsolidationBinding>,
+    seed: Uint8Array,
   ): Promise<void> {
+    const operation = binding.authority.authority.operation;
+    const attempted = await this.#markConsolidationAttempted(
+      scope,
+      owner,
+      binding.record.operation.operationId,
+    );
     let proofs: readonly Proof[];
     try {
       proofs = await completeCtfRangeConsolidationOperation(
@@ -844,32 +870,151 @@ export class BrowserCtfRangeOrderCoordinator {
     } catch (error) {
       throw rangeError("mint-source-uncertain", error);
     }
-    await this.#commitConsolidationResult(preparation, operation, reservationId, proofs);
+    const prepared = prepareDurableCustodyVerifiedMintResult({
+      record: attempted,
+      exactAuthority: binding.authority.exactAuthority,
+      result: { consolidated: proofs },
+    });
+    const staged = await this.#stageConsolidationResult(scope, owner, attempted, prepared);
+    await this.#commitConsolidationResult(
+      scope,
+      owner,
+      preparation,
+      staged,
+      operation,
+      prepared,
+      seed,
+    );
   }
 
   async #commitConsolidationResult(
+    scope: DurableCustodyScope,
+    owner: DurableCustodyOwnerAuthorization,
     preparation: PersistedCtfRangeOrderPreparation,
+    record: DurableCustodyRecord,
     operation: DurableCustodyProofOperationInput,
-    reservationId: string,
-    proofs: readonly Proof[],
+    prepared: DurableCustodyVerifiedMintResult,
+    seed: Uint8Array,
   ): Promise<void> {
-    const successors = proofs.map((proof) => legacySourceProof(preparation, proof, this.#now()));
+    const authorization = browserOwnerAt(
+      owner,
+      await this.#consolidationObservedAt(scope, record, this.#now()),
+    );
+    const successors = browserRangeConsolidationSuccessorProofRows({
+      record,
+      preparation,
+      operation,
+      prepared,
+      seed,
+      receivedAtMs: authorization.observedAtMs,
+    });
+    const legacySuccessors = prepared.proofs.map(({ proof }) =>
+      legacySourceProof(preparation, proof, authorization.observedAtMs),
+    );
+    const resultAuthority = requireBrowserStagedResult(record);
     try {
-      await this.#database.transaction("rw", this.#transactionTables(false), async () => {
-        await markProofOperationCompleted(
-          operation.operationId,
-          { consolidated: [...proofs] },
-          this.#database,
+      await this.#database.transaction("rw", this.#transactionTables(false), async (tx) => {
+        await this.#custody.transactInCurrentTransaction(
+          tx,
+          browserCustodySelection(
+            scope,
+            authorization,
+            record.operation.operationId,
+            record.revision,
+          ),
+          (transaction) =>
+            transaction.applyVerifiedResult({
+              operationId: record.operation.operationId,
+              expectedRevision: record.revision,
+              authorization,
+              outputPlanFingerprint: record.operation.outputPlan.outputPlanFingerprint,
+              resultHandle: resultAuthority.resultHandle,
+              resultFingerprint: resultAuthority.resultFingerprint,
+              successorAdmission: {
+                scopeId: scope.scopeId,
+                operationId: record.operation.operationId,
+                admissionId: `range-consolidation:${resultAuthority.resultFingerprint}`,
+                proofRows: successors.map(({ proof, expectedRevision }) => ({
+                  proofId: proof.proofId,
+                  expectedRevision,
+                  admittedRevision: proof.revision,
+                })),
+              },
+            }),
+          { successorProofs: { [record.operation.operationId]: successors } },
         );
         await this.#replaceLegacyReservedProofs(
           operation.inputs.map(({ secret }) => secret),
-          reservationId,
-          successors,
+          legacySuccessors,
         );
       });
     } catch (error) {
       throw rangeError("custody-commit-failed", error);
     }
+  }
+
+  async #markConsolidationAttempted(
+    scope: DurableCustodyScope,
+    owner: DurableCustodyOwnerAuthorization,
+    operationId: string,
+  ): Promise<DurableCustodyRecord> {
+    const current = await requireBrowserCustodyOperation(this.#custody, scope, operationId);
+    if (current.operation.state === "transport-attempted") return current;
+    if (current.operation.state !== "dispatch-intent") throw rangeError("recovery-pending");
+    const authorization = browserOwnerAt(owner, this.#now());
+    await this.#custody.transact(
+      browserCustodySelection(scope, authorization, operationId, current.revision),
+      (transaction) =>
+        transaction.transitionOperation({
+          operationId,
+          expectedRevision: current.revision,
+          transition: {
+            kind: "mark-transport-attempted",
+            authorization,
+            expectedRevision: current.revision,
+          },
+        }),
+    );
+    return requireBrowserCustodyOperation(this.#custody, scope, operationId);
+  }
+
+  async #stageConsolidationResult(
+    scope: DurableCustodyScope,
+    owner: DurableCustodyOwnerAuthorization,
+    record: DurableCustodyRecord,
+    prepared: DurableCustodyVerifiedMintResult,
+  ): Promise<DurableCustodyRecord> {
+    const authorization = browserOwnerAt(owner, this.#now());
+    await this.#custody.transact(
+      browserCustodySelection(scope, authorization, record.operation.operationId, record.revision),
+      (transaction) =>
+        stageDurableCustodyPreparedMintResult({
+          transaction,
+          record,
+          prepared,
+          authorization,
+        }),
+    );
+    return requireBrowserCustodyOperation(this.#custody, scope, record.operation.operationId);
+  }
+
+  async #consolidationObservedAt(
+    scope: DurableCustodyScope,
+    record: DurableCustodyRecord,
+    observedAtMs: number,
+  ): Promise<number> {
+    const keys = record.operation.reservation.inputs.map(
+      ({ proofId }) => [scope.scopeId, proofId] as [string, string],
+    );
+    const [rows, authorities] = await Promise.all([
+      this.#database.custodyProofs.bulkGet(keys),
+      this.#database.custodyProofBackupAuthorities.bulkGet(keys),
+    ]);
+    return Math.max(
+      observedAtMs,
+      ...rows.map((row) => row?.receivedAtMs ?? 0),
+      ...authorities.map((authority) => authority?.updatedAtMs ?? 0),
+    );
   }
 
   async #journalIdentity(
@@ -954,12 +1099,14 @@ export class BrowserCtfRangeOrderCoordinator {
     sourceProofs: DurableCustodyProofOperationInput["inputs"],
   ): Promise<void> {
     try {
-      await this.#database.transaction("rw", this.#transactionTables(true), async () => {
-        await insertCtfRangePreparation(
+      await this.#database.transaction("rw", this.#transactionTables(true), async (tx) => {
+        await insertCtfRangePreparationInTransaction(
+          tx,
           await this.#journalIdentity(scope, preparation),
           this.#database,
         );
-        await this.#custody.transact(
+        await this.#custody.transactInCurrentTransaction(
+          tx,
           browserCustodySelection(
             scope,
             browserOwnerAt(owner, this.#now()),
@@ -979,13 +1126,7 @@ export class BrowserCtfRangeOrderCoordinator {
             ),
           },
         );
-        await this.#reserveLegacySourceProofs(
-          scope,
-          preparation,
-          custodyOperationId,
-          sourceProofs,
-          predecessors,
-        );
+        await this.#reserveLegacySourceProofs(preparation, custodyOperationId, sourceProofs);
       });
     } catch (error) {
       throw rangeError("custody-commit-failed", error);
@@ -1043,7 +1184,13 @@ export class BrowserCtfRangeOrderCoordinator {
     );
     const snapshot = await this.#custody.readOperationSnapshot(scope, sourceCustodyOperationId);
     if (snapshot === null) {
-      return this.#recoverConsolidationOnlyPreparation(journalRecord, preparation);
+      return this.#recoverConsolidationOnlyPreparation(
+        journalRecord,
+        preparation,
+        seed,
+        scope,
+        owner,
+      );
     }
     const source = browserSourceOperationFromSnapshot(snapshot.record, snapshot.artifacts);
     switch (snapshot.record.operation.result.state) {
@@ -1084,6 +1231,9 @@ export class BrowserCtfRangeOrderCoordinator {
       ReturnType<typeof pageActiveCtfRangePreparations>
     >["preparations"][number],
     preparation: PersistedCtfRangeOrderPreparation,
+    seed: Uint8Array,
+    scope: DurableCustodyScope,
+    owner: DurableCustodyOwnerAuthorization,
   ): Promise<boolean> {
     const links = await readCtfRangePreparationConsolidations(
       journalRecord.scopeId,
@@ -1092,16 +1242,18 @@ export class BrowserCtfRangeOrderCoordinator {
     );
     if (links.length === 0) throw rangeError("recovery-pending");
     for (const link of links) {
-      await this.#resumeConsolidation(preparation, link.operationId, link.reservationId);
+      await this.#resumeConsolidation(preparation, seed, scope, owner, link.operationId);
     }
+    const current = await this.#currentPreparation(journalRecord);
+    if (current.lifecycleState !== "prepared") throw rangeError("recovery-pending");
     await transitionCtfRangePreparation(
       {
-        scopeId: journalRecord.scopeId,
-        rangeOperationId: journalRecord.rangeOperationId,
-        expectedRevision: journalRecord.revision,
+        scopeId: current.scopeId,
+        rangeOperationId: current.rangeOperationId,
+        expectedRevision: current.revision,
         from: "prepared",
         to: "terminal",
-        updatedAtMs: this.#now(),
+        updatedAtMs: Math.max(this.#now(), current.updatedAtMs),
       },
       this.#database,
     );
@@ -1110,23 +1262,49 @@ export class BrowserCtfRangeOrderCoordinator {
 
   async #resumeConsolidation(
     preparation: PersistedCtfRangeOrderPreparation,
+    seed: Uint8Array,
+    scope: DurableCustodyScope,
+    owner: DurableCustodyOwnerAuthorization,
     operationId: string,
-    reservationId: string,
   ): Promise<void> {
-    const record = await getProofOperation(operationId, this.#database);
-    if (record === null) throw rangeError("recovery-pending");
-    if (record.state === "Failed") {
-      throw new Error(
-        `Range consolidation ${operationId} failed: ${record.lastError ?? "unknown"}`,
+    const snapshot = await this.#custody.readOperationSnapshot(scope, operationId);
+    if (snapshot === null) throw rangeError("recovery-pending");
+    const operation = browserRangeConsolidationOperationFromSnapshot(
+      snapshot.record,
+      snapshot.artifacts,
+    );
+    if (snapshot.record.operation.result.state === "applied") return;
+    const privateArtifact = snapshot.artifacts.find(
+      ({ reference }) =>
+        reference.artifactId ===
+        snapshot.record.operation.privateMaterial.exactPrivateMaterial.artifactId,
+    );
+    if (privateArtifact === undefined) throw rangeError("recovery-pending");
+    const authority = prepareDurableCustodyExactArtifact(privateArtifact.artifact.artifact);
+    if (snapshot.record.operation.result.state === "verified-staged") {
+      const prepared = readDurableCustodyVerifiedMintResult({
+        record: snapshot.record,
+        exactAuthority: authority,
+        exactResult: await this.#readExactResultArtifact(scope, snapshot.record),
+      });
+      await this.#commitConsolidationResult(
+        scope,
+        owner,
+        preparation,
+        snapshot.record,
+        operation,
+        prepared,
+        seed,
       );
+      return;
     }
-    if (record.state === "completed") return;
-    const operation = persistedRangeConsolidationOperation(record);
+    if (snapshot.record.operation.result.state !== "none") throw rangeError("recovery-pending");
     const decision = await this.#classifyUncertainConsolidation(preparation, operation);
     let proofs: readonly Proof[];
     switch (decision.kind) {
       case "replay-exact-persisted-operation":
         try {
+          await this.#markConsolidationAttempted(scope, owner, operationId);
           proofs = await completeCtfRangeConsolidationOperation(
             operation,
             await this.#walletForMint(preparation.mintUrl),
@@ -1138,7 +1316,15 @@ export class BrowserCtfRangeOrderCoordinator {
       case "restore-exact-persisted-outputs": {
         let restored: Record<string, Proof[]>;
         try {
-          restored = await this.#restoreOutputs(preparation.mintUrl, record.outputs);
+          restored = await this.#restoreOutputs(
+            preparation.mintUrl,
+            Object.fromEntries(
+              Object.entries(operation.outputs).map(([label, outputs]) => [
+                label,
+                serializeOutputDataArray(outputs.map(deserializeDurableCustodyOutput)),
+              ]),
+            ),
+          );
           if (Object.keys(restored).some((label) => label !== "consolidated")) {
             throw new Error("Range consolidation restore returned a foreign proof group");
           }
@@ -1153,7 +1339,22 @@ export class BrowserCtfRangeOrderCoordinator {
       default:
         throw new Error("Range consolidation recovery state is invalid");
     }
-    await this.#commitConsolidationResult(preparation, operation, reservationId, proofs);
+    const current = await requireBrowserCustodyOperation(this.#custody, scope, operationId);
+    const prepared = prepareDurableCustodyVerifiedMintResult({
+      record: current,
+      exactAuthority: authority,
+      result: { consolidated: proofs },
+    });
+    const staged = await this.#stageConsolidationResult(scope, owner, current, prepared);
+    await this.#commitConsolidationResult(
+      scope,
+      owner,
+      preparation,
+      staged,
+      operation,
+      prepared,
+      seed,
+    );
   }
 
   async #classifyUncertainConsolidation(
@@ -1246,8 +1447,9 @@ export class BrowserCtfRangeOrderCoordinator {
     owner: DurableCustodyOwnerAuthorization;
   }): Promise<void> {
     const authorization = browserOwnerAt(input.owner, this.#now());
-    await this.#database.transaction("rw", this.#transactionTables(true), async () => {
-      await this.#custody.transact(
+    await this.#database.transaction("rw", this.#transactionTables(true), async (tx) => {
+      await this.#custody.transactInCurrentTransaction(
+        tx,
         browserCustodySelection(
           input.scope,
           authorization,
@@ -1265,8 +1467,9 @@ export class BrowserCtfRangeOrderCoordinator {
             },
           }),
       );
-      await this.#releaseLegacySourceProofs(input.source, input.sourceRecord.operation.operationId);
-      await transitionCtfRangePreparation(
+      await this.#releaseLegacySourceProofs(input.source);
+      await transitionCtfRangePreparationInTransaction(
+        tx,
         {
           scopeId: input.journalRecord.scopeId,
           rangeOperationId: input.journalRecord.rangeOperationId,
@@ -1458,8 +1661,9 @@ export class BrowserCtfRangeOrderCoordinator {
   async #commitAppliedSource(input: AppliedSourceCommitInput): Promise<void> {
     const outerOperationId = input.binding.record.operation.operationId;
     try {
-      await this.#database.transaction("rw", this.#transactionTables(false), async () => {
-        await this.#custody.transact(
+      await this.#database.transaction("rw", this.#transactionTables(false), async (tx) => {
+        await this.#custody.transactInCurrentTransaction(
+          tx,
           {
             scope: input.scope,
             owner: input.authorization,
@@ -1505,7 +1709,6 @@ export class BrowserCtfRangeOrderCoordinator {
         await this.#replaceLegacySourceProofs(
           input.preparation,
           input.sourceOperation,
-          input.source.operation.operationId,
           outerOperationId,
           input.result,
           input.authorization.observedAtMs,
@@ -1887,7 +2090,7 @@ export class BrowserCtfRangeOrderCoordinator {
       }),
       authorization.observedAtMs,
     );
-    await this.#database.transaction("rw", this.#transactionTables(true), async () => {
+    await this.#database.transaction("rw", this.#transactionTables(true), async (tx) => {
       await this.#database.proofOperations.put({
         ...refund,
         state: "completed",
@@ -1895,7 +2098,8 @@ export class BrowserCtfRangeOrderCoordinator {
         lastError: null,
         updatedAt: authorization.observedAtMs,
       });
-      await this.#custody.transact(
+      await this.#custody.transactInCurrentTransaction(
+        tx,
         browserCustodySelection(
           scope,
           authorization,
@@ -1913,7 +2117,7 @@ export class BrowserCtfRangeOrderCoordinator {
             },
           }),
       );
-      await this.#custody.retireAbortedInputsAndAdmitRefunds({
+      await this.#custody.retireAbortedInputsAndAdmitRefundsInCurrentTransaction(tx, {
         scopeId: scope.scopeId,
         operationId: record.operation.operationId,
         refundProofs: custodyProofs,
@@ -1921,10 +2125,10 @@ export class BrowserCtfRangeOrderCoordinator {
       });
       await this.#replaceLegacyReservedProofs(
         operation.inputs.map(({ secret }) => secret),
-        record.operation.operationId,
         legacyProofs,
       );
-      await transitionCtfRangePreparation(
+      await transitionCtfRangePreparationInTransaction(
+        tx,
         {
           scopeId: journalRecord.scopeId,
           rangeOperationId: journalRecord.rangeOperationId,
@@ -2002,8 +2206,9 @@ export class BrowserCtfRangeOrderCoordinator {
       result,
       authorization.observedAtMs,
     );
-    await this.#database.transaction("rw", this.#transactionTables(false), async () => {
-      await this.#custody.transact(
+    await this.#database.transaction("rw", this.#transactionTables(false), async (tx) => {
+      await this.#custody.transactInCurrentTransaction(
+        tx,
         browserCustodySelection(
           scope,
           authorization,
@@ -2033,7 +2238,6 @@ export class BrowserCtfRangeOrderCoordinator {
       );
       await this.#replaceLegacyReservedProofs(
         operation.inputs.map(({ secret }) => secret),
-        record.operation.operationId,
         legacySuccessors,
       );
     });
@@ -2070,6 +2274,20 @@ export class BrowserCtfRangeOrderCoordinator {
   }
 
   async #reserveLegacySourceProofs(
+    preparation: PersistedCtfRangeOrderPreparation,
+    reservationOperationId: string,
+    sourceProofs: DurableCustodyProofOperationInput["inputs"],
+  ): Promise<void> {
+    await this.#database.proofs.bulkPut(
+      sourceProofs.map((proof) =>
+        storedProofRow(
+          legacySourceProof(preparation, proof as Proof, this.#now(), reservationOperationId),
+        ),
+      ),
+    );
+  }
+
+  async #reserveLegacyConsolidationProofs(
     scope: DurableCustodyScope,
     preparation: PersistedCtfRangeOrderPreparation,
     reservationOperationId: string,
@@ -2077,35 +2295,26 @@ export class BrowserCtfRangeOrderCoordinator {
     expectedProofs: ReturnType<typeof browserSourceProofRows>[number]["proof"][],
   ): Promise<void> {
     const rows = await this.#database.proofs.bulkGet(sourceProofs.map(({ secret }) => secret));
-    if (rows.length !== sourceProofs.length || rows.length !== expectedProofs.length) {
-      throw new Error("browser source proof mirror count is invalid");
-    }
+    if (rows.length !== sourceProofs.length || rows.length !== expectedProofs.length) return;
     const reserved: StoredProofRow[] = [];
     for (const [index, sourceProof] of sourceProofs.entries()) {
       const row = rows[index];
-      if (!row || row.reservedBy !== undefined) {
-        throw new Error("browser source proof mirror is missing or reserved");
-      }
-      const proof = storedProofFromRow(row);
+      const expected = expectedProofs[index];
+      if (!row || !expected || row.reservedBy !== undefined) return;
       const observed = browserSourceProofRows(
         scope,
         preparation,
-        { authorization: [proof], keep: [] },
+        { authorization: [storedProofFromRow(row)], keep: [] },
         this.#now(),
       )[0]?.proof;
-      const expected = expectedProofs[index];
       if (
         observed === undefined ||
-        expected === undefined ||
         row.secret !== sourceProof.secret ||
         row.id !== sourceProof.id ||
-        !hasExpectedLegacySourceAsset(preparation, proof) ||
         observed.proofId !== expected.proofId ||
-        observed.proofFingerprint !== expected.proofFingerprint ||
-        observed.amount !== expected.amount ||
-        observed.keysetId !== expected.keysetId
+        observed.proofFingerprint !== expected.proofFingerprint
       ) {
-        throw new Error("browser source proof mirror differs from custody authority");
+        return;
       }
       reserved.push({ ...row, reservedBy: reservationOperationId });
     }
@@ -2115,7 +2324,6 @@ export class BrowserCtfRangeOrderCoordinator {
   async #replaceLegacySourceProofs(
     preparation: PersistedCtfRangeOrderPreparation,
     source: DurableCustodyProofOperationInput,
-    sourceCustodyOperationId: string,
     rangeCustodyOperationId: string,
     result: CtfRangeSourceResult,
     receivedAtMs: number,
@@ -2125,47 +2333,26 @@ export class BrowserCtfRangeOrderCoordinator {
       legacySourceProof(preparation, proof, receivedAtMs, rangeCustodyOperationId),
     );
     const keep = result.keep.map((proof) => legacySourceProof(preparation, proof, receivedAtMs));
-    await this.#replaceLegacyReservedProofs(inputSecrets, sourceCustodyOperationId, [
-      ...authorization,
-      ...keep,
-    ]);
+    await this.#replaceLegacyReservedProofs(inputSecrets, [...authorization, ...keep]);
   }
 
   async #replaceLegacyReservedProofs(
     inputSecrets: readonly string[],
-    reservationOperationId: string,
     successors: readonly StoredProof[],
   ): Promise<void> {
-    const inputRows = await this.#database.proofs.bulkGet([...inputSecrets]);
-    if (inputRows.some((row) => !row || row.reservedBy !== reservationOperationId)) {
-      throw new Error("browser proof mirror replacement authority is invalid");
-    }
     await this.#database.proofs.bulkDelete([...inputSecrets]);
     if (successors.length > 0) {
-      await this.#database.proofs.bulkAdd(successors.map(storedProofRow));
+      await this.#database.proofs.bulkPut(successors.map(storedProofRow));
     }
   }
 
-  async #releaseLegacySourceProofs(
-    source: DurableCustodyProofOperationInput,
-    sourceCustodyOperationId: string,
-  ): Promise<void> {
+  async #releaseLegacySourceProofs(source: DurableCustodyProofOperationInput): Promise<void> {
     const rows = await this.#database.proofs.bulkGet(source.inputs.map(({ secret }) => secret));
-    if (
-      rows.some(
-        (row, index) =>
-          !row ||
-          row.secret !== source.inputs[index]?.secret ||
-          row.reservedBy !== sourceCustodyOperationId,
-      )
-    ) {
-      throw new Error("browser source proof mirror release authority is invalid");
-    }
     await this.#database.proofs.bulkPut(
-      rows.map((row) => {
-        if (!row) throw new Error("browser source proof mirror is missing");
+      rows.flatMap((row) => {
+        if (!row) return [];
         const { reservedBy: _reservedBy, ...released } = row;
-        return released;
+        return [released];
       }),
     );
   }
@@ -2217,38 +2404,6 @@ function requireImmediateOrder(preparation: PersistedCtfRangeOrderPreparation): 
     default:
       return assertNever(preparation.request.timeInForce);
   }
-}
-
-function rangeConsolidationKind(
-  value: ProofOperationRecord["kind"] | DurableCustodyProofOperationInput["kind"],
-): "proof-consolidation" {
-  if (value === "proof-consolidation") return value;
-  throw new Error("Range consolidation operation kind is invalid");
-}
-
-function persistedRangeConsolidationOperation(
-  record: ProofOperationRecord,
-): DurableCustodyProofOperationInput {
-  const exact = record.metadata.exactOperation;
-  const validated = validateCtfRangeConsolidationOperation(
-    exact as DurableCustodyProofOperationInput,
-  );
-  const operation = validated.operation;
-  if (
-    operation.operationId !== record.operationId ||
-    operation.kind !== rangeConsolidationKind(record.kind) ||
-    operation.mintUrl !== record.mintUrl ||
-    canonicalJson(operation.inputs) !== canonicalJson(record.inputs) ||
-    canonicalJson({ consolidated: serializeOutputDataArray(validated.outputs) }) !==
-      canonicalJson(record.outputs)
-  ) {
-    throw new Error("Range consolidation journal differs from its exact operation");
-  }
-  return operation;
-}
-
-function canonicalJson(value: unknown): string {
-  return JSON.stringify(value, (_key, item) => (typeof item === "bigint" ? item.toString() : item));
 }
 
 function requireImmediateSubmitResponse(
@@ -2341,27 +2496,6 @@ function legacySourceProof(
         outcomeCollection: asset.outcomeCollection,
         marketId: `${asset.conditionId}-${asset.outcomeCollection}`,
       });
-    default:
-      return assertNever(asset);
-  }
-}
-
-function hasExpectedLegacySourceAsset(
-  preparation: PersistedCtfRangeOrderPreparation,
-  proof: StoredProof,
-): boolean {
-  if (proof.mintUrl !== preparation.mintUrl || proof.unit !== "msat" || proof.baseAsset !== "sat") {
-    return false;
-  }
-  const asset = browserRangeSourceAsset(preparation);
-  switch (asset.kind) {
-    case "regular":
-      return proof.conditionId === undefined && proof.outcomeCollection === undefined;
-    case "conditional":
-      return (
-        proof.conditionId === asset.conditionId &&
-        proof.outcomeCollection === asset.outcomeCollection
-      );
     default:
       return assertNever(asset);
   }

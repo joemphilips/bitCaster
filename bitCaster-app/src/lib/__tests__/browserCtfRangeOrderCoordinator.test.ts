@@ -79,7 +79,11 @@ import {
   readCtfRangePreparationConsolidations,
   transitionCtfRangePreparation,
 } from "../../stores/ctf-range-order-db";
-import { BitcasterDB, getProofOperation, type StoredProof } from "../../stores/proof-db";
+import {
+  BitcasterDB,
+  getBoundedCanonicalRangeProofsForKeyset,
+  type StoredProof,
+} from "../../stores/proof-db";
 
 const CONDITION_ID = "ab".repeat(32);
 const OUTCOME_COLLECTION = "YES";
@@ -184,23 +188,163 @@ describe("browser CTF range order coordinator", () => {
       plannedRound: { inputs: ["2", "2", "2"], outputs: ["4", "1"], fee: "1" },
     });
 
-    const operationId = `${preparation.sourceOperationId}:consolidation:0`;
-    expect(await getProofOperation(operationId, database)).toMatchObject({ state: "completed" });
+    const retainedOperationKey = `${preparation.sourceOperationId}:consolidation:0`;
+    const operationId = consolidationCustodyOperationId(retainedOperationKey);
+    expect(await database.proofOperations.get(retainedOperationKey)).toBeUndefined();
     expect(
       await readCtfRangePreparationConsolidations(
         walletScopeId(),
         preparation.operationId,
         database,
       ),
-    ).toEqual([expect.objectContaining({ round: 0, operationId, reservationId: operationId })]);
+    ).toEqual([
+      expect.objectContaining({
+        round: 0,
+        operationId,
+        reservationId: operationId,
+      }),
+    ]);
     expect(
       (await database.proofs.toArray())
         .map(({ amount }) => amountToNumber(amount))
         .sort((left, right) => right - left),
     ).toEqual([4, 1]);
+    const custodyProofs = await database.custodyProofs.toArray();
+    expect(custodyProofs.filter(({ selectability }) => selectability === "spent")).toHaveLength(3);
+    expect(
+      custodyProofs.filter(({ selectability }) => selectability === "selectable"),
+    ).toHaveLength(2);
+    const backupAuthorities = await database.custodyProofBackupAuthorities.toArray();
+    expect(
+      backupAuthorities
+        .filter(({ proofState }) => proofState === "selectable")
+        .every(({ derivationLocator }) => derivationLocator?.kind === "nut13"),
+    ).toBe(true);
     expect(contexts).toEqual([
       [walletScopeId(), preparation.mintUrl, preparation.offerKeyset.unit],
     ]);
+  });
+
+  it("uses canonical successors as the exact inputs of the next consolidation round", async () => {
+    const preparation = persistedPreparation("range-consolidation-chain");
+    const inputs = [
+      sourceProof(preparation.offerKeyset.id, 2, "fragment-a"),
+      sourceProof(preparation.offerKeyset.id, 2, "fragment-b"),
+      sourceProof(preparation.offerKeyset.id, 2, "fragment-c"),
+    ];
+    const database = createDatabase(inputs.map((proof) => storedSourceProof(proof)));
+    const coordinator = createCoordinator(database, sourceWallet(), engineMock(), {
+      counterSource: inMemoryCounterSource(),
+    });
+
+    await coordinator.consolidateRound({
+      seed: SEED,
+      preparation,
+      round: 0,
+      inputs,
+      plannedRound: { inputs: ["2", "2", "2"], outputs: ["4", "1"], fee: "1" },
+    });
+    const firstSuccessors = await getBoundedCanonicalRangeProofsForKeyset(
+      preparation.mintUrl,
+      {
+        scopeId: walletScopeId(),
+        unit: "msat",
+        keysetId: preparation.offerKeyset.id,
+        asset: { kind: "regular" },
+      },
+      database,
+    );
+    await coordinator.consolidateRound({
+      seed: SEED,
+      preparation,
+      round: 1,
+      inputs: firstSuccessors,
+      plannedRound: { inputs: ["4", "1"], outputs: ["4"], fee: "1" },
+    });
+
+    const rows = await database.custodyProofs.toArray();
+    expect(rows.filter(({ selectability }) => selectability === "spent")).toHaveLength(5);
+    expect(rows.filter(({ selectability }) => selectability === "selectable")).toHaveLength(1);
+    const finalProofs = await getBoundedCanonicalRangeProofsForKeyset(
+      preparation.mintUrl,
+      {
+        scopeId: walletScopeId(),
+        unit: "msat",
+        keysetId: preparation.offerKeyset.id,
+        asset: { kind: "regular" },
+      },
+      database,
+    );
+    expect(finalProofs.map(({ amount }) => amountToNumber(amount))).toEqual([4]);
+  });
+
+  it("recovers a staged consolidation after canonical admission rolls back", async () => {
+    const preparation = persistedPreparation("range-consolidation-rollback");
+    const inputs = [
+      sourceProof(preparation.offerKeyset.id, 2, "fragment-a"),
+      sourceProof(preparation.offerKeyset.id, 2, "fragment-b"),
+      sourceProof(preparation.offerKeyset.id, 2, "fragment-c"),
+    ];
+    const database = createDatabase(inputs.map((proof) => storedSourceProof(proof)));
+    let mintCalls = 0;
+    const wallet = sourceWallet({
+      onComplete: async () => {
+        mintCalls += 1;
+      },
+    });
+    const coordinator = createCoordinator(database, wallet, engineMock());
+    let injectFailure = true;
+    database.proofs.hook("deleting", () => {
+      if (!injectFailure) return;
+      injectFailure = false;
+      throw new Error("injected legacy consolidation replacement failure");
+    });
+
+    await expect(
+      coordinator.consolidateRound({
+        seed: SEED,
+        preparation,
+        round: 0,
+        inputs,
+        plannedRound: { inputs: ["2", "2", "2"], outputs: ["4", "1"], fee: "1" },
+      }),
+    ).rejects.toMatchObject({ code: "custody-commit-failed" });
+
+    const custodyRows = await database.custodyProofs.toArray();
+    expect(custodyRows.filter(({ selectability }) => selectability === "locked")).toHaveLength(3);
+    expect(custodyRows.some(({ selectability }) => selectability === "spent")).toBe(false);
+    expect(custodyRows.some(({ selectability }) => selectability === "selectable")).toBe(false);
+    expect(
+      (await database.proofs.toArray()).every(({ reservedBy }) => reservedBy !== undefined),
+    ).toBe(true);
+    expect(
+      await database.proofOperations.get(`${preparation.sourceOperationId}:consolidation:0`),
+    ).toBeUndefined();
+    expect(mintCalls).toBe(1);
+
+    const restarted = createCoordinator(database, wallet, engineMock());
+    await expect(restarted.recoverPage({ seed: SEED, limit: 8 })).resolves.toMatchObject({
+      recoveredOperationIds: [preparation.operationId],
+      pending: [],
+    });
+
+    expect(mintCalls).toBe(1);
+    const recoveredCustody = await database.custodyProofs.toArray();
+    expect(recoveredCustody.filter(({ selectability }) => selectability === "spent")).toHaveLength(
+      3,
+    );
+    expect(
+      recoveredCustody.filter(({ selectability }) => selectability === "selectable"),
+    ).toHaveLength(2);
+    expect(
+      (await database.proofs.toArray())
+        .map(({ amount }) => amountToNumber(amount))
+        .sort((left, right) => right - left),
+    ).toEqual([4, 1]);
+    expect(
+      (await readCtfRangePreparation(walletScopeId(), preparation.operationId, database))
+        ?.lifecycleState,
+    ).toBe("terminal");
   });
 
   it("restores an exact committed consolidation after local completion is interrupted", async () => {
@@ -238,8 +382,8 @@ describe("browser CTF range order coordinator", () => {
       pending: [expect.objectContaining({ operationId: preparation.operationId })],
     });
     expect(
-      await getProofOperation(`${preparation.sourceOperationId}:consolidation:0`, database),
-    ).toMatchObject({ state: "prepared" });
+      await database.proofOperations.get(`${preparation.sourceOperationId}:consolidation:0`),
+    ).toBeUndefined();
     expect((await database.proofs.toArray()).filter(({ reservedBy }) => reservedBy).length).toBe(3);
 
     const recovered = createCoordinator(
@@ -269,6 +413,11 @@ describe("browser CTF range order coordinator", () => {
         .map(({ amount }) => amountToNumber(amount))
         .sort((left, right) => right - left),
     ).toEqual([4, 1]);
+    const custodyRows = await database.custodyProofs.toArray();
+    expect(custodyRows.filter(({ selectability }) => selectability === "spent")).toHaveLength(3);
+    expect(custodyRows.filter(({ selectability }) => selectability === "selectable")).toHaveLength(
+      2,
+    );
   });
 
   it("persists exact source authority before mint I/O and submits one verified capability", async () => {
@@ -358,6 +507,29 @@ describe("browser CTF range order coordinator", () => {
     ).toBe(true);
   });
 
+  it("rolls back the composed source journal, custody, and legacy reservation", async () => {
+    const database = createDatabase();
+    const preparation = persistedPreparation("range-source-composed-rollback");
+    const coordinator = createCoordinator(database, sourceWallet(), engineMock());
+    database.proofs.hook("updating", () => {
+      throw new Error("injected legacy source reservation failure");
+    });
+
+    await expect(
+      coordinator.prepareAndSubmit({
+        seed: SEED,
+        preparation,
+        candidates: [sourceProof(preparation.offerKeyset.id)],
+      }),
+    ).rejects.toMatchObject({ code: "custody-commit-failed" });
+
+    expect(await database.ctfRangePreparations.count()).toBe(0);
+    expect(await database.custodyOperations.count()).toBe(0);
+    expect(await database.custodyReservations.count()).toBe(0);
+    expect(await database.custodyProofs.count()).toBe(0);
+    expect(await database.proofs.get("source-proof")).not.toHaveProperty("reservedBy");
+  });
+
   it("keeps complementary Sell change selectable with multi-input authorization", async () => {
     const preparation = persistedPreparation("range-sell-complement", "FAK", {
       side: "Sell",
@@ -421,7 +593,7 @@ describe("browser CTF range order coordinator", () => {
     ).toBe(true);
   });
 
-  it("rolls back durable source preparation when the legacy proof mirror is missing", async () => {
+  it("repairs a missing legacy proof mirror from canonical custody authority", async () => {
     const database = createDatabase();
     await database.open();
     await database.proofs.clear();
@@ -435,15 +607,41 @@ describe("browser CTF range order coordinator", () => {
         preparation,
         candidates: [sourceProof(preparation.offerKeyset.id)],
       }),
-    ).rejects.toMatchObject({ code: "custody-commit-failed" });
+    ).resolves.toMatchObject({ status: "filled" });
 
-    expect(await database.ctfRangePreparations.count()).toBe(0);
-    expect(await database.custodyOperations.count()).toBe(0);
-    expect(await database.custodyArtifacts.count()).toBe(0);
-    expect(await database.custodyProofs.count()).toBe(0);
-    expect(await database.custodyReservations.count()).toBe(0);
-    expect(engine.createCalls).toBe(0);
-    expect(engine.submitCalls).toBe(0);
+    expect(await database.custodyOperations.count()).toBeGreaterThan(0);
+    expect(await database.custodyProofs.count()).toBeGreaterThan(0);
+    expect((await database.proofs.toArray()).length).toBeGreaterThan(0);
+    expect(engine.createCalls).toBe(1);
+    expect(engine.submitCalls).toBe(1);
+  });
+
+  it("repairs a stale legacy reservation without rejecting canonical source proofs", async () => {
+    const database = createDatabase([
+      {
+        ...storedSourceProof(sourceProof(REGULAR_KEYSET_ID)),
+        reservedBy: "stale-legacy-operation",
+      },
+    ]);
+    const preparation = persistedPreparation("range-stale-proof-mirror");
+    const engine = engineMock();
+    const coordinator = createCoordinator(database, sourceWallet(), engine);
+
+    await expect(
+      coordinator.prepareAndSubmit({
+        seed: SEED,
+        preparation,
+        candidates: [sourceProof(preparation.offerKeyset.id)],
+      }),
+    ).resolves.toMatchObject({ status: "filled" });
+
+    expect(
+      (await database.proofs.toArray()).every(
+        ({ reservedBy }) => reservedBy !== "stale-legacy-operation",
+      ),
+    ).toBe(true);
+    expect(engine.createCalls).toBe(1);
+    expect(engine.submitCalls).toBe(1);
   });
 
   it("rolls back durable source application when legacy proof replacement fails", async () => {
@@ -2082,6 +2280,18 @@ function sourceCustodyOperationId(retainedOperationKey: string): string {
       kind: "wallet",
       activityId: retainedOperationKey,
       stage: "capability-preparation",
+    },
+  });
+}
+
+function consolidationCustodyOperationId(retainedOperationKey: string): string {
+  const scope = walletScope();
+  return deriveDurableCustodyOperationId(scope.scopeId, {
+    retainedOperationKey,
+    binding: {
+      kind: "wallet",
+      activityId: retainedOperationKey,
+      stage: "proof-consolidation",
     },
   });
 }

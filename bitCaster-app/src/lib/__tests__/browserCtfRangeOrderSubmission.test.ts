@@ -23,8 +23,7 @@ const mocks = vi.hoisted(() => ({
     getSettlementCapabilityAdmissionPolicy: vi.fn(),
   },
   consolidateRound: vi.fn(),
-  getProofAmountInventoryForKeyset: vi.fn(),
-  getSelectableUnitProofsForAmounts: vi.fn(),
+  getBoundedCanonicalRangeProofsForKeyset: vi.fn(),
   getWalletForMnemonicUnit: vi.fn(),
   loadMintMetadata: vi.fn(),
   prepareAndSubmit: vi.fn(),
@@ -52,12 +51,12 @@ vi.mock("@bitcaster/client-sdk/ctfRangeSourceOperation", () => ({
 
 vi.mock("@/lib/browserWalletProfile", () => ({
   browserWalletScopeIdFromMnemonic: () => "custody:wallet:scope-1",
+  activeBrowserWalletScopeId: () => "custody:wallet:scope-1",
 }));
 
 vi.mock("@/stores/proof-db", () => ({
   db: mocks.database,
-  getProofAmountInventoryForKeyset: mocks.getProofAmountInventoryForKeyset,
-  getSelectableUnitProofsForAmounts: mocks.getSelectableUnitProofsForAmounts,
+  getBoundedCanonicalRangeProofsForKeyset: mocks.getBoundedCanonicalRangeProofsForKeyset,
 }));
 
 vi.mock("@/stores/ctf-range-order-db", () => ({
@@ -143,8 +142,7 @@ describe("submitBrowserCtfRangeOrder", () => {
       coordinatorPubkey: "11".repeat(32),
     });
     mocks.loadMintMetadata.mockResolvedValue({ observation: {} });
-    mocks.getProofAmountInventoryForKeyset.mockResolvedValue([{ amount: "10000", count: 1 }]);
-    mocks.getSelectableUnitProofsForAmounts.mockResolvedValue(mocks.candidates);
+    mocks.getBoundedCanonicalRangeProofsForKeyset.mockResolvedValue(mocks.candidates);
     mocks.planConsolidation.mockReturnValue({
       kind: "ready",
       consolidationRounds: [],
@@ -299,12 +297,14 @@ describe("submitBrowserCtfRangeOrder", () => {
         preparation: expect.objectContaining({ operationId: "range-operation" }),
       }),
     );
-    expect(mocks.getSelectableUnitProofsForAmounts).toHaveBeenCalledWith("https://mint.example", {
-      unit: "msat",
-      keysetId: "regular-keyset",
-      conditional: false,
-      amounts: ["10000"],
-    });
+    expect(mocks.getBoundedCanonicalRangeProofsForKeyset).toHaveBeenCalledWith(
+      "https://mint.example",
+      expect.objectContaining({
+        scopeId: "custody:wallet:scope-1",
+        keysetId: "regular-keyset",
+        asset: { kind: "regular" },
+      }),
+    );
   });
 
   it.each(["Outcome", "Complement"] as const)(
@@ -332,11 +332,11 @@ describe("submitBrowserCtfRangeOrder", () => {
         expectedConsolidationFeeSubunits: 0,
       });
 
-      expect(mocks.getSelectableUnitProofsForAmounts).toHaveBeenCalledWith(
+      expect(mocks.getBoundedCanonicalRangeProofsForKeyset).toHaveBeenCalledWith(
         "https://mint.example",
         expect.objectContaining({
           keysetId: "conditional-keyset",
-          conditional: true,
+          asset: expect.objectContaining({ kind: "conditional" }),
         }),
       );
     },
@@ -378,7 +378,11 @@ describe("submitBrowserCtfRangeOrder", () => {
       consolidationFee: "1",
       sourceFee: "1",
     });
-    mocks.getSelectableUnitProofsForAmounts
+    mocks.getBoundedCanonicalRangeProofsForKeyset
+      .mockResolvedValueOnce([
+        { id: "regular-keyset", amount: 4, secret: "four", C: "C-four" },
+        { id: "regular-keyset", amount: 2, secret: "two", C: "C-two" },
+      ])
       .mockResolvedValueOnce([
         { id: "regular-keyset", amount: 4, secret: "four", C: "C-four" },
         { id: "regular-keyset", amount: 2, secret: "two", C: "C-two" },
@@ -446,6 +450,35 @@ describe("submitBrowserCtfRangeOrder", () => {
     ).rejects.toThrow("Wallet proof fees changed");
 
     expect(mocks.consolidateRound).not.toHaveBeenCalled();
+    expect(mocks.prepareAndSubmit).not.toHaveBeenCalled();
+  });
+
+  it("stops before another mint call when replanning exceeds the approved fee", async () => {
+    mocks.planConsolidation
+      .mockReturnValueOnce({
+        kind: "ready",
+        consolidationRounds: [{ inputs: ["4", "2"], outputs: ["4", "1"], fee: "1" }],
+        selectedInputs: ["4", "1"],
+        consolidationFee: "1",
+        sourceFee: "1",
+      })
+      .mockReturnValueOnce({
+        kind: "ready",
+        consolidationRounds: [{ inputs: ["4", "1"], outputs: ["4"], fee: "1" }],
+        selectedInputs: ["4"],
+        consolidationFee: "1",
+        sourceFee: "1",
+      });
+    mocks.getBoundedCanonicalRangeProofsForKeyset.mockResolvedValue([
+      { id: "regular-keyset", amount: 4, secret: "four", C: "C-four" },
+      { id: "regular-keyset", amount: 2, secret: "two", C: "C-two" },
+    ]);
+
+    await expect(submitRangeOrder("client-replanned-fee", 1)).rejects.toThrow(
+      "Wallet proof fees changed",
+    );
+
+    expect(mocks.consolidateRound).toHaveBeenCalledOnce();
     expect(mocks.prepareAndSubmit).not.toHaveBeenCalled();
   });
 
@@ -587,7 +620,7 @@ function market(): MarketDetail {
   } as MarketDetail;
 }
 
-function submitRangeOrder(clientOrderId: string) {
+function submitRangeOrder(clientOrderId: string, expectedConsolidationFeeSubunits = 0) {
   return submitBrowserCtfRangeOrder({
     market: market(),
     ticket: {
@@ -605,6 +638,6 @@ function submitRangeOrder(clientOrderId: string) {
     mintUrl: "https://mint.example",
     mnemonic:
       "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
-    expectedConsolidationFeeSubunits: 0,
+    expectedConsolidationFeeSubunits,
   });
 }

@@ -1,4 +1,5 @@
 import type { Proof } from "@cashu/cashu-ts";
+import Dexie, { type Table, type Transaction } from "dexie";
 import {
   applyDurableCustodyTransaction,
   assertDurableCustodyArtifactMatchesReference,
@@ -148,6 +149,13 @@ export interface BrowserCustodyTransactionOptions {
   };
 }
 
+export type BrowserCustodyCurrentTransactionOptions = Omit<
+  BrowserCustodyTransactionOptions,
+  "outgoingTransfer" | "outgoingAdmission" | "walletCounterAuthority" | "injectFault"
+> & {
+  readonly injectFault?: "before-commit";
+};
+
 type ApplyVerifiedResultInput = Parameters<DurableCustodyTransaction["applyVerifiedResult"]>[0];
 
 export function createBrowserCustodyProofRow(input: {
@@ -256,6 +264,16 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
     return this.#transact(selection, apply, options, true);
   }
 
+  /** Use only inside an explicit active Dexie readwrite transaction. */
+  async transactInCurrentTransaction<T>(
+    dexieTransaction: Transaction,
+    selection: DurableCustodyTransactionSelection,
+    apply: (transaction: DurableCustodyTransaction) => T,
+    options: BrowserCustodyCurrentTransactionOptions = {},
+  ): Promise<T> {
+    return this.#transactInCurrentTransaction(dexieTransaction, selection, apply, options, false);
+  }
+
   async #transact<T>(
     selection: DurableCustodyTransactionSelection,
     apply: (transaction: DurableCustodyTransaction) => T,
@@ -270,66 +288,95 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
     ) {
       throw new Error("browser custody extension requires atomic transaction");
     }
-    const tables = [
-      this.#database.custodyScopes,
-      this.#database.custodyOperations,
-      this.#database.custodyArtifacts,
-      this.#database.custodyProofs,
-      this.#database.custodyReservations,
-      this.#database.custodyActiveWork,
-      this.#database.custodyProofBackupAuthorities,
-      this.#database.custodyConditionalKeysets,
-      this.#database.encryptedWalletBackupV2DesiredAssets,
-      ...(atomic
-        ? [this.#database.outgoingCashuTransfers, this.#database.outgoingCashuTransferAdmissions]
-        : []),
-      ...(options.walletCounterAuthority === undefined
-        ? []
-        : [this.#database.walletCounterAssociations, this.#database.walletCounterCursors]),
-    ];
-    const result = await this.#database.transaction("rw", tables, async () => {
-      await options.walletCounterAuthority?.beforePersist?.();
-      const scope = (await this.#requiredScope(selection.scope.scopeId)).state;
-      const operations = await this.#loadSelectedOperations(selection);
-      const artifacts = await this.#loadArtifacts(selection.scope.scopeId, operations);
-      const proofState = await this.#loadProofState(selection.scope.scopeId, operations, options);
-      const transaction = new StagedBrowserCustodyTransaction({
-        scopeState: scope,
-        operations,
-        artifacts,
-        proofs: proofState.proofs,
-        reservations: proofState.reservations,
-        terminalProofIds: proofState.terminalProofIds,
-        successorProofs: options.successorProofs ?? {},
-        successorAdmissionOperationIds: stagedSuccessorAdmissionOperationIds(options),
-        predecessorFallbackOperationIds: stagedPredecessorFallbackOperationIds(options),
-        conditionalKeysets: stagedConditionalKeysets(options),
-      });
-      const output = atomic
-        ? (applyDurableCustodyTransaction(transaction, selection, () => undefined),
-          apply(transaction))
-        : applyDurableCustodyTransaction(transaction, selection, apply);
-      await this.#persistTransaction(selection, transaction);
-      if (atomic && options.outgoingTransfer !== undefined) {
-        await this.#persistOutgoingTransfer(selection.scope.scopeId, options.outgoingTransfer);
-        await this.#persistOutgoingAdmission(
-          selection.scope.scopeId,
-          options.outgoingTransfer,
-          options.outgoingAdmission,
-        );
-      } else if (atomic && options.outgoingAdmission !== undefined) {
-        throw new Error("browser outgoing admission requires an outgoing transfer");
-      }
-      await options.walletCounterAuthority?.afterPersist();
-      if (options.injectFault === "before-commit") {
-        throw new Error("injected browser custody fault before commit");
-      }
-      return output;
-    });
+    const result = await this.#database.transaction(
+      "rw",
+      this.#requiredTransactionTables(atomic, options),
+      async () => this.#applyCustodyTransaction(selection, apply, options, atomic),
+    );
     if (options.injectFault === "after-commit") {
       throw new Error("injected browser custody fault after commit");
     }
     return result;
+  }
+
+  async #transactInCurrentTransaction<T>(
+    dexieTransaction: Transaction,
+    selection: DurableCustodyTransactionSelection,
+    apply: (transaction: DurableCustodyTransaction) => T,
+    options: BrowserCustodyTransactionOptions,
+    atomic: boolean,
+  ): Promise<T> {
+    if (
+      options.outgoingTransfer !== undefined ||
+      options.outgoingAdmission !== undefined ||
+      options.walletCounterAuthority !== undefined
+    ) {
+      throw new Error("browser current custody transaction cannot run external extensions");
+    }
+    if (options.injectFault === "after-commit") {
+      throw new Error("browser current custody transaction cannot inject an after-commit fault");
+    }
+    assertCurrentReadwriteTransaction(
+      dexieTransaction,
+      this.#database,
+      this.#requiredTransactionTables(atomic, options),
+      "browser custody",
+    );
+    try {
+      return await this.#applyCustodyTransaction(selection, apply, options, atomic);
+    } catch (error) {
+      abortActiveTransaction(dexieTransaction);
+      throw error;
+    }
+  }
+
+  async #applyCustodyTransaction<T>(
+    selection: DurableCustodyTransactionSelection,
+    apply: (transaction: DurableCustodyTransaction) => T,
+    options: BrowserCustodyTransactionOptions,
+    atomic: boolean,
+  ): Promise<T> {
+    if (options.walletCounterAuthority?.beforePersist !== undefined) {
+      await options.walletCounterAuthority.beforePersist();
+    }
+    const scope = (await this.#requiredScope(selection.scope.scopeId)).state;
+    const operations = await this.#loadSelectedOperations(selection);
+    const artifacts = await this.#loadArtifacts(selection.scope.scopeId, operations);
+    const proofState = await this.#loadProofState(selection.scope.scopeId, operations, options);
+    const transaction = new StagedBrowserCustodyTransaction({
+      scopeState: scope,
+      operations,
+      artifacts,
+      proofs: proofState.proofs,
+      reservations: proofState.reservations,
+      terminalProofIds: proofState.terminalProofIds,
+      successorProofs: options.successorProofs ?? {},
+      successorAdmissionOperationIds: stagedSuccessorAdmissionOperationIds(options),
+      predecessorFallbackOperationIds: stagedPredecessorFallbackOperationIds(options),
+      conditionalKeysets: stagedConditionalKeysets(options),
+    });
+    const output = atomic
+      ? (applyDurableCustodyTransaction(transaction, selection, () => undefined),
+        apply(transaction))
+      : applyDurableCustodyTransaction(transaction, selection, apply);
+    await this.#persistTransaction(selection, transaction);
+    if (atomic && options.outgoingTransfer !== undefined) {
+      await this.#persistOutgoingTransfer(selection.scope.scopeId, options.outgoingTransfer);
+      await this.#persistOutgoingAdmission(
+        selection.scope.scopeId,
+        options.outgoingTransfer,
+        options.outgoingAdmission,
+      );
+    } else if (atomic && options.outgoingAdmission !== undefined) {
+      throw new Error("browser outgoing admission requires an outgoing transfer");
+    }
+    if (options.walletCounterAuthority?.afterPersist !== undefined) {
+      await options.walletCounterAuthority.afterPersist();
+    }
+    if (options.injectFault === "before-commit") {
+      throw new Error("injected browser custody fault before commit");
+    }
+    return output;
   }
 
   async retireAbortedInputsAndAdmitRefunds(input: {
@@ -339,104 +386,127 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
     observedAtMs: number;
     injectFault?: "before-commit" | "after-commit";
   }): Promise<void> {
-    await this.#database.transaction(
-      "rw",
-      [
-        this.#database.custodyOperations,
-        this.#database.custodyProofs,
-        this.#database.custodyReservations,
-        this.#database.custodyProofBackupAuthorities,
-        this.#database.custodyConditionalKeysets,
-        this.#database.encryptedWalletBackupV2DesiredAssets,
-      ],
-      async () => {
-        const operationRow = await this.#database.custodyOperations.get([
-          input.scopeId,
-          input.operationId,
-        ]);
-        if (!operationRow) throw new Error("browser refunded operation is missing");
-        const operation = decodeOperationRow(operationRow).record;
-        if (
-          operation.operation.state !== "aborted" ||
-          operation.operation.result.state !== "none"
-        ) {
-          throw new Error("browser refunded operation lifecycle is invalid");
-        }
-        const reservations = (
-          await this.#database.custodyReservations
-            .where("[scopeId+operationId]")
-            .equals([input.scopeId, input.operationId])
-            .toArray()
-        ).map(decodeReservationRow);
-        const expectedProofIds = operation.operation.proofStorage.lineage.predecessorProofIds;
-        if (
-          reservations.length !== expectedProofIds.length ||
-          reservations.some(({ proofId }) => !expectedProofIds.includes(proofId))
-        ) {
-          throw new Error("browser refunded reservation authority is incomplete");
-        }
-        const proofRows = await this.#database.custodyProofs.bulkGet(
-          expectedProofIds.map((proofId) => [input.scopeId, proofId]),
-        );
-        const retired = proofRows.map((row) => {
-          if (!row) throw new Error("browser refunded predecessor proof is missing");
-          const proof = decodeBrowserCustodyProofRow(row);
-          if (
-            proof.selectability !== "locked" ||
-            proof.reservationOperationId !== input.operationId
-          ) {
-            throw new Error("browser refunded predecessor proof authority is invalid");
-          }
-          return decodeBrowserCustodyProofRow({
-            ...proof,
-            revision: proof.revision + 1,
-            selectability: "spent",
-            reservationOperationId: null,
-          });
-        });
-        const refunds = input.refundProofs.map((staged) => ({
-          proof: decodeBrowserCustodyProofRow(staged.proof),
-          derivationLocator: requireBrowserProofDerivationLocator(staged.derivationLocator),
-          conditionalKeyset: staged.conditionalKeyset,
-        }));
-        if (
-          refunds.some(
-            ({ proof }) =>
-              proof.scopeId !== input.scopeId ||
-              proof.selectability !== "selectable" ||
-              proof.reservationOperationId !== null,
-          )
-        ) {
-          throw new Error("browser refund proof authority is invalid");
-        }
-        const retiredPersistence = await this.#persistProofRowsWithBackupAuthority(
-          retired.map((proof) => ({ proof, derivationLocator: undefined })),
-          input.observedAtMs,
-        );
-        await this.#database.custodyReservations.bulkDelete(
-          expectedProofIds.map((proofId) => [input.scopeId, proofId]),
-        );
-        const refundsPersisted = await this.#persistProofRowsWithBackupAuthority(
-          refunds,
-          input.observedAtMs,
-          () => input.operationId,
-        );
-        await advanceBrowserV2DesiredAssetsForProofChanges(
-          this.#database,
-          input.scopeId,
-          [...retiredPersistence.changes, ...refundsPersisted.changes].map(desiredAssetProofChange),
-          conditionalKeysetLookup(
-            retiredPersistence.conditionalKeysets,
-            refundsPersisted.conditionalKeysets,
-          ),
-        );
-        if (input.injectFault === "before-commit") {
-          throw new Error("injected browser refund custody fault before commit");
-        }
-      },
+    await this.#database.transaction("rw", this.#retirementTransactionTables(), async () =>
+      this.#retireAbortedInputsAndAdmitRefunds(input),
     );
-    if (input.injectFault === "after-commit") {
+    const injectedFault: unknown = input.injectFault;
+    if (injectedFault === "after-commit") {
       throw new Error("injected browser refund custody fault after commit");
+    }
+  }
+
+  /** Use only inside an explicit active Dexie readwrite transaction. */
+  async retireAbortedInputsAndAdmitRefundsInCurrentTransaction(
+    dexieTransaction: Transaction,
+    input: {
+      scopeId: string;
+      operationId: string;
+      refundProofs: readonly StagedBrowserCustodyProof[];
+      observedAtMs: number;
+      injectFault?: "before-commit";
+    },
+  ): Promise<void> {
+    const injectedFault: unknown = input.injectFault;
+    if (injectedFault === "after-commit") {
+      throw new Error("browser current custody transaction cannot inject an after-commit fault");
+    }
+    assertCurrentReadwriteTransaction(
+      dexieTransaction,
+      this.#database,
+      this.#retirementTransactionTables(),
+      "browser refund custody",
+    );
+    try {
+      await this.#retireAbortedInputsAndAdmitRefunds(input);
+    } catch (error) {
+      abortActiveTransaction(dexieTransaction);
+      throw error;
+    }
+  }
+
+  async #retireAbortedInputsAndAdmitRefunds(input: {
+    scopeId: string;
+    operationId: string;
+    refundProofs: readonly StagedBrowserCustodyProof[];
+    observedAtMs: number;
+    injectFault?: "before-commit" | "after-commit";
+  }): Promise<void> {
+    const operationRow = await this.#database.custodyOperations.get([
+      input.scopeId,
+      input.operationId,
+    ]);
+    if (!operationRow) throw new Error("browser refunded operation is missing");
+    const operation = decodeOperationRow(operationRow).record;
+    if (operation.operation.state !== "aborted" || operation.operation.result.state !== "none") {
+      throw new Error("browser refunded operation lifecycle is invalid");
+    }
+    const reservations = (
+      await this.#database.custodyReservations
+        .where("[scopeId+operationId]")
+        .equals([input.scopeId, input.operationId])
+        .toArray()
+    ).map(decodeReservationRow);
+    const expectedProofIds = operation.operation.proofStorage.lineage.predecessorProofIds;
+    if (
+      reservations.length !== expectedProofIds.length ||
+      reservations.some(({ proofId }) => !expectedProofIds.includes(proofId))
+    ) {
+      throw new Error("browser refunded reservation authority is incomplete");
+    }
+    const proofRows = await this.#database.custodyProofs.bulkGet(
+      expectedProofIds.map((proofId) => [input.scopeId, proofId]),
+    );
+    const retired = proofRows.map((row) => {
+      if (!row) throw new Error("browser refunded predecessor proof is missing");
+      const proof = decodeBrowserCustodyProofRow(row);
+      if (proof.selectability !== "locked" || proof.reservationOperationId !== input.operationId) {
+        throw new Error("browser refunded predecessor proof authority is invalid");
+      }
+      return decodeBrowserCustodyProofRow({
+        ...proof,
+        revision: proof.revision + 1,
+        selectability: "spent",
+        reservationOperationId: null,
+      });
+    });
+    const refunds = input.refundProofs.map((staged) => ({
+      proof: decodeBrowserCustodyProofRow(staged.proof),
+      derivationLocator: requireBrowserProofDerivationLocator(staged.derivationLocator),
+      conditionalKeyset: staged.conditionalKeyset,
+    }));
+    if (
+      refunds.some(
+        ({ proof }) =>
+          proof.scopeId !== input.scopeId ||
+          proof.selectability !== "selectable" ||
+          proof.reservationOperationId !== null,
+      )
+    ) {
+      throw new Error("browser refund proof authority is invalid");
+    }
+    const retiredPersistence = await this.#persistProofRowsWithBackupAuthority(
+      retired.map((proof) => ({ proof, derivationLocator: undefined })),
+      input.observedAtMs,
+    );
+    await this.#database.custodyReservations.bulkDelete(
+      expectedProofIds.map((proofId) => [input.scopeId, proofId]),
+    );
+    const refundsPersisted = await this.#persistProofRowsWithBackupAuthority(
+      refunds,
+      input.observedAtMs,
+      () => input.operationId,
+    );
+    await advanceBrowserV2DesiredAssetsForProofChanges(
+      this.#database,
+      input.scopeId,
+      [...retiredPersistence.changes, ...refundsPersisted.changes].map(desiredAssetProofChange),
+      conditionalKeysetLookup(
+        retiredPersistence.conditionalKeysets,
+        refundsPersisted.conditionalKeysets,
+      ),
+    );
+    if (input.injectFault === "before-commit") {
+      throw new Error("injected browser refund custody fault before commit");
     }
   }
 
@@ -582,6 +652,40 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
       totalBytes += separatorBytes + bytes;
     }
     return fitRecoveryPage(entries, rows.length > entries.length);
+  }
+
+  #requiredTransactionTables(
+    atomic: boolean,
+    options: BrowserCustodyTransactionOptions,
+  ): readonly Table[] {
+    return [
+      this.#database.custodyScopes,
+      this.#database.custodyOperations,
+      this.#database.custodyArtifacts,
+      this.#database.custodyProofs,
+      this.#database.custodyReservations,
+      this.#database.custodyActiveWork,
+      this.#database.custodyProofBackupAuthorities,
+      this.#database.custodyConditionalKeysets,
+      this.#database.encryptedWalletBackupV2DesiredAssets,
+      ...(atomic
+        ? [this.#database.outgoingCashuTransfers, this.#database.outgoingCashuTransferAdmissions]
+        : []),
+      ...(options.walletCounterAuthority === undefined
+        ? []
+        : [this.#database.walletCounterAssociations, this.#database.walletCounterCursors]),
+    ];
+  }
+
+  #retirementTransactionTables(): readonly Table[] {
+    return [
+      this.#database.custodyOperations,
+      this.#database.custodyProofs,
+      this.#database.custodyReservations,
+      this.#database.custodyProofBackupAuthorities,
+      this.#database.custodyConditionalKeysets,
+      this.#database.encryptedWalletBackupV2DesiredAssets,
+    ];
   }
 
   async #requiredScope(scopeId: string): Promise<BrowserCustodyScopeRow> {
@@ -2263,6 +2367,32 @@ function nonnegativeSafeInteger(value: unknown, label: string): number {
     throw new Error(`browser custody ${label} is invalid`);
   }
   return value;
+}
+
+function assertCurrentReadwriteTransaction(
+  transaction: Transaction,
+  database: BitcasterDB,
+  tables: readonly Table[],
+  label: string,
+): void {
+  if (Dexie.currentTransaction !== transaction || transaction.db !== database) {
+    throw new Error(`${label} transaction is not the current database transaction`);
+  }
+  try {
+    if (!transaction.active || transaction.mode !== "readwrite") {
+      throw new Error(`${label} transaction is not active readwrite authority`);
+    }
+    if (tables.some((table) => !transaction.storeNames.includes(table.name))) {
+      throw new Error(`${label} transaction does not cover required tables`);
+    }
+  } catch (error) {
+    abortActiveTransaction(transaction);
+    throw error;
+  }
+}
+
+function abortActiveTransaction(transaction: Transaction): void {
+  if (transaction.active) transaction.abort();
 }
 
 function mintRecoveryState(
