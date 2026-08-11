@@ -742,6 +742,8 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
       mintUrl: transfer.mintUrl,
       mintRecoveryState: mintRecoveryState(transfer),
       localAuthorityState: localAuthorityState(transfer),
+      bearerMintUrl:
+        transfer.deliveryIntent.policy === "bearer-spend-classification" ? transfer.mintUrl : null,
       dueAtMs: transfer.recovery.dueAtMs,
       transferId: transfer.transferId,
       recipientBinding:

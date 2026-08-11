@@ -2,6 +2,7 @@ import { isBlsKeyset, type Proof, type ProofState, type SwapPreview } from "@cas
 import {
   acknowledgeDurableOutgoingCashuRecipient,
   admitDurableOutgoingCashuToken,
+  classifyDurableOutgoingBearerProofStates,
   createDurableOutgoingCashuTransfer,
   decodeDurableOutgoingCashuTransfer,
   durableOutgoingCashuStorageReservationBytes,
@@ -249,6 +250,74 @@ export async function findBrowserDurableOutgoingCashuTransferByRecipientBinding(
   return rows.length === 0 ? null : decodeOutgoingRow(scope.scopeId, rows[0]!);
 }
 
+/** Read one retained bearer transfer for an explicit withdrawal surface only. */
+export async function findBrowserDurableOutgoingBearerTransfer(input: {
+  readonly mintUrl: string;
+  readonly context: BrowserDurableOutgoingCashuContext;
+}): Promise<DurableOutgoingCashuTransfer | null> {
+  const scope = browserWalletScope(input.context.seed);
+  input.context.requireCapturedProfile();
+  const rows = await (input.context.database ?? db).outgoingCashuTransfers
+    .where("[scopeId+bearerMintUrl+localAuthorityState+transferId]")
+    .between(
+      [scope.scopeId, input.mintUrl, "nonterminal", ""],
+      [scope.scopeId, input.mintUrl, "nonterminal", CURSOR_HIGH],
+      true,
+      true,
+    )
+    .reverse()
+    .limit(2)
+    .toArray();
+  if (rows.length > 1) throw new Error("browser bearer withdrawal resume is ambiguous");
+  const found = rows.length === 0 ? null : decodeOutgoingRow(scope.scopeId, rows[0]!);
+  if (
+    found !== null &&
+    (found.deliveryIntent.policy !== "bearer-spend-classification" ||
+      found.token === null ||
+      (found.deliveryState !== "delivery-pending" &&
+        found.deliveryState !== "bearer-partial" &&
+        found.deliveryState !== "reclaim-prepared"))
+  ) {
+    throw new Error("browser bearer withdrawal resume row is foreign");
+  }
+  input.context.requireCapturedProfile();
+  return found;
+}
+
+/** Persist one complete bearer proof-state classification without mint mutation. */
+export async function classifyBrowserDurableOutgoingBearerTransfer(input: {
+  readonly transfer: DurableOutgoingCashuTransfer;
+  readonly states: Parameters<typeof classifyDurableOutgoingBearerProofStates>[0]["states"];
+  readonly context: BrowserDurableOutgoingCashuContext;
+}): Promise<DurableOutgoingCashuTransfer> {
+  const scope = browserWalletScope(input.context.seed);
+  const database = input.context.database ?? db;
+  return withWalletProfileLock(
+    scope.scopeId,
+    () =>
+      database.transaction("rw", database.outgoingCashuTransfers, async () => {
+        input.context.requireCapturedProfile();
+        const row = await database.outgoingCashuTransfers.get([
+          scope.scopeId,
+          input.transfer.transferId,
+        ]);
+        if (!row) throw new Error("browser bearer transfer is missing");
+        const current = decodeOutgoingRow(scope.scopeId, row);
+        assertOutgoingRevision(current, input.transfer);
+        const classified = classifyDurableOutgoingBearerProofStates({
+          transfer: current,
+          states: input.states,
+          dueAtMs: (input.context.now ?? Date.now)(),
+        }).transfer;
+        await database.outgoingCashuTransfers.put(
+          browserOutgoingCashuTransferRow(scope.scopeId, classified, row.admissionState),
+        );
+        return classified;
+      }),
+    input.context.lockManager,
+  );
+}
+
 /** Persist one verified recipient receipt with profile fencing and revision CAS. */
 export async function acknowledgeBrowserDurableOutgoingCashuRecipient(input: {
   readonly transfer: DurableOutgoingCashuTransfer;
@@ -283,7 +352,7 @@ export async function acknowledgeBrowserDurableOutgoingCashuRecipient(input: {
         });
         input.context.requireCapturedProfile();
         await database.outgoingCashuTransfers.put(
-          outgoingRow(scope.scopeId, acknowledged, row.admissionState),
+          browserOutgoingCashuTransferRow(scope.scopeId, acknowledged, row.admissionState),
         );
         return acknowledged;
       }),
@@ -447,7 +516,7 @@ async function persistBrowserOutgoingRetry(
           throw new Error("browser outgoing retry transfer revision conflicts");
         }
         await database.outgoingCashuTransfers.put(
-          outgoingRow(scope.scopeId, next, existing.admissionState),
+          browserOutgoingCashuTransferRow(scope.scopeId, next, existing.admissionState),
         );
         return "retried";
       }),
@@ -484,7 +553,7 @@ async function prepareBrowserOutgoingTransfer(input: {
       bindDurableCustodyProofOperation(transaction, binding.record, binding.artifacts),
     {
       predecessorProofs: { [binding.record.operation.operationId]: predecessors },
-      outgoingTransfer: outgoingRow(scope.scopeId, transfer, "reserved"),
+      outgoingTransfer: browserOutgoingCashuTransferRow(scope.scopeId, transfer, "reserved"),
       outgoingAdmission: outgoingAdmission(scope.scopeId, transfer),
     },
   );
@@ -612,7 +681,11 @@ async function commitOutgoingMintAdmission(input: {
       ),
     {
       successorProofs: { [input.snapshot.record.operation.operationId]: input.successors },
-      outgoingTransfer: outgoingRow(input.scope.scopeId, input.admitted, "consumed"),
+      outgoingTransfer: browserOutgoingCashuTransferRow(
+        input.scope.scopeId,
+        input.admitted,
+        "consumed",
+      ),
       outgoingAdmission: null,
       ...(input.runtime.context.injectFault === undefined
         ? {}
@@ -893,7 +966,7 @@ function selection(
   };
 }
 
-function outgoingRow(
+export function browserOutgoingCashuTransferRow(
   scopeId: string,
   transfer: DurableOutgoingCashuTransfer,
   admissionState: BrowserOutgoingCashuTransferRow["admissionState"] = "consumed",
@@ -903,6 +976,7 @@ function outgoingRow(
     mintUrl: transfer.mintUrl,
     mintRecoveryState: mintRecoveryState(transfer),
     localAuthorityState: localAuthorityState(transfer),
+    bearerMintUrl: bearerMintUrl(transfer),
     dueAtMs: transfer.recovery.dueAtMs,
     transferId: transfer.transferId,
     recipientBinding: recipientBinding(transfer),
@@ -947,6 +1021,7 @@ function decodeOutgoingRow(
     row.mintUrl !== transfer.mintUrl ||
     row.mintRecoveryState !== mintRecoveryState(transfer) ||
     row.localAuthorityState !== localAuthorityState(transfer) ||
+    row.bearerMintUrl !== bearerMintUrl(transfer) ||
     row.dueAtMs !== transfer.recovery.dueAtMs ||
     row.recipientBinding !== recipientBinding(transfer) ||
     (row.admissionState !== "reserved" && row.admissionState !== "consumed") ||
@@ -961,6 +1036,10 @@ function recipientBinding(transfer: DurableOutgoingCashuTransfer): string | null
   return transfer.deliveryIntent.policy === "durable-recipient-ack"
     ? transfer.deliveryIntent.opaqueProductBinding
     : null;
+}
+
+function bearerMintUrl(transfer: DurableOutgoingCashuTransfer): string | null {
+  return transfer.deliveryIntent.policy === "bearer-spend-classification" ? transfer.mintUrl : null;
 }
 
 function assertOutgoingRevision(

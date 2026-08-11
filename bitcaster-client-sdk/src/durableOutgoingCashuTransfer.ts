@@ -121,6 +121,11 @@ export interface DurableOutgoingCashuReclaimExecutionInput {
     readonly reclaim: DurableOutgoingCashuReclaimAuthority
     readonly successorProofs: readonly Proof[]
   }): Promise<DurableOutgoingCashuReclaimCompletionEvidence>
+  /** Atomically discard the prepared local receive and record that the bearer spent it first. */
+  abortAndMarkBearerSpent(input: {
+    readonly transfer: DurableOutgoingCashuTransfer
+    readonly reclaim: DurableOutgoingCashuReclaimAuthority
+  }): Promise<DurableOutgoingCashuTransfer>
 }
 
 /** A local-only record. `encodedToken` is bearer authority and must never leave its durable store. */
@@ -834,6 +839,21 @@ export async function runDurableOutgoingCashuReclaim(
   }
   const result = await runDurableWalletReceiveOperation({ ...input.walletReceive, mode: 'recover' })
   if (result.state === 'nonterminal') return transfer
+  if (result.state === 'recipient-spent') {
+    const spent = markDurableOutgoingCashuReclaimRecipientSpent(transfer)
+    const persisted = await input.abortAndMarkBearerSpent({
+      transfer: spent,
+      reclaim: transfer.reclaim,
+    })
+    if (
+      persisted.deliveryState !== 'bearer-spent' ||
+      persisted.transferId !== transfer.transferId ||
+      persisted.revision !== spent.revision
+    ) {
+      throw new Error('durable outgoing Cashu recipient-spent transition conflicts')
+    }
+    return persisted
+  }
   const evidence = await input.admitAndComplete({
     transfer,
     reclaim: transfer.reclaim,
@@ -843,6 +863,28 @@ export async function runDurableOutgoingCashuReclaim(
     transfer,
     successorProofs: result.proofs,
     evidence,
+  })
+}
+
+/** Terminalize only the typed all-spent plus authenticated-empty recovery outcome. */
+export function markDurableOutgoingCashuReclaimRecipientSpent(
+  input: DurableOutgoingCashuTransfer,
+): DurableOutgoingCashuTransfer {
+  const transfer = decodeDurableOutgoingCashuTransfer(input)
+  if (
+    transfer.deliveryIntent.policy !== 'bearer-spend-classification' ||
+    transfer.deliveryState !== 'reclaim-prepared' ||
+    transfer.reclaim === null ||
+    transfer.token === null
+  ) {
+    throw new Error('durable outgoing Cashu recipient-spent transition is invalid')
+  }
+  return decodeDurableOutgoingCashuTransfer({
+    ...transfer,
+    deliveryState: 'bearer-spent',
+    token: { ...transfer.token, unspentProofs: null },
+    reclaim: null,
+    revision: transfer.revision + 1,
   })
 }
 
@@ -993,7 +1035,7 @@ export function planDurableOutgoingCashuProofStateChunks(input: {
     const remainingProofCapacity =
       reusableProofCapacity + (input.maximumCalls - chunks.length) * input.maximumProofsPerCall
     if (remainingProofCapacity < transfer.token.proofs.length) break
-    for (let proofOffset = 0; proofOffset < transfer.token.proofs.length;) {
+    for (let proofOffset = 0; proofOffset < transfer.token.proofs.length; ) {
       const previous = chunks.at(-1)
       const canAppend = previous !== undefined && previous.mintUrl === transfer.mintUrl
       const available = canAppend ? input.maximumProofsPerCall - previous.proofs.length : 0

@@ -64,6 +64,8 @@ export function DepositWithdraw(props: DepositWithdrawProps) {
           onNumpadPress={props.onNumpadPress}
           onToggleCurrency={props.onToggleCurrency}
           onSendEcash={props.onSendEcash}
+          onReclaimEcash={props.onReclaimEcash}
+          hasPendingBearerReclaim={props.hasPendingBearerReclaim}
           onClose={props.onClose}
         />
       );

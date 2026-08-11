@@ -9,6 +9,7 @@ import {
   createDurableOutgoingCashuTransfer,
   decodeDurableOutgoingCashuTransfer,
   durableOutgoingCashuStorageReservationBytes,
+  markDurableOutgoingCashuReclaimRecipientSpent,
   completeDurableOutgoingCashuReclaim,
   planDurableOutgoingCashuProofStateChunks,
   planDurableOutgoingCashuRecoveryPage,
@@ -393,6 +394,48 @@ test('reclaim recovery restores exact successors after a crash and leaves pendin
   })
   assert.equal(recovered.deliveryState, 'reclaimed')
   assert.equal(restores, 1)
+})
+
+test('reclaim recovery atomically terminalizes recipient-first spend from exact empty restore', async () => {
+  const reclaim = preparedReclaim('reclaim-recipient-spent')
+  let aborted = 0
+  const result = await runDurableOutgoingCashuReclaim({
+    transfer: reclaim,
+    walletReceive: {
+      operationId: reclaim.reclaim!.reclaimId,
+      store: {
+        loadOperation: async () => ({
+          operation: reclaim.reclaim!.walletReceiveOperation,
+          state: 'prepared' as const,
+          result: null,
+        }),
+        persistCompletedResult: async () => 'completed',
+      },
+      wallet: {
+        checkProofsStates: async () =>
+          reclaim.reclaim!.proofs.map((proof) => ({
+            Y: deriveDurableWalletProofY(proof),
+            state: 'SPENT',
+            witness: null,
+          })) as never,
+        completeSwap: async () => {
+          throw new Error('recipient-first spend must not resubmit')
+        },
+      },
+      restoreExactOutputs: async () => ({ receive: [] }),
+    },
+    admitAndComplete: async () => {
+      throw new Error('recipient-first spend must not admit successors')
+    },
+    abortAndMarkBearerSpent: async ({ transfer }) => {
+      aborted += 1
+      return transfer
+    },
+  })
+
+  assert.equal(result.deliveryState, 'bearer-spent')
+  assert.equal(aborted, 1)
+  assert.equal(markDurableOutgoingCashuReclaimRecipientSpent(reclaim).revision, result.revision)
 })
 
 test('recovery bounds stored bytes, cursor advancement, proof chunks, and capped retry backoff', () => {

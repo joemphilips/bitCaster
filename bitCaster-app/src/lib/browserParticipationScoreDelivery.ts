@@ -34,7 +34,7 @@ import {
 } from "@/lib/cashu";
 import { getDurableCashuDeliveryStatus, submitDurableCashuDelivery } from "@/lib/markets";
 import { normalizeUrl } from "@/lib/url";
-import { getBoundedParticipationScoreProofs, type StoredProof } from "@/stores/proof-db";
+import { getBoundedCanonicalSatProofs, type StoredProof } from "@/stores/proof-db";
 import { useWalletStore } from "@/stores/wallet";
 
 export type ParticipationScoreDeliveryProgress = "pending" | "received" | "credited";
@@ -98,7 +98,7 @@ export async function executeBrowserParticipationScoreDelivery(
   }
 
   context.requireCapturedProfile();
-  const proofs = await getBoundedParticipationScoreProofs(metadata.mintUrl, {
+  const proofs = await getBoundedCanonicalSatProofs(metadata.mintUrl, {
     keysetIds: participationScoreKeysetIds(metadata.mintUrl, wallet.getKeyset().id),
   });
   context.requireCapturedProfile();

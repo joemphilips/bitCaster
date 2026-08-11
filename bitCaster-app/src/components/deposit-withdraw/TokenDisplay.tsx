@@ -7,9 +7,10 @@ interface TokenDisplayProps {
   token: string;
   amountSats: number;
   onClose?: () => void;
+  onReclaim?: () => void;
 }
 
-export function TokenDisplay({ token, amountSats, onClose }: TokenDisplayProps) {
+export function TokenDisplay({ token, amountSats, onClose, onReclaim }: TokenDisplayProps) {
   const { t } = useTranslation();
   const [copied, setCopied] = useState(false);
 
@@ -67,6 +68,15 @@ export function TokenDisplay({ token, amountSats, onClose }: TokenDisplayProps) 
         <p className="mt-4 text-sm text-slate-400 text-center">
           {t("deposit.ecashTokenReadyHint")}
         </p>
+        {onReclaim ? (
+          <button
+            type="button"
+            onClick={onReclaim}
+            className="mt-5 rounded-lg border border-amber-400 px-4 py-2 text-sm font-semibold text-amber-200 transition-colors hover:bg-amber-400/10"
+          >
+            {t("deposit.reclaim")}
+          </button>
+        ) : null}
       </div>
     </div>
   );

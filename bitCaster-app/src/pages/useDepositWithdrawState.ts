@@ -1,4 +1,5 @@
 import { useState, useCallback, useRef, useEffect } from "react";
+import { useTranslation } from "react-i18next";
 import type {
   DepositWithdrawMode,
   DepositWithdrawView,
@@ -9,7 +10,15 @@ import type { MeltQuoteResponse } from "@cashu/cashu-ts";
 import { useWalletStore } from "@/stores/wallet";
 import { useActivityLogStore } from "@/stores/activity-log";
 import { useLiveQuery } from "dexie-react-hooks";
-import { createMeltQuote, meltProofs, spendRegularSatsAsToken } from "@/lib/cashu";
+import { createMeltQuote, meltProofs } from "@/lib/cashu";
+import {
+  executeBrowserBearerWithdrawal,
+  browserBearerReclaimFeeDisclosure,
+  classifyBrowserBearerWithdrawal,
+  reclaimBrowserBearerWithdrawal,
+  resumeBrowserBearerWithdrawal,
+} from "@/lib/browserBearerWithdrawal";
+import type { DurableOutgoingCashuTransfer } from "@bitcaster/client-sdk/durableOutgoingCashuTransfer";
 import {
   createBrowserDurableBolt11MintQuote,
   hideBrowserDurableBolt11MintQuote,
@@ -83,6 +92,7 @@ export interface DepositWithdrawState {
   /** Bolt11 expiry as unix-seconds. Drives the live countdown in the UI. */
   invoiceExpiresAtSec: number | undefined;
   ecashToken: string | null;
+  bearerWithdrawal: DurableOutgoingCashuTransfer | null;
   meltQuote: MeltQuoteResponse | null;
   meltIsPaying: boolean;
 
@@ -105,6 +115,7 @@ export interface DepositWithdrawState {
    *  same amount/mint/unit (one-click re-quote after expiry / failure). */
   onRegenerateInvoice: () => void;
   onSendEcash: () => void;
+  onReclaimEcash: () => void;
   onPaste: () => void;
   onScan: () => void;
   onRequest: () => void;
@@ -133,6 +144,7 @@ export function useDepositWithdrawState(
   mode: DepositWithdrawMode,
   onDismiss: () => void,
 ): DepositWithdrawState {
+  const { t } = useTranslation();
   const storeMints = useWalletStore((s) => s.mints);
   const activeMintUrl = useWalletStore((s) => s.activeMintUrl);
   const walletMnemonic = useWalletStore((s) => s.mnemonic);
@@ -175,6 +187,9 @@ export function useDepositWithdrawState(
   const [invoiceStatus, setInvoiceStatus] = useState<InvoiceStatus>("pending");
   const [invoiceExpiresAtSec, setInvoiceExpiresAtSec] = useState<number | undefined>();
   const [ecashToken, setEcashToken] = useState<string | null>(null);
+  const [bearerWithdrawal, setBearerWithdrawal] = useState<DurableOutgoingCashuTransfer | null>(
+    null,
+  );
   const [meltQuote, setMeltQuote] = useState<MeltQuoteResponse | null>(null);
   const [meltIsPaying, setMeltIsPaying] = useState(false);
 
@@ -198,6 +213,7 @@ export function useDepositWithdrawState(
   const inflightRef = useRef(false);
   const unsubRef = useRef<(() => void) | null>(null);
   const mintQuotePresentationGenerationRef = useRef(0);
+  const bearerPresentationGenerationRef = useRef(0);
   const mintQuoteDisposedRef = useRef(false);
   const userSelectedMintRef = useRef(false);
 
@@ -261,9 +277,65 @@ export function useDepositWithdrawState(
         setCurrentView(method === "ecash" ? "deposit-ecash" : "deposit-lightning");
       } else {
         setCurrentView(method === "ecash" ? "send-ecash" : "pay-lightning");
+        if (method === "ecash") {
+          const presentationGeneration = ++bearerPresentationGenerationRef.current;
+          const requestedMintId = selectedMintId;
+          void resumeBrowserBearerWithdrawal(selectedMintId)
+            .then(async (transfer) => {
+              if (
+                presentationGeneration !== bearerPresentationGenerationRef.current ||
+                transfer?.mintUrl !== requestedMintId
+              ) {
+                return;
+              }
+              if (transfer?.token === null || transfer === null) return;
+              if (transfer.deliveryState === "reclaim-prepared") {
+                setBearerWithdrawal(transfer);
+                setEcashToken(null);
+                const disclosure = browserBearerReclaimFeeDisclosure(transfer);
+                setError(
+                  disclosure === null
+                    ? t("deposit.reclaimPrepared")
+                    : t("deposit.reclaimFeeDisclosure", disclosure),
+                );
+                return;
+              }
+              const classified = await classifyBrowserBearerWithdrawal({ transfer });
+              if (presentationGeneration !== bearerPresentationGenerationRef.current) return;
+              setBearerWithdrawal(classified);
+              switch (classified.deliveryState) {
+                case "delivery-pending":
+                  const token = classified.token;
+                  if (
+                    token === null ||
+                    token.unspentProofs === null ||
+                    token.unspentProofs.length !== token.proofs.length
+                  ) {
+                    setEcashToken(null);
+                    setError(t("deposit.reclaimOriginalHidden"));
+                    return;
+                  }
+                  setEcashToken(token.encodedToken);
+                  setAmountString(classified.requestedAmount);
+                  setCurrentView("token-display");
+                  return;
+                case "bearer-partial":
+                  setEcashToken(null);
+                  setError(t("deposit.reclaimOriginalHidden"));
+                  return;
+                default:
+                  return;
+              }
+            })
+            .catch((reason: Error) => {
+              if (presentationGeneration === bearerPresentationGenerationRef.current) {
+                setError(reason.message);
+              }
+            });
+        }
       }
     },
-    [mode],
+    [mode, selectedMintId, t],
   );
 
   const onNumpadPress = useCallback((key: string) => {
@@ -279,6 +351,7 @@ export function useDepositWithdrawState(
 
   const onMintChange = useCallback((mintId: string) => {
     userSelectedMintRef.current = true;
+    bearerPresentationGenerationRef.current += 1;
     setSelectedMintId(mintId);
   }, []);
 
@@ -474,8 +547,13 @@ export function useDepositWithdrawState(
     setIsLoading(true);
     setError(null);
     try {
-      const token = await spendRegularSatsAsToken(amountSats, selectedMintId);
-      setEcashToken(token);
+      const transfer = await executeBrowserBearerWithdrawal({
+        amount: amountSats,
+        mintUrl: selectedMintId,
+      });
+      if (transfer.token === null) throw new Error("Withdrawal token was not durably admitted");
+      setBearerWithdrawal(transfer);
+      setEcashToken(transfer.token.encodedToken);
       setCurrentView("token-display");
     } catch (e) {
       setError((e as Error).message);
@@ -483,6 +561,58 @@ export function useDepositWithdrawState(
       setIsLoading(false);
     }
   }, [amountSats, selectedMintId]);
+
+  const onReclaimEcash = useCallback(async () => {
+    if (bearerWithdrawal === null) return;
+    setEcashToken(null);
+    setCurrentView("send-ecash");
+    setIsLoading(true);
+    try {
+      const classified = await reclaimBrowserBearerWithdrawal({ transfer: bearerWithdrawal });
+      setBearerWithdrawal(classified);
+      switch (classified.deliveryState) {
+        case "bearer-spent":
+          setEcashToken(null);
+          setError(t("deposit.reclaimSpent"));
+          setCurrentView("send-ecash");
+          return;
+        case "bearer-partial":
+          setEcashToken(null);
+          setError(t("deposit.reclaimOriginalHidden"));
+          setCurrentView("send-ecash");
+          return;
+        case "delivery-pending":
+          setError(t("deposit.reclaimUncertain"));
+          return;
+        case "reclaim-prepared": {
+          const disclosure = browserBearerReclaimFeeDisclosure(classified);
+          setError(
+            disclosure === null
+              ? t("deposit.reclaimPrepared")
+              : t("deposit.reclaimFeeDisclosure", disclosure),
+          );
+          return;
+        }
+        case "reclaimed":
+          setEcashToken(null);
+          setCurrentView("send-ecash");
+          return;
+        default:
+          setError(t("deposit.reclaimUnavailable"));
+      }
+    } catch (reason) {
+      const persisted = await resumeBrowserBearerWithdrawal(bearerWithdrawal.mintUrl).catch(
+        () => null,
+      );
+      if (persisted?.transferId === bearerWithdrawal.transferId) {
+        setBearerWithdrawal(persisted);
+        if (persisted.deliveryState !== "delivery-pending") setEcashToken(null);
+      }
+      setError((reason as Error).message);
+    } finally {
+      setIsLoading(false);
+    }
+  }, [bearerWithdrawal, t]);
 
   const onLightningInputChange = useCallback(
     async (value: string) => {
@@ -667,6 +797,7 @@ export function useDepositWithdrawState(
     invoiceStatus,
     invoiceExpiresAtSec,
     ecashToken,
+    bearerWithdrawal,
     meltQuote,
     meltIsPaying,
     paymentRequestEncoded,
@@ -680,6 +811,7 @@ export function useDepositWithdrawState(
     onCreateInvoice,
     onRegenerateInvoice,
     onSendEcash,
+    onReclaimEcash,
     onPaste,
     onScan,
     onRequest,

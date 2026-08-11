@@ -1,5 +1,6 @@
 // @vitest-environment node
 import "fake-indexeddb/auto";
+import Dexie from "dexie";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { bytesToHex } from "@noble/curves/utils.js";
 import { secp256k1 } from "@noble/curves/secp256k1.js";
@@ -32,13 +33,14 @@ import {
   listBrowserDurableOutgoingCashuDue,
   listBrowserDurableOutgoingCashuDueMints,
   executeBrowserDurableOutgoingCashuTransfer,
+  findBrowserDurableOutgoingBearerTransfer,
   findBrowserDurableOutgoingCashuTransferByRecipientBinding,
   recoverBrowserDurableOutgoingCashuTransfer,
   recoverBrowserDurableOutgoingCashuDuePage,
 } from "../browserDurableOutgoingCashuTransfer";
 import {
   BitcasterDB,
-  getBoundedParticipationScoreProofs,
+  getBoundedCanonicalSatProofs,
   getBoundedMarketFundingProofs,
   MARKET_FUNDING_INPUT_PROOF_LIMIT_MAX,
   type BrowserOutgoingCashuTransferRow,
@@ -64,6 +66,36 @@ afterEach(async () => {
 });
 
 describe("browser durable outgoing Cashu store", () => {
+  it("migrates the bounded bearer-resume index and rejects an ambiguous mint", async () => {
+    const name = `browser-outgoing-v13-${crypto.randomUUID()}`;
+    const seed = new Uint8Array(64).fill(9);
+    const scopeId = browserWalletScope(seed).scopeId;
+    const first = row(admittedTransfer("bearer-a", scopeId));
+    const second = row(admittedTransfer("bearer-b", scopeId));
+    const legacy = new Dexie(name);
+    legacy.version(13).stores({
+      outgoingCashuTransfers:
+        "&[scopeId+transferId], [scopeId+mintUrl+mintRecoveryState+dueAtMs+transferId], [scopeId+mintRecoveryState+dueAtMs+mintUrl+transferId], [scopeId+localAuthorityState+transferId], [scopeId+recipientBinding+transferId]",
+    });
+    await legacy.open();
+    await legacy
+      .table("outgoingCashuTransfers")
+      .bulkPut([first, second].map(({ bearerMintUrl: _ignored, ...record }) => record));
+    legacy.close();
+
+    const database = new BitcasterDB(name);
+    databases.push(database);
+    await database.open();
+    expect(
+      (await database.outgoingCashuTransfers.toArray()).every((row) => row.bearerMintUrl === MINT),
+    ).toBe(true);
+    await expect(
+      findBrowserDurableOutgoingBearerTransfer({
+        mintUrl: MINT,
+        context: recoveryContext(seed, database),
+      }),
+    ).rejects.toThrow(/ambiguous/);
+  });
   it("finds one exact recipient binding without scanning other transfers", async () => {
     const database = createDatabase();
     const seed = new Uint8Array(64).fill(3);
@@ -138,7 +170,7 @@ describe("browser durable outgoing Cashu store", () => {
       },
     ]);
 
-    const selected = await getBoundedParticipationScoreProofs(
+    const selected = await getBoundedCanonicalSatProofs(
       MINT,
       { keysetIds: [KEYSET_ID, OLD_V2_KEYSET_ID] },
       database,
@@ -902,6 +934,8 @@ function row(transfer: DurableOutgoingCashuTransfer): BrowserOutgoingCashuTransf
       transfer.deliveryState === "reclaimed"
         ? "terminal"
         : "nonterminal",
+    bearerMintUrl:
+      transfer.deliveryIntent.policy === "bearer-spend-classification" ? transfer.mintUrl : null,
     dueAtMs: transfer.recovery.dueAtMs,
     transferId: transfer.transferId,
     recipientBinding:

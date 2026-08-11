@@ -18,7 +18,7 @@ const recoverBrowserDurableOutgoingCashuTransfer = vi.fn();
 const captureBrowserMintPersistenceContext = vi.fn();
 const getWalletForUnit = vi.fn();
 const restoreExactMintOutputs = vi.fn();
-const getBoundedParticipationScoreProofs = vi.fn();
+const getBoundedCanonicalSatProofs = vi.fn();
 const getDurableCashuDeliveryStatus = vi.fn();
 const submitDurableCashuDelivery = vi.fn();
 
@@ -41,8 +41,7 @@ vi.mock("@/lib/cashu", () => ({
 }));
 
 vi.mock("@/stores/proof-db", () => ({
-  getBoundedParticipationScoreProofs: (...args: unknown[]) =>
-    getBoundedParticipationScoreProofs(...args),
+  getBoundedCanonicalSatProofs: (...args: unknown[]) => getBoundedCanonicalSatProofs(...args),
 }));
 
 const ACTIVE_KEYSET_ID = `01${"11".repeat(32)}`;
@@ -91,7 +90,7 @@ describe("browser Participation Score delivery", () => {
     captureBrowserMintPersistenceContext.mockReset();
     getWalletForUnit.mockReset();
     restoreExactMintOutputs.mockReset();
-    getBoundedParticipationScoreProofs.mockReset();
+    getBoundedCanonicalSatProofs.mockReset();
     getDurableCashuDeliveryStatus.mockReset();
     submitDurableCashuDelivery.mockReset();
   });
@@ -151,14 +150,14 @@ describe("browser Participation Score delivery", () => {
     });
     readBrowserDurableOutgoingCashuTransfer.mockResolvedValue(null);
     getWalletForUnit.mockResolvedValue({ getKeyset: () => ({ id: ACTIVE_KEYSET_ID }) });
-    getBoundedParticipationScoreProofs.mockResolvedValue([{ amount: input.requestedAmount }]);
+    getBoundedCanonicalSatProofs.mockResolvedValue([{ amount: input.requestedAmount }]);
     executeBrowserDurableOutgoingCashuTransfer.mockResolvedValue(transfer());
     getDurableCashuDeliveryStatus.mockResolvedValue(status("credited"));
 
     const result = await executeBrowserParticipationScoreDelivery(input);
 
     expect(result.progress).toBe("credited");
-    expect(getBoundedParticipationScoreProofs).toHaveBeenCalledWith(input.mintUrl, {
+    expect(getBoundedCanonicalSatProofs).toHaveBeenCalledWith(input.mintUrl, {
       keysetIds: [ACTIVE_KEYSET_ID, OLD_KEYSET_ID],
     });
     expect(executeBrowserDurableOutgoingCashuTransfer).toHaveBeenCalledWith(
@@ -191,7 +190,7 @@ describe("browser Participation Score delivery", () => {
     expect(credited.progress).toBe("credited");
     expect(getWalletForUnit).not.toHaveBeenCalled();
     expect(recoverBrowserDurableOutgoingCashuTransfer).not.toHaveBeenCalled();
-    expect(getBoundedParticipationScoreProofs).not.toHaveBeenCalled();
+    expect(getBoundedCanonicalSatProofs).not.toHaveBeenCalled();
   });
 });
 

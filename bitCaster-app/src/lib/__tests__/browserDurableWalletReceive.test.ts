@@ -9,6 +9,7 @@ import {
   createBlindSignature,
   createDLEQProof,
   deriveKeysetId,
+  getEncodedTokenV4,
   hashToCurve,
   pointFromHex,
   type Proof,
@@ -16,12 +17,31 @@ import {
 } from "@cashu/cashu-ts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  abortPreparedBrowserDurableWalletReceive,
+  bindPreparedBrowserDurableWalletReceiveOperation,
+  prepareBrowserDurableWalletReceiveOperation,
   readBrowserCurrentCustodyProofPage,
   receiveBrowserDurableWalletToken,
   recoverBrowserDurableWalletReceives,
   type BrowserDurableWalletReceiveContext,
   type BrowserDurableWalletReceiveWallet,
 } from "../browserDurableWalletReceive";
+import {
+  admitDurableOutgoingCashuToken,
+  classifyDurableOutgoingBearerProofStates,
+  createDurableOutgoingCashuTransfer,
+  markDurableOutgoingCashuReclaimRecipientSpent,
+  prepareDurableOutgoingCashuReclaim,
+  type DurableOutgoingCashuTransfer,
+} from "@bitcaster/client-sdk/durableOutgoingCashuTransfer";
+import {
+  deriveDurableWalletProofY,
+  hydrateDurableWalletProof,
+  serializeDurableWalletProof,
+  serializeDurableWalletSendOperation,
+} from "@bitcaster/client-sdk/durableWalletOperation";
+import { deriveDurableCustodyArtifactFingerprint } from "@bitcaster/client-sdk/durableCustody";
+import { browserOutgoingCashuTransferRow } from "../browserDurableOutgoingCashuTransfer";
 import { addProofs, addProofsIfMissing, BitcasterDB } from "../../stores/proof-db";
 import {
   BrowserDurableCustodyAdapter,
@@ -247,6 +267,140 @@ describe("browser durable ordinary receive", () => {
     expect(restarted.completeSwap).not.toHaveBeenCalled();
     expect(restarted.checkProofsStates).not.toHaveBeenCalled();
     expect(restarted.mint.restore).not.toHaveBeenCalled();
+  });
+
+  it("commits bearer reclaim authority with the receive and resumes the exact operation", async () => {
+    const database = createDatabase();
+    const scopeId = browserWalletScope(seed).scopeId;
+    const outgoing = admittedBearerTransfer(scopeId);
+    const inputProof = outgoing.token!.proofs[0]!;
+    const preview = receivePreviewForProof(inputProof);
+    const successor = proofForOutput(preview.keepOutputs![0]!);
+    const first = wallet(preview, successor, 21);
+    const faultContext = receiveContext(database, "after-commit", "reclaim");
+    const token = outgoing.token!.encodedToken;
+    const operation = await prepareBrowserDurableWalletReceiveOperation(
+      {
+        operationId: "bearer-reclaim:1",
+        token,
+        mintUrl: MINT,
+        unit: "sat",
+        wallet: first,
+        context: faultContext,
+      },
+      () => "unused",
+    );
+    const { prepared, terminal } = bearerReclaimStates(outgoing, operation);
+
+    await expect(
+      receiveBrowserDurableWalletToken({
+        operationId: operation.operationId,
+        preparedOperation: operation,
+        token,
+        mintUrl: MINT,
+        unit: "sat",
+        wallet: first,
+        context: faultContext,
+        outgoingTransferOnPrepare: browserOutgoingCashuTransferRow(scopeId, prepared, "consumed"),
+        completeOutgoingTransfer: () =>
+          browserOutgoingCashuTransferRow(scopeId, terminal, "consumed"),
+      }),
+    ).rejects.toThrow("injected browser custody fault after commit");
+
+    expect((await database.custodyOperations.toArray())[0]?.record.operation.result.state).toBe(
+      "applied",
+    );
+    expect((await database.outgoingCashuTransfers.toArray())[0]?.transfer.deliveryState).toBe(
+      "bearer-spent",
+    );
+    expect(await database.custodyProofs.count()).toBe(1);
+
+    const restarted = wallet(preview, successor, 21);
+    await expect(
+      receiveBrowserDurableWalletToken({
+        operationId: operation.operationId,
+        preparedOperation: operation,
+        skipBind: true,
+        token,
+        mintUrl: MINT,
+        unit: "sat",
+        wallet: restarted,
+        context: receiveContext(database),
+        completeOutgoingTransfer: () =>
+          browserOutgoingCashuTransferRow(scopeId, terminal, "consumed"),
+      }),
+    ).resolves.toEqual([expect.objectContaining({ secret: successor.secret })]);
+    expect(restarted.prepareSwapToReceive).not.toHaveBeenCalled();
+    expect(restarted.completeSwap).not.toHaveBeenCalled();
+    expect(restarted.checkProofsStates).not.toHaveBeenCalled();
+  });
+
+  it("atomically aborts a reclaim receive when the recipient spent every bearer proof", async () => {
+    const database = createDatabase();
+    const scopeId = browserWalletScope(seed).scopeId;
+    const outgoing = admittedBearerTransfer(scopeId);
+    const preview = receivePreviewForProof(outgoing.token!.proofs[0]!);
+    const first = wallet(preview, proofForOutput(preview.keepOutputs![0]!), 31);
+    const context = receiveContext(database);
+    const operation = await prepareBrowserDurableWalletReceiveOperation(
+      {
+        operationId: "bearer-reclaim:recipient-spent",
+        token: outgoing.token!.encodedToken,
+        mintUrl: MINT,
+        unit: "sat",
+        wallet: first,
+        context,
+      },
+      () => "unused",
+    );
+    const { prepared } = bearerReclaimStates(outgoing, operation);
+    await bindPreparedBrowserDurableWalletReceiveOperation({
+      operation,
+      wallet: first,
+      outgoingTransfer: browserOutgoingCashuTransferRow(scopeId, prepared, "consumed"),
+      context,
+    });
+    expect(await database.custodyOperations.count()).toBe(1);
+    expect(await database.outgoingCashuTransfers.count()).toBe(1);
+    vi.mocked(first.checkProofsStates).mockResolvedValue([
+      { Y: deriveDurableWalletProofY(prepared.reclaim!.proofs[0]!), state: "SPENT" },
+    ] as never);
+    vi.mocked(first.mint.restore).mockResolvedValue({ outputs: [], signatures: [] });
+    const token = getEncodedTokenV4({
+      mint: MINT,
+      unit: "sat",
+      proofs: prepared.reclaim!.proofs.map(hydrateDurableWalletProof),
+    });
+
+    await expect(
+      receiveBrowserDurableWalletToken({
+        operationId: operation.operationId,
+        preparedOperation: operation,
+        skipBind: true,
+        recoveryMode: "recover",
+        token,
+        mintUrl: MINT,
+        unit: "sat",
+        wallet: first,
+        context,
+        abortOutgoingTransfer: ({ custodyOperationId }) =>
+          abortPreparedBrowserDurableWalletReceive({
+            custodyOperationId,
+            transferId: prepared.transferId,
+            terminalOutgoingTransfer: browserOutgoingCashuTransferRow(
+              scopeId,
+              markDurableOutgoingCashuReclaimRecipientSpent(prepared),
+              "consumed",
+            ),
+            context,
+          }),
+      }),
+    ).resolves.toEqual([]);
+    expect(await database.custodyOperations.get([scopeId, operation.operationId])).toBeUndefined();
+    expect((await database.outgoingCashuTransfers.toArray())[0]?.transfer.deliveryState).toBe(
+      "bearer-spent",
+    );
+    expect(await database.custodyProofs.count()).toBe(0);
   });
 
   it("keeps a substituted staged result nonterminal", async () => {
@@ -496,6 +650,106 @@ function receiveContext(
     requireCapturedProfile: () => undefined,
     ...(injectFault === undefined ? {} : { injectFault }),
   };
+}
+
+function admittedBearerTransfer(scopeId: string): DurableOutgoingCashuTransfer {
+  const sendOutput = OutputData.createSingleDeterministicData(1, seed, 20, KEYSET_ID);
+  const prepared = createDurableOutgoingCashuTransfer({
+    transferId: "bearer-withdrawal:1",
+    walletScopeId: scopeId,
+    requestedAmount: "1",
+    walletSendOperation: serializeDurableWalletSendOperation({
+      operationId: "wallet-send:bearer-withdrawal:1",
+      mintUrl: MINT,
+      unit: "sat",
+      preview: {
+        amount: Amount.from(1),
+        fees: Amount.zero(),
+        keysetId: KEYSET_ID,
+        inputs: [
+          {
+            id: KEYSET_ID,
+            amount: Amount.from(1),
+            secret: "withdrawal-input",
+            C: "02" + "1".repeat(64),
+          },
+        ],
+        sendOutputs: [sendOutput],
+        keepOutputs: [],
+        unselectedProofs: [],
+      },
+    }),
+    deliveryIntent: {
+      policy: "bearer-spend-classification",
+      tokenBytesLimit: 4_096,
+      tokenProofLimit: 1,
+    },
+    dueAtMs: 1,
+  });
+  const proof = proofForOutput(sendOutput);
+  const serialized = serializeDurableWalletProof(proof);
+  const proofRevision = (entry: { id: string; secret: string; C: string }) => ({
+    proofIdentity: deriveDurableCustodyArtifactFingerprint({
+      id: entry.id,
+      secret: entry.secret,
+      C: entry.C,
+    }),
+    revision: 0,
+  });
+  return admitDurableOutgoingCashuToken({
+    transfer: prepared,
+    keepProofs: [],
+    sendProofs: [serialized],
+    encodedToken: getEncodedTokenV4({ mint: MINT, unit: "sat", proofs: [proof] }),
+    custodyRevisions: [
+      ...prepared.walletSendOperation.preview.inputs.map(proofRevision),
+      proofRevision(serialized),
+    ],
+    dueAtMs: 2,
+  });
+}
+
+function bearerReclaimStates(
+  outgoing: DurableOutgoingCashuTransfer,
+  operation: Awaited<ReturnType<typeof prepareBrowserDurableWalletReceiveOperation>>,
+): { prepared: DurableOutgoingCashuTransfer; terminal: DurableOutgoingCashuTransfer } {
+  const Y = deriveDurableWalletProofY(outgoing.token!.proofs[0]!);
+  const unspent = [{ Y, state: "UNSPENT" as const }];
+  const classified = classifyDurableOutgoingBearerProofStates({
+    transfer: outgoing,
+    states: unspent,
+    dueAtMs: 3,
+  }).transfer;
+  const prepared = prepareDurableOutgoingCashuReclaim({
+    transfer: classified,
+    reclaimId: operation.operationId,
+    states: unspent,
+    dueAtMs: 4,
+    walletReceiveOperation: operation,
+  });
+  let terminal = outgoing;
+  for (const dueAtMs of [3, 4, 5]) {
+    terminal = classifyDurableOutgoingBearerProofStates({
+      transfer: terminal,
+      states: unspent,
+      dueAtMs,
+    }).transfer;
+  }
+  terminal = classifyDurableOutgoingBearerProofStates({
+    transfer: terminal,
+    states: [{ Y, state: "SPENT" }],
+    dueAtMs: 6,
+  }).transfer;
+  return { prepared, terminal };
+}
+
+function receivePreviewForProof(
+  input: Parameters<typeof hydrateDurableWalletProof>[0],
+): SwapPreview {
+  return {
+    ...receivePreview(21),
+    inputs: [hydrateDurableWalletProof(input)],
+  } as SwapPreview;
 }
 
 function receivePreview(counter = 0, inputSecret = "input-secret"): SwapPreview {

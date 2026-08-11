@@ -793,25 +793,23 @@ test('wallet receive mixed, pending, and unknown states remain nonterminal', asy
   }
 })
 
-test('wallet receive rejects foreign restore groups before result persistence', async () => {
+test('wallet receive retains malformed restore groups as nonterminal', async () => {
   const operation = receiveOperation('foreign-result')
   const result = receiveResult(operation)
   const harness = receiveHarness({ operation, inputState: CheckStateEnum.SPENT })
 
-  await assert.rejects(
-    runDurableWalletReceiveOperation({
-      mode: 'recover',
-      operationId: operation.operationId,
-      store: harness.store,
-      wallet: harness.wallet,
-      restoreExactOutputs: async () => ({ foreign: result }),
-    }),
-    /result group/,
-  )
+  const recovered = await runDurableWalletReceiveOperation({
+    mode: 'recover',
+    operationId: operation.operationId,
+    store: harness.store,
+    wallet: harness.wallet,
+    restoreExactOutputs: async () => ({ foreign: result }),
+  })
+  assert.equal(recovered.state, 'nonterminal')
   assert.equal(harness.calls.persists, 0)
 })
 
-test('wallet receive rejects a substituted restored proof before result persistence', async () => {
+test('wallet receive retains partial or substituted restored proofs as nonterminal', async () => {
   const operation = receiveOperation('substituted-result')
   const [proof] = receiveResult(operation)
   const harness = receiveHarness({
@@ -820,16 +818,48 @@ test('wallet receive rejects a substituted restored proof before result persiste
     restore: [{ ...proof!, secret: 'foreign-secret' }],
   })
 
-  await assert.rejects(
-    runDurableWalletReceiveOperation({
-      mode: 'recover',
-      operationId: operation.operationId,
-      store: harness.store,
-      wallet: harness.wallet,
-      restoreExactOutputs: harness.restoreExactOutputs,
-    }),
-    /exact output plan/,
-  )
+  const recovered = await runDurableWalletReceiveOperation({
+    mode: 'recover',
+    operationId: operation.operationId,
+    store: harness.store,
+    wallet: harness.wallet,
+    restoreExactOutputs: harness.restoreExactOutputs,
+  })
+  assert.equal(recovered.state, 'nonterminal')
+  assert.equal(harness.calls.persists, 0)
+})
+
+test('wallet receive recovery identifies recipient-first spend only from exact empty restore', async () => {
+  const operation = receiveOperation('recipient-spent')
+  const harness = receiveHarness({ operation, inputState: CheckStateEnum.SPENT, restore: [] })
+
+  const recovered = await runDurableWalletReceiveOperation({
+    mode: 'recover',
+    operationId: operation.operationId,
+    store: harness.store,
+    wallet: harness.wallet,
+    restoreExactOutputs: harness.restoreExactOutputs,
+  })
+
+  assert.equal(recovered.state, 'recipient-spent')
+  assert.deepEqual(harness.calls, { loads: 1, persists: 0, checks: 1, swaps: 0, restores: 1 })
+})
+
+test('wallet receive recovery keeps restore transport failure nonterminal', async () => {
+  const operation = receiveOperation('restore-transport')
+  const harness = receiveHarness({ operation, inputState: CheckStateEnum.SPENT })
+
+  const recovered = await runDurableWalletReceiveOperation({
+    mode: 'recover',
+    operationId: operation.operationId,
+    store: harness.store,
+    wallet: harness.wallet,
+    restoreExactOutputs: async () => {
+      throw new Error('restore transport failed')
+    },
+  })
+
+  assert.equal(recovered.state, 'nonterminal')
   assert.equal(harness.calls.persists, 0)
 })
 

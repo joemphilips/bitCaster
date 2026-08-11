@@ -245,6 +245,8 @@ export type DurableWalletSendExecutionResult =
 
 export type DurableWalletReceiveExecutionResult =
   | { readonly state: 'completed' | 'external-applied'; readonly proofs: Proof[] }
+  /** Every exact input was spent and authenticated recovery returned no planned output. */
+  | { readonly state: 'recipient-spent'; readonly proofs: readonly [] }
   | { readonly state: 'nonterminal'; readonly proofs: readonly [] }
 
 export type DurableWalletMintExecutionResult =
@@ -948,12 +950,41 @@ export async function runDurableWalletReceiveOperation(
   )
   switch (classifyExactReceiveInputStates(snapshot.operation, states)) {
     case 'spent':
-      return restorePersistedReceive(input, snapshot.operation)
+      return recoverSpentReceive(input, snapshot.operation)
     case 'unspent':
       return submitPersistedReceive(input, snapshot.operation)
     case 'nonterminal':
       return { state: 'nonterminal', proofs: [] }
   }
+}
+
+/** Recover only exact signed outputs. Empty authenticated recovery proves another holder spent them. */
+async function recoverSpentReceive(
+  input: DurableWalletReceiveExecutionInput,
+  operation: DurableWalletReceiveOperation,
+): Promise<DurableWalletReceiveExecutionResult> {
+  let restored: Readonly<Record<string, readonly Proof[]>>
+  let receive: Proof[]
+  try {
+    restored = await input.restoreExactOutputs({
+      mintUrl: operation.mintUrl,
+      outputs: operation.preview.keepOutputs.map((output) => structuredClone(output)),
+    })
+    if (isExactEmptyReceiveResult(restored)) return { state: 'recipient-spent', proofs: [] }
+    receive = verifyDurableWalletReceiveResult(operation, restored)
+  } catch {
+    // Transport, malformed, and partial restore evidence retain the operation for retry.
+    return { state: 'nonterminal', proofs: [] }
+  }
+  return persistVerifiedReceiveResult(input.store, operation, receive)
+}
+
+function isExactEmptyReceiveResult(
+  result: Readonly<Record<string, readonly Proof[]>>,
+): result is Readonly<Record<'receive', readonly []>> {
+  return (
+    Object.keys(result).length === 1 && Array.isArray(result.receive) && result.receive.length === 0
+  )
 }
 
 function classifyExactReceiveInputStates(
@@ -1039,23 +1070,20 @@ async function submitPersistedReceive(
   return persistExactReceiveResult(input.store, operation, { receive: result.keep })
 }
 
-async function restorePersistedReceive(
-  input: DurableWalletReceiveExecutionInput,
-  operation: DurableWalletReceiveOperation,
-): Promise<DurableWalletReceiveExecutionResult> {
-  const restored = await input.restoreExactOutputs({
-    mintUrl: operation.mintUrl,
-    outputs: operation.preview.keepOutputs.map((output) => structuredClone(output)),
-  })
-  return persistExactReceiveResult(input.store, operation, restored)
-}
-
 async function persistExactReceiveResult(
   store: DurableWalletReceiveOperationStore,
   operation: DurableWalletReceiveOperation,
   result: Readonly<Record<string, readonly Proof[]>>,
 ): Promise<DurableWalletReceiveExecutionResult> {
   const receive = verifyDurableWalletReceiveResult(operation, result)
+  return persistVerifiedReceiveResult(store, operation, receive)
+}
+
+async function persistVerifiedReceiveResult(
+  store: DurableWalletReceiveOperationStore,
+  operation: DurableWalletReceiveOperation,
+  receive: Proof[],
+): Promise<DurableWalletReceiveExecutionResult> {
   const state = await store.persistCompletedResult({ operation, result: { receive } })
   if (state !== 'completed' && state !== 'external-applied') {
     throw new Error('persisted wallet receive result was not completed')

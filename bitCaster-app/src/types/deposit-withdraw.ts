@@ -82,6 +82,9 @@ export interface DepositWithdrawProps {
 
   /** Called when user taps "SEND" (send ecash) */
   onSendEcash?: () => void;
+  /** Resume an explicit persisted bearer-token reclaim. */
+  onReclaimEcash?: () => void;
+  hasPendingBearerReclaim?: boolean;
 
   /** Called when user taps "Paste" (deposit ecash or pay lightning) */
   onPaste?: () => void;

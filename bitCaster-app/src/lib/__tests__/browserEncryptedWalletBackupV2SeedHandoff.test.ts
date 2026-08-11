@@ -295,6 +295,7 @@ it("blocks seed handoff for nonterminal outgoing Cashu authority without deletin
     mintUrl: "https://mint.example",
     mintRecoveryState: "complete",
     localAuthorityState: "nonterminal",
+    bearerMintUrl: null,
     dueAtMs: 1,
     transferId: "outgoing-nonterminal",
     recipientBinding: null,

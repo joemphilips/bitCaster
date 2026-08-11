@@ -33,7 +33,6 @@ import {
   addProofs,
   addProofsIfMissing,
   DURABLE_BOLT11_MINT_QUOTE_OPERATION_METADATA_KEY,
-  getUnitProofs,
   getProofOperation,
   getProofOperations,
   isWalletCounterRecoveryComplete,
@@ -1196,34 +1195,6 @@ export async function sendProofs(
 ): Promise<{ keep: Proof[]; send: Proof[] }> {
   const wallet = await getWalletForUnit(options.mintUrl, options.unit);
   return wallet.send(amount, proofs);
-}
-
-/** Spend regular sat proofs into a Cashu token and persist local change. */
-export async function spendRegularSatsAsToken(
-  amountSats: number,
-  mintUrl: string,
-): Promise<string> {
-  if (!Number.isSafeInteger(amountSats) || amountSats <= 0) {
-    throw new Error("Amount must be a positive integer number of sats.");
-  }
-  const unit = defaultCollateralUnit("sat");
-  const proofs = await getUnitProofs(mintUrl, { unit });
-  const { keep, send } = await sendProofs(amountSats, proofs, {
-    mintUrl,
-    unit,
-  });
-  await removeProofs(proofs.map((proof) => proof.secret));
-  if (keep.length > 0) {
-    await addProofs(
-      keep.map((proof) => ({
-        ...proof,
-        mintUrl,
-        baseAsset: "sat",
-        unit,
-      })),
-    );
-  }
-  return encodeToken(send, mintUrl);
 }
 
 /** Create a melt quote for a Lightning invoice. */

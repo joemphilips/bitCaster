@@ -10,7 +10,21 @@ vi.mock("@/lib/cashu", () => ({
   sendProofs: vi.fn().mockResolvedValue({ keep: [], send: [{ secret: "s1", amount: 100 }] }),
   createMeltQuote: vi.fn(),
   meltProofs: vi.fn(),
-  spendRegularSatsAsToken: vi.fn().mockResolvedValue("cashuAtoken123"),
+}));
+
+const executeBrowserBearerWithdrawal = vi.fn();
+const resumeBrowserBearerWithdrawal = vi.fn();
+const reclaimBrowserBearerWithdrawal = vi.fn();
+const classifyBrowserBearerWithdrawal = vi.fn();
+const browserBearerReclaimFeeDisclosure = vi.fn();
+
+vi.mock("@/lib/browserBearerWithdrawal", () => ({
+  executeBrowserBearerWithdrawal: (...args: unknown[]) => executeBrowserBearerWithdrawal(...args),
+  resumeBrowserBearerWithdrawal: (...args: unknown[]) => resumeBrowserBearerWithdrawal(...args),
+  reclaimBrowserBearerWithdrawal: (...args: unknown[]) => reclaimBrowserBearerWithdrawal(...args),
+  classifyBrowserBearerWithdrawal: (...args: unknown[]) => classifyBrowserBearerWithdrawal(...args),
+  browserBearerReclaimFeeDisclosure: (...args: unknown[]) =>
+    browserBearerReclaimFeeDisclosure(...args),
 }));
 
 const createBrowserDurableBolt11MintQuote = vi.fn();
@@ -84,12 +98,20 @@ vi.mock("@/lib/nip17", () => ({
 }));
 
 beforeEach(() => {
+  classifyBrowserBearerWithdrawal.mockReset();
+  classifyBrowserBearerWithdrawal.mockImplementation(({ transfer }) => Promise.resolve(transfer));
+  browserBearerReclaimFeeDisclosure.mockReset();
   createBrowserDurableBolt11MintQuote.mockReset();
   createBrowserDurableBolt11MintQuote.mockResolvedValue(durableQuote());
   subscribeActiveBrowserDurableBolt11MintQuote.mockReset();
   subscribeActiveBrowserDurableBolt11MintQuote.mockResolvedValue(() => undefined);
   hideBrowserDurableBolt11MintQuote.mockReset();
   hideBrowserDurableBolt11MintQuote.mockResolvedValue(undefined);
+  executeBrowserBearerWithdrawal.mockReset();
+  executeBrowserBearerWithdrawal.mockResolvedValue(bearerTransfer());
+  resumeBrowserBearerWithdrawal.mockReset();
+  resumeBrowserBearerWithdrawal.mockResolvedValue(null);
+  reclaimBrowserBearerWithdrawal.mockReset();
   useActivityLogStore.getState().clear();
   useWalletStore.setState({
     mnemonic:
@@ -512,10 +534,7 @@ describe("useDepositWithdrawState", () => {
   });
 
   describe("sat-only withdraw paths", () => {
-    it("selects sat base proofs when sending ecash", async () => {
-      const cashu = await import("@/lib/cashu");
-      vi.mocked(cashu.spendRegularSatsAsToken).mockClear();
-
+    it("creates a durable bearer token only after Send", async () => {
       const { result } = renderHook(() => useDepositWithdrawState("withdraw", onDismiss));
       act(() => result.current.onSelectMethod("ecash"));
       act(() => result.current.onNumpadPress("5"));
@@ -525,7 +544,59 @@ describe("useDepositWithdrawState", () => {
         await result.current.onSendEcash();
       });
 
-      expect(cashu.spendRegularSatsAsToken).toHaveBeenCalledWith(50, "http://localhost:8085");
+      expect(executeBrowserBearerWithdrawal).toHaveBeenCalledWith({
+        amount: 50,
+        mintUrl: "http://localhost:8085",
+      });
+      expect(result.current.ecashToken).toBe("cashuAtoken123");
+      expect(result.current.currentView).toBe("token-display");
+    });
+
+    it("resumes an explicitly reopened persisted token without a new send", async () => {
+      const transfer = bearerTransfer();
+      resumeBrowserBearerWithdrawal.mockResolvedValueOnce(transfer);
+      classifyBrowserBearerWithdrawal.mockResolvedValueOnce({
+        ...transfer,
+        token: { ...transfer.token, unspentProofs: transfer.token.proofs },
+      });
+      const { result } = renderHook(() => useDepositWithdrawState("withdraw", onDismiss));
+      act(() => result.current.onSelectMethod("ecash"));
+      await act(async () => undefined);
+      expect(result.current.ecashToken).toBe("cashuAtoken123");
+      expect(executeBrowserBearerWithdrawal).not.toHaveBeenCalled();
+    });
+
+    it("does not present a stale resumed token after the mint changes", async () => {
+      let resolveResume: (value: unknown) => void = () => undefined;
+      resumeBrowserBearerWithdrawal.mockReturnValueOnce(
+        new Promise((resolve) => {
+          resolveResume = resolve;
+        }),
+      );
+      const { result } = renderHook(() => useDepositWithdrawState("withdraw", onDismiss));
+      act(() => result.current.onSelectMethod("ecash"));
+      act(() => result.current.onMintChange("https://other-mint.example"));
+      await act(async () => {
+        resolveResume(bearerTransfer());
+      });
+      expect(result.current.ecashToken).toBeNull();
+    });
+
+    it("never redisplays a partial token after explicit reclaim", async () => {
+      const transfer = bearerTransfer();
+      reclaimBrowserBearerWithdrawal.mockResolvedValueOnce({
+        ...transfer,
+        deliveryState: "bearer-partial",
+        token: { ...transfer.token, unspentProofs: [] },
+      });
+      const { result } = renderHook(() => useDepositWithdrawState("withdraw", onDismiss));
+      act(() => result.current.onSelectMethod("ecash"));
+      await act(async () => undefined);
+      await act(async () => {
+        await result.current.onReclaimEcash();
+      });
+      expect(result.current.ecashToken).toBeNull();
+      expect(result.current.currentView).toBe("send-ecash");
     });
 
     it("selects sat base proofs when paying lightning", async () => {
@@ -560,6 +631,19 @@ describe("useDepositWithdrawState", () => {
     });
   });
 });
+
+function bearerTransfer(): {
+  token: { encodedToken: string; unspentProofs: null; proofs: readonly unknown[] };
+} & Record<string, unknown> {
+  return {
+    transferId: "bearer-withdrawal:test",
+    mintUrl: "http://localhost:8085",
+    unit: "sat",
+    requestedAmount: "50",
+    deliveryState: "delivery-pending",
+    token: { encodedToken: "cashuAtoken123", unspentProofs: null, proofs: [] },
+  };
+}
 
 function durableQuote() {
   return {

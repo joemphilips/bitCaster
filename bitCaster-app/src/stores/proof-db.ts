@@ -278,6 +278,8 @@ export interface BrowserOutgoingCashuTransferRow {
   mintRecoveryState: "pending" | "complete";
   /** Derived from transfer state. Nonterminal authority blocks seed handoff. */
   localAuthorityState: "nonterminal" | "terminal";
+  /** Indexed only for one explicit bearer-withdrawal resume lookup. */
+  bearerMintUrl: string | null;
   dueAtMs: number;
   transferId: string;
   /** A durable-recipient product binding enables one bounded product resume lookup. */
@@ -506,6 +508,22 @@ export class BitcasterDB extends Dexie {
     this.version(13).stores({
       participationScoreDeliveryPointers: "&[scopeId+mintUrl+accountSubject], [scopeId+deliveryId]",
     });
+    this.version(14)
+      .stores({
+        outgoingCashuTransfers:
+          "&[scopeId+transferId], [scopeId+mintUrl+mintRecoveryState+dueAtMs+transferId], [scopeId+mintRecoveryState+dueAtMs+mintUrl+transferId], [scopeId+localAuthorityState+transferId], [scopeId+bearerMintUrl+localAuthorityState+transferId], [scopeId+recipientBinding+transferId]",
+      })
+      .upgrade(async (transaction) => {
+        await transaction
+          .table("outgoingCashuTransfers")
+          .toCollection()
+          .modify((row) => {
+            row.bearerMintUrl =
+              row.transfer?.deliveryIntent?.policy === "bearer-spend-classification"
+                ? row.mintUrl
+                : null;
+          });
+      });
     this.encryptedWalletBackupEnrollmentResults = this.table(
       "encryptedWalletBackupWalletEnrollmentResults",
     );
@@ -621,8 +639,8 @@ export async function getBoundedMarketFundingProofs(
     .slice(0, MARKET_FUNDING_INPUT_PROOF_LIMIT_MAX);
 }
 
-/** Read one bounded largest-first sat candidate set for Participation Score delivery. */
-export async function getBoundedParticipationScoreProofs(
+/** Read one bounded largest-first regular sat candidate set across canonical V2 keysets. */
+export async function getBoundedCanonicalSatProofs(
   mintUrl: string,
   options: { keysetIds: readonly string[] },
   database: BitcasterDB = db,
@@ -634,7 +652,7 @@ export async function getBoundedParticipationScoreProofs(
     keysetIds.length > 129 ||
     keysetIds.some((keysetId) => !/^01[0-9a-f]{64}$/.test(keysetId))
   ) {
-    throw new Error("Participation Score keyset authority is invalid");
+    throw new Error("canonical sat keyset authority is invalid");
   }
   const pages = await Promise.all(
     keysetIds.map((keysetId) =>

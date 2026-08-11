@@ -14,6 +14,7 @@ import {
 } from "@bitcaster/client-sdk/durableCustodyMintResult";
 import {
   prepareDurableCustodyExactArtifact,
+  decodeDurableCustodyRecord,
   type DurableCustodyOwnerAuthorization,
   type DurableCustodyRecord,
   type DurableCustodyScope,
@@ -36,6 +37,7 @@ import {
   type DurableWalletReceiveOperation,
 } from "@bitcaster/client-sdk/durableWalletOperation";
 import { bindDurableCustodyProofOperation } from "@bitcaster/client-sdk/durableCustodyProofOperationRecord";
+import { decodeDurableOutgoingCashuTransfer } from "@bitcaster/client-sdk/durableOutgoingCashuTransfer";
 import { withWalletProfileLock } from "./walletProfileLock";
 import { browserWalletScope } from "./browserCtfRangeOrderSource";
 import {
@@ -43,7 +45,12 @@ import {
   createBrowserCustodyProofRow,
   decodeBrowserCustodyProofRow,
 } from "../stores/durable-custody-db";
-import { db, type BitcasterDB, type StoredProof } from "../stores/proof-db";
+import {
+  db,
+  type BitcasterDB,
+  type BrowserOutgoingCashuTransferRow,
+  type StoredProof,
+} from "../stores/proof-db";
 
 const SCOPE_LEASE_MS = 10 * 60 * 1_000;
 const RECOVERY_PAGE_LIMIT = 64;
@@ -88,6 +95,22 @@ export interface BrowserDurableWalletReceiveContext {
 }
 
 export interface BrowserDurableWalletReceiveInput {
+  /** A reclaim supplies its persisted operation identity before any mint I/O. */
+  readonly operationId?: string;
+  /** Reclaim provides a previously prepared exact receive plan. */
+  readonly preparedOperation?: DurableWalletReceiveOperation;
+  /** Reclaim binds this transfer with the exact receive operation before mint I/O. */
+  readonly outgoingTransferOnPrepare?: BrowserOutgoingCashuTransferRow;
+  /** Recovery executes an already atomically bound exact receive operation. */
+  readonly skipBind?: boolean;
+  /** Recovery checks the complete persisted input vector before it calls the mint. */
+  readonly recoveryMode?: "execute" | "recover";
+  /** Reclaim creates the terminal transfer row in the successor-admission transaction. */
+  readonly completeOutgoingTransfer?: (proofs: readonly Proof[]) => BrowserOutgoingCashuTransferRow;
+  /** Recipient-first spend aborts this prepared receive and terminalizes its outgoing authority. */
+  readonly abortOutgoingTransfer?: (input: {
+    readonly custodyOperationId: string;
+  }) => Promise<void>;
   readonly token: string;
   readonly mintUrl: string;
   readonly unit: "sat" | "msat";
@@ -102,6 +125,7 @@ interface BrowserReceiveRuntime {
   readonly wallet: BrowserDurableWalletReceiveWallet;
   readonly context: BrowserDurableWalletReceiveContext;
   readonly adapter: BrowserDurableCustodyAdapter;
+  readonly completeOutgoingTransfer?: (proofs: readonly Proof[]) => BrowserOutgoingCashuTransferRow;
 }
 
 /** Persist and execute one ordinary bearer-token receive through custody authority. */
@@ -118,19 +142,42 @@ export async function receiveBrowserDurableWalletToken(
     async () => {
       const owner = await claimOwner(adapter, scope, now, randomId);
       return withReceiveScope(adapter, scope, owner, now, async () => {
-        const operation = await prepareReceiveOperation(input, randomId);
+        const operation =
+          input.preparedOperation ??
+          (await prepareBrowserDurableWalletReceiveOperation(input, randomId));
+        if (input.operationId !== undefined && operation.operationId !== input.operationId) {
+          throw new Error("browser wallet receive operation identity conflicts");
+        }
         const binding = createReceiveBinding(scope, operation, wallet);
-        await bindReceiveOperation(adapter, scope, ownerAt(owner, now()), binding);
+        if (!input.skipBind) {
+          await bindReceiveOperation(
+            adapter,
+            scope,
+            ownerAt(owner, now()),
+            binding,
+            input.outgoingTransferOnPrepare,
+          );
+        }
         context.requireCapturedProfile();
-        const result = await runReceive("execute", operation.operationId, {
+        const result = await runReceive(input.recoveryMode ?? "execute", operation.operationId, {
           scope,
           owner,
           custodyOperationId: binding.record.operation.operationId,
           wallet,
           context,
           adapter,
+          completeOutgoingTransfer: input.completeOutgoingTransfer,
         });
         context.requireCapturedProfile();
+        if (result.state === "recipient-spent") {
+          if (input.abortOutgoingTransfer === undefined) {
+            throw new Error("wallet receive inputs were spent elsewhere");
+          }
+          await input.abortOutgoingTransfer({
+            custodyOperationId: binding.record.operation.operationId,
+          });
+          return [];
+        }
         if (result.state === "nonterminal")
           throw new Error("wallet receive did not reach a terminal state");
         return result.proofs;
@@ -140,7 +187,8 @@ export async function receiveBrowserDurableWalletToken(
   );
 }
 
-async function prepareReceiveOperation(
+/** Prepare one exact deterministic receive plan. The caller must persist it before mint I/O. */
+export async function prepareBrowserDurableWalletReceiveOperation(
   input: BrowserDurableWalletReceiveInput,
   randomId: () => string,
 ): Promise<DurableWalletReceiveOperation> {
@@ -156,7 +204,7 @@ async function prepareReceiveOperation(
   }
   input.context.requireCapturedProfile();
   return serializeDurableWalletReceiveOperation({
-    operationId: `wallet-receive:${randomId()}`,
+    operationId: input.operationId ?? `wallet-receive:${randomId()}`,
     mintUrl: input.mintUrl,
     unit: input.unit,
     preview,
@@ -166,6 +214,89 @@ async function prepareReceiveOperation(
       counterCount: range.count,
     },
   });
+}
+
+/** Bind a caller-owned prepared receive before it may call the mint. */
+export async function bindPreparedBrowserDurableWalletReceiveOperation(input: {
+  readonly operation: DurableWalletReceiveOperation;
+  readonly wallet: BrowserDurableWalletReceiveWallet;
+  readonly outgoingTransfer: BrowserOutgoingCashuTransferRow;
+  readonly context: BrowserDurableWalletReceiveContext;
+}): Promise<void> {
+  const scope = browserWalletScope(input.context.seed);
+  const adapter = new BrowserDurableCustodyAdapter(input.context.database ?? db);
+  const now = input.context.now ?? Date.now;
+  const randomId = input.context.randomId ?? (() => crypto.randomUUID());
+  await withWalletProfileLock(
+    scope.scopeId,
+    async () => {
+      const owner = await claimOwner(adapter, scope, now, randomId);
+      await withReceiveScope(adapter, scope, owner, now, async () => {
+        const binding = createReceiveBinding(scope, input.operation, input.wallet);
+        await bindReceiveOperation(
+          adapter,
+          scope,
+          ownerAt(owner, now()),
+          binding,
+          input.outgoingTransfer,
+        );
+      });
+    },
+    input.context.lockManager,
+  );
+}
+
+/** Abort one un-applied reclaim receive in the same IndexedDB transaction as bearer-spent. */
+export async function abortPreparedBrowserDurableWalletReceive(input: {
+  readonly custodyOperationId: string;
+  readonly transferId: string;
+  readonly terminalOutgoingTransfer: BrowserOutgoingCashuTransferRow;
+  readonly context: BrowserDurableWalletReceiveContext;
+}): Promise<void> {
+  const scope = browserWalletScope(input.context.seed);
+  const database = input.context.database ?? db;
+  input.context.requireCapturedProfile();
+  await database.transaction(
+    "rw",
+    database.custodyOperations,
+    database.custodyArtifacts,
+    database.custodyActiveWork,
+    database.outgoingCashuTransfers,
+    async () => {
+      const operationRow = await database.custodyOperations.get([
+        scope.scopeId,
+        input.custodyOperationId,
+      ]);
+      const transferRow = await database.outgoingCashuTransfers.get([
+        scope.scopeId,
+        input.transferId,
+      ]);
+      if (operationRow === undefined) throw new Error("browser reclaim abort operation is missing");
+      if (transferRow === undefined) throw new Error("browser reclaim abort transfer is missing");
+      const operation = decodeDurableCustodyRecord(operationRow.record);
+      const current = decodeDurableOutgoingCashuTransfer(transferRow.transfer);
+      const terminal = decodeDurableOutgoingCashuTransfer(input.terminalOutgoingTransfer.transfer);
+      if (
+        operation.operation.operationId !== input.custodyOperationId ||
+        operation.operation.result.state !== "none" ||
+        current.transferId !== input.transferId ||
+        current.deliveryState !== "reclaim-prepared" ||
+        terminal.transferId !== current.transferId ||
+        terminal.deliveryState !== "bearer-spent" ||
+        terminal.revision !== current.revision + 1
+      ) {
+        throw new Error("browser reclaim abort authority conflicts");
+      }
+      await database.custodyArtifacts
+        .where("[scopeId+operationId]")
+        .equals([scope.scopeId, input.custodyOperationId])
+        .delete();
+      await database.custodyActiveWork.delete([scope.scopeId, input.custodyOperationId]);
+      await database.custodyOperations.delete([scope.scopeId, input.custodyOperationId]);
+      await database.outgoingCashuTransfers.put(input.terminalOutgoingTransfer);
+    },
+  );
+  input.context.requireCapturedProfile();
 }
 
 /** Replay persisted ordinary receives. This never prepares a second output plan. */
@@ -336,18 +467,28 @@ async function bindReceiveOperation(
   scope: DurableCustodyScope,
   owner: DurableCustodyOwnerAuthorization,
   binding: ReturnType<typeof createReceiveBinding>,
+  outgoingTransfer?: BrowserOutgoingCashuTransferRow,
 ): Promise<void> {
-  await adapter.transact(
-    {
-      scope,
-      owner,
-      operationRows: [
-        { operationId: binding.record.operation.operationId, expectedRevision: null },
-      ],
-    },
-    (transaction) =>
-      bindDurableCustodyProofOperation(transaction, binding.record, binding.artifacts),
-  );
+  const apply = (
+    transaction: Parameters<BrowserDurableCustodyAdapter["transact"]>[1] extends (
+      transaction: infer T,
+    ) => unknown
+      ? T
+      : never,
+  ) => bindDurableCustodyProofOperation(transaction, binding.record, binding.artifacts);
+  const selection = {
+    scope,
+    owner,
+    operationRows: [{ operationId: binding.record.operation.operationId, expectedRevision: null }],
+  };
+  if (outgoingTransfer !== undefined) {
+    await adapter.transactAtomic(selection, apply, {
+      outgoingTransfer,
+      outgoingAdmission: null,
+    });
+    return;
+  }
+  await adapter.transact(selection, apply);
 }
 
 async function runReceive(
@@ -417,6 +558,15 @@ async function persistReceiveResult(
     exactAuthority: exactAuthority(snapshot.record, snapshot.artifacts),
     result,
   });
+  if (runtime.completeOutgoingTransfer !== undefined) {
+    return persistReceiveResultAndCompleteOutgoing(
+      runtime,
+      snapshot.record,
+      prepared,
+      operation,
+      result,
+    );
+  }
   if (snapshot.record.operation.result.state === "none") {
     await stageReceiveResult(runtime, snapshot.record, prepared);
   }
@@ -425,6 +575,55 @@ async function persistReceiveResult(
   if (staged.operation.result.state !== "applied") {
     await applyStagedReceive({ ...runtime, record: staged, operation });
   }
+  return "completed" as const;
+}
+
+async function persistReceiveResultAndCompleteOutgoing(
+  runtime: BrowserReceiveRuntime,
+  record: DurableCustodyRecord,
+  prepared: ReturnType<typeof prepareDurableCustodyVerifiedMintResult>,
+  operation: DurableWalletReceiveOperation,
+  result: Readonly<Record<string, readonly Proof[]>>,
+) {
+  const successors = createReceiveSuccessors({ ...runtime, operation }, prepared.proofs);
+  const authorization = ownerAt(runtime.owner, (runtime.context.now ?? Date.now)());
+  const outgoingTransfer = runtime.completeOutgoingTransfer!(result.receive ?? []);
+  await runtime.adapter.transactAtomic(
+    selection(runtime.scope, authorization, record),
+    (transaction) => {
+      stageDurableCustodyPreparedMintResult({ transaction, record, prepared, authorization });
+      const staged = transaction.getOperation(record.operation.operationId);
+      if (!staged || staged.operation.result.exactResult === null) {
+        throw new Error("browser wallet receive result staging failed");
+      }
+      transaction.applyVerifiedResult({
+        operationId: staged.operation.operationId,
+        expectedRevision: staged.revision,
+        authorization,
+        outputPlanFingerprint: staged.operation.outputPlan.outputPlanFingerprint,
+        resultHandle: staged.operation.result.resultHandle!,
+        resultFingerprint: staged.operation.result.resultFingerprint!,
+        successorAdmission: {
+          scopeId: staged.scope.scopeId,
+          operationId: staged.operation.operationId,
+          admissionId: `wallet-receive:${staged.operation.result.resultFingerprint!}`,
+          proofRows: successors.map(({ proof, expectedRevision }) => ({
+            proofId: proof.proofId,
+            expectedRevision,
+            admittedRevision: proof.revision,
+          })),
+        },
+      });
+    },
+    {
+      successorProofs: { [record.operation.operationId]: successors },
+      outgoingTransfer,
+      outgoingAdmission: null,
+      ...(runtime.context.injectFault === undefined
+        ? {}
+        : { injectFault: runtime.context.injectFault }),
+    },
+  );
   return "completed" as const;
 }
 
@@ -674,6 +873,7 @@ async function restoreExactReceiveOutputs(
   const response = await wallet.mint.restore({
     outputs: outputs.map(({ blindedMessage }) => blindedMessage),
   });
+  if (response.outputs.length === 0 && response.signatures.length === 0) return { receive: [] };
   if (response.outputs.length !== outputs.length || response.signatures.length !== outputs.length) {
     throw new Error("browser wallet receive restore response is incomplete");
   }

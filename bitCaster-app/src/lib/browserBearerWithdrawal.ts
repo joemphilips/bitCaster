@@ -1,0 +1,434 @@
+import {
+  getEncodedTokenV4,
+  type OperationCounters,
+  type OutputData,
+  type Proof,
+  type ProofState,
+  type SwapPreview,
+} from "@cashu/cashu-ts";
+import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
+import { locateSeedDerivedProofLineage } from "@bitcaster/client-sdk/durableSeedDerivedProofLineage";
+import {
+  deriveDurableWalletOperationAuthority,
+  hydrateDurableWalletProof,
+  serializeDurableWalletProof,
+  serializeDurableWalletSendOperation,
+} from "@bitcaster/client-sdk/durableWalletOperation";
+import type { DurableWalletProofDerivationLocator } from "@bitcaster/client-sdk/durableWalletProofDerivationLocator";
+import {
+  completeDurableOutgoingCashuReclaim,
+  markDurableOutgoingCashuReclaimRecipientSpent,
+  prepareDurableOutgoingCashuReclaim,
+  type DurableOutgoingCashuTransfer,
+} from "@bitcaster/client-sdk/durableOutgoingCashuTransfer";
+import { deriveDurableCustodyArtifactFingerprint } from "@bitcaster/client-sdk/durableCustody";
+import {
+  classifyBrowserDurableOutgoingBearerTransfer,
+  browserOutgoingCashuTransferRow,
+  executeBrowserDurableOutgoingCashuTransfer,
+  findBrowserDurableOutgoingBearerTransfer,
+  readBrowserDurableOutgoingCashuTransfer,
+} from "@/lib/browserDurableOutgoingCashuTransfer";
+import {
+  captureBrowserMintPersistenceContext,
+  getWalletForUnit,
+  restoreExactMintOutputs,
+} from "@/lib/cashu";
+import {
+  abortPreparedBrowserDurableWalletReceive,
+  bindPreparedBrowserDurableWalletReceiveOperation,
+  prepareBrowserDurableWalletReceiveOperation,
+  receiveBrowserDurableWalletToken,
+} from "@/lib/browserDurableWalletReceive";
+import { getBoundedCanonicalSatProofs, type StoredProof } from "@/stores/proof-db";
+import { useWalletStore } from "@/stores/wallet";
+import { normalizeUrl } from "@/lib/url";
+
+export const BEARER_TOKEN_BYTES_LIMIT = 61_440;
+export const BEARER_TOKEN_PROOF_LIMIT = 512;
+
+/** Create and durably admit one bearer token only after the explicit Send action. */
+export async function executeBrowserBearerWithdrawal(input: {
+  readonly amount: number;
+  readonly mintUrl: string;
+}): Promise<DurableOutgoingCashuTransfer> {
+  if (!Number.isSafeInteger(input.amount) || input.amount < 1) {
+    throw new Error("Withdrawal amount is invalid");
+  }
+  const context = captureBrowserMintPersistenceContext();
+  const wallet = await getWalletForUnit(input.mintUrl, "sat");
+  context.requireCapturedProfile();
+  const keysetId = wallet.getKeyset().id;
+  if (!/^01[0-9a-f]{64}$/.test(keysetId)) {
+    throw new Error("Withdrawal requires a canonical V2 sat keyset");
+  }
+  const candidates = await getBoundedCanonicalSatProofs(input.mintUrl, {
+    keysetIds: withdrawalV2KeysetIds(input.mintUrl, keysetId),
+  });
+  context.requireCapturedProfile();
+  if (candidates.reduce((sum, proof) => sum + amountToNumber(proof.amount), 0) < input.amount) {
+    throw new Error("Withdrawal balance is insufficient in the active V2 sat keyset");
+  }
+  const transferId = `bearer-withdrawal:${crypto.randomUUID()}`;
+  const keepLocators: Array<DurableWalletProofDerivationLocator | null> = [];
+  return executeBrowserDurableOutgoingCashuTransfer({
+    reuseTransferId: true,
+    transfer: {
+      transferId,
+      mintUrl: input.mintUrl,
+      unit: "sat",
+      requestedAmount: String(input.amount),
+      deliveryIntent: {
+        policy: "bearer-spend-classification",
+        tokenBytesLimit: BEARER_TOKEN_BYTES_LIMIT,
+        tokenProofLimit: BEARER_TOKEN_PROOF_LIMIT,
+      },
+    },
+    prepareWalletSendOperation: () =>
+      prepareBearerWalletSend({
+        transferId,
+        wallet,
+        proofs: candidates,
+        amount: input.amount,
+        mintUrl: input.mintUrl,
+        seed: context.seed,
+        keepLocators,
+      }),
+    keepProofDerivationLocators: keepLocators,
+    wallet,
+    restoreExactOutputs: (restore) => restoreBearerExactOutputs(wallet, restore),
+    context,
+  });
+}
+
+function withdrawalV2KeysetIds(mintUrl: string, activeKeysetId: string): string[] {
+  const mint = useWalletStore
+    .getState()
+    .mints.find((candidate) => normalizeUrl(candidate.url) === normalizeUrl(mintUrl));
+  const ids = new Set(
+    mint?.keysets
+      ?.filter((keyset) => keyset.unit === "sat" && /^01[0-9a-f]{64}$/.test(keyset.id))
+      .map((keyset) => keyset.id) ?? [],
+  );
+  ids.add(activeKeysetId);
+  return [...ids];
+}
+
+/** Read one persisted bearer token only after the user opens the Ecash withdrawal surface. */
+export async function resumeBrowserBearerWithdrawal(
+  mintUrl: string,
+): Promise<DurableOutgoingCashuTransfer | null> {
+  return findBrowserDurableOutgoingBearerTransfer({
+    mintUrl,
+    context: captureBrowserMintPersistenceContext(),
+  });
+}
+
+/** Classify the complete exact token vector before a user may reclaim it. */
+export async function classifyBrowserBearerWithdrawal(input: {
+  readonly transfer: DurableOutgoingCashuTransfer;
+}): Promise<DurableOutgoingCashuTransfer> {
+  if (input.transfer.token === null) throw new Error("Bearer token authority is unavailable");
+  const context = captureBrowserMintPersistenceContext();
+  const wallet = await getWalletForUnit(input.transfer.mintUrl, "sat");
+  context.requireCapturedProfile();
+  const states = await wallet.checkProofsStates(
+    input.transfer.token.proofs.map(({ id, secret }) => ({ id, secret })),
+  );
+  context.requireCapturedProfile();
+  return classifyBrowserDurableOutgoingBearerTransfer({
+    transfer: input.transfer,
+    states: normalizeProofStates(states),
+    context,
+  });
+}
+
+/** Reclaim only the exact subset that a fresh complete NUT-07 classification permits. */
+export async function reclaimBrowserBearerWithdrawal(input: {
+  readonly transfer: DurableOutgoingCashuTransfer;
+}): Promise<DurableOutgoingCashuTransfer> {
+  if (input.transfer.token === null) throw new Error("Bearer token authority is unavailable");
+  const context = captureBrowserMintPersistenceContext();
+  const wallet = await getWalletForUnit(input.transfer.mintUrl, "sat");
+  if (input.transfer.deliveryState === "reclaim-prepared") {
+    return recoverPreparedBrowserBearerReclaim(input.transfer, wallet, context);
+  }
+  context.requireCapturedProfile();
+  const states = normalizeProofStates(
+    await wallet.checkProofsStates(
+      input.transfer.token.proofs.map(({ id, secret }) => ({ id, secret })),
+    ),
+  );
+  context.requireCapturedProfile();
+  const classified = await classifyBrowserDurableOutgoingBearerTransfer({
+    transfer: input.transfer,
+    states,
+    context,
+  });
+  if (classified.deliveryState === "bearer-spent") return classified;
+  if (
+    classified.deliveryState !== "delivery-pending" &&
+    classified.deliveryState !== "bearer-partial"
+  ) {
+    return classified;
+  }
+  if (classified.token?.unspentProofs === null || classified.token === null) return classified;
+  const reclaimId = `bearer-reclaim:${crypto.randomUUID()}`;
+  const token = getEncodedTokenV4({
+    mint: classified.mintUrl,
+    unit: classified.unit,
+    proofs: classified.token.unspentProofs.map(hydrateDurableWalletProof),
+  });
+  const operation = await prepareBrowserDurableWalletReceiveOperation(
+    {
+      operationId: reclaimId,
+      token,
+      mintUrl: classified.mintUrl,
+      unit: "sat",
+      wallet,
+      context,
+    },
+    () => crypto.randomUUID(),
+  );
+  const prepared = prepareDurableOutgoingCashuReclaim({
+    transfer: classified,
+    reclaimId,
+    states,
+    dueAtMs: Date.now(),
+    walletReceiveOperation: operation,
+  });
+  await bindPreparedBrowserDurableWalletReceiveOperation({
+    operation,
+    wallet,
+    outgoingTransfer: browserOutgoingCashuTransferRow(context.scopeId, prepared, "consumed"),
+    context,
+  });
+  return prepared;
+}
+
+/** Execute only the already persisted exact reclaim receive. */
+async function executePreparedBrowserBearerReclaim(
+  transfer: DurableOutgoingCashuTransfer,
+  wallet: Awaited<ReturnType<typeof getWalletForUnit>>,
+  context: ReturnType<typeof captureBrowserMintPersistenceContext>,
+): Promise<DurableOutgoingCashuTransfer> {
+  const reclaim = transfer.reclaim;
+  if (reclaim === null) throw new Error("Bearer reclaim authority is unavailable");
+  const token = getEncodedTokenV4({
+    mint: transfer.mintUrl,
+    unit: transfer.unit,
+    proofs: reclaim.proofs.map(hydrateDurableWalletProof),
+  });
+  await receiveBrowserDurableWalletToken({
+    operationId: reclaim.walletReceiveOperation.operationId,
+    preparedOperation: reclaim.walletReceiveOperation,
+    skipBind: true,
+    recoveryMode: "recover",
+    token,
+    mintUrl: transfer.mintUrl,
+    unit: "sat",
+    wallet,
+    context,
+    completeOutgoingTransfer: (received) =>
+      completedBearerReclaimRow(
+        transfer,
+        reclaim.walletReceiveOperation,
+        received,
+        reclaim.reclaimId,
+        context.scopeId,
+      ),
+    abortOutgoingTransfer: ({ custodyOperationId }) =>
+      abortPreparedBrowserDurableWalletReceive({
+        custodyOperationId,
+        transferId: transfer.transferId,
+        terminalOutgoingTransfer: browserOutgoingCashuTransferRow(
+          context.scopeId,
+          markDurableOutgoingCashuReclaimRecipientSpent(transfer),
+          "consumed",
+        ),
+        context,
+      }),
+  });
+  const completed = await readBrowserDurableOutgoingCashuTransfer({
+    transferId: transfer.transferId,
+    context,
+  });
+  if (completed === null) throw new Error("Bearer reclaim transfer is missing after recovery");
+  return completed;
+}
+
+function reclaimPresentation(
+  operation: Parameters<typeof prepareDurableOutgoingCashuReclaim>[0]["walletReceiveOperation"],
+) {
+  return {
+    returnedAmount: operation.preview.amount,
+    receiveFee: operation.preview.fees,
+  };
+}
+
+export function browserBearerReclaimFeeDisclosure(transfer: DurableOutgoingCashuTransfer): {
+  readonly returnedAmount: string;
+  readonly receiveFee: string;
+} | null {
+  if (transfer.deliveryState !== "reclaim-prepared" || transfer.reclaim === null) return null;
+  return reclaimPresentation(transfer.reclaim.walletReceiveOperation);
+}
+
+async function recoverPreparedBrowserBearerReclaim(
+  transfer: DurableOutgoingCashuTransfer,
+  wallet: Awaited<ReturnType<typeof getWalletForUnit>>,
+  context: ReturnType<typeof captureBrowserMintPersistenceContext>,
+): Promise<DurableOutgoingCashuTransfer> {
+  return executePreparedBrowserBearerReclaim(transfer, wallet, context);
+}
+
+function normalizeProofStates(states: readonly ProofState[]) {
+  return states.map(({ Y, state }) => ({
+    Y,
+    state: String(state) as "UNSPENT" | "PENDING" | "SPENT",
+  }));
+}
+
+function proofIdentity(proof: {
+  readonly id: string;
+  readonly secret: string;
+  readonly C: string;
+}): string {
+  return deriveDurableCustodyArtifactFingerprint({
+    id: proof.id,
+    secret: proof.secret,
+    C: proof.C,
+  });
+}
+
+function reclaimCompletionEvidence(
+  transfer: DurableOutgoingCashuTransfer,
+  operation: Parameters<typeof deriveDurableWalletOperationAuthority>[0],
+  successors: readonly Proof[],
+  reclaimId: string,
+) {
+  if (transfer.reclaim === null) throw new Error("Bearer reclaim authority is unavailable");
+  return {
+    transferId: transfer.transferId,
+    reclaimId,
+    walletReceiveOperationAuthority: deriveDurableWalletOperationAuthority(operation),
+    successorProofFingerprint: deriveDurableCustodyArtifactFingerprint(
+      successors.map(serializeDurableWalletProof),
+    ),
+    custodyRevisions: [
+      ...transfer.reclaim.proofs.map((proof) => ({
+        proofIdentity: proofIdentity(proof),
+        revision: 0,
+      })),
+      ...successors.map((proof) => ({ proofIdentity: proofIdentity(proof), revision: 0 })),
+    ],
+  };
+}
+
+function completedBearerReclaimRow(
+  transfer: DurableOutgoingCashuTransfer,
+  operation: Parameters<typeof deriveDurableWalletOperationAuthority>[0],
+  successors: readonly Proof[],
+  reclaimId: string,
+  scopeId: string,
+) {
+  const completed = completeDurableOutgoingCashuReclaim({
+    transfer,
+    successorProofs: successors,
+    evidence: reclaimCompletionEvidence(transfer, operation, successors, reclaimId),
+  });
+  return browserOutgoingCashuTransferRow(scopeId, completed, "consumed");
+}
+
+async function restoreBearerExactOutputs(
+  wallet: Awaited<ReturnType<typeof getWalletForUnit>>,
+  input: Parameters<
+    Parameters<typeof executeBrowserDurableOutgoingCashuTransfer>[0]["restoreExactOutputs"]
+  >[0],
+) {
+  const outputs = [...input.outputs.keep, ...input.outputs.send];
+  const restored = await restoreExactMintOutputs(wallet, {
+    mintUrl: input.mintUrl,
+    unit: input.unit,
+    outputs,
+  });
+  return {
+    keep: restored.slice(0, input.outputs.keep.length),
+    send: restored.slice(input.outputs.keep.length),
+  };
+}
+
+async function prepareBearerWalletSend(input: {
+  readonly transferId: string;
+  readonly wallet: {
+    prepareSwapToSend(
+      amount: number,
+      proofs: Proof[],
+      config: {
+        includeFees: false;
+        keysetId: string;
+        onCountersReserved: (counters: OperationCounters) => void;
+      },
+      outputConfig: {
+        send: { type: "deterministic"; counter: 0 };
+        keep: { type: "deterministic"; counter: 0 };
+      },
+    ): Promise<SwapPreview>;
+    getKeyset(keysetId?: string): { id: string };
+  };
+  readonly proofs: readonly StoredProof[];
+  readonly amount: number;
+  readonly mintUrl: string;
+  readonly seed: Uint8Array;
+  readonly keepLocators: Array<DurableWalletProofDerivationLocator | null>;
+}) {
+  const keysetId = input.wallet.getKeyset().id;
+  const counters: { value: OperationCounters | null } = { value: null };
+  const preview = await input.wallet.prepareSwapToSend(
+    input.amount,
+    input.proofs as unknown as Proof[],
+    {
+      includeFees: false,
+      keysetId,
+      onCountersReserved: (reserved) => {
+        if (counters.value !== null)
+          throw new Error("Withdrawal output counters were reserved twice");
+        counters.value = reserved;
+      },
+    },
+    { send: { type: "deterministic", counter: 0 }, keep: { type: "deterministic", counter: 0 } },
+  );
+  if (counters.value === null || counters.value.keysetId !== preview.keysetId) {
+    throw new Error("Withdrawal output counter reservation is missing");
+  }
+  const outputs = [...(preview.sendOutputs ?? []), ...(preview.keepOutputs ?? [])];
+  if (outputs.length !== counters.value.count)
+    throw new Error("Withdrawal output plan conflicts with counters");
+  const lineage = locateSeedDerivedProofLineage({
+    seed: input.seed,
+    keysetId: counters.value.keysetId,
+    counterStart: counters.value.start,
+    counterCount: counters.value.count,
+    proofs: outputs.map(outputLineage),
+  });
+  const locators = new Map(lineage.map(({ secret, ...locator }) => [secret, locator]));
+  input.keepLocators.splice(
+    0,
+    input.keepLocators.length,
+    ...(preview.keepOutputs ?? []).map((output) => {
+      const locator = locators.get(outputLineage(output).secret);
+      if (locator === undefined) throw new Error("Withdrawal keep output locator is missing");
+      return locator;
+    }),
+  );
+  return serializeDurableWalletSendOperation({
+    operationId: `bearer-withdrawal:${input.transferId}`,
+    mintUrl: input.mintUrl,
+    unit: "sat",
+    preview,
+  });
+}
+
+function outputLineage(output: OutputData): { readonly id: string; readonly secret: string } {
+  return { id: output.blindedMessage.id, secret: new TextDecoder().decode(output.secret) };
+}

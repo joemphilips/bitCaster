@@ -135,6 +135,7 @@ export function DepositWithdrawOverlay({ mode, onClose }: DepositWithdrawOverlay
           token={state.ecashToken}
           amountSats={state.amountSats}
           onClose={state.onClose}
+          onReclaim={state.onReclaimEcash}
         />
       </>
     );
@@ -178,6 +179,11 @@ export function DepositWithdrawOverlay({ mode, onClose }: DepositWithdrawOverlay
         onToggleCurrency={state.onToggleCurrency}
         onCreateInvoice={state.onCreateInvoice}
         onSendEcash={state.onSendEcash}
+        onReclaimEcash={state.onReclaimEcash}
+        hasPendingBearerReclaim={
+          state.bearerWithdrawal?.deliveryState === "bearer-partial" ||
+          state.bearerWithdrawal?.deliveryState === "reclaim-prepared"
+        }
         onPaste={state.onPaste}
         onScan={state.onScan}
         onRequest={state.onRequest}
