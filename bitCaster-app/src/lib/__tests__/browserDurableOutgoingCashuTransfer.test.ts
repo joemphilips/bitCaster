@@ -41,7 +41,7 @@ import {
 import {
   BitcasterDB,
   getBoundedCanonicalSatProofs,
-  getBoundedMarketFundingProofs,
+  getBoundedCanonicalRegularProofs,
   MARKET_FUNDING_INPUT_PROOF_LIMIT_MAX,
   type BrowserOutgoingCashuTransferRow,
 } from "../../stores/proof-db";
@@ -130,7 +130,7 @@ describe("browser durable outgoing Cashu store", () => {
     );
     await database.custodyProofs.bulkPut(rows);
 
-    const selected = await getBoundedMarketFundingProofs(
+    const selected = await getBoundedCanonicalRegularProofs(
       MINT,
       { scopeId: SELECTOR_SCOPE_ID, unit: "msat" },
       database,
@@ -156,7 +156,7 @@ describe("browser durable outgoing Cashu store", () => {
       }),
     ]);
 
-    const selected = await getBoundedMarketFundingProofs(
+    const selected = await getBoundedCanonicalRegularProofs(
       MINT,
       { scopeId: SELECTOR_SCOPE_ID, unit: "msat" },
       database,
@@ -196,7 +196,7 @@ describe("browser durable outgoing Cashu store", () => {
     const legacyRead = vi.spyOn(database.proofs, "toArray");
     const custodyQuery = vi.spyOn(database.custodyProofs, "where");
 
-    const selected = await getBoundedMarketFundingProofs(
+    const selected = await getBoundedCanonicalRegularProofs(
       MINT,
       { scopeId: SELECTOR_SCOPE_ID, unit: "msat" },
       database,
@@ -642,6 +642,58 @@ describe("browser durable outgoing Cashu store", () => {
         ?.transfer.deliveryState,
     ).toBe("delivery-pending");
     expect(await fixture.database.outgoingCashuTransferAdmissions.count()).toBe(0);
+  });
+
+  it("uses one fresh post-mint time for successor admission and backup revision", async () => {
+    const fixture = await executionFixture(undefined, true);
+    let nowMs = 1_000;
+    fixture.wallet.completeSwap.mockImplementation(async () => {
+      nowMs = 2_000;
+      return { keep: fixture.keepProofs, send: [fixture.sendProof] };
+    });
+
+    await expect(
+      executeBrowserDurableOutgoingCashuTransfer({
+        ...fixture.input,
+        context: { ...fixture.context, now: () => nowMs },
+      }),
+    ).resolves.toMatchObject({ deliveryState: "delivery-pending" });
+
+    const successor = (await fixture.database.custodyProofs.toArray()).find(
+      ({ selectability }) => selectability === "selectable",
+    );
+    expect(successor).toMatchObject({ receivedAtMs: 2_000 });
+    expect(await fixture.database.encryptedWalletBackupV2DesiredAssets.toArray()).toEqual([
+      expect.objectContaining({
+        custodyRevision: "1",
+        activeProofCount: 1,
+        desiredAction: "replace",
+      }),
+    ]);
+    expect(
+      (await fixture.database.custodyOperations.toArray())[0]?.record.operation.result.state,
+    ).toBe("applied");
+  });
+
+  it("fails closed when post-mint commit time reaches the claimed scope lease expiry", async () => {
+    const fixture = await executionFixture(undefined, true);
+    let nowMs = 1_000;
+    fixture.wallet.completeSwap.mockImplementation(async () => {
+      nowMs = 601_000;
+      return { keep: fixture.keepProofs, send: [fixture.sendProof] };
+    });
+
+    await expect(
+      executeBrowserDurableOutgoingCashuTransfer({
+        ...fixture.input,
+        context: { ...fixture.context, now: () => nowMs },
+      }),
+    ).rejects.toThrow("browser outgoing scope lease expired before post-mint commit");
+
+    expect(
+      (await fixture.database.custodyOperations.toArray())[0]?.record.operation.result.state,
+    ).toBe("none");
+    expect(await fixture.database.encryptedWalletBackupV2DesiredAssets.count()).toBe(0);
   });
 
   it("runs the required funded preflight before the final outgoing lock", async () => {
@@ -1193,7 +1245,8 @@ async function executionFixture(
   const sendProof = proofForOutput(preview.sendOutputs![0]!);
   const keepOutputs = preview.keepOutputs ?? [];
   if (keepOutputs.length !== keepCount) throw new Error("keep fixture outputs are invalid");
-  const wallet = walletFor(sendProof, keepOutputs.map(proofForOutput));
+  const keepProofs = keepOutputs.map(proofForOutput);
+  const wallet = walletFor(sendProof, keepProofs);
   const prepareWalletSendOperation = vi.fn(async () => operation);
   const preflightFundedAsset = vi.fn(async () => undefined);
   const restoreExactOutputs = vi.fn();
@@ -1215,6 +1268,7 @@ async function executionFixture(
     operation,
     inputProofId,
     sendProof,
+    keepProofs,
     wallet,
     prepareWalletSendOperation,
     preflightFundedAsset,

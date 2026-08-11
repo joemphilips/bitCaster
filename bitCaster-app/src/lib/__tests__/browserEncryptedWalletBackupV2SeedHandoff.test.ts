@@ -32,6 +32,7 @@ import { browserWalletDatabaseName } from "../browserWalletProfile";
 import {
   handoffBrowserEncryptedWalletBackupV2Seed,
   listBrowserEncryptedWalletBackupV2CacheRemovalEligibleAssets,
+  listBrowserEncryptedWalletBackupV2EvictedAssetMonitoringFacts,
 } from "../browserEncryptedWalletBackupV2SeedHandoff";
 
 const databases: BitcasterDB[] = [];
@@ -41,6 +42,10 @@ const SIGNING_KEY_ID = "55".repeat(16);
 const SIGNING_PRIVATE_KEY = fromHex("03".repeat(32));
 const SIGNING_PUBLIC_KEY = toHex(schnorr.getPublicKey(SIGNING_PRIVATE_KEY));
 const KEYSET = `01${"22".repeat(32)}`;
+const CONDITIONAL_KEYSET = `01${"44".repeat(32)}`;
+const CONDITIONAL_ID = "aa".repeat(32);
+const OUTCOME_COLLECTION_ID = "bb".repeat(32);
+const OUTCOME_COLLECTION = "YES";
 
 afterEach(async () => {
   vi.restoreAllMocks();
@@ -133,6 +138,248 @@ it("returns a fully acknowledged non-empty asset and rejects a revision replacem
     listBrowserEncryptedWalletBackupV2CacheRemovalEligibleAssets({
       database: covered.database,
       scopeId: covered.scopeId,
+      isCurrentProfile: () => true,
+    }),
+  ).resolves.toEqual([]);
+});
+
+it("reports the descriptor amount only after a complete backed cache eviction", async () => {
+  const covered = await coveredFixture();
+  await covered.database.custodyProofs.clear();
+
+  await expect(
+    listBrowserEncryptedWalletBackupV2EvictedAssetMonitoringFacts({
+      database: covered.database,
+      scopeId: covered.scopeId,
+      isCurrentProfile: () => true,
+    }),
+  ).resolves.toEqual([
+    {
+      kind: "ordinary",
+      mintUrl: "https://mint.example",
+      unit: "sat",
+      declaredAmount: 1,
+    },
+  ]);
+});
+
+it("reports a valid conditional identity after its complete backed cache eviction", async () => {
+  const covered = await coveredFixture("conditional");
+  await covered.database.custodyProofs.clear();
+
+  await expect(
+    listBrowserEncryptedWalletBackupV2EvictedAssetMonitoringFacts({
+      database: covered.database,
+      scopeId: covered.scopeId,
+      isCurrentProfile: () => true,
+    }),
+  ).resolves.toEqual([
+    {
+      kind: "conditional",
+      mintUrl: "https://mint.example",
+      unit: "msat",
+      conditionId: CONDITIONAL_ID,
+      outcomeCollection: OUTCOME_COLLECTION,
+      declaredAmount: 1,
+    },
+  ]);
+});
+
+it("binds conditional local proof presence to the exact validated keyset", async () => {
+  const covered = await coveredFixture("conditional");
+  const secondOutcomeCollectionId = "cc".repeat(32);
+  const secondKeyset = `01${"66".repeat(32)}`;
+  const secondDesired = {
+    ...createEncryptedWalletBackupV2DesiredAssetRow({
+      scopeId: covered.scopeId,
+      asset: createEncryptedWalletBackupV2AssetIdentity({
+        mintUrl: "https://mint.example",
+        unit: "msat",
+        asset: {
+          kind: "ctf",
+          conditionId: CONDITIONAL_ID,
+          outcomeCollectionId: secondOutcomeCollectionId,
+          outcomeLabel: OUTCOME_COLLECTION,
+          registeredAt: 0,
+          finalExpiry: 100,
+        },
+      }),
+      custodyRevision: 1n,
+      activeProofCount: 1,
+    }),
+    syncState: "acknowledged" as const,
+  };
+  await covered.database.encryptedWalletBackupV2DesiredAssets.put(secondDesired);
+  await covered.database.custodyConditionalKeysets.put({
+    schemaVersion: 1,
+    scopeId: covered.scopeId,
+    normalizedMint: "https://mint.example",
+    unit: "msat",
+    keysetId: secondKeyset,
+    denominationPublicKeys: { "1": `02${"77".repeat(32)}` },
+    inputFeePpk: 100,
+    conditionId: CONDITIONAL_ID,
+    outcomeCollection: OUTCOME_COLLECTION,
+    outcomeCollectionId: secondOutcomeCollectionId,
+    registeredAtUnixSeconds: 0,
+    finalExpiryUnixSeconds: 100,
+    curve: "secp256k1",
+  });
+  await covered.database.custodyProofs.put(
+    createBrowserCustodyProofRow({
+      scopeId: covered.scopeId,
+      normalizedMint: "https://mint.example",
+      unit: "msat",
+      proof: {
+        id: secondKeyset,
+        amount: Amount.from(1),
+        secret: `conditional-${sequence}`,
+        C: `02${"88".repeat(32)}`,
+      },
+      asset: {
+        kind: "conditional",
+        conditionId: CONDITIONAL_ID,
+        outcomeCollection: OUTCOME_COLLECTION,
+      },
+      receivedAtMs: 1,
+    }),
+  );
+
+  await expect(
+    listBrowserEncryptedWalletBackupV2EvictedAssetMonitoringFacts({
+      database: covered.database,
+      scopeId: covered.scopeId,
+      isCurrentProfile: () => true,
+    }),
+  ).resolves.toEqual([
+    {
+      kind: "conditional",
+      mintUrl: "https://mint.example",
+      unit: "msat",
+      conditionId: CONDITIONAL_ID,
+      outcomeCollection: OUTCOME_COLLECTION,
+      declaredAmount: 1,
+    },
+  ]);
+});
+
+it("reads each evicted-asset monitoring scope table once as desired assets grow", async () => {
+  const covered = await coveredFixture();
+  await covered.database.custodyProofs.clear();
+  await covered.database.custodyProofs.bulkPut(
+    Array.from({ length: 64 }, (_value, index) =>
+      proofRow(covered.scopeId, index + 2, "https://unrelated-proofs.example"),
+    ),
+  );
+  await covered.database.encryptedWalletBackupV2DesiredAssets.bulkPut(
+    Array.from({ length: 255 }, (_value, index) =>
+      Object.freeze({
+        ...createEncryptedWalletBackupV2DesiredAssetRow({
+          scopeId: covered.scopeId,
+          asset: createEncryptedWalletBackupV2AssetIdentity({
+            mintUrl: `https://missing-${index}.example`,
+            unit: "sat",
+            asset: { kind: "ordinary" },
+          }),
+          custodyRevision: 1n,
+          activeProofCount: 1,
+        }),
+        syncState: "acknowledged" as const,
+      }),
+    ),
+  );
+  const collectionPrototype = Object.getPrototypeOf(
+    covered.database.custodyProofs
+      .where("[scopeId+selectability+proofId]")
+      .between([covered.scopeId, "locked", ""], [covered.scopeId, "selectable", "\uffff"]),
+  ) as { each: unknown; toArray: unknown };
+  const cursorEach = vi.spyOn(collectionPrototype, "each" as never);
+  const collectionToArray = vi.spyOn(collectionPrototype, "toArray" as never);
+  const desiredWhere = vi.spyOn(covered.database.encryptedWalletBackupV2DesiredAssets, "where");
+  const proofWhere = vi.spyOn(covered.database.custodyProofs, "where");
+  const proofToArray = vi.spyOn(covered.database.custodyProofs, "toArray");
+  const receiptWhere = vi.spyOn(covered.database.encryptedWalletBackupV2AssetReceipts, "where");
+  const headWhere = vi.spyOn(covered.database.encryptedWalletBackupV2AcceptedHeads, "where");
+  const descriptorWhere = vi.spyOn(
+    covered.database.encryptedWalletBackupV2ActiveDescriptors,
+    "where",
+  );
+  const keysetWhere = vi.spyOn(covered.database.custodyConditionalKeysets, "where");
+
+  await expect(
+    listBrowserEncryptedWalletBackupV2EvictedAssetMonitoringFacts({
+      database: covered.database,
+      scopeId: covered.scopeId,
+      isCurrentProfile: () => true,
+    }),
+  ).resolves.toEqual([
+    {
+      kind: "ordinary",
+      mintUrl: "https://mint.example",
+      unit: "sat",
+      declaredAmount: 1,
+    },
+  ]);
+
+  expect(desiredWhere).toHaveBeenCalledTimes(1);
+  expect(proofWhere).toHaveBeenCalledTimes(1);
+  expect(proofToArray).not.toHaveBeenCalled();
+  expect(cursorEach).toHaveBeenCalledTimes(2);
+  expect(collectionToArray).toHaveBeenCalledTimes(4);
+  expect(receiptWhere).toHaveBeenCalledTimes(1);
+  expect(headWhere).toHaveBeenCalledTimes(1);
+  expect(descriptorWhere).toHaveBeenCalledTimes(1);
+  expect(keysetWhere).toHaveBeenCalledTimes(1);
+});
+
+it("excludes local, stale, and incomplete backup authority from evicted monitoring facts", async () => {
+  const local = await coveredFixture();
+  await expect(
+    listBrowserEncryptedWalletBackupV2EvictedAssetMonitoringFacts({
+      database: local.database,
+      scopeId: local.scopeId,
+      isCurrentProfile: () => true,
+    }),
+  ).resolves.toEqual([]);
+
+  const stale = await coveredFixture();
+  await stale.database.custodyProofs.clear();
+  await stale.database.encryptedWalletBackupV2DesiredAssets.put({
+    ...stale.desired,
+    custodyRevision: "2",
+  });
+  await expect(
+    listBrowserEncryptedWalletBackupV2EvictedAssetMonitoringFacts({
+      database: stale.database,
+      scopeId: stale.scopeId,
+      isCurrentProfile: () => true,
+    }),
+  ).resolves.toEqual([]);
+
+  const incomplete = await coveredFixture();
+  await incomplete.database.custodyProofs.clear();
+  await incomplete.database.encryptedWalletBackupV2ActiveDescriptors.clear();
+  await expect(
+    listBrowserEncryptedWalletBackupV2EvictedAssetMonitoringFacts({
+      database: incomplete.database,
+      scopeId: incomplete.scopeId,
+      isCurrentProfile: () => true,
+    }),
+  ).resolves.toEqual([]);
+
+  const foreign = await coveredFixture();
+  await foreign.database.custodyProofs.clear();
+  const descriptor = (
+    await foreign.database.encryptedWalletBackupV2ActiveDescriptors.toArray()
+  )[0]!;
+  await foreign.database.encryptedWalletBackupV2ActiveDescriptors.put({
+    ...descriptor,
+    assetLocator: "ff".repeat(32),
+  });
+  await expect(
+    listBrowserEncryptedWalletBackupV2EvictedAssetMonitoringFacts({
+      database: foreign.database,
+      scopeId: foreign.scopeId,
       isCurrentProfile: () => true,
     }),
   ).resolves.toEqual([]);
@@ -236,6 +483,140 @@ it("keeps a signed receipt eligible when a later head retains its descriptor", a
       isCurrentProfile: () => true,
     }),
   ).resolves.toHaveLength(1);
+});
+
+it("omits a same-head receipt whose descriptor is absent from the current descriptor set", async () => {
+  const covered = await coveredFixture();
+  await covered.database.custodyProofs.clear();
+  const [firstRow] = await covered.database.encryptedWalletBackupV2ActiveDescriptors.toArray();
+  const first = decodeEncryptedWalletBackupV2BundleDescriptorWire(firstRow!.canonicalDescriptor, {
+    realm: REALM,
+    walletId: covered.keyHandle.walletId,
+  });
+  const activeAsset = createEncryptedWalletBackupV2AssetIdentity({
+    mintUrl: "https://active.example",
+    unit: "sat",
+    asset: { kind: "ordinary" },
+  });
+  const absentAsset = createEncryptedWalletBackupV2AssetIdentity({
+    mintUrl: "https://absent.example",
+    unit: "sat",
+    asset: { kind: "ordinary" },
+  });
+  const absentDesired = {
+    ...createEncryptedWalletBackupV2DesiredAssetRow({
+      scopeId: covered.scopeId,
+      asset: absentAsset,
+      custodyRevision: 1n,
+      activeProofCount: 1,
+    }),
+    syncState: "acknowledged" as const,
+  };
+  const activeBundle = await prepareEncryptedWalletBackupV2TransportBundle({
+    keyHandle: covered.keyHandle,
+    asset: activeAsset,
+    declaredAmount: 1n,
+    custodyRevision: 1n,
+    canonicalPayload: encodeCanonicalBackupCbor(["active-proof"]),
+    runtime: { subtle: crypto.subtle, getRandomValues: queuedRandom([hex(5, 16), hex(6, 12)]) },
+  });
+  const currentHead = createEncryptedWalletBackupV2CurrentHead({
+    realm: REALM,
+    walletId: covered.keyHandle.walletId,
+    enrollmentEpoch: 1,
+    headVersion: 2,
+    bundles: [first, activeBundle.descriptor],
+  });
+  const acceptedHead = (await covered.database.encryptedWalletBackupV2AcceptedHeads.toArray())[0]!;
+  await covered.database.encryptedWalletBackupV2AcceptedHeads.put({
+    ...acceptedHead,
+    headVersion: currentHead.headVersion,
+    activeBundleCount: currentHead.activeBundleCount,
+    activeObjectCount: currentHead.activeObjectCount,
+    activeSetDigest: currentHead.activeSetDigest,
+    canonicalCurrentHead: encodeEncryptedWalletBackupV2CurrentHead(currentHead),
+  });
+  await covered.database.encryptedWalletBackupV2ActiveDescriptors.put({
+    scopeId: covered.scopeId,
+    realm: REALM,
+    walletId: covered.keyHandle.walletId,
+    enrollmentEpoch: 1,
+    bundleId: activeBundle.descriptor.bundleId,
+    assetLocator: activeBundle.descriptor.assetLocator,
+    declaredAmount: activeBundle.descriptor.declaredAmount.toString(),
+    custodyRevision: activeBundle.descriptor.custodyRevision.toString(),
+    payloadCommitment: activeBundle.descriptor.payloadCommitment,
+    objectCount: activeBundle.descriptor.objects.length,
+    canonicalDescriptor: encodeEncryptedWalletBackupV2BundleDescriptor(activeBundle.descriptor),
+  });
+  const absentBundle = await prepareEncryptedWalletBackupV2TransportBundle({
+    keyHandle: covered.keyHandle,
+    asset: absentAsset,
+    declaredAmount: 1n,
+    custodyRevision: 1n,
+    canonicalPayload: encodeCanonicalBackupCbor(["absent-proof"]),
+    runtime: { subtle: crypto.subtle, getRandomValues: queuedRandom([hex(7, 16), hex(8, 12)]) },
+  });
+  const absentEnvelope = await prepareEncryptedWalletBackupV2BundleSupersessionMutation({
+    keyHandle: covered.keyHandle,
+    expectedHeadEvidence: evidence(currentHead, [first, activeBundle.descriptor]),
+    addedBundle: absentBundle.descriptor,
+    supersededBundleIds: [],
+    runtime: { getRandomValues: queuedRandom([hex(9, 16), hex(10, 32)]) },
+  });
+  const absentResultHead = createEncryptedWalletBackupV2CurrentHead({
+    realm: REALM,
+    walletId: covered.keyHandle.walletId,
+    enrollmentEpoch: 1,
+    headVersion: 3,
+    bundles: [first, activeBundle.descriptor, absentBundle.descriptor],
+  });
+  const absentMutationEvidence = decodeEncryptedWalletBackupV2UploadGroup({
+    bytes: encodeEncryptedWalletBackupV2UploadGroup({
+      envelope: absentEnvelope,
+      objects: absentBundle.objects,
+    }),
+    expectedRequestAuthPublicKey: covered.keyHandle.requestAuthPublicKey,
+    expectedContext: { realm: REALM, walletId: covered.keyHandle.walletId, enrollmentEpoch: 1 },
+  }).mutationEvidence;
+  const absentReceipt = await issueEncryptedWalletBackupV2BundleSupersessionReceipt({
+    mutationEvidence: absentMutationEvidence,
+    resultHead: absentResultHead,
+    signingKeyId: SIGNING_KEY_ID,
+    signingPublicKey: SIGNING_PUBLIC_KEY,
+    signDigest: (digest) => schnorr.sign(digest, SIGNING_PRIVATE_KEY),
+  });
+  if (absentReceipt.bundleDescriptorDigest === null) throw new Error("test receipt digest");
+  await covered.database.encryptedWalletBackupV2DesiredAssets.put(absentDesired);
+  await covered.database.encryptedWalletBackupV2AssetReceipts.put({
+    scopeId: covered.scopeId,
+    realm: REALM,
+    walletId: covered.keyHandle.walletId,
+    enrollmentEpoch: 1,
+    localAssetKey: absentDesired.localAssetKey,
+    assetLocator: absentBundle.descriptor.assetLocator,
+    custodyRevision: absentDesired.custodyRevision,
+    bundleId: absentBundle.descriptor.bundleId,
+    bundleDescriptorDigest: absentReceipt.bundleDescriptorDigest,
+    canonicalSignedMutation:
+      encodeEncryptedWalletBackupV2SignedBundleSupersessionMutationWire(absentEnvelope),
+    canonicalSignedReceipt: encodeEncryptedWalletBackupV2BundleSupersessionReceipt(absentReceipt),
+  });
+
+  await expect(
+    listBrowserEncryptedWalletBackupV2EvictedAssetMonitoringFacts({
+      database: covered.database,
+      scopeId: covered.scopeId,
+      isCurrentProfile: () => true,
+    }),
+  ).resolves.toEqual([
+    {
+      kind: "ordinary",
+      mintUrl: "https://mint.example",
+      unit: "sat",
+      declaredAmount: 1,
+    },
+  ]);
 });
 
 it("excludes locked local proof custody from cache removal", async () => {
@@ -502,18 +883,32 @@ function rangeRecord(scopeId: string, lifecycleState: "prepared" | "terminal", o
   };
 }
 
-async function coveredFixture() {
+async function coveredFixture(kind: "ordinary" | "conditional" = "ordinary") {
   const { database, scopeId } = fixture();
   const keyHandle = await createEncryptedWalletBackupV2KeyHandle({
     seed: new Uint8Array(64).fill(sequence),
     realm: REALM,
     runtime: { subtle: crypto.subtle },
   });
-  const asset = createEncryptedWalletBackupV2AssetIdentity({
-    mintUrl: "https://mint.example",
-    unit: "sat",
-    asset: { kind: "ordinary" },
-  });
+  const asset =
+    kind === "ordinary"
+      ? createEncryptedWalletBackupV2AssetIdentity({
+          mintUrl: "https://mint.example",
+          unit: "sat",
+          asset: { kind: "ordinary" },
+        })
+      : createEncryptedWalletBackupV2AssetIdentity({
+          mintUrl: "https://mint.example",
+          unit: "msat",
+          asset: {
+            kind: "ctf",
+            conditionId: CONDITIONAL_ID,
+            outcomeCollectionId: OUTCOME_COLLECTION_ID,
+            outcomeLabel: OUTCOME_COLLECTION,
+            registeredAt: 0,
+            finalExpiry: 100,
+          },
+        });
   const desired = createEncryptedWalletBackupV2DesiredAssetRow({
     scopeId,
     asset,
@@ -522,6 +917,23 @@ async function coveredFixture() {
   });
   await database.encryptedWalletBackupV2DesiredAssets.put(desired);
   await database.custodyProofs.put(proofRow(scopeId, 1));
+  if (kind === "conditional") {
+    await database.custodyConditionalKeysets.put({
+      schemaVersion: 1,
+      scopeId,
+      normalizedMint: "https://mint.example",
+      unit: "msat",
+      keysetId: CONDITIONAL_KEYSET,
+      denominationPublicKeys: { "1": `02${"33".repeat(32)}` },
+      inputFeePpk: 100,
+      conditionId: CONDITIONAL_ID,
+      outcomeCollection: OUTCOME_COLLECTION,
+      outcomeCollectionId: OUTCOME_COLLECTION_ID,
+      registeredAtUnixSeconds: 0,
+      finalExpiryUnixSeconds: 100,
+      curve: "secp256k1",
+    });
+  }
   const store = new EncryptedWalletBackupV2DexieAuthorityStore({
     database,
     scopeId,

@@ -170,16 +170,18 @@ export async function advanceBrowserV2DesiredAssetsForProofChanges(
     if (!change.payloadChanged) continue;
     const before = change.beforeProof;
     if (before && isBackupEligible(before, change.beforeLocator)) {
+      const asset = knownAssetForProof(before, conditionalKeysetForProof);
       addDesiredAssetUpdate(
         updates,
-        await assetForProof(database, before, conditionalKeysetForProof),
+        asset ?? (await loadConditionalAssetForProof(database, before)),
         -1,
       );
     }
     if (isBackupEligible(change.afterProof, change.afterLocator)) {
+      const asset = knownAssetForProof(change.afterProof, conditionalKeysetForProof);
       addDesiredAssetUpdate(
         updates,
-        await assetForProof(database, change.afterProof, conditionalKeysetForProof),
+        asset ?? (await loadConditionalAssetForProof(database, change.afterProof)),
         1,
       );
     }
@@ -203,7 +205,11 @@ export async function advanceBrowserV2DesiredAssetsForCounter(input: {
   });
   if (active === null) return;
   const updates = new Map<string, DesiredAssetUpdate>();
-  addDesiredAssetUpdate(updates, await assetForProof(input.database, active), 0);
+  addDesiredAssetUpdate(
+    updates,
+    knownAssetForProof(active) ?? (await loadConditionalAssetForProof(input.database, active)),
+    0,
+  );
   await persistDesiredAssetUpdates(input.database, scopeId, updates);
 }
 
@@ -294,13 +300,12 @@ function isBackupEligible(
   return isActive(proof) && derivationLocator !== null;
 }
 
-async function assetForProof(
-  database: BitcasterDB,
+function knownAssetForProof(
   proof: BrowserCustodyProofRow,
   conditionalKeysetForProof?: (
     proof: BrowserCustodyProofRow,
   ) => ReturnType<typeof decodeBrowserCustodyConditionalKeysetRow> | undefined,
-): Promise<EncryptedWalletBackupV2AssetIdentity> {
+): EncryptedWalletBackupV2AssetIdentity | undefined {
   if (proof.assetKind === "regular") {
     return createEncryptedWalletBackupV2AssetIdentity({
       mintUrl: proof.normalizedMint,
@@ -308,17 +313,35 @@ async function assetForProof(
       asset: { kind: "ordinary" },
     });
   }
-  const raw = conditionalKeysetForProof
-    ? conditionalKeysetForProof(proof)
-    : await database.custodyConditionalKeysets.get([
-        proof.scopeId,
-        proof.normalizedMint,
-        proof.unit,
-        proof.keysetId,
-      ]);
+  if (conditionalKeysetForProof === undefined) return undefined;
+  const keyset = conditionalKeysetForProof(proof);
+  if (keyset === undefined)
+    throw new Error("browser V2 desired asset conditional authority is missing");
+  return conditionalAssetForProof(proof, keyset);
+}
+
+async function loadConditionalAssetForProof(
+  database: BitcasterDB,
+  proof: BrowserCustodyProofRow,
+): Promise<EncryptedWalletBackupV2AssetIdentity> {
+  if (proof.assetKind !== "conditional") {
+    throw new Error("browser V2 desired asset conditional proof is required");
+  }
+  const raw = await database.custodyConditionalKeysets.get([
+    proof.scopeId,
+    proof.normalizedMint,
+    proof.unit,
+    proof.keysetId,
+  ]);
   if (raw === undefined)
     throw new Error("browser V2 desired asset conditional authority is missing");
-  const keyset = decodeBrowserCustodyConditionalKeysetRow(raw);
+  return conditionalAssetForProof(proof, decodeBrowserCustodyConditionalKeysetRow(raw));
+}
+
+function conditionalAssetForProof(
+  proof: BrowserCustodyProofRow,
+  keyset: ReturnType<typeof decodeBrowserCustodyConditionalKeysetRow>,
+): EncryptedWalletBackupV2AssetIdentity {
   if (
     keyset.scopeId !== proof.scopeId ||
     keyset.normalizedMint !== proof.normalizedMint ||

@@ -46,9 +46,6 @@ export interface TargetedAssetRecoveryInput {
   readonly assetLocator: string
   /** Canonical asset identity used by local custody and backup adapters. */
   readonly asset: EncryptedWalletBackupV2AssetIdentity
-  /** Canonical monitoring asset used only for the exact monitoring fact. */
-  readonly monitoringAsset: AssetMonitoringAssetReference
-  readonly monitoringFactVersion: string
 }
 
 export type TargetedAssetRecoveryBackupInventory<TBackupEntry> =
@@ -148,7 +145,7 @@ async function recoverFromMonitoring<TBackupEntry>(
   if (fact === null || fact.availableSubunits === 0 || fact.recoveryHint === null)
     return { kind: 'unavailable' }
 
-  const key = createTargetedAssetRecoveryAttemptKey(recovery, backupHeadVersion)
+  const key = createTargetedAssetRecoveryAttemptKey(recovery, backupHeadVersion, fact.factVersion)
   const recoverableFact = { ...fact, recoveryHint: fact.recoveryHint }
   return withActiveAttempt(key, () => recoverMintAttempt(recovery, recoverableFact, key, ports))
 }
@@ -221,27 +218,24 @@ export function decodeTargetedAssetRecoveryInput(value: unknown): TargetedAssetR
     throw new Error('targeted asset recovery input is invalid')
   }
   const asset = decodeEncryptedWalletBackupV2AssetIdentity(value.asset)
-  const monitoringAsset = decodeAssetMonitoringAssetReference(value.monitoringAsset)
-  assertEncryptedWalletBackupV2AssetMatchesMonitoringAsset(asset, monitoringAsset)
   return Object.freeze({
     scopeId: decodeDurableCustodyScopeId(value.scopeId),
     assetLocator: requireAssetLocator(value.assetLocator),
     asset,
-    monitoringAsset,
-    monitoringFactVersion: requireFactVersion(value.monitoringFactVersion),
   })
 }
 
 export function createTargetedAssetRecoveryAttemptKey(
   input: TargetedAssetRecoveryInput,
   backupHeadVersion: number,
+  monitoringFactVersion: string,
 ): TargetedAssetRecoveryAttemptKey {
   const recovery = decodeTargetedAssetRecoveryInput(input)
   return Object.freeze({
     scopeId: recovery.scopeId,
     assetLocator: recovery.assetLocator,
     backupHeadVersion: requireHeadVersion(backupHeadVersion),
-    monitoringFactVersion: recovery.monitoringFactVersion,
+    monitoringFactVersion: requireFactVersion(monitoringFactVersion),
   })
 }
 
@@ -311,13 +305,8 @@ function decodeExactMonitoringFact(
     throw new Error('targeted asset recovery monitoring fact is invalid')
   }
   const asset = decodeAssetMonitoringAssetReference(value.asset)
-  if (JSON.stringify(asset) !== JSON.stringify(recovery.monitoringAsset)) {
-    throw new Error('targeted asset recovery monitoring fact is foreign')
-  }
+  assertEncryptedWalletBackupV2AssetMatchesMonitoringAsset(recovery.asset, asset)
   const factVersion = requireFactVersion(value.factVersion)
-  if (factVersion !== recovery.monitoringFactVersion) {
-    throw new Error('targeted asset recovery monitoring fact version is stale')
-  }
   const availableSubunits = requireNonnegativeSafeInteger(value.availableSubunits)
   const recoveryHint =
     value.recoveryHint === null ? null : decodeAssetMonitoringRecoveryHint(value.recoveryHint)
@@ -455,13 +444,7 @@ function exactKeys(value: Record<string, unknown>, fields: readonly string[]): b
   return keys.length === expected.length && keys.every((key, index) => key === expected[index])
 }
 
-const inputFields = [
-  'scopeId',
-  'assetLocator',
-  'asset',
-  'monitoringAsset',
-  'monitoringFactVersion',
-] as const
+const inputFields = ['scopeId', 'assetLocator', 'asset'] as const
 const attemptKeyFields = [
   'scopeId',
   'assetLocator',

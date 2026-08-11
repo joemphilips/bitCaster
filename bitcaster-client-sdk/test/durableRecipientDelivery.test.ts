@@ -159,6 +159,12 @@ test('requires receive authority, credit policy, amounts, and terminal business-
     receivedAt: '2026-08-10T00:00:00.000Z',
   }
   assert.equal(decodeDurableRecipientDeliveryStatus(status('received', received)).state, 'received')
+  assert.equal(
+    decodeDurableRecipientDeliveryStatus(
+      status('received', { ...received, businessEventId: null, businessEventAt: null }),
+    ).state,
+    'received',
+  )
   assert.throws(
     () => decodeDurableRecipientDeliveryStatus(status('received', null)),
     /lacks receive authority/,

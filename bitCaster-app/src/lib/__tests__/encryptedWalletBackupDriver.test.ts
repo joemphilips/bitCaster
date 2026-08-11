@@ -4,6 +4,9 @@ import { afterEach, expect, it, vi } from "vitest";
 import {
   createEncryptedWalletBackupV2AssetIdentity,
   createEncryptedWalletBackupV2KeyHandle,
+  EncryptedWalletBackupV2HttpAdapter,
+  EncryptedWalletBackupV2HttpTransportError,
+  prepareEncryptedWalletBackupV2RequestProof,
   type EncryptedWalletBackupV2RemotePort,
 } from "@bitcaster/client-sdk";
 import {
@@ -15,6 +18,7 @@ import { browserWalletDatabaseName } from "../browserWalletProfile";
 import { createEncryptedWalletBackupV2DesiredAssetRow } from "../../stores/browser-encrypted-wallet-backup-v2-desired-asset";
 import {
   createBrowserEncryptedWalletBackupV2RuntimeDriver,
+  encryptedWalletBackupV2CurrentInventoryUrl,
   resolveEncryptedWalletBackupV2EnrollmentEpoch,
 } from "../encryptedWalletBackupDriver";
 
@@ -67,6 +71,32 @@ it("uses an epoch-zero V2 discovery proof without an enrollment mutation when th
   expect(remote.discoverEnrollmentEpoch).toHaveBeenCalledOnce();
   expect(remote.discoverEnrollmentEpoch.mock.calls[0]?.[0].requestProof.enrollmentEpoch).toBe(0);
   expect(remote.executeAccountOperation).not.toHaveBeenCalled();
+});
+
+it("builds an adapter-valid current inventory URL", async () => {
+  const fixture = await enrollmentFixture();
+  const url = encryptedWalletBackupV2CurrentInventoryUrl(configuration, fixture.keyHandle);
+  const requestProof = await prepareEncryptedWalletBackupV2RequestProof({
+    keyHandle: fixture.keyHandle,
+    enrollmentEpoch: 1,
+    method: "GET",
+    url,
+    issuedAtUnixSeconds: 1_000,
+    expiresAtUnixSeconds: 1_060,
+    payload: new Uint8Array(),
+    signal: new AbortController().signal,
+    runtime: crypto,
+  });
+  const fetch = vi.fn().mockRejectedValue(new Error("test transport failure"));
+  const adapter = new EncryptedWalletBackupV2HttpAdapter({
+    origin: configuration.signedOrigin,
+    fetch,
+  });
+
+  await expect(adapter.readCurrentInventory({ requestProof })).rejects.toBeInstanceOf(
+    EncryptedWalletBackupV2HttpTransportError,
+  );
+  expect(fetch).toHaveBeenCalledWith(url, expect.objectContaining({ method: "GET" }));
 });
 
 it("enrolls once after V2 discovery reports an absent wallet", async () => {

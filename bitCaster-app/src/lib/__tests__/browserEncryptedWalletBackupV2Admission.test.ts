@@ -83,6 +83,30 @@ describe("browser encrypted wallet backup V2 admission", () => {
     await expectDesired(database, fixture, 65);
   });
 
+  it("reports only fixed admission stage transitions", async () => {
+    const fixture = await createFixture(1);
+    database = fixture.database;
+    const stages: string[] = [];
+
+    await admitBrowserEncryptedWalletBackupV2Asset({
+      ...fixture.input,
+      setTargetedRecoveryAdmissionStage: (stage) => stages.push(stage),
+    });
+
+    expect(stages).toEqual([
+      "backup-admit-lock",
+      "backup-admit-authority",
+      "backup-admit-state",
+      "backup-admit-custody",
+      "backup-admit-counter",
+      "backup-admit-desired",
+      "backup-admit-desired-write",
+      "backup-admit-current-profile",
+      "backup-admit-transaction-commit",
+      "backup-admit-cache",
+    ]);
+  });
+
   it("admits an exact CTF range-manifest locator and conditional keyset authority", async () => {
     const fixture = await createFixture(1, CTF_ASSET);
     database = fixture.database;

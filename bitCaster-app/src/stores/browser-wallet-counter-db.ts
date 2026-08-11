@@ -145,28 +145,56 @@ export class BrowserWalletCounterDexieStore {
         this.#database.encryptedWalletBackupV2DesiredAssets,
         this.#database.proofs,
       ],
-      async () => {
-        const row = await this.#ensureAssociation(association, id);
-        const current = await this.#currentNext(id);
-        const next = Math.max(current, minimum);
-        await admit();
-        this.#requireCurrentProfile();
-        const recoveryChanged = !row.recoveryComplete;
-        if (recoveryChanged) {
-          await this.#database.walletCounterAssociations.put({ ...row, recoveryComplete: true });
-        }
-        const counterChanged = next !== current;
-        if (counterChanged) {
-          await this.#database.walletCounterCursors.put({
-            scopeId: this.#scopeId,
-            keysetId: id,
-            next,
-          });
-          await this.#advanceDesiredAssetAuthority(association, id);
-        }
-        return { changed: counterChanged || recoveryChanged || admissionChangesWallet, next };
-      },
+      () =>
+        this.#restoreInOwnedTransaction(association, id, minimum, admissionChangesWallet, admit),
     );
+  }
+
+  /** Restore a counter inside a read-write transaction that the caller owns. */
+  restoreInOwnedTransaction<T>(
+    context: BrowserWalletCounterContextInput,
+    keysetId: string,
+    restoredNext: number,
+    admissionChangesWallet: boolean,
+    admit: () => T | Promise<T>,
+  ): Promise<BrowserWalletCounterAdvanceResult> {
+    this.#requireCurrentProfile();
+    return this.#restoreInOwnedTransaction(
+      requireContext(context),
+      requireKeysetId(keysetId),
+      requireCounter(restoredNext),
+      admissionChangesWallet,
+      admit,
+    );
+  }
+
+  async #restoreInOwnedTransaction<T>(
+    association: NormalizedBrowserWalletCounterContext,
+    keysetId: string,
+    minimum: number,
+    admissionChangesWallet: boolean,
+    admit: () => T | Promise<T>,
+  ): Promise<BrowserWalletCounterAdvanceResult> {
+    const row = await this.#ensureAssociation(association, keysetId);
+    const current = await this.#currentNext(keysetId);
+    const next = Math.max(current, minimum);
+    const admission = admit();
+    if (isPromiseLike(admission)) await admission;
+    this.#requireCurrentProfile();
+    const recoveryChanged = !row.recoveryComplete;
+    if (recoveryChanged) {
+      await this.#database.walletCounterAssociations.put({ ...row, recoveryComplete: true });
+    }
+    const counterChanged = next !== current;
+    if (counterChanged) {
+      await this.#database.walletCounterCursors.put({
+        scopeId: this.#scopeId,
+        keysetId,
+        next,
+      });
+      await this.#advanceDesiredAssetAuthority(association, keysetId);
+    }
+    return { changed: counterChanged || recoveryChanged || admissionChangesWallet, next };
   }
 
   async snapshot(): Promise<Record<string, number>> {
@@ -397,4 +425,13 @@ function requireCounter(value: number): number {
     throw new BrowserWalletCounterError("invalid_counter", "wallet counter is invalid");
   }
   return value;
+}
+
+function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
+  return (
+    (typeof value === "object" || typeof value === "function") &&
+    value !== null &&
+    "then" in value &&
+    typeof value.then === "function"
+  );
 }

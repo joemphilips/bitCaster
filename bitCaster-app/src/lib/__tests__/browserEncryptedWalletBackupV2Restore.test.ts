@@ -172,14 +172,51 @@ it("rejects a foreign wallet mint before backup or mint I/O", async () => {
 
 it("rejects a corrupt object before returning material", async () => {
   const fixture = await backupFixture();
+  const stages: string[] = [];
   const object = fixture.bundle.objects[0]!;
   fixture.remote.readObject.mockResolvedValueOnce({
     ...object,
     body: object.body.slice().reverse(),
   });
-  await expect(restoreBrowserEncryptedWalletBackupV2TargetedAsset(fixture.input)).rejects.toThrow(
+  await expect(
+    restoreBrowserEncryptedWalletBackupV2TargetedAsset({
+      ...fixture.input,
+      reportTargetedRecoveryStage: (stage) => stages.push(stage),
+    }),
+  ).rejects.toThrow(
     /corrupt encrypted wallet backup v2 bundle|encrypted backup bundle object|encrypted backup V2|authentication/i,
   );
+  expect(stages).toEqual(["backup-decrypt"]);
+});
+
+it("reports fixed object and verification stages without error detail", async () => {
+  const objectFailure = await backupFixture();
+  const objectStages: string[] = [];
+  const absent = createEncryptedWalletBackupV2AssetIdentity({
+    mintUrl: "https://absent.example",
+    unit: "sat",
+    asset: { kind: "ordinary" },
+  });
+  await expect(
+    restoreBrowserEncryptedWalletBackupV2TargetedAsset({
+      ...objectFailure.input,
+      asset: absent,
+      reportTargetedRecoveryStage: (stage) => objectStages.push(stage),
+    }),
+  ).rejects.toThrow(/current asset is absent/);
+  expect(objectStages).toEqual(["backup-object"]);
+
+  const verificationFailure = await backupFixture();
+  const verificationStages: string[] = [];
+  await expect(
+    restoreAndAdmitBrowserEncryptedWalletBackupV2TargetedAsset({
+      ...verificationFailure.input,
+      wallet: { mint: { mintUrl: "https://other-mint.example" } } as CashuWallet,
+      lockManager: immediateLockManager(),
+      reportTargetedRecoveryStage: (stage) => verificationStages.push(stage),
+    }),
+  ).rejects.toThrow(/restore mint is foreign/);
+  expect(verificationStages).toEqual(["backup-verify"]);
 });
 
 it("rejects a foreign current head", async () => {

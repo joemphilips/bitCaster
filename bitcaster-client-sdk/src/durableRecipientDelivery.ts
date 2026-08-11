@@ -392,10 +392,16 @@ function decodeResult(value: unknown): DurableRecipientDeliveryResult {
   requireTimestamp(value.receivedAt, 'received time')
   const businessEventId = value.businessEventId
   const businessEventAt = value.businessEventAt
-  const hasEventId = businessEventId !== undefined
-  const hasEventAt = businessEventAt !== undefined
+  const hasEventId = businessEventId !== undefined && businessEventId !== null
+  const hasEventAt = businessEventAt !== undefined && businessEventAt !== null
   if (hasEventId !== hasEventAt)
     throw new Error('durable recipient business event authority is invalid')
+  if (
+    (businessEventId === null && businessEventAt !== null) ||
+    (businessEventAt === null && businessEventId !== null)
+  ) {
+    throw new Error('durable recipient business event authority is invalid')
+  }
   if (hasEventId) {
     requireAscii(businessEventId, 'business event id', 256)
     requireTimestamp(businessEventAt, 'business event time')

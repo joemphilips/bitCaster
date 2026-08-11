@@ -45,8 +45,10 @@ export function createDurableCustodyProofOperation(input: {
   }
   const inputSource =
     operation.kind === 'wallet-receive'
-      ? requireDurableWalletProofTransition(operation.metadata ?? {}, Object.keys(operation.outputs))
-          .inputSource
+      ? requireDurableWalletProofTransition(
+          operation.metadata ?? {},
+          Object.keys(operation.outputs),
+        ).inputSource
       : 'wallet'
   const inputProofs = (inputSource === 'external' ? [] : operation.inputs).map((proof) => {
     if (!proof.id) throw new Error('custody input proof has no keyset id')

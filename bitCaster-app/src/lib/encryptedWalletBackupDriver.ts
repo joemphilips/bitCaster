@@ -29,9 +29,11 @@ import {
   scheduleEncryptedWalletBackupRetry,
 } from "../stores/encrypted-wallet-backup-retry-db";
 import type { BitcasterDB } from "../stores/proof-db";
-import { recoverBrowserTargetedAsset } from "./browserTargetedAssetRecovery";
+import {
+  recoverBrowserTargetedAsset,
+  type BrowserTargetedAssetRecoveryMonitoring,
+} from "./browserTargetedAssetRecovery";
 import type {
-  AssetMonitoringAssetResponse,
   EncryptedWalletBackupV2AssetIdentity,
   TargetedAssetRecoveryOutcome,
 } from "@bitcaster/client-sdk";
@@ -45,8 +47,9 @@ export interface BrowserEncryptedWalletBackupV2RuntimeDriver {
   stop(): void;
   recoverTargetedAsset(input: {
     readonly asset: EncryptedWalletBackupV2AssetIdentity;
-    readonly monitoringFact: AssetMonitoringAssetResponse;
-    readonly wallet: CashuWallet;
+    readonly requiredAmount: bigint;
+    readonly loadWallet: () => Promise<CashuWallet>;
+    readonly readExactMonitoringRecovery: () => Promise<BrowserTargetedAssetRecoveryMonitoring | null>;
     readonly lockManager?: Pick<LockManager, "request">;
   }): Promise<TargetedAssetRecoveryOutcome>;
 }
@@ -161,8 +164,9 @@ class BrowserEncryptedWalletBackupV2RuntimeDriverImpl implements BrowserEncrypte
 
   async recoverTargetedAsset(input: {
     readonly asset: EncryptedWalletBackupV2AssetIdentity;
-    readonly monitoringFact: AssetMonitoringAssetResponse;
-    readonly wallet: CashuWallet;
+    readonly requiredAmount: bigint;
+    readonly loadWallet: () => Promise<CashuWallet>;
+    readonly readExactMonitoringRecovery: () => Promise<BrowserTargetedAssetRecoveryMonitoring | null>;
     readonly lockManager?: Pick<LockManager, "request">;
   }): Promise<TargetedAssetRecoveryOutcome> {
     try {
@@ -178,14 +182,18 @@ class BrowserEncryptedWalletBackupV2RuntimeDriverImpl implements BrowserEncrypte
         keyHandle,
         enrollmentEpoch,
         asset: input.asset,
-        monitoringFact: input.monitoringFact,
-        wallet: input.wallet,
+        requiredAmount: input.requiredAmount,
+        loadWallet: input.loadWallet,
+        readExactMonitoringRecovery: input.readExactMonitoringRecovery,
         remote: this.#remote,
         requestUrl: (kind, value) =>
           kind === "head"
             ? requestUrl(this.#input.configuration, keyHandle, "head", value)
             : objectUrl(this.#input.configuration, keyHandle, requireObjectId(value)),
-        currentInventoryUrl: currentInventoryUrl(this.#input.configuration, keyHandle),
+        currentInventoryUrl: encryptedWalletBackupV2CurrentInventoryUrl(
+          this.#input.configuration,
+          keyHandle,
+        ),
         nowUnixSeconds,
         completedAtUnixMilliseconds: Date.now,
         runtime: this.#runtime,
@@ -619,11 +627,11 @@ function accountUrl(configuration: EncryptedWalletBackupConfiguration): string {
   return `${configuration.signedOrigin}/v1/encrypted-wallet-backup/realms/${configuration.realm}/wallets:enroll`;
 }
 
-function currentInventoryUrl(
+export function encryptedWalletBackupV2CurrentInventoryUrl(
   configuration: EncryptedWalletBackupConfiguration,
   keyHandle: EncryptedWalletBackupV2KeyHandle,
 ): string {
-  return `${configuration.signedOrigin}/v1/encrypted-wallet-backup/realms/${configuration.realm}/wallets/${keyHandle.walletId}/inventory`;
+  return `${configuration.signedOrigin}/v1/encrypted-wallet-backup/realms/${configuration.realm}/wallets/${keyHandle.walletId}/current-inventory`;
 }
 
 function objectUrl(

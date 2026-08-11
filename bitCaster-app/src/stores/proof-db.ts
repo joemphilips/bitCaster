@@ -616,11 +616,12 @@ export async function getUnitProofs(
   return proofs.filter((p) => !isCtfProof(p) && normalizeStoredProofUnit(p) === unit);
 }
 
-export const MARKET_FUNDING_INPUT_PROOF_LIMIT_MAX = 512;
-export const PARTICIPATION_SCORE_INPUT_PROOF_LIMIT_MAX = 512;
+export const BOUNDED_CANONICAL_REGULAR_PROOF_LIMIT_MAX = 512;
+export const MARKET_FUNDING_INPUT_PROOF_LIMIT_MAX = BOUNDED_CANONICAL_REGULAR_PROOF_LIMIT_MAX;
+export const PARTICIPATION_SCORE_INPUT_PROOF_LIMIT_MAX = BOUNDED_CANONICAL_REGULAR_PROOF_LIMIT_MAX;
 
 /** Read one bounded largest-first regular candidate set across canonical V2 keysets. */
-export async function getBoundedMarketFundingProofs(
+export async function getBoundedCanonicalRegularProofs(
   mintUrl: string,
   options: { scopeId: string; unit: CashuProofUnit | string },
   database: BitcasterDB = db,
@@ -629,7 +630,7 @@ export async function getBoundedMarketFundingProofs(
     mintUrl,
     options.unit,
     options.scopeId,
-    MARKET_FUNDING_INPUT_PROOF_LIMIT_MAX,
+    BOUNDED_CANONICAL_REGULAR_PROOF_LIMIT_MAX,
     database,
   );
 }
@@ -640,11 +641,9 @@ export async function getBoundedCanonicalSatProofs(
   options: { scopeId: string },
   database: BitcasterDB = db,
 ): Promise<StoredProof[]> {
-  return getBoundedCanonicalV2Proofs(
+  return getBoundedCanonicalRegularProofs(
     mintUrl,
-    "sat",
-    options.scopeId,
-    PARTICIPATION_SCORE_INPUT_PROOF_LIMIT_MAX,
+    { unit: "sat", scopeId: options.scopeId },
     database,
   );
 }

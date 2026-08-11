@@ -2,7 +2,9 @@ import { bytesToHex, utf8ToBytes } from "@noble/hashes/utils.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 import {
   buildAssetMonitoringHoldingsFromProofFacts,
+  canonicalizeAssetMonitoringHoldings,
   computeAssetMonitoringOutcomeUniverseDigest,
+  type AssetMonitoringAssetReference,
   type AssetMonitoringProofFact,
   type AssetMonitoringReportedHolding,
 } from "@bitcaster/client-sdk/assetMonitoring";
@@ -37,6 +39,7 @@ export interface AssetMonitoringSnapshotInput {
   readonly proofs: readonly StoredProof[];
   readonly catalogue: readonly AssetMonitoringCatalogueEntry[];
   readonly custody?: AssetMonitoringSnapshotCustody;
+  readonly evictedAssets?: readonly AssetMonitoringEvictedAsset[];
 }
 
 export interface AssetMonitoringSnapshotCustody {
@@ -44,6 +47,23 @@ export interface AssetMonitoringSnapshotCustody {
   readonly proofs: readonly unknown[];
   readonly proofBackupAuthorities: readonly unknown[];
 }
+
+/** One local V2 cache eviction represented by verified backup descriptor metadata. */
+export type AssetMonitoringEvictedAsset =
+  | {
+      readonly kind: "ordinary";
+      readonly mintUrl: string;
+      readonly unit: "sat" | "msat";
+      readonly declaredAmount: number;
+    }
+  | {
+      readonly kind: "conditional";
+      readonly mintUrl: string;
+      readonly unit: "sat" | "msat";
+      readonly conditionId: string;
+      readonly outcomeCollection: string;
+      readonly declaredAmount: number;
+    };
 
 export { AssetMonitoringReporter, fetchAssetMonitoringCatalogue };
 export { ASSET_MONITORING_CONDITIONS_MAX };
@@ -69,6 +89,16 @@ export function buildAssetMonitoringHoldings(
       if (conditions.size > ASSET_MONITORING_CONDITIONS_MAX) return null;
     }
   }
+  for (const asset of input.evictedAssets ?? []) {
+    switch (asset.kind) {
+      case "ordinary":
+        break;
+      case "conditional":
+        conditions.add(asset.conditionId);
+        if (conditions.size > ASSET_MONITORING_CONDITIONS_MAX) return null;
+        break;
+    }
+  }
 
   const catalogue = catalogueByCondition(input.catalogue, conditions);
   if (catalogue === null) return null;
@@ -91,10 +121,83 @@ export function buildAssetMonitoringHoldings(
         ...(recoveryCounter === undefined ? {} : { recoveryCounter }),
       });
     }
-    return buildAssetMonitoringHoldingsFromProofFacts(facts);
+    return mergeEvictedAssetHoldings(
+      buildAssetMonitoringHoldingsFromProofFacts(facts),
+      input.evictedAssets ?? [],
+      catalogue,
+    );
   } catch {
     return null;
   }
+}
+
+function mergeEvictedAssetHoldings(
+  holdings: readonly AssetMonitoringReportedHolding[],
+  evictedAssets: readonly AssetMonitoringEvictedAsset[],
+  catalogue: ReadonlyMap<string, AssetMonitoringCatalogueEntry>,
+): AssetMonitoringReportedHolding[] | null {
+  const merged = new Map<string, AssetMonitoringReportedHolding>();
+  for (const holding of holdings)
+    merged.set(monitoringAssetIdentity(holding.asset), { ...holding });
+  for (const evicted of evictedAssets) {
+    const asset = assetForEvictedAsset(evicted, catalogue);
+    if (
+      asset === null ||
+      !Number.isSafeInteger(evicted.declaredAmount) ||
+      evicted.declaredAmount < 1
+    )
+      return null;
+    const key = monitoringAssetIdentity(asset);
+    const current = merged.get(key);
+    merged.set(key, {
+      asset,
+      availableSubunits: checkedMonitoringAmount(
+        current?.availableSubunits ?? 0,
+        evicted.declaredAmount,
+      ),
+      pendingOutgoingSubunits: current?.pendingOutgoingSubunits ?? 0,
+      ...(current?.recoveryHint === undefined ? {} : { recoveryHint: current.recoveryHint }),
+    });
+  }
+  return canonicalizeAssetMonitoringHoldings([...merged.values()]);
+}
+
+function monitoringAssetIdentity(asset: AssetMonitoringAssetReference): string {
+  return JSON.stringify(asset);
+}
+
+function checkedMonitoringAmount(left: number, right: number): number {
+  const total = left + right;
+  if (!Number.isSafeInteger(total))
+    throw new Error("asset-monitoring holding amount exceeds range");
+  return total;
+}
+
+function assetForEvictedAsset(
+  asset: AssetMonitoringEvictedAsset,
+  catalogue: ReadonlyMap<string, AssetMonitoringCatalogueEntry>,
+): AssetMonitoringAssetReference | null {
+  const displayBaseAsset = COLLATERAL_UNIT_REGISTRY[asset.unit].baseAsset;
+  if (asset.kind === "ordinary") {
+    return {
+      canonicalMintUrl: normalizeUrl(asset.mintUrl),
+      kind: "collateral",
+      cashuUnit: asset.unit,
+      displayBaseAsset,
+    };
+  }
+  const entry = catalogue.get(asset.conditionId);
+  if (!entry || !isCanonicalOutcomeSet(asset.outcomeCollection, entry.outcomes)) return null;
+  return {
+    canonicalMintUrl: normalizeUrl(asset.mintUrl),
+    kind: "conditional",
+    cashuUnit: asset.unit,
+    displayBaseAsset,
+    conditionId: asset.conditionId,
+    parentConditionId: ROOT_CONDITION_ID,
+    outcomeUniverseDigest: computeAssetMonitoringOutcomeUniverseDigest(entry.outcomes),
+    internalOutcomeSetId: asset.outcomeCollection,
+  };
 }
 
 interface IndexedAssetMonitoringCustody {

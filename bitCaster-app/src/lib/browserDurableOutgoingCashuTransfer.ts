@@ -64,6 +64,10 @@ const SCOPE_LEASE_MS = 10 * 60 * 1_000;
 const CURSOR_HIGH = "\uffff";
 const DUE_MINT_DISCOVERY_KEY_LIMIT = DURABLE_OUTGOING_CASHU_RECOVERY_PAGE_LIMIT_MAX;
 
+type BrowserOutgoingScopeOwner = DurableCustodyOwnerAuthorization & {
+  readonly leaseExpiresAtMs: number;
+};
+
 export interface BrowserDurableOutgoingCashuWallet {
   completeSwap(preview: SwapPreview): Promise<{ readonly keep: Proof[]; readonly send: Proof[] }>;
   checkProofsStates(proofs: Array<Pick<Proof, "id" | "secret">>): Promise<readonly ProofState[]>;
@@ -540,7 +544,7 @@ async function persistBrowserOutgoingRetry(
 async function prepareBrowserOutgoingTransfer(input: {
   readonly input: ExecuteBrowserDurableOutgoingCashuTransferInput;
   readonly adapter: BrowserDurableCustodyAdapter;
-  readonly owner: DurableCustodyOwnerAuthorization;
+  readonly owner: BrowserOutgoingScopeOwner;
   readonly operation: DurableWalletSendOperation;
 }): Promise<DurableOutgoingCashuTransfer> {
   const { input: request, adapter, owner, operation } = input;
@@ -597,7 +601,7 @@ async function outgoingPredecessorRows(
 async function runBrowserOutgoingCoordinator(input: {
   readonly context: BrowserDurableOutgoingCashuContext;
   readonly adapter: BrowserDurableCustodyAdapter;
-  readonly owner: DurableCustodyOwnerAuthorization;
+  readonly owner: BrowserOutgoingScopeOwner;
   readonly wallet: BrowserDurableOutgoingCashuWallet;
   readonly restoreExactOutputs: DurableOutgoingCashuCoordinatorInput["restoreExactOutputs"];
   readonly transfer: DurableOutgoingCashuTransfer;
@@ -656,12 +660,6 @@ async function persistBrowserOutgoingMintResult(
     exactAuthority: exact,
     result: { keep, send },
   });
-  const successors = outgoingSuccessors(
-    scope.scopeId,
-    minted.transfer,
-    prepared.proofs,
-    runtime.context.now ?? Date.now,
-  );
   const revisions = await outgoingCustodyRevisions(
     runtime.adapter,
     scope,
@@ -669,6 +667,13 @@ async function persistBrowserOutgoingMintResult(
     keep,
     passthrough,
     send,
+  );
+  const commitOwner = freshPostMintCommitOwner(runtime);
+  const successors = outgoingSuccessors(
+    scope.scopeId,
+    minted.transfer,
+    prepared.proofs,
+    commitOwner.observedAtMs,
   );
   const admitted = admitDurableOutgoingCashuToken({
     transfer: minted.transfer,
@@ -678,7 +683,37 @@ async function persistBrowserOutgoingMintResult(
     custodyRevisions: revisions,
     dueAtMs: minted.transfer.recovery.dueAtMs,
   });
-  return commitOutgoingMintAdmission({ runtime, scope, snapshot, prepared, successors, admitted });
+  return commitOutgoingMintAdmission({
+    runtime,
+    scope,
+    snapshot,
+    prepared,
+    successors,
+    admitted,
+    owner: commitOwner,
+  });
+}
+
+/** Use one fresh lease-valid time for every post-mint custody fact and transition. */
+function freshPostMintCommitOwner(
+  runtime: Parameters<typeof runBrowserOutgoingCoordinator>[0],
+): BrowserOutgoingScopeOwner {
+  return ownerAtLeaseValidTime(
+    runtime.owner,
+    (runtime.context.now ?? Date.now)(),
+    "post-mint commit",
+  );
+}
+
+function ownerAtLeaseValidTime(
+  owner: BrowserOutgoingScopeOwner,
+  observedAtMs: number,
+  phase: string,
+): BrowserOutgoingScopeOwner {
+  if (observedAtMs >= owner.leaseExpiresAtMs) {
+    throw new Error(`browser outgoing scope lease expired before ${phase}`);
+  }
+  return { ...owner, observedAtMs };
 }
 
 async function commitOutgoingMintAdmission(input: {
@@ -690,16 +725,12 @@ async function commitOutgoingMintAdmission(input: {
   readonly prepared: ReturnType<typeof prepareDurableCustodyVerifiedMintResult>;
   readonly successors: readonly StagedBrowserCustodyProof[];
   readonly admitted: DurableOutgoingCashuTransfer;
+  readonly owner: BrowserOutgoingScopeOwner;
 }): Promise<DurableOutgoingCashuTransfer> {
   await input.runtime.adapter.transactAtomic(
-    selection(input.scope, input.runtime.owner, input.snapshot.record),
+    selection(input.scope, input.owner, input.snapshot.record),
     (transaction) =>
-      applyOutgoingMintResult(
-        transaction,
-        input.snapshot.record,
-        input.prepared,
-        input.runtime.owner,
-      ),
+      applyOutgoingMintResult(transaction, input.snapshot.record, input.prepared, input.owner),
     {
       successorProofs: { [input.snapshot.record.operation.operationId]: input.successors },
       outgoingTransfer: browserOutgoingCashuTransferRow(
@@ -863,9 +894,8 @@ function outgoingSuccessors(
   scopeId: string,
   transfer: DurableOutgoingCashuTransfer,
   proofs: ReturnType<typeof prepareDurableCustodyVerifiedMintResult>["proofs"],
-  now: () => number,
+  receivedAtMs: number,
 ): StagedBrowserCustodyProof[] {
-  const observedAtMs = now();
   let keepIndex = 0;
   return proofs.map(({ group, proof }) => ({
     proof: {
@@ -875,7 +905,7 @@ function outgoingSuccessors(
         unit: transfer.unit as "sat" | "msat",
         proof,
         asset: { kind: "regular" },
-        receivedAtMs: observedAtMs,
+        receivedAtMs,
       }),
       selectability: group === "send" ? "spent" : "selectable",
     },
@@ -1183,7 +1213,7 @@ function hydrateOutgoingProof(value: unknown): Proof {
 async function withBrowserOutgoingScope<T>(
   context: BrowserDurableOutgoingCashuContext,
   scopeId: string,
-  action: (owner: DurableCustodyOwnerAuthorization) => Promise<T>,
+  action: (owner: BrowserOutgoingScopeOwner) => Promise<T>,
 ): Promise<T> {
   const adapter = new BrowserDurableCustodyAdapter(context.database ?? db);
   const now = context.now ?? Date.now;
@@ -1193,14 +1223,16 @@ async function withBrowserOutgoingScope<T>(
     async () => {
       const scope = browserWalletScope(context.seed);
       const observedAtMs = now();
-      const owner = await adapter.claimScope(scope, {
+      const leaseExpiresAtMs = observedAtMs + SCOPE_LEASE_MS;
+      const claimed = await adapter.claimScope(scope, {
         incarnationId: `browser-outgoing:${randomId()}`,
         observedAtMs,
-        leaseExpiresAtMs: observedAtMs + SCOPE_LEASE_MS,
+        leaseExpiresAtMs,
       });
+      const owner: BrowserOutgoingScopeOwner = { ...claimed, leaseExpiresAtMs };
       let actionFailed = false;
       try {
-        return await action({ ...owner, observedAtMs: now() });
+        return await action(ownerAtLeaseValidTime(owner, now(), "outgoing execution"));
       } catch (error) {
         actionFailed = true;
         throw error;

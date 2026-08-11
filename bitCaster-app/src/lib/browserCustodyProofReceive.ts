@@ -18,7 +18,12 @@ import {
 } from "@bitcaster/client-sdk/durableWalletProofDerivationLocator";
 import { browserWalletScope } from "./browserCtfRangeOrderSource";
 import { withWalletProfileLock } from "./walletProfileLock";
-import { commitBrowserCustodyProofImport } from "../stores/browser-custody-proof-import";
+import {
+  commitBrowserCustodyProofImport,
+  commitBrowserCustodyProofImportsAtomic,
+  type BrowserCustodyProofImportAtomicAuthority,
+  type BrowserCustodyProofImportInput,
+} from "../stores/browser-custody-proof-import";
 import {
   BrowserDurableCustodyAdapter,
   createBrowserCustodyProofRow,
@@ -53,8 +58,30 @@ export interface AdmitBrowserReceivedProofsInput {
 }
 
 /** Admit one verified mint result into the canonical browser proof store. */
-export async function admitBrowserReceivedProofs(
+export function admitBrowserReceivedProofs(input: AdmitBrowserReceivedProofsInput): Promise<void> {
+  try {
+    return admitBrowserReceivedProofsInternal(input, false);
+  } catch (error) {
+    return Promise.reject(error);
+  }
+}
+
+/** Call only when the caller owns the exact wallet-profile lock. */
+export function admitBrowserReceivedProofsWithHeldProfileLock(
   input: AdmitBrowserReceivedProofsInput,
+  authority?: BrowserCustodyProofImportAtomicAuthority,
+): Promise<void> {
+  try {
+    return admitBrowserReceivedProofsInternal(input, true, authority);
+  } catch (error) {
+    return Promise.reject(error);
+  }
+}
+
+function admitBrowserReceivedProofsInternal(
+  input: AdmitBrowserReceivedProofsInput,
+  profileLockHeld: boolean,
+  authority?: BrowserCustodyProofImportAtomicAuthority,
 ): Promise<void> {
   if (
     input.proofs.length === 0 ||
@@ -80,46 +107,51 @@ export async function admitBrowserReceivedProofs(
     input.proofs.length / DURABLE_CUSTODY_PROOF_IMPORT_PAGE_PROOF_LIMIT_MAX,
   );
 
-  await withWalletProfileLock(
-    scope.scopeId,
-    async () => {
-      const adapter = new BrowserDurableCustodyAdapter(database);
-      const claimedAtMs = now();
-      const owner = await adapter.claimScope(scope, {
-        incarnationId: `browser-receive:${randomId()}`,
-        observedAtMs: claimedAtMs,
-        leaseExpiresAtMs: claimedAtMs + SCOPE_LEASE_MS,
-      });
-      let importFailure: unknown;
-      try {
-        for (let pageIndex = 0; pageIndex < pageCount; pageIndex += 1) {
-          const observedAtMs = now();
-          await commitImportPage({
-            input,
-            database,
-            scope,
-            owner: ownerAt(owner, observedAtMs),
-            keysets,
-            pageIndex,
-            pageCount,
-            proofSetFingerprint,
-            derivationLocators,
-            receivedAtMs: observedAtMs,
-          });
-        }
-      } catch (error) {
-        importFailure = error;
-        throw error;
-      } finally {
-        try {
-          await adapter.releaseScope(scope, ownerAt(owner, now()));
-        } catch (releaseError) {
-          if (importFailure === undefined) throw releaseError;
-        }
+  const commit = async (): Promise<void> => {
+    const adapter = new BrowserDurableCustodyAdapter(database);
+    const claimedAtMs = now();
+    const owner = await adapter.claimScope(scope, {
+      incarnationId: `browser-receive:${randomId()}`,
+      observedAtMs: claimedAtMs,
+      leaseExpiresAtMs: claimedAtMs + SCOPE_LEASE_MS,
+    });
+    let importFailure: unknown;
+    try {
+      const atomicPages: BrowserCustodyProofImportInput[] = [];
+      const batchObservedAtMs = now();
+      const batchOwner = ownerAt(owner, batchObservedAtMs);
+      for (let pageIndex = 0; pageIndex < pageCount; pageIndex += 1) {
+        const observedAtMs = profileLockHeld ? batchObservedAtMs : now();
+        const page = prepareImportPage({
+          input,
+          database,
+          scope,
+          owner: profileLockHeld ? batchOwner : ownerAt(owner, observedAtMs),
+          keysets,
+          pageIndex,
+          pageCount,
+          proofSetFingerprint,
+          derivationLocators,
+          receivedAtMs: observedAtMs,
+        });
+        if (profileLockHeld) atomicPages.push(page);
+        else await commitBrowserCustodyProofImport(page);
       }
-    },
-    input.lockManager,
-  );
+      if (profileLockHeld) await commitBrowserCustodyProofImportsAtomic(atomicPages, authority);
+    } catch (error) {
+      importFailure = error;
+      throw error;
+    } finally {
+      try {
+        await adapter.releaseScope(scope, ownerAt(owner, now()));
+      } catch (releaseError) {
+        if (importFailure === undefined) throw releaseError;
+      }
+    }
+  };
+  return profileLockHeld
+    ? commit()
+    : withWalletProfileLock(scope.scopeId, commit, input.lockManager);
 }
 
 interface CommitImportPageInput {
@@ -141,7 +173,7 @@ interface CommitImportPageInput {
   readonly derivationLocators: BrowserProofLocatorMap;
 }
 
-function commitImportPage(pageInput: CommitImportPageInput): Promise<void> {
+function prepareImportPage(pageInput: CommitImportPageInput): BrowserCustodyProofImportInput {
   const { input, scope } = pageInput;
   const page = input.proofs.slice(
     pageInput.pageIndex * DURABLE_CUSTODY_PROOF_IMPORT_PAGE_PROOF_LIMIT_MAX,
@@ -189,13 +221,13 @@ function commitImportPage(pageInput: CommitImportPageInput): Promise<void> {
     }),
     ...(pageInput.pageCount === 1 ? {} : { batchAuthority: batchAuthority(pageInput) }),
   });
-  return commitBrowserCustodyProofImport({
+  return {
     scope,
     owner: pageInput.owner,
     prepared,
     proofs: staged,
     database: pageInput.database,
-  });
+  };
 }
 
 function deriveProofLocators(input: AdmitBrowserReceivedProofsInput): BrowserProofLocatorMap {

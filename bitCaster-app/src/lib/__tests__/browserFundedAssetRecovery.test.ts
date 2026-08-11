@@ -57,25 +57,35 @@ describe("recoverBrowserFundedAsset", () => {
     expect(mocks.driver.recoverTargetedAsset).not.toHaveBeenCalled();
   });
 
-  it("uses one exact monitoring page only after an insufficient action plan", async () => {
+  it("invokes backup recovery before one bounded exact monitoring read", async () => {
+    const order: string[] = [];
     const loadPlan = vi.fn().mockResolvedValue({ kind: "insufficient" as const });
     mocks.rows.mockResolvedValue([]);
     mocks.activeDriver.mockReturnValue(mocks.driver);
     mocks.wallet.mockResolvedValue({ mint: { mintUrl: "https://mint.example" } });
-    mocks.engineAssets.mockResolvedValue({
-      assets: [
-        {
-          asset: {
-            canonicalMintUrl: "https://mint.example",
-            kind: "collateral",
-            cashuUnit: "msat",
-            displayBaseAsset: "msat",
+    mocks.engineAssets.mockImplementation(async () => {
+      order.push("monitoring");
+      return {
+        assets: [
+          {
+            asset: {
+              canonicalMintUrl: "https://mint.example",
+              kind: "collateral",
+              cashuUnit: "msat",
+              displayBaseAsset: "msat",
+            },
+            availableSubunits: 10,
           },
-          availableSubunits: 10,
-        },
-      ],
+        ],
+      };
     });
-    mocks.driver.recoverTargetedAsset.mockResolvedValue({ kind: "restored-mint" });
+    mocks.driver.recoverTargetedAsset.mockImplementation(
+      async ({ readExactMonitoringRecovery }) => {
+        order.push("driver");
+        await readExactMonitoringRecovery();
+        return { kind: "restored-mint" };
+      },
+    );
 
     await expect(recoverBrowserFundedAsset(input(loadPlan))).resolves.toEqual({
       kind: "recovered",
@@ -83,9 +93,25 @@ describe("recoverBrowserFundedAsset", () => {
 
     expect(mocks.engineAssets).toHaveBeenCalledWith(expect.objectContaining({ pageSize: 200 }));
     expect(mocks.engineAssets).toHaveBeenCalledOnce();
+    expect(order).toEqual(["driver", "monitoring"]);
     expect(mocks.driver.recoverTargetedAsset).toHaveBeenCalledWith(
-      expect.objectContaining({ asset }),
+      expect.objectContaining({ asset, requiredAmount: 10n }),
     );
+  });
+
+  it("does not read engine monitoring or load a mint when backup restoration succeeds", async () => {
+    const loadPlan = vi.fn().mockResolvedValue({ kind: "insufficient" as const });
+    mocks.rows.mockResolvedValue([]);
+    mocks.activeDriver.mockReturnValue(mocks.driver);
+    mocks.driver.recoverTargetedAsset.mockResolvedValue({ kind: "restored-backup" });
+
+    await expect(recoverBrowserFundedAsset(input(loadPlan))).resolves.toEqual({
+      kind: "recovered",
+    });
+
+    expect(mocks.engineAssets).not.toHaveBeenCalled();
+    expect(mocks.wallet).not.toHaveBeenCalled();
+    expect(mocks.driver.recoverTargetedAsset).toHaveBeenCalledOnce();
   });
 
   it("does not load the mint when the exact monitoring fact is absent", async () => {
@@ -93,13 +119,19 @@ describe("recoverBrowserFundedAsset", () => {
     mocks.rows.mockResolvedValue([]);
     mocks.activeDriver.mockReturnValue(mocks.driver);
     mocks.engineAssets.mockResolvedValue({ assets: [] });
+    mocks.driver.recoverTargetedAsset.mockImplementation(
+      async ({ readExactMonitoringRecovery }) => {
+        await readExactMonitoringRecovery();
+        return { kind: "unavailable" };
+      },
+    );
 
     await expect(recoverBrowserFundedAsset(input(loadPlan))).resolves.toEqual({
       kind: "unavailable",
     });
 
     expect(mocks.wallet).not.toHaveBeenCalled();
-    expect(mocks.driver.recoverTargetedAsset).not.toHaveBeenCalled();
+    expect(mocks.driver.recoverTargetedAsset).toHaveBeenCalledOnce();
   });
 
   it("returns ordinary insufficiency when the exact monitoring fact is below the action amount", async () => {
@@ -107,13 +139,19 @@ describe("recoverBrowserFundedAsset", () => {
     mocks.rows.mockResolvedValue([]);
     mocks.activeDriver.mockReturnValue(mocks.driver);
     mocks.engineAssets.mockResolvedValue({ assets: [monitoringFact(9)] });
+    mocks.driver.recoverTargetedAsset.mockImplementation(
+      async ({ readExactMonitoringRecovery }) => {
+        await readExactMonitoringRecovery();
+        return { kind: "unavailable" };
+      },
+    );
 
     await expect(recoverBrowserFundedAsset(input(loadPlan))).resolves.toEqual({
       kind: "unavailable",
     });
 
     expect(mocks.wallet).not.toHaveBeenCalled();
-    expect(mocks.driver.recoverTargetedAsset).not.toHaveBeenCalled();
+    expect(mocks.driver.recoverTargetedAsset).toHaveBeenCalledOnce();
   });
 
   it.each([
@@ -127,7 +165,12 @@ describe("recoverBrowserFundedAsset", () => {
       mocks.activeDriver.mockReturnValue(mocks.driver);
       mocks.wallet.mockResolvedValue({ mint: { mintUrl: "https://mint.example" } });
       mocks.engineAssets.mockResolvedValue({ assets: [monitoringFact(10)] });
-      mocks.driver.recoverTargetedAsset.mockResolvedValue(outcome);
+      mocks.driver.recoverTargetedAsset.mockImplementation(
+        async ({ readExactMonitoringRecovery }) => {
+          await readExactMonitoringRecovery();
+          return outcome;
+        },
+      );
 
       await expect(recoverBrowserFundedAsset(input(loadPlan))).resolves.toEqual({
         kind: "persistent-error",
@@ -144,13 +187,19 @@ describe("recoverBrowserFundedAsset", () => {
       current = false;
       return { assets: [monitoringFact(10)] };
     });
+    mocks.driver.recoverTargetedAsset.mockImplementation(
+      async ({ readExactMonitoringRecovery }) => {
+        await readExactMonitoringRecovery();
+        return { kind: "restored-mint" };
+      },
+    );
 
     await expect(
       recoverBrowserFundedAsset(input(loadPlan, { isCurrentProfile: () => current })),
     ).resolves.toEqual({ kind: "persistent-error" });
 
     expect(mocks.wallet).not.toHaveBeenCalled();
-    expect(mocks.driver.recoverTargetedAsset).not.toHaveBeenCalled();
+    expect(mocks.driver.recoverTargetedAsset).toHaveBeenCalledOnce();
   });
 
   it("repairs only selectable canonical rows", async () => {

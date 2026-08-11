@@ -17,15 +17,9 @@ import {
   createEncryptedWalletBackupV2AssetIdentity,
   type EncryptedWalletBackupV2AssetIdentity,
 } from "@bitcaster/client-sdk";
-import { locateSeedDerivedProofLineage } from "@bitcaster/client-sdk/durableSeedDerivedProofLineage";
-import { serializeDurableWalletSendOperation } from "@bitcaster/client-sdk/durableWalletOperation";
 import type { DurableWalletProofDerivationLocator } from "@bitcaster/client-sdk/durableWalletProofDerivationLocator";
-import type { OperationCounters, OutputData, Proof, SwapPreview } from "@cashu/cashu-ts";
 import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
-import type {
-  DurableOutgoingCashuCoordinatorInput,
-  DurableOutgoingCashuTransfer,
-} from "@bitcaster/client-sdk/durableOutgoingCashuTransfer";
+import type { DurableOutgoingCashuTransfer } from "@bitcaster/client-sdk/durableOutgoingCashuTransfer";
 import {
   acknowledgeBrowserDurableOutgoingCashuRecipient,
   executeBrowserDurableOutgoingCashuTransfer,
@@ -34,12 +28,12 @@ import {
   type BrowserDurableOutgoingCashuContext,
 } from "@/lib/browserDurableOutgoingCashuTransfer";
 import {
-  captureBrowserMintPersistenceContext,
-  getWalletForUnit,
-  restoreExactMintOutputs,
-} from "@/lib/cashu";
+  prepareBrowserDeterministicOutgoingCashuSend,
+  restoreBrowserDeterministicOutgoingCashuOutputs,
+} from "@/lib/browserDeterministicOutgoingCashu";
+import { captureBrowserMintPersistenceContext, getWalletForUnit } from "@/lib/cashu";
 import { recoverBrowserFundedAsset } from "@/lib/browserFundedAssetRecovery";
-import { getBoundedMarketFundingProofs, type StoredProof } from "@/stores/proof-db";
+import { getBoundedCanonicalRegularProofs, type StoredProof } from "@/stores/proof-db";
 import { getDurableCashuDeliveryStatus, submitDurableCashuDelivery } from "@/lib/markets";
 
 export type MarketFundingDeliveryProgress = "pending" | "received" | "credited";
@@ -82,11 +76,25 @@ export async function executeBrowserMarketFundingDelivery(
     context,
   });
   if (prior !== null) {
+    if (prior.token !== null) {
+      return reconcileBrowserMarketFundingDelivery({
+        transfer: prior,
+        metadata: persistedMarketFundingMetadata(input, prior),
+        readStatus: getDurableCashuDeliveryStatus,
+        submit: submitDurableCashuDelivery,
+        context,
+      });
+    }
     const wallet = await getWalletForUnit(prior.mintUrl, prior.unit);
     const recovered = await recoverBrowserDurableOutgoingCashuTransfer({
       transferId: prior.transferId,
       wallet,
-      restoreExactOutputs: (restore) => restoreMarketFundingExactOutputs(wallet, restore),
+      restoreExactOutputs: (restore) =>
+        restoreBrowserDeterministicOutgoingCashuOutputs({
+          wallet,
+          restore,
+          diagnosticLabel: "Market funding",
+        }),
       context,
     });
     if (recovered === null) {
@@ -145,20 +153,26 @@ export async function executeBrowserMarketFundingDelivery(
         }
         throw new BrowserMarketFundingInsufficientBalanceError();
       }
-      return prepareMarketFundingWalletSend({
-        deliveryId,
+      return prepareBrowserDeterministicOutgoingCashuSend({
+        operationId: `market-funding:${deliveryId}`,
         wallet,
         proofs,
         amount: Number(input.requestedAmount),
         mintUrl: durableMetadata.mintUrl,
         unit: durableMetadata.unit,
         seed: context.seed,
-        keepLocators,
+        keepProofDerivationLocators: keepLocators,
+        diagnosticLabel: "Market funding",
       });
     },
     keepProofDerivationLocators: keepLocators,
     wallet,
-    restoreExactOutputs: (restore) => restoreMarketFundingExactOutputs(wallet, restore),
+    restoreExactOutputs: (restore) =>
+      restoreBrowserDeterministicOutgoingCashuOutputs({
+        wallet,
+        restore,
+        diagnosticLabel: "Market funding",
+      }),
     context,
   });
   return reconcileBrowserMarketFundingDelivery({
@@ -221,7 +235,7 @@ async function readMarketFundingCandidates(input: {
   readonly unit: "sat" | "msat";
   readonly scopeId: string;
 }): Promise<StoredProof[]> {
-  return getBoundedMarketFundingProofs(input.mintUrl, {
+  return getBoundedCanonicalRegularProofs(input.mintUrl, {
     unit: input.unit,
     scopeId: input.scopeId,
   });
@@ -241,25 +255,6 @@ function persistedMarketFundingMetadata(
     mintUrl: transfer.mintUrl,
     unit: "msat",
     requestedAmount: transfer.requestedAmount,
-  };
-}
-
-async function restoreMarketFundingExactOutputs(
-  wallet: Awaited<ReturnType<typeof getWalletForUnit>>,
-  input: Parameters<DurableOutgoingCashuCoordinatorInput["restoreExactOutputs"]>[0],
-) {
-  const exactOutputs = [...input.outputs.keep, ...input.outputs.send];
-  const restored = await restoreExactMintOutputs(wallet, {
-    mintUrl: input.mintUrl,
-    unit: input.unit,
-    outputs: exactOutputs,
-  });
-  if (restored.length !== exactOutputs.length) {
-    throw new Error("market funding restored output set is incomplete");
-  }
-  return {
-    keep: restored.slice(0, input.outputs.keep.length),
-    send: restored.slice(input.outputs.keep.length),
   };
 }
 
@@ -352,89 +347,4 @@ function marketFundingMetadata(
     throw new Error("market funding product binding conflicts with the stored transfer");
   }
   return durableMetadata;
-}
-
-async function prepareMarketFundingWalletSend(input: {
-  readonly deliveryId: string;
-  readonly wallet: {
-    prepareSwapToSend(
-      amount: number,
-      proofs: Proof[],
-      config: {
-        includeFees: false;
-        keysetId: string;
-        onCountersReserved: (counters: OperationCounters) => void;
-      },
-      outputConfig: {
-        send: { type: "deterministic"; counter: 0 };
-        keep: { type: "deterministic"; counter: 0 };
-      },
-    ): Promise<SwapPreview>;
-    getKeyset(keysetId?: string): { id: string };
-  };
-  readonly proofs: readonly StoredProof[];
-  readonly amount: number;
-  readonly mintUrl: string;
-  readonly unit: "sat" | "msat";
-  readonly seed: Uint8Array;
-  readonly keepLocators: Array<DurableWalletProofDerivationLocator | null>;
-}) {
-  if (!Number.isSafeInteger(input.amount) || input.amount < 1) {
-    throw new Error("market funding amount is invalid");
-  }
-  const keysetId = input.wallet.getKeyset().id;
-  const counterReservation: { value: OperationCounters | null } = { value: null };
-  const preview = await input.wallet.prepareSwapToSend(
-    input.amount,
-    input.proofs as unknown as Proof[],
-    {
-      includeFees: false,
-      keysetId,
-      onCountersReserved: (reserved) => {
-        if (counterReservation.value !== null) {
-          throw new Error("market funding output counters were reserved twice");
-        }
-        counterReservation.value = reserved;
-      },
-    },
-    {
-      send: { type: "deterministic", counter: 0 },
-      keep: { type: "deterministic", counter: 0 },
-    },
-  );
-  const counters = counterReservation.value;
-  if (counters === null || counters.keysetId !== preview.keysetId) {
-    throw new Error("market funding output counter reservation is missing");
-  }
-  const outputs = [...(preview.sendOutputs ?? []), ...(preview.keepOutputs ?? [])];
-  if (outputs.length !== counters.count) {
-    throw new Error("market funding output counter reservation conflicts with the output plan");
-  }
-  const lineage = locateSeedDerivedProofLineage({
-    seed: input.seed,
-    keysetId: counters.keysetId,
-    counterStart: counters.start,
-    counterCount: counters.count,
-    proofs: outputs.map(outputProofLineage),
-  });
-  const locators = new Map(lineage.map(({ secret, ...locator }) => [secret, locator]));
-  input.keepLocators.splice(
-    0,
-    input.keepLocators.length,
-    ...(preview.keepOutputs ?? []).map((output) => {
-      const locator = locators.get(outputProofLineage(output).secret);
-      if (locator === undefined) throw new Error("market funding keep output locator is missing");
-      return locator;
-    }),
-  );
-  return serializeDurableWalletSendOperation({
-    operationId: `market-funding:${input.deliveryId}`,
-    mintUrl: input.mintUrl,
-    unit: input.unit,
-    preview,
-  });
-}
-
-function outputProofLineage(output: OutputData): { readonly id: string; readonly secret: string } {
-  return { id: output.blindedMessage.id, secret: new TextDecoder().decode(output.secret) };
 }

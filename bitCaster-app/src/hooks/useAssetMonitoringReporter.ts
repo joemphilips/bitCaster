@@ -14,6 +14,7 @@ import {
 import { createAuthenticatedBrowserEngineClient } from "@/lib/markets";
 import { getNdk, getNostrSignerRevision, subscribeToNostrSignerRevision } from "@/lib/nostr";
 import { hasSubmittedCtfRangeOrder } from "@/stores/ctf-range-order-db";
+import { listBrowserEncryptedWalletBackupV2EvictedAssetMonitoringFacts } from "@/lib/browserEncryptedWalletBackupV2SeedHandoff";
 import {
   db,
   isCtfProof,
@@ -62,6 +63,7 @@ export function useAssetMonitoringReporter(nostrSignerReady: boolean): void {
           proofs,
           catalogue,
           ...(snapshot.custody === undefined ? {} : { custody: snapshot.custody }),
+          ...(snapshot.evictedAssets.length === 0 ? {} : { evictedAssets: snapshot.evictedAssets }),
         });
       },
       hasPendingSubmittedOrder: () => hasSubmittedCtfRangeOrder(scopeId, database),
@@ -96,6 +98,9 @@ interface AssetMonitoringDatabaseSnapshot {
     readonly proofs: readonly unknown[];
     readonly proofBackupAuthorities: readonly unknown[];
   };
+  readonly evictedAssets: Awaited<
+    ReturnType<typeof listBrowserEncryptedWalletBackupV2EvictedAssetMonitoringFacts>
+  >;
 }
 
 async function readAssetMonitoringSnapshot(
@@ -103,15 +108,22 @@ async function readAssetMonitoringSnapshot(
   scopeId: string,
 ): Promise<AssetMonitoringDatabaseSnapshot> {
   if (!hasCustodyAuthorityTables(database)) {
-    return { proofRows: await database.proofs.toArray() };
+    return { proofRows: await database.proofs.toArray(), evictedAssets: [] };
   }
   return database.transaction(
     "r",
-    database.proofs,
-    database.custodyProofs,
-    database.custodyProofBackupAuthorities,
+    [
+      database.proofs,
+      database.custodyProofs,
+      database.custodyProofBackupAuthorities,
+      database.custodyConditionalKeysets,
+      database.encryptedWalletBackupV2DesiredAssets,
+      database.encryptedWalletBackupV2AssetReceipts,
+      database.encryptedWalletBackupV2AcceptedHeads,
+      database.encryptedWalletBackupV2ActiveDescriptors,
+    ],
     async () => {
-      const [proofRows, custodyProofs, proofBackupAuthorities] = await Promise.all([
+      const [proofRows, custodyProofs, proofBackupAuthorities, evictedAssets] = await Promise.all([
         database.proofs.toArray(),
         database.custodyProofs
           .where("[scopeId+selectability+proofId]")
@@ -121,10 +133,18 @@ async function readAssetMonitoringSnapshot(
           .where("[scopeId+proofState+proofId]")
           .between([scopeId, Dexie.minKey, Dexie.minKey], [scopeId, Dexie.maxKey, Dexie.maxKey])
           .toArray(),
+        listBrowserEncryptedWalletBackupV2EvictedAssetMonitoringFacts({
+          database,
+          scopeId,
+          isCurrentProfile: () =>
+            database.name === browserWalletDatabaseName(scopeId) &&
+            activeBrowserWalletScopeId() === scopeId,
+        }),
       ]);
       return {
         proofRows,
         custody: { scopeId, proofs: custodyProofs, proofBackupAuthorities },
+        evictedAssets,
       };
     },
   );
@@ -144,6 +164,8 @@ export function subscribeToCommittedProofChanges(
   const observedTransactions = new WeakSet<Transaction>();
   let active = true;
   const observesAuthorities = hasCustodyAuthorityTables(database);
+  const observesBackupMetadata = hasBackupMetadataTables(database);
+  const metadataUnsubscribers: Array<() => void> = [];
   const requestAfterCommit = (transaction: Transaction) => {
     if (observedTransactions.has(transaction)) return;
     observedTransactions.add(transaction);
@@ -180,6 +202,15 @@ export function subscribeToCommittedProofChanges(
     database.custodyProofBackupAuthorities.hook("updating", authorityUpdating);
     database.custodyProofBackupAuthorities.hook("deleting", authorityDeleting);
   }
+  if (observesBackupMetadata) {
+    metadataUnsubscribers.push(
+      subscribeTableChanges(database.encryptedWalletBackupV2DesiredAssets, requestAfterCommit),
+      subscribeTableChanges(database.encryptedWalletBackupV2AssetReceipts, requestAfterCommit),
+      subscribeTableChanges(database.encryptedWalletBackupV2AcceptedHeads, requestAfterCommit),
+      subscribeTableChanges(database.encryptedWalletBackupV2ActiveDescriptors, requestAfterCommit),
+      subscribeTableChanges(database.custodyConditionalKeysets, requestAfterCommit),
+    );
+  }
   return () => {
     active = false;
     database.proofs.hook("creating").unsubscribe(creating);
@@ -190,6 +221,39 @@ export function subscribeToCommittedProofChanges(
       database.custodyProofBackupAuthorities.hook("updating").unsubscribe(authorityUpdating);
       database.custodyProofBackupAuthorities.hook("deleting").unsubscribe(authorityDeleting);
     }
+    if (observesBackupMetadata) {
+      metadataUnsubscribers.forEach((unsubscribe) => unsubscribe());
+    }
+  };
+}
+
+function hasBackupMetadataTables(database: BitcasterDB): boolean {
+  return (
+    database.custodyConditionalKeysets !== undefined &&
+    database.encryptedWalletBackupV2DesiredAssets !== undefined &&
+    database.encryptedWalletBackupV2AssetReceipts !== undefined &&
+    database.encryptedWalletBackupV2AcceptedHeads !== undefined &&
+    database.encryptedWalletBackupV2ActiveDescriptors !== undefined
+  );
+}
+
+function subscribeTableChanges(
+  table: { hook(event: "creating" | "updating" | "deleting", listener?: never): unknown },
+  requestAfterCommit: (transaction: Transaction) => void,
+): () => void {
+  const creating = (_key: unknown, _value: unknown, transaction: Transaction) =>
+    requestAfterCommit(transaction);
+  const updating = (_changes: object, _key: unknown, _value: unknown, transaction: Transaction) =>
+    requestAfterCommit(transaction);
+  const deleting = (_key: unknown, _value: unknown, transaction: Transaction) =>
+    requestAfterCommit(transaction);
+  table.hook("creating", creating as never);
+  table.hook("updating", updating as never);
+  table.hook("deleting", deleting as never);
+  return () => {
+    (table.hook("creating") as { unsubscribe(listener: unknown): void }).unsubscribe(creating);
+    (table.hook("updating") as { unsubscribe(listener: unknown): void }).unsubscribe(updating);
+    (table.hook("deleting") as { unsubscribe(listener: unknown): void }).unsubscribe(deleting);
   };
 }
 

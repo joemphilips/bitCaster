@@ -92,7 +92,7 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class DurableCashuDeliverySubmission
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public DurableCashuDeliverySubmission(string @accountSubject, DurableCashuCreditPolicy @creditPolicy, System.Guid @deliveryId, string @destinationId, System.Uri @mintUrl, string @productBindingSha256, DurableCashuDeliveryPurpose @purpose, DurableCashuRecipientKind @recipientKind, string @requestedAmount, DurableCashuDeliverySubmissionSchemaVersion @schemaVersion, string @token, int @tokenEncodedLength, string @tokenSha256, DurableCashuDeliverySubmissionUnit @unit)
+        public DurableCashuDeliverySubmission(string @accountSubject, DurableCashuCreditPolicy @creditPolicy, System.Guid @deliveryId, string @destinationId, System.Uri @mintUrl, string @productBindingSha256, DurableCashuDeliveryPurpose @purpose, DurableCashuRecipientKind @recipientKind, string @requestedAmount, int @schemaVersion, string @token, int @tokenEncodedLength, string @tokenSha256, DurableCashuDeliverySubmissionUnit @unit)
         {
             this.SchemaVersion = @schemaVersion;
             this.DeliveryId = @deliveryId;
@@ -111,7 +111,7 @@ namespace BitCaster.MatchingEngine.Contracts
         }
 
         [System.Text.Json.Serialization.JsonPropertyName("schemaVersion")]
-        public DurableCashuDeliverySubmissionSchemaVersion SchemaVersion { get; }
+        public int SchemaVersion { get; }
 
         /// <summary>
         /// Lowercase canonical UUID delivery identifier.
@@ -181,7 +181,7 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class DurableCashuDeliveryImmutableTuple
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public DurableCashuDeliveryImmutableTuple(string @accountSubject, DurableCashuCreditPolicy @creditPolicy, System.Guid @deliveryId, string @destinationId, System.Uri @mintUrl, string @productBindingSha256, DurableCashuDeliveryPurpose @purpose, DurableCashuRecipientKind @recipientKind, string @requestedAmount, DurableCashuDeliveryImmutableTupleSchemaVersion @schemaVersion, int @tokenEncodedLength, string @tokenSha256, DurableCashuDeliveryImmutableTupleUnit @unit)
+        public DurableCashuDeliveryImmutableTuple(string @accountSubject, DurableCashuCreditPolicy @creditPolicy, System.Guid @deliveryId, string @destinationId, System.Uri @mintUrl, string @productBindingSha256, DurableCashuDeliveryPurpose @purpose, DurableCashuRecipientKind @recipientKind, string @requestedAmount, int @schemaVersion, int @tokenEncodedLength, string @tokenSha256, DurableCashuDeliveryImmutableTupleUnit @unit)
         {
             this.SchemaVersion = @schemaVersion;
             this.DeliveryId = @deliveryId;
@@ -199,7 +199,7 @@ namespace BitCaster.MatchingEngine.Contracts
         }
 
         [System.Text.Json.Serialization.JsonPropertyName("schemaVersion")]
-        public DurableCashuDeliveryImmutableTupleSchemaVersion SchemaVersion { get; }
+        public int SchemaVersion { get; }
 
         /// <summary>
         /// Lowercase canonical UUID delivery identifier.
@@ -313,7 +313,7 @@ namespace BitCaster.MatchingEngine.Contracts
     }
 
     /// <summary>
-    /// Delivery state. A pending state has a null result. A received state has a receive result and no business event. A credited state has a receive result and both business event fields. SDK decoders enforce these paired fields.
+    /// Delivery state. A pending state has a null result. A received state has a receive result and no business event. The received result can omit both business event fields or set both fields to null. A credited state has a receive result and both non-null business event fields. SDK decoders enforce these paired fields.
     /// <br/>
     /// </summary>
     [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
@@ -3968,14 +3968,6 @@ namespace BitCaster.MatchingEngine.Contracts
     }
 
     [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
-    public enum DurableCashuDeliverySubmissionSchemaVersion
-    {
-
-        _1 = 1,
-
-    }
-
-    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
     public enum DurableCashuDeliverySubmissionUnit
     {
 
@@ -3984,14 +3976,6 @@ namespace BitCaster.MatchingEngine.Contracts
 
         [System.Runtime.Serialization.EnumMember(Value = @"msat")]
         Msat = 1,
-
-    }
-
-    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
-    public enum DurableCashuDeliveryImmutableTupleSchemaVersion
-    {
-
-        _1 = 1,
 
     }
 

@@ -659,8 +659,7 @@ export interface components {
         /** @enum {string} */
         DurableCashuCreditVerification: "exact-amount" | "net-of-receive-fee";
         DurableCashuDeliverySubmission: {
-            /** @enum {integer} */
-            schemaVersion: 1;
+            schemaVersion: number;
             /**
              * Format: uuid
              * @description Lowercase canonical UUID delivery identifier.
@@ -690,8 +689,7 @@ export interface components {
         };
         /** @description Tuple fingerprint input order is schemaVersion, deliveryId, accountSubject, recipientKind, purpose, destinationId, productBindingSha256, mintUrl, unit, requestedAmount, creditPolicy, tokenSha256, tokenEncodedLength. SHA-256 uses UTF-8 fields joined by NUL after the domain string "bitcaster/durable-cashu-delivery/v1". */
         DurableCashuDeliveryImmutableTuple: {
-            /** @enum {integer} */
-            schemaVersion: 1;
+            schemaVersion: number;
             /**
              * Format: uuid
              * @description Lowercase canonical UUID delivery identifier.
@@ -736,13 +734,13 @@ export interface components {
              */
             businessEventAt?: string;
         };
-        /** @description Delivery state. A pending state has a null result. A received state has a receive result and no business event. A credited state has a receive result and both business event fields. SDK decoders enforce these paired fields. */
+        /** @description Delivery state. A pending state has a null result. A received state has a receive result and no business event. The received result can omit both business event fields or set both fields to null. A credited state has a receive result and both non-null business event fields. SDK decoders enforce these paired fields. */
         DurableCashuDeliveryStatus: {
             delivery: components["schemas"]["DurableCashuDeliveryImmutableTuple"];
             tupleFingerprint: components["schemas"]["Sha256Digest"];
             state: components["schemas"]["DurableCashuDeliveryState"];
             result: components["schemas"]["DurableCashuDeliveryResult"] | null;
-        } & (unknown & unknown & unknown);
+        } & (unknown & unknown);
         /**
          * @description Canonical Cashu unit for a monitored asset or its display base asset.
          * @enum {string}

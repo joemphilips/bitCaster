@@ -248,6 +248,63 @@ describe("asset monitoring snapshot", () => {
     ]);
   });
 
+  it("merges a fully evicted ordinary backup descriptor with unrelated local proof rows", () => {
+    const holdings = buildAssetMonitoringHoldings({
+      proofs: [proof({ amount: 4_096 })],
+      catalogue: [],
+      evictedAssets: [
+        {
+          kind: "ordinary",
+          mintUrl: "https://mint.example",
+          unit: "msat",
+          declaredAmount: 20_000_000,
+        },
+      ],
+    });
+
+    expect(holdings).toEqual([
+      expect.objectContaining({ availableSubunits: 20_004_096, pendingOutgoingSubunits: 0 }),
+    ]);
+  });
+
+  it("maps an evicted conditional asset without creating a recovery hint", () => {
+    const holdings = buildAssetMonitoringHoldings({
+      proofs: [],
+      catalogue: [{ conditionId, outcomes: ["NO", "YES"] }],
+      evictedAssets: [
+        {
+          kind: "conditional",
+          mintUrl: "https://mint.example",
+          unit: "msat",
+          conditionId,
+          outcomeCollection: "YES",
+          declaredAmount: 20_000_000,
+        },
+      ],
+    });
+
+    expect(holdings).toEqual([
+      expect.objectContaining({ availableSubunits: 20_000_000, pendingOutgoingSubunits: 0 }),
+    ]);
+    expect(holdings?.[0]?.asset).toEqual(
+      expect.objectContaining({ kind: "conditional", conditionId, internalOutcomeSetId: "YES" }),
+    );
+    expect(holdings?.[0]).not.toHaveProperty("recoveryHint");
+  });
+
+  it("keeps evicted conditional assets within the monitoring condition bound", () => {
+    const evictedAssets = Array.from({ length: 201 }, (_, index) => ({
+      kind: "conditional" as const,
+      mintUrl: "https://mint.example",
+      unit: "msat" as const,
+      conditionId: index.toString(16).padStart(64, "0"),
+      outcomeCollection: "YES",
+      declaredAmount: 1,
+    }));
+
+    expect(buildAssetMonitoringHoldings({ proofs: [], catalogue: [], evictedAssets })).toBeNull();
+  });
+
   it("resolves conditional metadata from the exact catalogue outcomes", () => {
     const holdings = buildAssetMonitoringHoldings({
       proofs: [proof({ conditionId, outcomeCollection: "NO|YES", unit: "msat" })],

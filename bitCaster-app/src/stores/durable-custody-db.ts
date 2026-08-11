@@ -141,6 +141,11 @@ export interface BrowserCustodyTransactionOptions {
   readonly outgoingTransfer?: BrowserOutgoingCashuTransferRow;
   /** A physical pre-mint reservation. Null consumes an existing reservation. */
   readonly outgoingAdmission?: BrowserOutgoingCashuTransferAdmissionRow | null;
+  /** Include browser counter authority in this physical custody commit. */
+  readonly walletCounterAuthority?: {
+    readonly beforePersist?: () => void | Promise<void>;
+    readonly afterPersist: () => void | Promise<void>;
+  };
 }
 
 type ApplyVerifiedResultInput = Parameters<DurableCustodyTransaction["applyVerifiedResult"]>[0];
@@ -259,9 +264,11 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
   ): Promise<T> {
     if (
       !atomic &&
-      (options.outgoingTransfer !== undefined || options.outgoingAdmission !== undefined)
+      (options.outgoingTransfer !== undefined ||
+        options.outgoingAdmission !== undefined ||
+        options.walletCounterAuthority !== undefined)
     ) {
-      throw new Error("browser outgoing transfer requires atomic custody transaction");
+      throw new Error("browser custody extension requires atomic transaction");
     }
     const tables = [
       this.#database.custodyScopes,
@@ -276,8 +283,12 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
       ...(atomic
         ? [this.#database.outgoingCashuTransfers, this.#database.outgoingCashuTransferAdmissions]
         : []),
+      ...(options.walletCounterAuthority === undefined
+        ? []
+        : [this.#database.walletCounterAssociations, this.#database.walletCounterCursors]),
     ];
     const result = await this.#database.transaction("rw", tables, async () => {
+      await options.walletCounterAuthority?.beforePersist?.();
       const scope = (await this.#requiredScope(selection.scope.scopeId)).state;
       const operations = await this.#loadSelectedOperations(selection);
       const artifacts = await this.#loadArtifacts(selection.scope.scopeId, operations);
@@ -309,6 +320,7 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
       } else if (atomic && options.outgoingAdmission !== undefined) {
         throw new Error("browser outgoing admission requires an outgoing transfer");
       }
+      await options.walletCounterAuthority?.afterPersist();
       if (options.injectFault === "before-commit") {
         throw new Error("injected browser custody fault before commit");
       }
@@ -783,19 +795,21 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
   }
 
   async #persistChangedOperations(transaction: StagedBrowserCustodyTransaction): Promise<void> {
-    for (const operationId of transaction.changedOperationIds) {
+    const rows = [...transaction.changedOperationIds].map((operationId) => {
       const record = transaction.operations.get(operationId);
       if (!record) throw new Error("browser custody changed operation is absent");
-      await this.#database.custodyOperations.put(operationRow(record));
-    }
+      return operationRow(record);
+    });
+    if (rows.length !== 0) await this.#database.custodyOperations.bulkPut(rows);
   }
 
   async #persistChangedArtifacts(transaction: StagedBrowserCustodyTransaction): Promise<void> {
-    for (const key of transaction.changedArtifactKeys) {
+    const rows = [...transaction.changedArtifactKeys].map((key) => {
       const artifact = transaction.artifacts.get(key);
       if (!artifact) throw new Error("browser custody changed artifact is absent");
-      await this.#database.custodyArtifacts.put(decodeArtifactRow(artifact));
-    }
+      return decodeArtifactRow(artifact);
+    });
+    if (rows.length !== 0) await this.#database.custodyArtifacts.bulkPut(rows);
   }
 
   async #persistChangedProofs(

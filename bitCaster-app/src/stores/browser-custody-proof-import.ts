@@ -22,6 +22,75 @@ export interface BrowserCustodyProofImportInput {
   readonly injectFault?: "before-commit" | "after-commit";
 }
 
+export interface BrowserCustodyProofImportAtomicAuthority {
+  readonly beforePersist?: () => void | Promise<void>;
+  readonly afterPersist: () => void | Promise<void>;
+}
+
+/** Commit several already-verified import pages in one physical custody transaction. */
+export async function commitBrowserCustodyProofImportsAtomic(
+  inputs: readonly BrowserCustodyProofImportInput[],
+  authority?: BrowserCustodyProofImportAtomicAuthority,
+): Promise<void> {
+  if (inputs.length === 0) throw new Error("browser proof import batch is empty");
+  const first = inputs[0]!;
+  const database = first.database ?? db;
+  const adapter = new BrowserDurableCustodyAdapter(database);
+  const prepared = inputs.map((input) => {
+    if (
+      (input.database ?? db) !== database ||
+      input.scope.scopeId !== first.scope.scopeId ||
+      input.scope.scopeKind !== first.scope.scopeKind ||
+      input.owner.incarnationId !== first.owner.incarnationId ||
+      input.owner.fencingEpoch !== first.owner.fencingEpoch ||
+      input.injectFault !== undefined
+    ) {
+      throw new Error("browser proof import batch authority conflicts");
+    }
+    return { input, proofs: requireExactImportProofs(input) };
+  });
+  const operationRows = await Promise.all(
+    prepared.map(async ({ input }) => {
+      const operationId = input.prepared.record.operation.operationId;
+      const current = await adapter.readOperation(input.scope, operationId);
+      return { operationId, expectedRevision: current?.revision ?? null };
+    }),
+  );
+  await adapter.transactAtomic(
+    { scope: first.scope, owner: first.owner, operationRows },
+    (transaction) => {
+      for (const item of prepared) {
+        bindDurableCustodyProofImport({ transaction, prepared: item.input.prepared });
+        stageDurableCustodyProofImport({
+          transaction,
+          prepared: item.input.prepared,
+          authorization: item.input.owner,
+        });
+        applyDurableCustodyProofImport({
+          transaction,
+          prepared: item.input.prepared,
+          authorization: item.input.owner,
+          successorAdmission: successorAdmission(item.input, item.proofs),
+          inventoryAuthorityFingerprint: inventoryAuthorityFingerprint(item.proofs),
+        });
+      }
+    },
+    {
+      successorProofs: Object.fromEntries(
+        prepared.map(({ input, proofs }) => [input.prepared.record.operation.operationId, proofs]),
+      ),
+      ...(authority === undefined
+        ? {}
+        : {
+            walletCounterAuthority: {
+              beforePersist: authority.beforePersist,
+              afterPersist: authority.afterPersist,
+            },
+          }),
+    },
+  );
+}
+
 /** Commit one SDK-prepared proof import and its exact proof rows atomically. */
 export async function commitBrowserCustodyProofImport(
   input: BrowserCustodyProofImportInput,

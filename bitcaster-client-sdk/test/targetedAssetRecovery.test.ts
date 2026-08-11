@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { deriveDurableCustodyScopeId } from '../src/durableCustody.ts'
-import { deriveRootCtfOutcomeCollectionId } from '../src/durableCtfRangeOperation.ts'
 import { createEncryptedWalletBackupV2AssetIdentity } from '../src/encryptedWalletBackupV2ProofSet.ts'
 import {
   buildTargetedAssetRecoveryMintRequests,
@@ -46,8 +45,6 @@ function input(overrides: Partial<TargetedAssetRecoveryInput> = {}): TargetedAss
       unit: 'sat',
       asset: { kind: 'ordinary' },
     }),
-    monitoringAsset,
-    monitoringFactVersion: 'fact-1',
     ...overrides,
   }
 }
@@ -143,17 +140,22 @@ test('targeted recovery preserves unavailable backup inventory as a persistent e
 })
 
 test('targeted recovery restores a present backup and never calls monitoring or mint', async () => {
+  const order: string[] = []
   const fake = ports({
-    readAuthenticatedCurrentBackupInventory: () => ({
-      kind: 'available',
-      headVersion: 4,
-      exactEntry: 'backup',
-    }),
+    readAuthenticatedCurrentBackupInventory: () => {
+      order.push('backup')
+      return { kind: 'available', headVersion: 4, exactEntry: 'backup' }
+    },
+    readExactMonitoringFact: () => {
+      order.push('monitoring')
+      return fact()
+    },
   })
   assert.deepEqual(await recoverTargetedAsset(input(), fake.ports), { kind: 'restored-backup' })
   assert.equal(fake.calls.restore, 1)
   assert.equal(fake.calls.monitoring, 0)
   assert.equal(fake.calls.mint, 0)
+  assert.deepEqual(order, ['backup'])
 })
 
 test('targeted recovery does not fall through when backup restore fails', async () => {
@@ -191,20 +193,22 @@ test('targeted recovery persists an automatic mint result and does not repeat th
   assert.equal(fake.calls.record, 1)
 })
 
-test('targeted recovery retries only when the head or exact fact version changes', async () => {
+test('targeted recovery retries only when the head or lazy exact fact version changes', async () => {
   let headVersion = 4
+  let factVersion = 'fact-1'
   const fake = ports({
     readAuthenticatedCurrentBackupInventory: () => ({
       kind: 'available',
       headVersion,
       exactEntry: null,
     }),
-    readExactMonitoringFact: (recovery) => fact({ factVersion: recovery.monitoringFactVersion }),
+    readExactMonitoringFact: () => fact({ factVersion }),
   })
   await recoverTargetedAsset(input(), fake.ports)
   headVersion = 5
   await recoverTargetedAsset(input(), fake.ports)
-  await recoverTargetedAsset(input({ monitoringFactVersion: 'fact-2' }), fake.ports)
+  factVersion = 'fact-2'
+  await recoverTargetedAsset(input(), fake.ports)
   assert.equal(fake.calls.mint, 3)
 })
 
@@ -212,7 +216,9 @@ test('targeted recovery records an unavailable or failed automatic mint attempt'
   const unavailable = ports({ recoverFromMint: () => 'unavailable' })
   assert.deepEqual(await recoverTargetedAsset(input(), unavailable.ports), { kind: 'unavailable' })
   assert.equal(
-    unavailable.completed.get(JSON.stringify(createTargetedAssetRecoveryAttemptKey(input(), 4))),
+    unavailable.completed.get(
+      JSON.stringify(createTargetedAssetRecoveryAttemptKey(input(), 4, 'fact-1')),
+    ),
     'unavailable',
   )
 
@@ -223,66 +229,26 @@ test('targeted recovery records an unavailable or failed automatic mint attempt'
   })
   assert.deepEqual(await recoverTargetedAsset(input(), failed.ports), { kind: 'persistent-error' })
   assert.equal(
-    failed.completed.get(JSON.stringify(createTargetedAssetRecoveryAttemptKey(input(), 4))),
+    failed.completed.get(
+      JSON.stringify(createTargetedAssetRecoveryAttemptKey(input(), 4, 'fact-1')),
+    ),
     'persistent-error',
   )
 })
 
-test('targeted recovery rejects a foreign or stale monitoring fact before mint recovery', async () => {
-  const fake = ports({ readExactMonitoringFact: () => fact({ factVersion: 'fact-2' }) })
+test('targeted recovery rejects a foreign lazy monitoring fact before mint recovery', async () => {
+  const fake = ports({
+    readExactMonitoringFact: () =>
+      fact({ asset: { ...monitoringAsset, canonicalMintUrl: 'https://other-mint.example' } }),
+  })
   assert.deepEqual(await recoverTargetedAsset(input(), fake.ports), { kind: 'persistent-error' })
   assert.equal(fake.calls.mint, 0)
 })
 
-test('targeted recovery rejects different backup and monitoring asset authorities', async () => {
+test('targeted recovery accepts backup identity without any monitoring authority', async () => {
   const fake = ports()
-  await assert.rejects(() =>
-    recoverTargetedAsset(
-      input({
-        monitoringAsset: {
-          ...monitoringAsset,
-          canonicalMintUrl: 'https://other-mint.example',
-        },
-      }),
-      fake.ports,
-    ),
-  )
-  assert.equal(fake.calls.local, 0)
-
-  const conditionId = '33'.repeat(32)
-  const conditionalMonitoring = {
-    canonicalMintUrl: 'https://mint.example',
-    kind: 'conditional' as const,
-    cashuUnit: 'sat' as const,
-    displayBaseAsset: 'sat' as const,
-    conditionId,
-    parentConditionId: '00'.repeat(32),
-    outcomeUniverseDigest: '44'.repeat(32),
-    internalOutcomeSetId: 'NO',
-  }
-  await assert.rejects(() =>
-    recoverTargetedAsset(
-      input({
-        asset: createEncryptedWalletBackupV2AssetIdentity({
-          mintUrl: 'https://mint.example',
-          unit: 'sat',
-          asset: {
-            kind: 'ctf',
-            conditionId,
-            outcomeLabel: 'YES',
-            outcomeCollectionId: deriveRootCtfOutcomeCollectionId({
-              conditionId,
-              outcomeCollection: 'YES',
-            }),
-            registeredAt: 1,
-            finalExpiry: null,
-          },
-        }),
-        monitoringAsset: conditionalMonitoring,
-      }),
-      fake.ports,
-    ),
-  )
+  await recoverTargetedAsset(input(), fake.ports)
+  assert.equal(fake.calls.local, 1)
 })
 
 test('targeted recovery coalesces concurrent calls for one exact tuple', async () => {

@@ -1378,7 +1378,8 @@ components:
       properties:
         schemaVersion:
           type: integer
-          enum: [1]
+          minimum: 1
+          maximum: 1
         deliveryId:
           type: string
           format: uuid
@@ -1444,7 +1445,8 @@ components:
       properties:
         schemaVersion:
           type: integer
-          enum: [1]
+          minimum: 1
+          maximum: 1
         deliveryId:
           type: string
           format: uuid
@@ -1536,8 +1538,10 @@ components:
       additionalProperties: false
       description: >
         Delivery state. A pending state has a null result. A received state has a
-        receive result and no business event. A credited state has a receive result
-        and both business event fields. SDK decoders enforce these paired fields.
+        receive result and no business event. The received result can omit both
+        business event fields or set both fields to null. A credited state has a
+        receive result and both non-null business event fields. SDK decoders enforce
+        these paired fields.
       required: [delivery, tupleFingerprint, state, result]
       properties:
         delivery:
@@ -1556,17 +1560,6 @@ components:
             properties: { state: { const: pending } }
           then:
             properties: { result: { type: 'null' } }
-        - if:
-            properties: { state: { const: received } }
-          then:
-            properties:
-              result:
-                allOf:
-                  - $ref: '#/components/schemas/DurableCashuDeliveryResult'
-                  - not:
-                      anyOf:
-                        - required: [businessEventId]
-                        - required: [businessEventAt]
         - if:
             properties: { state: { const: credited } }
           then:

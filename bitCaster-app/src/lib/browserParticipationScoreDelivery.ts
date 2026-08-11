@@ -12,19 +12,13 @@ import {
   participationScoreDeliveryIntent,
   type ParticipationScoreDeliveryInput,
 } from "@bitcaster/client-sdk/participationScoreDelivery";
-import { locateSeedDerivedProofLineage } from "@bitcaster/client-sdk/durableSeedDerivedProofLineage";
-import { serializeDurableWalletSendOperation } from "@bitcaster/client-sdk/durableWalletOperation";
 import type { DurableWalletProofDerivationLocator } from "@bitcaster/client-sdk/durableWalletProofDerivationLocator";
-import type { OperationCounters, OutputData, Proof, SwapPreview } from "@cashu/cashu-ts";
 import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
 import {
   createEncryptedWalletBackupV2AssetIdentity,
   type EncryptedWalletBackupV2AssetIdentity,
 } from "@bitcaster/client-sdk";
-import type {
-  DurableOutgoingCashuCoordinatorInput,
-  DurableOutgoingCashuTransfer,
-} from "@bitcaster/client-sdk/durableOutgoingCashuTransfer";
+import type { DurableOutgoingCashuTransfer } from "@bitcaster/client-sdk/durableOutgoingCashuTransfer";
 import {
   acknowledgeBrowserDurableOutgoingCashuRecipient,
   executeBrowserDurableOutgoingCashuTransfer,
@@ -33,10 +27,10 @@ import {
   type BrowserDurableOutgoingCashuContext,
 } from "@/lib/browserDurableOutgoingCashuTransfer";
 import {
-  captureBrowserMintPersistenceContext,
-  getWalletForUnit,
-  restoreExactMintOutputs,
-} from "@/lib/cashu";
+  prepareBrowserDeterministicOutgoingCashuSend,
+  restoreBrowserDeterministicOutgoingCashuOutputs,
+} from "@/lib/browserDeterministicOutgoingCashu";
+import { captureBrowserMintPersistenceContext, getWalletForUnit } from "@/lib/cashu";
 import { recoverBrowserFundedAsset } from "@/lib/browserFundedAssetRecovery";
 import { getDurableCashuDeliveryStatus, submitDurableCashuDelivery } from "@/lib/markets";
 import { getBoundedCanonicalSatProofs, type StoredProof } from "@/stores/proof-db";
@@ -88,7 +82,12 @@ export async function executeBrowserParticipationScoreDelivery(
     const recovered = await recoverBrowserDurableOutgoingCashuTransfer({
       transferId: metadata.deliveryId,
       wallet,
-      restoreExactOutputs: (restore) => restoreParticipationScoreExactOutputs(wallet, restore),
+      restoreExactOutputs: (restore) =>
+        restoreBrowserDeterministicOutgoingCashuOutputs({
+          wallet,
+          restore,
+          diagnosticLabel: "Participation Score",
+        }),
       context,
     });
     if (recovered === null)
@@ -131,19 +130,26 @@ export async function executeBrowserParticipationScoreDelivery(
       if (balanceSats < Number(metadata.requestedAmount)) {
         throw new BrowserParticipationScoreInsufficientBalanceError(balanceSats);
       }
-      return prepareParticipationScoreWalletSend({
-        deliveryId: metadata.deliveryId,
+      return prepareBrowserDeterministicOutgoingCashuSend({
+        operationId: `participation-score:${metadata.deliveryId}`,
         wallet,
         proofs,
         amount: Number(metadata.requestedAmount),
         mintUrl: metadata.mintUrl,
+        unit: "sat",
         seed: context.seed,
-        keepLocators,
+        keepProofDerivationLocators: keepLocators,
+        diagnosticLabel: "Participation Score",
       });
     },
     keepProofDerivationLocators: keepLocators,
     wallet,
-    restoreExactOutputs: (restore) => restoreParticipationScoreExactOutputs(wallet, restore),
+    restoreExactOutputs: (restore) =>
+      restoreBrowserDeterministicOutgoingCashuOutputs({
+        wallet,
+        restore,
+        diagnosticLabel: "Participation Score",
+      }),
     context,
   });
   return reconcileBrowserParticipationScoreDelivery({
@@ -238,7 +244,12 @@ export async function reconcileBrowserParticipationScoreDeliveryIfPresent(input:
   const recovered = await recoverBrowserDurableOutgoingCashuTransfer({
     transferId: existing.transferId,
     wallet,
-    restoreExactOutputs: (restore) => restoreParticipationScoreExactOutputs(wallet, restore),
+    restoreExactOutputs: (restore) =>
+      restoreBrowserDeterministicOutgoingCashuOutputs({
+        wallet,
+        restore,
+        diagnosticLabel: "Participation Score",
+      }),
     context,
   });
   if (recovered === null)
@@ -349,109 +360,6 @@ function participationScoreMetadata(
   return durableMetadata;
 }
 
-async function restoreParticipationScoreExactOutputs(
-  wallet: Awaited<ReturnType<typeof getWalletForUnit>>,
-  input: Parameters<DurableOutgoingCashuCoordinatorInput["restoreExactOutputs"]>[0],
-) {
-  const exactOutputs = [...input.outputs.keep, ...input.outputs.send];
-  const restored = await restoreExactMintOutputs(wallet, {
-    mintUrl: input.mintUrl,
-    unit: input.unit,
-    outputs: exactOutputs,
-  });
-  if (restored.length !== exactOutputs.length) {
-    throw new Error("Participation Score restored output set is incomplete");
-  }
-  return {
-    keep: restored.slice(0, input.outputs.keep.length),
-    send: restored.slice(input.outputs.keep.length),
-  };
-}
-
-async function prepareParticipationScoreWalletSend(input: {
-  readonly deliveryId: string;
-  readonly wallet: {
-    prepareSwapToSend(
-      amount: number,
-      proofs: Proof[],
-      config: {
-        includeFees: false;
-        keysetId: string;
-        onCountersReserved: (counters: OperationCounters) => void;
-      },
-      outputConfig: {
-        send: { type: "deterministic"; counter: 0 };
-        keep: { type: "deterministic"; counter: 0 };
-      },
-    ): Promise<SwapPreview>;
-    getKeyset(keysetId?: string): { id: string };
-  };
-  readonly proofs: readonly StoredProof[];
-  readonly amount: number;
-  readonly mintUrl: string;
-  readonly seed: Uint8Array;
-  readonly keepLocators: Array<DurableWalletProofDerivationLocator | null>;
-}) {
-  const counterReservation: { value: OperationCounters | null } = { value: null };
-  const keysetId = input.wallet.getKeyset().id;
-  const preview = await input.wallet.prepareSwapToSend(
-    input.amount,
-    input.proofs as unknown as Proof[],
-    {
-      includeFees: false,
-      keysetId,
-      onCountersReserved: (reserved) => {
-        if (counterReservation.value !== null) {
-          throw new Error("Participation Score output counters were reserved twice");
-        }
-        counterReservation.value = reserved;
-      },
-    },
-    {
-      send: { type: "deterministic", counter: 0 },
-      keep: { type: "deterministic", counter: 0 },
-    },
-  );
-  const counters = counterReservation.value;
-  if (counters === null || counters.keysetId !== preview.keysetId) {
-    throw new Error("Participation Score output counter reservation is missing");
-  }
-  const outputs = [...(preview.sendOutputs ?? []), ...(preview.keepOutputs ?? [])];
-  if (outputs.length !== counters.count) {
-    throw new Error(
-      "Participation Score output counter reservation conflicts with the output plan",
-    );
-  }
-  const lineage = locateSeedDerivedProofLineage({
-    seed: input.seed,
-    keysetId: counters.keysetId,
-    counterStart: counters.start,
-    counterCount: counters.count,
-    proofs: outputs.map(outputProofLineage),
-  });
-  const locators = new Map(lineage.map(({ secret, ...locator }) => [secret, locator]));
-  input.keepLocators.splice(
-    0,
-    input.keepLocators.length,
-    ...(preview.keepOutputs ?? []).map((output) => {
-      const locator = locators.get(outputProofLineage(output).secret);
-      if (locator === undefined)
-        throw new Error("Participation Score keep output locator is missing");
-      return locator;
-    }),
-  );
-  return serializeDurableWalletSendOperation({
-    operationId: `participation-score:${input.deliveryId}`,
-    mintUrl: input.mintUrl,
-    unit: "sat",
-    preview,
-  });
-}
-
 function sumProofs(proofs: readonly StoredProof[]): number {
   return proofs.reduce((sum, proof) => sum + amountToNumber(proof.amount), 0);
-}
-
-function outputProofLineage(output: OutputData): { readonly id: string; readonly secret: string } {
-  return { id: output.blindedMessage.id, secret: new TextDecoder().decode(output.secret) };
 }

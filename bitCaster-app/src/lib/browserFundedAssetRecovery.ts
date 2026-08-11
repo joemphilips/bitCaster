@@ -50,7 +50,7 @@ export async function recoverBrowserFundedAsset<TPlan extends FundedPlan>(
       if (repaired.kind === "ready") return { kind: "ready", plan: repaired };
       if (repaired.kind !== "insufficient") return { kind: "not-recoverable", plan: repaired };
     }
-    return await recoverFromExactMonitoringFact(input);
+    return await recoverBackupFirst(input);
   } catch {
     return { kind: "persistent-error" };
   }
@@ -81,11 +81,32 @@ export async function repairSelectableCanonicalRows(
   return true;
 }
 
-async function recoverFromExactMonitoringFact<TPlan extends FundedPlan>(
+async function recoverBackupFirst<TPlan extends FundedPlan>(
   input: BrowserFundedAssetRecoveryInput<TPlan>,
 ): Promise<BrowserFundedAssetRecoveryOutcome<TPlan>> {
   const driver = activeBrowserEncryptedWalletBackupV2RuntimeDriver(input.scopeId);
   if (driver === null) return { kind: "persistent-error" };
+  let monitoringAbsent = false;
+  const outcome = await driver.recoverTargetedAsset({
+    asset: input.asset,
+    requiredAmount: input.requiredAmount,
+    loadWallet: () => loadWallet(input),
+    readExactMonitoringRecovery: async () => {
+      const monitoring = await readExactMonitoringRecovery(input);
+      monitoringAbsent = monitoring === null;
+      return monitoring;
+    },
+    lockManager: input.lockManager,
+  });
+  requireCurrent(input);
+  return recoveryOutcome(outcome, monitoringAbsent);
+}
+
+/** Reads one bounded monitoring page only after authenticated backup inventory lacks the asset. */
+async function readExactMonitoringRecovery<TPlan extends FundedPlan>(
+  input: BrowserFundedAssetRecoveryInput<TPlan>,
+) {
+  requireCurrent(input);
   const walletId = deriveDurableCustodyWalletId(input.seed);
   const page = await createAuthenticatedBrowserEngineClient().getAssetMonitoringAssets({
     walletId,
@@ -95,27 +116,24 @@ async function recoverFromExactMonitoringFact<TPlan extends FundedPlan>(
   const fact = page.assets.find((candidate) =>
     encryptedWalletBackupV2AssetMatchesMonitoringAsset(input.asset, candidate.asset),
   );
-  if (fact === undefined || BigInt(fact.availableSubunits) < input.requiredAmount) {
-    return { kind: "unavailable" };
-  }
+  if (fact === undefined || BigInt(fact.availableSubunits) < input.requiredAmount) return null;
+  return { fact };
+}
+
+async function loadWallet<TPlan extends FundedPlan>(input: BrowserFundedAssetRecoveryInput<TPlan>) {
+  requireCurrent(input);
   const wallet = await getWalletForMnemonicUnit(
     input.asset.mintUrl,
     input.asset.unit,
     input.mnemonic,
   );
   requireCurrent(input);
-  const outcome = await driver.recoverTargetedAsset({
-    asset: input.asset,
-    monitoringFact: fact,
-    wallet,
-    lockManager: input.lockManager,
-  });
-  requireCurrent(input);
-  return recoveryOutcome(outcome);
+  return wallet;
 }
 
 function recoveryOutcome<TPlan extends FundedPlan>(
   outcome: TargetedAssetRecoveryOutcome,
+  monitoringAbsent: boolean,
 ): BrowserFundedAssetRecoveryOutcome<TPlan> {
   switch (outcome.kind) {
     case "local":
@@ -123,7 +141,7 @@ function recoveryOutcome<TPlan extends FundedPlan>(
     case "restored-mint":
       return { kind: "recovered" };
     case "unavailable":
-      return { kind: "persistent-error" };
+      return monitoringAbsent ? { kind: "unavailable" } : { kind: "persistent-error" };
     case "already-attempted":
       return { kind: "persistent-error" };
     case "persistent-error":

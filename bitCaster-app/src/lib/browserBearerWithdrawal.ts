@@ -1,22 +1,13 @@
-import {
-  getEncodedTokenV4,
-  type OperationCounters,
-  type OutputData,
-  type Proof,
-  type ProofState,
-  type SwapPreview,
-} from "@cashu/cashu-ts";
+import { getEncodedTokenV4, type Proof, type ProofState } from "@cashu/cashu-ts";
 import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
 import {
   createEncryptedWalletBackupV2AssetIdentity,
   type EncryptedWalletBackupV2AssetIdentity,
 } from "@bitcaster/client-sdk";
-import { locateSeedDerivedProofLineage } from "@bitcaster/client-sdk/durableSeedDerivedProofLineage";
 import {
   deriveDurableWalletOperationAuthority,
   hydrateDurableWalletProof,
   serializeDurableWalletProof,
-  serializeDurableWalletSendOperation,
 } from "@bitcaster/client-sdk/durableWalletOperation";
 import type { DurableWalletProofDerivationLocator } from "@bitcaster/client-sdk/durableWalletProofDerivationLocator";
 import {
@@ -34,10 +25,10 @@ import {
   readBrowserDurableOutgoingCashuTransfer,
 } from "@/lib/browserDurableOutgoingCashuTransfer";
 import {
-  captureBrowserMintPersistenceContext,
-  getWalletForUnit,
-  restoreExactMintOutputs,
-} from "@/lib/cashu";
+  prepareBrowserDeterministicOutgoingCashuSend,
+  restoreBrowserDeterministicOutgoingCashuOutputs,
+} from "@/lib/browserDeterministicOutgoingCashu";
+import { captureBrowserMintPersistenceContext, getWalletForUnit } from "@/lib/cashu";
 import {
   abortPreparedBrowserDurableWalletReceive,
   bindPreparedBrowserDurableWalletReceiveOperation,
@@ -61,10 +52,6 @@ export async function executeBrowserBearerWithdrawal(input: {
   const context = captureBrowserMintPersistenceContext();
   const wallet = await getWalletForUnit(input.mintUrl, "sat");
   context.requireCapturedProfile();
-  const keysetId = wallet.getKeyset().id;
-  if (!/^01[0-9a-f]{64}$/.test(keysetId)) {
-    throw new Error("Withdrawal requires a canonical V2 sat keyset");
-  }
   const transferId = `bearer-withdrawal:${crypto.randomUUID()}`;
   const keepLocators: Array<DurableWalletProofDerivationLocator | null> = [];
   return executeBrowserDurableOutgoingCashuTransfer({
@@ -93,19 +80,26 @@ export async function executeBrowserBearerWithdrawal(input: {
       if (sumProofs(proofs) < input.amount) {
         throw new Error("Withdrawal balance is insufficient in the active V2 sat keyset");
       }
-      return prepareBearerWalletSend({
-        transferId,
+      return prepareBrowserDeterministicOutgoingCashuSend({
+        operationId: `bearer-withdrawal:${transferId}`,
         wallet,
         proofs,
         amount: input.amount,
         mintUrl: input.mintUrl,
         seed: context.seed,
-        keepLocators,
+        unit: "sat",
+        keepProofDerivationLocators: keepLocators,
+        diagnosticLabel: "Withdrawal",
       });
     },
     keepProofDerivationLocators: keepLocators,
     wallet,
-    restoreExactOutputs: (restore) => restoreBearerExactOutputs(wallet, restore),
+    restoreExactOutputs: (restore) =>
+      restoreBrowserDeterministicOutgoingCashuOutputs({
+        wallet,
+        restore,
+        diagnosticLabel: "Withdrawal",
+      }),
     context,
   });
 }
@@ -384,97 +378,4 @@ function completedBearerReclaimRow(
     evidence: reclaimCompletionEvidence(transfer, operation, successors, reclaimId),
   });
   return browserOutgoingCashuTransferRow(scopeId, completed, "consumed");
-}
-
-async function restoreBearerExactOutputs(
-  wallet: Awaited<ReturnType<typeof getWalletForUnit>>,
-  input: Parameters<
-    Parameters<typeof executeBrowserDurableOutgoingCashuTransfer>[0]["restoreExactOutputs"]
-  >[0],
-) {
-  const outputs = [...input.outputs.keep, ...input.outputs.send];
-  const restored = await restoreExactMintOutputs(wallet, {
-    mintUrl: input.mintUrl,
-    unit: input.unit,
-    outputs,
-  });
-  return {
-    keep: restored.slice(0, input.outputs.keep.length),
-    send: restored.slice(input.outputs.keep.length),
-  };
-}
-
-async function prepareBearerWalletSend(input: {
-  readonly transferId: string;
-  readonly wallet: {
-    prepareSwapToSend(
-      amount: number,
-      proofs: Proof[],
-      config: {
-        includeFees: false;
-        keysetId: string;
-        onCountersReserved: (counters: OperationCounters) => void;
-      },
-      outputConfig: {
-        send: { type: "deterministic"; counter: 0 };
-        keep: { type: "deterministic"; counter: 0 };
-      },
-    ): Promise<SwapPreview>;
-    getKeyset(keysetId?: string): { id: string };
-  };
-  readonly proofs: readonly StoredProof[];
-  readonly amount: number;
-  readonly mintUrl: string;
-  readonly seed: Uint8Array;
-  readonly keepLocators: Array<DurableWalletProofDerivationLocator | null>;
-}) {
-  const keysetId = input.wallet.getKeyset().id;
-  const counters: { value: OperationCounters | null } = { value: null };
-  const preview = await input.wallet.prepareSwapToSend(
-    input.amount,
-    input.proofs as unknown as Proof[],
-    {
-      includeFees: false,
-      keysetId,
-      onCountersReserved: (reserved) => {
-        if (counters.value !== null)
-          throw new Error("Withdrawal output counters were reserved twice");
-        counters.value = reserved;
-      },
-    },
-    { send: { type: "deterministic", counter: 0 }, keep: { type: "deterministic", counter: 0 } },
-  );
-  if (counters.value === null || counters.value.keysetId !== preview.keysetId) {
-    throw new Error("Withdrawal output counter reservation is missing");
-  }
-  const outputs = [...(preview.sendOutputs ?? []), ...(preview.keepOutputs ?? [])];
-  if (outputs.length !== counters.value.count)
-    throw new Error("Withdrawal output plan conflicts with counters");
-  const lineage = locateSeedDerivedProofLineage({
-    seed: input.seed,
-    keysetId: counters.value.keysetId,
-    counterStart: counters.value.start,
-    counterCount: counters.value.count,
-    proofs: outputs.map(outputLineage),
-  });
-  const locators = new Map(lineage.map(({ secret, ...locator }) => [secret, locator]));
-  input.keepLocators.splice(
-    0,
-    input.keepLocators.length,
-    ...(preview.keepOutputs ?? []).map((output) => {
-      const locator = locators.get(outputLineage(output).secret);
-      if (locator === undefined) throw new Error("Withdrawal keep output locator is missing");
-      return locator;
-    }),
-  );
-  return serializeDurableWalletSendOperation({
-    operationId: `bearer-withdrawal:${input.transferId}`,
-    mintUrl: input.mintUrl,
-    unit: "sat",
-    preview,
-  });
-}
-
-function outputLineage(output: OutputData): { readonly id: string; readonly secret: string } {
-  return { id: output.blindedMessage.id, secret: new TextDecoder().decode(output.secret) };
 }

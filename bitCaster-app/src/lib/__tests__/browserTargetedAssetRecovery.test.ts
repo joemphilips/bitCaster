@@ -28,7 +28,9 @@ vi.mock("../browserEncryptedWalletBackupV2Restore", () => ({
   readBrowserEncryptedWalletBackupV2LocalAvailableAmount: mocks.localAmount,
   restoreAndAdmitBrowserEncryptedWalletBackupV2TargetedAsset: mocks.restoreBackup,
 }));
-vi.mock("../browserCustodyProofReceive", () => ({ admitBrowserReceivedProofs: mocks.admit }));
+vi.mock("../browserCustodyProofReceive", () => ({
+  admitBrowserReceivedProofsWithHeldProfileLock: mocks.admit,
+}));
 vi.mock("../../stores/proof-db", () => ({ restoreProofsAndAdvanceCounter: mocks.restoreProofs }));
 vi.mock("../../stores/browser-encrypted-wallet-backup-v2-asset-source", () => ({
   readBrowserEncryptedWalletBackupV2ExactLocalProofRows: mocks.localRows,
@@ -91,6 +93,7 @@ it.each([1n, 2n])(
     });
 
     expect(mocks.restoreBackup).toHaveBeenCalledOnce();
+    expect(input.readExactMonitoringRecovery).not.toHaveBeenCalled();
     expect(input.wallet.restore).not.toHaveBeenCalled();
   },
 );
@@ -122,6 +125,7 @@ it("uses a higher local amount and merges a sufficient backup with a lower local
 it("falls through a lower backup amount when no local copy exists", async () => {
   mocks.localAmount.mockResolvedValue(null);
   const input = await fixture({ exactInventoryEntry: true, backupAmount: 1n });
+  input.requiredAmount = 2n;
   input.monitoringFact.availableSubunits = 2;
   input.wallet.restore.mockResolvedValueOnce({ proofs: [] });
 
@@ -134,10 +138,32 @@ it("falls through a lower backup amount when no local copy exists", async () => 
 it("does not fall through after a backup service failure", async () => {
   mocks.localAmount.mockResolvedValue(null);
   const input = await fixture({ inventoryError: new Error("unavailable") });
+  const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
 
   await expect(recoverBrowserTargetedAsset(input)).resolves.toEqual({ kind: "persistent-error" });
 
   expect(input.wallet.restore).not.toHaveBeenCalled();
+  expect(warning).toHaveBeenCalledWith("targeted-recovery-stage=current-inventory");
+});
+
+it("reports fixed monitoring and mint stages without arbitrary error text", async () => {
+  mocks.localAmount.mockResolvedValue(null);
+  const monitoring = await fixture();
+  monitoring.readExactMonitoringRecovery.mockRejectedValueOnce(new Error("secret monitoring text"));
+  const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+  await expect(recoverBrowserTargetedAsset(monitoring)).resolves.toEqual({
+    kind: "persistent-error",
+  });
+  expect(warning).toHaveBeenCalledWith("targeted-recovery-stage=monitoring");
+  expect(warning.mock.calls.flat()).not.toContain("secret monitoring text");
+
+  mocks.localAmount.mockResolvedValue(null);
+  const mint = await fixture();
+  mint.wallet.restore.mockRejectedValueOnce(new Error("secret mint text"));
+  await expect(recoverBrowserTargetedAsset(mint)).resolves.toEqual({ kind: "persistent-error" });
+  expect(warning).toHaveBeenLastCalledWith("targeted-recovery-stage=mint");
+  expect(warning.mock.calls.flat()).not.toContain("secret mint text");
 });
 
 it("uses only the supplied exact mint request and does not admit a PENDING proof", async () => {
@@ -313,6 +339,7 @@ it("uses a new durable operation identity for a newer fact with an overlapping r
     .mockResolvedValueOnce({ unspent: [first, second], pending: [], spent: [] });
 
   await expect(recoverBrowserTargetedAsset(input)).resolves.toEqual({ kind: "restored-mint" });
+  input.requiredAmount = 2n;
   input.monitoringFact.availableSubunits = 2;
   input.monitoringFact.recoveryHint = {
     keysetIds: [KEYSET],
@@ -366,8 +393,12 @@ it("serializes duplicate tabs and records one exact mint attempt", async () => {
     recoverBrowserTargetedAsset(input),
   ]);
 
-  expect(first).toEqual({ kind: "unavailable" });
-  expect(second).toEqual({ kind: "already-attempted", completedOutcome: "unavailable" });
+  expect([first, second]).toEqual(
+    expect.arrayContaining([
+      { kind: "unavailable" },
+      { kind: "already-attempted", completedOutcome: "unavailable" },
+    ]),
+  );
   expect(input.wallet.restore).toHaveBeenCalledOnce();
 });
 
@@ -445,6 +476,7 @@ async function fixture(
       ? `ctf:${CONDITION_ID}:${OUTCOME_COLLECTION_ID}`
       : "cashu:ordinary",
   } as const;
+  const fact = monitoringFact(options.conditional);
   return {
     database: {
       tables: [],
@@ -455,8 +487,11 @@ async function fixture(
     keyHandle,
     enrollmentEpoch: 1,
     asset,
-    monitoringFact: monitoringFact(options.conditional),
+    requiredAmount: 1n,
+    loadWallet: vi.fn(async () => wallet),
+    readExactMonitoringRecovery: vi.fn(async () => ({ fact })),
     wallet,
+    monitoringFact: fact,
     remote,
     requestUrl: (kind: "head" | "object", value: string | null) =>
       `https://backup.example/${kind}/${value ?? ""}`,

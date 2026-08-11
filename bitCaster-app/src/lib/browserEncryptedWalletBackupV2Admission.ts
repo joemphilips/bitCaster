@@ -7,7 +7,7 @@ import { BrowserWalletCounterDexieStore } from "../stores/browser-wallet-counter
 import { addProofs, type BitcasterDB, type StoredProof } from "../stores/proof-db";
 import { readBrowserEncryptedWalletBackupV2ExactLocalProofRows } from "../stores/browser-encrypted-wallet-backup-v2-asset-source";
 import { browserWalletScope } from "./browserCtfRangeOrderSource";
-import { admitBrowserReceivedProofs } from "./browserCustodyProofReceive";
+import { admitBrowserReceivedProofsWithHeldProfileLock } from "./browserCustodyProofReceive";
 import { withWalletProfileLock } from "./walletProfileLock";
 import { normalizeUrl } from "./url";
 import type {
@@ -32,6 +32,19 @@ export interface BrowserEncryptedWalletBackupV2AdmissionInput {
   /** Entropy for a bounded local-only reimport operation after cache eviction. */
   readonly randomId?: () => string;
   readonly fault?: "before-commit" | "after-authority-before-cache";
+  readonly setTargetedRecoveryAdmissionStage?: (
+    stage:
+      | "backup-admit-lock"
+      | "backup-admit-authority"
+      | "backup-admit-state"
+      | "backup-admit-custody"
+      | "backup-admit-counter"
+      | "backup-admit-desired"
+      | "backup-admit-desired-write"
+      | "backup-admit-current-profile"
+      | "backup-admit-transaction-commit"
+      | "backup-admit-cache",
+  ) => void;
 }
 
 /** Admit one verified V2 asset under one profile lock, then repair the legacy cache. */
@@ -44,14 +57,17 @@ export async function admitBrowserEncryptedWalletBackupV2Asset(
   if (browserWalletScope(input.seed).scopeId !== input.scopeId)
     throw new Error("browser V2 restore scope is foreign");
   const proofs = storedProofs(input, verified);
+  input.setTargetedRecoveryAdmissionStage?.("backup-admit-lock");
   await withWalletProfileLock(
     input.scopeId,
     async () => {
       requireCurrent(input);
+      input.setTargetedRecoveryAdmissionStage?.("backup-admit-authority");
       await commitAuthority(input, verified, proofs);
       if (input.fault === "after-authority-before-cache")
         throw new Error("browser V2 restore injected cache fault");
       requireCurrent(input);
+      input.setTargetedRecoveryAdmissionStage?.("backup-admit-cache");
       await addProofs(proofs, input.database);
     },
     input.lockManager,
@@ -75,26 +91,47 @@ async function commitAuthority(
   verified: EncryptedWalletBackupV2VerifiedProofSet,
   proofs: StoredProof[],
 ): Promise<void> {
-  await input.database.transaction("rw", input.database.tables, async () => {
+  requireCurrent(input);
+  input.setTargetedRecoveryAdmissionStage?.("backup-admit-state");
+  const start = await startingState(input, verified);
+  if (start.kind === "idempotent") return;
+  const sourceOperationId =
+    start.kind === "evicted"
+      ? `${input.sourceOperationId}:reimport:${localReimportId(input)}`
+      : input.sourceOperationId;
+  const selected = verified.proofs.flatMap((proof, index) =>
+    start.proofIdsToAdmit.has(proof.proofId) ? [{ verified: proof, stored: proofs[index]! }] : [],
+  );
+  const beforePersist =
+    start.kind === "evicted"
+      ? async () => {
+          const desired = desiredRow(input, proofs.length);
+          await input.database.encryptedWalletBackupV2DesiredAssets.delete([
+            input.scopeId,
+            desired.localAssetKey,
+          ]);
+        }
+      : undefined;
+  const afterPersist = async () => {
+    input.setTargetedRecoveryAdmissionStage?.("backup-admit-counter");
+    await restoreCountersInOwnedTransaction(input, verified);
+    input.setTargetedRecoveryAdmissionStage?.("backup-admit-desired");
+    const desired = desiredRow(input, proofs.length);
+    input.setTargetedRecoveryAdmissionStage?.("backup-admit-desired-write");
+    await input.database.encryptedWalletBackupV2DesiredAssets.put({
+      ...desired,
+      syncState: "acknowledged",
+    });
+    input.setTargetedRecoveryAdmissionStage?.("backup-admit-current-profile");
     requireCurrent(input);
-    const start = await startingState(input, verified);
-    if (start.kind === "idempotent") return;
-    const sourceOperationId =
-      start.kind === "evicted"
-        ? `${input.sourceOperationId}:reimport:${localReimportId(input)}`
-        : input.sourceOperationId;
-    if (start.kind === "evicted") {
-      const desired = desiredRow(input, proofs.length);
-      await input.database.encryptedWalletBackupV2DesiredAssets.delete([
-        input.scopeId,
-        desired.localAssetKey,
-      ]);
-    }
-    const selected = verified.proofs.flatMap((proof, index) =>
-      start.proofIdsToAdmit.has(proof.proofId) ? [{ verified: proof, stored: proofs[index]! }] : [],
-    );
-    if (selected.length !== 0) {
-      await admitBrowserReceivedProofs({
+    input.setTargetedRecoveryAdmissionStage?.("backup-admit-transaction-commit");
+    if (input.fault === "before-commit")
+      throw new Error("browser V2 restore injected commit fault");
+  };
+  if (selected.length !== 0) {
+    input.setTargetedRecoveryAdmissionStage?.("backup-admit-custody");
+    await admitBrowserReceivedProofsWithHeldProfileLock(
+      {
         seed: input.seed,
         sourceOperationId,
         mintUrl: input.asset.mintUrl,
@@ -106,24 +143,31 @@ async function commitAuthority(
           selected.map(({ verified: proof }) => [proof.proof.secret, proof.locator]),
         ),
         database: input.database,
-        lockManager: immediateLock,
-      });
-    }
-    await restoreCounters(input, verified);
-    const desired = createEncryptedWalletBackupV2DesiredAssetRow({
-      scopeId: input.scopeId,
-      asset: input.asset,
-      custodyRevision: input.custodyRevision,
-      activeProofCount: proofs.length,
-    });
-    await input.database.encryptedWalletBackupV2DesiredAssets.put({
-      ...desired,
-      syncState: "acknowledged",
-    });
-    requireCurrent(input);
-    if (input.fault === "before-commit")
-      throw new Error("browser V2 restore injected commit fault");
-  });
+      },
+      {
+        beforePersist,
+        afterPersist,
+      },
+    );
+    return;
+  }
+  await input.database.transaction(
+    "rw",
+    [
+      input.database.walletCounterAssociations,
+      input.database.walletCounterCursors,
+      input.database.custodyProofs,
+      input.database.custodyProofBackupAuthorities,
+      input.database.custodyConditionalKeysets,
+      input.database.encryptedWalletBackupV2DesiredAssets,
+    ],
+    async () => {
+      await beforePersist?.();
+      await afterPersist();
+      if (input.fault === "before-commit")
+        throw new Error("browser V2 restore injected commit fault");
+    },
+  );
 }
 
 function localReimportId(input: BrowserEncryptedWalletBackupV2AdmissionInput): string {
@@ -134,7 +178,7 @@ function localReimportId(input: BrowserEncryptedWalletBackupV2AdmissionInput): s
   return value;
 }
 
-async function restoreCounters(
+async function restoreCountersInOwnedTransaction(
   input: BrowserEncryptedWalletBackupV2AdmissionInput,
   verified: EncryptedWalletBackupV2VerifiedProofSet,
 ): Promise<void> {
@@ -144,7 +188,7 @@ async function restoreCounters(
     isCurrentProfile: input.isCurrentProfile,
   });
   for (const mark of verified.counterHighWaterMarks) {
-    await counters.restoreInContext(
+    await counters.restoreInOwnedTransaction(
       { mintUrl: mark.mintUrl, unit: mark.unit },
       mark.keysetId,
       mark.nextCounter,
@@ -265,11 +309,3 @@ function storedProofs(
 function requireCurrent(input: BrowserEncryptedWalletBackupV2AdmissionInput): void {
   if (!input.isCurrentProfile()) throw new Error("browser V2 restore profile is stale");
 }
-
-const immediateLock = {
-  request: async <T>(
-    _name: string,
-    options: LockOptions | LockGrantedCallback<T>,
-    callback?: LockGrantedCallback<T>,
-  ) => (typeof options === "function" ? options(null) : callback!(null)),
-} as Pick<LockManager, "request">;

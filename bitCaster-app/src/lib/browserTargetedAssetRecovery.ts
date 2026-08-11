@@ -16,6 +16,7 @@ import {
   type EncryptedWalletBackupV2RemotePort,
   type TargetedAssetRecoveryInput,
   type TargetedAssetRecoveryAttemptKey,
+  type TargetedAssetRecoveryCompletedOutcome,
   type TargetedAssetRecoveryMintRequest,
   type TargetedAssetRecoveryOutcome,
 } from "@bitcaster/client-sdk";
@@ -26,7 +27,7 @@ import {
   type Wallet as CashuWallet,
 } from "@cashu/cashu-ts";
 import {
-  admitBrowserReceivedProofs,
+  admitBrowserReceivedProofsWithHeldProfileLock,
   type AdmitBrowserReceivedProofsInput,
 } from "./browserCustodyProofReceive";
 import { browserWalletScope } from "./browserCtfRangeOrderSource";
@@ -34,6 +35,8 @@ import {
   readBrowserEncryptedWalletBackupV2LocalAvailableAmount,
   restoreAndAdmitBrowserEncryptedWalletBackupV2TargetedAsset,
   type BrowserEncryptedWalletBackupV2TargetedRestoreInput,
+  type BrowserEncryptedWalletBackupV2FailureClass,
+  type BrowserEncryptedWalletBackupV2RestoreStage,
 } from "./browserEncryptedWalletBackupV2Restore";
 import { BrowserTargetedAssetRecoveryAttemptStore } from "../stores/browser-targeted-asset-recovery-attempt-store";
 import { readBrowserEncryptedWalletBackupV2ExactLocalProofRows } from "../stores/browser-encrypted-wallet-backup-v2-asset-source";
@@ -52,8 +55,11 @@ export interface BrowserTargetedAssetRecoveryInput {
   readonly keyHandle: EncryptedWalletBackupV2KeyHandle;
   readonly enrollmentEpoch: number;
   readonly asset: EncryptedWalletBackupV2AssetIdentity;
-  readonly monitoringFact: AssetMonitoringAssetResponse;
-  readonly wallet: CashuWallet;
+  readonly requiredAmount: bigint;
+  /** Loads the mint only after local custody is insufficient. */
+  readonly loadWallet: () => Promise<CashuWallet>;
+  /** Loads the exact engine fact only after authenticated backup absence. */
+  readonly readExactMonitoringRecovery: () => Promise<BrowserTargetedAssetRecoveryMonitoring | null>;
   readonly remote: EncryptedWalletBackupV2RemotePort;
   readonly requestUrl: BrowserEncryptedWalletBackupV2TargetedRestoreInput["requestUrl"];
   readonly currentInventoryUrl: string;
@@ -65,10 +71,32 @@ export interface BrowserTargetedAssetRecoveryInput {
   readonly lockManager?: Pick<LockManager, "request">;
 }
 
+export interface BrowserTargetedAssetRecoveryMonitoring {
+  readonly fact: AssetMonitoringAssetResponse;
+}
+
+type BrowserTargetedAssetRecoveryStage =
+  | "current-inventory"
+  | BrowserEncryptedWalletBackupV2RestoreStage
+  | "monitoring"
+  | "mint";
+
 /** Runs one exact browser recovery. It does not discover monitoring assets or mint counters. */
 export async function recoverBrowserTargetedAsset(
   input: BrowserTargetedAssetRecoveryInput,
 ): Promise<TargetedAssetRecoveryOutcome> {
+  let reported = false;
+  let failureReported = false;
+  const report = (stage: BrowserTargetedAssetRecoveryStage): void => {
+    if (reported) return;
+    reported = true;
+    console.warn(`targeted-recovery-stage=${stage}`);
+  };
+  const reportFailure = (failureClass: BrowserEncryptedWalletBackupV2FailureClass): void => {
+    if (failureReported) return;
+    failureReported = true;
+    console.warn(`targeted-recovery-error=${failureClass}`);
+  };
   try {
     requireCurrent(input);
     const scope = browserWalletScope(input.seed);
@@ -77,9 +105,10 @@ export async function recoverBrowserTargetedAsset(
     }
     const recovery = await recoveryInput(input);
     return await targetedRecoveryLock(input.scopeId, recovery.assetLocator, input.lockManager, () =>
-      recoverTargetedAsset(recovery, recoveryPorts(input)),
+      recoverTargetedAsset(recovery, recoveryPorts(input, report, reportFailure)),
     );
   } catch {
+    report("current-inventory");
     return { kind: "persistent-error" };
   }
 }
@@ -110,38 +139,79 @@ async function recoveryInput(
       ...input.asset,
     }),
     asset: input.asset,
-    monitoringAsset: decodeAssetMonitoringAssetReference(input.monitoringFact.asset),
-    monitoringFactVersion: browserTargetedAssetRecoveryFactVersion(input.monitoringFact),
   };
 }
 
-function recoveryPorts(input: BrowserTargetedAssetRecoveryInput) {
+function recoveryPorts(
+  input: BrowserTargetedAssetRecoveryInput,
+  report: (stage: BrowserTargetedAssetRecoveryStage) => void,
+  reportFailure: (failureClass: BrowserEncryptedWalletBackupV2FailureClass) => void,
+) {
   const attempts = new BrowserTargetedAssetRecoveryAttemptStore({
     database: input.database,
     scopeId: input.scopeId,
     completedAtUnixMilliseconds: input.completedAtUnixMilliseconds,
   });
+  const monitoring = lazyMonitoringRecovery(input, report);
+  const wallet = lazyWallet(input);
   return {
     hasLocalCustody: async () => {
-      const available = await readBrowserEncryptedWalletBackupV2LocalAvailableAmount(input);
-      return available !== null && available >= BigInt(input.monitoringFact.availableSubunits);
-    },
-    readAuthenticatedCurrentBackupInventory: (recovery: TargetedAssetRecoveryInput) =>
-      readCurrentInventory(input, recovery),
-    restoreAndAdmitBackup: async () => {
-      await restoreAndAdmitBrowserEncryptedWalletBackupV2TargetedAsset({
-        ...input,
-        minimumAvailableAmount: BigInt(input.monitoringFact.availableSubunits),
-      });
-      const available = await readBrowserEncryptedWalletBackupV2LocalAvailableAmount(input);
-      if (available === null || available < BigInt(input.monitoringFact.availableSubunits)) {
-        throw new Error("targeted asset recovery backup amount is incomplete");
+      try {
+        const available = await readBrowserEncryptedWalletBackupV2LocalAvailableAmount(input);
+        return available !== null && available >= input.requiredAmount;
+      } catch {
+        report("current-inventory");
+        throw new Error("targeted asset recovery local custody failed");
       }
     },
-    readExactMonitoringFact: (recovery: TargetedAssetRecoveryInput) =>
-      exactMonitoringFact(input, recovery),
-    readCompletedAttempt: attempts.readCompletedAttempt.bind(attempts),
-    recordCompletedAttempt: attempts.recordCompletedAttempt.bind(attempts),
+    readAuthenticatedCurrentBackupInventory: (recovery: TargetedAssetRecoveryInput) =>
+      readCurrentInventory(input, recovery, report),
+    restoreAndAdmitBackup: async () => {
+      let loadedWallet: CashuWallet;
+      try {
+        loadedWallet = await wallet();
+      } catch {
+        report("backup-verify");
+        throw new Error("targeted asset recovery wallet load failed");
+      }
+      await restoreAndAdmitBrowserEncryptedWalletBackupV2TargetedAsset({
+        ...input,
+        wallet: loadedWallet,
+        minimumAvailableAmount: input.requiredAmount,
+        reportTargetedRecoveryStage: report,
+        reportTargetedRecoveryFailureClass: reportFailure,
+      });
+      try {
+        const available = await readBrowserEncryptedWalletBackupV2LocalAvailableAmount(input);
+        if (available === null || available < input.requiredAmount) {
+          report("backup-admit-postcheck");
+          throw new Error("targeted asset recovery backup amount is incomplete");
+        }
+      } catch {
+        report("backup-admit-postcheck");
+        throw new Error("targeted asset recovery backup admission failed");
+      }
+    },
+    readExactMonitoringFact: () => exactMonitoringFact(monitoring, report),
+    readCompletedAttempt: async (key: TargetedAssetRecoveryAttemptKey) => {
+      try {
+        return await attempts.readCompletedAttempt(key);
+      } catch {
+        report("mint");
+        throw new Error("targeted asset recovery attempt read failed");
+      }
+    },
+    recordCompletedAttempt: async (
+      key: TargetedAssetRecoveryAttemptKey,
+      outcome: TargetedAssetRecoveryCompletedOutcome,
+    ) => {
+      try {
+        await attempts.recordCompletedAttempt(key, outcome);
+      } catch {
+        report("mint");
+        throw new Error("targeted asset recovery attempt write failed");
+      }
+    },
     recoverFromMint: ({
       recovery,
       attemptKey,
@@ -150,104 +220,161 @@ function recoveryPorts(input: BrowserTargetedAssetRecoveryInput) {
       recovery: TargetedAssetRecoveryInput;
       attemptKey: TargetedAssetRecoveryAttemptKey;
       requests: readonly TargetedAssetRecoveryMintRequest[];
-    }) => restoreExactMintRequests(input, recovery, attemptKey, requests),
+    }) =>
+      restoreExactMintRequests(input, wallet, monitoring, recovery, attemptKey, requests, report),
   };
 }
 
 async function readCurrentInventory(
   input: BrowserTargetedAssetRecoveryInput,
   recovery: TargetedAssetRecoveryInput,
+  report: (stage: BrowserTargetedAssetRecoveryStage) => void,
 ) {
-  requireCurrent(input);
-  const issuedAtUnixSeconds = input.nowUnixSeconds();
-  const requestProof = await prepareEncryptedWalletBackupV2RequestProof({
-    keyHandle: input.keyHandle,
-    enrollmentEpoch: input.enrollmentEpoch,
-    method: "GET",
-    url: input.currentInventoryUrl,
-    issuedAtUnixSeconds,
-    expiresAtUnixSeconds: issuedAtUnixSeconds + 60,
-    payload: new Uint8Array(),
-    signal: input.signal,
-    runtime: input.runtime,
-  });
-  requireCurrent(input);
-  const inventory = await input.remote.readCurrentInventory({ requestProof, signal: input.signal });
-  requireCurrent(input);
-  const exact = inventory.entries.find(
-    ({ assetLocator }) => assetLocator === recovery.assetLocator,
-  );
-  return {
-    kind: "available" as const,
-    headVersion: inventory.headVersion,
-    exactEntry:
-      exact !== undefined && exact.declaredAmount >= BigInt(input.monitoringFact.availableSubunits)
-        ? true
-        : null,
+  try {
+    requireCurrent(input);
+    const issuedAtUnixSeconds = input.nowUnixSeconds();
+    const requestProof = await prepareEncryptedWalletBackupV2RequestProof({
+      keyHandle: input.keyHandle,
+      enrollmentEpoch: input.enrollmentEpoch,
+      method: "GET",
+      url: input.currentInventoryUrl,
+      issuedAtUnixSeconds,
+      expiresAtUnixSeconds: issuedAtUnixSeconds + 60,
+      payload: new Uint8Array(),
+      signal: input.signal,
+      runtime: input.runtime,
+    });
+    requireCurrent(input);
+    const inventory = await input.remote.readCurrentInventory({
+      requestProof,
+      signal: input.signal,
+    });
+    requireCurrent(input);
+    const exact = inventory.entries.find(
+      ({ assetLocator }) => assetLocator === recovery.assetLocator,
+    );
+    return {
+      kind: "available" as const,
+      headVersion: inventory.headVersion,
+      exactEntry: exact !== undefined && exact.declaredAmount >= input.requiredAmount ? true : null,
+    };
+  } catch {
+    report("current-inventory");
+    throw new Error("targeted asset recovery inventory failed");
+  }
+}
+
+function lazyMonitoringRecovery(
+  input: BrowserTargetedAssetRecoveryInput,
+  report: (stage: BrowserTargetedAssetRecoveryStage) => void,
+) {
+  let pending: Promise<BrowserTargetedAssetRecoveryMonitoring | null> | undefined;
+  return async (): Promise<BrowserTargetedAssetRecoveryMonitoring | null> => {
+    try {
+      if (pending === undefined) pending = input.readExactMonitoringRecovery();
+      const monitoring = await pending;
+      requireCurrent(input);
+      if (monitoring === null) return null;
+      if (BigInt(requireAmount(monitoring.fact.availableSubunits)) < input.requiredAmount)
+        return null;
+      return monitoring;
+    } catch {
+      report("monitoring");
+      throw new Error("targeted asset recovery monitoring failed");
+    }
   };
 }
 
-function exactMonitoringFact(
-  input: BrowserTargetedAssetRecoveryInput,
-  recovery: TargetedAssetRecoveryInput,
-) {
-  return {
-    asset: decodeAssetMonitoringAssetReference(input.monitoringFact.asset),
-    factVersion: recovery.monitoringFactVersion,
-    availableSubunits: input.monitoringFact.availableSubunits,
-    recoveryHint: input.monitoringFact.recoveryHint,
+function lazyWallet(input: BrowserTargetedAssetRecoveryInput) {
+  let pending: Promise<CashuWallet> | undefined;
+  return async (): Promise<CashuWallet> => {
+    if (pending === undefined) {
+      requireCurrent(input);
+      pending = input.loadWallet();
+    }
+    const wallet = await pending;
+    requireCurrent(input);
+    return wallet;
   };
+}
+
+async function exactMonitoringFact(
+  readMonitoring: () => Promise<BrowserTargetedAssetRecoveryMonitoring | null>,
+  report: (stage: BrowserTargetedAssetRecoveryStage) => void,
+) {
+  try {
+    const monitoring = await readMonitoring();
+    if (monitoring === null) return null;
+    return {
+      asset: decodeAssetMonitoringAssetReference(monitoring.fact.asset),
+      factVersion: browserTargetedAssetRecoveryFactVersion(monitoring.fact),
+      availableSubunits: monitoring.fact.availableSubunits,
+      recoveryHint: monitoring.fact.recoveryHint,
+    };
+  } catch {
+    report("monitoring");
+    throw new Error("targeted asset recovery monitoring failed");
+  }
 }
 
 async function restoreExactMintRequests(
   input: BrowserTargetedAssetRecoveryInput,
+  readWallet: () => Promise<CashuWallet>,
+  readMonitoring: () => Promise<BrowserTargetedAssetRecoveryMonitoring | null>,
   recovery: TargetedAssetRecoveryInput,
   attemptKey: TargetedAssetRecoveryAttemptKey,
   requests: readonly TargetedAssetRecoveryMintRequest[],
+  report: (stage: BrowserTargetedAssetRecoveryStage) => void,
 ): Promise<"restored" | "unavailable"> {
-  requireMintAuthority(input, requests);
-  const existingProofIds = new Set(
-    (
-      await readBrowserEncryptedWalletBackupV2ExactLocalProofRows({
-        database: input.database,
-        scopeId: input.scopeId,
-        asset: input.asset,
-      })
-    ).map(({ proofId }) => proofId),
-  );
-  const ranges: { request: TargetedAssetRecoveryMintRequest; proofs: Proof[] }[] = [];
-  for (const request of requests) {
+  try {
+    const monitoring = await readMonitoring();
+    if (monitoring === null) throw new Error("targeted asset recovery monitoring is unavailable");
+    const wallet = await readWallet();
+    requireMintAuthority(input, wallet, requests);
+    const existingProofIds = new Set(
+      (
+        await readBrowserEncryptedWalletBackupV2ExactLocalProofRows({
+          database: input.database,
+          scopeId: input.scopeId,
+          asset: input.asset,
+        })
+      ).map(({ proofId }) => proofId),
+    );
+    const ranges: { request: TargetedAssetRecoveryMintRequest; proofs: Proof[] }[] = [];
+    for (const request of requests) {
+      requireCurrent(input);
+      const response = await wallet.restore(request.counterStart, request.counterCount, {
+        keysetId: request.keysetId,
+      });
+      requireCurrent(input);
+      requireExactRestoreProofs(input.seed, response.proofs, request);
+      verifyExactMintProofs(input, wallet, response.proofs);
+      ranges.push({ request, proofs: response.proofs });
+    }
+    const allProofs = ranges.flatMap(({ proofs }) => proofs);
+    const groups =
+      allProofs.length === 0
+        ? { unspent: [], pending: [], spent: [] }
+        : await wallet.groupProofsByState(allProofs);
     requireCurrent(input);
-    const response = await input.wallet.restore(request.counterStart, request.counterCount, {
-      keysetId: request.keysetId,
-    });
+    const unspentSecrets = requireExactProofStateGroups(allProofs, groups);
+    for (const { request, proofs } of ranges) {
+      const fresh = proofs.filter((proof) => {
+        if (!unspentSecrets.has(proof.secret)) return false;
+        const proofId = exactProofId(input, proof);
+        if (existingProofIds.has(proofId)) return false;
+        existingProofIds.add(proofId);
+        return true;
+      });
+      await admitExactMintProofs(input, wallet, recovery, attemptKey, request, fresh);
+    }
+    const available = await readBrowserEncryptedWalletBackupV2LocalAvailableAmount(input);
     requireCurrent(input);
-    requireExactRestoreProofs(input.seed, response.proofs, request);
-    verifyExactMintProofs(input, response.proofs);
-    ranges.push({ request, proofs: response.proofs });
+    return available !== null && available >= input.requiredAmount ? "restored" : "unavailable";
+  } catch {
+    report("mint");
+    throw new Error("targeted asset recovery mint failed");
   }
-  const allProofs = ranges.flatMap(({ proofs }) => proofs);
-  const groups =
-    allProofs.length === 0
-      ? { unspent: [], pending: [], spent: [] }
-      : await input.wallet.groupProofsByState(allProofs);
-  requireCurrent(input);
-  const unspentSecrets = requireExactProofStateGroups(allProofs, groups);
-  for (const { request, proofs } of ranges) {
-    const fresh = proofs.filter((proof) => {
-      if (!unspentSecrets.has(proof.secret)) return false;
-      const proofId = exactProofId(input, proof);
-      if (existingProofIds.has(proofId)) return false;
-      existingProofIds.add(proofId);
-      return true;
-    });
-    await admitExactMintProofs(input, recovery, attemptKey, request, fresh);
-  }
-  const available = await readBrowserEncryptedWalletBackupV2LocalAvailableAmount(input);
-  requireCurrent(input);
-  return available !== null && available >= BigInt(input.monitoringFact.availableSubunits)
-    ? "restored"
-    : "unavailable";
 }
 
 function exactProofId(input: BrowserTargetedAssetRecoveryInput, proof: Proof): string {
@@ -281,22 +408,24 @@ function requireExactProofStateGroups(
 
 function verifyExactMintProofs(
   input: BrowserTargetedAssetRecoveryInput,
+  wallet: CashuWallet,
   proofs: readonly Proof[],
 ): void {
-  for (const proof of proofs) requireProofAsset(input.asset, input.wallet, proof);
-  verifyProofsForReceive([...proofs], (keysetId) => input.wallet.getKeyset(keysetId), {
+  for (const proof of proofs) requireProofAsset(input.asset, wallet, proof);
+  verifyProofsForReceive([...proofs], (keysetId) => wallet.getKeyset(keysetId), {
     requireDleq: true,
   });
 }
 
 async function admitExactMintProofs(
   input: BrowserTargetedAssetRecoveryInput,
+  wallet: CashuWallet,
   recovery: TargetedAssetRecoveryInput,
   attemptKey: TargetedAssetRecoveryAttemptKey,
   request: TargetedAssetRecoveryMintRequest,
   unspent: readonly Proof[],
 ): Promise<void> {
-  const stored = storedProofs(input, unspent);
+  const stored = storedProofs(input, wallet, unspent);
   const locators = new Map(
     locateSeedDerivedProofLineage({
       seed: input.seed,
@@ -310,13 +439,14 @@ async function admitExactMintProofs(
   );
   await withWalletProfileLock(
     input.scopeId,
-    () => commitExactMintProofs(input, recovery, attemptKey, request, stored, locators),
+    () => commitExactMintProofs(input, wallet, recovery, attemptKey, request, stored, locators),
     input.lockManager,
   );
 }
 
 async function commitExactMintProofs(
   input: BrowserTargetedAssetRecoveryInput,
+  wallet: CashuWallet,
   recovery: TargetedAssetRecoveryInput,
   attemptKey: TargetedAssetRecoveryAttemptKey,
   request: TargetedAssetRecoveryMintRequest,
@@ -326,17 +456,16 @@ async function commitExactMintProofs(
   await input.database.transaction("rw", input.database.tables, async () => {
     requireCurrent(input);
     if (stored.length !== 0) {
-      await admitBrowserReceivedProofs({
+      await admitBrowserReceivedProofsWithHeldProfileLock({
         seed: input.seed,
         sourceOperationId: mintRecoverySourceOperationId(recovery, attemptKey, request),
         mintUrl: input.asset.mintUrl,
         unit: requiredUnit(input.asset.unit),
-        wallet: input.wallet,
+        wallet,
         proofs: stored,
         derivationAuthority: null,
         proofLocators: locators,
         database: input.database,
-        lockManager: immediateLock,
       });
     }
     await restoreProofsAndAdvanceCounter(
@@ -364,7 +493,7 @@ function mintRecoverySourceOperationId(
     JSON.stringify([
       recovery.scopeId,
       recovery.assetLocator,
-      recovery.monitoringFactVersion,
+      attemptKey.monitoringFactVersion,
       attemptKey.backupHeadVersion,
       request.keysetId,
       request.counterStart,
@@ -376,11 +505,12 @@ function mintRecoverySourceOperationId(
 
 function storedProofs(
   input: BrowserTargetedAssetRecoveryInput,
+  wallet: CashuWallet,
   proofs: readonly Proof[],
 ): StoredProof[] {
   const unit = requiredUnit(input.asset.unit);
   return proofs.map((proof) => {
-    const conditional = input.wallet.getKeyset(proof.id).conditional;
+    const conditional = wallet.getKeyset(proof.id).conditional;
     return {
       ...proof,
       ...(conditional === undefined
@@ -464,16 +594,17 @@ function requireProofAsset(
 
 function requireMintAuthority(
   input: BrowserTargetedAssetRecoveryInput,
+  wallet: CashuWallet,
   requests: readonly TargetedAssetRecoveryMintRequest[],
 ): void {
-  if (normalizeUrl(input.wallet.mint.mintUrl) !== normalizeUrl(input.asset.mintUrl)) {
+  if (normalizeUrl(wallet.mint.mintUrl) !== normalizeUrl(input.asset.mintUrl)) {
     throw new Error("targeted asset recovery mint is foreign");
   }
   for (const keysetId of new Set(requests.map(({ keysetId }) => keysetId))) {
     if (isBlsKeyset(keysetId)) {
       throw new Error("targeted asset recovery BLS keyset is unsupported");
     }
-    const keyset = input.wallet.getKeyset(keysetId);
+    const keyset = wallet.getKeyset(keysetId);
     if (!keyset.hasKeys || keyset.unit !== input.asset.unit || !keyset.verify()) {
       throw new Error("targeted asset recovery mint keyset is invalid");
     }
@@ -522,11 +653,3 @@ function requireCurrent(input: BrowserTargetedAssetRecoveryInput): void {
     throw new Error("targeted asset recovery profile is stale");
   }
 }
-
-const immediateLock = {
-  request: async <T>(
-    _name: string,
-    options: LockOptions | LockGrantedCallback<T>,
-    callback?: LockGrantedCallback<T>,
-  ) => (typeof options === "function" ? options(null) : callback!(null)),
-} as Pick<LockManager, "request">;

@@ -20,7 +20,7 @@ const recoverBrowserDurableOutgoingCashuTransfer = vi.fn();
 const captureBrowserMintPersistenceContext = vi.fn();
 const getWalletForUnit = vi.fn();
 const restoreExactMintOutputs = vi.fn();
-const getBoundedMarketFundingProofs = vi.fn();
+const getBoundedCanonicalRegularProofs = vi.fn();
 const getDurableCashuDeliveryStatus = vi.fn();
 const submitDurableCashuDelivery = vi.fn();
 const recoverBrowserFundedAsset = vi.fn();
@@ -44,7 +44,8 @@ vi.mock("@/lib/cashu", () => ({
 }));
 
 vi.mock("@/stores/proof-db", () => ({
-  getBoundedMarketFundingProofs: (...args: unknown[]) => getBoundedMarketFundingProofs(...args),
+  getBoundedCanonicalRegularProofs: (...args: unknown[]) =>
+    getBoundedCanonicalRegularProofs(...args),
 }));
 
 vi.mock("@/lib/markets", () => ({
@@ -80,7 +81,7 @@ describe("browser market funding delivery", () => {
     captureBrowserMintPersistenceContext.mockReset();
     getWalletForUnit.mockReset();
     restoreExactMintOutputs.mockReset();
-    getBoundedMarketFundingProofs.mockReset();
+    getBoundedCanonicalRegularProofs.mockReset();
     getDurableCashuDeliveryStatus.mockReset();
     submitDurableCashuDelivery.mockReset();
     recoverBrowserFundedAsset.mockReset();
@@ -172,7 +173,25 @@ describe("browser market funding delivery", () => {
       expect.objectContaining({ transferId: input.deliveryId }),
     );
     expect(executeBrowserDurableOutgoingCashuTransfer).not.toHaveBeenCalled();
-    expect(getBoundedMarketFundingProofs).not.toHaveBeenCalled();
+    expect(getBoundedCanonicalRegularProofs).not.toHaveBeenCalled();
+  });
+
+  it("reconciles a persisted token without re-entering pre-mint recovery", async () => {
+    captureBrowserMintPersistenceContext.mockReturnValue({
+      activeMintUrl: input.mintUrl,
+      seed: new Uint8Array(64),
+      requireCapturedProfile: vi.fn(),
+    });
+    findBrowserDurableOutgoingCashuTransferByRecipientBinding.mockResolvedValue(transfer());
+    getDurableCashuDeliveryStatus.mockResolvedValue(status("credited"));
+
+    const result = await executeBrowserMarketFundingDelivery({ ...input });
+
+    expect(result.progress).toBe("credited");
+    expect(getDurableCashuDeliveryStatus).toHaveBeenCalledWith(input.deliveryId);
+    expect(getWalletForUnit).not.toHaveBeenCalled();
+    expect(recoverBrowserDurableOutgoingCashuTransfer).not.toHaveBeenCalled();
+    expect(executeBrowserDurableOutgoingCashuTransfer).not.toHaveBeenCalled();
   });
 
   it("does not reject from cached available balance when no persisted transfer can resume", async () => {
@@ -210,7 +229,7 @@ describe("browser market funding delivery", () => {
     });
     findBrowserDurableOutgoingCashuTransferByRecipientBinding.mockResolvedValue(null);
     getWalletForUnit.mockResolvedValue({ getKeyset: () => ({ id: "keyset-1" }) });
-    getBoundedMarketFundingProofs.mockResolvedValue([{ amount: input.requestedAmount }]);
+    getBoundedCanonicalRegularProofs.mockResolvedValue([{ amount: input.requestedAmount }]);
     executeBrowserDurableOutgoingCashuTransfer.mockResolvedValue(transfer());
     getDurableCashuDeliveryStatus.mockResolvedValue(status("received"));
 
@@ -245,7 +264,7 @@ describe("browser market funding delivery", () => {
     });
     findBrowserDurableOutgoingCashuTransferByRecipientBinding.mockResolvedValue(null);
     getWalletForUnit.mockResolvedValue(wallet);
-    getBoundedMarketFundingProofs.mockResolvedValue([{ amount: input.requestedAmount }]);
+    getBoundedCanonicalRegularProofs.mockResolvedValue([{ amount: input.requestedAmount }]);
     executeBrowserDurableOutgoingCashuTransfer.mockResolvedValue(transfer());
     getDurableCashuDeliveryStatus.mockResolvedValue(status("received"));
     recoverBrowserFundedAsset.mockResolvedValue({ kind: "ready", plan: { kind: "ready" } });
@@ -275,7 +294,7 @@ describe("browser market funding delivery", () => {
     getWalletForUnit.mockResolvedValue(wallet);
     executeBrowserDurableOutgoingCashuTransfer.mockResolvedValue(transfer());
     getDurableCashuDeliveryStatus.mockResolvedValue(status("received"));
-    getBoundedMarketFundingProofs.mockResolvedValue([{ amount: "1" }]);
+    getBoundedCanonicalRegularProofs.mockResolvedValue([{ amount: "1" }]);
 
     await executeBrowserMarketFundingDelivery({ ...input });
     const outgoingInput = executeBrowserDurableOutgoingCashuTransfer.mock.calls[0]?.[0] as {
@@ -297,7 +316,7 @@ describe("browser market funding delivery", () => {
     getWalletForUnit.mockResolvedValue(wallet);
     executeBrowserDurableOutgoingCashuTransfer.mockResolvedValue(transfer());
     getDurableCashuDeliveryStatus.mockResolvedValue(status("received"));
-    getBoundedMarketFundingProofs.mockResolvedValue([{ amount: "1" }]);
+    getBoundedCanonicalRegularProofs.mockResolvedValue([{ amount: "1" }]);
 
     await executeBrowserMarketFundingDelivery({
       ...input,
@@ -326,7 +345,7 @@ describe("browser market funding delivery", () => {
     getWalletForUnit.mockResolvedValue(wallet);
     executeBrowserDurableOutgoingCashuTransfer.mockResolvedValue(transfer());
     getDurableCashuDeliveryStatus.mockResolvedValue(status("received"));
-    getBoundedMarketFundingProofs.mockResolvedValue([{ amount: input.requestedAmount }]);
+    getBoundedCanonicalRegularProofs.mockResolvedValue([{ amount: input.requestedAmount }]);
 
     await executeBrowserMarketFundingDelivery({ ...input });
     const outgoingInput = executeBrowserDurableOutgoingCashuTransfer.mock.calls[0]?.[0] as {

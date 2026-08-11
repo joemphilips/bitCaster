@@ -57,7 +57,41 @@ export interface BrowserEncryptedWalletBackupV2TargetedRestoreInput {
   readonly signal: AbortSignal;
   readonly isCurrentProfile: () => boolean;
   readonly minimumAvailableAmount?: bigint;
+  readonly reportTargetedRecoveryStage?: (
+    stage: BrowserEncryptedWalletBackupV2RestoreStage,
+  ) => void;
+  readonly reportTargetedRecoveryFailureClass?: (
+    failureClass: BrowserEncryptedWalletBackupV2FailureClass,
+  ) => void;
 }
+
+export type BrowserEncryptedWalletBackupV2RestoreStage =
+  | "backup-object"
+  | "backup-decrypt"
+  | "backup-verify"
+  | "backup-admit"
+  | "backup-admit-lock"
+  | "backup-admit-authority"
+  | "backup-admit-state"
+  | "backup-admit-custody"
+  | "backup-admit-counter"
+  | "backup-admit-desired"
+  | "backup-admit-desired-write"
+  | "backup-admit-current-profile"
+  | "backup-admit-transaction-commit"
+  | "backup-admit-cache"
+  | "backup-admit-postcheck";
+
+export type BrowserEncryptedWalletBackupV2FailureClass =
+  | "abort"
+  | "constraint"
+  | "data"
+  | "database-closed"
+  | "invalid-state"
+  | "premature-commit"
+  | "quota"
+  | "transaction-inactive"
+  | "unknown";
 
 export interface BrowserEncryptedWalletBackupV2RestoreAndAdmitInput extends BrowserEncryptedWalletBackupV2TargetedRestoreInput {
   readonly wallet: CashuWallet;
@@ -82,51 +116,70 @@ export async function restoreBrowserEncryptedWalletBackupV2TargetedAsset(
     (input.minimumAvailableAmount === undefined || localAmount >= input.minimumAvailableAmount)
   )
     return { kind: "local-custody" };
-  const assetLocator = await deriveEncryptedWalletBackupV2AssetLocator({
-    keyHandle: input.keyHandle,
-    ...input.asset,
-  });
-  const head = await collectAllEncryptedWalletBackupV2DescriptorPages({
-    issueRequestProof: (cursor) => requestProof(input, "head", cursor, new Uint8Array()),
-    readDescriptorPage: ({ requestProof, afterBundleId }) => {
-      requireCurrent(input);
-      return input.remote.readDescriptorPage({ requestProof, afterBundleId, signal: input.signal });
-    },
-  });
-  requireCurrent(input);
-  if (
-    head.head.realm !== input.keyHandle.realm ||
-    head.head.walletId !== input.keyHandle.walletId ||
-    head.head.enrollmentEpoch !== input.enrollmentEpoch
-  ) {
-    throw new Error("encrypted backup V2 current head is foreign");
-  }
-  const descriptor = head.bundles.find((candidate) => candidate.assetLocator === assetLocator);
-  if (descriptor === undefined) throw new Error("encrypted backup V2 current asset is absent");
-  const objects = [];
-  for (const { objectId } of descriptor.objects) {
-    const auth = await requestProof(input, "object", objectId, new Uint8Array());
+  let assetLocator: string;
+  let head: Awaited<ReturnType<typeof collectAllEncryptedWalletBackupV2DescriptorPages>>;
+  let descriptor: (typeof head.bundles)[number];
+  let objects: Awaited<ReturnType<EncryptedWalletBackupV2RemotePort["readObject"]>>[];
+  try {
+    assetLocator = await deriveEncryptedWalletBackupV2AssetLocator({
+      keyHandle: input.keyHandle,
+      ...input.asset,
+    });
+    head = await collectAllEncryptedWalletBackupV2DescriptorPages({
+      issueRequestProof: (cursor) => requestProof(input, "head", cursor, new Uint8Array()),
+      readDescriptorPage: ({ requestProof, afterBundleId }) => {
+        requireCurrent(input);
+        return input.remote.readDescriptorPage({
+          requestProof,
+          afterBundleId,
+          signal: input.signal,
+        });
+      },
+    });
     requireCurrent(input);
-    objects.push(
-      await input.remote.readObject({
-        requestProof: auth,
-        objectId,
-        expectedDescriptor: descriptor,
-        signal: input.signal,
-      }),
-    );
+    if (
+      head.head.realm !== input.keyHandle.realm ||
+      head.head.walletId !== input.keyHandle.walletId ||
+      head.head.enrollmentEpoch !== input.enrollmentEpoch
+    ) {
+      throw new Error("encrypted backup V2 current head is foreign");
+    }
+    descriptor = head.bundles.find((candidate) => candidate.assetLocator === assetLocator)!;
+    if (descriptor === undefined) throw new Error("encrypted backup V2 current asset is absent");
+    objects = [];
+    for (const { objectId } of descriptor.objects) {
+      const auth = await requestProof(input, "object", objectId, new Uint8Array());
+      requireCurrent(input);
+      objects.push(
+        await input.remote.readObject({
+          requestProof: auth,
+          objectId,
+          expectedDescriptor: descriptor,
+          signal: input.signal,
+        }),
+      );
+    }
+    requireCurrent(input);
+  } catch (error) {
+    reportStage(input, "backup-object");
+    throw error;
   }
-  requireCurrent(input);
-  const unverified = await decryptEncryptedWalletBackupV2ProofSetBundle({
-    keyHandle: input.keyHandle,
-    seed: input.seed,
-    expectedAsset: input.asset,
-    custodyRevision: descriptor.custodyRevision,
-    descriptor,
-    objects,
-    runtime: input.runtime,
-  });
-  requireCurrent(input);
+  let unverified: Awaited<ReturnType<typeof decryptEncryptedWalletBackupV2ProofSetBundle>>;
+  try {
+    unverified = await decryptEncryptedWalletBackupV2ProofSetBundle({
+      keyHandle: input.keyHandle,
+      seed: input.seed,
+      expectedAsset: input.asset,
+      custodyRevision: descriptor.custodyRevision,
+      descriptor,
+      objects,
+      runtime: input.runtime,
+    });
+    requireCurrent(input);
+  } catch (error) {
+    reportStage(input, "backup-decrypt");
+    throw error;
+  }
   return {
     kind: "backup",
     assetLocator,
@@ -142,46 +195,99 @@ export async function restoreAndAdmitBrowserEncryptedWalletBackupV2TargetedAsset
   input: BrowserEncryptedWalletBackupV2RestoreAndAdmitInput,
 ): Promise<BrowserEncryptedWalletBackupV2RestoreAndAdmitResult> {
   if (normalizeUrl(input.wallet.mint.mintUrl) !== normalizeUrl(input.asset.mintUrl)) {
+    reportStage(input, "backup-verify");
     throw new Error("browser V2 restore mint is foreign");
   }
   const restored = await restoreBrowserEncryptedWalletBackupV2TargetedAsset(input);
   requireCurrent(input);
   if (restored.kind === "local-custody") {
-    await withWalletProfileLock(
-      input.scopeId,
-      () => repairLegacyProofCache(input),
-      input.lockManager,
-    );
+    try {
+      await withWalletProfileLock(
+        input.scopeId,
+        () => repairLegacyProofCache(input),
+        input.lockManager,
+      );
+    } catch (error) {
+      reportStage(input, "backup-admit");
+      throw error;
+    }
     return restored;
   }
-  const verified = await verifyEncryptedWalletBackupV2RestoredProofSet({
-    seed: input.seed,
-    expectedAsset: input.asset,
-    unverified: restored.unverified,
-    port: restoreVerificationPort(input),
-  });
-  requireCurrent(input);
-  await retryBrowserEncryptedWalletBackupV2QuotaWrite({
-    database: input.database,
-    scopeId: input.scopeId,
-    isCurrentProfile: input.isCurrentProfile,
-    protectedLocalAssetKeys: [encryptedWalletBackupV2LocalAssetKey(input.asset)],
-    lockManager: input.lockManager,
-    write: () =>
-      admitBrowserEncryptedWalletBackupV2Asset({
-        seed: input.seed,
-        verified,
-        asset: input.asset,
-        custodyRevision: restored.custodyRevision,
-        sourceOperationId: `backup-v2-restore:${restored.bundleId}`,
-        wallet: input.wallet,
-        database: input.database,
-        scopeId: input.scopeId,
-        isCurrentProfile: input.isCurrentProfile,
-        lockManager: input.lockManager,
-      }),
-  });
+  let verified: Awaited<ReturnType<typeof verifyEncryptedWalletBackupV2RestoredProofSet>>;
+  let admissionStage: BrowserEncryptedWalletBackupV2RestoreStage = "backup-admit-lock";
+  try {
+    verified = await verifyEncryptedWalletBackupV2RestoredProofSet({
+      seed: input.seed,
+      expectedAsset: input.asset,
+      unverified: restored.unverified,
+      port: restoreVerificationPort(input),
+    });
+    requireCurrent(input);
+  } catch (error) {
+    reportStage(input, "backup-verify");
+    throw error;
+  }
+  try {
+    await retryBrowserEncryptedWalletBackupV2QuotaWrite({
+      database: input.database,
+      scopeId: input.scopeId,
+      isCurrentProfile: input.isCurrentProfile,
+      protectedLocalAssetKeys: [encryptedWalletBackupV2LocalAssetKey(input.asset)],
+      lockManager: input.lockManager,
+      write: () =>
+        admitBrowserEncryptedWalletBackupV2Asset({
+          seed: input.seed,
+          verified,
+          asset: input.asset,
+          custodyRevision: restored.custodyRevision,
+          sourceOperationId: `backup-v2-restore:${restored.bundleId}`,
+          wallet: input.wallet,
+          database: input.database,
+          scopeId: input.scopeId,
+          isCurrentProfile: input.isCurrentProfile,
+          lockManager: input.lockManager,
+          setTargetedRecoveryAdmissionStage: (stage) => {
+            admissionStage = stage;
+          },
+        }),
+    });
+  } catch (error) {
+    reportStage(input, admissionStage);
+    input.reportTargetedRecoveryFailureClass?.(classifyFailure(error));
+    throw error;
+  }
   return { kind: "restored", bundleId: restored.bundleId, headVersion: restored.headVersion };
+}
+
+function reportStage(
+  input: BrowserEncryptedWalletBackupV2TargetedRestoreInput,
+  stage: BrowserEncryptedWalletBackupV2RestoreStage,
+): void {
+  input.reportTargetedRecoveryStage?.(stage);
+}
+
+function classifyFailure(error: unknown): BrowserEncryptedWalletBackupV2FailureClass {
+  if (!(error instanceof Error)) return "unknown";
+  switch (error.name) {
+    case "AbortError":
+      return "abort";
+    case "ConstraintError":
+      return "constraint";
+    case "DataError":
+      return "data";
+    case "DatabaseClosedError":
+      return "database-closed";
+    case "InvalidStateError":
+      return "invalid-state";
+    case "PrematureCommitError":
+      return "premature-commit";
+    case "QuotaExceededError":
+      return "quota";
+    case "TransactionInactiveError":
+      return "transaction-inactive";
+    default:
+      return "unknown";
+  }
 }
 
 function restoreVerificationPort(
