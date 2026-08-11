@@ -17,6 +17,7 @@ import {
   planCtfRangeOrderAuthorization,
   type CtfRangeOrderAuthorizationPlan,
 } from './ctfRangeOrderAuthorization.ts'
+import { assertCanonicalNut02V2KeysetId } from './durableSeedDerivedPolicy.ts'
 
 const ROOT_PARENT_COLLECTION_ID = '0'.repeat(64)
 
@@ -149,6 +150,7 @@ function assertPreparationAuthority(input: {
   expiryObservation: DurableCtfRangeExpiryObservation
 }): void {
   for (const keyset of [input.offerKeyset, input.receiveKeyset]) {
+    assertCanonicalNut02V2KeysetId(keyset.id, 'CTF range preparation keyset id')
     if (keyset.canonicalMintUrl !== input.mintUrl || keyset.unit !== 'msat') {
       throw new Error('CTF range preparation keyset is from a foreign asset context')
     }

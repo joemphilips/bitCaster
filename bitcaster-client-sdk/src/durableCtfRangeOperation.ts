@@ -9,8 +9,6 @@ import {
   deriveCtfRangeRecoverySelection,
   deriveSecretAndBlindingFactor,
   hashToCurve,
-  hashToCurveBls,
-  isBlsKeyset,
   parseCtfPayToUnlockCondition,
   parseCtfSelectionBitmap,
   recoverCtfRangeProofs,
@@ -69,6 +67,7 @@ import type {
   TokenImportKeysetSource,
 } from './tokenImportValidation.ts'
 import type { DurableWalletProofDerivationLocator } from './durableWalletProofDerivationLocator.ts'
+import { assertCanonicalNut02V2KeysetId } from './durableSeedDerivedPolicy.ts'
 
 export const DURABLE_CTF_RANGE_OPERATION_SCHEMA_VERSION = 3 as const
 export const DURABLE_CTF_RANGE_OPERATION_METADATA_KEY = 'durableCtfRangeOperation'
@@ -1205,8 +1204,8 @@ function validateRangeIdentity(value: DurableCtfRangeOperation): void {
     throw new Error('nested CTF range conditions are unsupported')
   }
   requireXOnlyPublicKey(value.coordinatorPublicKey, 'CTF range coordinator public key')
-  requireBoundedText(value.offerKeysetId, 'offer keyset id')
-  requireBoundedText(value.receiveKeysetId, 'receive keyset id')
+  assertCanonicalNut02V2KeysetId(value.offerKeysetId, 'CTF range offer keyset id')
+  assertCanonicalNut02V2KeysetId(value.receiveKeysetId, 'CTF range receive keyset id')
   if (!Number.isSafeInteger(value.expiry) || value.expiry < 0) {
     throw new Error('CTF range expiry is invalid')
   }
@@ -1565,6 +1564,7 @@ function decodeManifestEntry(value: unknown): CtfPoolEntry {
   if (!isRecord(value.outputData) || !isRecord(value.outputData.blindedMessage)) {
     throw new Error('CTF range output data is invalid')
   }
+  const id = requireCtfRangeV2KeysetId(value.id, 'manifest keyset id')
   const output = OutputData.deserialize(value.outputData as unknown as SerializedOutputData)
   if (
     output.blindedMessage.amount.toString() !== value.amount ||
@@ -1577,7 +1577,7 @@ function decodeManifestEntry(value: unknown): CtfPoolEntry {
     index: requireText(value.index, 'manifest index'),
     role: requireRole(value.role),
     amount: requireUnsigned(value.amount, 'manifest amount', false),
-    id: requireText(value.id, 'manifest keyset id'),
+    id,
     B_: requireText(value.B_, 'manifest blinded message'),
   }
 }
@@ -1585,7 +1585,7 @@ function decodeManifestEntry(value: unknown): CtfPoolEntry {
 function decodeProof(value: unknown): asserts value is DurableCtfRangeProof {
   if (!isRecord(value)) throw new Error('CTF range proof is invalid')
   exactKeys(value, ['id', 'amount', 'secret', 'C', 'dleq', 'p2pkE', 'witness'])
-  requireText(value.id, 'proof keyset id')
+  requireCtfRangeV2KeysetId(value.id, 'proof keyset id')
   requireUnsigned(value.amount, 'proof amount', false)
   requireText(value.secret, 'proof secret')
   requireText(value.C, 'proof signature')
@@ -2079,10 +2079,11 @@ function assertRangeKeysetVerificationAuthority(
 }
 
 function expectedRangeKeysets(ids: readonly string[]) {
-  const expected = new Map<string, 'secp256k1' | 'bls12-381'>()
+  const expected = new Map<string, 'secp256k1'>()
   for (const id of ids) {
+    requireCtfRangeV2KeysetId(id, 'CTF range verification keyset id')
     const canonicalId = canonicalDurableCustodyKeysetIdentity(id)
-    const curve = isBlsKeyset(id) ? 'bls12-381' : 'secp256k1'
+    const curve = 'secp256k1' as const
     const existing = expected.get(canonicalId)
     if (existing !== undefined && existing !== curve) {
       throw new Error('CTF range keyset curve authority is inconsistent')
@@ -2098,6 +2099,7 @@ function canonicalKeysetUses(
 ) {
   const result = new Map<string, 'secp256k1' | 'bls12-381'>()
   for (const use of uses) {
+    requireCtfRangeV2KeysetId(use.keysetId, `${error} keyset id`)
     const keysetId = canonicalDurableCustodyKeysetIdentity(use.keysetId)
     if (result.has(keysetId)) throw new Error(`${error} is duplicated`)
     result.set(keysetId, use.curve)
@@ -2110,6 +2112,7 @@ function canonicalKeysetBindings(
 ) {
   const result = new Map<string, (typeof bindings)[number]>()
   for (const binding of bindings) {
+    requireCtfRangeV2KeysetId(binding.keysetId, 'CTF range keyset binding authority keyset id')
     const keysetId = canonicalDurableCustodyKeysetIdentity(binding.keysetId)
     if (result.has(keysetId)) {
       throw new Error('CTF range keyset binding authority is duplicated')
@@ -2150,7 +2153,7 @@ function assertRangeMintKeysetAuthority(
   for (const authority of authorities) {
     const resolved = mintKeysets.get(authority.keysetId)!
     verifyRangeKeysetIdentity(operation, authority, resolved)
-    const curve = isBlsKeyset(authority.keysetId) ? 'bls12-381' : 'secp256k1'
+    const curve = 'secp256k1' as const
     if (
       bindings.get(authority.keysetId)?.keysetFingerprint !==
       deriveDurableCustodyKeysetFingerprint({
@@ -2276,7 +2279,7 @@ export function assertDurableCtfRangeRefundKeysetAuthority(input: {
     ({ keysetId }) => keysetId === authority.keysetId,
   )
   const binding = bindings[0]
-  const curve = isBlsKeyset(authority.keysetId) ? 'bls12-381' : 'secp256k1'
+  const curve = 'secp256k1' as const
   if (
     bindings.length !== 1 ||
     binding === undefined ||
@@ -2443,7 +2446,8 @@ function createBoundRangeKeysetResolver(
       inputFeePpk: authority.inputFeePpk,
       finalExpiry: authority.finalExpiry,
     })
-    const curve = isBlsKeyset(id) ? 'bls12-381' : 'secp256k1'
+    requireCtfRangeV2KeysetId(id, 'CTF range recovery keyset id')
+    const curve = 'secp256k1' as const
     if (
       binding.curve !== curve ||
       binding.keysetFingerprint !==
@@ -2534,10 +2538,10 @@ function normalizeAllManifestRecovery(
 function normalizeRestoredOutput(value: SerializedBlindedMessage): SerializedBlindedMessage {
   if (!isRecord(value)) throw new Error('CTF range restored output is invalid')
   exactKeys(value, ['id', 'amount', 'B_'])
-  const id = requireBoundedText(value.id, 'restored output keyset id')
+  const id = requireCtfRangeV2KeysetId(value.id, 'restored output keyset id')
   const amount = Amount.from(value.amount as string | bigint | number | Amount)
   requireUnsigned(amount.toString(), 'restored output amount', false)
-  requireLowerHex(value.B_, isBlsKeyset(id) ? 96 : 66, 'restored blinded message')
+  requireLowerHex(value.B_, 66, 'restored blinded message')
   return { id, amount, B_: value.B_ as string }
 }
 
@@ -2664,10 +2668,9 @@ function deserializeProof(proof: DurableCtfRangeProof): Proof {
 }
 
 function deriveInputY(proof: DurableCtfRangeProof): string {
+  requireCtfRangeV2KeysetId(proof.id, 'CTF range proof keyset id')
   const secret = new TextEncoder().encode(proof.secret)
-  return isBlsKeyset(proof.id)
-    ? hashToCurveBls(secret).toHex(true)
-    : hashToCurve(secret).toHex(true)
+  return hashToCurve(secret).toHex(true)
 }
 
 function toCustodyProof(proof: DurableCtfRangeProof) {
@@ -2707,20 +2710,23 @@ function deserializeSignature(value: DurableCtfRangeSignature): SerializedBlinde
 function decodeSignature(value: unknown): void {
   if (!isRecord(value)) throw new Error('CTF range signature is invalid')
   exactKeys(value, ['id', 'amount', 'C_', 'dleq'])
-  const id = requireBoundedText(value.id, 'signature keyset id')
+  requireCtfRangeV2KeysetId(value.id, 'signature keyset id')
   requireUnsigned(value.amount, 'signature amount', false)
-  const signatureLength = isBlsKeyset(id) ? 96 : 66
-  requireLowerHex(value.C_, signatureLength, 'blind signature')
-  if (!isBlsKeyset(id) && value.dleq === null) {
+  requireLowerHex(value.C_, 66, 'blind signature')
+  if (value.dleq === null) {
     throw new Error('secp256k1 CTF range signature requires DLEQ')
   }
   if (value.dleq !== null) {
-    if (isBlsKeyset(id)) throw new Error('BLS CTF range signature cannot contain DLEQ')
     if (!isRecord(value.dleq)) throw new Error('CTF range DLEQ is invalid')
     exactKeys(value.dleq, ['e', 's'])
     requireLowerHex(value.dleq.e, 64, 'DLEQ e')
     requireLowerHex(value.dleq.s, 64, 'DLEQ s')
   }
+}
+
+function requireCtfRangeV2KeysetId(value: unknown, field: string): string {
+  assertCanonicalNut02V2KeysetId(value, `CTF range ${field}`)
+  return value
 }
 
 function walletDisposition(asset: DurableCtfRangeAsset) {

@@ -26,7 +26,7 @@ import {
 import { BitcasterDB } from "../proof-db";
 
 const MINT = "https://mint.example";
-const KEYSET = "0011223344556677";
+const KEYSET = `01${"11".repeat(32)}`;
 const PUBLIC_KEY = `02${"11".repeat(32)}`;
 const openDatabases: BitcasterDB[] = [];
 
@@ -38,6 +38,22 @@ afterEach(async () => {
 });
 
 describe("browser durable custody adapter", () => {
+  it("rejects a full-length V3 proof before browser custody can persist it", async () => {
+    const database = createDatabase();
+    const scope = walletScope();
+    expect(() =>
+      createBrowserCustodyProofRow({
+        scopeId: scope.scopeId,
+        normalizedMint: MINT,
+        unit: "msat",
+        proof: { ...proof("v3"), id: `02${"11".repeat(32)}` } as Proof,
+        asset: { kind: "regular" },
+        receivedAtMs: 1,
+      }),
+    ).toThrow(/canonical NUT-02 V2/);
+    expect(await database.custodyProofs.count()).toBe(0);
+  });
+
   it("accepts the same validated scope regardless of property insertion order", async () => {
     const adapter = new BrowserDurableCustodyAdapter(createDatabase());
     const scope = walletScope();

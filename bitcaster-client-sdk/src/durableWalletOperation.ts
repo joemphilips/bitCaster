@@ -4,8 +4,6 @@ import {
   Amount,
   CheckStateEnum,
   hashToCurve,
-  hashToCurveBls,
-  isBlsKeyset,
   type OutputDataLike,
   type OutputData,
   type MintPreview,
@@ -27,6 +25,7 @@ import {
   serializeDurableCustodyOutput,
   type DurableCustodyProofOperationInput,
 } from './durableCustodyProofOperation.ts'
+import { assertCanonicalNut02V2KeysetId } from './durableSeedDerivedPolicy.ts'
 import {
   addDurableWalletProofTransitionMetadata,
   createDurableWalletProofTransition,
@@ -1146,7 +1145,7 @@ function decodeSwapPreview(
   ])
   requireAmount(value.amount, 'amount', false)
   requireAmount(value.fees, 'fees', true)
-  requireText(value.keysetId, 'keyset id')
+  assertCanonicalNut02V2KeysetId(value.keysetId, 'durable wallet swap keyset id')
   decodeArray(value.inputs, decodeProof, 'inputs', maximumProofs)
   decodeArray(
     value.sendOutputs,
@@ -1210,7 +1209,7 @@ function decodeReceiveDerivationRange(value: unknown, preview: Record<string, un
   if (value === null) return
   if (!isRecord(value)) throw new Error('durable wallet receive derivation range is invalid')
   exactKeys(value, ['keysetId', 'counterStart', 'counterCount'])
-  requireText(value.keysetId, 'receive derivation keyset id')
+  assertCanonicalNut02V2KeysetId(value.keysetId, 'durable wallet receive derivation keyset id')
   if (
     value.keysetId !== preview.keysetId ||
     !Number.isSafeInteger(value.counterStart) ||
@@ -1233,7 +1232,7 @@ function decodeMintPreview(value: Record<string, unknown>): void {
   ) {
     throw new Error('durable wallet quote expiry is invalid')
   }
-  requireText(value.keysetId, 'keyset id')
+  assertCanonicalNut02V2KeysetId(value.keysetId, 'durable wallet mint keyset id')
   if (!isRecord(value.payload)) throw new Error('durable wallet mint payload is invalid')
   exactKeys(value.payload, ['quote', 'outputs', 'signature'])
   requireText(value.payload.quote, 'quote')
@@ -1270,7 +1269,7 @@ function decodeMintPreview(value: Record<string, unknown>): void {
 function decodeMeltPreview(value: Record<string, unknown>): void {
   exactKeys(value, ['method', 'inputs', 'outputData', 'keysetId', 'quote', 'requestOptions'])
   requireText(value.method, 'melt method')
-  requireText(value.keysetId, 'keyset id')
+  assertCanonicalNut02V2KeysetId(value.keysetId, 'durable wallet melt keyset id')
   decodeArray(value.inputs, decodeProof, 'melt inputs', DURABLE_CUSTODY_INPUT_PROOF_LIMIT_MAX)
   decodeArray(
     value.outputData,
@@ -1306,7 +1305,7 @@ function decodeMeltPreview(value: Record<string, unknown>): void {
 function decodeProof(value: unknown): void {
   if (!isRecord(value)) throw new Error('durable wallet proof is invalid')
   exactKeys(value, ['id', 'amount', 'secret', 'C', 'dleq', 'p2pkE', 'witness'])
-  requireText(value.id, 'proof keyset id')
+  assertCanonicalNut02V2KeysetId(value.id, 'durable wallet proof keyset id')
   requireAmount(value.amount, 'proof amount', false)
   requireText(value.secret, 'proof secret')
   requireText(value.C, 'proof signature')
@@ -1356,7 +1355,7 @@ function decodeBlindedMessage(value: unknown): void {
   if (!isRecord(value)) throw new Error('durable wallet blinded message is invalid')
   exactKeys(value, ['amount', 'id', 'B_'])
   requireAmount(value.amount, 'blinded amount', false)
-  requireText(value.id, 'blinded keyset id')
+  assertCanonicalNut02V2KeysetId(value.id, 'durable wallet blinded keyset id')
   requireText(value.B_, 'blinded message')
 }
 
@@ -1471,10 +1470,9 @@ function requireMintOperation(operation: DurableWalletOperation): DurableWalletM
 }
 
 export function deriveDurableWalletProofY(proof: DurableWalletProof): string {
+  assertCanonicalNut02V2KeysetId(proof.id, 'durable wallet proof keyset id')
   const secret = new TextEncoder().encode(proof.secret)
-  return isBlsKeyset(proof.id)
-    ? hashToCurveBls(secret).toHex(true)
-    : hashToCurve(secret).toHex(true)
+  return hashToCurve(secret).toHex(true)
 }
 
 function toCustodyProof(proof: DurableWalletProof) {

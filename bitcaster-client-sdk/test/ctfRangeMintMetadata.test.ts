@@ -8,8 +8,8 @@ import {
 
 const MINT_URL = 'https://mint.example'
 const CONDITION_ID = 'condition-1'
-const REGULAR_KEYSET_ID = '0011223344556677'
-const CONDITIONAL_KEYSET_ID = '8899aabbccddeeff'
+const REGULAR_KEYSET_ID = `01${'11'.repeat(32)}`
+const CONDITIONAL_KEYSET_ID = `01${'22'.repeat(32)}`
 const PUBLIC_KEY = `02${'11'.repeat(32)}`
 
 test('loads one bounded exact range-settlement authority for every client', async () => {
@@ -84,6 +84,55 @@ test('rejects foreign conditions and missing exact key responses', async () => {
     loadCtfRangeMintKeys({ getKeys: async () => ({ keysets: [] }) }, [REGULAR_KEYSET_ID]),
     /omitted keys/,
   )
+})
+
+test('rejects a full-length V3 keyset before range preparation can reserve counters', async () => {
+  const client = mint()
+  client.getKeySets = async () => ({
+    keysets: [{ id: `02${'11'.repeat(32)}`, unit: 'msat', active: true, input_fee_ppk: 100 }],
+  })
+  await assert.rejects(
+    loadCtfRangeMintMetadata({
+      mint: client,
+      mintUrl: MINT_URL,
+      conditionId: CONDITION_ID,
+      observedAt: 1_000,
+      allowInsecureLoopbackHttp: false,
+    }),
+    /no active msat range-order keyset authority/,
+  )
+})
+
+test('ignores an advertised V3 regular keyset when exact V2 authority is available', async () => {
+  const client = mint()
+  const v3KeysetId = `02${'11'.repeat(32)}`
+  const requested: string[] = []
+  client.getKeySets = async () => ({
+    keysets: [
+      { id: v3KeysetId, unit: 'msat', active: true, input_fee_ppk: 100 },
+      { id: REGULAR_KEYSET_ID, unit: 'msat', active: true, input_fee_ppk: 100 },
+    ],
+  })
+  client.getKeys = async (keysetId?: string) => {
+    requested.push(keysetId!)
+    return {
+      keysets: [{ id: keysetId!, unit: 'msat', keys: { 1: PUBLIC_KEY } }],
+    }
+  }
+
+  const metadata = await loadCtfRangeMintMetadata({
+    mint: client,
+    mintUrl: MINT_URL,
+    conditionId: CONDITION_ID,
+    observedAt: 1_000,
+    allowInsecureLoopbackHttp: false,
+  })
+
+  assert.deepEqual(
+    metadata.regular.map(({ id }) => id),
+    [REGULAR_KEYSET_ID],
+  )
+  assert.equal(requested.includes(v3KeysetId), false)
 })
 
 test('starts conditional keyset discovery at the condition registration time', async () => {

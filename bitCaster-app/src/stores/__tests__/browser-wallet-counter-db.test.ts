@@ -18,6 +18,7 @@ import { BitcasterDB } from "../proof-db";
 
 const scopeId = deriveDurableCustodyScopeId({ scopeKind: "wallet", walletId: "11".repeat(32) });
 const keysetId = `01${"aa".repeat(32)}`;
+const v3KeysetId = `02${"aa".repeat(32)}`;
 const databases: BitcasterDB[] = [];
 
 afterEach(async () => {
@@ -41,6 +42,26 @@ function createStore(options: { current?: boolean; name?: string } = {}) {
 }
 
 describe("browser wallet counter authority", () => {
+  it("rejects a V3 keyset before a direct durable counter mutation", async () => {
+    const counters = createStore();
+    const database = databases.at(-1)!;
+    const context = { mintUrl: "https://mint.example", unit: "sat" };
+
+    await expect(counters.reserveInContext(context, v3KeysetId, 1, false)).rejects.toMatchObject({
+      code: "invalid_keyset",
+    });
+    await expect(
+      counters.advanceToAtLeastInContext(context, v3KeysetId, 1, false),
+    ).rejects.toMatchObject({ code: "invalid_keyset" });
+    await expect(
+      counters.restoreInContext(context, v3KeysetId, 1, false, () => undefined),
+    ).rejects.toMatchObject({ code: "invalid_keyset" });
+
+    expect(await database.walletCounterAssociations.count()).toBe(0);
+    expect(await database.walletCounterCursors.count()).toBe(0);
+    expect(await counters.snapshot()).toEqual({});
+  });
+
   it("allocates unique concurrent ranges and shares a cursor across mint aliases", async () => {
     const counters = createStore();
     const profile = { database: databases.at(-1)!, scopeId };

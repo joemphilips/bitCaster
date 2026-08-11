@@ -16,6 +16,7 @@ import {
   normalizeMarketDivisibility,
 } from '@bitcaster-market/client-sdk/marketUnits'
 import { amountToNumber } from '@bitcaster-market/client-sdk/proofSelection'
+import { assertCanonicalNut02V2KeysetId } from '@bitcaster-market/client-sdk/durableSeedDerivedOutputs'
 import type {
   ManagedConditionInventoryBinding,
   ManagedConditionInventoryMutation,
@@ -4171,14 +4172,8 @@ function requireText(value: unknown, label: string): string {
 }
 
 function assertDaemonCounterInput(keysetId: string, value: number, maximum: number): void {
-  if (
-    typeof keysetId !== 'string' ||
-    keysetId.length < 1 ||
-    keysetId.length > 1024 ||
-    !Number.isSafeInteger(value) ||
-    value < 0 ||
-    value > maximum
-  ) {
+  assertCanonicalNut02V2KeysetId(keysetId, 'daemon keyset counter keyset id')
+  if (!Number.isSafeInteger(value) || value < 0 || value > maximum) {
     throw new Error('daemon keyset counter input is invalid')
   }
 }

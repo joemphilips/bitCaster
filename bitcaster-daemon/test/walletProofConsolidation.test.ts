@@ -25,11 +25,14 @@ import {
   consolidateWalletProofs,
   recoverWalletProofConsolidations,
 } from '../src/walletProofConsolidation.ts'
+import { canonicalTestKeysetId } from './support/canonicalKeysetId.ts'
 
 const MINT_URL = 'https://mint.example'
 const SEED = '11'.repeat(64)
 const REGULAR_ACTIVE_KEYSET_ID = `01${'a'.repeat(64)}`
 const OUTCOME_ACTIVE_KEYSET_ID = `01${'b'.repeat(64)}`
+const REGULAR_OLD_KEYSET_ID = canonicalTestKeysetId('wallet-consolidation:regular-old')
+const OUTCOME_OLD_KEYSET_ID = canonicalTestKeysetId('wallet-consolidation:outcome-old')
 const KEYS = Object.fromEntries(
   Array.from({ length: 21 }, (_, exponent) => [String(2 ** exponent), `key-${exponent}`]),
 )
@@ -45,7 +48,7 @@ test('manual proof consolidation journals separate regular and CTF groups', asyn
       unit: 'msat',
     } as const
     const state = emptyDaemonState()
-    addProofs(state, 'regular-old', regularAsset, 'regular')
+    addProofs(state, REGULAR_OLD_KEYSET_ID, regularAsset, 'regular')
     addProofs(state, OUTCOME_ACTIVE_KEYSET_ID, outcomeAsset, 'outcome')
     await writeState(state)
     const observedAtMs = Date.now()
@@ -101,7 +104,7 @@ test('inactive conditional keysets are reported without an invalid cross-keyset 
     const state = emptyDaemonState()
     addProofs(
       state,
-      'outcome-old',
+      OUTCOME_OLD_KEYSET_ID,
       {
         kind: 'Outcome',
         conditionId: 'condition-1',
@@ -138,7 +141,7 @@ test('group paging reaches groups after the first 256 with bounded reporting', a
     for (let index = 0; index < 300; index += 1) {
       state.wallet.proofs.push({
         proof: {
-          id: `regular-${String(index).padStart(3, '0')}`,
+          id: canonicalTestKeysetId(`wallet-consolidation:group:${index}`),
           amount: 1,
           secret: `group-secret-${index}`,
           C: `group-signature-${index}`,
@@ -176,7 +179,7 @@ test('RPC fails closed without a fence and delegates with current custody author
 
     const state = emptyDaemonState()
     state.wallet.proofs.push({
-      proof: { id: 'regular-old', amount: 1, secret: 'rpc-secret', C: 'rpc-signature' },
+      proof: { id: REGULAR_OLD_KEYSET_ID, amount: 1, secret: 'rpc-secret', C: 'rpc-signature' },
       mintUrl: MINT_URL,
       state: 'available',
       asset: { kind: 'sats', baseAsset: 'sat', unit: 'sat' },
@@ -515,7 +518,14 @@ test('generic send recovery ignores both exact proof-consolidation purposes', as
         kind: 'wallet-send',
         state: 'prepared',
         mintUrl: MINT_URL,
-        inputs: [{ id: 'keyset', amount: 2, secret: `input-${index}`, C: `C-${index}` }],
+        inputs: [
+          {
+            id: canonicalTestKeysetId(`wallet-consolidation:journal:${index}`),
+            amount: 2,
+            secret: `input-${index}`,
+            C: `C-${index}`,
+          },
+        ],
         outputs: { consolidated: [] },
         metadata: { purpose },
         lastError: null,
@@ -751,7 +761,12 @@ function fakeDependencies(
 
 async function writeRegularProofs(): Promise<void> {
   const state = emptyDaemonState()
-  addProofs(state, 'regular-old', { kind: 'sats', baseAsset: 'sat', unit: 'sat' }, 'regular')
+  addProofs(
+    state,
+    REGULAR_OLD_KEYSET_ID,
+    { kind: 'sats', baseAsset: 'sat', unit: 'sat' },
+    'regular',
+  )
   await writeState(state)
 }
 

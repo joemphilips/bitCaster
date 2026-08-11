@@ -14,6 +14,7 @@ import {
 import { serializeDurableWalletMintOperation } from '../src/durableWalletOperation.ts'
 
 const mintUrl = 'https://mint.example'
+const KEYSET_ID = `01${'a'.repeat(64)}`
 
 test('derives stable, domain-separated quote and wallet mint identities', () => {
   const input = { mintUrl, unit: 'sat', paymentMethod: 'bolt11' as const, quoteId: 'quote-1' }
@@ -226,13 +227,13 @@ function mintPreview(
 ) {
   const amounts = typeof amount === 'string' ? [amount] : amount
   const outputData = amounts.map((entry, index) =>
-    OutputData.createSingleData(entry, 'keyset-1', `${outputSecret}-${index}`, BigInt(index + 3)),
+    OutputData.createSingleData(entry, KEYSET_ID, `${outputSecret}-${index}`, BigInt(index + 3)),
   )
   return {
     method,
     payload: { quote: quoteId, outputs: outputData.map((output) => output.blindedMessage) },
     outputData,
-    keysetId: 'keyset-1',
+    keysetId: KEYSET_ID,
     quote: { quote: quoteId },
   }
 }

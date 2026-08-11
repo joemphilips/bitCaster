@@ -43,6 +43,10 @@ import {
 import { splitAvailableSatProofsForCtfCollateral } from '../src/walletOps.ts'
 import { withDaemonStateSqliteTransaction } from '../src/stateSqlite.ts'
 import { withDurableCustodyUnitOfWork } from '../src/durableCustodyUnitOfWork.ts'
+import { canonicalTestKeysetId } from './support/canonicalKeysetId.ts'
+
+const TEST_KEYSET_ID = canonicalTestKeysetId('dispatch')
+const CTF_KEYSET_ID = canonicalTestKeysetId('dispatch:ctf')
 import { createCustodyProofSqliteRow } from '../src/custodyProofSqliteRow.ts'
 import { DurableCustodySqliteStore } from '../src/durableCustodySqliteStore.ts'
 import { DaemonDurableOutgoingCashuCoordinator } from '../src/durableOutgoingCashuCoordinator.ts'
@@ -295,11 +299,11 @@ test('daemon dispatch persists wallet and order state', async (t) => {
           kind: 'conditional-keyset-swap',
           state: 'completed',
           mintUrl: 'https://mint-a.example',
-          inputs: [{ id: 'ctf-keyset', amount: 136n as never, secret: 'ctf-input', C: 'C-in' }],
+          inputs: [{ id: CTF_KEYSET_ID, amount: 136n as never, secret: 'ctf-input', C: 'C-in' }],
           outputs: {
             lock: [
               {
-                blindedMessage: { amount: 100n as never, id: 'ctf-keyset', B_: 'B-lock' },
+                blindedMessage: { amount: 100n as never, id: CTF_KEYSET_ID, B_: 'B-lock' },
                 blindingFactor: '01',
                 secret: '02',
               },
@@ -307,7 +311,7 @@ test('daemon dispatch persists wallet and order state', async (t) => {
           },
           metadata: { fees: 0n },
           resultProofs: {
-            lock: [{ id: 'ctf-keyset', amount: 100n as never, secret: 'ctf-lock', C: 'C-out' }],
+            lock: [{ id: CTF_KEYSET_ID, amount: 100n as never, secret: 'ctf-lock', C: 'C-out' }],
           },
           createdAt: 1,
           updatedAt: 2,
@@ -1031,7 +1035,7 @@ test('daemon dispatch persists wallet and order state', async (t) => {
         outputs: {
           send: [
             {
-              blindedMessage: { amount: 5, id: 'keyset-a', B_: 'B-a' },
+              blindedMessage: { amount: 5, id: TEST_KEYSET_ID, B_: 'B-a' },
               blindingFactor: 'blind-secret-a',
               secret: 'output-secret-a',
             },
@@ -1043,7 +1047,7 @@ test('daemon dispatch persists wallet and order state', async (t) => {
         updatedAt: 20,
       }
       const completedResults = {
-        YES: [{ id: 'keyset-b', amount: 8, secret: 'result-secret', C: 'C-result' }],
+        YES: [{ id: TEST_KEYSET_ID, amount: 8, secret: 'result-secret', C: 'C-result' }],
       }
       state.proofOperations['op-b'] = {
         operationId: 'op-b',
@@ -2245,7 +2249,7 @@ async function insertCustodyBalanceProof(input: {
           dleq_state, nut07_state, selectability, storage_class,
           reservation_operation_id, revision, created_at_ms, updated_at_ms
         ) VALUES (
-          ?, ?, 'https://mint-a.example', 'msat', 'balance-keyset', ?,
+          ?, ?, 'https://mint-a.example', 'msat', '${TEST_KEYSET_ID}', ?,
           'sat', NULL, NULL, NULL,
           ?, ?, 'secp256k1', 1,
           'not-present', ?, ?, 'pinned-operation-bound-deterministic',
@@ -2321,7 +2325,7 @@ function proofRecord(
     state,
     asset: strictAsset,
     proof: {
-      id: `keyset-${amount}`,
+      id: canonicalTestKeysetId(`dispatch:${amount}`),
       amount,
       secret,
       C: `c-${amount}`,

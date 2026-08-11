@@ -18,6 +18,7 @@ import {
   writeState,
   type StoredProofAsset,
 } from '../src/state.ts'
+import { canonicalTestKeysetId } from './support/canonicalKeysetId.ts'
 
 const MINT_URL = 'https://mint-a.example'
 
@@ -167,8 +168,10 @@ test('wallet recovery sweep resumes prepared CTF consolidation operations', asyn
       mintUrl: MINT_URL,
       inputs: state.wallet.proofs.map((record) => record.proof),
       outputs: {
-        [COLLATERAL_COLLECTION]: [storedOutput('ks-base', 1, 'base')],
-        C: [storedOutput('ks-C', 2, 'C')],
+        [COLLATERAL_COLLECTION]: [
+          storedOutput(canonicalTestKeysetId('consolidation:base'), 1, 'base'),
+        ],
+        C: [storedOutput(outputKeysets().C!, 2, 'C')],
       },
       metadata: {
         marketId: 'cond2-A',
@@ -192,8 +195,10 @@ test('wallet recovery sweep resumes prepared CTF consolidation operations', asyn
           assert.deepEqual(Object.keys(request.outputs).sort(), [COLLATERAL_COLLECTION, 'C'])
           assert.deepEqual(Object.keys(outputsByCollection).sort(), [COLLATERAL_COLLECTION, 'C'])
           return {
-            [COLLATERAL_COLLECTION]: [cashuProof(1, 'recovered-base', 'ks-base')],
-            C: [cashuProof(2, 'recovered-C', 'ks-C')],
+            [COLLATERAL_COLLECTION]: [
+              cashuProof(1, 'recovered-base', canonicalTestKeysetId('consolidation:base')),
+            ],
+            C: [cashuProof(2, 'recovered-C', outputKeysets().C!)],
           }
         },
       },
@@ -225,8 +230,10 @@ test('wallet recovery sweep finalizes completed CTF consolidation operations', a
       mintUrl: MINT_URL,
       inputs: state.wallet.proofs.map((record) => record.proof),
       outputs: {
-        [COLLATERAL_COLLECTION]: [storedOutput('ks-base', 1, 'base')],
-        C: [storedOutput('ks-C', 2, 'C')],
+        [COLLATERAL_COLLECTION]: [
+          storedOutput(canonicalTestKeysetId('consolidation:base'), 1, 'base'),
+        ],
+        C: [storedOutput(outputKeysets().C!, 2, 'C')],
       },
       metadata: {
         marketId: 'cond2-A',
@@ -238,8 +245,10 @@ test('wallet recovery sweep finalizes completed CTF consolidation operations', a
       },
     })
     await markProofOperationCompleted('ctf-consolidation-finalize', {
-      [COLLATERAL_COLLECTION]: [cashuProof(1, 'finalized-base', 'ks-base')],
-      C: [cashuProof(2, 'finalized-C', 'ks-C')],
+      [COLLATERAL_COLLECTION]: [
+        cashuProof(1, 'finalized-base', canonicalTestKeysetId('consolidation:base')),
+      ],
+      C: [cashuProof(2, 'finalized-C', outputKeysets().C!)],
     })
 
     const recovery = await recoverPreparedWalletSends(
@@ -350,15 +359,12 @@ function market(conditionId: string, status: string): unknown {
 }
 
 function outputKeysets(): Record<string, string> {
-  return {
-    '*': 'ks-base',
-    A: 'ks-A',
-    B: 'ks-B',
-    C: 'ks-C',
-    'A|B': 'ks-A|B',
-    'A|C': 'ks-A|C',
-    'B|C': 'ks-B|C',
-  }
+  return Object.fromEntries(
+    ['*', 'A', 'B', 'C', 'A|B', 'A|C', 'B|C'].map((collection) => [
+      collection,
+      canonicalTestKeysetId(`consolidation:${collection}`),
+    ]),
+  )
 }
 
 function fakeMintKeys(id: string): MintKeys {
@@ -432,7 +438,9 @@ function proofRecord(
   return {
     mintUrl: MINT_URL,
     proof: {
-      id: outcomeSetId ? outputKeysets()[outcomeSetId] : 'ks-base',
+      id: outcomeSetId
+        ? outputKeysets()[outcomeSetId]!
+        : canonicalTestKeysetId('consolidation:base'),
       amount,
       secret: `secret-${label}`,
       C: `C-${label}`,

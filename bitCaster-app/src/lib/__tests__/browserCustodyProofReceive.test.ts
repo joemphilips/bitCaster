@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { BitcasterDB, type StoredProof } from "../../stores/proof-db";
 import { admitBrowserReceivedProofs } from "../browserCustodyProofReceive";
 
-const KEYSET_ID = `00${"11".repeat(7)}`;
+const KEYSET_ID = `01${"11".repeat(32)}`;
 const PUBLIC_KEY = `02${"22".repeat(32)}`;
 const MODERN_KEYSET_ID = `01${"33".repeat(32)}`;
 const MODERN_SEED = Uint8Array.from({ length: 64 }, (_, index) => index + 1);
@@ -101,15 +101,15 @@ describe("browser custody proof receive", () => {
     ).toEqual([0, 2]);
   });
 
-  it("persists an SDK nut13 locator for a verified legacy receive", async () => {
-    database = new BitcasterDB(`proof-receive-legacy-${crypto.randomUUID()}`);
+  it("persists an SDK nut13 locator for a verified V2 receive", async () => {
+    database = new BitcasterDB(`proof-receive-v2-${crypto.randomUUID()}`);
     await admitBrowserReceivedProofs({
       seed: MODERN_SEED,
-      sourceOperationId: "receive:legacy",
+      sourceOperationId: "receive:v2",
       mintUrl: "https://mint.example",
       unit: "sat",
       wallet: wallet(),
-      proofs: [legacyProof(4)],
+      proofs: [deterministicProof(4)],
       derivationAuthority: { keysetId: KEYSET_ID, counterStart: 4, counterCount: 1 },
       database,
       lockManager: immediateLockManager(),
@@ -164,8 +164,31 @@ describe("browser custody proof receive", () => {
         database,
         lockManager: immediateLockManager(),
       }),
-    ).rejects.toThrow(/seed-derived proof lineage input/);
+    ).rejects.toThrow(/canonical NUT-02 V2/);
     expect(await database.custodyProofs.count()).toBe(0);
+  });
+
+  it("rejects V3 before browser custody authority mutation", async () => {
+    database = new BitcasterDB(`proof-receive-v3-${crypto.randomUUID()}`);
+    const v3KeysetId = `02${"44".repeat(32)}`;
+
+    await expect(
+      admitBrowserReceivedProofs({
+        seed: MODERN_SEED,
+        sourceOperationId: "receive:v3",
+        mintUrl: "https://mint.example",
+        unit: "sat",
+        wallet: wallet(v3KeysetId),
+        proofs: [{ ...proof(0), id: v3KeysetId }],
+        derivationAuthority: null,
+        database,
+        lockManager: immediateLockManager(),
+      }),
+    ).rejects.toThrow(/canonical NUT-02 V2/);
+    expect(await database.custodyScopes.count()).toBe(0);
+    expect(await database.custodyOperations.count()).toBe(0);
+    expect(await database.custodyProofs.count()).toBe(0);
+    expect(await database.custodyProofBackupAuthorities.count()).toBe(0);
   });
 
   it("rejects conditional metadata that conflicts with a verified regular keyset", async () => {
@@ -230,7 +253,7 @@ function modernProof(counter: number): StoredProof {
   };
 }
 
-function legacyProof(counter: number): StoredProof {
+function deterministicProof(counter: number): StoredProof {
   return {
     ...proof(counter),
     secret: new TextDecoder().decode(

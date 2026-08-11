@@ -5,8 +5,6 @@ import {
   CheckStateEnum,
   OutputData,
   hashToCurve,
-  hashToCurveBls,
-  isBlsKeyset,
   type Proof,
   type ProofState,
   type MintPreview,
@@ -33,8 +31,11 @@ import {
   type DurableWalletSendOperationStore,
 } from '../src/durableWalletOperation.ts'
 
+const KEYSET_ID = `01${'aa'.repeat(32)}`
+const V3_KEYSET_ID = `02${'aa'.repeat(32)}`
+
 test('wallet mint preview roundtrips exact request and private output authority', () => {
-  const output = OutputData.createSingleData('2', 'keyset-1', 'mint-output', 3n)
+  const output = OutputData.createSingleData('2', KEYSET_ID, 'mint-output', 3n)
   const preview: MintPreview<{ quote: string; expiry: number }> = {
     method: 'bolt11',
     payload: {
@@ -43,7 +44,7 @@ test('wallet mint preview roundtrips exact request and private output authority'
       signature: 'quote-signature',
     },
     outputData: [output],
-    keysetId: 'keyset-1',
+    keysetId: KEYSET_ID,
     quote: { quote: 'quote-1', expiry: 123 },
   }
   const operation = serializeDurableWalletMintOperation({
@@ -83,12 +84,12 @@ test('wallet mint preview roundtrips exact request and private output authority'
 
 test('wallet send runner executes only the persisted input and output authority', async () => {
   const input: Proof = {
-    id: 'keyset-1',
+    id: KEYSET_ID,
     amount: Amount.from('2'),
     secret: 'send-input',
     C: 'input-C',
   }
-  const sendOutput = OutputData.createSingleData('2', 'keyset-1', 'send-output', 2n)
+  const sendOutput = OutputData.createSingleData('2', KEYSET_ID, 'send-output', 2n)
   const operation = serializeDurableWalletSendOperation({
     operationId: 'wallet-send-runner',
     mintUrl: 'https://mint.example',
@@ -96,7 +97,7 @@ test('wallet send runner executes only the persisted input and output authority'
     preview: {
       amount: Amount.from('2'),
       fees: Amount.from('0'),
-      keysetId: 'keyset-1',
+      keysetId: KEYSET_ID,
       inputs: [input],
       sendOutputs: [sendOutput],
       keepOutputs: [],
@@ -104,7 +105,7 @@ test('wallet send runner executes only the persisted input and output authority'
     },
   })
   const sent: Proof = {
-    id: 'keyset-1',
+    id: KEYSET_ID,
     amount: Amount.from('2'),
     secret: 'send-output',
     C: 'send-C',
@@ -199,7 +200,7 @@ test('wallet mint duplicate-output recovery restores only persisted outputs', as
 })
 
 function mintOperation(suffix: string) {
-  const output = OutputData.createSingleData('2', 'keyset-1', `mint-output-${suffix}`, 3n)
+  const output = OutputData.createSingleData('2', KEYSET_ID, `mint-output-${suffix}`, 3n)
   return serializeDurableWalletMintOperation({
     operationId: `wallet-mint-${suffix}`,
     mintUrl: 'https://mint.example',
@@ -208,7 +209,7 @@ function mintOperation(suffix: string) {
       method: 'bolt11',
       payload: { quote: `quote-${suffix}`, outputs: [output.blindedMessage] },
       outputData: [output],
-      keysetId: 'keyset-1',
+      keysetId: KEYSET_ID,
       quote: { quote: `quote-${suffix}` },
     },
   })
@@ -289,10 +290,10 @@ function walletSend() {
     preview: {
       amount: '1',
       fees: '0',
-      keysetId: 'keyset-1',
+      keysetId: KEYSET_ID,
       inputs: [
         {
-          id: 'keyset-1',
+          id: KEYSET_ID,
           amount: '1',
           secret: 'input-secret',
           C: 'input-signature',
@@ -303,7 +304,7 @@ function walletSend() {
       ],
       sendOutputs: [
         {
-          blindedMessage: { amount: '1', id: 'keyset-1', B_: 'blinded-1' },
+          blindedMessage: { amount: '1', id: KEYSET_ID, B_: 'blinded-1' },
           blindingFactor: 'blinding-1',
           secret: 'output-secret',
           ephemeralE: null,
@@ -332,6 +333,37 @@ test('wallet operation decoder is strict and binds exact mint/unit authority', (
     /normalized/,
   )
   assert.throws(() => decodeDurableWalletOperation({ ...walletSend(), unit: '' }), /unit/)
+})
+
+test('wallet operation decoder rejects V3 authority before it can be persisted', () => {
+  const operation = walletSend()
+  const invalidPreviews = [
+    (() => {
+      const preview = structuredClone(operation.preview)
+      preview.keysetId = V3_KEYSET_ID
+      return preview
+    })(),
+    (() => {
+      const preview = structuredClone(operation.preview)
+      preview.inputs[0]!.id = V3_KEYSET_ID
+      return preview
+    })(),
+    (() => {
+      const preview = structuredClone(operation.preview)
+      preview.sendOutputs[0]!.blindedMessage.id = V3_KEYSET_ID
+      return preview
+    })(),
+  ]
+  for (const preview of invalidPreviews) {
+    assert.throws(
+      () => decodeDurableWalletOperation({ ...operation, preview }),
+      /canonical NUT-02 V2 keyset id/,
+    )
+    assert.throws(
+      () => toDurableCustodyProofOperationInput({ ...operation, preview }),
+      /canonical NUT-02 V2 keyset id/,
+    )
+  }
 })
 
 test('wallet operation converts to and recovers from exact custody authority', () => {
@@ -474,6 +506,14 @@ test('wallet receive binds its exact deterministic derivation range', () => {
       }),
     /derivation range/,
   )
+  assert.throws(
+    () =>
+      decodeDurableWalletOperation({
+        ...operation,
+        derivationRange: { ...operation.derivationRange!, keysetId: V3_KEYSET_ID },
+      }),
+    /canonical NUT-02 V2 keyset id/,
+  )
 })
 
 test('wallet receive rejects 513 proofs or outputs before durable or mint effects', async () => {
@@ -558,7 +598,7 @@ test('wallet receive rejects absent, wrong-kind, and foreign snapshots before ef
   }
 })
 
-test('wallet receive validates exact NUT-07 Y authority for secp and BLS keysets', async () => {
+test('wallet receive validates exact NUT-07 Y authority and rejects V3 keysets', async () => {
   const operation = receiveOperation('proof-state', 2)
   const exact = [
     inputState(operation, 0, CheckStateEnum.PENDING),
@@ -577,13 +617,10 @@ test('wallet receive validates exact NUT-07 Y authority for secp and BLS keysets
     assert.equal(harness.calls.restores, 0)
   }
 
-  const bls = receiveOperation('bls-proof-state', 1, 1, `02${'11'.repeat(32)}`)
-  const harness = receiveHarness({
-    operation: bls,
-    states: [inputState(bls, 0, CheckStateEnum.PENDING)],
-  })
-  const pending = await runReceive(bls, harness, 'recover')
-  assert.equal(pending.state, 'nonterminal')
+  assert.throws(
+    () => receiveOperation('v3-proof-state', 1, 1, V3_KEYSET_ID),
+    /canonical NUT-02 V2 keyset id/,
+  )
 })
 
 test('wallet receive rejects invalid mint results before persistence', async () => {
@@ -607,7 +644,12 @@ test('wallet receive rejects invalid mint results before persistence', async () 
     },
     { name: 'empty', operation: single, keep: [], error: /exact output plan/ },
     { name: 'duplicate', operation: pair, keep: [first!, first!], error: /duplicate/ },
-    { name: 'wrong id', operation: single, keep: [{ ...proof!, id: 'foreign' }], error: /exact/ },
+    {
+      name: 'wrong id',
+      operation: single,
+      keep: [{ ...proof!, id: `01${'bb'.repeat(32)}` }],
+      error: /exact/,
+    },
     {
       name: 'wrong amount',
       operation: single,
@@ -883,7 +925,7 @@ test('wallet receive rejects a conflicting current preview before wallet or mint
   assert.deepEqual(harness.calls, { loads: 1, persists: 0, checks: 0, swaps: 0, restores: 0 })
 })
 
-function receivePreview(inputCount: number, outputCount = 1, keysetId = 'keyset-1'): SwapPreview {
+function receivePreview(inputCount: number, outputCount = 1, keysetId = KEYSET_ID): SwapPreview {
   const outputAmount = inputCount === outputCount ? 1 : inputCount
   const outputs = Array.from({ length: outputCount }, (_, index) =>
     OutputData.createSingleData(
@@ -908,7 +950,7 @@ function receivePreview(inputCount: number, outputCount = 1, keysetId = 'keyset-
   }
 }
 
-function receiveOperation(suffix: string, inputCount = 1, outputCount = 1, keysetId = 'keyset-1') {
+function receiveOperation(suffix: string, inputCount = 1, outputCount = 1, keysetId = KEYSET_ID) {
   return serializeDurableWalletReceiveOperation({
     operationId: `wallet-receive-${suffix}`,
     mintUrl: 'https://mint.example',
@@ -943,7 +985,7 @@ function inputState(
   const proof = operation.preview.inputs[index]!
   const secret = new TextEncoder().encode(proof.secret)
   return {
-    Y: isBlsKeyset(proof.id) ? hashToCurveBls(secret).toHex(true) : hashToCurve(secret).toHex(true),
+    Y: hashToCurve(secret).toHex(true),
     state,
     witness: null,
   } as ProofState

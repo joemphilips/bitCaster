@@ -14,16 +14,20 @@ const SCOPE_ID = deriveDurableCustodyScopeId({
   walletId: '11'.repeat(32),
 })
 
-test('proof material codec derives exact secp256k1 and BLS custody authority', () => {
-  const bls = createRecord(`02${'11'.repeat(32)}`, 'bls-secret', null)
-  assert.equal(bls.curve, 'bls12-381')
-  assert.equal(bls.dleqPresence, 'not-present')
-  assert.equal(decode(bls).proof.secret, 'bls-secret')
-
-  const secp = createRecord('AbCdEfGhIjKl', 'secp-secret', { e: '11', s: '22' })
+test('proof material codec admits canonical V2 custody authority only', () => {
+  const secp = createRecord(`01${'11'.repeat(32)}`, 'secp-secret', { e: '11', s: '22' })
   assert.equal(secp.curve, 'secp256k1')
   assert.equal(secp.dleqPresence, 'present')
   assert.equal(decode(secp).proof.secret, 'secp-secret')
+
+  for (const keysetId of [
+    `02${'11'.repeat(32)}`,
+    'AbCdEfGhIjKl',
+    `01${'AA'.repeat(32)}`,
+    '0011223344556677',
+  ]) {
+    assert.throws(() => createRecord(keysetId, 'rejected-secret', null), /canonical NUT-02 V2/)
+  }
 })
 
 test('proof material codec rejects identity, curve, and canonical-body substitution', () => {

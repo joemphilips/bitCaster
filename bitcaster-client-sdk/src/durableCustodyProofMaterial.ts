@@ -1,9 +1,10 @@
-import { Amount, isBlsKeyset, type AmountLike, type Proof } from '@cashu/cashu-ts'
+import { Amount, type AmountLike, type Proof } from '@cashu/cashu-ts'
 import {
   deriveDurableCustodyArtifactFingerprint,
   deriveDurableCustodyProofId,
   encodeBoundedDurableArtifact,
 } from './durableCustody.ts'
+import { assertCanonicalNut02V2KeysetId } from './durableSeedDerivedPolicy.ts'
 
 export const DURABLE_CUSTODY_PROOF_BODY_BYTES_MAX = 64 * 1_024
 
@@ -84,7 +85,7 @@ export function createDurableCustodyProofMaterialRecord(input: {
     amount: Number(proof.amount),
     proofBody: encodeBoundedDurableArtifact(proof, DURABLE_CUSTODY_PROOF_BODY_BYTES_MAX),
     proofFingerprint: deriveDurableCustodyArtifactFingerprint(proof),
-    curve: isBlsKeyset(proof.id) ? 'bls12-381' : 'secp256k1',
+    curve: 'secp256k1',
     dleqPresence: proof.dleq === null ? 'not-present' : 'present',
   }
 }
@@ -135,12 +136,10 @@ function normalizeProof(value: DurableCustodyProofMaterial): DurableCustodyProof
   ) {
     throw new Error('custody proof material is invalid')
   }
+  assertCanonicalNut02V2KeysetId(value.id, 'custody proof keyset id')
   const amount = Amount.from(value.amount).toBigInt()
   if (amount <= 0n || amount > BigInt(Number.MAX_SAFE_INTEGER)) {
     throw new Error('custody proof amount is invalid')
-  }
-  if (isBlsKeyset(value.id) && value.dleq !== null) {
-    throw new Error('custody BLS proof must not carry secp256k1 DLEQ authority')
   }
   return {
     schemaVersion: 1,

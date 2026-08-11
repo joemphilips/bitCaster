@@ -583,6 +583,56 @@ test('range operation preserves direct proof-operation authority and fee bounds'
   )
 })
 
+test('range operation decoding rejects V3 keysets before custody authority exists', async () => {
+  const operation = fixture()
+  const v3KeysetId = `02${'aa'.repeat(32)}`
+  const invalidOperations = [
+    { ...operation, offerKeysetId: v3KeysetId },
+    { ...operation, inputs: [{ ...operation.inputs[0]!, id: v3KeysetId }] },
+    {
+      ...operation,
+      manifest: {
+        ...operation.manifest,
+        entries: operation.manifest.entries.map((entry, index) =>
+          index === 0 ? { ...entry, id: v3KeysetId } : entry,
+        ),
+      },
+    },
+  ]
+  for (const invalid of invalidOperations) {
+    assert.throws(() => decodeDurableCtfRangeOperation(invalid), /canonical NUT-02 V2 keyset id/)
+    assert.throws(
+      () => toDurableCtfRangeProofOperationInput(invalid),
+      /canonical NUT-02 V2 keyset id/,
+    )
+  }
+
+  const record = await recordFor(operation)
+  const invalidRecords = [
+    (() => {
+      const invalid = structuredClone(record)
+      invalid.operation.verification.inputKeysets[0]!.keysetId = v3KeysetId
+      return invalid
+    })(),
+    (() => {
+      const invalid = structuredClone(record)
+      invalid.operation.verification.outputKeysets[0]!.keysetId = v3KeysetId
+      return invalid
+    })(),
+    (() => {
+      const invalid = structuredClone(record)
+      invalid.operation.verification.keysetBindings[0]!.keysetId = v3KeysetId
+      return invalid
+    })(),
+  ]
+  for (const invalid of invalidRecords) {
+    assert.throws(
+      () => assertDurableCtfRangeCustodyAuthority(invalid, operation),
+      /canonical NUT-02 V2 keyset id/,
+    )
+  }
+})
+
 test('range custody authority admits repeated input keysets and rejects substitutions', async () => {
   const operation = fixture({ inputAmounts: ['2', '2'] })
   const record = await recordFor(operation)

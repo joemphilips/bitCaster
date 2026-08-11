@@ -1,6 +1,10 @@
 import type { GetInfoResponse, MintKeys, MintKeyset } from '@cashu/cashu-ts'
 import type { ActiveCtfRangeMintKeyset } from './ctfRangeOrderPreparation.ts'
 import {
+  assertCanonicalNut02V2KeysetId,
+  isCanonicalNut02V2KeysetId,
+} from './durableSeedDerivedPolicy.ts'
+import {
   CTF_RANGE_BATCH_INPUT_LIMIT_MAX,
   CTF_RANGE_BATCH_POOL_ENTRY_LIMIT_MAX,
 } from './ctfRangeCapabilityBatchPlan.ts'
@@ -83,19 +87,18 @@ export async function loadCtfRangeMintMetadata(input: {
   )
   const conditionKeysetIds = [...new Set(Object.values(condition.keysets))].sort()
   assertCandidateCount(conditionKeysetIds, 'mint CTF condition keyset')
+  conditionKeysetIds.forEach((id) =>
+    assertCanonicalNut02V2KeysetId(id, 'mint CTF condition keyset id'),
+  )
+  const regularKeysets = regularResponse.keysets.filter(
+    (keyset) => keyset.active && keyset.unit === 'msat' && isCanonicalNut02V2KeysetId(keyset.id),
+  )
   const conditionEntries = await loadConditionKeysets(
     input.mint,
     conditionKeysetIds,
     conditionRegisteredAt,
   )
-  const keyIds = [
-    ...new Set([
-      ...regularResponse.keysets
-        .filter((keyset) => keyset.active && keyset.unit === 'msat')
-        .map(({ id }) => id),
-      ...conditionKeysetIds,
-    ]),
-  ]
+  const keyIds = [...new Set([...regularKeysets.map(({ id }) => id), ...conditionKeysetIds])]
   assertCandidateCount(keyIds, 'mint keyset authority')
   const keys = await loadCtfRangeMintKeys(input.mint, keyIds)
   const limits = settlementLimits(info)
@@ -104,7 +107,7 @@ export async function loadCtfRangeMintMetadata(input: {
       input.mintUrl,
       input.allowInsecureLoopbackHttp,
     ),
-    regularResponse: regularResponse.keysets,
+    regularResponse: regularKeysets,
     conditionEntries,
     conditionKeysetIds,
     keys,
@@ -269,6 +272,7 @@ function resolvedKeyset(
   },
   keys: ReadonlyMap<string, MintKeys>,
 ): DurableCtfRangeMintKeyset {
+  assertCanonicalNut02V2KeysetId(metadata.id, 'mint keyset id')
   const resolved = keys.get(metadata.id)
   if (
     resolved === undefined ||

@@ -30,7 +30,7 @@ import {
   type DurableWalletSendOperation,
 } from '../src/durableWalletOperation.ts'
 
-const KEYSET_ID = '0000000000000001'
+const KEYSET_ID = `01${'a'.repeat(64)}`
 const TOKEN_C = `02${'1'.repeat(64)}`
 const SECOND_TOKEN_C = `02${'2'.repeat(64)}`
 

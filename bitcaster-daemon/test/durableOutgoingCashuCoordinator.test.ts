@@ -1078,30 +1078,13 @@ test('durable send gives cashu-ts all eligible proofs for nonzero input fees and
   }
 })
 
-test('durable send rejects a non-V2 available proof before cashu-ts preparation', async () => {
+test('durable proof admission rejects a non-V2 keyset before cashu-ts preparation', async () => {
   const fixture = await createFixture()
   try {
-    const legacy = await fixture.addAvailableInput(MINT_URL, 'legacy-keyset-input', 'AbCdEfGhIjKl')
-    const wallet = fixture.wallet(async () => ({ keep: [], send: [] }))
-    let preparations = 0
-    wallet.prepareSwapToSend = async () => {
-      preparations += 1
-      throw new Error('cashu-ts preparation must not run')
-    }
-
     await assert.rejects(
-      () =>
-        fixture.coordinator.execute({
-          transferId: 'outgoing-v2-boundary',
-          amountSats: 1,
-          mintUrl: MINT_URL,
-          wallet,
-        }),
-      /supports only V2 keysets/,
+      () => fixture.addAvailableInput(MINT_URL, 'legacy-keyset-input', 'AbCdEfGhIjKl'),
+      /keyset_id/,
     )
-
-    assert.equal(preparations, 0)
-    assert.equal(await fixture.custodySelectability(legacy), 'selectable')
   } finally {
     await fixture.close()
   }

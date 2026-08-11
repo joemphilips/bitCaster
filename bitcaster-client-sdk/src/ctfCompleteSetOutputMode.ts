@@ -10,7 +10,7 @@ import {
 } from './durableCustody.ts'
 import {
   fitsDurableSeedDerivedCounterRange,
-  isCanonicalModernNut02KeysetId,
+  isCanonicalNut02V2KeysetId,
   isDurableSeedDerivedCount,
   isDurableSeedDerivedCounter,
   isNonArrayRecord,
@@ -302,7 +302,7 @@ export function decodeCompleteSetOutputDescriptor(value: unknown): CompleteSetOu
   if (
     keys.join(',') !== 'counterCount,counterStart,keysetId,schemaVersion' ||
     value.schemaVersion !== COMPLETE_SET_OUTPUT_DESCRIPTOR_SCHEMA_VERSION ||
-    !isCanonicalModernNut02KeysetId(value.keysetId) ||
+    !isCanonicalNut02V2KeysetId(value.keysetId) ||
     !isDurableSeedDerivedCounter(value.counterStart) ||
     !isDurableSeedDerivedCount(value.counterCount) ||
     !fitsDurableSeedDerivedCounterRange(value.counterStart, value.counterCount)
@@ -327,7 +327,7 @@ function descriptorFromPlan(plan: DurableSeedDerivedOutputPlan): CompleteSetOutp
 }
 
 function requireSeedDerivedCompleteSetKeyset(keyset: MintKeys, expectedId: string): void {
-  if (keyset.id !== expectedId || !isCanonicalModernNut02KeysetId(keyset.id)) {
+  if (keyset.id !== expectedId || !isCanonicalNut02V2KeysetId(keyset.id)) {
     throw new Error(`CTF output keyset ${expectedId} was not returned exactly`)
   }
   if (keyset.unit !== 'msat') {

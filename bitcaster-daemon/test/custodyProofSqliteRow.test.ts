@@ -1,9 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import {
-  deriveDurableCustodyProofId,
-  deriveDurableCustodyScopeId,
-} from '@bitcaster-market/client-sdk/durableCustody'
+import { deriveDurableCustodyScopeId } from '@bitcaster-market/client-sdk/durableCustody'
 import {
   createCustodyProofSqliteRow,
   decodeCustodyProofSqliteRow,
@@ -14,26 +11,10 @@ const SCOPE_ID = deriveDurableCustodyScopeId({
   walletId: '11'.repeat(32),
 })
 
-test('proof row codec admits BLS and legacy base64 keysets with exact identities', () => {
-  const bls = createRow(`02${'11'.repeat(32)}`, 'bls-secret', null)
-  assert.equal(bls.curve, 'bls12-381')
-  assert.equal(bls.dleqState, 'not-present')
-  assert.equal(decodeCustodyProofSqliteRow(bls).proof.secret, 'bls-secret')
-
-  const legacyKeysetId = 'AbCdEfGhIjKl'
-  const legacy = createRow(legacyKeysetId, 'legacy-secret', { e: '11', s: '22' })
-  assert.equal(legacy.curve, 'secp256k1')
-  assert.equal(legacy.dleqState, 'verified')
-  assert.equal(
-    legacy.proofId,
-    deriveDurableCustodyProofId({
-      scopeId: SCOPE_ID,
-      normalizedMint: 'https://mint.example',
-      unit: 'msat',
-      keysetId: legacyKeysetId,
-      secret: 'legacy-secret',
-    }),
-  )
+test('proof row codec rejects V3 and legacy keysets before SQLite row construction', () => {
+  for (const keysetId of [`02${'11'.repeat(32)}`, 'AbCdEfGhIjKl', '0011223344556677']) {
+    assert.throws(() => createRow(keysetId, 'rejected-secret', null), /canonical NUT-02 V2/)
+  }
 })
 
 test('proof row codec rejects curve and canonical-body substitution', () => {

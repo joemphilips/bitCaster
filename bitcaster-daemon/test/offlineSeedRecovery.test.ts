@@ -8,6 +8,9 @@ import { bootstrapFreshDaemonProfile } from '../src/profileBootstrap.ts'
 import { acquireDaemonRunLock } from '../src/runLock.ts'
 import { runOfflineDaemonSeedRecovery } from '../src/emergencySeedRecovery.ts'
 import { openDaemonStateSqlite } from '../src/stateSqlite.ts'
+import { canonicalTestKeysetId } from './support/canonicalKeysetId.ts'
+
+const KEYSET_ID = canonicalTestKeysetId('offline-seed-recovery')
 
 test('offline seed recovery refuses an active daemon run lock before mint setup', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'bitcaster-offline-recovery-lock-'))
@@ -223,7 +226,7 @@ function insertTargetProofReservation(
          proof_id, scope_id, normalized_mint, unit, keyset_id, amount, secret,
          signature, proof_body, state, reserved_by, asset_kind, condition_id,
          outcome_set_id, base_asset, created_at_ms, updated_at_ms
-       ) VALUES (?, ?, 'https://mint.example', 'sat', 'keyset-1', 1, ?,
+       ) VALUES (?, ?, 'https://mint.example', 'sat', '${KEYSET_ID}', 1, ?,
          'signature', X'7b7d', ?, 'reservation-1', 'sats', NULL, NULL, 'sat', 0, 0)`,
     )
     .run(state === 'reserved' ? 'a'.repeat(64) : 'b'.repeat(64), scopeId, `secret-${state}`, state)

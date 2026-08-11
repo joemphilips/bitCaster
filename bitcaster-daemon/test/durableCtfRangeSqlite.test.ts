@@ -172,12 +172,17 @@ test('range authority survives restart and injected rollback exposes no partial 
         (database.prepare('PRAGMA synchronous').get() as { synchronous: number }).synchronous,
         2,
       )
-      database
-        .prepare(
-          `UPDATE custody_proofs SET curve = 'bls12-381', dleq_state = 'not-present'
-           WHERE scope_id = ? AND proof_id = ?`,
-        )
-        .run(fixture.walletScopeId, proofIds[0]!)
+      database.exec('PRAGMA ignore_check_constraints = ON')
+      try {
+        database
+          .prepare(
+            `UPDATE custody_proofs SET curve = 'bls12-381', dleq_state = 'not-present'
+             WHERE scope_id = ? AND proof_id = ?`,
+          )
+          .run(fixture.walletScopeId, proofIds[0]!)
+      } finally {
+        database.exec('PRAGMA ignore_check_constraints = OFF')
+      }
       assert.throws(() => loadDaemonDurableCtfRangeAuthority(store, custodyOperationId), /curve/)
       database
         .prepare(

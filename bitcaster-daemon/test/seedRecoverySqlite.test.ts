@@ -31,6 +31,10 @@ import {
   readAvailableWalletProofsFenced,
   reserveDaemonKeysetCounter,
 } from '../src/state.ts'
+import { canonicalTestKeysetId } from './support/canonicalKeysetId.ts'
+
+const KEYSET_ID = canonicalTestKeysetId('seed-recovery:one')
+const SECOND_KEYSET_ID = canonicalTestKeysetId('seed-recovery:two')
 
 test('explicit ordinary recovery co-commits selectable and spent proofs with cursor and job', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'bitcaster-recovery-'))
@@ -86,7 +90,7 @@ test('explicit ordinary recovery co-commits selectable and spent proofs with cur
       )
       assert.deepEqual(
         await reserveDaemonKeysetCounter(
-          'keyset-1',
+          KEYSET_ID,
           1,
           {
             fence: fixture.fence,
@@ -158,7 +162,7 @@ test('recovery continues beyond four pages across explicit invocations', async (
       walletScopeId: fixture.profile.walletScopeId,
       mintUrl: 'https://mint.example',
       unit: 'sat',
-      keysetId: 'keyset-1',
+      keysetId: KEYSET_ID,
       disclosureAcknowledged: true,
       authority: recoveryAuthority(fixture.profile.walletScopeId, fixture.fence),
       store: new SeedRecoverySqliteStore({
@@ -228,7 +232,7 @@ test('one recovery job isolates two keyset cursors and aggregates both batches',
       walletScopeId: fixture.profile.walletScopeId,
       mintUrl: 'https://mint.example',
       unit: 'sat',
-      keysetId: 'keyset-2',
+      keysetId: SECOND_KEYSET_ID,
       disclosureAcknowledged: true,
       authority: recoveryAuthority(fixture.profile.walletScopeId, fixture.fence),
       store: fixture.store,
@@ -236,7 +240,13 @@ test('one recovery job isolates two keyset cursors and aggregates both batches',
         {
           observation: oneProofObservation(),
           proofs: [
-            observed(fixture.profile.walletScopeId, 'two', 'UNSPENT', 'selectable', 'keyset-2'),
+            observed(
+              fixture.profile.walletScopeId,
+              'two',
+              'UNSPENT',
+              'selectable',
+              SECOND_KEYSET_ID,
+            ),
           ],
         },
       ],
@@ -261,8 +271,8 @@ test('one recovery job isolates two keyset cursors and aggregates both batches',
       assert.deepEqual(
         cursors.map((cursor) => ({ ...cursor })),
         [
-          { keysetId: 'keyset-1', nextCounter: 1, revision: 1 },
-          { keysetId: 'keyset-2', nextCounter: 1, revision: 1 },
+          { keysetId: KEYSET_ID, nextCounter: 1, revision: 1 },
+          { keysetId: SECOND_KEYSET_ID, nextCounter: 1, revision: 1 },
         ],
       )
     })
@@ -294,12 +304,12 @@ test('completed children remain extensible until the orchestrator finalizes disc
     })
     const secondStart = await fixture.store.readRecoveryStart({
       ...binding,
-      keysetId: 'keyset-2',
+      keysetId: SECOND_KEYSET_ID,
     })
     assert.equal(secondStart.cursor.state, 'active')
     await runExplicitEmergencySeedRecovery({
       ...binding,
-      keysetId: 'keyset-2',
+      keysetId: SECOND_KEYSET_ID,
       disclosureAcknowledged: true,
       authority: recoveryAuthority(binding.walletScopeId, fixture.fence),
       store: fixture.store,
@@ -335,7 +345,7 @@ test('recovery child access rejects foreign bindings and completed job acquisiti
       walletScopeId: fixture.profile.walletScopeId,
       mintUrl: 'https://mint.example',
       unit: 'sat' as const,
-      keysetId: 'keyset-1',
+      keysetId: KEYSET_ID,
     }
     await fixture.store.readRecoveryStart(input)
     await assert.rejects(
@@ -351,7 +361,7 @@ test('recovery child access rejects foreign bindings and completed job acquisiti
     const completed = await fixture.store.readRecoveryStart(input)
     assert.equal(completed.cursor.state, 'completed')
     await assert.rejects(
-      () => fixture.store.readRecoveryStart({ ...input, keysetId: 'keyset-2' }),
+      () => fixture.store.readRecoveryStart({ ...input, keysetId: SECOND_KEYSET_ID }),
       /cannot acquire/,
     )
     await assert.rejects(
@@ -476,7 +486,7 @@ test('recovery schema rejects an orphan child keyset while foreign keys are enab
               `INSERT INTO seed_recovery_keysets (
                  recovery_id, keyset_id, next_counter,
                  trailing_empty_counters, revision, state
-               ) VALUES ('orphan', 'keyset-1', 0, 0, 0, 'active')`,
+               ) VALUES ('orphan', '${KEYSET_ID}', 0, 0, 0, 'active')`,
             )
             .run(),
         /FOREIGN KEY constraint failed/,
@@ -538,10 +548,10 @@ test('direct staged recovery rejects a target reservation added after its initia
       walletScopeId: fixture.profile.walletScopeId,
       mintUrl: 'https://mint.example',
       unit: 'sat',
-      keysetId: 'keyset-1',
+      keysetId: KEYSET_ID,
     })
     const recovered = observed(fixture.profile.walletScopeId, 'post-read', 'UNSPENT', 'selectable')
-    fixture.store.stageBatch(recoveryId, 'keyset-1', [recovered])
+    fixture.store.stageBatch(recoveryId, KEYSET_ID, [recovered])
     await withRecoveryDatabase(directory, (database) =>
       insertTargetWalletReservation(database, fixture.profile.walletScopeId),
     )
@@ -655,7 +665,7 @@ test('recovery replay preserves stronger proof state and rejects a foreign bindi
         walletScopeId: fixture.profile.walletScopeId,
         mintUrl: 'https://mint.example',
         unit: 'sat',
-        keysetId: 'keyset-1',
+        keysetId: KEYSET_ID,
         disclosureAcknowledged: true,
         authority: recoveryAuthority(fixture.profile.walletScopeId, fixture.fence),
         store: new SeedRecoverySqliteStore({
@@ -735,7 +745,7 @@ test('recovery failures before and after commit preserve atomic recovery semanti
           walletScopeId: fixture.profile.walletScopeId,
           mintUrl: 'https://mint.example',
           unit: 'sat',
-          keysetId: 'keyset-1',
+          keysetId: KEYSET_ID,
           disclosureAcknowledged: true,
           authority: recoveryAuthority(fixture.profile.walletScopeId, fixture.fence),
           store: beforeCommit,
@@ -765,7 +775,7 @@ test('recovery failures before and after commit preserve atomic recovery semanti
           walletScopeId: fixture.profile.walletScopeId,
           mintUrl: 'https://mint.example',
           unit: 'sat',
-          keysetId: 'keyset-1',
+          keysetId: KEYSET_ID,
           disclosureAcknowledged: true,
           authority: recoveryAuthority(fixture.profile.walletScopeId, fixture.fence),
           store: afterCommit,
@@ -794,7 +804,7 @@ test('recovery failures before and after commit preserve atomic recovery semanti
           walletScopeId: fixture.profile.walletScopeId,
           mintUrl: 'https://mint.example',
           unit: 'sat',
-          keysetId: 'keyset-1',
+          keysetId: KEYSET_ID,
           disclosureAcknowledged: true,
           authority: recoveryAuthority(fixture.profile.walletScopeId, fixture.fence),
           store: failedUpdate,
@@ -827,7 +837,7 @@ test('recovery failures before and after commit preserve atomic recovery semanti
           `SELECT next_counter AS nextCounter, revision
            FROM seed_recovery_keysets WHERE recovery_id = ? AND keyset_id = ?`,
         )
-        .get('recovery-after-commit', 'keyset-1') as { nextCounter: number; revision: number }
+        .get('recovery-after-commit', KEYSET_ID) as { nextCounter: number; revision: number }
       assert.equal(cursor.nextCounter, 1)
       assert.equal(cursor.revision, 1)
       assert.equal(readRowCount(database, 'custody_proofs'), 1)
@@ -836,7 +846,7 @@ test('recovery failures before and after commit preserve atomic recovery semanti
           `SELECT next_counter AS nextCounter FROM target_keyset_counters
            WHERE scope_id = ? AND keyset_id = ?`,
         )
-        .get(fixture.profile.walletScopeId, 'keyset-1') as { nextCounter: number }
+        .get(fixture.profile.walletScopeId, KEYSET_ID) as { nextCounter: number }
       assert.equal(counter.nextCounter, 1)
     })
     await runExplicitEmergencySeedRecovery({
@@ -844,7 +854,7 @@ test('recovery failures before and after commit preserve atomic recovery semanti
       walletScopeId: fixture.profile.walletScopeId,
       mintUrl: 'https://mint.example',
       unit: 'sat',
-      keysetId: 'keyset-1',
+      keysetId: KEYSET_ID,
       disclosureAcknowledged: true,
       authority: recoveryAuthority(fixture.profile.walletScopeId, fixture.fence),
       store: new SeedRecoverySqliteStore({
@@ -901,7 +911,7 @@ test('recovery requires acknowledgement, rejects unknown state, and caps four ba
       walletScopeId: profile.walletScopeId,
       mintUrl: 'https://mint.example',
       unit: 'sat' as const,
-      keysetId: 'keyset-1',
+      keysetId: KEYSET_ID,
       authority: {
         walletScopeId: profile.walletScopeId,
         incarnationId: fence.incarnationId,
@@ -1033,7 +1043,7 @@ async function deleteRecoveryCursor(directory: string, recoveryId: string): Prom
     database.exec('PRAGMA foreign_keys = OFF')
     database
       .prepare('DELETE FROM seed_recovery_keysets WHERE recovery_id = ? AND keyset_id = ?')
-      .run(recoveryId, 'keyset-1')
+      .run(recoveryId, KEYSET_ID)
     database.exec('PRAGMA foreign_keys = ON')
   })
 }
@@ -1048,7 +1058,7 @@ function replayRecoveryFromZero(
     walletScopeId: fixture.profile.walletScopeId,
     mintUrl: 'https://mint.example',
     unit: 'sat',
-    keysetId: 'keyset-1',
+    keysetId: KEYSET_ID,
     disclosureAcknowledged: true,
     authority: recoveryAuthority(fixture.profile.walletScopeId, fixture.fence),
     store: new SeedRecoverySqliteStore({
@@ -1110,7 +1120,7 @@ function runRecovery(
     walletScopeId: fixture.profile.walletScopeId,
     mintUrl: 'https://mint.example',
     unit: 'sat',
-    keysetId: 'keyset-1',
+    keysetId: KEYSET_ID,
     authority: recoveryAuthority(fixture.profile.walletScopeId, fixture.fence),
     store: fixture.store,
   })
@@ -1121,7 +1131,7 @@ function runRecoveryWithContext(
   recoveryId: string,
   mintUrl: string,
   unit: 'sat' | 'msat',
-  keysetId = 'keyset-1',
+  keysetId = KEYSET_ID,
 ) {
   return () =>
     runExplicitEmergencySeedRecovery({
@@ -1257,7 +1267,7 @@ function insertTargetWalletReservation(database: DatabaseSync, scopeId: string):
          proof_id, scope_id, normalized_mint, unit, keyset_id, amount, secret,
          signature, proof_body, state, reserved_by, asset_kind, condition_id,
          outcome_set_id, base_asset, created_at_ms, updated_at_ms
-       ) VALUES (?, ?, 'https://mint.example', 'sat', 'keyset-1', 1,
+       ) VALUES (?, ?, 'https://mint.example', 'sat', '${KEYSET_ID}', 1,
          'target-reservation-secret', 'signature', X'7b7d', 'reserved',
          'reservation-1', 'sats', NULL, NULL, 'sat', 0, 0)`,
     )
@@ -1282,7 +1292,7 @@ function observed(
   id: string,
   mintState: unknown,
   selectability: CustodyProofSqliteRow['selectability'],
-  keysetId = 'keyset-1',
+  keysetId = KEYSET_ID,
 ): SeedRecoveryObservedProof {
   const nut07State =
     mintState === 'UNSPENT' ? 'UNSPENT' : mintState === 'SPENT' ? 'SPENT' : 'PENDING'

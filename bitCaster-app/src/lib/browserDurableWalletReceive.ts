@@ -1,5 +1,4 @@
 import {
-  isBlsKeyset,
   type OperationCounters,
   type Proof,
   type ProofState,
@@ -29,6 +28,7 @@ import {
   decodeDurableCustodyProofMaterialRecord,
 } from "@bitcaster/client-sdk/durableCustodyProofMaterial";
 import { locateSeedDerivedProofLineage } from "@bitcaster/client-sdk/durableSeedDerivedProofLineage";
+import { assertCanonicalNut02V2KeysetId } from "@bitcaster/client-sdk/durableSeedDerivedOutputs";
 import {
   requireDurableWalletOperationFromCustody,
   runDurableWalletReceiveOperation,
@@ -829,7 +829,7 @@ function receiveKeysets(
     ),
   ]);
   return [...ids].map((id) => {
-    if (!id || isBlsKeyset(id)) throw new Error("browser wallet receive supports only V2 keysets");
+    assertCanonicalNut02V2KeysetId(id, "browser wallet receive keyset id");
     const keyset = wallet.getKeyset(id);
     if (
       keyset.id !== id ||

@@ -6,6 +6,19 @@ export function isCanonicalModernNut02KeysetId(value: unknown): value is string 
   return typeof value === 'string' && /^(?:01|02)[0-9a-f]{64}$/.test(value)
 }
 
+export function isCanonicalNut02V2KeysetId(value: unknown): value is string {
+  return typeof value === 'string' && /^01[0-9a-f]{64}$/.test(value)
+}
+
+export function assertCanonicalNut02V2KeysetId(
+  value: unknown,
+  name = 'Cashu keyset id',
+): asserts value is string {
+  if (!isCanonicalNut02V2KeysetId(value)) {
+    throw new Error(`${name} must be a canonical NUT-02 V2 keyset id`)
+  }
+}
+
 export function isDurableSeedDerivedCounter(value: unknown): value is number {
   return (
     typeof value === 'number' &&

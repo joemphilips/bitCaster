@@ -18,8 +18,11 @@ import {
 } from '../src/state.ts'
 import { retireDaemonConditionInventory } from '../src/managedConditionRetirement.ts'
 import { readProfile } from '../src/profile.ts'
+import { canonicalTestKeysetId } from './support/canonicalKeysetId.ts'
 
 const roots: string[] = []
+const CTF_KEYSET_ID = canonicalTestKeysetId('managed-retirement:ctf')
+const REGULAR_KEYSET_ID = canonicalTestKeysetId('managed-retirement:regular')
 after(async () => Promise.all(roots.map((root) => rm(root, { recursive: true, force: true }))))
 
 test('daemon previews then atomically retires one verified condition inventory', async () => {
@@ -52,7 +55,7 @@ test('daemon previews then atomically retires one verified condition inventory',
   })
   const signature = signOutcome('YES', oraclePrivateKey)
   const inputs = Array.from({ length: 65 }, (_, index) =>
-    proof('ctf-keyset', `conditional-input-${index.toString().padStart(3, '0')}`, 1),
+    proof(CTF_KEYSET_ID, `conditional-input-${index.toString().padStart(3, '0')}`, 1),
   )
   await addAvailableProofs('https://mint.example', inputs, {
     kind: 'Outcome',
@@ -99,7 +102,7 @@ test('daemon previews then atomically retires one verified condition inventory',
     },
     walletDependencies: {
       createCashuWallet: () => wallet,
-      resolveInputFeePpkByKeyset: async () => ({ 'ctf-keyset': 0 }),
+      resolveInputFeePpkByKeyset: async () => ({ [CTF_KEYSET_ID]: 0 }),
     },
   }
 
@@ -137,7 +140,7 @@ test('daemon previews then atomically retires one verified condition inventory',
     true,
   )
   await assert.rejects(
-    addAvailableProofs('https://mint.example', [proof('ctf-keyset', 'late-proof', 1)], {
+    addAvailableProofs('https://mint.example', [proof(CTF_KEYSET_ID, 'late-proof', 1)], {
       kind: 'Outcome',
       conditionId,
       outcomeSetId: 'YES',
@@ -153,7 +156,7 @@ test('daemon previews then atomically retires one verified condition inventory',
     outcomeCount: 2,
     oraclePublicKeys: [oraclePublicKey],
   })
-  const losingInput = proof('ctf-keyset', 'conditional-loser', 5)
+  const losingInput = proof(CTF_KEYSET_ID, 'conditional-loser', 5)
   await addAvailableProofs('https://mint.example', [losingInput], {
     kind: 'Outcome',
     conditionId: losingConditionId,
@@ -180,7 +183,7 @@ test('daemon previews then atomically retires one verified condition inventory',
     },
     walletDependencies: {
       createCashuWallet: () => losingWallet,
-      resolveInputFeePpkByKeyset: async () => ({ 'ctf-keyset': 0 }),
+      resolveInputFeePpkByKeyset: async () => ({ [CTF_KEYSET_ID]: 0 }),
     },
   })
   const afterLosing = await readState()
@@ -198,7 +201,7 @@ test('daemon previews then atomically retires one verified condition inventory',
   })
   await addAvailableProofs(
     'https://mint.example',
-    [proof('ctf-keyset', 'conditional-restart', 4)],
+    [proof(CTF_KEYSET_ID, 'conditional-restart', 4)],
     {
       kind: 'Outcome',
       conditionId: retryConditionId,
@@ -223,7 +226,7 @@ test('daemon previews then atomically retires one verified condition inventory',
       engine: { getConditionAttestation: async () => retryResponse },
       walletDependencies: {
         createCashuWallet: () => new FakeRetirementWallet(new Error('mint timeout')),
-        resolveInputFeePpkByKeyset: async () => ({ 'ctf-keyset': 0 }),
+        resolveInputFeePpkByKeyset: async () => ({ [CTF_KEYSET_ID]: 0 }),
       },
     }),
     /mint timeout/,
@@ -236,7 +239,7 @@ test('daemon previews then atomically retires one verified condition inventory',
     engine: { getConditionAttestation: async () => null },
     walletDependencies: {
       createCashuWallet: () => restartWallet,
-      resolveInputFeePpkByKeyset: async () => ({ 'ctf-keyset': 0 }),
+      resolveInputFeePpkByKeyset: async () => ({ [CTF_KEYSET_ID]: 0 }),
     },
   })
   assert.equal(restartResult.state, 'retired')
@@ -248,7 +251,7 @@ test('daemon previews then atomically retires one verified condition inventory',
     outcomeCount: 2,
     oraclePublicKeys: [oraclePublicKey],
   })
-  const reservedProof = proof('ctf-keyset', 'conditional-reserved', 3)
+  const reservedProof = proof(CTF_KEYSET_ID, 'conditional-reserved', 3)
   const reservedAsset = {
     kind: 'Outcome' as const,
     conditionId: reservedConditionId,
@@ -311,7 +314,7 @@ class FakeRetirementWallet {
   }
   readonly mint = {
     getKeys: async (keysetId?: string) => ({
-      keysets: [keysetId === 'ctf-keyset' ? outcomeKeyset() : regularKeyset()],
+      keysets: [keysetId === CTF_KEYSET_ID ? outcomeKeyset() : regularKeyset()],
     }),
   }
 
@@ -327,7 +330,7 @@ class FakeRetirementWallet {
       (sum, output) => sum + Number(output.blindedMessage.amount),
       0,
     )
-    return [proof('regular-keyset', `regular-result:${options.inputs[0]?.secret}`, amount)]
+    return [proof(REGULAR_KEYSET_ID, `regular-result:${options.inputs[0]?.secret}`, amount)]
   }
 
   async checkProofsStates() {
@@ -341,7 +344,7 @@ function proof(id: string, secret: string, amount: number): Proof {
 
 function regularKeyset(): MintKeys {
   return {
-    id: 'regular-keyset',
+    id: REGULAR_KEYSET_ID,
     unit: 'msat',
     active: true,
     input_fee_ppk: 0,
@@ -350,7 +353,7 @@ function regularKeyset(): MintKeys {
 }
 
 function outcomeKeyset(): MintKeys {
-  return { ...regularKeyset(), id: 'ctf-keyset' }
+  return { ...regularKeyset(), id: CTF_KEYSET_ID }
 }
 
 function signOutcome(outcome: string, privateKey: Uint8Array): string {

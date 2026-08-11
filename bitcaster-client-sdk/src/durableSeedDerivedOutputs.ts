@@ -13,14 +13,22 @@ import {
   encodeBoundedDurableArtifact,
 } from './durableCustody.ts'
 import {
+  assertCanonicalNut02V2KeysetId,
   fitsDurableSeedDerivedCounterRange,
+  isCanonicalNut02V2KeysetId,
   isCanonicalModernNut02KeysetId,
   isDurableSeedDerivedCounter,
   isDurableSeedDerivedCount,
   isNonArrayRecord,
 } from './durableSeedDerivedPolicy.ts'
 
-export { isCanonicalModernNut02KeysetId, isDurableSeedDerivedCount, isDurableSeedDerivedCounter }
+export {
+  assertCanonicalNut02V2KeysetId,
+  isCanonicalModernNut02KeysetId,
+  isCanonicalNut02V2KeysetId,
+  isDurableSeedDerivedCount,
+  isDurableSeedDerivedCounter,
+}
 
 const DURABLE_SEED_DERIVED_OUTPUT_SCHEMA_VERSION = 1 as const
 
@@ -249,7 +257,7 @@ function validateAllocationInput(
 
 function validateKeyset(value: unknown, amounts: readonly number[]): HasKeysetKeys | null {
   if (!isNonArrayRecord(value) || !isNonArrayRecord(value.keys)) return null
-  if (!isCanonicalModernNut02KeysetId(value.id)) return null
+  if (!isCanonicalNut02V2KeysetId(value.id)) return null
   const id = value.id
   const entries = Object.entries(value.keys)
   if (entries.length === 0 || entries.length > DURABLE_CUSTODY_KEYSET_BINDING_LIMIT_MAX) {
@@ -325,7 +333,7 @@ function decodePlan(value: unknown): DurableSeedDerivedOutputPlan {
   requireExactKeys(value, ['schemaVersion', 'keysetId', 'counterStart', 'counterCount', 'outputs'])
   if (
     value.schemaVersion !== DURABLE_SEED_DERIVED_OUTPUT_SCHEMA_VERSION ||
-    !isCanonicalModernNut02KeysetId(value.keysetId)
+    !isCanonicalNut02V2KeysetId(value.keysetId)
   ) {
     throw new Error('durable seed-derived output plan is invalid')
   }

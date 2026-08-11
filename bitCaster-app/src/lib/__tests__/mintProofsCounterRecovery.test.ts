@@ -28,6 +28,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // Hoisted mocks — the cashu-ts wallet, the wallet store, and the proof DB
 // are all swapped out per-test via these handles.
 const mocks = vi.hoisted(() => {
+  const keysetId = `01${"11".repeat(32)}`;
+  const alternateKeysetId = `01${"22".repeat(32)}`;
   const wallet = {
     createMintQuote: vi.fn(),
     prepareMint: vi.fn(),
@@ -51,7 +53,7 @@ const mocks = vi.hoisted(() => {
   } = {
     mnemonic: "seed words",
     activeMintUrl: "https://mint.test",
-    mints: [{ url: "https://mint.test", keysets: [{ id: "k1" }] }],
+    mints: [{ url: "https://mint.test", keysets: [{ id: keysetId }] }],
     getWallet,
     getWalletForUnit: getWallet,
   };
@@ -116,6 +118,8 @@ const mocks = vi.hoisted(() => {
     getProofOperations,
     admitBrowserReceivedProofs,
     verifyProofsForReceive,
+    keysetId,
+    alternateKeysetId,
   };
 });
 
@@ -166,12 +170,14 @@ vi.mock("@/stores/proof-db", () => ({
 import * as cashu from "../cashu";
 import { setActiveBrowserWalletProfile } from "../browserWalletProfile";
 
+const KEYSET_ID = mocks.keysetId;
+const ALT_KEYSET_ID = mocks.alternateKeysetId;
 const VALID_MNEMONIC =
   "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
-const MINT_PROOFS = [{ id: "k1", amount: 100, secret: "s1", C: "C1" }] as never;
+const MINT_PROOFS = [{ id: KEYSET_ID, amount: 100, secret: "s1", C: "C1" }] as never;
 const MODERN_KEYSET_ID = `01${"44".repeat(32)}`;
 
-function mintPreview(keysetId = "k1") {
+function mintPreview(keysetId = KEYSET_ID) {
   const output = OutputData.createSingleData("100", keysetId, "s1", 3n);
   return {
     method: "bolt11",
@@ -209,7 +215,12 @@ beforeEach(() => {
   mocks.wallet.restore.mockReset();
   mocks.wallet.groupProofsByState.mockReset();
   mocks.wallet.getKeyset.mockReset();
-  mocks.wallet.getKeyset.mockReturnValue({ id: "k1", unit: "msat", verify: () => true, keys: {} });
+  mocks.wallet.getKeyset.mockReturnValue({
+    id: KEYSET_ID,
+    unit: "msat",
+    verify: () => true,
+    keys: {},
+  });
   mocks.wallet.prepareMint.mockImplementation(
     async (
       _method: string,
@@ -217,7 +228,7 @@ beforeEach(() => {
       _quote: unknown,
       config?: { onCountersReserved?: (value: unknown) => void },
     ) => {
-      config?.onCountersReserved?.({ keysetId: "k1", start: 0, count: 1, next: 1 });
+      config?.onCountersReserved?.({ keysetId: KEYSET_ID, start: 0, count: 1, next: 1 });
       return mintPreview();
     },
   );
@@ -231,11 +242,11 @@ beforeEach(() => {
     spent: [],
   }));
   mocks.wallet.mint.getKeySets.mockReset();
-  mocks.wallet.mint.getKeySets.mockResolvedValue({ keysets: [{ id: "k1" }] });
+  mocks.wallet.mint.getKeySets.mockResolvedValue({ keysets: [{ id: KEYSET_ID }] });
   for (const keysetId of Object.keys(mocks.restoredCounters))
     delete mocks.restoredCounters[keysetId];
   mocks.store.activeMintUrl = "https://mint.test";
-  mocks.store.mints = [{ url: "https://mint.test", keysets: [{ id: "k1" }] }];
+  mocks.store.mints = [{ url: "https://mint.test", keysets: [{ id: KEYSET_ID }] }];
   mocks.store.mnemonic = VALID_MNEMONIC;
   setActiveBrowserWalletProfile(VALID_MNEMONIC);
   mocks.addProofs.mockReset();
@@ -373,7 +384,7 @@ describe("conditional bearer-token import", () => {
         "msat",
         "ctf-position-msat",
       ),
-    ).rejects.toThrow("Conditional Cashu token supports only V2 keysets");
+    ).rejects.toThrow("canonical NUT-02 V2 keyset id");
 
     expect(mocks.verifyProofsForReceive).not.toHaveBeenCalled();
     expect(mocks.wallet.groupProofsByState).not.toHaveBeenCalled();
@@ -413,7 +424,7 @@ describe("mintProofs — CDK duplicate-output recovery", () => {
   });
 
   it("sends regular sat proofs through the explicit sat wallet", async () => {
-    const proofs = [{ id: "k1", amount: 20_000, secret: "s1", C: "C1" }] as never;
+    const proofs = [{ id: KEYSET_ID, amount: 20_000, secret: "s1", C: "C1" }] as never;
     const split = { keep: [], send: proofs };
     mocks.wallet.send.mockResolvedValueOnce(split);
 
@@ -439,7 +450,7 @@ describe("mintProofs — CDK duplicate-output recovery", () => {
 
     expect(result.map((proof) => proof.secret)).toEqual(["s1"]);
     expect(mocks.restoreProofsAndAdvanceCounter).toHaveBeenCalledWith(
-      expect.objectContaining({ keysetId: "k1", restoredNext: 8 }),
+      expect.objectContaining({ keysetId: KEYSET_ID, restoredNext: 8 }),
     );
     expect(mocks.wallet.completeMint).toHaveBeenCalledTimes(2);
     expect(mocks.wallet.batchRestore).toHaveBeenCalledTimes(1);
@@ -452,7 +463,7 @@ describe("mintProofs — CDK duplicate-output recovery", () => {
       .mockRejectedValueOnce(cdkDuplicateError("Blinded message already signed or pending"))
       .mockResolvedValueOnce(PROOFS);
     mocks.wallet.mint.getKeySets.mockResolvedValueOnce({
-      keysets: [{ id: "k1", unit: "msat" }],
+      keysets: [{ id: KEYSET_ID, unit: "msat" }],
     });
     mocks.wallet.batchRestore.mockResolvedValueOnce({
       proofs: [],
@@ -463,7 +474,7 @@ describe("mintProofs — CDK duplicate-output recovery", () => {
 
     expect(result.map((proof) => proof.secret)).toEqual(["s1"]);
     expect(mocks.restoreProofsAndAdvanceCounter).toHaveBeenCalledWith(
-      expect.objectContaining({ keysetId: "k1", restoredNext: 12 }),
+      expect.objectContaining({ keysetId: KEYSET_ID, restoredNext: 12 }),
     );
     expect(mocks.wallet.completeMint).toHaveBeenCalledTimes(2);
   });
@@ -472,9 +483,9 @@ describe("mintProofs — CDK duplicate-output recovery", () => {
     mocks.wallet.completeMint
       .mockRejectedValueOnce(cdkDuplicateError("Blinded message already signed or pending"))
       .mockResolvedValueOnce(PROOFS);
-    mocks.wallet.getKeyset.mockReturnValue({ id: "usd-keyset" });
+    mocks.wallet.getKeyset.mockReturnValue({ id: ALT_KEYSET_ID });
     mocks.wallet.mint.getKeySets.mockResolvedValueOnce({
-      keysets: [{ id: "usd-keyset", unit: "msat" }],
+      keysets: [{ id: ALT_KEYSET_ID, unit: "msat" }],
     });
     mocks.wallet.batchRestore.mockRejectedValueOnce(new Error("restore unavailable"));
 
@@ -490,9 +501,9 @@ describe("mintProofs — CDK duplicate-output recovery", () => {
     mocks.wallet.completeMint
       .mockRejectedValueOnce(cdkDuplicateError())
       .mockResolvedValueOnce(PROOFS);
-    const recoveredProofs = [{ id: "k1", amount: 50, secret: "rs1", C: "rC1" }] as never;
+    const recoveredProofs = [{ id: KEYSET_ID, amount: 50, secret: "rs1", C: "rC1" }] as never;
     mocks.wallet.mint.getKeySets.mockResolvedValueOnce({
-      keysets: [{ id: "k1", unit: "msat" }],
+      keysets: [{ id: KEYSET_ID, unit: "msat" }],
     });
     mocks.wallet.batchRestore.mockResolvedValueOnce({
       proofs: recoveredProofs,
@@ -755,7 +766,7 @@ describe("recoverKeysetCountersForMint — idempotency", () => {
 
   it("walks every keyset and advances the canonical authority", async () => {
     mocks.wallet.mint.getKeySets.mockResolvedValueOnce({
-      keysets: [{ id: "k1" }, { id: "k2" }],
+      keysets: [{ id: KEYSET_ID }, { id: "k2" }],
     });
     mocks.wallet.batchRestore
       .mockResolvedValueOnce({ proofs: [], lastCounterWithSignature: 4 })
@@ -764,7 +775,7 @@ describe("recoverKeysetCountersForMint — idempotency", () => {
     const r = await cashu.recoverKeysetCountersForMint("https://mint.test");
 
     expect(mocks.restoreProofsAndAdvanceCounter).toHaveBeenCalledTimes(2);
-    expect(r.scannedKeysets).toEqual(["k1", "k2"]);
+    expect(r.scannedKeysets).toEqual([KEYSET_ID, "k2"]);
   });
 
   it("walks every supported advertised keyset unit when no baseAsset filter is provided", async () => {
@@ -846,7 +857,7 @@ describe("recoverKeysetCountersForMint — idempotency", () => {
 
   it("uses fresh keysets from mint.getKeySets, not stale store keysets (codex review #3)", async () => {
     // Store has only k1; the mint has rotated to k2.
-    mocks.store.mints = [{ url: "https://mint.test", keysets: [{ id: "k1" }] }];
+    mocks.store.mints = [{ url: "https://mint.test", keysets: [{ id: KEYSET_ID }] }];
     mocks.wallet.mint.getKeySets.mockResolvedValueOnce({ keysets: [{ id: "k2" }] });
     mocks.wallet.batchRestore.mockResolvedValueOnce({
       proofs: [],
@@ -871,8 +882,8 @@ describe("recoverKeysetCountersForMint — idempotency", () => {
 
     const r = await cashu.recoverKeysetCountersForMint("https://mint.test");
 
-    expect(mocks.wallet.batchRestore).toHaveBeenCalledWith(300, 100, 0, "k1");
-    expect(r.scannedKeysets).toEqual(["k1"]);
+    expect(mocks.wallet.batchRestore).toHaveBeenCalledWith(300, 100, 0, KEYSET_ID);
+    expect(r.scannedKeysets).toEqual([KEYSET_ID]);
   });
 
   it("rescans every keyset without a separate recovered-state flag", async () => {
@@ -884,9 +895,9 @@ describe("recoverKeysetCountersForMint — idempotency", () => {
     const r = await cashu.recoverKeysetCountersForMint("https://mint.test");
 
     expect(mocks.restoreProofsAndAdvanceCounter).toHaveBeenCalledWith(
-      expect.objectContaining({ keysetId: "k1", restoredNext: 13 }),
+      expect.objectContaining({ keysetId: KEYSET_ID, restoredNext: 13 }),
     );
-    expect(r.scannedKeysets).toEqual(["k1"]);
+    expect(r.scannedKeysets).toEqual([KEYSET_ID]);
   });
 
   it("returns empty scannedKeysets when no mnemonic (anonymous wallet)", async () => {
@@ -902,9 +913,9 @@ describe("recoverKeysetCountersForMint — idempotency", () => {
     // cause spent-token errors on the next spend. The fix uses
     // groupProofsByState to keep only UNSPENT.
     const recoveredProofs = [
-      { id: "k1", amount: 50, secret: "unspent1", C: "C1" },
-      { id: "k1", amount: 100, secret: "spent1", C: "C2" },
-      { id: "k1", amount: 25, secret: "pending1", C: "C3" },
+      { id: KEYSET_ID, amount: 50, secret: "unspent1", C: "C1" },
+      { id: KEYSET_ID, amount: 100, secret: "spent1", C: "C2" },
+      { id: KEYSET_ID, amount: 25, secret: "pending1", C: "C3" },
     ] as never;
     mocks.wallet.batchRestore.mockResolvedValueOnce({
       proofs: recoveredProofs,
@@ -936,7 +947,7 @@ describe("recoverKeysetCountersForMint — idempotency", () => {
     await cashu.recoverKeysetCountersForMint("https://mint.test");
 
     expect(mocks.restoreProofsAndAdvanceCounter).toHaveBeenCalledWith(
-      expect.objectContaining({ keysetId: "k1", restoredNext: 0 }),
+      expect.objectContaining({ keysetId: KEYSET_ID, restoredNext: 0 }),
     );
   });
 
@@ -949,7 +960,7 @@ describe("recoverKeysetCountersForMint — idempotency", () => {
     await cashu.recoverKeysetCountersForMint("https://mint.test");
 
     expect(mocks.restoreProofsAndAdvanceCounter).toHaveBeenCalledWith(
-      expect.objectContaining({ keysetId: "k1", restoredNext: 6 }),
+      expect.objectContaining({ keysetId: KEYSET_ID, restoredNext: 6 }),
     );
   });
 });

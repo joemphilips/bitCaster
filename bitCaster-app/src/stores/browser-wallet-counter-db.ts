@@ -1,5 +1,6 @@
 import type { CounterRange, CounterSource } from "@cashu/cashu-ts";
 import { decodeDurableCustodyScopeId } from "@bitcaster/client-sdk/durableCustody";
+import { isCanonicalNut02V2KeysetId } from "@bitcaster/client-sdk/durableSeedDerivedOutputs";
 import { parseCashuProofUnit, type CashuProofUnit } from "@bitcaster/client-sdk/marketUnits";
 import { activeBrowserWalletScopeId, browserWalletDatabaseName } from "@/lib/browserWalletProfile";
 import { normalizeUrl } from "@/lib/url";
@@ -396,7 +397,7 @@ function requireScope(scopeId: string): string {
 }
 
 function requireKeysetId(value: string): string {
-  if (typeof value !== "string" || value.length === 0 || value.length > 256) {
+  if (!isCanonicalNut02V2KeysetId(value)) {
     throw new BrowserWalletCounterError("invalid_keyset", "wallet counter keyset is invalid");
   }
   return value;

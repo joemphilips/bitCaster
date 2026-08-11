@@ -13,7 +13,6 @@ import {
   Wallet as CashuWallet,
   getEncodedTokenV4,
   getDecodedToken,
-  isBlsKeyset,
   type MintKeys,
   type Proof,
   type MintQuoteResponse,
@@ -86,6 +85,7 @@ import {
   recoverBrowserDurableWalletReceives,
 } from "@/lib/browserDurableWalletReceive";
 import { deriveDurableCustodyArtifactFingerprint } from "@bitcaster/client-sdk/durableCustody";
+import { assertCanonicalNut02V2KeysetId } from "@bitcaster/client-sdk/durableSeedDerivedOutputs";
 import { serializeDurableCustodyProofArtifact } from "@bitcaster/client-sdk/durableCustodyProofMaterial";
 import type { TokenImportContext } from "@bitcaster/client-sdk/tokenImportValidation";
 import {
@@ -1052,9 +1052,9 @@ async function importConditionalTokenDirectly(
   ) {
     throw new Error("Conditional Cashu token authority does not match the validated import");
   }
-  if (decoded.proofs.some(({ id }) => isBlsKeyset(id))) {
-    throw new Error("Conditional Cashu token supports only V2 keysets");
-  }
+  decoded.proofs.forEach(({ id }) =>
+    assertCanonicalNut02V2KeysetId(id, "Conditional Cashu token keyset id"),
+  );
   const wallet = await getWalletForMnemonicUnit(mintUrl, unit, context.mnemonic);
   verifyProofsForReceive(decoded.proofs, (keysetId) => wallet.getKeyset(keysetId), {
     requireDleq: true,
@@ -1087,7 +1087,7 @@ async function importConditionalTokenDirectly(
 }
 
 function conditionalStoredProof(wallet: CashuWallet, proof: Proof, mintUrl: string): StoredProof {
-  if (isBlsKeyset(proof.id)) throw new Error("Conditional Cashu token supports only V2 keysets");
+  assertCanonicalNut02V2KeysetId(proof.id, "Conditional Cashu token keyset id");
   const conditional = wallet.getKeyset(proof.id).conditional;
   if (!conditional) throw new Error("Conditional Cashu token keyset is not conditional");
   return {

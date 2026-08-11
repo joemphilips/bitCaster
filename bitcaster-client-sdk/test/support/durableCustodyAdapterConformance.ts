@@ -43,6 +43,8 @@ export interface DurableCustodyConformancePrepared {
   successorProofIds: readonly string[]
 }
 
+const CONFORMANCE_KEYSET_ID = `01${'11'.repeat(32)}`
+
 export async function assertDurableCustodyAdapterConformance(
   createHarness: (
     suffix: string,
@@ -160,7 +162,7 @@ export function createDurableCustodyConformancePrepared(
     inputKeysetRequirement: 'required',
     keysets: [
       {
-        keysetId: 'keyset-1',
+        keysetId: CONFORMANCE_KEYSET_ID,
         unit: 'sat',
         curve: 'secp256k1',
         publicKeys: { '1': `02${'11'.repeat(32)}` },
@@ -181,7 +183,9 @@ export function createDurableCustodyConformancePrepared(
     reservation: {
       reservationId: `reservation-${suffix}`,
       parentReservationId: null,
-      inputs: [{ proofId: predecessorProofId, keysetId: 'keyset-1', curve: 'secp256k1' }],
+      inputs: [
+        { proofId: predecessorProofId, keysetId: CONFORMANCE_KEYSET_ID, curve: 'secp256k1' },
+      ],
     },
     proofLineage: {
       predecessorProofIds: [predecessorProofId],

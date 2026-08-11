@@ -42,6 +42,9 @@ import {
   type DurableCustodyAdapterConformanceSnapshot,
   type DurableCustodyConformancePrepared,
 } from '../../bitcaster-client-sdk/test/support/durableCustodyAdapterConformance.ts'
+import { canonicalTestKeysetId } from './support/canonicalKeysetId.ts'
+
+const KEYSET_ID = canonicalTestKeysetId('durable-custody-sqlite')
 
 async function profile() {
   const directory = await mkdtemp(join(tmpdir(), 'bitcaster-custody-sqlite-'))
@@ -69,7 +72,7 @@ test('fenced custody unit of work rolls proof and counter writes back atomically
       scopeId: fixture.walletScopeId,
       normalizedMint: 'https://mint.example',
       unit: 'sat',
-      keysetId: 'keyset-1',
+      keysetId: KEYSET_ID,
       nextCounter: 3,
       revision: 0,
       updatedAtMs: 3,
@@ -1496,7 +1499,7 @@ function exactIntent(
     scopeId,
     normalizedMint: 'https://mint.example',
     unit: 'sat',
-    keysetId: 'keyset-1',
+    keysetId: KEYSET_ID,
     secret: `predecessor-secret-${suffix}`,
   })
   const successorIds = Array.from({ length: successorCount }, (_, index) =>
@@ -1504,7 +1507,7 @@ function exactIntent(
       scopeId,
       normalizedMint: 'https://mint.example',
       unit: 'sat',
-      keysetId: 'keyset-1',
+      keysetId: KEYSET_ID,
       secret: `successor-secret-${suffix}-${index}`,
     }),
   )
@@ -1520,7 +1523,7 @@ function exactIntent(
     inputKeysetRequirement: inputMode === 'one' ? 'required' : 'none',
     keysets: [
       {
-        keysetId: 'keyset-1',
+        keysetId: KEYSET_ID,
         unit: 'sat',
         curve: 'secp256k1',
         publicKeys: { '1': `02${'11'.repeat(32)}` },
@@ -1541,7 +1544,7 @@ function exactIntent(
     reservation: {
       reservationId: `reservation-${suffix}`,
       parentReservationId: null,
-      inputs: inputMode === 'one' ? [{ proofId, keysetId: 'keyset-1', curve: 'secp256k1' }] : [],
+      inputs: inputMode === 'one' ? [{ proofId, keysetId: KEYSET_ID, curve: 'secp256k1' }] : [],
     },
     proofLineage: {
       predecessorProofIds: inputMode === 'one' ? [proofId] : [],
@@ -1588,7 +1591,7 @@ function proofRow(scopeId: string): CustodyProofSqliteRow {
     scopeId,
     normalizedMint: 'https://mint.example',
     unit: 'sat',
-    keysetId: 'keyset-1',
+    keysetId: KEYSET_ID,
     amount: 1,
     baseAsset: 'sat',
     conditionId: null,

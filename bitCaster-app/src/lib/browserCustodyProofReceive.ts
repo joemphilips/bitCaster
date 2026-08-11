@@ -1,4 +1,4 @@
-import { isBlsKeyset, type Proof, type Wallet as CashuWallet } from "@cashu/cashu-ts";
+import { type Proof, type Wallet as CashuWallet } from "@cashu/cashu-ts";
 import {
   deriveDurableCustodyArtifactFingerprint,
   decodeCanonicalMintOrigin,
@@ -12,6 +12,7 @@ import {
 } from "@bitcaster/client-sdk/durableCustodyProofImport";
 import { serializeDurableCustodyProofArtifact } from "@bitcaster/client-sdk/durableCustodyProofMaterial";
 import { locateSeedDerivedProofLineage } from "@bitcaster/client-sdk/durableSeedDerivedProofLineage";
+import { assertCanonicalNut02V2KeysetId } from "@bitcaster/client-sdk/durableSeedDerivedOutputs";
 import {
   decodeDurableWalletProofDerivationLocator,
   type DurableWalletProofDerivationLocator,
@@ -308,6 +309,7 @@ function resolveImportKeysets(
     }
   >();
   for (const keysetId of new Set(proofs.map((proof) => proof.id))) {
+    assertCanonicalNut02V2KeysetId(keysetId, "Browser proof import keyset id");
     const keyset = wallet.getKeyset(keysetId);
     if (keyset.unit !== unit || !keyset.verify()) {
       throw new Error("Browser proof import keyset is not verified");
@@ -320,7 +322,7 @@ function resolveImportKeysets(
     authorities.set(keysetId, {
       keysetId,
       unit,
-      curve: isBlsKeyset(keysetId) ? "bls12-381" : "secp256k1",
+      curve: "secp256k1",
       publicKeys: Object.fromEntries(Object.entries(keyset.keys)),
       keysetExpiryMs,
       requireDleq: false,

@@ -104,7 +104,7 @@ test('prepares a conditional consolidation with the same exact plan', async () =
 })
 
 test('generic exact consolidation spends an inactive keyset into an active keyset', async () => {
-  const outputKeysetId = `02${'b'.repeat(64)}`
+  const outputKeysetId = `01${'b'.repeat(64)}`
   let plannedOutputs: OutputData[] = []
   const wallet: ExactProofConsolidationWallet = {
     prepareSwapToSend: async (

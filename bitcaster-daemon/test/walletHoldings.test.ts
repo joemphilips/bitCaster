@@ -7,9 +7,11 @@ import type { DatabaseSync } from 'node:sqlite'
 import { bootstrapFreshDaemonProfile } from '../src/profileBootstrap.ts'
 import { openDaemonStateSqlite } from '../src/stateSqlite.ts'
 import { readDaemonTokenHoldings } from '../src/walletHoldings.ts'
+import { canonicalTestKeysetId } from './support/canonicalKeysetId.ts'
 
 const MINT_URL = 'https://mint.example'
 const CONDITION_ID = 'condition-1'
+const KEYSET_ID = canonicalTestKeysetId('wallet-holdings')
 
 test('indexed wallet holdings aggregate more than ten thousand proofs without loading bodies', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'bitcaster-wallet-holdings-'))
@@ -140,7 +142,7 @@ function insertProof(
     input.scopeId,
     input.mintUrl,
     input.unit ?? 'msat',
-    'keyset-1',
+    KEYSET_ID,
     input.amount,
     `secret-${input.index}`,
     'signature',

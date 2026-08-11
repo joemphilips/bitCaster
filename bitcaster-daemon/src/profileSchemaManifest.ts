@@ -10,7 +10,7 @@ export const FINAL_PROFILE_APPLICATION_ID = 0x4243444d
 export const FINAL_PROFILE_SCHEMA_VERSION = 1
 export const FINAL_PROFILE_SCHEMA_NAME = 'bitcaster-daemon-profile'
 export const FINAL_PROFILE_SCHEMA_MANIFEST_DIGEST =
-  'f67898dd7ccc923be81336b0eead43ec3d2e2039c77988ce70903599301cee77'
+  '7aef75c86efcc1f8ca7bf915bc217dfdafc25f79bb94903b5c8967e9bbd26554'
 
 const artifactBytesMax = 16 * 1_024 * 1_024
 const recordBytesMax = 64 * 1_024
@@ -171,7 +171,11 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
     scope_id TEXT NOT NULL REFERENCES custody_scopes(scope_id) ON DELETE RESTRICT,
     normalized_mint TEXT NOT NULL CHECK (length(normalized_mint) BETWEEN 1 AND 2048),
     unit TEXT NOT NULL CHECK (unit IN ('sat', 'msat')),
-    keyset_id TEXT NOT NULL CHECK (length(keyset_id) BETWEEN 1 AND 1024),
+    keyset_id TEXT NOT NULL CHECK (
+      length(keyset_id) = 66
+      AND substr(keyset_id, 1, 2) = '01'
+      AND keyset_id NOT GLOB '*[^0-9a-f]*'
+    ),
     amount INTEGER NOT NULL CHECK (amount > 0),
     secret TEXT NOT NULL CHECK (length(secret) BETWEEN 1 AND 16384),
     signature TEXT NOT NULL CHECK (length(signature) BETWEEN 1 AND 16384),
@@ -202,7 +206,11 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
     scope_id TEXT NOT NULL REFERENCES custody_scopes(scope_id) ON DELETE RESTRICT,
     normalized_mint TEXT NOT NULL CHECK (length(normalized_mint) BETWEEN 1 AND 2048),
     unit TEXT NOT NULL CHECK (unit IN ('sat', 'msat')),
-    keyset_id TEXT NOT NULL CHECK (length(keyset_id) BETWEEN 1 AND 1024),
+    keyset_id TEXT NOT NULL CHECK (
+      length(keyset_id) = 66
+      AND substr(keyset_id, 1, 2) = '01'
+      AND keyset_id NOT GLOB '*[^0-9a-f]*'
+    ),
     next_counter INTEGER NOT NULL CHECK (next_counter BETWEEN 0 AND 2147483648),
     updated_at_ms INTEGER NOT NULL CHECK (updated_at_ms >= 0),
     PRIMARY KEY (scope_id, normalized_mint, unit, keyset_id)
@@ -626,7 +634,11 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
     scope_id TEXT NOT NULL REFERENCES custody_scopes(scope_id) ON DELETE RESTRICT,
     normalized_mint TEXT NOT NULL CHECK (length(normalized_mint) BETWEEN 1 AND 2048),
     unit TEXT NOT NULL CHECK (unit IN ('sat', 'msat')),
-    keyset_id TEXT NOT NULL CHECK (length(keyset_id) BETWEEN 1 AND 1024),
+    keyset_id TEXT NOT NULL CHECK (
+      length(keyset_id) = 66
+      AND substr(keyset_id, 1, 2) = '01'
+      AND keyset_id NOT GLOB '*[^0-9a-f]*'
+    ),
     amount INTEGER NOT NULL CHECK (amount > 0),
     base_asset TEXT NOT NULL CHECK (base_asset = 'sat'),
     condition_id TEXT CHECK (condition_id IS NULL OR length(condition_id) BETWEEN 1 AND 1024),
@@ -637,7 +649,7 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
       length(proof_fingerprint) = 64
       AND proof_fingerprint NOT GLOB '*[^0-9a-f]*'
     ),
-    curve TEXT NOT NULL CHECK (curve IN ('secp256k1', 'bls12-381')),
+    curve TEXT NOT NULL CHECK (curve = 'secp256k1'),
     signature_verified INTEGER NOT NULL CHECK (signature_verified IN (0, 1)),
     dleq_state TEXT NOT NULL CHECK (dleq_state IN ('not-present', 'verified')),
     nut07_state TEXT NOT NULL CHECK (nut07_state IN ('UNSPENT', 'PENDING', 'SPENT')),
@@ -668,7 +680,11 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
     scope_id TEXT NOT NULL REFERENCES custody_scopes(scope_id) ON DELETE RESTRICT,
     normalized_mint TEXT NOT NULL CHECK (length(normalized_mint) BETWEEN 1 AND 2048),
     unit TEXT NOT NULL CHECK (unit IN ('sat', 'msat')),
-    keyset_id TEXT NOT NULL CHECK (length(keyset_id) BETWEEN 1 AND 1024),
+    keyset_id TEXT NOT NULL CHECK (
+      length(keyset_id) = 66
+      AND substr(keyset_id, 1, 2) = '01'
+      AND keyset_id NOT GLOB '*[^0-9a-f]*'
+    ),
     next_counter INTEGER NOT NULL CHECK (next_counter >= 0),
     revision INTEGER NOT NULL CHECK (revision >= 0),
     updated_at_ms INTEGER NOT NULL CHECK (updated_at_ms >= 0),
@@ -844,8 +860,8 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
     operation_id TEXT NOT NULL,
     input_position INTEGER NOT NULL CHECK (input_position BETWEEN 0 AND 255),
     proof_id TEXT NOT NULL,
-    keyset_id TEXT NOT NULL CHECK (length(keyset_id) BETWEEN 1 AND 1024),
-    curve TEXT NOT NULL CHECK (curve IN ('secp256k1', 'bls12-381')),
+    keyset_id TEXT NOT NULL CHECK (length(keyset_id) = 66 AND substr(keyset_id, 1, 2) = '01' AND keyset_id NOT GLOB '*[^0-9a-f]*'),
+    curve TEXT NOT NULL CHECK (curve = 'secp256k1'),
     PRIMARY KEY (scope_id, operation_id, input_position),
     UNIQUE (scope_id, operation_id, proof_id),
     FOREIGN KEY (scope_id, operation_id)
@@ -882,8 +898,8 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
   `CREATE TABLE custody_verification_bindings (
     scope_id TEXT NOT NULL,
     operation_id TEXT NOT NULL,
-    keyset_id TEXT NOT NULL CHECK (length(keyset_id) BETWEEN 1 AND 1024),
-    curve TEXT NOT NULL CHECK (curve IN ('secp256k1', 'bls12-381')),
+    keyset_id TEXT NOT NULL CHECK (length(keyset_id) = 66 AND substr(keyset_id, 1, 2) = '01' AND keyset_id NOT GLOB '*[^0-9a-f]*'),
+    curve TEXT NOT NULL CHECK (curve = 'secp256k1'),
     keyset_fingerprint TEXT NOT NULL CHECK (length(keyset_fingerprint) = 64),
     require_dleq INTEGER NOT NULL CHECK (require_dleq IN (0, 1)),
     binding_position INTEGER NOT NULL CHECK (binding_position BETWEEN 0 AND 255),
@@ -897,8 +913,8 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
     operation_id TEXT NOT NULL,
     use_kind TEXT NOT NULL CHECK (use_kind IN ('input', 'output')),
     use_position INTEGER NOT NULL CHECK (use_position BETWEEN 0 AND 255),
-    keyset_id TEXT NOT NULL CHECK (length(keyset_id) BETWEEN 1 AND 1024),
-    curve TEXT NOT NULL CHECK (curve IN ('secp256k1', 'bls12-381')),
+    keyset_id TEXT NOT NULL CHECK (length(keyset_id) = 66 AND substr(keyset_id, 1, 2) = '01' AND keyset_id NOT GLOB '*[^0-9a-f]*'),
+    curve TEXT NOT NULL CHECK (curve = 'secp256k1'),
     PRIMARY KEY (scope_id, operation_id, use_kind, use_position),
     FOREIGN KEY (scope_id, operation_id)
       REFERENCES custody_operations(scope_id, operation_id) ON DELETE RESTRICT,
@@ -1132,7 +1148,7 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
   ) STRICT`,
   `CREATE TABLE seed_recovery_keysets (
     recovery_id TEXT NOT NULL,
-    keyset_id TEXT NOT NULL CHECK (length(keyset_id) BETWEEN 1 AND 1024),
+    keyset_id TEXT NOT NULL CHECK (length(keyset_id) = 66 AND substr(keyset_id, 1, 2) = '01' AND keyset_id NOT GLOB '*[^0-9a-f]*'),
     next_counter INTEGER NOT NULL CHECK (next_counter >= 0),
     trailing_empty_counters INTEGER NOT NULL CHECK (
       trailing_empty_counters BETWEEN 0 AND 9007199254740991

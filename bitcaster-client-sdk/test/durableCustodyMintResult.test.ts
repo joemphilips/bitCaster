@@ -388,19 +388,22 @@ test('accepts and verifies an exact wallet receive operation', () => {
   assert.equal(result.proofs.length, 1)
 })
 
-test('verifies an exact persisted BLS output without secp DLEQ material', () => {
+test('rejects a full-length V3 output before durable custody result admission', () => {
   const prepared = preparedSend('send:bls', {
     id: BLS_KEYSET_ID,
     keys: BLS_KEYS,
     proof: proofForBlsOutput,
   })
-  const result = prepareDurableCustodyVerifiedMintResult({
-    record: prepared.record,
-    exactAuthority: prepared.exactAuthority,
-    result: { keep: [proofForBlsOutput(prepared.output)] },
-  })
 
-  assert.equal(result.proofs[0]!.dleqState, 'not-present')
+  assert.throws(
+    () =>
+      prepareDurableCustodyVerifiedMintResult({
+        record: prepared.record,
+        exactAuthority: prepared.exactAuthority,
+        result: { keep: [proofForBlsOutput(prepared.output)] },
+      }),
+    /canonical NUT-02 V2/,
+  )
 })
 
 function preparedSend(

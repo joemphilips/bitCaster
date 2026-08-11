@@ -18,6 +18,7 @@ import {
 } from './ctfRangeOrderJournal.ts'
 import { assertOrderRouteBelongsToCondition } from './orderRoute.ts'
 import { decodeCanonicalMintOrigin } from './durableCustody.ts'
+import { assertCanonicalNut02V2KeysetId } from './durableSeedDerivedPolicy.ts'
 import type {
   DurableCtfRangeExpiryObservation,
   DurableCtfRangeKeysetResolver,
@@ -694,9 +695,11 @@ function decodeActiveKeyset(
     throw new Error('range preparation keyset is invalid')
   }
   const keys = decodeKeysetKeys(keyset.keys)
+  const id = requireText(keyset.id, 'range preparation keyset id')
+  assertCanonicalNut02V2KeysetId(id, 'range preparation keyset id')
   const base = {
     canonicalMintUrl,
-    id: requireText(keyset.id, 'range preparation keyset id'),
+    id,
     unit: 'msat' as const,
     keys,
     inputFeePpk: requirePositiveSafeInteger(
@@ -739,6 +742,9 @@ function decodeExpiryObservation(
   const conditionKeysetIds = requireTextArray(
     observation.conditionKeysetIds,
     'range preparation condition keyset ids',
+  )
+  conditionKeysetIds.forEach((keysetId) =>
+    assertCanonicalNut02V2KeysetId(keysetId, 'range preparation condition keyset id'),
   )
   const conditionalKeysets = requireArray(
     observation.conditionalKeysets,
@@ -787,8 +793,10 @@ function decodeObservedConditionalKeyset(
     keyset.finalExpiry === undefined || keyset.finalExpiry === null
       ? undefined
       : requirePositiveSafeInteger(keyset.finalExpiry, 'range preparation observed final expiry')
+  const keysetId = requireText(keyset.keysetId, 'range preparation observed keyset id')
+  assertCanonicalNut02V2KeysetId(keysetId, 'range preparation observed keyset id')
   return {
-    keysetId: requireText(keyset.keysetId, 'range preparation observed keyset id'),
+    keysetId,
     conditionId: observedConditionId,
     unit: 'msat',
     inputFeePpk: requirePositiveSafeInteger(
