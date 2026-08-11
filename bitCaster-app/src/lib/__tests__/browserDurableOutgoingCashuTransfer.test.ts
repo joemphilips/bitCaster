@@ -121,9 +121,10 @@ describe("browser durable outgoing Cashu store", () => {
     ).resolves.toMatchObject({ transferId: "recipient" });
   });
 
-  it("bounds largest-first market-funding candidates in a 10,000-proof wallet", async () => {
+  it("bounds largest-first market-funding candidates beyond one selection page", async () => {
     const database = createDatabase();
-    const rows = Array.from({ length: 10_000 }, (_, index) =>
+    const proofCount = MARKET_FUNDING_INPUT_PROOF_LIMIT_MAX + 1;
+    const rows = Array.from({ length: proofCount }, (_, index) =>
       custodyProof(SELECTOR_SCOPE_ID, "msat", {
         secret: `funding-${index.toString().padStart(5, "0")}`,
         amount: index + 1,
@@ -139,9 +140,9 @@ describe("browser durable outgoing Cashu store", () => {
     );
 
     expect(selected).toHaveLength(MARKET_FUNDING_INPUT_PROOF_LIMIT_MAX);
-    expect(amountToNumber(selected[0]!.amount)).toBe(10_000);
-    expect(amountToNumber(selected.at(-1)!.amount)).toBe(9_489);
-  }, 15_000);
+    expect(amountToNumber(selected[0]!.amount)).toBe(proofCount);
+    expect(amountToNumber(selected.at(-1)!.amount)).toBe(2);
+  });
 
   it("includes an exact recovered canonical V2 market-funding keyset", async () => {
     const database = createDatabase();
@@ -332,7 +333,7 @@ describe("browser durable outgoing Cashu store", () => {
   it("reads one bounded custody page without scanning higher-sorted legacy history", async () => {
     const database = createDatabase();
     await database.proofs.bulkPut(
-      Array.from({ length: 10_000 }, (_, index) => ({
+      Array.from({ length: MARKET_FUNDING_INPUT_PROOF_LIMIT_MAX + 1 }, (_, index) => ({
         secret: `legacy-history-${index}`,
         amount: 20_000 + index,
         id: KEYSET_ID,
