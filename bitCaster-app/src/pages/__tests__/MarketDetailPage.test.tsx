@@ -31,6 +31,7 @@ import type {
 const mocks = vi.hoisted(() => ({
   buildIndexedDbTokenHoldings: vi.fn(),
   getBalance: vi.fn(),
+  ensureParticipationScoreForNextMatch: vi.fn(),
   navigate: vi.fn(),
   previewBrowserCtfRangeOrderFees: vi.fn(),
   routeParams: { id: "condition-yesno" } as { id?: string },
@@ -127,6 +128,10 @@ vi.mock("@/lib/markets", () => ({
 vi.mock("@/lib/browserCtfRangeOrderSubmission", () => ({
   previewBrowserCtfRangeOrderFees: mocks.previewBrowserCtfRangeOrderFees,
   submitBrowserCtfRangeOrder: vi.fn(),
+}));
+
+vi.mock("@/lib/participationScorePayment", () => ({
+  ensureParticipationScoreForNextMatch: mocks.ensureParticipationScoreForNextMatch,
 }));
 
 vi.mock("@bitcaster/client-sdk/engineClient", () => ({
@@ -346,6 +351,11 @@ describe("MarketDetailPage live market status", () => {
     });
     mocks.buildIndexedDbTokenHoldings.mockReset();
     mocks.getBalance.mockReset();
+    mocks.ensureParticipationScoreForNextMatch.mockReset();
+    mocks.ensureParticipationScoreForNextMatch.mockResolvedValue({
+      kind: "disabled",
+      score: { enabled: false, matchDebitScore: 0 },
+    });
     mocks.liveStatusHandlers.length = 0;
     mocks.orderBookHandlers.clear();
     mocks.routeParams.id = "condition-yesno";
