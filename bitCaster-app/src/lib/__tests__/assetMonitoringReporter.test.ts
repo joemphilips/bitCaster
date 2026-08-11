@@ -1,9 +1,19 @@
+// @vitest-environment node
 import { Amount } from "@cashu/cashu-ts";
+import {
+  deriveDurableCustodyScopeId,
+  deriveDurableCustodyWalletId,
+} from "@bitcaster/client-sdk/durableCustody";
 import { EngineClientError } from "@bitcaster/client-sdk/engineClient";
 import type {
   AssetMonitoringReportedHolding,
   AssetMonitoringReportRequest,
 } from "@bitcaster/client-sdk/assetMonitoring";
+import {
+  bindBrowserProofBackupAuthorityTerminalOperation,
+  createBrowserProofBackupAuthorityRow,
+} from "@/stores/browser-proof-backup-authority";
+import { createBrowserCustodyProofRow } from "@/stores/durable-custody-db";
 import type { StoredProof } from "@/stores/proof-db";
 import { describe, expect, it, vi, type Mock } from "vitest";
 import {
@@ -16,6 +26,213 @@ const conditionId = "a".repeat(64);
 const walletId = "b".repeat(64);
 
 describe("asset monitoring snapshot", () => {
+  it("reports only a valid bound NUT-13 recovery counter", () => {
+    const stored = proof({ id: keysetId(), secret: "recoverable", C: "03" });
+    const custody = custodyProof(stored);
+    const authority = createBrowserProofBackupAuthorityRow(
+      custody,
+      2,
+      { schemaVersion: 1, kind: "nut13", keysetId: stored.id, counter: 7 },
+      "admission-1",
+    );
+
+    expect(
+      buildAssetMonitoringHoldings({
+        proofs: [stored],
+        catalogue: [],
+        custody: {
+          scopeId: custody.scopeId,
+          proofs: [custody],
+          proofBackupAuthorities: [authority],
+        },
+      }),
+    ).toEqual([
+      expect.objectContaining({
+        recoveryHint: { keysetIds: [stored.id], counterIntervals: [{ start: 7, count: 1 }] },
+      }),
+    ]);
+  });
+
+  it.each([
+    ["null", null],
+    ["malformed", { schemaVersion: 1, kind: "nut13", keysetId: keysetId(), counter: -1 }],
+    [
+      "foreign keyset",
+      { schemaVersion: 1, kind: "nut13", keysetId: alternateKeysetId(), counter: 7 },
+    ],
+    [
+      "manifest",
+      {
+        schemaVersion: 1,
+        kind: "ctf-range-manifest",
+        rangeOperationId: "range-1",
+        manifestIndex: 1,
+      },
+    ],
+    [
+      "refund",
+      {
+        schemaVersion: 1,
+        kind: "ctf-range-refund",
+        rangeOperationId: "range-1",
+        authorizationId: "authorization-1",
+        refundOperationId: "refund-1",
+        counter: 1,
+      },
+    ],
+  ])("keeps the holding without a recovery counter for a %s locator", (_label, locator) => {
+    const stored = proof({ id: keysetId(), secret: "without-counter", C: "04" });
+    const custody = custodyProof(stored);
+    const valid = createBrowserProofBackupAuthorityRow(custody, 2, null, "admission-1");
+    const authority = locator === null ? valid : { ...valid, derivationLocator: locator };
+
+    expect(
+      buildAssetMonitoringHoldings({
+        proofs: [stored],
+        catalogue: [],
+        custody: {
+          scopeId: custody.scopeId,
+          proofs: [custody],
+          proofBackupAuthorities: [authority],
+        },
+      }),
+    ).toEqual([
+      expect.objectContaining({
+        recoveryHint: { keysetIds: [stored.id], counterIntervals: [] },
+      }),
+    ]);
+  });
+
+  it("keeps the holding without a recovery counter for a foreign or stale authority", () => {
+    const stored = proof({ id: keysetId(), secret: "unbound", C: "05" });
+    const custody = custodyProof(stored);
+    const authority = createBrowserProofBackupAuthorityRow(
+      custody,
+      2,
+      { schemaVersion: 1, kind: "nut13", keysetId: stored.id, counter: 7 },
+      "admission-1",
+    );
+
+    for (const invalid of [
+      { ...authority, proofFingerprint: "f".repeat(64) },
+      { ...authority, proofRevision: custody.revision + 1 },
+      { ...authority, proofState: "locked" },
+    ]) {
+      expect(
+        buildAssetMonitoringHoldings({
+          proofs: [stored],
+          catalogue: [],
+          custody: {
+            scopeId: custody.scopeId,
+            proofs: [custody],
+            proofBackupAuthorities: [invalid],
+          },
+        }),
+      ).toEqual([
+        expect.objectContaining({
+          recoveryHint: { keysetIds: [stored.id], counterIntervals: [] },
+        }),
+      ]);
+    }
+  });
+
+  it("keeps the holding without a recovery counter for a spent canonical proof", () => {
+    const stored = proof({ id: keysetId(), secret: "spent", C: "06" });
+    const custody = {
+      ...custodyProof(stored),
+      revision: 1,
+      selectability: "spent" as const,
+    };
+    const authority = createBrowserProofBackupAuthorityRow(
+      custody,
+      2,
+      nut13(stored.id, 7),
+      "admission-1",
+    );
+
+    expect(recoveryIntervals(stored, custody, authority)).toEqual([]);
+  });
+
+  it("keeps the holding without a recovery counter for a terminal authority", () => {
+    const stored = proof({ id: keysetId(), secret: "terminal", C: "07" });
+    const custody = custodyProof(stored);
+    const authority = bindBrowserProofBackupAuthorityTerminalOperation(
+      createBrowserProofBackupAuthorityRow(custody, 2, nut13(stored.id, 7), "admission-1"),
+      "terminal-1",
+      3,
+    );
+
+    expect(recoveryIntervals(stored, custody, authority)).toEqual([]);
+  });
+
+  it("reports a recovery counter for an exactly matching locked reservation", () => {
+    const stored = proof({ id: keysetId(), secret: "locked", C: "08", reservedBy: "order-1" });
+    const custody = {
+      ...custodyProof(stored),
+      revision: 1,
+      selectability: "locked" as const,
+      reservationOperationId: "order-1",
+    };
+    const authority = createBrowserProofBackupAuthorityRow(
+      custody,
+      2,
+      nut13(stored.id, 7),
+      "admission-1",
+    );
+
+    expect(recoveryIntervals(stored, custody, authority)).toEqual([{ start: 7, count: 1 }]);
+  });
+
+  it("keeps the holding without a recovery counter for a locked reservation mismatch", () => {
+    const stored = proof({ id: keysetId(), secret: "mismatch", C: "09", reservedBy: "order-1" });
+    const custody = {
+      ...custodyProof(stored),
+      revision: 1,
+      selectability: "locked" as const,
+      reservationOperationId: "order-2",
+    };
+    const authority = createBrowserProofBackupAuthorityRow(
+      custody,
+      2,
+      nut13(stored.id, 7),
+      "admission-1",
+    );
+
+    expect(recoveryIntervals(stored, custody, authority)).toEqual([]);
+  });
+
+  it("keeps the holding without a recovery counter for duplicate or foreign-scope custody", () => {
+    const stored = proof({ id: keysetId(), secret: "duplicate", C: "0a" });
+    const custody = custodyProof(stored);
+    const authority = createBrowserProofBackupAuthorityRow(
+      custody,
+      2,
+      nut13(stored.id, 7),
+      "admission-1",
+    );
+    const foreignScopeId = deriveDurableCustodyScopeId({
+      scopeKind: "wallet",
+      walletId: deriveDurableCustodyWalletId(new Uint8Array(32).fill(8)),
+    });
+    const foreignCustody = createBrowserCustodyProofRow({
+      scopeId: foreignScopeId,
+      normalizedMint: stored.mintUrl,
+      unit: "msat",
+      proof: stored,
+      asset: { kind: "regular" },
+      receivedAtMs: 1,
+    });
+    const foreignAuthority = createBrowserProofBackupAuthorityRow(
+      foreignCustody,
+      2,
+      nut13(stored.id, 7),
+      "admission-1",
+    );
+
+    expect(recoveryIntervals(stored, custody, authority, [custody, custody])).toEqual([]);
+    expect(recoveryIntervals(stored, custody, foreignAuthority, [foreignCustody])).toEqual([]);
+  });
+
   it("includes reserved proofs as pending and excludes terminal proofs", () => {
     const holdings = buildAssetMonitoringHoldings({
       proofs: [
@@ -341,6 +558,48 @@ type ProofOverrides = Omit<Partial<StoredProof>, "amount"> & {
   condition_id?: string;
   outcome_collection?: string;
 };
+
+function custodyProof(stored: StoredProof) {
+  const walletId = deriveDurableCustodyWalletId(new Uint8Array(32).fill(7));
+  const scopeId = deriveDurableCustodyScopeId({ scopeKind: "wallet", walletId });
+  return createBrowserCustodyProofRow({
+    scopeId,
+    normalizedMint: stored.mintUrl,
+    unit: "msat",
+    proof: stored,
+    asset: { kind: "regular" },
+    receivedAtMs: 1,
+  });
+}
+
+function keysetId(): string {
+  return `00${"a".repeat(14)}`;
+}
+
+function alternateKeysetId(): string {
+  return `01${"b".repeat(64)}`;
+}
+
+function nut13(keysetId: string, counter: number) {
+  return { schemaVersion: 1 as const, kind: "nut13" as const, keysetId, counter };
+}
+
+function recoveryIntervals(
+  stored: StoredProof,
+  custody: ReturnType<typeof custodyProof>,
+  authority: unknown,
+  custodyRows: readonly unknown[] = [custody],
+) {
+  return buildAssetMonitoringHoldings({
+    proofs: [stored],
+    catalogue: [],
+    custody: {
+      scopeId: custody.scopeId,
+      proofs: custodyRows,
+      proofBackupAuthorities: [authority],
+    },
+  })?.[0]?.recoveryHint?.counterIntervals;
+}
 
 function holdings(amount: number): AssetMonitoringReportedHolding[] {
   return [

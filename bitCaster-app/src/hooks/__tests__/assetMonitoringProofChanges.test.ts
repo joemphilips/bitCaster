@@ -13,7 +13,7 @@ afterEach(async () => {
   }
 });
 
-it("reports committed proof writes once per transaction and ignores aborts", async () => {
+it("reports committed proof and authority writes once per transaction and ignores aborts", async () => {
   const database = createDatabase();
   const callback = vi.fn();
   const unsubscribe = subscribeToCommittedProofChanges(database, callback);
@@ -27,17 +27,31 @@ it("reports committed proof writes once per transaction and ignores aborts", asy
   });
   expect(callback).toHaveBeenCalledTimes(4);
 
+  await database.custodyProofBackupAuthorities.put(authority("authority-only") as never);
+  expect(callback).toHaveBeenCalledTimes(5);
+
+  await database.transaction(
+    "rw",
+    database.proofs,
+    database.custodyProofBackupAuthorities,
+    async () => {
+      await database.proofs.add(proof("combined"));
+      await database.custodyProofBackupAuthorities.put(authority("combined") as never);
+    },
+  );
+  expect(callback).toHaveBeenCalledTimes(6);
+
   await expect(
     database.transaction("rw", database.proofs, async () => {
       await database.proofs.add(proof("aborted"));
       throw new Error("abort test transaction");
     }),
   ).rejects.toThrow("abort test transaction");
-  expect(callback).toHaveBeenCalledTimes(4);
+  expect(callback).toHaveBeenCalledTimes(6);
 
   unsubscribe();
   await database.proofs.add(proof("after-unsubscribe"));
-  expect(callback).toHaveBeenCalledTimes(4);
+  expect(callback).toHaveBeenCalledTimes(6);
 });
 
 function createDatabase(): BitcasterDB {
@@ -53,5 +67,12 @@ function proof(secret: string) {
     id: "keyset",
     amount: 1,
     mintUrl: "https://mint.example",
+  };
+}
+
+function authority(proofId: string) {
+  return {
+    scopeId: "scope",
+    proofId,
   };
 }
