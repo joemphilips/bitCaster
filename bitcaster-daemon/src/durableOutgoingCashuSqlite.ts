@@ -11,6 +11,7 @@ import {
   deriveDurableCustodyArtifactFingerprint,
   encodeBoundedDurableArtifact,
 } from '@bitcaster-market/client-sdk/durableCustody'
+import { createParticipationScoreDeliveryMetadata } from '@bitcaster-market/client-sdk/participationScoreDelivery'
 
 const TRANSFER_BYTES_MAX = DURABLE_OUTGOING_CASHU_RECOVERY_BYTES_MAX
 
@@ -75,6 +76,7 @@ export class DurableOutgoingCashuSqliteStore {
            artifact.fingerprint AS artifactFingerprint, transfer.transfer_fingerprint AS transferFingerprint,
            transfer.normalized_mint AS normalizedMint,
            unit, requested_amount AS requestedAmount, delivery_state AS deliveryState,
+           delivery_policy AS deliveryPolicy, recipient_binding AS recipientBinding,
            due_at_ms AS dueAtMs, attempt_count AS attemptCount, transfer.revision AS revision
          FROM daemon_outgoing_cashu_transfers AS transfer
          JOIN custody_artifacts AS artifact
@@ -104,6 +106,7 @@ export class DurableOutgoingCashuSqliteStore {
            transfer.transfer_fingerprint AS transferFingerprint,
            transfer.normalized_mint AS normalizedMint, transfer.unit,
            transfer.requested_amount AS requestedAmount, transfer.delivery_state AS deliveryState,
+           transfer.delivery_policy AS deliveryPolicy, transfer.recipient_binding AS recipientBinding,
            transfer.due_at_ms AS dueAtMs, transfer.attempt_count AS attemptCount,
            transfer.revision AS revision
          FROM daemon_outgoing_cashu_transfers AS transfer
@@ -163,13 +166,176 @@ export class DurableOutgoingCashuSqliteStore {
              SELECT 1
              FROM daemon_outgoing_cashu_transfers
              WHERE scope_id = ?
-               AND delivery_state IN ('prepared', 'reclaim-prepared')
+               AND (
+                 delivery_state IN ('prepared', 'reclaim-prepared')
+                 OR (delivery_state = 'delivery-pending' AND delivery_policy = 'durable-recipient-ack')
+               )
            ) AS hasBlockingPending`,
       )
       .get(scopeId, scopeId) as { hasPending: number; hasBlockingPending: number }
     return {
       hasPending: row.hasPending === 1,
       hasBlockingPending: row.hasBlockingPending === 1,
+    }
+  }
+
+  /** Reserve one Score delivery or retire an observed credited predecessor. */
+  preflightParticipationScoreDelivery(input: {
+    readonly scopeId: string
+    readonly transferId: string
+    readonly amountSats: number
+    readonly purchasedTotal: number
+    readonly accountSubject: string
+    readonly mintUrl: string
+    readonly nowMs: number
+  }): {
+    readonly transferId: string
+    readonly amountSats: number
+    readonly purchasedTotalEpoch: number
+  } {
+    assertPurchasedTotal(input.purchasedTotal)
+    assertTransferId(input.transferId)
+    assertParticipationScoreAmount(input.amountSats)
+    const pointer = this.#readParticipationScorePointer(input.scopeId)
+    if (pointer !== null) {
+      const current = this.get(input.scopeId, pointer.transferId)
+      if (current === null) {
+        if (input.purchasedTotal <= pointer.purchasedTotalEpoch) return pointer
+        this.#deleteParticipationScorePointer(input.scopeId, pointer)
+      } else {
+        this.#assertParticipationScorePointerTransfer({ pointer, current, input })
+        if (current.transfer.deliveryState !== 'recipient-acknowledged') return pointer
+        if (input.purchasedTotal <= pointer.purchasedTotalEpoch) return pointer
+        this.#retireParticipationScorePointer(input.scopeId, pointer, current)
+      }
+    }
+    const inserted = this.#database
+      .prepare(
+        `INSERT INTO daemon_participation_score_delivery_pointers (
+           scope_id, transfer_id, amount_sats, purchased_total_epoch, created_at_ms
+         ) VALUES (?, ?, ?, ?, ?)`,
+      )
+      .run(input.scopeId, input.transferId, input.amountSats, input.purchasedTotal, input.nowMs)
+    if (inserted.changes !== 1) throw new Error('Participation Score delivery pointer CAS lost')
+    return {
+      transferId: input.transferId,
+      amountSats: input.amountSats,
+      purchasedTotalEpoch: input.purchasedTotal,
+    }
+  }
+
+  #readParticipationScorePointer(scopeId: string): {
+    readonly transferId: string
+    readonly amountSats: number
+    readonly purchasedTotalEpoch: number
+  } | null {
+    const row = this.#database
+      .prepare(
+        `SELECT transfer_id AS transferId, amount_sats AS amountSats,
+           purchased_total_epoch AS purchasedTotalEpoch
+           FROM daemon_participation_score_delivery_pointers WHERE scope_id = ?`,
+      )
+      .get(scopeId) as
+      | { transferId: string; amountSats: number; purchasedTotalEpoch: number }
+      | undefined
+    if (row === undefined) return null
+    assertTransferId(row.transferId)
+    assertParticipationScoreAmount(row.amountSats)
+    assertPurchasedTotal(row.purchasedTotalEpoch)
+    return row
+  }
+
+  #retireParticipationScorePointer(
+    scopeId: string,
+    pointer: {
+      readonly transferId: string
+      readonly amountSats: number
+      readonly purchasedTotalEpoch: number
+    },
+    current: {
+      readonly custodyOperationId: string
+      readonly artifactId: string
+      readonly transfer: DurableOutgoingCashuTransfer
+    },
+  ): void {
+    if (current.transfer.deliveryState !== 'recipient-acknowledged') {
+      throw new Error('Participation Score delivery pointer is not acknowledged')
+    }
+    this.#deleteParticipationScorePointer(scopeId, pointer)
+    this.#retireAcknowledgedParticipationScoreTransfer(scopeId, current)
+  }
+
+  #deleteParticipationScorePointer(
+    scopeId: string,
+    pointer: {
+      readonly transferId: string
+      readonly amountSats: number
+      readonly purchasedTotalEpoch: number
+    },
+  ): void {
+    const pointerDeleted = this.#database
+      .prepare(
+        `DELETE FROM daemon_participation_score_delivery_pointers
+         WHERE scope_id = ? AND transfer_id = ? AND amount_sats = ? AND purchased_total_epoch = ?`,
+      )
+      .run(scopeId, pointer.transferId, pointer.amountSats, pointer.purchasedTotalEpoch)
+    if (pointerDeleted.changes !== 1)
+      throw new Error('Participation Score delivery pointer CAS lost')
+  }
+
+  #retireAcknowledgedParticipationScoreTransfer(
+    scopeId: string,
+    current: {
+      readonly custodyOperationId: string
+      readonly artifactId: string
+      readonly transfer: DurableOutgoingCashuTransfer
+    },
+  ): void {
+    const deleted = this.#database
+      .prepare(
+        `DELETE FROM daemon_outgoing_cashu_transfers
+         WHERE scope_id = ? AND transfer_id = ? AND revision = ?
+           AND delivery_state = 'recipient-acknowledged'
+           AND delivery_policy = 'durable-recipient-ack'`,
+      )
+      .run(scopeId, current.transfer.transferId, current.transfer.revision)
+    if (deleted.changes !== 1) throw new Error('Participation Score delivery retirement CAS lost')
+    this.#deleteUnreferencedArtifact(scopeId, current.artifactId)
+  }
+
+  #assertParticipationScorePointerTransfer(input: {
+    readonly pointer: {
+      readonly transferId: string
+      readonly amountSats: number
+      readonly purchasedTotalEpoch: number
+    }
+    readonly current: {
+      readonly custodyOperationId: string
+      readonly artifactId: string
+      readonly transfer: DurableOutgoingCashuTransfer
+    }
+    readonly input: {
+      readonly accountSubject: string
+      readonly mintUrl: string
+    }
+  }): void {
+    const expected = createParticipationScoreDeliveryMetadata({
+      deliveryId: input.pointer.transferId,
+      accountSubject: input.input.accountSubject,
+      mintUrl: input.input.mintUrl,
+      requestedAmount: String(input.pointer.amountSats),
+    })
+    const transfer = input.current.transfer
+    if (
+      transfer.transferId !== input.pointer.transferId ||
+      transfer.requestedAmount !== expected.requestedAmount ||
+      transfer.mintUrl !== expected.mintUrl ||
+      transfer.unit !== 'sat' ||
+      transfer.deliveryIntent.policy !== 'durable-recipient-ack' ||
+      transfer.deliveryIntent.expectedSubject !== expected.accountSubject ||
+      transfer.deliveryIntent.opaqueProductBinding !== expected.productBindingSha256
+    ) {
+      throw new Error('Participation Score delivery pointer authority conflicts')
     }
   }
 
@@ -205,9 +371,9 @@ export class DurableOutgoingCashuSqliteStore {
       .prepare(
         `INSERT INTO daemon_outgoing_cashu_transfers (
            scope_id, transfer_id, custody_operation_id, normalized_mint, unit,
-           requested_amount, delivery_state, due_at_ms, attempt_count, revision,
+           requested_amount, delivery_state, delivery_policy, recipient_binding, due_at_ms, attempt_count, revision,
            transfer_artifact_id, transfer_fingerprint, created_at_ms, updated_at_ms
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         input.scopeId,
@@ -217,6 +383,8 @@ export class DurableOutgoingCashuSqliteStore {
         transfer.unit,
         transfer.requestedAmount,
         transfer.deliveryState,
+        transfer.deliveryIntent.policy,
+        recipientBinding(transfer),
         transfer.recovery.dueAtMs,
         transfer.recovery.attemptCount,
         transfer.revision,
@@ -237,7 +405,7 @@ export class DurableOutgoingCashuSqliteStore {
     const result = this.#database
       .prepare(
         `UPDATE daemon_outgoing_cashu_transfers SET
-           normalized_mint = ?, unit = ?, requested_amount = ?, delivery_state = ?,
+           normalized_mint = ?, unit = ?, requested_amount = ?, delivery_state = ?, delivery_policy = ?, recipient_binding = ?,
            due_at_ms = ?, attempt_count = ?, revision = ?, transfer_artifact_id = ?,
            transfer_fingerprint = ?, updated_at_ms = MAX(created_at_ms, ?)
          WHERE scope_id = ? AND transfer_id = ? AND custody_operation_id = ? AND revision = ?`,
@@ -247,6 +415,8 @@ export class DurableOutgoingCashuSqliteStore {
         transfer.unit,
         transfer.requestedAmount,
         transfer.deliveryState,
+        transfer.deliveryIntent.policy,
+        recipientBinding(transfer),
         transfer.recovery.dueAtMs,
         transfer.recovery.attemptCount,
         transfer.revision,
@@ -304,6 +474,8 @@ interface TransferRow {
   readonly unit: string
   readonly requestedAmount: string
   readonly deliveryState: string
+  readonly deliveryPolicy: string
+  readonly recipientBinding: string | null
   readonly dueAtMs: number
   readonly attemptCount: number
   readonly revision: number
@@ -332,6 +504,8 @@ function decodeRow(
     transfer.unit !== row.unit ||
     transfer.requestedAmount !== row.requestedAmount ||
     transfer.deliveryState !== row.deliveryState ||
+    transfer.deliveryIntent.policy !== row.deliveryPolicy ||
+    recipientBinding(transfer) !== row.recipientBinding ||
     transfer.recovery.dueAtMs !== row.dueAtMs ||
     transfer.recovery.attemptCount !== row.attemptCount ||
     transfer.revision !== row.revision ||
@@ -342,6 +516,12 @@ function decodeRow(
     throw new Error('outgoing transfer row is foreign')
   }
   return { custodyOperationId: row.custodyOperationId, artifactId: row.artifactId, transfer }
+}
+
+function recipientBinding(transfer: DurableOutgoingCashuTransfer): string | null {
+  return transfer.deliveryIntent.policy === 'durable-recipient-ack'
+    ? transfer.deliveryIntent.opaqueProductBinding
+    : null
 }
 
 function validatePage(limit: number, maximumBytes: number): void {
@@ -358,5 +538,23 @@ function validatePage(limit: number, maximumBytes: number): void {
     maximumBytes > DURABLE_OUTGOING_CASHU_RECOVERY_BYTES_MAX
   ) {
     throw new Error('outgoing transfer recovery byte limit is invalid')
+  }
+}
+
+function assertPurchasedTotal(value: number): void {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new Error('Participation Score purchased total is invalid')
+  }
+}
+
+function assertParticipationScoreAmount(value: number): void {
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new Error('Participation Score delivery amount is invalid')
+  }
+}
+
+function assertTransferId(value: string): void {
+  if (value.length < 1 || value.length > 16_384) {
+    throw new Error('Participation Score delivery transfer identity is invalid')
   }
 }

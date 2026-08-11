@@ -49,7 +49,19 @@ import {
   type TokenImportUnit,
 } from '@bitcaster-market/client-sdk/tokenImportValidation'
 import { serializeDurableWalletReceiveOperation } from '@bitcaster-market/client-sdk/durableWalletOperation'
-import { redactedTransferMetadata } from '@bitcaster-market/client-sdk/durableOutgoingCashuTransfer'
+import {
+  redactedTransferMetadata,
+  type DurableOutgoingCashuTransfer,
+} from '@bitcaster-market/client-sdk/durableOutgoingCashuTransfer'
+import {
+  deriveDurableRecipientTokenAllowance,
+  type DurableRecipientDeliveryClient,
+} from '@bitcaster-market/client-sdk/durableRecipientDelivery'
+import {
+  createParticipationScoreDeliveryMetadata,
+  createParticipationScoreDeliverySubmission,
+  participationScoreDeliveryIntent,
+} from '@bitcaster-market/client-sdk/participationScoreDelivery'
 import {
   addAvailableProofs,
   advanceDaemonKeysetCounter,
@@ -177,6 +189,12 @@ export interface WalletSendResult {
   amountSats: number
   proofCount: number
   token: string
+}
+
+export interface DurableParticipationScoreDeliveryResult {
+  readonly deliveryId: string
+  readonly transferId: string
+  readonly state: 'pending' | 'received' | 'credited'
 }
 
 export interface WalletSendRecoveryResult {
@@ -426,10 +444,127 @@ export async function sendWalletToken(
   }
 }
 
-/** Recover one bounded page of due outgoing bearer transfers without token delivery. */
+/** Create and reconcile one exact Score delivery without returning its bearer token. */
+export async function deliverParticipationScoreCashu(input: {
+  readonly deliveryId: string
+  readonly accountSubject: string
+  readonly amountSats: number
+  readonly purchasedTotalEpoch: number
+  readonly profile: DaemonProfile
+  readonly secrets: WalletOpsSecrets
+  readonly client: DurableRecipientDeliveryClient
+  readonly deps?: WalletOpsDependencies
+}): Promise<DurableParticipationScoreDeliveryResult> {
+  if (!Number.isSafeInteger(input.amountSats) || input.amountSats <= 0) {
+    throw new Error('Participation Score amount must be a positive safe integer')
+  }
+  const deps = input.deps ?? {}
+  if (!deps.getCustodyFence)
+    throw new Error('Participation Score delivery requires custody authority')
+  if (!Number.isSafeInteger(input.purchasedTotalEpoch) || input.purchasedTotalEpoch < 0) {
+    throw new Error('Participation Score purchase epoch is invalid')
+  }
+  const coordinator = new DaemonDurableOutgoingCashuCoordinator(
+    profileDir(),
+    deps.getCustodyFence,
+    deps,
+  )
+  const pointer = await coordinator.preflightParticipationScoreDelivery({
+    transferId: input.deliveryId,
+    amountSats: input.amountSats,
+    purchasedTotal: input.purchasedTotalEpoch,
+    accountSubject: input.accountSubject,
+    mintUrl: input.profile.mintUrl,
+  })
+  const requestedAmount = String(pointer.amountSats)
+  const initialMetadata = createParticipationScoreDeliveryMetadata({
+    deliveryId: pointer.transferId,
+    accountSubject: input.accountSubject,
+    mintUrl: input.profile.mintUrl,
+    requestedAmount,
+  })
+  const existing = await coordinator.loadTransfer(pointer.transferId)
+  const metadata =
+    existing === null
+      ? initialMetadata
+      : createParticipationScoreDeliveryMetadata({
+          deliveryId: existing.transferId,
+          accountSubject: input.accountSubject,
+          mintUrl: existing.mintUrl,
+          requestedAmount: existing.requestedAmount,
+        })
+  const intent = participationScoreDeliveryIntent({
+    accountSubject: metadata.accountSubject,
+    productBindingSha256: metadata.productBindingSha256,
+    tokenBytesLimit: deriveDurableRecipientTokenAllowance(metadata),
+  })
+  const transfer =
+    existing === null
+      ? await executeScoreTransfer()
+      : existing.deliveryState === 'recipient-acknowledged'
+        ? existing
+        : existing.deliveryState === 'delivery-pending' && existing.token !== null
+          ? existing
+          : await recoverScoreTransfer(existing)
+  if (transfer.deliveryState === 'recipient-acknowledged') {
+    return {
+      deliveryId: metadata.deliveryId,
+      transferId: transfer.transferId,
+      state: 'credited',
+    }
+  }
+  if (transfer.token === null) throw new Error('Participation Score token admission is absent')
+  const status = await coordinator.reconcileRecipientDelivery({
+    transfer,
+    submission: createParticipationScoreDeliverySubmission({
+      metadata,
+      token: transfer.token.encodedToken,
+    }),
+    client: input.client,
+    acknowledge: (candidate) => candidate.state === 'credited',
+  })
+  return {
+    deliveryId: metadata.deliveryId,
+    transferId: status.transfer.transferId,
+    state:
+      status.transfer.deliveryState === 'recipient-acknowledged'
+        ? 'credited'
+        : (status.status?.state ?? 'pending'),
+  }
+
+  async function executeScoreTransfer() {
+    const wallet = createWallet(metadata.mintUrl, input.secrets, deps, 'sat', 'sat')
+    await wallet.loadMint()
+    return coordinator.execute({
+      transferId: metadata.deliveryId,
+      amountSats: Number(metadata.requestedAmount),
+      mintUrl: metadata.mintUrl,
+      wallet,
+      deliveryIntent: intent,
+    })
+  }
+
+  async function recoverScoreTransfer(existingTransfer: DurableOutgoingCashuTransfer) {
+    const wallet = createWallet(metadata.mintUrl, input.secrets, deps, 'sat', 'sat')
+    await wallet.loadMint()
+    return coordinator.recover({
+      transfer: existingTransfer,
+      amountSats: Number(metadata.requestedAmount),
+      mintUrl: metadata.mintUrl,
+      wallet,
+      deliveryIntent: intent,
+    })
+  }
+}
+
+/** Recover one bounded page of due outgoing Cashu transfers without exposing tokens. */
 export async function recoverDurableOutgoingCashuTransfers(
   secrets: WalletOpsSecrets,
   deps: WalletOpsDependencies = {},
+  recipientDelivery?: {
+    readonly client: DurableRecipientDeliveryClient
+    readonly accountSubject: string
+  },
 ): Promise<DurableOutgoingCashuRecoveryResult> {
   if (!deps.getCustodyFence) {
     return {
@@ -446,6 +581,25 @@ export async function recoverDurableOutgoingCashuTransfers(
     deps,
   ).recoverDue({
     walletFor: async (mintUrl, unit) => createWallet(mintUrl, secrets, deps, 'sat', unit),
+    ...(recipientDelivery === undefined
+      ? {}
+      : {
+          recipientClient: recipientDelivery.client,
+          recipientSubmission: (transfer: DurableOutgoingCashuTransfer) => {
+            if (transfer.token === null)
+              throw new Error('Participation Score token admission is absent')
+            return createParticipationScoreDeliverySubmission({
+              metadata: createParticipationScoreDeliveryMetadata({
+                deliveryId: transfer.transferId,
+                accountSubject: recipientDelivery.accountSubject,
+                mintUrl: transfer.mintUrl,
+                requestedAmount: transfer.requestedAmount,
+              }),
+              token: transfer.token.encodedToken,
+            })
+          },
+          acknowledgeRecipientStatus: (status) => status.state === 'credited',
+        }),
   })
   return {
     recovered: result.recovered,

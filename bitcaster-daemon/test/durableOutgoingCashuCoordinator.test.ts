@@ -23,6 +23,16 @@ import {
   deriveDurableCustodyScopeId,
   deriveDurableCustodyWalletId,
 } from '@bitcaster-market/client-sdk'
+import {
+  decodeDurableRecipientDeliveryStatus,
+  deriveDurableRecipientTupleFingerprint,
+} from '@bitcaster-market/client-sdk/durableRecipientDelivery'
+import {
+  createParticipationScoreDeliveryMetadata,
+  createParticipationScoreDeliverySubmission,
+  participationScoreDeliveryIntent,
+} from '@bitcaster-market/client-sdk/participationScoreDelivery'
+import { deriveDurableRecipientTokenAllowance } from '@bitcaster-market/client-sdk/durableRecipientDelivery'
 import { DaemonDurableOutgoingCashuCoordinator } from '../src/durableOutgoingCashuCoordinator.ts'
 import { createCustodyProofSqliteRow } from '../src/custodyProofSqliteRow.ts'
 import { DurableCustodySqliteStore } from '../src/durableCustodySqliteStore.ts'
@@ -42,6 +52,38 @@ const FEE_KEYSET_ID = deriveKeysetId(KEYS, {
   versionByte: 1,
   input_fee_ppk: 500,
 })
+
+function recipientStatus(
+  submission: ReturnType<typeof createParticipationScoreDeliverySubmission>,
+  state: 'pending' | 'received' | 'credited',
+) {
+  const { token: _token, ...delivery } = submission
+  return decodeDurableRecipientDeliveryStatus({
+    delivery,
+    tupleFingerprint: deriveDurableRecipientTupleFingerprint(submission),
+    state,
+    result:
+      state === 'pending'
+        ? null
+        : state === 'received'
+          ? {
+              creditedAmount: submission.requestedAmount,
+              receiveFee: '0',
+              creditVerification: submission.creditPolicy,
+              receiveOperationId: 'receive-1',
+              receivedAt: '2026-08-11T00:00:00.000Z',
+            }
+          : {
+              creditedAmount: submission.requestedAmount,
+              receiveFee: '0',
+              creditVerification: submission.creditPolicy,
+              receiveOperationId: 'receive-1',
+              receivedAt: '2026-08-11T00:00:00.000Z',
+              businessEventId: 'event-1',
+              businessEventAt: '2026-08-11T00:00:00.000Z',
+            },
+  })
+}
 
 test('outgoing transfer persists exact authority before mint I/O and returns an identical token on retry', async () => {
   const fixture = await createFixture()
@@ -75,6 +117,404 @@ test('outgoing transfer persists exact authority before mint I/O and returns an 
     await assert.rejects(
       () => fixture.putForeignTransferBinding(second),
       /custody operation is foreign/,
+    )
+  } finally {
+    await fixture.close()
+  }
+})
+
+test('recipient delivery reads credited status before POST and atomically persists its receipt', async () => {
+  const fixture = await createFixture()
+  try {
+    const metadata = createParticipationScoreDeliveryMetadata({
+      deliveryId: '11111111-1111-4111-8111-111111111111',
+      accountSubject: 'subject-1',
+      mintUrl: MINT_URL,
+      requestedAmount: '5',
+    })
+    const transfer = await fixture.coordinator.execute({
+      transferId: metadata.deliveryId,
+      amountSats: 5,
+      mintUrl: MINT_URL,
+      wallet: fixture.wallet(async () => ({ keep: fixture.keepProofs, send: fixture.sendProofs })),
+      deliveryIntent: participationScoreDeliveryIntent({
+        accountSubject: metadata.accountSubject,
+        productBindingSha256: metadata.productBindingSha256,
+        tokenBytesLimit: deriveDurableRecipientTokenAllowance(metadata),
+      }),
+    })
+    assert.ok(transfer.token)
+    const unavailableEngineRecovery = await fixture.coordinator.recoverDue({
+      walletFor: async () => {
+        throw new Error('recipient delivery recovery must not use mint proof classification')
+      },
+    })
+    assert.equal(unavailableEngineRecovery.hasBlockingPending, true)
+    assert.equal(unavailableEngineRecovery.pending.length, 1)
+    let posts = 0
+    const submission = createParticipationScoreDeliverySubmission({
+      metadata,
+      token: transfer.token!.encodedToken,
+    })
+    const restarted = fixture.coordinatorFor(fixture.fence, Date.now())
+    const persisted = await restarted.loadTransfer(transfer.transferId)
+    assert.ok(persisted?.token)
+    assert.equal(persisted?.token?.encodedToken, transfer.token!.encodedToken)
+    const result = await restarted.reconcileRecipientDelivery({
+      transfer: persisted!,
+      submission,
+      client: {
+        getDurableRecipientDeliveryStatus: async () => recipientStatus(submission, 'credited'),
+        submitDurableRecipientDelivery: async () => {
+          posts += 1
+          throw new Error('credited delivery must not post')
+        },
+      },
+      acknowledge: (status) => status.state === 'credited',
+    })
+
+    assert.equal(posts, 0)
+    assert.equal(result.transfer.deliveryState, 'recipient-acknowledged')
+    assert.equal(result.transfer.recipientReceipt?.receiveOperationId, 'receive-1')
+    assert.equal(
+      (await fixture.transfer(transfer.transferId))?.deliveryState,
+      'recipient-acknowledged',
+    )
+  } finally {
+    await fixture.close()
+  }
+})
+
+test('Score delivery pointer blocks repeated preflight and retires only after the purchase epoch advances', async () => {
+  const fixture = await createFixture()
+  try {
+    const firstId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+    const first = await fixture.coordinator.preflightParticipationScoreDelivery({
+      transferId: firstId,
+      amountSats: 5,
+      purchasedTotal: 3,
+      accountSubject: 'subject-1',
+      mintUrl: MINT_URL,
+    })
+    assert.deepEqual(first, { transferId: firstId, amountSats: 5, purchasedTotalEpoch: 3 })
+    const restarted = fixture.coordinatorFor(fixture.fence, Date.now())
+    const reused = await Promise.all([
+      fixture.coordinator.preflightParticipationScoreDelivery({
+        transferId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+        amountSats: 7,
+        purchasedTotal: 3,
+        accountSubject: 'subject-1',
+        mintUrl: MINT_URL,
+      }),
+      restarted.preflightParticipationScoreDelivery({
+        transferId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+        amountSats: 9,
+        purchasedTotal: 3,
+        accountSubject: 'subject-1',
+        mintUrl: MINT_URL,
+      }),
+    ])
+    for (const pointer of reused) {
+      assert.equal(pointer.transferId, first.transferId)
+      assert.equal(pointer.amountSats, first.amountSats)
+      assert.equal(pointer.purchasedTotalEpoch, first.purchasedTotalEpoch)
+    }
+    const metadata = createParticipationScoreDeliveryMetadata({
+      deliveryId: first.transferId,
+      accountSubject: 'subject-1',
+      mintUrl: MINT_URL,
+      requestedAmount: '5',
+    })
+    const transfer = await restarted.execute({
+      transferId: first.transferId,
+      amountSats: 5,
+      mintUrl: MINT_URL,
+      wallet: fixture.wallet(async () => ({ keep: fixture.keepProofs, send: fixture.sendProofs })),
+      deliveryIntent: participationScoreDeliveryIntent({
+        accountSubject: metadata.accountSubject,
+        productBindingSha256: metadata.productBindingSha256,
+        tokenBytesLimit: deriveDurableRecipientTokenAllowance(metadata),
+      }),
+    })
+    assert.ok(transfer.token)
+    const nonterminal = await restarted.preflightParticipationScoreDelivery({
+      transferId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+      amountSats: 6,
+      purchasedTotal: 4,
+      accountSubject: 'subject-1',
+      mintUrl: MINT_URL,
+    })
+    assert.equal(nonterminal.transferId, first.transferId)
+    assert.equal(nonterminal.amountSats, first.amountSats)
+    assert.equal(nonterminal.purchasedTotalEpoch, first.purchasedTotalEpoch)
+    const submission = createParticipationScoreDeliverySubmission({
+      metadata,
+      token: transfer.token.encodedToken,
+    })
+    await restarted.reconcileRecipientDelivery({
+      transfer,
+      submission,
+      client: {
+        getDurableRecipientDeliveryStatus: async () => recipientStatus(submission, 'credited'),
+        submitDurableRecipientDelivery: async () => {
+          throw new Error('credited Score delivery must not post')
+        },
+      },
+      acknowledge: (status) => status.state === 'credited',
+    })
+
+    const secondId = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd'
+    const next = await restarted.preflightParticipationScoreDelivery({
+      transferId: secondId,
+      amountSats: 6,
+      purchasedTotal: 4,
+      accountSubject: 'subject-1',
+      mintUrl: MINT_URL,
+    })
+
+    assert.deepEqual(next, { transferId: secondId, amountSats: 6, purchasedTotalEpoch: 4 })
+    assert.equal(await restarted.loadTransfer(firstId), null)
+    assert.equal(await fixture.count('daemon_outgoing_cashu_transfers'), 0)
+    assert.equal(
+      await fixture.hasArtifact(deriveDurableCustodyArtifactFingerprint(transfer)),
+      false,
+    )
+  } finally {
+    await fixture.close()
+  }
+})
+
+test('Score delivery pointer retires an advanced orphan before reserving the next delivery', async () => {
+  const fixture = await createFixture()
+  try {
+    const orphanId = 'f1111111-1111-4111-8111-111111111111'
+    await fixture.coordinator.preflightParticipationScoreDelivery({
+      transferId: orphanId,
+      amountSats: 5,
+      purchasedTotal: 3,
+      accountSubject: 'subject-1',
+      mintUrl: MINT_URL,
+    })
+    const next = await fixture
+      .coordinatorFor(fixture.fence, Date.now())
+      .preflightParticipationScoreDelivery({
+        transferId: 'f2222222-2222-4222-8222-222222222222',
+        amountSats: 7,
+        purchasedTotal: 4,
+        accountSubject: 'subject-1',
+        mintUrl: MINT_URL,
+      })
+
+    assert.deepEqual(next, {
+      transferId: 'f2222222-2222-4222-8222-222222222222',
+      amountSats: 7,
+      purchasedTotalEpoch: 4,
+    })
+    assert.equal(await fixture.coordinator.loadTransfer(orphanId), null)
+  } finally {
+    await fixture.close()
+  }
+})
+
+test('recipient recovery schedules the minted current revision after a status failure', async () => {
+  const fixture = await createFixture()
+  try {
+    const metadata = createParticipationScoreDeliveryMetadata({
+      deliveryId: 'f3333333-3333-4333-8333-333333333333',
+      accountSubject: 'subject-1',
+      mintUrl: MINT_URL,
+      requestedAmount: '5',
+    })
+    await assert.rejects(
+      () =>
+        fixture.coordinator.execute({
+          transferId: metadata.deliveryId,
+          amountSats: 5,
+          mintUrl: MINT_URL,
+          wallet: fixture.wallet(async () => {
+            throw new Error('mint response was interrupted')
+          }),
+          deliveryIntent: participationScoreDeliveryIntent({
+            accountSubject: metadata.accountSubject,
+            productBindingSha256: metadata.productBindingSha256,
+            tokenBytesLimit: deriveDurableRecipientTokenAllowance(metadata),
+          }),
+        }),
+      /mint response was interrupted/,
+    )
+    const prepared = await fixture.transfer(metadata.deliveryId)
+    assert.equal(prepared?.deliveryState, 'prepared')
+
+    const recovery = await fixture.coordinator.recoverDue({
+      walletFor: async () =>
+        fixture.wallet(async () => ({ keep: fixture.keepProofs, send: fixture.sendProofs })),
+      recipientClient: {
+        getDurableRecipientDeliveryStatus: async () => {
+          throw new Error('engine status is unavailable')
+        },
+        submitDurableRecipientDelivery: async () => {
+          throw new Error('status failure must contain this row before POST')
+        },
+      },
+      recipientSubmission: (transfer) => {
+        assert.equal(transfer.deliveryState, 'delivery-pending')
+        assert.ok(transfer.token)
+        return createParticipationScoreDeliverySubmission({
+          metadata,
+          token: transfer.token!.encodedToken,
+        })
+      },
+      acknowledgeRecipientStatus: (status) => status.state === 'credited',
+    })
+
+    assert.equal(recovery.recovered.length, 0)
+    assert.equal(recovery.pending.length, 1)
+    assert.equal(recovery.pending[0]?.transferId, metadata.deliveryId)
+    assert.match(recovery.pending[0]?.error ?? '', /engine status is unavailable/)
+    const persisted = await fixture.transfer(metadata.deliveryId)
+    assert.equal(persisted?.deliveryState, 'delivery-pending')
+    assert.equal(persisted?.revision, (prepared?.revision ?? 0) + 2)
+    assert.equal(persisted?.recovery.attemptCount, (prepared?.recovery.attemptCount ?? 0) + 1)
+  } finally {
+    await fixture.close()
+  }
+})
+
+test('recipient delivery posts an absent exact token once and recovers an ambiguous POST from status', async () => {
+  const fixture = await createFixture()
+  try {
+    const metadata = createParticipationScoreDeliveryMetadata({
+      deliveryId: '22222222-2222-4222-8222-222222222222',
+      accountSubject: 'subject-1',
+      mintUrl: MINT_URL,
+      requestedAmount: '5',
+    })
+    const transfer = await fixture.coordinator.execute({
+      transferId: metadata.deliveryId,
+      amountSats: 5,
+      mintUrl: MINT_URL,
+      wallet: fixture.wallet(async () => ({ keep: fixture.keepProofs, send: fixture.sendProofs })),
+      deliveryIntent: participationScoreDeliveryIntent({
+        accountSubject: metadata.accountSubject,
+        productBindingSha256: metadata.productBindingSha256,
+        tokenBytesLimit: deriveDurableRecipientTokenAllowance(metadata),
+      }),
+    })
+    assert.ok(transfer.token)
+    const submission = createParticipationScoreDeliverySubmission({
+      metadata,
+      token: transfer.token!.encodedToken,
+    })
+    let reads = 0
+    let posted: string | null = null
+    const result = await fixture.coordinator.reconcileRecipientDelivery({
+      transfer,
+      submission,
+      client: {
+        getDurableRecipientDeliveryStatus: async () => {
+          reads += 1
+          return reads === 1 ? null : recipientStatus(submission, 'credited')
+        },
+        submitDurableRecipientDelivery: async (exact) => {
+          posted = exact.token
+          throw new Error('response lost')
+        },
+      },
+      acknowledge: (status) => status.state === 'credited',
+    })
+
+    assert.equal(posted, transfer.token!.encodedToken)
+    assert.equal(reads, 2)
+    assert.equal(result.transfer.deliveryState, 'recipient-acknowledged')
+  } finally {
+    await fixture.close()
+  }
+})
+
+test('received recipient delivery remains nonterminal and retries from its admitted revision', async () => {
+  const fixture = await createFixture()
+  try {
+    const metadata = createParticipationScoreDeliveryMetadata({
+      deliveryId: 'abababab-abab-4bab-8bab-abababababab',
+      accountSubject: 'subject-1',
+      mintUrl: MINT_URL,
+      requestedAmount: '5',
+    })
+    const admitted = await fixture.coordinator.execute({
+      transferId: metadata.deliveryId,
+      amountSats: 5,
+      mintUrl: MINT_URL,
+      wallet: fixture.wallet(async () => ({ keep: fixture.keepProofs, send: fixture.sendProofs })),
+      deliveryIntent: participationScoreDeliveryIntent({
+        accountSubject: metadata.accountSubject,
+        productBindingSha256: metadata.productBindingSha256,
+        tokenBytesLimit: deriveDurableRecipientTokenAllowance(metadata),
+      }),
+    })
+    assert.ok(admitted.token)
+    const submission = createParticipationScoreDeliverySubmission({
+      metadata,
+      token: admitted.token.encodedToken,
+    })
+    const result = await fixture.coordinator.reconcileRecipientDelivery({
+      transfer: admitted,
+      submission,
+      client: {
+        getDurableRecipientDeliveryStatus: async () => recipientStatus(submission, 'received'),
+        submitDurableRecipientDelivery: async () => {
+          throw new Error('received delivery must not post')
+        },
+      },
+      acknowledge: (status) => status.state === 'credited',
+    })
+
+    assert.equal(result.status?.state, 'received')
+    assert.equal(result.transfer.deliveryState, 'delivery-pending')
+    assert.equal(result.transfer.revision, admitted.revision + 1)
+    assert.equal((await fixture.transfer(admitted.transferId))?.revision, result.transfer.revision)
+  } finally {
+    await fixture.close()
+  }
+})
+
+test('recipient delivery rejects a persisted transfer with a conflicting exact tuple', async () => {
+  const fixture = await createFixture()
+  try {
+    const metadata = createParticipationScoreDeliveryMetadata({
+      deliveryId: '33333333-3333-4333-8333-333333333333',
+      accountSubject: 'subject-1',
+      mintUrl: MINT_URL,
+      requestedAmount: '5',
+    })
+    const intent = participationScoreDeliveryIntent({
+      accountSubject: metadata.accountSubject,
+      productBindingSha256: metadata.productBindingSha256,
+      tokenBytesLimit: deriveDurableRecipientTokenAllowance(metadata),
+    })
+    const transfer = await fixture.coordinator.execute({
+      transferId: metadata.deliveryId,
+      amountSats: 5,
+      mintUrl: MINT_URL,
+      wallet: fixture.wallet(async () => ({ keep: fixture.keepProofs, send: fixture.sendProofs })),
+      deliveryIntent: intent,
+    })
+    assert.ok(transfer.token)
+    const submission = createParticipationScoreDeliverySubmission({
+      metadata: { ...metadata, accountSubject: 'other-subject' },
+      token: transfer.token!.encodedToken,
+    })
+    await assert.rejects(
+      () =>
+        fixture.coordinator.reconcileRecipientDelivery({
+          transfer,
+          submission,
+          client: {
+            getDurableRecipientDeliveryStatus: async () => null,
+            submitDurableRecipientDelivery: async () => recipientStatus(submission, 'pending'),
+          },
+          acknowledge: (status) => status.state === 'credited',
+        }),
+      /conflicts/,
     )
   } finally {
     await fixture.close()
@@ -915,6 +1355,7 @@ async function createFixture(
   const outgoingTransferAbortRestore = new Map<'insert' | 'update', () => void>()
   return {
     coordinator,
+    fence,
     inputProof,
     sendProofs,
     keepProofs,
@@ -1060,6 +1501,22 @@ async function createFixture(
             .count,
       )
     },
+    hasArtifact: async (artifactId: string) =>
+      withDurableCustodyUnitOfWork(
+        directory,
+        fence,
+        Date.now(),
+        (database) =>
+          (
+            database
+              .prepare(
+                `SELECT EXISTS (
+                 SELECT 1 FROM custody_artifacts WHERE scope_id = ? AND artifact_id = ?
+               ) AS found`,
+              )
+              .get(scopeId, artifactId) as { found: number }
+          ).found === 1,
+      ),
     custodySelectability: async (proof: Proof) =>
       withDurableCustodyUnitOfWork(directory, fence, Date.now(), (database) => {
         const proofId = deriveDurableCustodyProofId({

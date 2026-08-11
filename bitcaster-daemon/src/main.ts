@@ -267,9 +267,16 @@ switch (command) {
         const receiveRecovery = await recoverDurableWalletReceives(secrets, {
           getCustodyFence: currentFence,
         })
-        const outgoingRecovery = await recoverDurableOutgoingCashuTransfers(secrets, {
-          getCustodyFence: currentFence,
-        })
+        const outgoingRecovery = await recoverDurableOutgoingCashuTransfers(
+          secrets,
+          {
+            getCustodyFence: currentFence,
+          },
+          {
+            client: rangeRecoveryClient,
+            accountSubject: secrets.nostrPublicKeyHex,
+          },
+        )
         const completeSetRecovery = await recoverCompleteSetSplits({
           secrets,
           deps: { getCustodyFence: currentFence },

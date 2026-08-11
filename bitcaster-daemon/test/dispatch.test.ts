@@ -22,6 +22,11 @@ import {
 } from '@bitcaster-market/client-sdk'
 import { EngineClientError } from '@bitcaster-market/client-sdk/engineClient'
 import {
+  decodeDurableRecipientDeliveryStatus,
+  deriveDurableRecipientTupleFingerprint,
+  type DurableRecipientDeliverySubmission,
+} from '@bitcaster-market/client-sdk/durableRecipientDelivery'
+import {
   dispatch,
   type EngineClientLike,
   type PrepareSettlementCapabilityInput,
@@ -40,6 +45,7 @@ import { withDaemonStateSqliteTransaction } from '../src/stateSqlite.ts'
 import { withDurableCustodyUnitOfWork } from '../src/durableCustodyUnitOfWork.ts'
 import { createCustodyProofSqliteRow } from '../src/custodyProofSqliteRow.ts'
 import { DurableCustodySqliteStore } from '../src/durableCustodySqliteStore.ts'
+import { DaemonDurableOutgoingCashuCoordinator } from '../src/durableOutgoingCashuCoordinator.ts'
 import { claimCustodyScopeLease } from '../src/profileFencing.ts'
 import { reserveDaemonKeysetCounter } from '../src/state.ts'
 
@@ -832,7 +838,7 @@ test('daemon dispatch persists wallet and order state', async (t) => {
     })
 
     await t.test(
-      'order.submit pays Participation Score through the strict outgoing path',
+      'order.submit reuses one Score delivery across projection lag and retires it after the purchase epoch advances',
       async () => {
         const privateKey = Uint8Array.from([...new Uint8Array(31), 9])
         const publicKey = bytesToHex(secp256k1.getPublicKey(privateKey, true))
@@ -848,7 +854,7 @@ test('daemon dispatch persists wallet and order state', async (t) => {
           observedAtMs: Date.now(),
         })
         const input = signedDleqProof(
-          OutputData.createSingleData(4, keysetId, 'score-input', 19n),
+          OutputData.createSingleData(8, keysetId, 'score-input', 19n),
           privateKey,
           keys,
         )
@@ -856,7 +862,7 @@ test('daemon dispatch persists wallet and order state', async (t) => {
         state.wallet.proofs.push(
           proofRecord(
             'https://mint-a.example',
-            4,
+            8,
             'available',
             { kind: 'sats', baseAsset: 'sat', unit: 'sat' },
             input.secret,
@@ -893,87 +899,110 @@ test('daemon dispatch persists wallet and order state', async (t) => {
         ]
         const scoreProofs = scoreOutputs.map((output) => signedDleqProof(output, privateKey, keys))
         const scoreKeepOutputs = [OutputData.createSingleData(2, keysetId, 'score-keep-two', 22n)]
+        scoreKeepOutputs.push(OutputData.createSingleData(4, keysetId, 'score-keep-four', 23n))
         const scoreKeepProofs = scoreKeepOutputs.map((output) =>
           signedDleqProof(output, privateKey, keys),
         )
         let completed = 0
-        let paid = 0
+        let deliveries = 0
+        let deliveryId: string | null = null
+        let scoreReads = 0
         let recoveryWakes = 0
-        const response = await dispatch(
-          {
-            method: 'order.submit',
-            params: {
-              marketId: 'cond-YES',
-              outcomeId: 'YES',
-              side: 'Buy',
-              price: 1_000,
-              amountSubunits: 10_000,
-              timeInForce: 'FAK',
-            },
+        const command = {
+          method: 'order.submit' as const,
+          params: {
+            marketId: 'cond-YES',
+            outcomeId: 'YES',
+            side: 'Buy' as const,
+            price: 1_000,
+            amountSubunits: 10_000,
+            timeInForce: 'FAK' as const,
           },
-          {
-            getCustodyFence: () => fence,
-            createCashuWallet: () => ({
-              loadMint: async () => {},
-              receive: async () => [],
-              send: async () => ({ keep: [], send: [] }),
-              prepareSwapToSend: async (amount, proofs) => {
-                assert.equal(amount, 2)
-                assert.equal(proofs.length, 1)
-                assert.equal(Number(proofs[0]?.amount), 4)
-                return {
-                  amount: Amount.from(2),
-                  fees: Amount.zero(),
-                  keysetId,
-                  inputs: proofs,
-                  sendOutputs: scoreOutputs,
-                  keepOutputs: scoreKeepOutputs,
-                  unselectedProofs: [],
-                }
-              },
-              completeSwap: async () => {
-                completed += 1
-                return { keep: scoreKeepProofs, send: scoreProofs }
-              },
-              checkProofsStates: async () => [],
-              getKeyset: () => ({ id: keysetId, unit: 'sat', keys, fee: 0, verify: () => true }),
-            }),
-            restoreOutputGroups: async () => ({ keep: scoreKeepProofs, send: scoreProofs }),
-            triggerCustodyRecovery: () => {
-              recoveryWakes += 1
+        }
+        const dispatchDeps = {
+          getCustodyFence: () => fence,
+          createCashuWallet: () => ({
+            loadMint: async () => {},
+            receive: async () => [],
+            send: async () => ({ keep: [], send: [] }),
+            prepareSwapToSend: async (amount, proofs) => {
+              assert.equal(amount, 2)
+              assert.equal(proofs.length, 1)
+              assert.equal(Number(proofs[0]?.amount), 8)
+              return {
+                amount: Amount.from(2),
+                fees: Amount.zero(),
+                keysetId,
+                inputs: proofs,
+                sendOutputs: scoreOutputs,
+                keepOutputs: scoreKeepOutputs,
+                unselectedProofs: [],
+              }
             },
-            createEngineClient: () => ({
-              ...scoreDisabledEngineMethods,
-              getParticipationScore: async () => scoreResponse({ balance: -1, matchDebitScore: 1 }),
-              payParticipationScoreEcash: async (amountSats, token, paymentId) => {
-                paid += 1
-                assert.equal(amountSats, 2)
-                assert.match(token, /^cashu/)
-                assert.match(paymentId ?? '', /^[0-9a-f-]{36}$/i)
-                return { paymentId: paymentId!, balance: 1 }
-              },
-              submitOrder: async () => ({
-                orderId: 'score-paid-order',
-                status: 'resting',
-                remainingAmountSubunits: 10_000,
-                fills: [],
-                baseAsset: 'sat',
-                divisibility: 10_000,
-                activeSettlementGroup: null,
-              }),
-            }),
-            prepareSettlementCapability: prepareSettlementCapability('score-paid-order'),
+            completeSwap: async () => {
+              completed += 1
+              return { keep: scoreKeepProofs, send: scoreProofs }
+            },
+            checkProofsStates: async () => [],
+            getKeyset: () => ({ id: keysetId, unit: 'sat', keys, fee: 0, verify: () => true }),
+          }),
+          restoreOutputGroups: async () => ({ keep: scoreKeepProofs, send: scoreProofs }),
+          triggerCustodyRecovery: () => {
+            recoveryWakes += 1
           },
-        )
+          createEngineClient: () => ({
+            ...scoreDisabledEngineMethods,
+            getParticipationScore: async () => {
+              scoreReads += 1
+              return scoreReads === 1 || scoreReads === 2 || scoreReads === 3
+                ? scoreResponse({ balance: -1, matchDebitScore: 1 })
+                : scoreResponse({ balance: 1, purchasedTotal: 2, matchDebitScore: 1 })
+            },
+            getDurableRecipientDeliveryStatus: async () => null,
+            submitDurableRecipientDelivery: async (submission) => {
+              deliveries += 1
+              deliveryId = submission.deliveryId
+              assert.equal(submission.requestedAmount, '2')
+              assert.match(submission.token, /^cashu/)
+              return creditedRecipientStatus(submission)
+            },
+            submitOrder: async () => ({
+              orderId: 'score-paid-order',
+              status: 'resting',
+              remainingAmountSubunits: 10_000,
+              fills: [],
+              baseAsset: 'sat',
+              divisibility: 10_000,
+              activeSettlementGroup: null,
+            }),
+          }),
+          prepareSettlementCapability: prepareSettlementCapability('score-paid-order'),
+        }
 
-        assert.equal(response.ok, true)
+        await assert.rejects(
+          () => dispatch(command, dispatchDeps),
+          /Participation Score credit is not available for this order/,
+        )
+        const response = await dispatch(command, dispatchDeps)
+
+        assert.equal(response.ok, true, JSON.stringify(response))
         assert.equal(completed, 1)
-        assert.equal(paid, 1)
-        assert.equal(recoveryWakes, 1)
+        assert.equal(deliveries, 1)
+        assert.equal(recoveryWakes, 2)
         assert.equal(
           (response.result as { participationScore: { kind: string } }).participationScore.kind,
           'paid',
         )
+        assert.ok(deliveryId)
+        const restarted = new DaemonDurableOutgoingCashuCoordinator(profileDir(), () => fence)
+        await restarted.preflightParticipationScoreDelivery({
+          transferId: 'f4444444-4444-4444-8444-444444444444',
+          amountSats: 1,
+          purchasedTotal: 2,
+          accountSubject: secrets.nostrPublicKeyHex,
+          mintUrl: 'https://mint-a.example',
+        })
+        assert.equal(await restarted.loadTransfer(deliveryId), null)
       },
     )
 
@@ -2353,13 +2382,25 @@ const scoreDisabledEngineMethods = {
   async getParticipationScore() {
     return scoreResponse({ enabled: false })
   },
-  async payParticipationScoreEcash() {
-    throw new Error('payParticipationScoreEcash unused')
-  },
-} satisfies Pick<
-  EngineClientLike,
-  'getMarket' | 'getParticipationScore' | 'payParticipationScoreEcash'
->
+} satisfies Pick<EngineClientLike, 'getMarket' | 'getParticipationScore'>
+
+function creditedRecipientStatus(submission: DurableRecipientDeliverySubmission) {
+  const { token: _token, ...delivery } = submission
+  return decodeDurableRecipientDeliveryStatus({
+    delivery,
+    tupleFingerprint: deriveDurableRecipientTupleFingerprint(submission),
+    state: 'credited',
+    result: {
+      creditedAmount: submission.requestedAmount,
+      receiveFee: '0',
+      creditVerification: submission.creditPolicy,
+      receiveOperationId: 'receive-1',
+      receivedAt: '2026-08-11T00:00:00.000Z',
+      businessEventId: 'event-1',
+      businessEventAt: '2026-08-11T00:00:00.000Z',
+    },
+  })
+}
 
 function scoreResponse(
   overrides: Partial<Awaited<ReturnType<EngineClientLike['getParticipationScore']>>> = {},

@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
+import { sha256 } from '@noble/hashes/sha2.js'
+import { bytesToHex } from '@noble/hashes/utils.js'
 import {
   BitcasterEngineClient,
   decodeMatchedDelta,
@@ -7,6 +9,7 @@ import {
   decodeSettlementGroupStateChangedDelta,
   decodeSubmitOrderResponse,
   EngineClientError,
+  DURABLE_RECIPIENT_DELIVERY_RESPONSE_BYTES_MAX,
   isDefinitiveOrderSubmissionError,
   SETTLEMENT_CAPABILITY_RESULT_ERROR_RESPONSE_BYTES_MAX,
   SETTLEMENT_CAPABILITY_RESULT_RESPONSE_BYTES_MAX,
@@ -14,9 +17,60 @@ import {
   type EngineAuthorizationRequest,
 } from '../src/engineClient.ts'
 import { decodeDurableCustodyWalletId } from '../src/durableCustody.ts'
+import {
+  deriveDurableRecipientTupleFingerprint,
+  type DurableRecipientDeliverySubmission,
+} from '../src/durableRecipientDelivery.ts'
 import { isKind89NostrEvent } from '../src/marketLifecycle.ts'
 
 const DISPLAY_WALLET_ID = decodeDurableCustodyWalletId('c'.repeat(64))
+
+function durableRecipientSubmission(deliveryId: string): DurableRecipientDeliverySubmission {
+  const token = 'cashuBabc123'
+  return {
+    schemaVersion: 1,
+    deliveryId,
+    accountSubject: 'subject-1',
+    recipientKind: 'matching-engine',
+    purpose: 'participation-score',
+    destinationId: deliveryId,
+    productBindingSha256: 'a'.repeat(64),
+    mintUrl: 'https://mint.example',
+    unit: 'sat',
+    requestedAmount: '5',
+    creditPolicy: 'exact-amount',
+    tokenSha256: bytesToHex(sha256(new TextEncoder().encode(token))),
+    tokenEncodedLength: token.length,
+    token,
+  }
+}
+
+function durableRecipientStatus(
+  submission: DurableRecipientDeliverySubmission,
+  state: 'pending' | 'credited',
+) {
+  const delivery = {
+    ...submission,
+  }
+  delete (delivery as Partial<DurableRecipientDeliverySubmission>).token
+  return {
+    delivery,
+    tupleFingerprint: deriveDurableRecipientTupleFingerprint(submission),
+    state,
+    result:
+      state === 'pending'
+        ? null
+        : {
+            creditedAmount: submission.requestedAmount,
+            receiveFee: '0',
+            creditVerification: submission.creditPolicy,
+            receiveOperationId: 'receive-1',
+            receivedAt: '2026-08-11T00:00:00.000Z',
+            businessEventId: 'event-1',
+            businessEventAt: '2026-08-11T00:00:00.000Z',
+          },
+  }
+}
 
 test('BitcasterEngineClient.getMarket reads one catalogue row through query ids', async () => {
   const requests: string[] = []
@@ -365,6 +419,190 @@ test('BitcasterEngineClient.payParticipationScoreEcash posts exact ecash fee bod
       auth: 'Nostr auth',
     },
   ])
+})
+
+test('BitcasterEngineClient reads one authenticated durable Cashu delivery status and maps 404 to null', async () => {
+  const deliveryId = '11111111-1111-4111-8111-111111111111'
+  const submission = durableRecipientSubmission(deliveryId)
+  const requests: Array<{ url: string; method: string; authorization: string | null }> = []
+  const client = new BitcasterEngineClient({
+    baseUrl: 'https://engine.example',
+    authorization: ({ url, method }) => {
+      assert.equal(url, `https://engine.example/api/v1/cashu-deliveries/${deliveryId}`)
+      assert.equal(method, 'GET')
+      return 'Nostr auth'
+    },
+    fetchImpl: async (input, init) => {
+      requests.push({
+        url: String(input),
+        method: init?.method ?? 'GET',
+        authorization: new Headers(init?.headers).get('authorization'),
+      })
+      return new Response(JSON.stringify(durableRecipientStatus(submission, 'credited')), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    },
+  })
+
+  const status = await client.getDurableRecipientDeliveryStatus(deliveryId)
+
+  assert.equal(status?.state, 'credited')
+  assert.deepEqual(requests, [
+    {
+      url: `https://engine.example/api/v1/cashu-deliveries/${deliveryId}`,
+      method: 'GET',
+      authorization: 'Nostr auth',
+    },
+  ])
+
+  const missing = new BitcasterEngineClient({
+    baseUrl: 'https://engine.example',
+    fetchImpl: async () => new Response(null, { status: 404 }),
+  })
+  assert.equal(await missing.getDurableRecipientDeliveryStatus(deliveryId), null)
+})
+
+test('BitcasterEngineClient cancels an endless 404 durable Cashu delivery status body', async () => {
+  let cancelled = false
+  const client = new BitcasterEngineClient({
+    baseUrl: 'https://engine.example',
+    fetchImpl: async () =>
+      new Response(
+        new ReadableStream<Uint8Array>({
+          cancel() {
+            cancelled = true
+          },
+        }),
+        { status: 404 },
+      ),
+  })
+
+  assert.equal(
+    await client.getDurableRecipientDeliveryStatus('99999999-9999-4999-8999-999999999999'),
+    null,
+  )
+  assert.equal(cancelled, true)
+})
+
+test('BitcasterEngineClient posts one exact authenticated durable Cashu delivery body', async () => {
+  const submission = durableRecipientSubmission('22222222-2222-4222-8222-222222222222')
+  let request: {
+    url: string
+    method?: string
+    body?: string
+    authorization: string | null
+  } | null = null
+  const client = new BitcasterEngineClient({
+    baseUrl: 'https://engine.example',
+    authorization: ({ url, method, bodyText }) => {
+      assert.equal(url, `https://engine.example/api/v1/cashu-deliveries/${submission.deliveryId}`)
+      assert.equal(method, 'POST')
+      assert.equal(bodyText, JSON.stringify(submission))
+      return 'Nostr auth'
+    },
+    fetchImpl: async (input, init) => {
+      request = {
+        url: String(input),
+        method: init?.method,
+        body: String(init?.body),
+        authorization: new Headers(init?.headers).get('authorization'),
+      }
+      return new Response(JSON.stringify(durableRecipientStatus(submission, 'pending')), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    },
+  })
+
+  const result = await client.submitDurableRecipientDelivery(submission)
+
+  assert.equal(result.state, 'pending')
+  assert.deepEqual(request, {
+    url: `https://engine.example/api/v1/cashu-deliveries/${submission.deliveryId}`,
+    method: 'POST',
+    body: JSON.stringify(submission),
+    authorization: 'Nostr auth',
+  })
+})
+
+test('BitcasterEngineClient bounds invalid durable Cashu delivery responses', async () => {
+  const client = new BitcasterEngineClient({
+    baseUrl: 'https://engine.example',
+    fetchImpl: async () =>
+      new Response('x'.repeat(DURABLE_RECIPIENT_DELIVERY_RESPONSE_BYTES_MAX + 1), {
+        status: 200,
+      }),
+  })
+
+  await assert.rejects(
+    () => client.getDurableRecipientDeliveryStatus('33333333-3333-4333-8333-333333333333'),
+    /byte limit exceeded/i,
+  )
+})
+
+test('BitcasterEngineClient durable delivery rejects redirects and redacts token echo errors', async () => {
+  const submission = durableRecipientSubmission('44444444-4444-4444-8444-444444444444')
+  let redirectMode: RequestRedirect | undefined
+  const redirected = new BitcasterEngineClient({
+    baseUrl: 'https://engine.example',
+    fetchImpl: async (_input, init) => {
+      redirectMode = init?.redirect
+      throw new TypeError('redirected request')
+    },
+  })
+
+  await assert.rejects(
+    () => redirected.submitDurableRecipientDelivery(submission),
+    /durable recipient delivery request failed/,
+  )
+  assert.equal(redirectMode, 'error')
+
+  const echoed = new BitcasterEngineClient({
+    baseUrl: 'https://engine.example',
+    fetchImpl: async () => new Response(submission.token, { status: 503 }),
+  })
+  await assert.rejects(
+    () => echoed.submitDurableRecipientDelivery(submission),
+    (error: unknown) => {
+      assert.match(String(error), /durable recipient delivery request failed: HTTP 503/)
+      assert.doesNotMatch(String(error), new RegExp(submission.token))
+      return true
+    },
+  )
+})
+
+test('BitcasterEngineClient durable delivery timeout covers response-body consumption', async () => {
+  const submission = durableRecipientSubmission('55555555-5555-4555-8555-555555555555')
+  let bodySignalAborted = false
+  const client = new BitcasterEngineClient({
+    baseUrl: 'https://engine.example',
+    durableRecipientDeliveryRequestTimeoutMs: 5,
+    fetchImpl: async (_input, init) => {
+      const signal = init?.signal
+      return new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            signal?.addEventListener(
+              'abort',
+              () => {
+                bodySignalAborted = true
+                controller.error(new DOMException('aborted', 'AbortError'))
+              },
+              { once: true },
+            )
+          },
+        }),
+        { status: 200 },
+      )
+    },
+  })
+
+  await assert.rejects(
+    () => client.submitDurableRecipientDelivery(submission),
+    /durable recipient delivery request failed/,
+  )
+  assert.equal(bodySignalAborted, true)
 })
 
 test('BitcasterEngineClient default fetch keeps the browser fetch receiver', async () => {

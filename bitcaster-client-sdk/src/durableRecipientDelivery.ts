@@ -67,6 +67,48 @@ export type DurableRecipientDeliveryStatus =
         Required<Pick<DurableRecipientDeliveryResult, 'businessEventId' | 'businessEventAt'>>
     }
 
+/** Transport boundary for one durable recipient delivery. */
+export interface DurableRecipientDeliveryClient {
+  getDurableRecipientDeliveryStatus(
+    deliveryId: string,
+  ): Promise<DurableRecipientDeliveryStatus | null>
+  submitDurableRecipientDelivery(
+    submission: DurableRecipientDeliverySubmission,
+  ): Promise<DurableRecipientDeliveryStatus>
+}
+
+/**
+ * Read recipient state before posting an exact stored token. A pending POST or
+ * ambiguous POST failure always gets one status read before this returns or fails.
+ */
+export async function reconcileDurableRecipientDelivery(input: {
+  readonly client: DurableRecipientDeliveryClient
+  readonly submission: DurableRecipientDeliverySubmission
+}): Promise<DurableRecipientDeliveryStatus | null> {
+  const submission = decodeDurableRecipientDeliverySubmission(input.submission)
+  const verify = (status: DurableRecipientDeliveryStatus) => {
+    assertDurableRecipientDeliveryStatusAuthority({ expected: submission, status })
+    return status
+  }
+  const existing = await input.client.getDurableRecipientDeliveryStatus(submission.deliveryId)
+  if (existing !== null) {
+    const verified = verify(existing)
+    if (verified.state !== 'pending') return verified
+  }
+  try {
+    const posted = verify(await input.client.submitDurableRecipientDelivery(submission))
+    if (posted.state !== 'pending') return posted
+  } catch (error) {
+    const recovered = await input.client
+      .getDurableRecipientDeliveryStatus(submission.deliveryId)
+      .catch(() => null)
+    if (recovered !== null) return verify(recovered)
+    throw error
+  }
+  const refreshed = await input.client.getDurableRecipientDeliveryStatus(submission.deliveryId)
+  return refreshed === null ? null : verify(refreshed)
+}
+
 /** Decode a submission. This function validates the token but never returns it in a status value. */
 export function decodeDurableRecipientDeliverySubmission(
   value: unknown,

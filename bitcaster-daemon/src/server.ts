@@ -11,7 +11,6 @@ import {
   type OrderBookSnapshot,
   type OrderStatusResponse,
   type ParticipationScoreResponse,
-  type PayParticipationScoreEcashResponse,
   type QueryMarketsParams,
   type QueryMarketsResponse,
   type CreateSettlementCapabilityRequest,
@@ -23,6 +22,10 @@ import {
   type SubmitOrderResponse,
   type ConditionAttestationResponse,
 } from '@bitcaster-market/client-sdk/engineClient'
+import type {
+  DurableRecipientDeliveryStatus,
+  DurableRecipientDeliverySubmission,
+} from '@bitcaster-market/client-sdk/durableRecipientDelivery'
 import {
   createMarketViaEngine,
   conditionIdFromMarketId,
@@ -74,6 +77,7 @@ import {
   recoverDurableWalletReceives,
   recoverDurableOutgoingCashuTransfers,
   reclaimDurableOutgoingCashuTransfer,
+  deliverParticipationScoreCashu,
   receiveWalletToken,
   sendWalletToken,
   executeCtfConsolidationPlan,
@@ -116,11 +120,12 @@ export interface EngineClientLike {
   getOrderBook(marketId: string): Promise<OrderBookSnapshot>
   queryMarkets(params: QueryMarketsParams): Promise<QueryMarketsResponse>
   getParticipationScore(): Promise<ParticipationScoreResponse>
-  payParticipationScoreEcash(
-    amountSats: number,
-    proofsToken: string,
-    paymentId?: string,
-  ): Promise<PayParticipationScoreEcashResponse>
+  getDurableRecipientDeliveryStatus?(
+    deliveryId: string,
+  ): Promise<DurableRecipientDeliveryStatus | null>
+  submitDurableRecipientDelivery?(
+    submission: DurableRecipientDeliverySubmission,
+  ): Promise<DurableRecipientDeliveryStatus>
   getMarket?(conditionId: string): Promise<unknown | null>
   getConditionAttestation?(conditionId: string): Promise<ConditionAttestationResponse | null>
   createSettlementCapability?(
@@ -183,12 +188,10 @@ type DaemonParticipationScorePreflightResult =
   | {
       kind: 'paid'
       score: ParticipationScoreResponse
-      payment: PayParticipationScoreEcashResponse
-      paymentId: string
+      deliveryId: string
+      deliveryState: 'credited'
       operationId: string
     }
-
-const SCORE_PAYMENT_ATTEMPTS = 3
 
 export interface DispatchDependencies extends WalletOpsDependencies {
   createEngineClient?: (options: { baseUrl: string; nostrSecretKeyHex: string }) => EngineClientLike
@@ -604,7 +607,27 @@ export async function dispatch(
       if (!deps.getCustodyFence) return { ok: true, result: wallet }
       const getCustodyFence = deps.getCustodyFence
       const receives = await recoverDurableWalletReceives(secrets, deps)
-      const outgoing = await recoverDurableOutgoingCashuTransfers(secrets, deps)
+      const client = createEngineClient(deps, {
+        baseUrl: profile.engineBaseUrl,
+        nostrSecretKeyHex: secrets.nostrSecretKeyHex,
+      })
+      const outgoing = await recoverDurableOutgoingCashuTransfers(secrets, deps, {
+        client: {
+          getDurableRecipientDeliveryStatus: async (deliveryId) => {
+            if (!client.getDurableRecipientDeliveryStatus) {
+              throw new Error('daemon engine client does not support durable Cashu deliveries')
+            }
+            return client.getDurableRecipientDeliveryStatus(deliveryId)
+          },
+          submitDurableRecipientDelivery: async (submission) => {
+            if (!client.submitDurableRecipientDelivery) {
+              throw new Error('daemon engine client does not support durable Cashu deliveries')
+            }
+            return client.submitDurableRecipientDelivery(submission)
+          },
+        },
+        accountSubject: secrets.nostrPublicKeyHex,
+      })
       const outgoingStatus = outgoingCashuRecoveryStatus(outgoing)
       const consolidation = await recoverWalletProofConsolidations({
         secrets,
@@ -1079,44 +1102,68 @@ async function ensureDaemonParticipationScoreForNextMatch(input: {
   if (plan.kind === 'disabled') return { kind: 'disabled', score }
   if (plan.kind === 'sufficient') return { kind: 'sufficient', score }
 
-  const paymentId = randomUUID()
-  const operationId = `engine-score:${paymentId}`
+  if (
+    input.client.getDurableRecipientDeliveryStatus === undefined ||
+    input.client.submitDurableRecipientDelivery === undefined
+  ) {
+    throw new Error('daemon engine client does not support durable Cashu deliveries')
+  }
+  const deliver = (deliveryId: string, amountSats: number, purchasedTotalEpoch: number) =>
+    deliverParticipationScoreCashu({
+      deliveryId,
+      accountSubject: input.secrets.nostrPublicKeyHex,
+      amountSats,
+      purchasedTotalEpoch,
+      profile: input.profile,
+      secrets: input.secrets,
+      client: {
+        getDurableRecipientDeliveryStatus: (id) =>
+          input.client.getDurableRecipientDeliveryStatus!(id),
+        submitDurableRecipientDelivery: (submission) =>
+          input.client.submitDurableRecipientDelivery!(submission),
+      },
+      deps: input.deps,
+    })
+  const deliveryId = randomUUID()
   try {
-    const token = await sendWalletToken(
-      plan.deficitScore,
-      input.profile,
-      input.secrets,
-      input.deps,
-      input.profile.mintUrl,
-      operationId,
-    )
-    const payment = await payParticipationScoreEcashWithRetry(
-      input.client,
-      plan.deficitScore,
-      token.token,
-      paymentId,
-    )
-    return { kind: 'paid', score, payment, paymentId, operationId }
+    let delivery = await deliver(deliveryId, plan.deficitScore, score.purchasedTotal)
+    if (delivery.state !== 'credited') {
+      throw new Error(`Participation Score delivery remains ${delivery.state}`)
+    }
+    let refreshedScore = await input.client.getParticipationScore()
+    if (refreshedScore.purchasedTotal <= score.purchasedTotal) {
+      throw new Error('Participation Score credit is not available for this order')
+    }
+    let refreshedPlan = planParticipationScoreTopUp(refreshedScore)
+    if (refreshedPlan.kind === 'needs-top-up') {
+      const purchasedBeforeSecondDelivery = refreshedScore.purchasedTotal
+      delivery = await deliver(
+        randomUUID(),
+        refreshedPlan.deficitScore,
+        purchasedBeforeSecondDelivery,
+      )
+      if (delivery.state !== 'credited') {
+        throw new Error(`Participation Score delivery remains ${delivery.state}`)
+      }
+      refreshedScore = await input.client.getParticipationScore()
+      if (refreshedScore.purchasedTotal <= purchasedBeforeSecondDelivery) {
+        throw new Error('Participation Score credit is not available for this order')
+      }
+      refreshedPlan = planParticipationScoreTopUp(refreshedScore)
+    }
+    if (refreshedPlan.kind === 'needs-top-up') {
+      throw new Error('Participation Score credit is not available for this order')
+    }
+    return {
+      kind: 'paid',
+      score: refreshedScore,
+      deliveryId: delivery.deliveryId,
+      deliveryState: 'credited',
+      operationId: delivery.transferId,
+    }
   } finally {
     input.deps.triggerCustodyRecovery?.()
   }
-}
-
-async function payParticipationScoreEcashWithRetry(
-  client: EngineClientLike,
-  amountSats: number,
-  token: string,
-  paymentId: string,
-): Promise<PayParticipationScoreEcashResponse> {
-  let lastError: unknown
-  for (let attempt = 0; attempt < SCORE_PAYMENT_ATTEMPTS; attempt += 1) {
-    try {
-      return await client.payParticipationScoreEcash(amountSats, token, paymentId)
-    } catch (err) {
-      lastError = err
-    }
-  }
-  throw lastError instanceof Error ? lastError : new Error('Failed to pay Engine Score.')
 }
 
 async function consolidateMarket(input: {

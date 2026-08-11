@@ -10,7 +10,7 @@ export const FINAL_PROFILE_APPLICATION_ID = 0x4243444d
 export const FINAL_PROFILE_SCHEMA_VERSION = 1
 export const FINAL_PROFILE_SCHEMA_NAME = 'bitcaster-daemon-profile'
 export const FINAL_PROFILE_SCHEMA_MANIFEST_DIGEST =
-  'da6f70ea3390da650415159b7feddf3dad689c7ecd009b403360133bcc8c0230'
+  'f67898dd7ccc923be81336b0eead43ec3d2e2039c77988ce70903599301cee77'
 
 const artifactBytesMax = 16 * 1_024 * 1_024
 const recordBytesMax = 64 * 1_024
@@ -1167,6 +1167,14 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
       'prepared', 'delivery-pending', 'recipient-acknowledged', 'bearer-spent',
       'bearer-partial', 'reclaim-prepared', 'reclaimed'
     )),
+    delivery_policy TEXT NOT NULL CHECK (delivery_policy IN (
+      'durable-recipient-ack', 'bearer-spend-classification'
+    )),
+    recipient_binding TEXT CHECK (
+      recipient_binding IS NULL OR (
+        length(recipient_binding) = 64 AND recipient_binding NOT GLOB '*[^0-9a-f]*'
+      )
+    ),
     due_at_ms INTEGER NOT NULL CHECK (due_at_ms BETWEEN 0 AND 9007199254740991),
     attempt_count INTEGER NOT NULL CHECK (attempt_count BETWEEN 0 AND 9007199254740991),
     revision INTEGER NOT NULL CHECK (revision BETWEEN 0 AND 9007199254740991),
@@ -1191,7 +1199,29 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
       (delivery_state IN ('prepared', 'delivery-pending', 'bearer-partial', 'reclaim-prepared')
         AND due_at_ms >= 0)
       OR delivery_state IN ('recipient-acknowledged', 'bearer-spent', 'reclaimed')
+    ),
+    CHECK (
+      (delivery_policy = 'durable-recipient-ack'
+        AND recipient_binding IS NOT NULL
+        AND delivery_state IN ('prepared', 'delivery-pending', 'recipient-acknowledged'))
+      OR (
+        delivery_policy = 'bearer-spend-classification'
+        AND recipient_binding IS NULL
+        AND delivery_state IN (
+          'prepared', 'delivery-pending', 'bearer-spent', 'bearer-partial',
+          'reclaim-prepared', 'reclaimed'
+        )
+      )
     )
+  ) STRICT`,
+  `CREATE TABLE daemon_participation_score_delivery_pointers (
+    scope_id TEXT PRIMARY KEY REFERENCES custody_scopes(scope_id) ON DELETE RESTRICT,
+    transfer_id TEXT NOT NULL CHECK (length(transfer_id) BETWEEN 1 AND 16384),
+    amount_sats INTEGER NOT NULL CHECK (amount_sats BETWEEN 1 AND 9007199254740991),
+    purchased_total_epoch INTEGER NOT NULL CHECK (
+      purchased_total_epoch BETWEEN 0 AND 9007199254740991
+    ),
+    created_at_ms INTEGER NOT NULL CHECK (created_at_ms BETWEEN 0 AND 9007199254740991)
   ) STRICT`,
   `CREATE INDEX custody_proofs_selection_idx
     ON custody_proofs (
@@ -1263,6 +1293,10 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
   `CREATE INDEX daemon_outgoing_cashu_transfers_all_mints_due_idx
     ON daemon_outgoing_cashu_transfers (scope_id, due_at_ms, transfer_id)
     WHERE delivery_state IN ('prepared', 'delivery-pending', 'bearer-partial', 'reclaim-prepared')`,
+  `CREATE UNIQUE INDEX daemon_outgoing_cashu_recipient_active_binding_idx
+    ON daemon_outgoing_cashu_transfers (scope_id, recipient_binding)
+    WHERE delivery_policy = 'durable-recipient-ack'
+      AND delivery_state IN ('prepared', 'delivery-pending', 'recipient-acknowledged')`,
   `CREATE TRIGGER profile_schema_marker_no_update
     BEFORE UPDATE ON profile_schema_marker
     BEGIN

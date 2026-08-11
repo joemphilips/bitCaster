@@ -2,6 +2,7 @@ import {
   assertDurableRecipientDeliveryStatusAuthority,
   deriveDurableRecipientDeliveryResultFingerprint,
   deriveDurableRecipientTokenAllowance,
+  reconcileDurableRecipientDelivery,
   type DurableRecipientDeliveryStatus,
   type DurableRecipientDeliverySubmission,
 } from "@bitcaster/client-sdk/durableRecipientDelivery";
@@ -204,25 +205,15 @@ export async function reconcileBrowserParticipationScoreDelivery(input: {
     metadata: participationScoreMetadata(input.transfer, input.metadata),
     token: input.transfer.token.encodedToken,
   });
-  const existing = await input.readStatus(input.transfer.transferId);
-  if (existing !== null) {
-    assertDurableRecipientDeliveryStatusAuthority({ expected: submission, status: existing });
-    if (existing.state !== "pending") return persistRecipientStatus(input, submission, existing);
-  }
-  try {
-    const posted = await input.submit(submission);
-    if (posted.state === "pending") {
-      const refreshed = await input.readStatus(input.transfer.transferId);
-      if (refreshed === null)
-        return { transfer: input.transfer, progress: "pending", delivery: null };
-      return persistRecipientStatus(input, submission, refreshed);
-    }
-    return persistRecipientStatus(input, submission, posted);
-  } catch (error) {
-    const recovered = await input.readStatus(input.transfer.transferId).catch(() => null);
-    if (recovered !== null) return persistRecipientStatus(input, submission, recovered);
-    throw error;
-  }
+  const status = await reconcileDurableRecipientDelivery({
+    client: {
+      getDurableRecipientDeliveryStatus: input.readStatus,
+      submitDurableRecipientDelivery: input.submit,
+    },
+    submission,
+  });
+  if (status === null) return { transfer: input.transfer, progress: "pending", delivery: null };
+  return persistRecipientStatus(input, submission, status);
 }
 
 function persistedParticipationScoreMetadata(

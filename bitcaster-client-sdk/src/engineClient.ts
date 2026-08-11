@@ -31,20 +31,30 @@ import {
   type AssetMonitoringSummaryResponse,
 } from './assetMonitoring.ts'
 import type { WalletId } from './durableCustody.ts'
+import {
+  decodeDurableRecipientDeliveryStatus,
+  decodeDurableRecipientDeliverySubmission,
+  type DurableRecipientDeliveryStatus,
+  type DurableRecipientDeliverySubmission,
+} from './durableRecipientDelivery.ts'
 
 export type EngineFetch = typeof fetch
 export const SETTLEMENT_CAPABILITY_RESULT_RESPONSE_BYTES_MAX = 384 * 1_024
 export const SETTLEMENT_CAPABILITY_RESULT_ERROR_RESPONSE_BYTES_MAX = 64 * 1_024
 export const SUBMIT_ORDER_RESPONSE_BYTES_MAX = 1024 * 1024
 export const CONDITION_ATTESTATION_RESPONSE_BYTES_MAX = 64 * 1_024
+export const DURABLE_RECIPIENT_DELIVERY_RESPONSE_BYTES_MAX = 64 * 1_024
 const SETTLEMENT_CAPABILITY_RESULT_REQUEST_TIMEOUT_MS = 10_000
 const SETTLEMENT_CAPABILITY_RESULT_REQUEST_TIMEOUT_MS_MAX = 60_000
+const DURABLE_RECIPIENT_DELIVERY_REQUEST_TIMEOUT_MS = 10_000
+const DURABLE_RECIPIENT_DELIVERY_REQUEST_TIMEOUT_MS_MAX = 60_000
 
 export interface EngineClientOptions {
   baseUrl: string
   fetchImpl?: EngineFetch
   authorization?: (request: EngineAuthorizationRequest) => string | Promise<string>
   settlementResultRequestTimeoutMs?: number
+  durableRecipientDeliveryRequestTimeoutMs?: number
 }
 
 export interface EngineAuthorizationRequest {
@@ -471,6 +481,7 @@ export class BitcasterEngineClient {
   private readonly fetchImpl: EngineFetch
   private readonly authorization?: (request: EngineAuthorizationRequest) => string | Promise<string>
   private readonly settlementResultRequestTimeoutMs: number
+  private readonly durableRecipientDeliveryRequestTimeoutMs: number
 
   constructor(options: EngineClientOptions) {
     this.baseUrl = options.baseUrl.replace(/\/+$/, '')
@@ -484,6 +495,17 @@ export class BitcasterEngineClient {
       this.settlementResultRequestTimeoutMs > SETTLEMENT_CAPABILITY_RESULT_REQUEST_TIMEOUT_MS_MAX
     ) {
       throw new Error('settlement capability result request timeout is invalid')
+    }
+    this.durableRecipientDeliveryRequestTimeoutMs =
+      options.durableRecipientDeliveryRequestTimeoutMs ??
+      DURABLE_RECIPIENT_DELIVERY_REQUEST_TIMEOUT_MS
+    if (
+      !Number.isSafeInteger(this.durableRecipientDeliveryRequestTimeoutMs) ||
+      this.durableRecipientDeliveryRequestTimeoutMs <= 0 ||
+      this.durableRecipientDeliveryRequestTimeoutMs >
+        DURABLE_RECIPIENT_DELIVERY_REQUEST_TIMEOUT_MS_MAX
+    ) {
+      throw new Error('durable recipient delivery request timeout is invalid')
     }
   }
 
@@ -790,6 +812,50 @@ export class BitcasterEngineClient {
     return (await response.json()) as PayParticipationScoreEcashResponse
   }
 
+  async getDurableRecipientDeliveryStatus(
+    deliveryId: string,
+  ): Promise<DurableRecipientDeliveryStatus | null> {
+    return this.requestDurableRecipientDelivery(
+      `/api/v1/cashu-deliveries/${encodePathSegment(deliveryId)}`,
+      {},
+      undefined,
+      true,
+      async (response) => {
+        if (response.status === 404) return null
+        return decodeDurableRecipientDeliveryStatus(
+          await readAllocationBoundedJsonResponse(
+            response,
+            DURABLE_RECIPIENT_DELIVERY_RESPONSE_BYTES_MAX,
+          ),
+        )
+      },
+    )
+  }
+
+  async submitDurableRecipientDelivery(
+    submission: DurableRecipientDeliverySubmission,
+  ): Promise<DurableRecipientDeliveryStatus> {
+    const exact = decodeDurableRecipientDeliverySubmission(submission)
+    const bodyText = JSON.stringify(exact)
+    return this.requestDurableRecipientDelivery(
+      `/api/v1/cashu-deliveries/${encodePathSegment(exact.deliveryId)}`,
+      {
+        method: 'POST',
+        body: bodyText,
+        headers: { 'content-type': 'application/json' },
+      },
+      bodyText,
+      false,
+      async (response) =>
+        decodeDurableRecipientDeliveryStatus(
+          await readAllocationBoundedJsonResponse(
+            response,
+            DURABLE_RECIPIENT_DELIVERY_RESPONSE_BYTES_MAX,
+          ),
+        ),
+    )
+  }
+
   async getMarket(conditionId: string): Promise<unknown | null> {
     const response = await this.queryMarkets({
       ids: [conditionId],
@@ -857,7 +923,7 @@ export class BitcasterEngineClient {
   ): Promise<SettlementCapabilityResultResponse | null> {
     const url = `${this.baseUrl}${path}`
     const headers = await this.authorizedHeaders(url, init, bodyText)
-    const lifetime = createSettlementResultRequestLifetime(
+    const lifetime = createBoundedRequestLifetime(
       callerSignal,
       this.settlementResultRequestTimeoutMs,
     )
@@ -887,6 +953,55 @@ export class BitcasterEngineClient {
       } catch (error) {
         if (lifetime.signal.aborted) {
           throw new Error('settlement capability result request failed')
+        }
+        throw error
+      }
+    } finally {
+      lifetime.dispose()
+    }
+  }
+
+  private async requestDurableRecipientDelivery<T>(
+    path: string,
+    init: RequestInit,
+    bodyText: string | undefined,
+    allowNotFound: boolean,
+    read: (response: Response) => Promise<T>,
+  ): Promise<T> {
+    const url = `${this.baseUrl}${path}`
+    const headers = await this.authorizedHeaders(url, init, bodyText)
+    const lifetime = createBoundedRequestLifetime(
+      undefined,
+      this.durableRecipientDeliveryRequestTimeoutMs,
+    )
+    try {
+      let response: Response
+      try {
+        response = await this.fetchImpl(url, {
+          ...init,
+          headers,
+          redirect: 'error',
+          signal: lifetime.signal,
+        })
+      } catch {
+        throw new Error('durable recipient delivery request failed')
+      }
+      if (lifetime.signal.aborted) {
+        await response.body?.cancel().catch(() => undefined)
+        throw new Error('durable recipient delivery request failed')
+      }
+      if (!response.ok && !(allowNotFound && response.status === 404)) {
+        await response.body?.cancel().catch(() => undefined)
+        throw new Error(`durable recipient delivery request failed: HTTP ${response.status}`)
+      }
+      if (allowNotFound && response.status === 404) {
+        await response.body?.cancel().catch(() => undefined)
+      }
+      try {
+        return await read(response)
+      } catch (error) {
+        if (lifetime.signal.aborted) {
+          throw new Error('durable recipient delivery request failed')
         }
         throw error
       }
@@ -1383,7 +1498,7 @@ async function boundedSettlementResultError(response: Response): Promise<EngineC
   return new EngineClientError(response.status, detail, problem?.code, problem?.detail)
 }
 
-function createSettlementResultRequestLifetime(
+function createBoundedRequestLifetime(
   callerSignal: AbortSignal | undefined,
   timeoutMs: number,
 ): { signal: AbortSignal; dispose(): void } {

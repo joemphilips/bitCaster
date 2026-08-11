@@ -22,6 +22,7 @@ import {
 } from '@bitcaster-market/client-sdk/durableCustodyProofOperationRecord'
 import {
   admitDurableOutgoingCashuToken,
+  acknowledgeDurableOutgoingCashuRecipient,
   classifyDurableOutgoingBearerProofStates,
   completeDurableOutgoingCashuReclaim,
   createDurableOutgoingCashuTransfer,
@@ -35,8 +36,18 @@ import {
   DURABLE_OUTGOING_CASHU_PROOF_STATE_PROOFS_PER_CALL_MAX,
   DURABLE_OUTGOING_CASHU_RECOVERY_BYTES_MAX,
   type DurableOutgoingCashuCoordinatorInput,
+  type DurableOutgoingCashuDeliveryIntent,
+  type DurableOutgoingCashuRecipientAcknowledgement,
   type DurableOutgoingCashuTransfer,
 } from '@bitcaster-market/client-sdk/durableOutgoingCashuTransfer'
+import { decodeDurableOutgoingCashuTransfer } from '@bitcaster-market/client-sdk/durableOutgoingCashuTransfer'
+import {
+  deriveDurableRecipientDeliveryResultFingerprint,
+  reconcileDurableRecipientDelivery,
+  type DurableRecipientDeliveryClient,
+  type DurableRecipientDeliveryStatus,
+  type DurableRecipientDeliverySubmission,
+} from '@bitcaster-market/client-sdk/durableRecipientDelivery'
 import {
   requireDurableWalletOperationFromCustody,
   hydrateDurableWalletProof,
@@ -105,11 +116,39 @@ export class DaemonDurableOutgoingCashuCoordinator {
     )
   }
 
+  /** Reserve one Score delivery against the engine's observed purchase epoch. */
+  async preflightParticipationScoreDelivery(input: {
+    readonly transferId: string
+    readonly amountSats: number
+    readonly purchasedTotal: number
+    readonly accountSubject: string
+    readonly mintUrl: string
+  }): Promise<{
+    readonly transferId: string
+    readonly amountSats: number
+    readonly purchasedTotalEpoch: number
+  }> {
+    const fence = this.#getFence()
+    const nowMs = this.#now()
+    return await withDurableCustodyUnitOfWork(this.#storage, fence, nowMs, (database) =>
+      new DurableOutgoingCashuSqliteStore(database).preflightParticipationScoreDelivery({
+        scopeId: fence.scopeId,
+        transferId: input.transferId,
+        amountSats: input.amountSats,
+        purchasedTotal: input.purchasedTotal,
+        accountSubject: input.accountSubject,
+        mintUrl: input.mintUrl,
+        nowMs,
+      }),
+    )
+  }
+
   async execute(input: {
     readonly transferId: string
     readonly amountSats: number
     readonly mintUrl: string
     readonly wallet: CashuWalletLike
+    readonly deliveryIntent?: DurableOutgoingCashuDeliveryIntent
   }): Promise<DurableOutgoingCashuTransfer> {
     const prepared = await this.#prepare(input)
     return this.#run(prepared, input.wallet, 'execute')
@@ -120,6 +159,7 @@ export class DaemonDurableOutgoingCashuCoordinator {
     readonly amountSats: number
     readonly mintUrl: string
     readonly wallet: CashuWalletLike
+    readonly deliveryIntent?: DurableOutgoingCashuDeliveryIntent
   }): Promise<DurableOutgoingCashuTransfer> {
     if (
       input.transfer.mintUrl !== input.mintUrl ||
@@ -128,7 +168,56 @@ export class DaemonDurableOutgoingCashuCoordinator {
     ) {
       throw new Error('durable outgoing Cashu transfer conflicts with the caller request')
     }
+    if (
+      deriveDurableCustodyArtifactFingerprint(input.transfer.deliveryIntent) !==
+      deriveDurableCustodyArtifactFingerprint(input.deliveryIntent ?? bearerDeliveryIntent())
+    ) {
+      throw new Error('durable outgoing Cashu transfer delivery intent conflicts')
+    }
     return this.#run(input.transfer, input.wallet, 'recover')
+  }
+
+  /** Reconcile one persisted recipient delivery. It never selects or classifies proofs. */
+  async reconcileRecipientDelivery(input: {
+    readonly transfer: DurableOutgoingCashuTransfer
+    readonly submission: DurableRecipientDeliverySubmission
+    readonly client: DurableRecipientDeliveryClient
+    readonly acknowledge: (status: DurableRecipientDeliveryStatus) => boolean
+  }): Promise<{
+    readonly transfer: DurableOutgoingCashuTransfer
+    readonly status: DurableRecipientDeliveryStatus | null
+  }> {
+    const transfer = await this.#requireExactTransfer(input.transfer)
+    if (transfer.deliveryIntent.policy !== 'durable-recipient-ack' || transfer.token === null) {
+      throw new Error('durable outgoing Cashu recipient delivery is invalid')
+    }
+    if (
+      input.submission.deliveryId !== transfer.transferId ||
+      input.submission.accountSubject !== transfer.deliveryIntent.expectedSubject ||
+      input.submission.productBindingSha256 !== transfer.deliveryIntent.opaqueProductBinding ||
+      input.submission.mintUrl !== transfer.mintUrl ||
+      input.submission.unit !== transfer.unit ||
+      input.submission.requestedAmount !== transfer.requestedAmount ||
+      input.submission.tokenSha256 !== transfer.token.sha256 ||
+      input.submission.tokenEncodedLength !== transfer.token.encodedLength ||
+      input.submission.token !== transfer.token.encodedToken
+    ) {
+      throw new Error('durable outgoing Cashu recipient delivery conflicts')
+    }
+    if (transfer.deliveryState === 'recipient-acknowledged') return { transfer, status: null }
+    if (transfer.deliveryState !== 'delivery-pending') {
+      throw new Error('durable outgoing Cashu recipient delivery is not pending')
+    }
+    const status = await reconcileDurableRecipientDelivery({
+      client: input.client,
+      submission: input.submission,
+    })
+    if (status === null || !input.acknowledge(status)) {
+      const scheduled = await this.#scheduleRetry(transfer, this.#now())
+      return { transfer: scheduled, status }
+    }
+    if (status.state === 'pending') throw new Error('durable recipient acknowledgement is pending')
+    return { transfer: await this.#acknowledgeRecipient(transfer, status), status }
   }
 
   /**
@@ -137,6 +226,11 @@ export class DaemonDurableOutgoingCashuCoordinator {
    */
   async recoverDue(input: {
     readonly walletFor: (mintUrl: string, unit: 'sat' | 'msat') => Promise<CashuWalletLike>
+    readonly recipientClient?: DurableRecipientDeliveryClient
+    readonly recipientSubmission?: (
+      transfer: DurableOutgoingCashuTransfer,
+    ) => DurableRecipientDeliverySubmission
+    readonly acknowledgeRecipientStatus?: (status: DurableRecipientDeliveryStatus) => boolean
   }): Promise<{
     readonly recovered: string[]
     readonly pending: Array<{ transferId: string; error: string }>
@@ -180,6 +274,47 @@ export class DaemonDurableOutgoingCashuCoordinator {
     for (const transfers of groups.values()) {
       for (const transfer of transfers) {
         try {
+          if (transfer.deliveryIntent.policy === 'durable-recipient-ack') {
+            if (
+              input.recipientClient === undefined ||
+              input.recipientSubmission === undefined ||
+              input.acknowledgeRecipientStatus === undefined
+            ) {
+              pending.push({
+                transferId: transfer.transferId,
+                error: 'durable recipient delivery recovery requires an engine client',
+              })
+              continue
+            }
+            const minted =
+              transfer.deliveryState === 'prepared'
+                ? await this.recover({
+                    transfer,
+                    amountSats: Number(transfer.requestedAmount),
+                    mintUrl: transfer.mintUrl,
+                    wallet: await walletFor(transfer.mintUrl, receiveUnit(transfer.unit)),
+                    deliveryIntent: transfer.deliveryIntent,
+                  })
+                : transfer
+            if (minted.deliveryState !== 'delivery-pending') {
+              throw new Error('durable outgoing Cashu recipient state is invalid')
+            }
+            const reconciled = await this.reconcileRecipientDelivery({
+              transfer: minted,
+              submission: input.recipientSubmission(minted),
+              client: input.recipientClient,
+              acknowledge: input.acknowledgeRecipientStatus,
+            })
+            if (reconciled.transfer.deliveryState === 'recipient-acknowledged') {
+              recovered.push(transfer.transferId)
+            } else {
+              pending.push({
+                transferId: transfer.transferId,
+                error: 'durable recipient delivery remains pending',
+              })
+            }
+            continue
+          }
           if (transfer.deliveryState === 'prepared') {
             const result = await this.recover({
               transfer,
@@ -399,8 +534,84 @@ export class DaemonDurableOutgoingCashuCoordinator {
     })
   }
 
-  async #scheduleRetry(transfer: DurableOutgoingCashuTransfer, nowMs: number): Promise<void> {
-    await this.#persistTransfer(scheduleDurableOutgoingCashuRecoveryRetry({ transfer, nowMs }))
+  async #acknowledgeRecipient(
+    expected: DurableOutgoingCashuTransfer,
+    status: Exclude<DurableRecipientDeliveryStatus, { readonly state: 'pending' }>,
+  ): Promise<DurableOutgoingCashuTransfer> {
+    if (expected.token === null || expected.deliveryIntent.policy !== 'durable-recipient-ack') {
+      throw new Error('durable outgoing Cashu recipient delivery is invalid')
+    }
+    const receipt: DurableOutgoingCashuRecipientAcknowledgement = {
+      transferId: expected.transferId,
+      expectedSubject: expected.deliveryIntent.expectedSubject,
+      opaqueProductBinding: expected.deliveryIntent.opaqueProductBinding,
+      mintUrl: expected.mintUrl,
+      unit: expected.unit,
+      requestedAmount: expected.requestedAmount,
+      tokenSha256: expected.token.sha256,
+      tokenLength: expected.token.encodedLength,
+      receiveOperationId: status.result.receiveOperationId,
+      durableResultFingerprint: deriveDurableRecipientDeliveryResultFingerprint(status),
+    }
+    return acknowledgeDurableOutgoingCashuRecipient({
+      transfer: expected,
+      receiptAdapter: {
+        readAndPersistReceipt: async ({ transfer }) =>
+          this.#persistRecipientReceipt(transfer, receipt),
+      },
+    })
+  }
+
+  async #persistRecipientReceipt(
+    expected: DurableOutgoingCashuTransfer,
+    receipt: DurableOutgoingCashuRecipientAcknowledgement,
+  ): Promise<DurableOutgoingCashuTransfer> {
+    const fence = this.#getFence()
+    const nowMs = this.#now()
+    return withDurableCustodyUnitOfWork(this.#storage, fence, nowMs, (database) => {
+      const outgoing = new DurableOutgoingCashuSqliteStore(database)
+      const stored = outgoing.get(fence.scopeId, expected.transferId)
+      if (stored === null) throw new Error('durable outgoing Cashu transfer is missing')
+      if (stored.transfer.deliveryState === 'recipient-acknowledged') return stored.transfer
+      assertExactTransfer(stored.transfer, expected)
+      const acknowledged = decodeDurableOutgoingCashuTransfer({
+        ...stored.transfer,
+        deliveryState: 'recipient-acknowledged',
+        recipientReceipt: receipt,
+        revision: stored.transfer.revision + 1,
+      })
+      outgoing.put({
+        scopeId: fence.scopeId,
+        custodyOperationId: stored.custodyOperationId,
+        transfer: acknowledged,
+        nowMs,
+      })
+      return acknowledged
+    })
+  }
+
+  async #scheduleRetry(
+    expected: DurableOutgoingCashuTransfer,
+    nowMs: number,
+  ): Promise<DurableOutgoingCashuTransfer> {
+    const fence = this.#getFence()
+    return withDurableCustodyUnitOfWork(this.#storage, fence, nowMs, (database) => {
+      const store = new DurableOutgoingCashuSqliteStore(database)
+      const current = store.get(fence.scopeId, expected.transferId)
+      if (current === null) throw new Error('durable outgoing Cashu transfer is missing')
+      if (!isRetryableOutgoingTransfer(current.transfer)) return current.transfer
+      const scheduled = scheduleDurableOutgoingCashuRecoveryRetry({
+        transfer: current.transfer,
+        nowMs,
+      })
+      store.put({
+        scopeId: fence.scopeId,
+        custodyOperationId: current.custodyOperationId,
+        transfer: scheduled,
+        nowMs,
+      })
+      return scheduled
+    })
   }
 
   async #bindReclaim(
@@ -763,6 +974,7 @@ export class DaemonDurableOutgoingCashuCoordinator {
     readonly amountSats: number
     readonly mintUrl: string
     readonly wallet: CashuWalletLike
+    readonly deliveryIntent?: DurableOutgoingCashuDeliveryIntent
   }): Promise<DurableOutgoingCashuTransfer> {
     if (!input.wallet.prepareSwapToSend || !input.wallet.completeSwap) {
       throw new Error('cashu wallet does not support durable send preparation')
@@ -796,11 +1008,7 @@ export class DaemonDurableOutgoingCashuCoordinator {
       requestedAmount: String(input.amountSats),
       walletSendOperation: operation,
       keepProofDerivationLocators: operation.preview.keepOutputs.map(() => null),
-      deliveryIntent: {
-        policy: 'bearer-spend-classification',
-        tokenBytesLimit: TOKEN_BYTES_LIMIT,
-        tokenProofLimit: TOKEN_PROOF_LIMIT,
-      },
+      deliveryIntent: input.deliveryIntent ?? bearerDeliveryIntent(),
       dueAtMs: observedAtMs,
     })
     const binding = outgoingBinding(walletScope(fence), operation, input.wallet)
@@ -1395,6 +1603,23 @@ function walletScope(fence: CustodyScopeFence): DurableCustodyScope {
     scopeId: fence.scopeId,
     walletId: fence.scopeId.slice('custody:wallet:'.length),
   }
+}
+
+function bearerDeliveryIntent(): DurableOutgoingCashuDeliveryIntent {
+  return {
+    policy: 'bearer-spend-classification',
+    tokenBytesLimit: TOKEN_BYTES_LIMIT,
+    tokenProofLimit: TOKEN_PROOF_LIMIT,
+  }
+}
+
+function isRetryableOutgoingTransfer(transfer: DurableOutgoingCashuTransfer): boolean {
+  return (
+    transfer.deliveryState === 'prepared' ||
+    transfer.deliveryState === 'delivery-pending' ||
+    transfer.deliveryState === 'bearer-partial' ||
+    transfer.deliveryState === 'reclaim-prepared'
+  )
 }
 
 function owner(fence: CustodyScopeFence, observedAtMs: number): DurableCustodyOwnerAuthorization {

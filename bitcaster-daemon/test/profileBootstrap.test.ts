@@ -293,9 +293,9 @@ test('outgoing transfer schema keeps requested amounts within the JavaScript saf
     const insert = database.prepare(
       `INSERT INTO daemon_outgoing_cashu_transfers (
          scope_id, transfer_id, custody_operation_id, normalized_mint, unit,
-         requested_amount, delivery_state, due_at_ms, attempt_count, revision,
+         requested_amount, delivery_state, delivery_policy, recipient_binding, due_at_ms, attempt_count, revision,
          transfer_artifact_id, transfer_fingerprint, created_at_ms, updated_at_ms
-       ) VALUES (?, ?, ?, 'https://mint.example', 'sat', ?, 'prepared', 0, 0, 0, ?, ?, 0, 0)`,
+       ) VALUES (?, ?, ?, 'https://mint.example', 'sat', ?, 'prepared', 'bearer-spend-classification', NULL, 0, 0, 0, ?, ?, 0, 0)`,
     )
     insert.run(
       'scope',
@@ -314,6 +314,72 @@ test('outgoing transfer schema keeps requested amounts within the JavaScript saf
           '9007199254740992',
           'c'.repeat(64),
           'd'.repeat(64),
+        ),
+      /constraint failed/i,
+    )
+  } finally {
+    database.close()
+  }
+})
+
+test('outgoing transfer schema rejects delivery policy and state substitutions', () => {
+  const database = new DatabaseSync(':memory:')
+  try {
+    const statement = FINAL_PROFILE_SCHEMA_SQL.find((sql) =>
+      sql.startsWith('CREATE TABLE daemon_outgoing_cashu_transfers'),
+    )
+    assert.ok(statement)
+    database.exec(`
+      CREATE TABLE custody_scopes (scope_id TEXT PRIMARY KEY);
+      CREATE TABLE custody_operations (
+        scope_id TEXT NOT NULL,
+        operation_id TEXT NOT NULL,
+        PRIMARY KEY (scope_id, operation_id)
+      );
+      CREATE TABLE custody_artifacts (
+        scope_id TEXT NOT NULL,
+        artifact_id TEXT NOT NULL,
+        PRIMARY KEY (scope_id, artifact_id)
+      );
+      INSERT INTO custody_scopes VALUES ('scope');
+      INSERT INTO custody_operations VALUES ('scope', 'operation-a');
+      INSERT INTO custody_operations VALUES ('scope', 'operation-b');
+      INSERT INTO custody_artifacts VALUES ('scope', '${'a'.repeat(64)}');
+      INSERT INTO custody_artifacts VALUES ('scope', '${'b'.repeat(64)}');
+    `)
+    database.exec(statement)
+    const insert = database.prepare(
+      `INSERT INTO daemon_outgoing_cashu_transfers (
+         scope_id, transfer_id, custody_operation_id, normalized_mint, unit,
+         requested_amount, delivery_state, delivery_policy, recipient_binding, due_at_ms, attempt_count, revision,
+         transfer_artifact_id, transfer_fingerprint, created_at_ms, updated_at_ms
+       ) VALUES (?, ?, ?, 'https://mint.example', 'sat', '1', ?, ?, ?, 0, 0, 0, ?, ?, 0, 0)`,
+    )
+    assert.throws(
+      () =>
+        insert.run(
+          'scope',
+          'recipient-bearer-state',
+          'operation-a',
+          'bearer-spent',
+          'durable-recipient-ack',
+          'c'.repeat(64),
+          'a'.repeat(64),
+          'd'.repeat(64),
+        ),
+      /constraint failed/i,
+    )
+    assert.throws(
+      () =>
+        insert.run(
+          'scope',
+          'bearer-recipient-state',
+          'operation-b',
+          'recipient-acknowledged',
+          'bearer-spend-classification',
+          null,
+          'b'.repeat(64),
+          'e'.repeat(64),
         ),
       /constraint failed/i,
     )
