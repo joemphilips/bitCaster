@@ -27,10 +27,10 @@ bitCaster's asset model can be understood as a four-layer stack. Each layer wrap
 
 - **Layer 1 — Bitcoin.** Base money. Trustless and censorship-resistant, but with low liquidity for active trading: on-chain confirmations are slow, fees are non-trivial, and throughput is limited. Suitable for settlement, not for high-frequency order flow.
 - **Layer 2 — Lightning Network.** A trustless scaling layer over Bitcoin. Lightning solves L1's fee and confirmation-latency problems *without* introducing a new trusted party — payments are secured by the underlying Bitcoin timelocks. In exchange, it requires participants to be online and to manage channel liquidity, which makes it unsuitable as a long-term store or a passive holding.
-- **Layer 3 — Cashu native tokens.** Ecash wrapping a reserve asset held by a [Cashu mint](/user-guide/core-concepts/ecash/) — typically BTC (via Lightning), but possibly stablecoins or WBTC depending on the mint. Custodial with respect to the mint operator, but instant, private, and fee-less. Users move value between L2 and L3 by minting and melting ecash over Lightning.
+- **Layer 3 — Cashu native tokens.** Sat ecash backed by Bitcoin reserves held by the supported [Cashu mint](/user-guide/core-concepts/ecash/). It is custodial with respect to the mint operator, but instant, private, and fee-less. In the first release, users move value between L2 and L3 through the mint's BOLT11 Lightning payment method.
 - **Layer 4 — Cashu conditional tokens.** A *position* in a prediction market — what the Ethereum ecosystem would call a "security token". Each L4 token is locked to a specific outcome of a specific event and is spendable only once a DLC oracle attests that outcome. Users move value between L3 and L4 by buying or selling on the market; at resolution, winning L4 tokens settle back to L3 ecash at face value, and losing tokens expire.
 
-The stack describes the normal path, but implementations can sometimes skip layers. For example, value can move from Layer 1 directly to Layer 3 through Cashu's [on-chain payment method](https://github.com/cashubtc/nuts/pull/365). A direct path from Layer 1 or Layer 2 to Layer 4 is planned as a goal for the next milestone.
+The first release follows this stack. Users obtain sat ecash from the supported mint before they pay the matching engine. All payments to the matching engine use ecash. Users move value between Layer 3 and Layer 4 through CLOB orders and mint settlement.
 
 ## Why four layers?
 

@@ -9,6 +9,10 @@ sidebar:
 
 bitCaster is a prediction market platform built on [Bitcoin](https://bitcoin.org/) and [Cashu](https://cashu.space/). You buy and sell tokens that represent outcomes of real-world events — elections, sports, weather, anything. If your prediction is correct, the price of your tokens rises; if not, it falls.
 
+The browser serves casual participants and market creators. Professional and
+automated traders can use the CLI, daemon, and SDK. Every client uses the same
+CLOB and settlement protocol.
+
 At its core, it is fully open-spec and open-source. Your live wallet and tokens
 stay local to your browser. The web app can store an encrypted recovery copy
 that the server cannot decrypt; see [Encrypted wallet backup](./wallet-backup/)
@@ -21,7 +25,7 @@ For an overview of Cashu itself, see the [Bitcoin Design guide on ecash](https:/
 ### Trade anything, any way you wish
 
 Browse existing markets or place limit orders at any price. Markets can be binary
-(Yes/No), categorical (multiple outcomes), or even two-dimensional. The product
+(Yes/No) or categorical (multiple outcomes). The product
 uses sat ecash for ordinary wallet funding and msat conditional ecash for market
 positions. You can top up through a Lightning invoice or by pasting an existing
 sat Cashu token.
@@ -41,9 +45,11 @@ bitCaster's protocol is designed to make oracle fraud as difficult as possible. 
 
 When a market's oracle key is a Nostr public key, you should audit the oracle yourself before trading. Copy the market's oracle `npub` from the market detail page and check that identity's history and credibility in your preferred Nostr client.
 
-### Become a token issuer
+### Use the supported mint
 
-Any user can run their own Cashu mint to issue prediction market tokens. The mint software is open-source, and the protocol specification is public. Multiple independent mints can coexist, each serving different communities or markets.
+The first release supports one Cashu mint operated by bitCaster. The app does
+not support selecting or using another mint. The mint software and protocol
+specification remain public.
 
 ## How it works
 
@@ -51,7 +57,7 @@ Every market outcome has a corresponding token. The price of a token reflects th
 
 The trade ticket asks for whole shares and shows the cost before you submit. The breakdown separates **Quote payment**, **Est. settlement fee**, and **Total**, so you can see the order payment apart from the estimated mint fee. One categorical-market share pays **10 sats** if it wins. Internally, categorical markets use msat collateral subunits with `D=10000`, so the smallest price move is `0.01%`. For example, 50 shares at 30.00% quote 150 sats before any estimated settlement fee, and pay 500 sats if they win.
 
-When the event resolves, winning tokens are redeemable for their full share value, and losing tokens become worthless. Throughout this process, nobody — not even the token issuer — can know who holds which tokens or how many.
+When the event resolves, winning tokens are redeemable for their full share value, and losing tokens become worthless. Throughout this process, nobody — not even the token issuer — can know who holds which tokens or how many. The mint cannot selectively freeze an identified user's ecash. It can stop service for everyone, so users must still assess the mint before they participate.
 
 ## Your assets, your responsibility[^1]
 

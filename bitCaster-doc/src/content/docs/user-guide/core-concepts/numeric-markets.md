@@ -42,4 +42,6 @@ When you create a numeric market:
 
 ## Why Not Fiat Numeric Markets?
 
-Fiat-denominated numeric markets would need either very large payouts per share (too expensive for small traders) or sub-cent ecash units (complex and error-prone). We may add fiat support in the future if there's enough demand, but for now BTC-only keeps things simple and accessible.
+Fiat-denominated numeric markets would need either very large payouts per share
+or sub-cent ecash units. The product does not support fiat collateral. Sat-only
+collateral keeps the product boundary simple and explicit.

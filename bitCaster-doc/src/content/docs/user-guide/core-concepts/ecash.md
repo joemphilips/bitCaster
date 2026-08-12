@@ -26,15 +26,22 @@ secrets, but it cannot redirect their value or extend their expiry.
 
 ## Funding and withdrawal
 
-You can fund a sat wallet through Lightning or by importing a sat Cashu token.
-The trading flow manages conditional market proofs. You can withdraw ordinary
-sat ecash through a supported wallet flow.
+The first release supports one mint operated by bitCaster. You can fund a sat
+wallet through the mint's BOLT11 Lightning payment method or by importing a sat
+Cashu token from that mint. The trading flow manages conditional market proofs.
+You can withdraw ordinary sat ecash through the mint's BOLT11 Lightning flow.
 
 ## Trust model
 
 Ecash is a bearer system. You must protect wallet data and recovery material.
 The mint holds the Bitcoin reserves behind its issued tokens. You therefore
 trust the mint operator to honor its ecash obligations.
+
+The mint verifies bearer tokens instead of a persistent user identity. A user
+can swap a token before redemption and break the link to an earlier request.
+The mint therefore cannot selectively freeze ecash by user identity. It can
+halt service globally, so users must still assess the mint and its observable
+operation before they participate.
 
 The matching engine temporarily holds the bounded capability for an order. It
 cannot spend other wallet proofs. If it withholds settlement, the authorized

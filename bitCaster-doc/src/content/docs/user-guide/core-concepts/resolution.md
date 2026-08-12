@@ -49,12 +49,16 @@ For example, in a market with YES/NO outcomes:
 
 There is also a second path that closes a market. If the oracle's announced deadline passes without an attestation arriving, the market closes by deadline. The redemption window for winning tokens is set per-mint, not per-market — every market a given mint hosts shares the same window length, which the mint commits to in its vesting period.
 
+The first release does not define a predetermined refund rule for a missing
+attestation. The mint operator can choose a refund outcome under the disclosed
+mint policy. Users should inspect that policy before they trade.
+
 ## Redeeming Tokens
 
 Redeeming converts your conditional tokens (CTF tokens locked to an outcome) back into regular ecash tokens that you can spend freely.
 
-- Those ecash tokens can be either stablecoin-denominated or BTC-denominated, depending on the mint.
-- BTC-denominated tokens can be further redeemed for actual bitcoin by withdrawing over Lightning.
+- The first release returns sat ecash issued by the supported mint.
+- You can redeem ordinary sat ecash for bitcoin through the mint's supported BOLT11 Lightning withdrawal flow.
 
 ### Native daemon retirement
 
