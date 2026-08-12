@@ -49,8 +49,8 @@
   "dependencies": {
     "@bitcaster-market/client-sdk": "0.1.0",
     "@cashu/cashu-ts": "file:../cashu-ts",
-    "@microsoft/signalr": "^10.0.0",
-    "nostr-tools": "^2.23.8"
+    "@microsoft/signalr": "^10.0.11",
+    "nostr-tools": "^2.24.1"
   },
   "devDependencies": {
     "@types/node": "^22.10.5",
