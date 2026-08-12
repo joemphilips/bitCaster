@@ -111,6 +111,24 @@ test('proof-operation facts bind exact wallet unit, scope, and real mint keys', 
     durableCustodyProofOperationSemanticKind('ctf-range-collateral-convert'),
     'ctf-range-collateral-convert',
   )
+  assert.equal(
+    durableCustodyProofOperationSemanticKind('ctf-range-refund'),
+    'ctf-range-refund',
+  )
+  assert.throws(
+    () => durableCustodyProofOperationSemanticKind('swap-refund' as never),
+    /kind/,
+  )
+})
+
+test('CTF range refunds retain an explicit non-HTLC custody stage', async () => {
+  const facts = await resolveDurableCustodyProofOperationFacts({
+    operation: operation('ctf-range-refund'),
+    resolveMintKeys: async () =>
+      new Map([[KEYSET, { id: KEYSET, unit: 'sat', keys: { '1': PUBLIC_KEY } }]]),
+    requireDleq: false,
+  })
+  assert.equal(facts.binding.stage, 'ctf-range-refund')
 })
 
 test('proof-operation bounds and curve-specific mint keys fail closed', async () => {

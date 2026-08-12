@@ -41,8 +41,8 @@ function scope() {
 }
 
 function intent(
-  semanticKind: 'wallet-send' | 'swap-lock' = 'wallet-send',
-  stage: 'send' | 'lock' = 'send',
+  semanticKind: 'wallet-send' | 'ctf-range-refund' = 'wallet-send',
+  stage: 'send' | 'ctf-range-refund' = 'send',
 ): DurableCustodyRecord {
   const walletScope = scope()
   const facts = createDurableProofOperationFacts({
@@ -748,7 +748,7 @@ test('cross-scope proof identities cannot collide', () => {
 })
 
 test('P09 purge requires terminal status, replay cutoff, and resolved delivery', () => {
-  const record = intent('swap-lock', 'lock')
+  const record = intent('ctf-range-refund', 'ctf-range-refund')
   assert.deepEqual(record.operation.proofStorage, {
     storageClass: 'pinned-operation-bound-deterministic',
     pinReasons: ['active-reservation'],

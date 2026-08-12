@@ -1385,6 +1385,7 @@ describe("browser CTF range order coordinator", () => {
     ).toHaveLength(1);
     const refundId = deriveDurableCtfRangeRefundOperationId(preparation.operationId);
     expect(await database.proofOperations.get(refundId)).toMatchObject({
+      kind: "ctf-range-refund",
       state: "completed",
       metadata: { rangeOperationId: preparation.operationId },
     });

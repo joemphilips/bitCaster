@@ -253,7 +253,7 @@ function proofId(scope: DurableCustodyScope, secret: string): string {
     scopeId: scope.scopeId,
     normalizedMint: 'https://mint.example',
     unit: 'sat',
-    keysetId: 'keyset-1',
+    keysetId: CONFORMANCE_KEYSET_ID,
     secret,
   })
 }

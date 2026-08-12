@@ -178,10 +178,8 @@ export interface StoredOutputData {
 }
 
 export type ProofOperationKind =
-  | "swap-lock"
-  | "swap-claim"
   | "conditional-keyset-swap"
-  | "swap-refund"
+  | "ctf-range-refund"
   | "ctf-split"
   | "ctf-merge"
   | "ctf-consolidation"

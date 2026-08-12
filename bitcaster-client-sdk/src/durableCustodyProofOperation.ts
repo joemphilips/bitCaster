@@ -255,9 +255,7 @@ export function durableCustodyProofOperationSemanticKind(
 ): DurableCustodySemanticKind {
   switch (kind) {
     case 'conditional-keyset-swap':
-    case 'swap-lock':
-    case 'swap-claim':
-    case 'swap-refund':
+    case 'ctf-range-refund':
     case 'ctf-split':
     case 'ctf-merge':
     case 'ctf-redeem':
@@ -274,8 +272,6 @@ export function durableCustodyProofOperationSemanticKind(
       return 'proof-consolidation'
     case 'ctf-range-authorization':
       return 'conditional-keyset-swap'
-    case 'ctf-range-refund':
-      return 'swap-refund'
     case 'ctf-condition-registration':
     case 'regular-split':
     case 'proof-split':
@@ -299,12 +295,8 @@ function stageForSemantic(
   kind: DurableCustodySemanticKind,
 ): DurableProofOperationFacts['binding']['stage'] {
   switch (kind) {
-    case 'swap-lock':
-      return 'lock'
-    case 'swap-claim':
-      return 'claim'
-    case 'swap-refund':
-      return 'refund'
+    case 'ctf-range-refund':
+      return 'ctf-range-refund'
     case 'generic-receive':
       return 'receive'
     case 'ctf-split':

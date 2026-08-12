@@ -192,7 +192,7 @@ test('accepts an exact CTF range refund as a mint-verified operation', () => {
   })
 
   assert.equal(authority.authority.operation.kind, 'ctf-range-refund')
-  assert.equal(authority.facts.binding.stage, 'refund')
+  assert.equal(authority.facts.binding.stage, 'ctf-range-refund')
 })
 
 test('accepts and verifies an exact CTF split operation', () => {

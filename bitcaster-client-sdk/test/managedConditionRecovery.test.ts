@@ -63,7 +63,7 @@ for (const [kind, semanticKind, stage, path] of [
     '/v1/ctf/convert',
   ],
   ['range-settlement', 'conditional-keyset-swap', 'send', '/internal/settlement-capabilities'],
-  ['range-refund', 'swap-refund', 'refund', '/v1/swap'],
+  ['range-refund', 'ctf-range-refund', 'ctf-range-refund', '/v1/swap'],
   ['condition-linked-consolidation', 'ctf-merge', 'ctf-merge', '/v1/ctf/convert'],
   ['condition-linked-consolidation', 'proof-consolidation', 'proof-consolidation', '/v1/swap'],
   ['inventory-retirement', 'ctf-redeem', 'ctf-redeem', '/v1/redeem_outcome'],

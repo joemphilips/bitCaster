@@ -22,10 +22,8 @@ export const DURABLE_CUSTODY_RECORD_MAX_BYTES = DURABLE_CUSTODY_RECORD_BYTES_MAX
 export const DURABLE_ARTIFACT_BYTES_LIMIT_MAX = DURABLE_CUSTODY_ARTIFACT_BYTES_MAX
 
 export type DurableCustodySemanticKind =
-  | 'swap-lock'
-  | 'swap-claim'
-  | 'swap-refund'
   | 'conditional-keyset-swap'
+  | 'ctf-range-refund'
   | 'generic-receive'
   | 'generic-send'
   | 'wallet-send'
@@ -43,12 +41,10 @@ export type DurableCustodyOperationState =
   | 'aborted'
 export type DurableCustodyCurve = 'secp256k1' | 'bls12-381'
 export type DurableCustodyWalletStage =
-  | 'lock'
-  | 'claim'
-  | 'refund'
   | 'receive'
   | 'send'
   | 'capability-preparation'
+  | 'ctf-range-refund'
   | 'ctf-split'
   | 'ctf-merge'
   | 'proof-consolidation'
@@ -2649,11 +2645,9 @@ function validateBinding(value: unknown): asserts value is DurableCustodyBinding
   requireText(value.activityId, 'activity id')
   if (
     value.stage !== 'receive' &&
-    value.stage !== 'lock' &&
-    value.stage !== 'claim' &&
-    value.stage !== 'refund' &&
     value.stage !== 'send' &&
     value.stage !== 'capability-preparation' &&
+    value.stage !== 'ctf-range-refund' &&
     value.stage !== 'ctf-split' &&
     value.stage !== 'ctf-merge' &&
     value.stage !== 'proof-consolidation' &&
@@ -2665,10 +2659,8 @@ function validateBinding(value: unknown): asserts value is DurableCustodyBinding
 
 function requireSemantic(value: unknown): asserts value is DurableCustodySemanticKind {
   if (
-    value !== 'swap-lock' &&
-    value !== 'swap-claim' &&
-    value !== 'swap-refund' &&
     value !== 'conditional-keyset-swap' &&
+    value !== 'ctf-range-refund' &&
     value !== 'generic-receive' &&
     value !== 'generic-send' &&
     value !== 'wallet-send' &&
@@ -2686,10 +2678,8 @@ function requireSemantic(value: unknown): asserts value is DurableCustodySemanti
 
 function requiresTerminalReplay(kind: DurableCustodySemanticKind): boolean {
   switch (kind) {
-    case 'swap-lock':
-    case 'swap-claim':
-    case 'swap-refund':
     case 'conditional-keyset-swap':
+    case 'ctf-range-refund':
     case 'ctf-range-regular-source':
     case 'ctf-range-conditional-source':
     case 'ctf-range-collateral-convert':
@@ -2707,12 +2697,8 @@ function requiresTerminalReplay(kind: DurableCustodySemanticKind): boolean {
 
 function semanticStage(kind: DurableCustodySemanticKind): DurableCustodyWalletStage {
   switch (kind) {
-    case 'swap-lock':
-      return 'lock'
-    case 'swap-claim':
-      return 'claim'
-    case 'swap-refund':
-      return 'refund'
+    case 'ctf-range-refund':
+      return 'ctf-range-refund'
     case 'conditional-keyset-swap':
     case 'generic-send':
     case 'wallet-send':

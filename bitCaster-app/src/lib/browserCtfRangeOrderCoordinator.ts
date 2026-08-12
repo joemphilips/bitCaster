@@ -1959,7 +1959,7 @@ export class BrowserCtfRangeOrderCoordinator {
     const now = this.#now();
     const refund: ProofOperationRecord = {
       operationId,
-      kind: "swap-refund",
+      kind: "ctf-range-refund",
       state: "prepared",
       mintUrl: operation.mintUrl,
       inputs: prepared.request.inputs,
@@ -2550,7 +2550,7 @@ function assertExactRefundRecord(
   };
   if (
     refund.operationId !== rebuilt.operation.operationId ||
-    refund.kind !== "swap-refund" ||
+    refund.kind !== "ctf-range-refund" ||
     refund.mintUrl !== operation.mintUrl ||
     refund.metadata.rangeOperationId !== operation.operationId ||
     refund.metadata.unit !== "msat" ||
