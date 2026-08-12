@@ -1,18 +1,18 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
-import { useBookmarkStore } from '@/stores/bookmarks'
-import { getMarkets } from '@/lib/markets'
-import type { Market } from '@/types/market'
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { useBookmarkStore } from "@/stores/bookmarks";
+import { getMarkets } from "@/lib/markets";
+import type { Market } from "@/types/market";
 
 interface UseLikedMarketsResult {
-  markets: Market[]
-  loading: boolean
-  error: string | null
+  markets: Market[];
+  loading: boolean;
+  error: string | null;
   /**
    * Re-run the bulk-fetch against the engine. Used by the liked-market close
    * reconcile (P22 Link G2) so a `visibilitychange` can refresh the catalogue
    * `state` of the user's bookmarks without a full reload.
    */
-  refetch: () => void
+  refetch: () => void;
 }
 
 /**
@@ -20,7 +20,7 @@ interface UseLikedMarketsResult {
  * to grow without bound; we batch the ID set into pages of this size to stay
  * under the cap. Mirrors the `?ids=<comma-separated>` cap on the engine.
  */
-const MAX_BULK_IDS = 100
+const MAX_BULK_IDS = 100;
 
 /**
  * Resolve the user's bookmarked / "liked" markets (P5.1).
@@ -41,60 +41,58 @@ const MAX_BULK_IDS = 100
  * same `e`-tag.
  */
 export function useLikedMarkets(): UseLikedMarketsResult {
-  const bookmarks = useBookmarkStore((s) => s.markets)
-  const [allMarkets, setAllMarkets] = useState<Market[] | null>(null)
-  const [error, setError] = useState<string | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [refetchNonce, setRefetchNonce] = useState(0)
+  const bookmarks = useBookmarkStore((s) => s.markets);
+  const [allMarkets, setAllMarkets] = useState<Market[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [refetchNonce, setRefetchNonce] = useState(0);
 
-  const refetch = useCallback(() => setRefetchNonce((n) => n + 1), [])
+  const refetch = useCallback(() => setRefetchNonce((n) => n + 1), []);
 
-  const uniqueIds = useMemo(() => Array.from(new Set(bookmarks)), [bookmarks])
+  const uniqueIds = useMemo(() => Array.from(new Set(bookmarks)), [bookmarks]);
 
   useEffect(() => {
-    let cancelled = false
+    let cancelled = false;
 
     if (uniqueIds.length === 0) {
-      setAllMarkets([])
-      setError(null)
-      setLoading(false)
+      setAllMarkets([]);
+      setError(null);
+      setLoading(false);
       return () => {
-        cancelled = true
-      }
+        cancelled = true;
+      };
     }
 
-    setLoading(true)
-    setError(null)
+    setLoading(true);
+    setError(null);
     fetchBookmarkedMarkets(uniqueIds)
       .then((markets) => {
-        if (!cancelled) setAllMarkets(markets)
+        if (!cancelled) setAllMarkets(markets);
       })
       .catch(() => {
         if (!cancelled) {
-          setAllMarkets(null)
-          setError('Failed to load markets')
+          setAllMarkets(null);
+          setError("Failed to load markets");
         }
       })
       .finally(() => {
-        if (!cancelled) setLoading(false)
-      })
+        if (!cancelled) setLoading(false);
+      });
     return () => {
-      cancelled = true
-    }
-  }, [uniqueIds, refetchNonce])
+      cancelled = true;
+    };
+  }, [uniqueIds, refetchNonce]);
 
   const markets = useMemo(() => {
-    if (!allMarkets) return []
-    if (uniqueIds.length === 0) return []
-    const byId = new Map(allMarkets.map((m) => [m.id, m]))
+    if (!allMarkets) return [];
+    if (uniqueIds.length === 0) return [];
+    const byId = new Map(allMarkets.map((m) => [m.id, m]));
     // Preserve the order in which the user bookmarked the markets so the
     // most recently liked sits on the right edge of the horizontal list.
-    return uniqueIds
-      .map((id) => byId.get(id))
-      .filter((m): m is Market => m != null)
-  }, [allMarkets, uniqueIds])
+    return uniqueIds.map((id) => byId.get(id)).filter((m): m is Market => m != null);
+  }, [allMarkets, uniqueIds]);
 
-  return { markets, loading, error, refetch }
+  return { markets, loading, error, refetch };
 }
 
 /**
@@ -104,11 +102,11 @@ export function useLikedMarkets(): UseLikedMarketsResult {
  * one-shot load).
  */
 async function fetchBookmarkedMarkets(ids: string[]): Promise<Market[]> {
-  const collected: Market[] = []
+  const collected: Market[] = [];
   for (let i = 0; i < ids.length; i += MAX_BULK_IDS) {
-    const slice = ids.slice(i, i + MAX_BULK_IDS)
-    const result = await getMarkets({ ids: slice, state: 'All' })
-    collected.push(...result.markets)
+    const slice = ids.slice(i, i + MAX_BULK_IDS);
+    const result = await getMarkets({ ids: slice, state: "All" });
+    collected.push(...result.markets);
   }
-  return collected
+  return collected;
 }

@@ -1,61 +1,40 @@
 ---
 title: "Ecash"
-description: "ecashとは何か、bitCasterがCashuを選んだ理由、そしてなぜブロックチェーンが予測市場に不要なのか"
+description: "Cashu ecash の概要と、bitCaster が sat 建て条件付きトークンを使う方法。"
 sidebar:
   order: 0
 ---
 
 # Ecash
 
-bitCasterのポジションの実態は、単なる**ecashトークン**です。このページでは、それが何を意味し、なぜ重要で、なぜブロックチェーンよりも予測市場に適しているかを説明します。
+bitCaster のポジションは Cashu ecash を使用します。現在のプロダクト資産は sat です。
 
-## ecashとは？
+## Ecash とは
 
-ecashは、1980年代にDavid Chaumが発明した**Chaumianブラインド署名**に基づくデジタルマネーの形態です。核となるアイデアはシンプルです：
+ecash は Chaumian blind signature を使用します。ミントは署名済みの bearer token を発行します。token を制御する人が token を使用できます。ミントは token を検証しますが、blind signature により、発行と後の使用を結び付けにくくします。
 
-- **ミント**がデジタルトークンを発行します。銀行が紙幣を発行するのと同様です。ミントは各トークンに署名して、本物であることを証明します。
-- **ブラインド署名**により、ミントは*署名対象を見ずに*トークンに署名します。後でトークンが本物であることを検証できますが、そのトークンを最初に受け取った人に結びつけることはできません。
-- ecashは**ベアラー証券**です。トークンを持っている人がそれを所有します。物理的な現金と同じです。トークンにはアカウント、ログイン、IDは紐づいていません。
-- **プライバシーはプロトコルに組み込まれています**。後付けではありません。ミント自体が誰が何を使っているかを追跡できません。
+bitCaster では、ウォレットは通常の sat ecash とマーケットポジション用の条件付きトークンを使用します。ミントは決済中にこれらのポジションを conversion します。確定した conversion は、正確な result entry をウォレットに返します。
 
-bitCasterでは、ミントがビットコイン（sats）建てのecashトークンを発行します。ミントによっては、USD cents など別の単位も提供できます。Lightning経由でトップアップすると、選択した単位のecashを受け取ります。既存のCashu ecashトークンをトップアップ画面に貼り付けて、新しいLightningインボイスを作らずに取引用ウォレットへ直接クレジットすることもできます。賭けを行うと、そのecashを特定の結果にロックされた**条件付きトークン**と交換します。勝てば、その条件付きトークンは通常のecashに償還可能になり、いつでもLightningに出金できます。
+ウォレットは seed、output blinding factor、refund key、および通常の proof inventory を保持します。注文では、その注文を認可する正確な `PAY_TO_UNLOCK` proof だけをエンジンに送信します。エンジンはその proof secret を確認しますが、値を別の場所に移動したり、有効期限を延長したりできません。
 
-## Lightning経由のUSD入金
+## 入金と出金
 
-ミントがUSDに対応している場合、アプリでは入金額を cents で入力し、そのUSD見積もりに対応する新しいLightningインボイスをリクエストします。インボイス自体はLightning上のBTCで支払いますが、BTC金額は見積もり時点のレートで決まり、見積画面には有効期限のカウントダウンが表示されます。BTC/USDレートは変動するため、USD見積もりの有効期限は意図的に短く、通常は約90秒です。
+初回リリースは、bitCaster が運営する1つのミントに対応します。sat ウォレットには、ミントの BOLT11 Lightning 支払い方式またはそのミントが発行した sat Cashu token のインポートで入金できます。取引フローが条件付きマーケット proof を管理します。ミントの BOLT11 Lightning フローで通常の sat ecash を出金できます。
 
-支払い前に見積もりが期限切れになった場合は、同じ画面から新しい見積もりをリクエストしてください。ミントがその見積もりを決済できる状態で支払いが届いた場合、ウォレットには後から再計算した金額ではなく、見積もりで提示された正確なUSD cents額がクレジットされます。
+## 信頼モデル
 
-## Ecash貼り付けによるトップアップ
+ecash は bearer system です。ウォレットデータと回復材料を保護してください。ミントは発行した token の裏付けとなる Bitcoin 準備金を保持します。そのため、mint operator が ecash の義務を履行すると信頼する必要があります。
 
-トレードチケットのトップアップ画面では、**Lightning invoice** と **Ecash paste** を選べます。アプリに新しいインボイスを作らせたい場合はLightningを使います。別のウォレットやデバイスに既にCashuトークンがあり、それをbitCasterウォレットへ移して取引に使いたい場合はEcash pasteを使います。
+ミントは永続的なユーザー identity ではなく bearer token を検証します。ユーザーは償還前に token を swap して、以前の request との関連を切断できます。そのため、ミントはユーザー identity に基づいて ecash を選択的に凍結できません。ミントはサービス全体を停止できるため、ユーザーは参加前にミントと観測可能な運用データを自分で評価する必要があります。
 
-トップアップボタンには、取引に必要なウォレット単位が **Top up USD wallet** や **Top up sats wallet** のように表示されます。取引しているマーケットに合う単位のトークンを貼り付けてください。USDマーケットにはUSD ecash、satマーケットにはsat ecashが必要です。
+マッチングエンジンは、注文に対する限定された capability を一時的に保持します。他の wallet proof は使用できません。決済を保留した場合、認可された proof は refund が有効になるまで使用できません。
 
-## なぜCashuなのか？
+## Cashu を使う理由
 
-以下の理由から、bitCaster では[**Cashu**](https://cashu.space/)をecashのプロトコルとして用いています
+Cashu は Bitcoin と Lightning をサポートするプライベートな bearer token を提供します。また、bitCaster が条件付きトークンと `PAY_TO_UNLOCK` authorization に使用する NUT framework も提供します。
 
-- **オープン仕様** — Cashuは[NUTs](https://github.com/cashubtc/nuts)（Notation, Usage, and Terminology）と呼ばれる公開仕様のセットで定義されています。誰でもミントやウォレットを実装でき、プロトコルはコミュニティレビューを通じて進化します。
-- **シンプルなプロトコル** — 暗号プロトコルは（secp256k1上のブラインド署名）は理解、監査、拡張が容易です。bitCasterの条件付きトークン拡張（NUT-CTF）はこの基盤の上に直接構築されています。
-- **ネイティブBitcoin/Lightning統合** — Cashuミントはビットコインで準備金を保持し、Lightning経由で入出金を受け付けます。ブリッジ、ラップドトークン、別チェーンの管理などを必要としません
-- **コミュニティ主導の開発** — 複数の独立チームがCashuウォレット、ミント、ライブラリを構築しており、エコシステムの単一障害点を削減しています。
+## 関連情報
 
-## なぜブロックチェーンではないのか？
-
-よくある質問：PolymarketがPolygon上で行っているように、なぜブロックチェーン上で取引所を運営しないのか？
-
-重要な洞察は、**予測市場取引所は既に中央集権的である**ということです。誰かが注文板を運営し、取引をマッチングしなければなりません。その活動をオンチェーンに載せても中央集権性は排除されません。オーバーヘッドが追加されるだけです：
-
-- **プライバシーが低下する** — パブリックブロックチェーンでは、すべての取引が誰にでも見えます。Polymarket参加者のポジション、タイミング、取引パターンはすべてオンチェーンで分析可能です。ecashはその反対を提供します。ミント自体ですら、誰がどのトークンを持っているかわかりません。外部の観察者はなおさらです。
-- **スケーラビリティが低下する** — オンチェーン決済はガス代、ブロック確認時間、スループット制限を意味します。高アクティビティイベント中にはこれらのコストが急増します。ecash決済は即時かつ非常に安上りです。
-- **摩擦が増加する** — PolymarketにはPolygon上のUSDCが必要で、他チェーンからのブリッジ、ガストークンの管理、ブロックチェーン固有のUX（ウォレット承認、トランザクション署名、失敗したトランザクション）への対応が必要です。Lightning経由のecashなら、satsを入金してすぐに取引を開始できます。
-
-ブロックチェーンは**検閲耐性**と**公開検証可能性**に優れています。これらは分散型金融にとって重要な特性です。しかし、予測市場取引所はすべての取引の公開検証可能性を必要とせず、マッチング層での検閲耐性はそもそも不可能です（マッチングエンジンはいつでも注文を拒否できます）。ユーザーが実際に求めているのは**プライバシー**、**速度**、**低手数料**です。まさにecashが提供するものです。
-
-## さらに読む
-
-- [アトミックスワップ](/ja/user-guide/core-concepts/atomic-swap/) — カストディアンを信頼せずに取引が決済される仕組み
-- [マーケットの清算](/ja/user-guide/core-concepts/resolution/) — マーケットがどのように解決され、勝利トークンがどのように償還されるか
-- [コンディショナルトークンフレームワーク](/ja/user-guide/core-concepts/conditional-tokens/) — bitCasterの3層アセットモデルと、予測市場のポジションをecashとしてどう表現するか
-- [Bitcoin Design — Ecash Introduction](https://bitcoin.design/guide/how-it-works/ecash/introduction/) — ecash信頼モデルの外部プライマー
+- [アトミック決済](/ja/user-guide/core-concepts/atomic-swap/)はミント conversion フローを説明します。
+- [Conditional Token Framework](/ja/user-guide/core-concepts/conditional-tokens/)は条件付きマーケットポジションを説明します。
+- [Bitcoin Design — Ecash Introduction](https://bitcoin.design/guide/how-it-works/ecash/introduction/)は ecash 信頼モデルの外部紹介です。

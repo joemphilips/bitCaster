@@ -15,8 +15,8 @@ public sealed class OpenApiJsonStringEnumConverter<TEnum> : JsonConverterFactory
     where TEnum : struct, Enum
 {
     private static readonly Dictionary<TEnum, string> ToWire = BuildToWire();
-    private static readonly Dictionary<string, TEnum> FromWireCaseInsensitive =
-        ToWire.ToDictionary(kvp => kvp.Value, kvp => kvp.Key, StringComparer.OrdinalIgnoreCase);
+    private static readonly Dictionary<string, TEnum> FromWire =
+        ToWire.ToDictionary(kvp => kvp.Value, kvp => kvp.Key, StringComparer.Ordinal);
 
     public override bool CanConvert(Type typeToConvert) =>
         typeToConvert == typeof(TEnum)
@@ -87,7 +87,7 @@ public sealed class OpenApiJsonStringEnumConverter<TEnum> : JsonConverterFactory
 
     private static TEnum ReadWireValue(string? value)
     {
-        if (value is not null && FromWireCaseInsensitive.TryGetValue(value, out var parsed))
+        if (value is not null && FromWire.TryGetValue(value, out var parsed))
             return parsed;
 
         throw new JsonException($"Unknown {typeof(TEnum).Name} value: {value}");

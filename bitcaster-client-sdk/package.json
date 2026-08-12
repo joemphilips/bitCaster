@@ -19,6 +19,210 @@
       "types": "./dist/ctfConsolidation.d.ts",
       "import": "./dist/ctfConsolidation.js"
     },
+    "./durableCustody": {
+      "types": "./dist/durableCustody.d.ts",
+      "import": "./dist/durableCustody.js"
+    },
+    "./durableSeedDerivedOutputs": {
+      "types": "./dist/durableSeedDerivedOutputs.d.ts",
+      "import": "./dist/durableSeedDerivedOutputs.js"
+    },
+    "./durableSeedDerivedProofLineage": {
+      "types": "./dist/durableSeedDerivedProofLineage.d.ts",
+      "import": "./dist/durableSeedDerivedProofLineage.js"
+    },
+    "./durableWalletProofDerivationLocator": {
+      "types": "./dist/durableWalletProofDerivationLocator.d.ts",
+      "import": "./dist/durableWalletProofDerivationLocator.js"
+    },
+    "./recoverableWalletStorage": {
+      "types": "./dist/recoverableWalletStorage.d.ts",
+      "import": "./dist/recoverableWalletStorage.js"
+    },
+    "./encryptedWalletBackup": {
+      "types": "./dist/encryptedWalletBackup.d.ts",
+      "import": "./dist/encryptedWalletBackup.js"
+    },
+    "./encryptedWalletBackupV2Keys": {
+      "types": "./dist/encryptedWalletBackupV2Keys.d.ts",
+      "import": "./dist/encryptedWalletBackupV2Keys.js"
+    },
+    "./encryptedWalletBackupV2Bundle": {
+      "types": "./dist/encryptedWalletBackupV2Bundle.d.ts",
+      "import": "./dist/encryptedWalletBackupV2Bundle.js"
+    },
+    "./encryptedWalletBackupV2Descriptor": {
+      "types": "./dist/encryptedWalletBackupV2Descriptor.d.ts",
+      "import": "./dist/encryptedWalletBackupV2Descriptor.js"
+    },
+    "./encryptedWalletBackupV2Head": {
+      "types": "./dist/encryptedWalletBackupV2Head.d.ts",
+      "import": "./dist/encryptedWalletBackupV2Head.js"
+    },
+    "./encryptedWalletBackupV2Mutation": {
+      "types": "./dist/encryptedWalletBackupV2Mutation.d.ts",
+      "import": "./dist/encryptedWalletBackupV2Mutation.js"
+    },
+    "./encryptedWalletBackupV2Receipt": {
+      "types": "./dist/encryptedWalletBackupV2Receipt.d.ts",
+      "import": "./dist/encryptedWalletBackupV2Receipt.js"
+    },
+    "./encryptedWalletBackupV2ServiceCodec": {
+      "types": "./dist/encryptedWalletBackupV2ServiceCodec.d.ts",
+      "import": "./dist/encryptedWalletBackupV2ServiceCodec.js"
+    },
+    "./encryptedWalletBackupV2HttpCodec": {
+      "types": "./dist/encryptedWalletBackupV2HttpCodec.d.ts",
+      "import": "./dist/encryptedWalletBackupV2HttpCodec.js"
+    },
+    "./encryptedWalletBackupV2DelegatedServerCodec": {
+      "types": "./dist/encryptedWalletBackupV2DelegatedServerCodec.d.ts",
+      "import": "./dist/encryptedWalletBackupV2DelegatedServerCodec.js"
+    },
+    "./encryptedWalletBackupV2HttpAdapter": {
+      "types": "./dist/encryptedWalletBackupV2HttpAdapter.d.ts",
+      "import": "./dist/encryptedWalletBackupV2HttpAdapter.js"
+    },
+    "./encryptedWalletBackupV2RequestProof": {
+      "types": "./dist/encryptedWalletBackupV2RequestProof.d.ts",
+      "import": "./dist/encryptedWalletBackupV2RequestProof.js"
+    },
+    "./encryptedWalletBackupV2ProofSet": {
+      "types": "./dist/encryptedWalletBackupV2ProofSet.d.ts",
+      "import": "./dist/encryptedWalletBackupV2ProofSet.js"
+    },
+    "./encryptedWalletBackupV2Sync": {
+      "types": "./dist/encryptedWalletBackupV2Sync.d.ts",
+      "import": "./dist/encryptedWalletBackupV2Sync.js"
+    },
+    "./encryptedWalletBackupEnrollment": {
+      "types": "./dist/encryptedWalletBackupEnrollment.d.ts",
+      "import": "./dist/encryptedWalletBackupEnrollment.js"
+    },
+    "./encryptedWalletBackupHttpCodec": {
+      "types": "./dist/encryptedWalletBackupHttpCodec.d.ts",
+      "import": "./dist/encryptedWalletBackupHttpCodec.js"
+    },
+    "./encryptedWalletBackupHttpAdapter": {
+      "types": "./dist/encryptedWalletBackupHttpAdapter.d.ts",
+      "import": "./dist/encryptedWalletBackupHttpAdapter.js"
+    },
+    "./encryptedWalletBackupNip98AccountAuthorization": {
+      "types": "./dist/encryptedWalletBackupNip98AccountAuthorization.d.ts",
+      "import": "./dist/encryptedWalletBackupNip98AccountAuthorization.js"
+    },
+    "./encryptedWalletBackupRetrySchedule": {
+      "types": "./dist/encryptedWalletBackupRetrySchedule.d.ts",
+      "import": "./dist/encryptedWalletBackupRetrySchedule.js"
+    },
+    "./encryptedWalletBackupServerCodec": {
+      "types": "./dist/encryptedWalletBackupServerCodec.d.ts",
+      "import": "./dist/encryptedWalletBackupServerCodec.js"
+    },
+    "./encryptedWalletBackupDelegatedServerCodec": {
+      "types": "./dist/encryptedWalletBackupDelegatedServerCodec.d.ts",
+      "import": "./dist/encryptedWalletBackupDelegatedServerCodec.js"
+    },
+    "./managedConditionInventory": {
+      "types": "./dist/managedConditionInventory.d.ts",
+      "import": "./dist/managedConditionInventory.js"
+    },
+    "./managedConditionRecovery": {
+      "types": "./dist/managedConditionRecovery.d.ts",
+      "import": "./dist/managedConditionRecovery.js"
+    },
+    "./durableCustodyProofOperation": {
+      "types": "./dist/durableCustodyProofOperation.d.ts",
+      "import": "./dist/durableCustodyProofOperation.js"
+    },
+    "./durableCustodyProofOperationRecord": {
+      "types": "./dist/durableCustodyProofOperationRecord.d.ts",
+      "import": "./dist/durableCustodyProofOperationRecord.js"
+    },
+    "./durableCustodyProofMaterial": {
+      "types": "./dist/durableCustodyProofMaterial.d.ts",
+      "import": "./dist/durableCustodyProofMaterial.js"
+    },
+    "./durableCustodyProofImport": {
+      "types": "./dist/durableCustodyProofImport.d.ts",
+      "import": "./dist/durableCustodyProofImport.js"
+    },
+    "./durableCustodyMintResult": {
+      "types": "./dist/durableCustodyMintResult.d.ts",
+      "import": "./dist/durableCustodyMintResult.js"
+    },
+    "./durableCtfRangeOperation": {
+      "types": "./dist/durableCtfRangeOperation.d.ts",
+      "import": "./dist/durableCtfRangeOperation.js"
+    },
+    "./durableCtfRangeCustody": {
+      "types": "./dist/durableCtfRangeCustody.d.ts",
+      "import": "./dist/durableCtfRangeCustody.js"
+    },
+    "./ctfRangeRecoveryTransport": {
+      "types": "./dist/ctfRangeRecoveryTransport.d.ts",
+      "import": "./dist/ctfRangeRecoveryTransport.js"
+    },
+    "./ctfRangeOrderPreparation": {
+      "types": "./dist/ctfRangeOrderPreparation.d.ts",
+      "import": "./dist/ctfRangeOrderPreparation.js"
+    },
+    "./ctfRangeOrderProtocol": {
+      "types": "./dist/ctfRangeOrderProtocol.d.ts",
+      "import": "./dist/ctfRangeOrderProtocol.js"
+    },
+    "./ctfRangeMintMetadata": {
+      "types": "./dist/ctfRangeMintMetadata.d.ts",
+      "import": "./dist/ctfRangeMintMetadata.js"
+    },
+    "./ctfRangeOrderJournal": {
+      "types": "./dist/ctfRangeOrderJournal.d.ts",
+      "import": "./dist/ctfRangeOrderJournal.js"
+    },
+    "./ctfRangeSourceOperation": {
+      "types": "./dist/ctfRangeSourceOperation.d.ts",
+      "import": "./dist/ctfRangeSourceOperation.js"
+    },
+    "./settlementCapabilityArtifact": {
+      "types": "./dist/settlementCapabilityArtifact.d.ts",
+      "import": "./dist/settlementCapabilityArtifact.js"
+    },
+    "./durableWalletOperation": {
+      "types": "./dist/durableWalletOperation.d.ts",
+      "import": "./dist/durableWalletOperation.js"
+    },
+    "./durableOutgoingCashuTransfer": {
+      "types": "./dist/durableOutgoingCashuTransfer.d.ts",
+      "import": "./dist/durableOutgoingCashuTransfer.js"
+    },
+    "./durableRecipientDelivery": {
+      "types": "./dist/durableRecipientDelivery.d.ts",
+      "import": "./dist/durableRecipientDelivery.js"
+    },
+    "./marketFundingDelivery": {
+      "types": "./dist/marketFundingDelivery.d.ts",
+      "import": "./dist/marketFundingDelivery.js"
+    },
+    "./participationScoreDelivery": {
+      "types": "./dist/participationScoreDelivery.d.ts",
+      "import": "./dist/participationScoreDelivery.js"
+    },
+    "./durableBolt11MintQuote": {
+      "types": "./dist/durableBolt11MintQuote.d.ts",
+      "import": "./dist/durableBolt11MintQuote.js"
+    },
+    "./durableWalletProofTransition": {
+      "types": "./dist/durableWalletProofTransition.d.ts",
+      "import": "./dist/durableWalletProofTransition.js"
+    },
+    "./emergencySeedRecovery": {
+      "types": "./dist/emergencySeedRecovery.d.ts",
+      "import": "./dist/emergencySeedRecovery.js"
+    },
+    "./seedRecoveryCore": {
+      "types": "./dist/seedRecoveryCore.d.ts",
+      "import": "./dist/seedRecoveryCore.js"
+    },
     "./ctfRedeem": {
       "types": "./dist/ctfRedeem.d.ts",
       "import": "./dist/ctfRedeem.js"
@@ -27,6 +231,10 @@
     "./conditionalKeysets": {
       "types": "./dist/conditionalKeysets.d.ts",
       "import": "./dist/conditionalKeysets.js"
+    },
+    "./conditionalKeysetSeedRecovery": {
+      "types": "./dist/conditionalKeysetSeedRecovery.d.ts",
+      "import": "./dist/conditionalKeysetSeedRecovery.js"
     },
     "./engineClient": {
       "types": "./dist/engineClient.d.ts",
@@ -52,13 +260,65 @@
       "types": "./dist/outcomeSets.d.ts",
       "import": "./dist/outcomeSets.js"
     },
+    "./orderRoute": {
+      "types": "./dist/orderRoute.d.ts",
+      "import": "./dist/orderRoute.js"
+    },
     "./proofSelection": {
       "types": "./dist/proofSelection.d.ts",
       "import": "./dist/proofSelection.js"
     },
+    "./boundedProofConsolidation": {
+      "types": "./dist/boundedProofConsolidation.d.ts",
+      "import": "./dist/boundedProofConsolidation.js"
+    },
+    "./ctfRangeConsolidationOperation": {
+      "types": "./dist/ctfRangeConsolidationOperation.d.ts",
+      "import": "./dist/ctfRangeConsolidationOperation.js"
+    },
+    "./ctfRangeCapabilitySourcePlan": {
+      "types": "./dist/ctfRangeCapabilitySourcePlan.d.ts",
+      "import": "./dist/ctfRangeCapabilitySourcePlan.js"
+    },
+    "./ctfRangeCapabilityBatchPlan": {
+      "types": "./dist/ctfRangeCapabilityBatchPlan.d.ts",
+      "import": "./dist/ctfRangeCapabilityBatchPlan.js"
+    },
+    "./ctfRangeCapabilityParentOperation": {
+      "types": "./dist/ctfRangeCapabilityParentOperation.d.ts",
+      "import": "./dist/ctfRangeCapabilityParentOperation.js"
+    },
+    "./ctfRangeCollateralSourceOperation": {
+      "types": "./dist/ctfRangeCollateralSourceOperation.d.ts",
+      "import": "./dist/ctfRangeCollateralSourceOperation.js"
+    },
+    "./proofConsolidationOperation": {
+      "types": "./dist/proofConsolidationOperation.d.ts",
+      "import": "./dist/proofConsolidationOperation.js"
+    },
+    "./ctfRangeSourceRecovery": {
+      "types": "./dist/ctfRangeSourceRecovery.d.ts",
+      "import": "./dist/ctfRangeSourceRecovery.js"
+    },
     "./proofUnit": {
       "types": "./dist/proofUnit.d.ts",
       "import": "./dist/proofUnit.js"
+    },
+    "./tokenImportValidation": {
+      "types": "./dist/tokenImportValidation.d.ts",
+      "import": "./dist/tokenImportValidation.js"
+    },
+    "./boundedJsonResponse": {
+      "types": "./dist/boundedJsonResponse.d.ts",
+      "import": "./dist/boundedJsonResponse.js"
+    },
+    "./assetMonitoringReporter": {
+      "types": "./dist/assetMonitoringReporter.d.ts",
+      "import": "./dist/assetMonitoringReporter.js"
+    },
+    "./targetedAssetRecovery": {
+      "types": "./dist/targetedAssetRecovery.d.ts",
+      "import": "./dist/targetedAssetRecovery.js"
     },
     "./participationScore": {
       "types": "./dist/participationScore.d.ts",
@@ -68,31 +328,15 @@
       "types": "./dist/settlementSupport.d.ts",
       "import": "./dist/settlementSupport.js"
     },
-    "./swapFailure": {
-      "types": "./dist/swapFailure.d.ts",
-      "import": "./dist/swapFailure.js"
-    },
-    "./tradeFlow": {
-      "types": "./dist/tradeFlow.d.ts",
-      "import": "./dist/tradeFlow.js"
-    },
-    "./tradeIgnition": {
-      "types": "./dist/tradeIgnition.d.ts",
-      "import": "./dist/tradeIgnition.js"
-    },
-    "./tradePreparation": {
-      "types": "./dist/tradePreparation.d.ts",
-      "import": "./dist/tradePreparation.js"
-    },
-    "./tradeSession": {
-      "types": "./dist/tradeSession.d.ts",
-      "import": "./dist/tradeSession.js"
-    },
     "./tradeTicket": {
       "types": "./dist/tradeTicket.d.ts",
       "import": "./dist/tradeTicket.js"
     },
     "./tradingClient": "./src/tradingClient.ts",
+    "./nut16Qr": {
+      "types": "./dist/nut16Qr.d.ts",
+      "import": "./dist/nut16Qr.js"
+    },
     "./types": {
       "types": "./dist/types.d.ts",
       "import": "./dist/types.js"
@@ -102,7 +346,9 @@
     "build": "tsc -p tsconfig.build.json",
     "postbuild": "node ../scripts/rewrite-dts-imports.mjs dist",
     "prepack": "npm run build",
+    "pretest": "npm run build",
     "test": "node --experimental-strip-types --test test/*.test.ts",
+    "test:backup-browsers": "node scripts/test-encrypted-wallet-backup-browsers.mjs",
     "typecheck": "tsc --noEmit"
   },
   "files": [
@@ -113,10 +359,15 @@
     "registry": "https://registry.npmjs.org/"
   },
   "dependencies": {
+    "@cashu/cashu-ts": "file:../cashu-ts",
+    "@ngraveio/bc-ur": "1.1.13",
     "@noble/curves": "^2.2.0",
-    "@cashu/cashu-ts": "file:../cashu-ts"
+    "@noble/hashes": "^2.2.0",
+    "cborg": "5.1.7"
   },
   "devDependencies": {
+    "esbuild": "0.28.1",
+    "playwright": "1.60.0",
     "typescript": "^5.7.2"
   }
 }

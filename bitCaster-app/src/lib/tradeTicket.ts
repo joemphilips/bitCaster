@@ -3,4 +3,4 @@ export {
   TradeTicketError,
   type TradeTicket,
   type TradeTicketErrorCode,
-} from '@bitcaster/client-sdk/tradeTicket'
+} from "@bitcaster/client-sdk/tradeTicket";

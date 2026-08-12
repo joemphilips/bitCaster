@@ -1,94 +1,88 @@
-import { render, screen, waitFor } from '@testing-library/react'
-import { MemoryRouter } from 'react-router'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { MarketsPage } from '@/pages/MarketsPage'
-import { getMarkets } from '@/lib/markets'
+import { render, screen, waitFor } from "@testing-library/react";
+import { MemoryRouter } from "react-router";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { MarketsPage } from "@/pages/MarketsPage";
+import { getMarkets } from "@/lib/markets";
 
-vi.mock('@/lib/markets', () => ({
+vi.mock("@/lib/markets", () => ({
   getMarkets: vi.fn(),
   filterMarkets: vi.fn((markets) => markets),
-}))
+}));
 
-const mockedGetMarkets = vi.mocked(getMarkets)
+const mockedGetMarkets = vi.mocked(getMarkets);
 
-describe('MarketsPage', () => {
+describe("MarketsPage", () => {
   beforeEach(() => {
-    mockedGetMarkets.mockReset()
-  })
+    mockedGetMarkets.mockReset();
+  });
 
-  it('shows a create-market empty state when the catalogue response is valid but empty', async () => {
+  it("shows a create-market empty state when the catalogue response is valid but empty", async () => {
     mockedGetMarkets.mockResolvedValue({
       markets: [],
       nextCursor: null,
-      lastSuccessfulRefreshAt: new Date('2026-07-02T00:00:00Z').toISOString(),
-    })
+      lastSuccessfulRefreshAt: new Date("2026-07-02T00:00:00Z").toISOString(),
+    });
 
     render(
-      <MemoryRouter initialEntries={['/markets']}>
+      <MemoryRouter initialEntries={["/markets"]}>
         <MarketsPage />
       </MemoryRouter>,
-    )
+    );
 
-    expect(screen.getByText('Loading markets...')).toBeInTheDocument()
+    expect(screen.getByText("Loading markets...")).toBeInTheDocument();
 
     await waitFor(() => {
-      expect(screen.getByText('No markets yet')).toBeInTheDocument()
-    })
+      expect(screen.getByText("No markets yet")).toBeInTheDocument();
+    });
 
-    expect(
-      screen.getByText('Create one to get started.'),
-    ).toBeInTheDocument()
+    expect(screen.getByText("Create one to get started.")).toBeInTheDocument();
     expect(
       screen.queryByText(
-        'Failed to load markets. Please check that the matching engine is running.',
+        "Failed to load markets. Please check that the matching engine is running.",
       ),
-    ).not.toBeInTheDocument()
-    expect(
-      screen.getByRole('button', { name: /create market/i }),
-    ).toBeInTheDocument()
-  })
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /create market/i })).toBeInTheDocument();
+  });
 
-  it('shows a catalogue-refreshing state while an empty catalogue has no successful refresh timestamp', async () => {
+  it("shows a catalogue-refreshing state while an empty catalogue has no successful refresh timestamp", async () => {
     mockedGetMarkets.mockResolvedValue({
       markets: [],
       nextCursor: null,
-      lastSuccessfulRefreshAt: '0001-01-01T00:00:00+00:00',
-    })
+      lastSuccessfulRefreshAt: "0001-01-01T00:00:00+00:00",
+    });
 
     render(
-      <MemoryRouter initialEntries={['/markets']}>
+      <MemoryRouter initialEntries={["/markets"]}>
         <MarketsPage />
       </MemoryRouter>,
-    )
+    );
 
     await waitFor(() => {
-      expect(screen.getByText('Catalogue refreshing...')).toBeInTheDocument()
-    })
+      expect(screen.getByText("Catalogue refreshing...")).toBeInTheDocument();
+    });
 
-    expect(screen.queryByText('No markets yet')).not.toBeInTheDocument()
-    expect(
-      screen.queryByRole('button', { name: /create market/i }),
-    ).not.toBeInTheDocument()
-  })
+    expect(screen.queryByText("No markets yet")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /create market/i })).not.toBeInTheDocument();
+  });
 
-  it('keeps the engine-unavailable response in the error state', async () => {
-    mockedGetMarkets.mockRejectedValue(new Error('HTTP 503'))
+  it("keeps the engine-unavailable response in the error state", async () => {
+    mockedGetMarkets.mockRejectedValue(new Error("HTTP 503"));
 
     render(
-      <MemoryRouter initialEntries={['/markets']}>
+      <MemoryRouter initialEntries={["/markets"]}>
         <MarketsPage />
       </MemoryRouter>,
-    )
+    );
 
     await waitFor(() => {
       expect(
         screen.getByText(
-          'Failed to load markets. Please check that the matching engine is running.',
+          "Failed to load markets. Please check that the matching engine is running.",
         ),
-      ).toBeInTheDocument()
-    })
+      ).toBeInTheDocument();
+    });
 
-    expect(screen.queryByText('No markets yet')).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /retry/i })).toBeInTheDocument()
-  })
-})
+    expect(screen.queryByText("No markets yet")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /retry/i })).toBeInTheDocument();
+  });
+});

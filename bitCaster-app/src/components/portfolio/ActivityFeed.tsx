@@ -1,59 +1,76 @@
-import { useTranslation } from 'react-i18next'
-import type { ActivityItem, ActivityType } from '@/types/portfolio'
-import {
-  formatMarketSubunits,
-  normalizeMarketBaseAsset,
-} from '@bitcaster/client-sdk/marketUnits'
-import {
-  ArrowDownLeft,
-  ArrowUpRight,
-  ShoppingCart,
-  Tag,
-  Trophy,
-  Coins,
-} from 'lucide-react'
+import { useTranslation } from "react-i18next";
+import type { ActivityItem, ActivityType } from "@/types/portfolio";
+import { formatMarketSubunits, normalizeMarketBaseAsset } from "@bitcaster/client-sdk/marketUnits";
+import { ArrowDownLeft, ArrowUpRight, ShoppingCart, Tag, Trophy, Coins } from "lucide-react";
 
-const TYPE_META: Record<ActivityType, { icon: typeof ArrowDownLeft; labelKey: string; colorClass: string }> = {
-  deposit: { icon: ArrowDownLeft, labelKey: 'activityType.deposit', colorClass: 'text-emerald-500 bg-emerald-100 dark:bg-emerald-900/30' },
-  withdrawal: { icon: ArrowUpRight, labelKey: 'activityType.withdrawal', colorClass: 'text-rose-500 bg-rose-100 dark:bg-rose-900/30' },
-  Buy: { icon: ShoppingCart, labelKey: 'activityType.buy', colorClass: 'text-blue-500 bg-blue-100 dark:bg-blue-900/30' },
-  Sell: { icon: Tag, labelKey: 'activityType.sell', colorClass: 'text-amber-500 bg-amber-100 dark:bg-amber-900/30' },
-  payout_claimed: { icon: Trophy, labelKey: 'activityType.payout_claimed', colorClass: 'text-emerald-500 bg-emerald-100 dark:bg-emerald-900/30' },
-  creator_fee_claimed: { icon: Coins, labelKey: 'activityType.creator_fee_claimed', colorClass: 'text-amber-500 bg-amber-100 dark:bg-amber-900/30' },
-}
+const TYPE_META: Record<
+  ActivityType,
+  { icon: typeof ArrowDownLeft; labelKey: string; colorClass: string }
+> = {
+  deposit: {
+    icon: ArrowDownLeft,
+    labelKey: "activityType.deposit",
+    colorClass: "text-emerald-500 bg-emerald-100 dark:bg-emerald-900/30",
+  },
+  withdrawal: {
+    icon: ArrowUpRight,
+    labelKey: "activityType.withdrawal",
+    colorClass: "text-rose-500 bg-rose-100 dark:bg-rose-900/30",
+  },
+  Buy: {
+    icon: ShoppingCart,
+    labelKey: "activityType.buy",
+    colorClass: "text-blue-500 bg-blue-100 dark:bg-blue-900/30",
+  },
+  Sell: {
+    icon: Tag,
+    labelKey: "activityType.sell",
+    colorClass: "text-amber-500 bg-amber-100 dark:bg-amber-900/30",
+  },
+  payout_claimed: {
+    icon: Trophy,
+    labelKey: "activityType.payout_claimed",
+    colorClass: "text-emerald-500 bg-emerald-100 dark:bg-emerald-900/30",
+  },
+  creator_fee_claimed: {
+    icon: Coins,
+    labelKey: "activityType.creator_fee_claimed",
+    colorClass: "text-amber-500 bg-amber-100 dark:bg-amber-900/30",
+  },
+};
 
 const STATUS_BADGES: Record<string, string> = {
-  completed: 'bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-400',
-  pending: 'bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400',
-  failed: 'bg-rose-100 dark:bg-rose-900/30 text-rose-700 dark:text-rose-400',
-}
+  completed: "bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-400",
+  pending: "bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400",
+  failed: "bg-rose-100 dark:bg-rose-900/30 text-rose-700 dark:text-rose-400",
+};
 
 interface ActivityFeedProps {
-  activity: ActivityItem[]
-  onViewActivity?: (activityId: string) => void
+  activity: ActivityItem[];
+  onViewActivity?: (activityId: string) => void;
 }
 
 export function ActivityFeed({ activity, onViewActivity }: ActivityFeedProps) {
-  const { t, i18n } = useTranslation()
+  const { t, i18n } = useTranslation();
   if (activity.length === 0) {
     return (
       <div className="py-8 text-center text-sm text-slate-400 dark:text-slate-500">
-        {t('portfolio.noActivity')}
+        {t("portfolio.noActivity")}
       </div>
-    )
+    );
   }
 
   return (
     <div className="space-y-1">
       {activity.map((item) => {
-        const config = TYPE_META[item.type]
-        const Icon = config.icon
+        const config = TYPE_META[item.type];
+        const Icon = config.icon;
         const date = new Date(item.date).toLocaleDateString(i18n.language, {
-          month: 'short',
-          day: 'numeric',
-          hour: '2-digit',
-          minute: '2-digit',
-        })
+          month: "short",
+          day: "numeric",
+          hour: "2-digit",
+          minute: "2-digit",
+        });
 
         return (
           <button
@@ -62,7 +79,9 @@ export function ActivityFeed({ activity, onViewActivity }: ActivityFeedProps) {
             className="w-full flex items-center gap-3 p-3 hover:bg-slate-50 dark:hover:bg-slate-700/50 rounded-lg transition-colors text-left"
           >
             {/* Type Icon */}
-            <div className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 ${config.colorClass}`}>
+            <div
+              className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 ${config.colorClass}`}
+            >
               <Icon className="w-4 h-4" />
             </div>
 
@@ -94,19 +113,25 @@ export function ActivityFeed({ activity, onViewActivity }: ActivityFeedProps) {
             {/* Amount & Status */}
             <div className="text-right shrink-0">
               <div className="text-sm font-mono font-medium text-slate-900 dark:text-white">
-                {item.type === 'deposit' || item.type === 'payout_claimed' || item.type === 'creator_fee_claimed'
-                  ? '+' : '-'}{formatMarketSubunits(item.amountSats, normalizeMarketBaseAsset(item.baseAsset))}
+                {item.type === "deposit" ||
+                item.type === "payout_claimed" ||
+                item.type === "creator_fee_claimed"
+                  ? "+"
+                  : "-"}
+                {formatMarketSubunits(item.amountSats, normalizeMarketBaseAsset(item.baseAsset))}
               </div>
               <div className="flex items-center justify-end gap-1 mt-0.5">
                 <span className="text-xs text-slate-400 dark:text-slate-500">{date}</span>
-                <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded ${STATUS_BADGES[item.status] ?? ''}`}>
+                <span
+                  className={`text-[10px] font-medium px-1.5 py-0.5 rounded ${STATUS_BADGES[item.status] ?? ""}`}
+                >
                   {item.status}
                 </span>
               </div>
             </div>
           </button>
-        )
+        );
       })}
     </div>
-  )
+  );
 }

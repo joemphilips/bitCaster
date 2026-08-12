@@ -1,6 +1,6 @@
-import { create } from 'zustand'
-import { persist } from 'zustand/middleware'
-import type { MarketBaseAsset } from '@bitcaster/client-sdk/marketUnits'
+import { create } from "zustand";
+import { persist } from "zustand/middleware";
+import type { MarketBaseAsset } from "@bitcaster/client-sdk/marketUnits";
 
 /**
  * Cap on how many notifications we keep in memory / localStorage. Once the
@@ -8,7 +8,7 @@ import type { MarketBaseAsset } from '@bitcaster/client-sdk/marketUnits'
  * that shows a handful per session — it just exists so the persisted blob
  * doesn't grow without bound across many trades.
  */
-const MAX_NOTIFICATIONS = 100
+const MAX_NOTIFICATIONS = 100;
 
 /**
  * Mirrors the engine's terminal / partial order statuses so the bell can
@@ -21,13 +21,16 @@ const MAX_NOTIFICATIONS = 100
  * `finalOutcome`.
  */
 export type NotificationKind =
-  | 'accepted'
-  | 'Matched'
-  | 'Filled'
-  | 'partially_filled'
-  | 'cancelled'
-  | 'Failed'
-  | 'market_closed'
+  | "accepted"
+  | "Matched"
+  | "Filled"
+  | "partially_filled"
+  | "cancelled"
+  | "expired"
+  | "evicted_capacity"
+  | "rejected_capacity"
+  | "Failed"
+  | "market_closed";
 
 export interface Notification {
   /**
@@ -39,50 +42,46 @@ export interface Notification {
    *   partially_filled   → `{orderId}-partially_filled-{fillCount}` (one per step)
    *   market_closed      → `{marketId}-market_closed` (one per liked market)
    */
-  id: string
-  kind: NotificationKind
+  id: string;
+  kind: NotificationKind;
   /**
    * Owning order. Empty for non-order notifications (`market_closed`), which
    * are keyed on the market instead.
    */
-  orderId: string
-  marketId: string
+  orderId: string;
+  marketId: string;
   /** Absolute market subunits filled at the moment this notification was generated. */
-  filledAmountSubunits: number
+  filledAmountSubunits: number;
   /** Market subunits remaining on the order at the moment this notification was generated. */
-  remainingAmountSubunits: number
+  remainingAmountSubunits: number;
   /** Legacy persisted field; new notifications use filledAmountSubunits. */
-  filledAmountSats?: number
+  filledAmountSats?: number;
   /** Legacy persisted field; new notifications use remainingAmountSubunits. */
-  remainingAmountSats?: number
-  /**
-   * Base asset of the order (e.g. 'sat', 'usd'). Used by the notification
-   * bell to format amounts correctly. Absent on old persisted notifications;
-   * defaults to 'sat' at render time.
-   */
-  unit?: MarketBaseAsset
+  remainingAmountSats?: number;
+  /** Explicit product base asset used to format amount fields. */
+  unit: MarketBaseAsset;
   /** Unix ms. */
-  occurredAt: number
-  read: boolean
+  occurredAt: number;
+  read: boolean;
 
   // ── market_closed only (P22 Link G) ──────────────────────────────────────
   /** Condition the closed market belongs to. */
-  conditionId?: string
+  conditionId?: string;
   /**
    * The winning outcome name, when the close also carried an attested
    * resolution. `undefined` when the market merely transitioned to closed
    * without a known final outcome yet.
    */
-  finalOutcome?: string
+  finalOutcome?: string;
   /** Unix ms the market was observed closed. */
-  closedAt?: number
+  closedAt?: number;
 }
 
 interface NotificationState {
-  items: Notification[]
-  add: (n: Notification) => void
-  markAllRead: () => void
-  clear: () => void
+  items: Notification[];
+  add: (n: Notification) => void;
+  markAllRead: () => void;
+  clear: () => void;
 }
 
 /**
@@ -90,7 +89,7 @@ interface NotificationState {
  * bell to the whole items array for every render elsewhere.
  */
 export const selectUnreadCount = (s: NotificationState): number =>
-  s.items.reduce((c, n) => (n.read ? c : c + 1), 0)
+  s.items.reduce((c, n) => (n.read ? c : c + 1), 0);
 
 export const useNotificationsStore = create<NotificationState>()(
   persist(
@@ -98,20 +97,20 @@ export const useNotificationsStore = create<NotificationState>()(
       items: [],
       add: (n) => {
         set((s) => {
-          if (s.items.some((x) => x.id === n.id)) return s
-          const next = [n, ...s.items]
-          if (next.length > MAX_NOTIFICATIONS) next.length = MAX_NOTIFICATIONS
-          return { items: next }
-        })
+          if (s.items.some((x) => x.id === n.id)) return s;
+          const next = [n, ...s.items];
+          if (next.length > MAX_NOTIFICATIONS) next.length = MAX_NOTIFICATIONS;
+          return { items: next };
+        });
       },
       markAllRead: () => {
         set((s) => {
-          if (s.items.every((n) => n.read)) return s
-          return { items: s.items.map((n) => (n.read ? n : { ...n, read: true })) }
-        })
+          if (s.items.every((n) => n.read)) return s;
+          return { items: s.items.map((n) => (n.read ? n : { ...n, read: true })) };
+        });
       },
       clear: () => set({ items: [] }),
     }),
-    { name: 'bitcaster-notifications' },
+    { name: "bitcaster-notifications" },
   ),
-)
+);

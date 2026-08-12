@@ -23,10 +23,7 @@ interface BookmarkPayload {
  * Uses a short-lived NDK instance so we don't keep extra relay connections
  * open on the shared singleton.
  */
-export async function publishBookmarks(
-  privateKeyHex: string,
-  marketIds: string[],
-): Promise<void> {
+export async function publishBookmarks(privateKeyHex: string, marketIds: string[]): Promise<void> {
   const ndk = createExplicitRelayNdk({
     explicitRelayUrls: DEFAULT_RELAYS,
     signer: new NDKPrivateKeySigner(privateKeyHex),
@@ -65,10 +62,7 @@ export async function fetchBookmarks(pubkey: string): Promise<string[] | null> {
     if (!event) return null;
     try {
       const parsed = JSON.parse(event.content) as Partial<BookmarkPayload>;
-      if (
-        Array.isArray(parsed.markets) &&
-        parsed.markets.every((m) => typeof m === "string")
-      ) {
+      if (Array.isArray(parsed.markets) && parsed.markets.every((m) => typeof m === "string")) {
         return parsed.markets;
       }
       return null;

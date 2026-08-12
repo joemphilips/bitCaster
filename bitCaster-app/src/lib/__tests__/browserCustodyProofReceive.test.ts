@@ -1,0 +1,314 @@
+// @vitest-environment node
+import "fake-indexeddb/auto";
+import { deriveConditionalKeysetId, OutputData, type Wallet as CashuWallet } from "@cashu/cashu-ts";
+import { deriveRootCtfOutcomeCollectionId } from "@bitcaster/client-sdk/durableCtfRangeOperation";
+import { DURABLE_CUSTODY_PROOF_IMPORT_PAGE_PROOF_LIMIT_MAX } from "@bitcaster/client-sdk/durableCustodyProofImport";
+import { afterEach, describe, expect, it } from "vitest";
+import { BitcasterDB, type StoredProof } from "../../stores/proof-db";
+import { admitBrowserReceivedProofs } from "../browserCustodyProofReceive";
+
+const KEYSET_ID = `01${"11".repeat(32)}`;
+const PUBLIC_KEY = `02${"22".repeat(32)}`;
+const MODERN_KEYSET_ID = `01${"33".repeat(32)}`;
+const MODERN_SEED = Uint8Array.from({ length: 64 }, (_, index) => index + 1);
+const CONDITION_ID = "aa".repeat(32);
+const OUTCOME_COLLECTION = "YES";
+const OUTCOME_COLLECTION_ID = deriveRootCtfOutcomeCollectionId({
+  conditionId: CONDITION_ID,
+  outcomeCollection: OUTCOME_COLLECTION,
+});
+const CONDITIONAL_KEYSET_WITHOUT_FINAL_EXPIRY = deriveConditionalKeysetId({
+  keys: { "1": PUBLIC_KEY },
+  unit: "msat",
+  input_fee_ppk: 100,
+  conditionId: CONDITION_ID,
+  outcomeCollectionId: OUTCOME_COLLECTION_ID,
+});
+
+describe("browser custody proof receive", () => {
+  let database: BitcasterDB | null = null;
+
+  afterEach(async () => {
+    database?.close();
+    if (database) await indexedDB.deleteDatabase(database.name);
+    database = null;
+  });
+
+  it("pages one verified receive and retries every page exactly", async () => {
+    database = new BitcasterDB(`proof-receive-${crypto.randomUUID()}`);
+    const proofs = Array.from({ length: 130 }, (_, index) => proof(index));
+    const input = {
+      seed: new Uint8Array(32).fill(7),
+      sourceOperationId: "receive:large",
+      mintUrl: "https://mint.example",
+      unit: "sat" as const,
+      wallet: wallet(),
+      proofs,
+      derivationAuthority: null,
+      database,
+      lockManager: immediateLockManager(),
+      now: () => 10,
+      randomId: () => "test",
+    };
+
+    await admitBrowserReceivedProofs(input);
+    await admitBrowserReceivedProofs(input);
+
+    expect(await database.custodyProofs.count()).toBe(130);
+    expect(await database.custodyProofBackupAuthorities.count()).toBe(130);
+    expect((await database.custodyProofBackupAuthorities.toArray())[0]).toMatchObject({
+      derivationLocator: null,
+    });
+    const pageCount = Math.ceil(proofs.length / DURABLE_CUSTODY_PROOF_IMPORT_PAGE_PROOF_LIMIT_MAX);
+    expect(await database.custodyOperations.count()).toBe(pageCount);
+    expect(
+      (await database.custodyOperations.toArray())
+        .map((row) =>
+          row.record.operation.binding.kind === "wallet"
+            ? row.record.operation.binding.activityId
+            : null,
+        )
+        .sort(),
+    ).toEqual([
+      "receive:large",
+      ...Array.from({ length: pageCount - 1 }, (_, index) => `receive:large:page:${index + 1}`),
+    ]);
+  });
+
+  it("maps a reordered subset from the verified modern range to exact counters", async () => {
+    database = new BitcasterDB(`proof-receive-modern-${crypto.randomUUID()}`);
+    const rangeProofs = [modernProof(0), modernProof(1), modernProof(2)];
+    await admitBrowserReceivedProofs({
+      seed: MODERN_SEED,
+      sourceOperationId: "receive:modern",
+      mintUrl: "https://mint.example",
+      unit: "sat",
+      wallet: wallet(MODERN_KEYSET_ID),
+      proofs: [rangeProofs[2], rangeProofs[0]],
+      derivationRangeProofs: rangeProofs,
+      derivationAuthority: { keysetId: MODERN_KEYSET_ID, counterStart: 0, counterCount: 3 },
+      database,
+      lockManager: immediateLockManager(),
+      now: () => 10,
+    });
+
+    expect(
+      (await database.custodyProofBackupAuthorities.toArray())
+        .map((row) =>
+          row.derivationLocator?.kind === "nut13" ? row.derivationLocator.counter : null,
+        )
+        .sort(),
+    ).toEqual([0, 2]);
+  });
+
+  it("persists an SDK nut13 locator for a verified V2 receive", async () => {
+    database = new BitcasterDB(`proof-receive-v2-${crypto.randomUUID()}`);
+    await admitBrowserReceivedProofs({
+      seed: MODERN_SEED,
+      sourceOperationId: "receive:v2",
+      mintUrl: "https://mint.example",
+      unit: "sat",
+      wallet: wallet(),
+      proofs: [deterministicProof(4)],
+      derivationAuthority: { keysetId: KEYSET_ID, counterStart: 4, counterCount: 1 },
+      database,
+      lockManager: immediateLockManager(),
+      now: () => 10,
+    });
+
+    expect((await database.custodyProofBackupAuthorities.toArray())[0]).toMatchObject({
+      derivationLocator: {
+        schemaVersion: 1,
+        kind: "nut13",
+        keysetId: KEYSET_ID,
+        counter: 4,
+      },
+    });
+  });
+
+  it.each([
+    { counterStart: 0, counterCount: 1 },
+    { counterStart: 2_147_483_647, counterCount: 2 },
+  ])("rejects an invalid modern range before mutation", async (derivationAuthority) => {
+    database = new BitcasterDB(`proof-receive-invalid-${crypto.randomUUID()}`);
+
+    await expect(
+      admitBrowserReceivedProofs({
+        seed: MODERN_SEED,
+        sourceOperationId: "receive:invalid",
+        mintUrl: "https://mint.example",
+        unit: "sat",
+        wallet: wallet(MODERN_KEYSET_ID),
+        proofs: [modernProof(0), modernProof(1)],
+        derivationAuthority: { keysetId: MODERN_KEYSET_ID, ...derivationAuthority },
+        database,
+        lockManager: immediateLockManager(),
+      }),
+    ).rejects.toThrow(/(?:Browser proof derivation keyset|seed-derived proof lineage input)/);
+    expect(await database.custodyProofs.count()).toBe(0);
+    expect(await database.custodyProofBackupAuthorities.count()).toBe(0);
+  });
+
+  it("rejects a noncanonical modern-looking derivation keyset", async () => {
+    database = new BitcasterDB(`proof-receive-uppercase-${crypto.randomUUID()}`);
+    const noncanonicalKeysetId = `01${"AA".repeat(32)}`;
+    await expect(
+      admitBrowserReceivedProofs({
+        seed: MODERN_SEED,
+        sourceOperationId: "receive:uppercase",
+        mintUrl: "https://mint.example",
+        unit: "sat",
+        wallet: wallet(noncanonicalKeysetId),
+        proofs: [{ ...modernProof(0), id: noncanonicalKeysetId }],
+        derivationAuthority: { keysetId: noncanonicalKeysetId, counterStart: 0, counterCount: 1 },
+        database,
+        lockManager: immediateLockManager(),
+      }),
+    ).rejects.toThrow(/canonical NUT-02 V2/);
+    expect(await database.custodyProofs.count()).toBe(0);
+  });
+
+  it("rejects V3 before browser custody authority mutation", async () => {
+    database = new BitcasterDB(`proof-receive-v3-${crypto.randomUUID()}`);
+    const v3KeysetId = `02${"44".repeat(32)}`;
+
+    await expect(
+      admitBrowserReceivedProofs({
+        seed: MODERN_SEED,
+        sourceOperationId: "receive:v3",
+        mintUrl: "https://mint.example",
+        unit: "sat",
+        wallet: wallet(v3KeysetId),
+        proofs: [{ ...proof(0), id: v3KeysetId }],
+        derivationAuthority: null,
+        database,
+        lockManager: immediateLockManager(),
+      }),
+    ).rejects.toThrow(/canonical NUT-02 V2/);
+    expect(await database.custodyScopes.count()).toBe(0);
+    expect(await database.custodyOperations.count()).toBe(0);
+    expect(await database.custodyProofs.count()).toBe(0);
+    expect(await database.custodyProofBackupAuthorities.count()).toBe(0);
+  });
+
+  it("rejects conditional metadata that conflicts with a verified regular keyset", async () => {
+    database = new BitcasterDB(`proof-receive-asset-${crypto.randomUUID()}`);
+    await expect(
+      admitBrowserReceivedProofs({
+        seed: new Uint8Array(32).fill(7),
+        sourceOperationId: "receive:asset",
+        mintUrl: "https://mint.example",
+        unit: "sat",
+        wallet: wallet(),
+        proofs: [{ ...proof(0), conditionId: "aa".repeat(32), outcomeCollection: "YES" }],
+        derivationAuthority: null,
+        database,
+        lockManager: immediateLockManager(),
+      }),
+    ).rejects.toThrow(/metadata conflicts/);
+    expect(await database.custodyProofs.count()).toBe(0);
+  });
+
+  it("admits a conditional keyset with an explicit missing final expiry", async () => {
+    database = new BitcasterDB(`proof-receive-conditional-${crypto.randomUUID()}`);
+    await admitBrowserReceivedProofs({
+      seed: new Uint8Array(32).fill(7),
+      sourceOperationId: "receive:conditional",
+      mintUrl: "https://mint.example",
+      unit: "msat",
+      wallet: conditionalWalletWithoutFinalExpiry(),
+      proofs: [conditionalProof()],
+      derivationAuthority: null,
+      database,
+      lockManager: immediateLockManager(),
+      now: () => 10,
+    });
+
+    expect((await database.custodyConditionalKeysets.toArray())[0]).toMatchObject({
+      keysetId: CONDITIONAL_KEYSET_WITHOUT_FINAL_EXPIRY,
+      finalExpiryUnixSeconds: null,
+    });
+  });
+});
+
+function proof(index: number): StoredProof {
+  return {
+    id: KEYSET_ID,
+    amount: 1 as never,
+    secret: `proof-secret-${index}`,
+    C: PUBLIC_KEY,
+    mintUrl: "https://mint.example",
+    baseAsset: "sat",
+    unit: "sat",
+  };
+}
+
+function modernProof(counter: number): StoredProof {
+  return {
+    ...proof(counter),
+    id: MODERN_KEYSET_ID,
+    secret: new TextDecoder().decode(
+      OutputData.createSingleDeterministicData(1, MODERN_SEED, counter, MODERN_KEYSET_ID).secret,
+    ),
+  };
+}
+
+function deterministicProof(counter: number): StoredProof {
+  return {
+    ...proof(counter),
+    secret: new TextDecoder().decode(
+      OutputData.createSingleDeterministicData(1, MODERN_SEED, counter, KEYSET_ID).secret,
+    ),
+  };
+}
+
+function conditionalProof(): StoredProof {
+  return {
+    ...proof(0),
+    id: CONDITIONAL_KEYSET_WITHOUT_FINAL_EXPIRY,
+    conditionId: CONDITION_ID,
+    outcomeCollection: OUTCOME_COLLECTION,
+  };
+}
+
+function wallet(keysetId = KEYSET_ID): CashuWallet {
+  return {
+    getKeyset: () => ({
+      id: keysetId,
+      unit: "sat",
+      keys: { 1: PUBLIC_KEY },
+      expiry: undefined,
+      verify: () => true,
+    }),
+  } as unknown as CashuWallet;
+}
+
+function conditionalWalletWithoutFinalExpiry(): CashuWallet {
+  return {
+    getKeyset: () => ({
+      id: CONDITIONAL_KEYSET_WITHOUT_FINAL_EXPIRY,
+      unit: "msat",
+      keys: { 1: PUBLIC_KEY },
+      fee: 100,
+      expiry: undefined,
+      conditional: {
+        conditionId: CONDITION_ID,
+        outcomeCollection: OUTCOME_COLLECTION,
+        outcomeCollectionId: OUTCOME_COLLECTION_ID,
+        registeredAt: 1,
+      },
+      verify: () => true,
+    }),
+  } as unknown as CashuWallet;
+}
+
+function immediateLockManager(): Pick<LockManager, "request"> {
+  const manager = {
+    request: async (
+      _name: string,
+      _options: LockOptions,
+      callback: (lock: Lock | null) => unknown,
+    ) => callback(null),
+  };
+  return manager as unknown as Pick<LockManager, "request">;
+}

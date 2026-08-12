@@ -1,18 +1,12 @@
-import { useEffect } from 'react'
-import { useTranslation } from 'react-i18next'
-import {
-  onMarketStatusChanged,
-  type MarketStatusChanged,
-} from '@/lib/marketHub'
-import { useNotificationsStore } from '@/stores/notifications'
-import { useSettingsStore } from '@/stores/settings'
-import {
-  useLikedMarketStateStore,
-  reconcileLikedMarketCloses,
-} from '@/lib/likedMarketClose'
-import { showWebNotification } from '@/lib/webNotifications'
-import type { Market } from '@/types/market'
-import { assertNever } from '../lib/enumDiscipline'
+import { useEffect } from "react";
+import { useTranslation } from "react-i18next";
+import { onMarketStatusChanged, type MarketStatusChanged } from "@/lib/marketHub";
+import { useNotificationsStore } from "@/stores/notifications";
+import { useSettingsStore } from "@/stores/settings";
+import { useLikedMarketStateStore, reconcileLikedMarketCloses } from "@/lib/likedMarketClose";
+import { showWebNotification } from "@/lib/webNotifications";
+import type { Market } from "@/types/market";
+import { assertNever } from "../lib/enumDiscipline";
 
 /**
  * P22 Link G2 — best-effort live `MarketStatusChanged` push while the market
@@ -51,23 +45,23 @@ export function useMarketStatusLive(
   conditionId: string | null | undefined,
   onStatus: (status: MarketStatusChanged) => void,
 ): void {
-  const { t } = useTranslation()
+  const { t } = useTranslation();
 
   useEffect(() => {
-    if (!conditionId) return
+    if (!conditionId) return;
 
     const handleStatus = (status: MarketStatusChanged) => {
       // Always notify the parent so the UI reflects the pushed state quickly;
       // the parent still reconciles from the catalogue for correctness.
-      onStatus(status)
+      onStatus(status);
 
       switch (status.state) {
-        case 'open':
-          return
-        case 'closed':
-          break
+        case "open":
+          return;
+        case "closed":
+          break;
         default:
-          return assertNever(status.state)
+          return assertNever(status.state);
       }
 
       // Mirror the reconcile path: build a minimal Market shape, run it through
@@ -75,11 +69,11 @@ export function useMarketStatusLive(
       // and dedup semantics as the boot reconcile.
       const minimalMarket: Market = {
         id: conditionId,
-        title: '',
-        state: 'closed',
-        type: 'yesno',
+        title: "",
+        state: "closed",
+        type: "yesno",
         currentOdds: { yes: 50, no: 50 },
-        imageUrl: '',
+        imageUrl: "",
         categoryTags: [],
         metaTags: [],
         volume: 0,
@@ -87,45 +81,44 @@ export function useMarketStatusLive(
         liquiditySubunits: 0,
         ammBotBudgetSubunits: 0,
         volumeLifetimeSubunits: 0,
-        closingDate: '',
-        createdDate: '',
-        activeSince: '',
+        closingDate: "",
+        createdDate: "",
+        activeSince: "",
         creatorFeePercent: 0,
-        baseMarket: 'sats',
-      }
+        baseMarket: "sats",
+        baseAsset: "sat",
+        divisibility: 10_000,
+      };
 
-      const lastSeen = useLikedMarketStateStore.getState().states
-      const { notifications, nextStates } = reconcileLikedMarketCloses(
-        [minimalMarket],
-        lastSeen,
-      )
+      const lastSeen = useLikedMarketStateStore.getState().states;
+      const { notifications, nextStates } = reconcileLikedMarketCloses([minimalMarket], lastSeen);
 
       // Update the shared last-seen map so the background reconcile does not
       // re-fire after the next visibilitychange refetch.
       useLikedMarketStateStore.getState().setStates({
         ...lastSeen,
         ...nextStates,
-      })
+      });
 
-      if (notifications.length === 0) return
+      if (notifications.length === 0) return;
 
-      const addNotification = useNotificationsStore.getState().add
-      const optedIn = useSettingsStore.getState().likedMarketCloseNotifications
+      const addNotification = useNotificationsStore.getState().add;
+      const optedIn = useSettingsStore.getState().likedMarketCloseNotifications;
 
       for (const notification of notifications) {
-        addNotification(notification)
+        addNotification(notification);
         if (optedIn) {
-          showWebNotification(t('notification.marketClosedTitle'), {
-            body: t('notification.marketClosed', {
+          showWebNotification(t("notification.marketClosedTitle"), {
+            body: t("notification.marketClosed", {
               market: notification.marketId,
             }),
             tag: notification.id,
-          })
+          });
         }
       }
-    }
+    };
 
-    const unsubscribe = onMarketStatusChanged(conditionId, handleStatus)
-    return unsubscribe
-  }, [conditionId, onStatus, t])
+    const unsubscribe = onMarketStatusChanged(conditionId, handleStatus);
+    return unsubscribe;
+  }, [conditionId, onStatus, t]);
 }

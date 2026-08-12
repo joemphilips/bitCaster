@@ -5,7 +5,6 @@ import {
   CheckStateEnum,
   OutputData,
   getDecodedToken,
-  getEncodedToken,
   type CounterRange,
   type CounterSource,
   type CtfConvertRequest,
@@ -16,6 +15,8 @@ import {
   type ProofState,
   type SerializedBlindedMessage,
   type SerializedBlindedSignature,
+  type ConditionalSwapPreview,
+  type OperationCounters,
   type SwapPreview,
 } from '@cashu/cashu-ts'
 import { createHash, randomUUID } from 'node:crypto'
@@ -27,6 +28,7 @@ import {
   type CtfProofOperationRecord,
   type CtfProofOperationStore,
 } from '@bitcaster-market/client-sdk/ctfSplit'
+import { isLoopbackHttpUrl } from '@bitcaster-market/client-sdk'
 import {
   COLLATERAL_COLLECTION,
   type CtfConsolidationPlan,
@@ -41,28 +43,59 @@ import {
   normalizeMarketBaseAsset,
 } from '@bitcaster-market/client-sdk/marketUnits'
 import {
+  canonicalizeTokenImportMintUrl,
+  validateProductWalletTokenImport,
+  type ResolveTokenImportKeysets,
+  type TokenImportUnit,
+} from '@bitcaster-market/client-sdk/tokenImportValidation'
+import { serializeDurableWalletReceiveOperation } from '@bitcaster-market/client-sdk/durableWalletOperation'
+import {
+  redactedTransferMetadata,
+  type DurableOutgoingCashuTransfer,
+} from '@bitcaster-market/client-sdk/durableOutgoingCashuTransfer'
+import {
+  deriveDurableRecipientTokenAllowance,
+  type DurableRecipientDeliveryClient,
+} from '@bitcaster-market/client-sdk/durableRecipientDelivery'
+import {
+  createParticipationScoreDeliveryMetadata,
+  createParticipationScoreDeliverySubmission,
+  participationScoreDeliveryIntent,
+} from '@bitcaster-market/client-sdk/participationScoreDelivery'
+import {
   addAvailableProofs,
-  completeReservedSatSend,
+  advanceDaemonKeysetCounter,
   ensureState,
   getProofOperation,
   markProofOperationCompleted,
   prepareProofOperation,
-  releaseProofReservation,
-  reserveAvailableSatProofsForSend,
+  readDaemonKeysetCounters,
+  readAvailableWalletProofAmountSamplesForReceive,
+  reserveDaemonKeysetCounter,
   updateState,
+  type FencedStateMutation,
   type ProofOperationRecord,
   type StoredOutputData,
   type StoredProofAsset,
 } from './state.ts'
-import type { DaemonProfile } from './profile.ts'
-import type {
-  WalletConsolidationProofSummary,
-  WalletConsolidationResult,
-} from './protocol.ts'
+import { profileDir, type DaemonProfile } from './profile.ts'
+import type { CustodyScopeFence } from './profileFencing.ts'
+import type { WalletConsolidationProofSummary, WalletConsolidationResult } from './protocol.ts'
+import { createDaemonTokenImportKeysetResolver } from './tokenImportKeysetResolver.ts'
+import { DaemonDurableWalletReceiveCoordinator } from './durableWalletReceiveCoordinator.ts'
+import { DaemonDurableOutgoingCashuCoordinator } from './durableOutgoingCashuCoordinator.ts'
 
 export interface CashuWalletLike {
   loadMint(): Promise<void>
-  receive(token: string, config?: { proofsWeHave?: Proof[] }): Promise<Proof[]>
+  receive(token: string, config?: { proofsWeHave?: Array<Pick<Proof, 'amount'>> }): Promise<Proof[]>
+  prepareSwapToReceive?(
+    token: string,
+    config?: {
+      proofsWeHave?: Array<Pick<Proof, 'amount'>>
+      onCountersReserved?: (range: OperationCounters) => void
+    },
+    outputConfig?: unknown,
+  ): Promise<SwapPreview>
   send(amount: number, proofs: Proof[]): Promise<{ keep: Proof[]; send: Proof[] }>
   prepareSwapToSend?(
     amount: number,
@@ -71,9 +104,13 @@ export interface CashuWalletLike {
     outputConfig?: unknown,
   ): Promise<SwapPreview>
   completeSwap?(swapPreview: SwapPreview): Promise<{ keep: Proof[]; send: Proof[] }>
-  checkProofsStates?(
-    proofs: Array<Pick<Proof, 'id' | 'secret'>>,
-  ): Promise<ProofState[]>
+  prepareConditionalSwap?(options: {
+    keysetId: string
+    inputs: Proof[]
+    outputs: [{ label: 'consolidated'; kind: 'random'; amount: number }]
+  }): Promise<ConditionalSwapPreview>
+  completeConditionalSwap?(preview: ConditionalSwapPreview): Promise<Record<string, Proof[]>>
+  checkProofsStates?(proofs: Array<Pick<Proof, 'id' | 'secret'>>): Promise<ProofState[]>
   selectProofsToSend?(
     proofs: Proof[],
     amountToSend: number,
@@ -89,7 +126,9 @@ export interface CashuWalletLike {
 }
 
 export interface WalletOpsDependencies {
-  createCashuWallet?: (mintUrl: string, baseAsset?: string | null) => CashuWalletLike
+  createCashuWallet?: (mintUrl: string, unit?: TokenImportUnit) => CashuWalletLike
+  getCustodyFence?: () => CustodyScopeFence
+  resolveTokenImportKeysets?: ResolveTokenImportKeysets
   ctfConvert?: (
     mintUrl: string,
     request: CtfConvertRequest,
@@ -112,10 +151,7 @@ export interface WalletOpsDependencies {
     outputs: Record<string, StoredOutputData[]>,
   ) => Promise<Record<string, Proof[]>>
   resolveMintKeysetIds?: (mintUrl: string) => Promise<string[]>
-  resolveConditionKeysetIds?: (
-    mintUrl: string,
-    conditionId: string,
-  ) => Promise<string[]>
+  resolveConditionKeysetIds?: (mintUrl: string, conditionId: string) => Promise<string[]>
   resolveRootPreflightOutputAmountSats?: (params: {
     mintUrl: string
     baseAsset?: string | null
@@ -143,6 +179,8 @@ export interface WalletReceiveResult {
   amountSats: number
   proofCount: number
   asset: StoredProofAsset
+  unit: TokenImportUnit
+  hasInactiveProofs: boolean
 }
 
 export interface WalletSendResult {
@@ -153,15 +191,54 @@ export interface WalletSendResult {
   token: string
 }
 
+export interface DurableParticipationScoreDeliveryResult {
+  readonly deliveryId: string
+  readonly transferId: string
+  readonly state: 'pending' | 'received' | 'credited'
+}
+
 export interface WalletSendRecoveryResult {
   recovered: string[]
   pending: Array<{ operationId: string; error: string }>
+}
+
+export interface DurableOutgoingCashuRecoveryResult {
+  readonly recovered: string[]
+  readonly pending: Array<{ operationId: string; error: string }>
+  readonly hasMore: boolean
+  readonly hasPending: boolean
+  readonly hasBlockingPending: boolean
+}
+
+export interface DurableOutgoingCashuReclaimResult {
+  readonly transferId: string
+  readonly mintUrl: string
+  readonly unit: string
+  readonly deliveryState: string
+  readonly tokenDigest: string | null
+  readonly tokenLength: number | null
+  readonly returnedAmount: string | null
+  readonly receiveFee: string | null
+}
+
+export interface WalletReceiveRecoveryResult {
+  recovered: string[]
+  recoveredCount: number
+  pending: Array<{ operationId: string; error: string }>
+  pendingCount: number
+  hasMore: boolean
 }
 
 export interface PreparedCtfCollateralResult {
   inputs: Proof[]
   spent: Proof[]
   keep: Proof[]
+}
+
+export interface CtfCollateralOperationAuthority {
+  readonly proofOperationStore: CtfProofOperationStore
+  readonly beforeMintMutation: () => Promise<void>
+  readonly readAvailableProofs: () => Promise<Proof[]>
 }
 
 export interface ExecuteCtfConsolidationPlanInput {
@@ -179,11 +256,8 @@ const DAEMON_CTF_PROOF_OPERATION_STORE: CtfProofOperationStore = {
     (await getProofOperation(operationId)) as CtfProofOperationRecord | null,
   prepareProofOperation: async (input) =>
     (await prepareProofOperation(input)) as CtfProofOperationRecord,
-  markProofOperationCompleted: async (operationId, resultProofs) =>
-    (await markProofOperationCompleted(
-      operationId,
-      resultProofs,
-    )) as CtfProofOperationRecord,
+  markProofOperationCompleted: async (operationId, completion) =>
+    (await markProofOperationCompleted(operationId, completion)) as CtfProofOperationRecord,
 }
 
 export async function receiveWalletToken(
@@ -193,31 +267,124 @@ export async function receiveWalletToken(
   deps: WalletOpsDependencies = {},
   metadata: WalletReceiveMetadata = {},
 ): Promise<WalletReceiveResult> {
-  const asset = resolveReceiveAsset(metadata)
-  const decoded = await decodeTokenForProfile(token, profile, asset, deps)
+  const allowInsecureLoopbackHttp = isLoopbackHttpUrl(profile.mintUrl)
+  const canonicalProfileMintUrl = canonicalizeTokenImportMintUrl(
+    profile.mintUrl,
+    allowInsecureLoopbackHttp,
+  )
+  const validated = await validateProductWalletTokenImport({
+    encodedToken: token,
+    allowedCanonicalMintUrls: new Set([canonicalProfileMintUrl]),
+    resolveKeysets:
+      deps.resolveTokenImportKeysets ??
+      createDaemonTokenImportKeysetResolver({ allowInsecureLoopbackHttp }),
+    allowInsecureLoopbackHttp,
+    bounds: {
+      maxEncodedBytes: 4 * 1_024 * 1_024,
+      maxProofs: 10_000,
+      maxMints: 1,
+      maxKeysets: 512,
+      maxResolverCandidates: 512,
+    },
+  })
+  if (!validated.proofs.every(({ resolvedKeysetId }) => isV2KeysetId(resolvedKeysetId))) {
+    throw new Error('daemon wallet receive supports only V2 keysets')
+  }
+  if (validated.canonicalMintUrls.length !== 1) {
+    throw new Error('daemon wallet receive supports exactly one mint per token')
+  }
+  const validatedMintUrl = validated.canonicalMintUrls[0]
+  if (validatedMintUrl !== canonicalProfileMintUrl) {
+    throw new Error('cashu token mint does not match daemon profile mint')
+  }
+  const asset = resolveReceiveAsset(metadata, validated.unit, validated.context)
+  const decoded = await decodeTokenForProfile(validated.encodedToken, profile, asset, deps)
   const mintUrl = decoded.mint || profile.mintUrl
   if (!mintUrl) throw new Error('cashu token did not include a mint URL')
   if (mintUrl !== profile.mintUrl) {
     throw new Error('cashu token mint does not match daemon profile mint')
   }
   if (asset.kind === 'Outcome') {
-    return receiveOutcomeToken(decoded.proofs as Proof[], mintUrl, asset, secrets, deps)
+    return receiveOutcomeToken(
+      decoded.proofs as Proof[],
+      mintUrl,
+      asset,
+      secrets,
+      deps,
+      validated.hasInactiveProofs,
+    )
   }
 
-  const wallet = createWallet(mintUrl, secrets, deps)
+  if (!deps.getCustodyFence) {
+    throw new Error('daemon wallet receive requires custody authority')
+  }
+  const wallet = createWallet(mintUrl, secrets, deps, 'sat', validated.unit)
   await wallet.loadMint()
-  const state = await ensureState()
-  const proofsWeHave = state.wallet.proofs
-    .filter((record) => record.mintUrl === mintUrl)
-    .map((record) => record.proof as Proof)
-  const received = await wallet.receive(token, { proofsWeHave })
-  await addAvailableProofs(mintUrl, received, asset)
+  const receiveMutation = { fence: deps.getCustodyFence(), observedAtMs: Date.now() }
+  const proofsWeHave = (
+    await readAvailableWalletProofAmountSamplesForReceive({
+      mintUrl,
+      unit: validated.unit,
+      mutation: receiveMutation,
+    })
+  ).map(({ amount }) => ({ amount: Amount.from(amount) }))
+  if (!wallet.prepareSwapToReceive) {
+    throw new Error('cashu wallet does not support durable receive preparation')
+  }
+  let reserved: OperationCounters | undefined
+  const preview = await wallet.prepareSwapToReceive(
+    validated.encodedToken,
+    {
+      proofsWeHave,
+      onCountersReserved: (range) => {
+        reserved = range
+      },
+    },
+    { type: 'deterministic', counter: 0 },
+  )
+  if (reserved === undefined) {
+    throw new Error('daemon wallet receive did not reserve a deterministic output range')
+  }
+  const operation = serializeDurableWalletReceiveOperation({
+    operationId: `wallet-receive:${randomUUID()}`,
+    mintUrl,
+    unit: validated.unit,
+    preview,
+    derivationRange: {
+      keysetId: reserved.keysetId,
+      counterStart: reserved.start,
+      counterCount: reserved.count,
+    },
+  })
+  const received = await new DaemonDurableWalletReceiveCoordinator(
+    profileDir(),
+    deps.getCustodyFence,
+    deps.restoreOutputGroups ?? restoreOutputGroups,
+  ).execute({ prepared: { operation }, wallet })
   return {
     mintUrl,
-    amountSats: sumProofs(received),
-    proofCount: received.length,
+    amountSats: sumProofs([...received.proofs]),
+    proofCount: received.proofs.length,
     asset,
+    unit: validated.unit,
+    hasInactiveProofs: validated.hasInactiveProofs,
   }
+}
+
+/** Recover bounded active ordinary receives without creating a new output plan. */
+export async function recoverDurableWalletReceives(
+  secrets: WalletOpsSecrets,
+  deps: WalletOpsDependencies = {},
+): Promise<WalletReceiveRecoveryResult> {
+  if (!deps.getCustodyFence)
+    return { recovered: [], recoveredCount: 0, pending: [], pendingCount: 0, hasMore: false }
+  return new DaemonDurableWalletReceiveCoordinator(
+    profileDir(),
+    deps.getCustodyFence,
+    deps.restoreOutputGroups ?? restoreOutputGroups,
+  ).recover({
+    walletFor: async (mintUrl, unit) => createWallet(mintUrl, secrets, deps, 'sat', unit),
+  })
 }
 
 async function decodeTokenForProfile(
@@ -248,18 +415,225 @@ export async function sendWalletToken(
   mintUrl = profile.mintUrl,
   operationId?: string,
 ): Promise<WalletSendResult> {
-  if (!Number.isInteger(amountSats) || amountSats <= 0) {
-    throw new Error('amountSats must be a positive integer')
+  if (!Number.isSafeInteger(amountSats) || amountSats <= 0) {
+    throw new Error('amountSats must be a positive safe integer')
   }
   if (!mintUrl) throw new Error('mint URL is required')
+  if (!deps.getCustodyFence) throw new Error('daemon wallet send requires custody authority')
 
-  return sendWalletTokenWithOperation(
-    amountSats,
-    mintUrl,
-    operationId ?? `wallet-send-${randomUUID()}`,
-    secrets,
+  const transferId = operationId ?? `wallet-send-${randomUUID()}`
+  const coordinator = new DaemonDurableOutgoingCashuCoordinator(
+    profileDir(),
+    deps.getCustodyFence,
     deps,
   )
+  const existing = await coordinator.loadTransfer(transferId)
+  const wallet = createWallet(mintUrl, secrets, deps, 'sat', 'sat')
+  await wallet.loadMint()
+  const transfer =
+    existing === null
+      ? await coordinator.execute({ transferId, amountSats, mintUrl, wallet })
+      : await coordinator.recover({ transfer: existing, amountSats, mintUrl, wallet })
+  if (transfer.token === null) throw new Error('durable outgoing Cashu token admission is absent')
+  return {
+    operationId: transfer.walletSendOperation.operationId,
+    mintUrl: transfer.mintUrl,
+    amountSats,
+    proofCount: transfer.token.proofs.length,
+    token: transfer.token.encodedToken,
+  }
+}
+
+/** Create and reconcile one exact Score delivery without returning its bearer token. */
+export async function deliverParticipationScoreCashu(input: {
+  readonly deliveryId: string
+  readonly accountSubject: string
+  readonly amountSats: number
+  readonly purchasedTotalEpoch: number
+  readonly profile: DaemonProfile
+  readonly secrets: WalletOpsSecrets
+  readonly client: DurableRecipientDeliveryClient
+  readonly deps?: WalletOpsDependencies
+}): Promise<DurableParticipationScoreDeliveryResult> {
+  if (!Number.isSafeInteger(input.amountSats) || input.amountSats <= 0) {
+    throw new Error('Participation Score amount must be a positive safe integer')
+  }
+  const deps = input.deps ?? {}
+  if (!deps.getCustodyFence)
+    throw new Error('Participation Score delivery requires custody authority')
+  if (!Number.isSafeInteger(input.purchasedTotalEpoch) || input.purchasedTotalEpoch < 0) {
+    throw new Error('Participation Score purchase epoch is invalid')
+  }
+  const coordinator = new DaemonDurableOutgoingCashuCoordinator(
+    profileDir(),
+    deps.getCustodyFence,
+    deps,
+  )
+  const pointer = await coordinator.preflightParticipationScoreDelivery({
+    transferId: input.deliveryId,
+    amountSats: input.amountSats,
+    purchasedTotal: input.purchasedTotalEpoch,
+    accountSubject: input.accountSubject,
+    mintUrl: input.profile.mintUrl,
+  })
+  const requestedAmount = String(pointer.amountSats)
+  const initialMetadata = createParticipationScoreDeliveryMetadata({
+    deliveryId: pointer.transferId,
+    accountSubject: input.accountSubject,
+    mintUrl: input.profile.mintUrl,
+    requestedAmount,
+  })
+  const existing = await coordinator.loadTransfer(pointer.transferId)
+  const metadata =
+    existing === null
+      ? initialMetadata
+      : createParticipationScoreDeliveryMetadata({
+          deliveryId: existing.transferId,
+          accountSubject: input.accountSubject,
+          mintUrl: existing.mintUrl,
+          requestedAmount: existing.requestedAmount,
+        })
+  const intent = participationScoreDeliveryIntent({
+    accountSubject: metadata.accountSubject,
+    productBindingSha256: metadata.productBindingSha256,
+    tokenBytesLimit: deriveDurableRecipientTokenAllowance(metadata),
+  })
+  const transfer =
+    existing === null
+      ? await executeScoreTransfer()
+      : existing.deliveryState === 'recipient-acknowledged'
+        ? existing
+        : existing.deliveryState === 'delivery-pending' && existing.token !== null
+          ? existing
+          : await recoverScoreTransfer(existing)
+  if (transfer.deliveryState === 'recipient-acknowledged') {
+    return {
+      deliveryId: metadata.deliveryId,
+      transferId: transfer.transferId,
+      state: 'credited',
+    }
+  }
+  if (transfer.token === null) throw new Error('Participation Score token admission is absent')
+  const status = await coordinator.reconcileRecipientDelivery({
+    transfer,
+    submission: createParticipationScoreDeliverySubmission({
+      metadata,
+      token: transfer.token.encodedToken,
+    }),
+    client: input.client,
+    acknowledge: (candidate) => candidate.state === 'credited',
+  })
+  return {
+    deliveryId: metadata.deliveryId,
+    transferId: status.transfer.transferId,
+    state:
+      status.transfer.deliveryState === 'recipient-acknowledged'
+        ? 'credited'
+        : (status.status?.state ?? 'pending'),
+  }
+
+  async function executeScoreTransfer() {
+    const wallet = createWallet(metadata.mintUrl, input.secrets, deps, 'sat', 'sat')
+    await wallet.loadMint()
+    return coordinator.execute({
+      transferId: metadata.deliveryId,
+      amountSats: Number(metadata.requestedAmount),
+      mintUrl: metadata.mintUrl,
+      wallet,
+      deliveryIntent: intent,
+    })
+  }
+
+  async function recoverScoreTransfer(existingTransfer: DurableOutgoingCashuTransfer) {
+    const wallet = createWallet(metadata.mintUrl, input.secrets, deps, 'sat', 'sat')
+    await wallet.loadMint()
+    return coordinator.recover({
+      transfer: existingTransfer,
+      amountSats: Number(metadata.requestedAmount),
+      mintUrl: metadata.mintUrl,
+      wallet,
+      deliveryIntent: intent,
+    })
+  }
+}
+
+/** Recover one bounded page of due outgoing Cashu transfers without exposing tokens. */
+export async function recoverDurableOutgoingCashuTransfers(
+  secrets: WalletOpsSecrets,
+  deps: WalletOpsDependencies = {},
+  recipientDelivery?: {
+    readonly client: DurableRecipientDeliveryClient
+    readonly accountSubject: string
+  },
+): Promise<DurableOutgoingCashuRecoveryResult> {
+  if (!deps.getCustodyFence) {
+    return {
+      recovered: [],
+      pending: [],
+      hasMore: false,
+      hasPending: false,
+      hasBlockingPending: false,
+    }
+  }
+  const result = await new DaemonDurableOutgoingCashuCoordinator(
+    profileDir(),
+    deps.getCustodyFence,
+    deps,
+  ).recoverDue({
+    walletFor: async (mintUrl, unit) => createWallet(mintUrl, secrets, deps, 'sat', unit),
+    ...(recipientDelivery === undefined
+      ? {}
+      : {
+          recipientClient: recipientDelivery.client,
+          recipientSubmission: (transfer: DurableOutgoingCashuTransfer) => {
+            if (transfer.token === null)
+              throw new Error('Participation Score token admission is absent')
+            return createParticipationScoreDeliverySubmission({
+              metadata: createParticipationScoreDeliveryMetadata({
+                deliveryId: transfer.transferId,
+                accountSubject: recipientDelivery.accountSubject,
+                mintUrl: transfer.mintUrl,
+                requestedAmount: transfer.requestedAmount,
+              }),
+              token: transfer.token.encodedToken,
+            })
+          },
+          acknowledgeRecipientStatus: (status) => status.state === 'credited',
+        }),
+  })
+  return {
+    recovered: result.recovered,
+    pending: result.pending.map(({ transferId, error }) => ({ operationId: transferId, error })),
+    hasMore: result.hasMore,
+    hasPending: result.hasPending,
+    hasBlockingPending: result.hasBlockingPending,
+  }
+}
+
+/** Reclaim one exact persisted bearer transfer after a fresh complete classification. */
+export async function reclaimDurableOutgoingCashuTransfer(
+  transferId: string,
+  secrets: WalletOpsSecrets,
+  deps: WalletOpsDependencies = {},
+): Promise<DurableOutgoingCashuReclaimResult> {
+  if (!deps.getCustodyFence)
+    throw new Error('durable outgoing Cashu reclaim requires custody authority')
+  const coordinator = new DaemonDurableOutgoingCashuCoordinator(
+    profileDir(),
+    deps.getCustodyFence,
+    deps,
+  )
+  const transfer = await coordinator.loadTransfer(transferId)
+  if (transfer === null) throw new Error('durable outgoing Cashu transfer is missing')
+  const wallet = createWallet(
+    transfer.mintUrl,
+    secrets,
+    deps,
+    'sat',
+    transfer.unit as TokenImportUnit,
+  )
+  await wallet.loadMint()
+  return redactedTransferMetadata(await coordinator.reclaim({ transferId, wallet }))
 }
 
 export async function splitAvailableSatProofsForCtfCollateral(
@@ -269,56 +643,34 @@ export async function splitAvailableSatProofsForCtfCollateral(
   secrets: WalletOpsSecrets,
   deps: WalletOpsDependencies = {},
   baseAssetInput?: string | null,
+  operationAuthority?: CtfCollateralOperationAuthority,
 ): Promise<PreparedCtfCollateralResult> {
   const baseAsset = normalizeMarketBaseAsset(baseAssetInput)
+  const proofOperationStore =
+    operationAuthority?.proofOperationStore ?? DAEMON_CTF_PROOF_OPERATION_STORE
+  const existing = await proofOperationStore.getProofOperation(operationId)
   const wallet = createWallet(mintUrl, secrets, deps, baseAsset)
-  await wallet.loadMint()
-  const existing = await getProofOperation(operationId)
   if (existing) {
-    const grossPlanningKeyset = await resolveGrossCtfInputPlanningKeyset(
-      mintUrl,
-      wallet,
-      deps,
-    )
-    const grossCtfInputSats = computeGrossCtfInputAmountSats({
-      faceAmountSats: amountSats,
-      keyset: grossPlanningKeyset,
-    })
+    if (existing.state !== 'completed') await wallet.loadMint()
     const split = await splitRegularProofsWithOperation({
       mintUrl,
       baseAsset,
       operationId,
       wallet,
       proofs: [],
-      amountSats: grossCtfInputSats,
-      proofOperationStore: DAEMON_CTF_PROOF_OPERATION_STORE,
+      amountSats: requirePersistedCtfCollateralAmount(existing),
+      proofOperationStore,
+      beforeMintMutation: operationAuthority?.beforeMintMutation,
     })
-    const exact = await validateExactCtfCollateralFromProofs(
-      mintUrl,
-      split.send,
-      amountSats,
-      deps,
-    )
+    const exact = await validateExactCtfCollateralFromProofs(mintUrl, split.send, amountSats, deps)
     return { inputs: exact.inputs, spent: split.spent, keep: split.keep }
   }
+  await wallet.loadMint()
 
-  const available = (await ensureState()).wallet.proofs
-    .filter(
-      (record) =>
-        record.mintUrl === mintUrl &&
-        record.state === 'available' &&
-        record.asset.kind === 'sats' &&
-        normalizeMarketBaseAsset(record.asset.baseAsset) === baseAsset,
-    )
-    .map((record) => record.proof as Proof)
+  const available = await readAvailableCollateralProofs(mintUrl, baseAsset, operationAuthority)
 
   try {
-    const exact = await validateExactCtfCollateralFromProofs(
-      mintUrl,
-      available,
-      amountSats,
-      deps,
-    )
+    const exact = await validateExactCtfCollateralFromProofs(mintUrl, available, amountSats, deps)
     return { inputs: exact.inputs, spent: [], keep: [] }
   } catch {
     // Fall through to wallet-backed selection, then to a regular split if needed.
@@ -334,11 +686,7 @@ export async function splitAvailableSatProofsForCtfCollateral(
   if (!wallet.selectProofsToSend || !wallet.getFeesForProofs) {
     throw new Error('cashu wallet does not support fee-aware proof selection')
   }
-  const grossPlanningKeyset = await resolveGrossCtfInputPlanningKeyset(
-    mintUrl,
-    wallet,
-    deps,
-  )
+  const grossPlanningKeyset = await resolveGrossCtfInputPlanningKeyset(mintUrl, wallet, deps)
   const grossCtfInputSats = computeGrossCtfInputAmountSats({
     faceAmountSats: amountSats,
     keyset: grossPlanningKeyset,
@@ -354,15 +702,37 @@ export async function splitAvailableSatProofsForCtfCollateral(
     wallet,
     proofs: selected.send,
     amountSats: grossCtfInputSats,
-    proofOperationStore: DAEMON_CTF_PROOF_OPERATION_STORE,
+    proofOperationStore,
+    beforeMintMutation: operationAuthority?.beforeMintMutation,
   })
-  const exact = await validateExactCtfCollateralFromProofs(
-    mintUrl,
-    split.send,
-    amountSats,
-    deps,
-  )
+  const exact = await validateExactCtfCollateralFromProofs(mintUrl, split.send, amountSats, deps)
   return { inputs: exact.inputs, spent: split.spent, keep: split.keep }
+}
+
+function requirePersistedCtfCollateralAmount(operation: CtfProofOperationRecord): number {
+  const amount = operation.metadata.amount
+  if (typeof amount !== 'number' || !Number.isSafeInteger(amount) || amount <= 0) {
+    throw new Error('persisted CTF collateral operation amount is invalid')
+  }
+  return amount
+}
+
+async function readAvailableCollateralProofs(
+  mintUrl: string,
+  baseAsset: 'sat',
+  operationAuthority: CtfCollateralOperationAuthority | undefined,
+): Promise<Proof[]> {
+  if (operationAuthority) return operationAuthority.readAvailableProofs()
+  return (await ensureState()).wallet.proofs
+    .filter(
+      (record) =>
+        record.mintUrl === mintUrl &&
+        record.state === 'available' &&
+        record.asset.kind === 'sats' &&
+        normalizeMarketBaseAsset(record.asset.baseAsset) === baseAsset &&
+        record.asset.unit === 'msat',
+    )
+    .map((record) => record.proof as Proof)
 }
 
 async function resolveGrossCtfInputPlanningKeyset(
@@ -403,14 +773,8 @@ async function validateExactCtfCollateralFromProofs(
     inputs.map((proof) => proof.id),
     deps,
   )
-  const inputFeeSats = computeInputFeeSatsForProofs(
-    inputs,
-    inputFeePpkByKeyset,
-  )
-  const grossInputSats = inputs.reduce(
-    (acc, proof) => acc + amountToNumber(proof.amount),
-    0,
-  )
+  const inputFeeSats = computeInputFeeSatsForProofs(inputs, inputFeePpkByKeyset)
+  const grossInputSats = inputs.reduce((acc, proof) => acc + amountToNumber(proof.amount), 0)
   const netInputSats = grossInputSats - inputFeeSats
   if (netInputSats !== faceAmountSats) {
     throw new Error(
@@ -429,11 +793,7 @@ export async function executeCtfConsolidationPlan(
     throw new Error('CTF consolidation plan did not include input proofs')
   }
 
-  const operationId = ctfConsolidationOperationId(
-    input.conditionId,
-    input.type,
-    selectedInputs,
-  )
+  const operationId = ctfConsolidationOperationId(input.conditionId, input.type, selectedInputs)
   await prepareProofOperation({
     operationId,
     kind: 'ctf-consolidation',
@@ -450,8 +810,8 @@ export async function executeCtfConsolidationPlan(
       conditionId: input.conditionId,
       type: input.type,
       parentCollectionId: input.plan.request.parent_collection_id ?? null,
-      inputCollections: Object.entries(input.plan.request.inputs).flatMap(
-        ([collection, proofs]) => proofs.map(() => collection),
+      inputCollections: Object.entries(input.plan.request.inputs).flatMap(([collection, proofs]) =>
+        proofs.map(() => collection),
       ),
       feeSats: input.plan.feeSats,
       collateralOutputSats: input.plan.collateralOutputSats,
@@ -492,9 +852,7 @@ export async function resolveCtfConsolidationInputFees(
     return deps.resolveInputFeePpkByKeyset(mintUrl, unique)
   }
   const keysetRows = await listMintAndConditionalKeysets(mintUrl)
-  const feeByKeyset = new Map(
-    keysetRows.map((keyset) => [keyset.id, keyset.input_fee_ppk ?? 0]),
-  )
+  const feeByKeyset = new Map(keysetRows.map((keyset) => [keyset.id, keyset.input_fee_ppk ?? 0]))
   return Object.fromEntries(
     unique.map((keysetId) => {
       if (!feeByKeyset.has(keysetId)) {
@@ -517,9 +875,7 @@ export async function resolveCtfConsolidationOutputKeysets(
   const collateralUnit = defaultCollateralUnit(undefined)
   const activeCollateral = keysets.find(
     (keyset) =>
-      keyset.active &&
-      keyset.unit === collateralUnit &&
-      keyset.condition_id === undefined,
+      keyset.active && keyset.unit === collateralUnit && keyset.condition_id === undefined,
   )
   if (!activeCollateral) {
     throw new Error(`mint did not return an active ${collateralUnit} collateral keyset`)
@@ -527,10 +883,7 @@ export async function resolveCtfConsolidationOutputKeysets(
   const entries: Array<[string, string]> = [[COLLATERAL_COLLECTION, activeCollateral.id]]
   for (const keyset of keysets) {
     if (!keyset.active || keyset.condition_id !== conditionId) continue
-    for (const collection of [
-      keyset.outcome_collection,
-      keyset.outcome_collection_id,
-    ]) {
+    for (const collection of [keyset.outcome_collection, keyset.outcome_collection_id]) {
       if (collection) entries.push([collection, keyset.id])
     }
   }
@@ -567,9 +920,7 @@ async function executeMintCtfConvert(
   const response = await mint.ctfConvert(request)
   const keysets = await resolveMintKeysByKeyset(
     mintUrl,
-    Object.values(request.outputs).flatMap((outputs) =>
-      outputs.map((output) => output.id),
-    ),
+    Object.values(request.outputs).flatMap((outputs) => outputs.map((output) => output.id)),
   )
   const result: Record<string, Proof[]> = {}
   for (const [collection, outputs] of Object.entries(outputsByCollection)) {
@@ -593,9 +944,7 @@ async function executeMintCtfConvert(
       }
       const keyset = keysets[message.id]
       if (!keyset) throw new Error(`missing mint keys for keyset ${message.id}`)
-      return normalizeProof(
-        output.toProof({ ...signature, amount: message.amount }, keyset),
-      )
+      return normalizeProof(output.toProof({ ...signature, amount: message.amount }, keyset))
     })
   }
   return result
@@ -612,8 +961,7 @@ async function replaceConsolidatedProofs(input: {
   )
   await updateState((state, now) => {
     state.wallet.proofs = state.wallet.proofs.filter(
-      (record) =>
-        record.mintUrl !== input.mintUrl || !spentSecrets.has(record.proof.secret),
+      (record) => record.mintUrl !== input.mintUrl || !spentSecrets.has(record.proof.secret),
     )
     const existingSecrets = new Set(
       state.wallet.proofs
@@ -623,8 +971,14 @@ async function replaceConsolidatedProofs(input: {
     for (const [collection, proofs] of Object.entries(input.resultProofs)) {
       const asset: StoredProofAsset =
         collection === COLLATERAL_COLLECTION
-          ? { kind: 'sats' }
-          : { kind: 'Outcome', conditionId: input.conditionId, outcomeSetId: collection }
+          ? { kind: 'sats', baseAsset: 'sat', unit: 'msat' }
+          : {
+              kind: 'Outcome',
+              conditionId: input.conditionId,
+              outcomeSetId: collection,
+              baseAsset: 'sat',
+              unit: 'msat',
+            }
       for (const proof of proofs) {
         if (existingSecrets.has(proof.secret)) continue
         existingSecrets.add(proof.secret)
@@ -641,9 +995,7 @@ async function replaceConsolidatedProofs(input: {
   })
 }
 
-function summarizeProofGroups(
-  groups: Record<string, Proof[]>,
-): WalletConsolidationProofSummary[] {
+function summarizeProofGroups(groups: Record<string, Proof[]>): WalletConsolidationProofSummary[] {
   return Object.entries(groups).flatMap(([label, proofs]) =>
     proofs.map((proof) => ({
       id: proof.id,
@@ -696,100 +1048,21 @@ async function listMintAndConditionalKeysets(mintUrl: string): Promise<
   return [...regular, ...conditional]
 }
 
-async function sendWalletTokenWithOperation(
-  amountSats: number,
-  mintUrl: string,
-  operationId: string,
-  secrets: WalletOpsSecrets,
-  deps: WalletOpsDependencies,
-): Promise<WalletSendResult> {
-  const existing = await getProofOperation(operationId)
-  const wallet = createWallet(mintUrl, secrets, deps)
-  await wallet.loadMint()
-  if (existing) {
-    const split = await resumeWalletSendOperation(wallet, existing, mintUrl, deps)
-    return walletSendResult(operationId, mintUrl, amountSats, split.send)
-  }
-
-  const reservationId = `wallet-send:${operationId}`
-  const selected = await reserveAvailableSatProofsForSend({
-    mintUrl,
-    amountSats,
-    reservedBy: reservationId,
-  })
-  const selectedProofs = selected as Proof[]
-  if (!wallet.prepareSwapToSend || !wallet.completeSwap) {
-    await releaseProofReservation(reservationId)
-    throw new Error('cashu wallet does not support resumable send preparation')
-  }
-
-  let preview: SwapPreview
-  try {
-    preview = await wallet.prepareSwapToSend(
-      amountSats,
-      selectedProofs,
-      undefined,
-      { send: { type: 'random' }, keep: { type: 'random' } },
-    )
-  } catch (err) {
-    await releaseProofReservation(reservationId)
-    throw err
-  }
-
-  await prepareProofOperation({
-    operationId,
-    kind: 'wallet-send',
-    mintUrl,
-    inputs: preview.inputs,
-    outputs: {
-      send: serializeOutputDataArray(preview.sendOutputs ?? []),
-      keep: serializeOutputDataArray(preview.keepOutputs ?? []),
-    },
-    metadata: {
-      amount: amountToNumber(preview.amount),
-      fees: amountToNumber(preview.fees),
-      keysetId: preview.keysetId,
-      unselectedProofs: preview.unselectedProofs ?? [],
-      reservationId,
-    },
-  })
-
-  const split = await wallet.completeSwap(preview)
-  await markProofOperationCompleted(operationId, {
-    send: split.send,
-    keep: split.keep,
-  })
-  await completeReservedSatSend({
-    mintUrl,
-    reservedBy: reservationId,
-    keepProofs: split.keep,
-  })
-  return walletSendResult(operationId, mintUrl, amountSats, split.send)
-}
-
 export async function recoverPreparedWalletSends(
-  secrets: WalletOpsSecrets,
+  _secrets: WalletOpsSecrets,
   deps: WalletOpsDependencies = {},
 ): Promise<WalletSendRecoveryResult> {
   const state = await ensureState()
   const recoverable = Object.values(state.proofOperations).filter(
     (entry) =>
-      (entry.kind === 'wallet-send' && entry.state === 'prepared') ||
-      (entry.kind === 'ctf-consolidation' &&
-        (entry.state === 'prepared' ||
-          (entry.state === 'completed' &&
-            !isCtfConsolidationFinalized(entry, state.wallet.proofs)))),
+      entry.kind === 'ctf-consolidation' &&
+      (entry.state === 'prepared' ||
+        (entry.state === 'completed' && !isCtfConsolidationFinalized(entry, state.wallet.proofs))),
   )
   const result: WalletSendRecoveryResult = { recovered: [], pending: [] }
   for (const entry of recoverable) {
     try {
-      if (entry.kind === 'ctf-consolidation') {
-        await resumeCtfConsolidationOperation(entry, deps)
-      } else {
-        const wallet = createWallet(entry.mintUrl, secrets, deps)
-        await wallet.loadMint()
-        await resumeWalletSendOperation(wallet, entry, entry.mintUrl, deps)
-      }
+      await resumeCtfConsolidationOperation(entry, deps)
       result.recovered.push(entry.operationId)
     } catch (err) {
       result.pending.push({
@@ -853,159 +1126,79 @@ async function resumeCtfConsolidationOperation(
   return resultProofs
 }
 
-async function resumeWalletSendOperation(
-  wallet: CashuWalletLike,
-  entry: ProofOperationRecord,
-  mintUrl: string,
-  deps: WalletOpsDependencies,
-): Promise<{ send: Proof[]; keep: Proof[] }> {
-  assertWalletSendOperation(entry, mintUrl)
-  const reservationId = readStringMetadata(entry, 'reservationId')
-  if (entry.state === 'completed') {
-    const split = {
-      send: (entry.resultProofs?.send ?? []) as Proof[],
-      keep: (entry.resultProofs?.keep ?? []) as Proof[],
-    }
-    await completeReservedSatSend({
-      mintUrl,
-      reservedBy: reservationId,
-      keepProofs: split.keep,
-    })
-    return split
-  }
-  if (entry.state === 'Failed') {
-    throw new Error(`Proof operation ${entry.operationId} previously failed: ${entry.lastError ?? 'unknown error'}`)
-  }
-  if (!wallet.checkProofsStates) {
-    throw new Error('cashu wallet does not support proof-state recovery checks')
-  }
-
-  const states = await wallet.checkProofsStates(
-    entry.inputs.map(({ id, secret }) => ({ id: id ?? '', secret })),
-  )
-  let split: { send: Proof[]; keep: Proof[] }
-  if (allStates(states, CheckStateEnum.SPENT)) {
-    const restored = deps.restoreOutputGroups
-      ? await deps.restoreOutputGroups(entry.mintUrl, entry.outputs)
-      : await restoreOutputGroups(entry.mintUrl, entry.outputs)
-    split = {
-      send: restored.send ?? [],
-      keep: [
-        ...(restored.keep ?? []),
-        ...readUnselectedProofs(entry),
-      ],
-    }
-  } else if (allStates(states, CheckStateEnum.UNSPENT)) {
-    if (!wallet.completeSwap) {
-      throw new Error('cashu wallet does not support prepared send completion')
-    }
-    const result = await wallet.completeSwap(entryToSwapPreview(entry))
-    split = { send: result.send, keep: result.keep }
-  } else {
-    throw new Error(`Proof operation ${entry.operationId} is still pending at the mint`)
-  }
-
-  await markProofOperationCompleted(entry.operationId, split)
-  await completeReservedSatSend({
-    mintUrl,
-    reservedBy: reservationId,
-    keepProofs: split.keep,
-  })
-  return split
-}
-
-function walletSendResult(
-  operationId: string,
-  mintUrl: string,
-  amountSats: number,
-  sendProofs: Proof[],
-  baseAsset?: string | null,
-): WalletSendResult {
-  const unit = defaultCollateralUnit(baseAsset)
-  return {
-    operationId,
-    mintUrl,
-    amountSats,
-    proofCount: sendProofs.length,
-    token: getEncodedToken({ mint: mintUrl, unit, proofs: sendProofs }),
-  }
-}
-
-function createWallet(
+export function createWallet(
   mintUrl: string,
   secrets: WalletOpsSecrets,
   deps: WalletOpsDependencies,
-  baseAsset?: string | null,
+  baseAsset: 'sat',
+  exactUnit?: TokenImportUnit,
+  counterMutation?: () => FencedStateMutation,
 ): CashuWalletLike {
-  const unit = defaultCollateralUnit(baseAsset)
+  const unit = exactUnit ?? defaultCollateralUnit(baseAsset)
   if (deps.createCashuWallet) return deps.createCashuWallet(mintUrl, unit)
+  const mutation = counterMutation ?? mutationFromRuntimeFence(deps.getCustodyFence)
+  if (!mutation) {
+    throw new Error('default Cashu wallet requires a runtime custody fence provider')
+  }
   return new CashuWallet(new CashuMint(mintUrl), {
     unit,
     bip39seed: Buffer.from(secrets.walletSeedHex, 'hex'),
-    counterSource: new DaemonCounterSource(),
+    counterSource: createDaemonCounterSource(mutation, { normalizedMint: mintUrl, unit }),
   }) as CashuWalletLike
 }
 
+export function createDaemonCounterSource(
+  mutation: () => FencedStateMutation,
+  binding: { normalizedMint: string; unit: 'sat' | 'msat' },
+): CounterSource {
+  return new DaemonCounterSource(mutation, binding)
+}
+
 class DaemonCounterSource implements CounterSource {
-  async reserve(keysetId: string, n: number): Promise<CounterRange> {
-    if (!Number.isInteger(n) || n < 0) {
-      throw new Error(`invalid counter reservation size: ${n}`)
+  readonly #mutation: () => FencedStateMutation
+  readonly #binding: { normalizedMint: string; unit: 'sat' | 'msat' }
+
+  constructor(
+    mutation: () => FencedStateMutation,
+    binding: { normalizedMint: string; unit: 'sat' | 'msat' },
+  ) {
+    this.#mutation = mutation
+    this.#binding = {
+      normalizedMint: canonicalizeTokenImportMintUrl(
+        binding.normalizedMint,
+        isLoopbackHttpUrl(binding.normalizedMint),
+      ),
+      unit: binding.unit,
     }
-    return updateState((state) => {
-      const start = state.wallet.keysetCounters[keysetId] ?? 0
-      if (n > 0) {
-        state.wallet.keysetCounters[keysetId] = start + n
-      }
-      return { start, count: n }
-    })
+  }
+
+  async reserve(keysetId: string, n: number): Promise<CounterRange> {
+    return reserveDaemonKeysetCounter(keysetId, n, this.#mutation(), this.#binding)
   }
 
   async advanceToAtLeast(keysetId: string, minNext: number): Promise<void> {
-    if (!Number.isInteger(minNext) || minNext < 0) {
-      throw new Error(`invalid counter advance target: ${minNext}`)
-    }
-    await updateState((state) => {
-      const current = state.wallet.keysetCounters[keysetId] ?? 0
-      if (minNext > current) {
-        state.wallet.keysetCounters[keysetId] = minNext
-      }
-    })
-  }
-
-  async setNext(keysetId: string, next: number): Promise<void> {
-    if (!Number.isInteger(next) || next < 0) {
-      throw new Error(`invalid counter value: ${next}`)
-    }
-    await updateState((state) => {
-      state.wallet.keysetCounters[keysetId] = next
-    })
+    await advanceDaemonKeysetCounter(keysetId, minNext, this.#mutation(), this.#binding)
   }
 
   async snapshot(): Promise<Record<string, number>> {
-    return { ...(await ensureState()).wallet.keysetCounters }
+    return readDaemonKeysetCounters(this.#binding)
   }
+}
+
+function mutationFromRuntimeFence(
+  getCustodyFence: (() => CustodyScopeFence) | undefined,
+): (() => FencedStateMutation) | undefined {
+  if (!getCustodyFence) return undefined
+  return () => ({ fence: getCustodyFence(), observedAtMs: Date.now() })
 }
 
 function sumProofs(proofs: Proof[]): number {
   return proofs.reduce((sum, proof) => sum + amountToNumber(proof.amount), 0)
 }
 
-function assertWalletSendOperation(
-  entry: ProofOperationRecord,
-  mintUrl: string,
-): void {
-  if (entry.kind !== 'wallet-send' || entry.mintUrl !== mintUrl) {
-    throw new Error(
-      `Proof operation ${entry.operationId} does not match this wallet send`,
-    )
-  }
-}
-
 function assertCtfConsolidationOperation(entry: ProofOperationRecord): void {
   if (entry.kind !== 'ctf-consolidation') {
-    throw new Error(
-      `Proof operation ${entry.operationId} does not match CTF consolidation`,
-    )
+    throw new Error(`Proof operation ${entry.operationId} does not match CTF consolidation`)
   }
 }
 
@@ -1016,8 +1209,7 @@ function isCtfConsolidationFinalized(
   const inputSecrets = new Set(entry.inputs.map((proof) => proof.secret))
   if (
     walletProofs.some(
-      (record) =>
-        record.mintUrl === entry.mintUrl && inputSecrets.has(record.proof.secret),
+      (record) => record.mintUrl === entry.mintUrl && inputSecrets.has(record.proof.secret),
     )
   ) {
     return false
@@ -1041,9 +1233,7 @@ function ctfConsolidationOperationId(
   type: CtfConsolidationStrategy,
   inputs: Proof[],
 ): string {
-  const inputProofIds = inputs
-    .map((proof) => `${proof.id ?? ''}:${proof.C}`)
-    .sort()
+  const inputProofIds = inputs.map((proof) => `${proof.id ?? ''}:${proof.C}`).sort()
   const digest = createHash('sha256')
     .update(JSON.stringify({ conditionId, type, inputProofIds }), 'utf8')
     .digest('hex')
@@ -1060,10 +1250,7 @@ async function ctfConsolidationInputGroups(
     inputCollections.length === entry.inputs.length &&
     inputCollections.every((collection) => typeof collection === 'string')
   ) {
-    return groupInputsByCollection(
-      entry.inputs as Proof[],
-      inputCollections as string[],
-    )
+    return groupInputsByCollection(entry.inputs as Proof[], inputCollections as string[])
   }
 
   const state = await ensureState()
@@ -1072,24 +1259,16 @@ async function ctfConsolidationInputGroups(
     if (record.mintUrl !== entry.mintUrl) continue
     collectionBySecret.set(record.proof.secret, proofCollection(record.asset))
   }
-  const recoveredCollections = entry.inputs.map((proof) =>
-    collectionBySecret.get(proof.secret),
-  )
+  const recoveredCollections = entry.inputs.map((proof) => collectionBySecret.get(proof.secret))
   if (recoveredCollections.some((collection) => !collection)) {
     throw new Error(
       `Proof operation ${entry.operationId} is missing CTF consolidation input collection metadata`,
     )
   }
-  return groupInputsByCollection(
-    entry.inputs as Proof[],
-    recoveredCollections as string[],
-  )
+  return groupInputsByCollection(entry.inputs as Proof[], recoveredCollections as string[])
 }
 
-function groupInputsByCollection(
-  inputs: Proof[],
-  collections: string[],
-): Record<string, Proof[]> {
+function groupInputsByCollection(inputs: Proof[], collections: string[]): Record<string, Proof[]> {
   const grouped: Record<string, Proof[]> = {}
   inputs.forEach((proof, index) => {
     const collection = collections[index]
@@ -1113,9 +1292,9 @@ function proofCollection(asset: StoredProofAsset): string {
   return asset.kind === 'sats' ? COLLATERAL_COLLECTION : asset.outcomeSetId
 }
 
-function serializeOutputDataArray(
+export function serializeOutputDataArray(
   outputs: Array<
-    Pick<OutputDataLike, 'blindedMessage' | 'blindingFactor' | 'secret'>
+    Pick<OutputDataLike, 'blindedMessage' | 'blindingFactor' | 'secret' | 'ephemeralE'>
   >,
 ): StoredOutputData[] {
   return outputs.map((output) => ({
@@ -1126,10 +1305,11 @@ function serializeOutputDataArray(
     },
     blindingFactor: output.blindingFactor.toString(16),
     secret: bytesToHex(output.secret),
+    ...(output.ephemeralE === undefined ? {} : { ephemeralE: output.ephemeralE }),
   }))
 }
 
-function deserializeOutputGroups(
+export function deserializeOutputGroups(
   groups: Record<string, StoredOutputData[]>,
 ): Record<string, OutputData[]> {
   return Object.fromEntries(
@@ -1144,20 +1324,20 @@ function deserializeOutputGroups(
             },
             BigInt(`0x${output.blindingFactor}`),
             hexToBytes(output.secret),
+            output.ephemeralE,
           ),
       ),
     ]),
   )
 }
 
-async function restoreOutputGroups(
+export async function restoreOutputGroups(
   mintUrl: string,
   outputs: Record<string, StoredOutputData[]>,
 ): Promise<Record<string, Proof[]>> {
   const mint = new CashuMint(mintUrl)
-  const rows = Object.entries(deserializeOutputGroups(outputs)).flatMap(
-    ([group, groupOutputs]) =>
-      groupOutputs.map((output, index) => ({ group, index, output })),
+  const rows = Object.entries(deserializeOutputGroups(outputs)).flatMap(([group, groupOutputs]) =>
+    groupOutputs.map((output, index) => ({ group, index, output })),
   )
   if (rows.length === 0) return {}
 
@@ -1169,10 +1349,7 @@ async function restoreOutputGroups(
   }
   const signaturesByOutput = new Map<string, SerializedBlindedSignature>()
   response.outputs.forEach((output, index) => {
-    signaturesByOutput.set(
-      blindedMessageKey(output),
-      response.signatures[index],
-    )
+    signaturesByOutput.set(blindedMessageKey(output), response.signatures[index])
   })
 
   const keysets = new Map<string, MintKeys>()
@@ -1180,9 +1357,7 @@ async function restoreOutputGroups(
     const cached = keysets.get(keysetId)
     if (cached) return cached
     const keysetResponse = await mint.getKeys(keysetId)
-    const keyset = keysetResponse.keysets.find(
-      (candidate) => candidate.id === keysetId,
-    )
+    const keyset = keysetResponse.keysets.find((candidate) => candidate.id === keysetId)
     if (!keyset) {
       throw new Error(`Mint did not return keys for keyset ${keysetId}`)
     }
@@ -1192,13 +1367,9 @@ async function restoreOutputGroups(
 
   const restored: Record<string, Proof[]> = {}
   for (const row of rows) {
-    const signature = signaturesByOutput.get(
-      blindedMessageKey(row.output.blindedMessage),
-    )
+    const signature = signaturesByOutput.get(blindedMessageKey(row.output.blindedMessage))
     if (!signature) {
-      throw new Error(
-        `Mint restore did not return signature for output ${row.group}[${row.index}]`,
-      )
+      throw new Error(`Mint restore did not return signature for output ${row.group}[${row.index}]`)
     }
     const keyset = await getKeyset(row.output.blindedMessage.id)
     const proof = row.output.toProof(signature, keyset)
@@ -1207,43 +1378,12 @@ async function restoreOutputGroups(
   return restored
 }
 
-function entryToSwapPreview(entry: ProofOperationRecord): SwapPreview {
-  return {
-    amount: Amount.from(readNumberMetadata(entry, 'amount')),
-    fees: Amount.from(readNumberMetadata(entry, 'fees')),
-    keysetId: readStringMetadata(entry, 'keysetId'),
-    inputs: entry.inputs as Proof[],
-    sendOutputs:
-      deserializeOutputGroups({ send: entry.outputs.send ?? [] }).send ?? [],
-    keepOutputs:
-      deserializeOutputGroups({ keep: entry.outputs.keep ?? [] }).keep ?? [],
-    unselectedProofs: readUnselectedProofs(entry),
-  }
-}
-
-function readUnselectedProofs(entry: ProofOperationRecord): Proof[] {
-  const value = entry.metadata.unselectedProofs
-  return Array.isArray(value) ? (structuredClone(value) as Proof[]) : []
-}
-
-function readNumberMetadata(entry: ProofOperationRecord, key: string): number {
-  const value = entry.metadata[key]
-  if (typeof value !== 'number') {
-    throw new Error(`Proof operation ${entry.operationId} is missing numeric metadata ${key}`)
-  }
-  return value
-}
-
 function readStringMetadata(entry: ProofOperationRecord, key: string): string {
   const value = entry.metadata[key]
   if (typeof value !== 'string') {
     throw new Error(`Proof operation ${entry.operationId} is missing string metadata ${key}`)
   }
   return value
-}
-
-function allStates(states: ProofState[], expected: string): boolean {
-  return states.length > 0 && states.every((state) => state.state === expected)
 }
 
 function bytesToHex(bytes: Uint8Array): string {
@@ -1269,9 +1409,15 @@ async function receiveOutcomeToken(
   asset: StoredProofAsset,
   secrets: WalletOpsSecrets,
   deps: WalletOpsDependencies,
+  hasInactiveProofs: boolean,
 ): Promise<WalletReceiveResult> {
   if (!proofs.length) throw new Error('cashu token did not include proofs')
-  const wallet = createWallet(mintUrl, secrets, deps, asset.baseAsset)
+  for (const proof of proofs) {
+    if (!isV2KeysetId(proof.id)) {
+      throw new Error('cashu outcome receive supports only V2 keysets')
+    }
+  }
+  const wallet = createWallet(mintUrl, secrets, deps, asset.baseAsset, asset.unit)
   await wallet.loadMint()
   if (!wallet.checkProofsStates) {
     throw new Error('cashu wallet does not support proof-state checks')
@@ -1279,13 +1425,9 @@ async function receiveOutcomeToken(
   const proofStates = await wallet.checkProofsStates(
     proofs.map((proof) => ({ id: proof.id, secret: proof.secret })),
   )
-  const firstBlocked = proofStates.find(
-    (state) => state.state !== CheckStateEnum.UNSPENT,
-  )
+  const firstBlocked = proofStates.find((state) => state.state !== CheckStateEnum.UNSPENT)
   if (firstBlocked) {
-    throw new Error(
-      `cashu outcome proof is not spendable: ${firstBlocked.state}`,
-    )
+    throw new Error(`cashu outcome proof is not spendable: ${firstBlocked.state}`)
   }
   await addAvailableProofs(mintUrl, proofs, asset)
   return {
@@ -1293,18 +1435,42 @@ async function receiveOutcomeToken(
     amountSats: sumProofs(proofs),
     proofCount: proofs.length,
     asset,
+    unit: asset.unit,
+    hasInactiveProofs,
   }
 }
 
-function resolveReceiveAsset(metadata: WalletReceiveMetadata): StoredProofAsset {
-  const conditionId = metadata.conditionId?.trim()
-  const outcomeSetId = metadata.outcomeSetId?.trim()
-  const baseAsset = normalizeMarketBaseAsset(undefined)
-  if (!conditionId && !outcomeSetId) return { kind: 'sats', baseAsset }
+function isV2KeysetId(id: unknown): id is string {
+  return typeof id === 'string' && /^01[0-9a-f]{64}$/.test(id)
+}
+
+function resolveReceiveAsset(
+  metadata: WalletReceiveMetadata,
+  unit: TokenImportUnit,
+  context: 'ordinary-sat' | 'ctf-position-msat' | 'ctf-collateral-msat',
+): StoredProofAsset {
+  const conditionId = requireCanonicalOptionalText(metadata.conditionId, 'conditionId')
+  const outcomeSetId = requireCanonicalOptionalText(metadata.outcomeSetId, 'outcomeSetId')
+  const baseAsset = normalizeMarketBaseAsset('sat')
+  if (!conditionId && !outcomeSetId) {
+    if (context === 'ctf-position-msat') {
+      throw new Error('conditional msat proofs require conditionId and outcomeSetId')
+    }
+    return { kind: 'sats', baseAsset, unit }
+  }
   if (!conditionId || !outcomeSetId) {
     throw new Error('conditionId and outcomeSetId must be supplied together')
   }
-  return { kind: 'Outcome', conditionId, outcomeSetId, baseAsset }
+  if (context !== 'ctf-position-msat' || unit !== 'msat') {
+    throw new Error('outcome-token imports require exact conditional msat proofs')
+  }
+  return { kind: 'Outcome', conditionId, outcomeSetId, baseAsset, unit }
+}
+
+function requireCanonicalOptionalText(value: string | undefined, name: string): string | undefined {
+  if (value === undefined) return undefined
+  if (!value || value !== value.trim()) throw new Error(`${name} must be canonical non-empty text`)
+  return value
 }
 
 async function getConditionKeysetIds(
@@ -1337,16 +1503,10 @@ async function getDecodeKeysetIds(
 ): Promise<string[]> {
   const regular = await getMintKeysetIds(mintUrl, deps)
   if (asset.kind === 'sats') return regular
-  return [
-    ...regular,
-    ...(await getConditionKeysetIds(mintUrl, asset.conditionId, deps)),
-  ]
+  return [...regular, ...(await getConditionKeysetIds(mintUrl, asset.conditionId, deps))]
 }
 
-async function getMintKeysetIds(
-  mintUrl: string,
-  deps: WalletOpsDependencies,
-): Promise<string[]> {
+async function getMintKeysetIds(mintUrl: string, deps: WalletOpsDependencies): Promise<string[]> {
   if (deps.resolveMintKeysetIds) return deps.resolveMintKeysetIds(mintUrl)
   const response = await fetch(`${mintUrl.replace(/\/+$/, '')}/v1/keysets`)
   if (!response.ok) {

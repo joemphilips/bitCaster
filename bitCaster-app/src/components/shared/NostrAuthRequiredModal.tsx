@@ -6,9 +6,7 @@ interface NostrAuthRequiredModalProps {
   onClose: () => void;
 }
 
-export function NostrAuthRequiredModal({
-  onClose,
-}: NostrAuthRequiredModalProps) {
+export function NostrAuthRequiredModal({ onClose }: NostrAuthRequiredModalProps) {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const location = useLocation();

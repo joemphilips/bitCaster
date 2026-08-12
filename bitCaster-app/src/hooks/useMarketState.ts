@@ -1,5 +1,5 @@
-import { assertNever } from '@/lib/enumDiscipline'
-import type { components } from '@/generated/api'
+import { assertNever } from "@/lib/enumDiscipline";
+import type { components } from "@/generated/api";
 
 /**
  * Engine-side `MarketState` enum, generated from the OpenAPI spec
@@ -19,9 +19,9 @@ import type { components } from '@/generated/api'
  * any unexpected value via `assertNever`. See
  * `.claude/skills/bitcaster-coding-guideline/SKILL.md` for the full rule.
  */
-export type MarketState = components['schemas']['MarketCatalogueEntry']['state']
+export type MarketState = components["schemas"]["MarketCatalogueEntry"]["state"];
 
-export type DerivedMarketState = 'Open' | 'Closed'
+export type DerivedMarketState = "Open" | "Closed";
 
 /**
  * Derive the rendered "Open" / "Closed" badge from the engine's authoritative
@@ -30,10 +30,13 @@ export type DerivedMarketState = 'Open' | 'Closed'
  * pane and bookmark affordances do not flash hidden during initial load.
  */
 export function useMarketState(state: MarketState | null | undefined): DerivedMarketState {
-  if (state == null) return 'Open'
+  if (state == null) return "Open";
   switch (state) {
-    case 'open':   return 'Open'
-    case 'closed': return 'Closed'
-    default:       return assertNever(state)
+    case "open":
+      return "Open";
+    case "closed":
+      return "Closed";
+    default:
+      return assertNever(state);
   }
 }

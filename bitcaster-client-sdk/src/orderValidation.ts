@@ -1,8 +1,9 @@
 import {
-  normalizeMarketDivisibility,
+  parseMarketDivisibility,
   validatePriceNumerator,
   validateWholeShareFaceAmount,
 } from './marketUnits.ts'
+import { parseOrderRouteId } from './orderRoute.ts'
 
 export type SupportedOrderSide = 'Buy' | 'Sell'
 export type SupportedTimeInForce = 'FAK' | 'FOK' | 'GTC'
@@ -19,13 +20,52 @@ export interface OrderIntentForValidation {
   timeInForce?: unknown
 }
 
-export type OrderIntentValidation =
-  | { valid: true }
-  | { valid: false; message: string }
+export type OrderIntentValidation = { valid: true } | { valid: false; message: string }
 
-export function validateOrderIntent(
-  request: unknown,
-): OrderIntentValidation {
+export function validateOrderIntent(request: unknown): OrderIntentValidation {
+  const shape = validateOrderRoutingIdentity(request)
+  if (!shape.valid) return shape
+  const intent = request as OrderIntentForValidation
+  if (intent.baseAsset !== 'sat') {
+    return {
+      valid: false,
+      message: 'Order rejected: baseAsset must be sat.',
+    }
+  }
+  const divisibility = parseMarketDivisibility(intent.divisibility)
+  if (divisibility === null) {
+    return {
+      valid: false,
+      message: 'Order rejected: divisibility must be 10000 or 1000000.',
+    }
+  }
+  const price = intent.price
+  if (typeof price !== 'number' || !validatePriceNumerator(price, divisibility)) {
+    return {
+      valid: false,
+      message: `Order rejected: price must be an integer from 1 to ${divisibility - 1}.`,
+    }
+  }
+  const amountSubunits = intent.amountSubunits
+  const shareFace = divisibility
+  if (
+    typeof amountSubunits !== 'number' ||
+    !validateWholeShareFaceAmount(amountSubunits, shareFace)
+  ) {
+    return {
+      valid: false,
+      message: `Order rejected: amountSubunits must be a positive integer in ${shareFace} sub-unit increments.`,
+    }
+  }
+
+  return { valid: true }
+}
+
+/**
+ * Validates only the fields needed to identify and route an order before
+ * market-owned unit and economics metadata is available.
+ */
+export function validateOrderRoutingIdentity(request: unknown): OrderIntentValidation {
   if (!isRecord(request)) {
     return { valid: false, message: 'Order rejected: missing order request.' }
   }
@@ -49,15 +89,11 @@ export function validateOrderIntent(
       message: 'Order rejected: outcome id must be a primitive outcome name.',
     }
   }
-  const marketOutcomeSegment = primitiveOutcomeSegment(intent.marketId)
-  if (
-    !marketOutcomeSegment ||
-    marketOutcomeSegment !== intent.outcomeId
-  ) {
+  const orderRoute = parseOrderRouteId(intent.marketId)
+  if (orderRoute === null || orderRoute.outcomeId !== intent.outcomeId) {
     return {
       valid: false,
-      message:
-        'Order rejected: outcome id must match the primitive outcome segment of market id.',
+      message: 'Order rejected: outcome id must match the primitive outcome segment of market id.',
     }
   }
   if (intent.tokenSide !== 'Outcome' && intent.tokenSide !== 'Complement') {
@@ -70,29 +106,6 @@ export function validateOrderIntent(
     return {
       valid: false,
       message: 'Order rejected: side must be Buy or Sell.',
-    }
-  }
-  const price = intent.price
-  const divisibility =
-    typeof intent.divisibility === 'number'
-      ? normalizeMarketDivisibility(intent.divisibility, typeof intent.baseAsset === 'string' ? intent.baseAsset : undefined)
-      : normalizeMarketDivisibility(undefined, typeof intent.baseAsset === 'string' ? intent.baseAsset : undefined)
-  if (typeof price !== 'number' || !validatePriceNumerator(price, divisibility)) {
-    return {
-      valid: false,
-      message: `Order rejected: price must be an integer from 1 to ${divisibility - 1}.`,
-    }
-  }
-  const amountSubunits = intent.amountSubunits
-  const shareFace = divisibility
-  if (
-    typeof amountSubunits !== 'number' ||
-    !validateWholeShareFaceAmount(amountSubunits, shareFace)
-  ) {
-    return {
-      valid: false,
-      message:
-        `Order rejected: amountSubunits must be a positive integer in ${shareFace} sub-unit increments.`,
     }
   }
   if (
@@ -115,10 +128,4 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.trim().length > 0
-}
-
-function primitiveOutcomeSegment(marketId: string): string | null {
-  const index = marketId.lastIndexOf('-')
-  if (index <= 0 || index >= marketId.length - 1) return null
-  return marketId.slice(index + 1)
 }

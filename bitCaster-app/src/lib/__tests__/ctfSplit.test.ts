@@ -7,167 +7,145 @@ import {
   type CtfProofOperationStore,
 } from "@/lib/ctfSplit";
 
-const { MockAmount, MockOutputData, MockCtfMint, ctfMintState } = vi.hoisted(
-  () => {
-    class MockAmount {
-      constructor(readonly value: number) {}
-      static from(value: unknown) {
-        return value instanceof MockAmount
-          ? value
-          : new MockAmount(Number(value));
+const { MockAmount, MockOutputData, MockCtfMint, ctfMintState } = vi.hoisted(() => {
+  class MockAmount {
+    constructor(readonly value: number) {}
+    static from(value: unknown) {
+      return value instanceof MockAmount ? value : new MockAmount(Number(value));
+    }
+    isZero() {
+      return this.value === 0;
+    }
+    equals(other: unknown) {
+      return this.value === Number(other instanceof MockAmount ? other.value : other);
+    }
+    toNumber() {
+      return this.value;
+    }
+    toJSON() {
+      return String(this.value);
+    }
+  }
+
+  class MockOutputData {
+    blindedMessage: { amount: MockAmount; id: string; B_: string };
+    blindingFactor = 1n;
+    secret = new Uint8Array([1]);
+
+    constructor(kind: "p2pk" | "random", amount: MockAmount, keyset: { id: string }) {
+      if (typeof amount?.isZero !== "function") {
+        throw new TypeError("amount.isZero is not a function");
       }
-      isZero() {
-        return this.value === 0;
-      }
-      equals(other: unknown) {
-        return (
-          this.value ===
-          Number(other instanceof MockAmount ? other.value : other)
-        );
-      }
-      toNumber() {
-        return this.value;
-      }
-      toJSON() {
-        return String(this.value);
-      }
+      this.blindedMessage = {
+        amount,
+        id: keyset.id,
+        B_: `${kind}-${keyset.id}`,
+      };
     }
 
-    class MockOutputData {
-      blindedMessage: { amount: MockAmount; id: string; B_: string };
-      blindingFactor = 1n;
-      secret = new Uint8Array([1]);
-
-      constructor(
-        kind: "p2pk" | "random",
-        amount: MockAmount,
-        keyset: { id: string },
-      ) {
-        if (typeof amount?.isZero !== "function") {
-          throw new TypeError("amount.isZero is not a function");
-        }
-        this.blindedMessage = {
-          amount,
-          id: keyset.id,
-          B_: `${kind}-${keyset.id}`,
-        };
-      }
-
-      static createP2PKData(
-        _p2pk: unknown,
-        amount: MockAmount,
-        keyset: { id: string },
-      ): MockOutputData[] {
-        return [new MockOutputData("p2pk", amount, keyset)];
-      }
-
-      static createRandomData(
-        amount: MockAmount,
-        keyset: { id: string },
-      ): MockOutputData[] {
-        return [new MockOutputData("random", amount, keyset)];
-      }
-
-      toProof(signature: { id: string; amount: unknown; C_: string }) {
-        const amount =
-          signature.amount instanceof MockAmount
-            ? signature.amount.toNumber()
-            : Number(signature.amount);
-        return {
-          id: signature.id,
-          amount,
-          secret: `proof-${this.blindedMessage.B_}`,
-          C: signature.C_,
-        };
-      }
+    static createP2PKData(
+      _p2pk: unknown,
+      amount: MockAmount,
+      keyset: { id: string },
+    ): MockOutputData[] {
+      return [new MockOutputData("p2pk", amount, keyset)];
     }
 
-    const ctfMintState = {
-      keysets: {} as Record<string, string>,
-      collateral: undefined as string | undefined,
-      conditionalKeysets: [] as Array<{
-        id: string;
-        unit?: string;
-        condition_id: string;
-        outcome_collection: string;
-        outcome_collection_id: string;
-      }>,
-      splitRequests: [] as Array<{
-        condition_id: string;
-        inputs: Proof[];
-        outputs: Record<
-          string,
-          Array<{ id: string; amount: number; B_: string }>
-        >;
-      }>,
-    };
-
-    class MockCtfMint {
-      constructor(readonly mintUrl: string) {}
-
-      async getKeys(keysetId: string) {
-        return {
-          keysets: [
-            {
-              id: keysetId,
-              unit: keysetId.startsWith("usd") ? "usd" : "sat",
-              active: true,
-              input_fee_ppk: 1,
-              keys: { 1: "02".padEnd(66, "1") },
-            },
-          ],
-        };
-      }
-
-      async getCtfCondition(conditionIdArg: string) {
-        return {
-          condition_id: conditionIdArg,
-          collateral: ctfMintState.collateral,
-          keysets: ctfMintState.keysets,
-        };
-      }
-
-      async getConditionalKeysets() {
-        return { keysets: ctfMintState.conditionalKeysets };
-      }
-
-      async ctfConvert(request: {
-        condition_id: string;
-        inputs: Record<string, Proof[]>;
-        outputs: Record<
-          string,
-          Array<{ id: string; amount: number; B_: string }>
-        >;
-      }) {
-        expect(Object.keys(request.inputs)).toEqual(["*"]);
-        ctfMintState.splitRequests.push({
-          condition_id: request.condition_id,
-          inputs: request.inputs["*"] ?? [],
-          outputs: request.outputs,
-        });
-        for (const outputs of Object.values(request.outputs)) {
-          expect(
-            outputs.every((output) => typeof output.amount === "number"),
-          ).toBe(true);
-        }
-        return {
-          signatures: Object.fromEntries(
-            Object.entries(request.outputs).map(([collection, outputs]) => [
-              collection,
-              outputs.map((output) => ({
-                id: output.id,
-                amount: output.amount,
-                C_: `02${collection}`.padEnd(66, "0"),
-              })),
-            ]),
-          ),
-        };
-      }
+    static createRandomData(amount: MockAmount, keyset: { id: string }): MockOutputData[] {
+      return [new MockOutputData("random", amount, keyset)];
     }
 
-    return { MockAmount, MockOutputData, MockCtfMint, ctfMintState };
-  },
-);
+    toProof(signature: { id: string; amount: unknown; C_: string }) {
+      const amount =
+        signature.amount instanceof MockAmount
+          ? signature.amount.toNumber()
+          : Number(signature.amount);
+      return {
+        id: signature.id,
+        amount,
+        secret: `proof-${this.blindedMessage.B_}`,
+        C: signature.C_,
+      };
+    }
+  }
+
+  const ctfMintState = {
+    keysets: {} as Record<string, string>,
+    collateral: undefined as string | undefined,
+    conditionalKeysets: [] as Array<{
+      id: string;
+      unit?: string;
+      condition_id: string;
+      outcome_collection: string;
+      outcome_collection_id: string;
+    }>,
+    splitRequests: [] as Array<{
+      condition_id: string;
+      inputs: Proof[];
+      outputs: Record<string, Array<{ id: string; amount: number; B_: string }>>;
+    }>,
+  };
+
+  class MockCtfMint {
+    constructor(readonly mintUrl: string) {}
+
+    async getKeys(keysetId: string) {
+      return {
+        keysets: [
+          {
+            id: keysetId,
+            unit: keysetId.startsWith("sat") ? "sat" : "msat",
+            active: true,
+            input_fee_ppk: 1,
+            keys: { 1: "02".padEnd(66, "1") },
+          },
+        ],
+      };
+    }
+
+    async getCtfCondition(conditionIdArg: string) {
+      return {
+        condition_id: conditionIdArg,
+        collateral: ctfMintState.collateral,
+        keysets: ctfMintState.keysets,
+      };
+    }
+
+    async getConditionalKeysets() {
+      return { keysets: ctfMintState.conditionalKeysets };
+    }
+
+    async ctfConvert(request: {
+      condition_id: string;
+      inputs: Record<string, Proof[]>;
+      outputs: Record<string, Array<{ id: string; amount: number; B_: string }>>;
+    }) {
+      expect(Object.keys(request.inputs)).toEqual(["*"]);
+      ctfMintState.splitRequests.push({
+        condition_id: request.condition_id,
+        inputs: request.inputs["*"] ?? [],
+        outputs: request.outputs,
+      });
+      for (const outputs of Object.values(request.outputs)) {
+        expect(outputs.every((output) => typeof output.amount === "number")).toBe(true);
+      }
+      return {
+        signatures: Object.fromEntries(
+          Object.entries(request.outputs).map(([collection, outputs]) => [
+            collection,
+            outputs.map((output) => ({
+              id: output.id,
+              amount: output.amount,
+              C_: `02${collection}`.padEnd(66, "0"),
+            })),
+          ]),
+        ),
+      };
+    }
+  }
+
+  return { MockAmount, MockOutputData, MockCtfMint, ctfMintState };
+});
 
 vi.mock("@cashu/cashu-ts", () => {
   return {
@@ -183,7 +161,7 @@ vi.mock("@cashu/cashu-ts", () => {
 
 const conditionId = "a".repeat(64);
 const inputProof = {
-  id: "sat-keyset",
+  id: "msat-keyset",
   amount: 101,
   secret: "input-secret",
   C: "02".padEnd(66, "0"),
@@ -203,15 +181,18 @@ function proofOperationStore(): CtfProofOperationStore {
       }),
     ),
     markProofOperationCompleted: vi.fn(
-      async (operationId, resultProofs): Promise<CtfProofOperationRecord> => ({
+      async (operationId, completion): Promise<CtfProofOperationRecord> => ({
         operationId,
-        kind: "ctf-split",
+        kind: completion.kind,
         state: "completed",
         mintUrl: "https://mint.example",
         inputs: [inputProof],
         outputs: {},
         metadata: {},
-        resultProofs,
+        resultProofs: completion.resultProofs,
+        ...("resultProofsDigest" in completion
+          ? { resultProofsDigest: completion.resultProofsDigest }
+          : {}),
         lastError: null,
         createdAt: Date.now(),
         updatedAt: Date.now(),
@@ -231,9 +212,10 @@ function mockMintCondition(
     {},
     ...entries.map((entry) => toMockConditionKeysetEntry(entry).keysets),
   );
-  ctfMintState.collateral = entries
-    .map((entry) => toMockConditionKeysetEntry(entry).collateral)
-    .find((collateral): collateral is string => typeof collateral === "string");
+  ctfMintState.collateral =
+    entries
+      .map((entry) => toMockConditionKeysetEntry(entry).collateral)
+      .find((collateral): collateral is string => typeof collateral === "string") ?? "msat";
   ctfMintState.conditionalKeysets = [];
   ctfMintState.splitRequests = [];
 }
@@ -276,6 +258,7 @@ describe("splitRootCompleteSetForSwap", () => {
 
     const result = await splitRootCompleteSetForSwap({
       mintUrl: "https://mint.example",
+      baseAsset: "sat",
       conditionId,
       collateralProofs: [inputProof],
       amountSats: 100,
@@ -287,20 +270,13 @@ describe("splitRootCompleteSetForSwap", () => {
     });
 
     const splitRequest = ctfMintState.splitRequests[0];
-    expect(Object.keys(splitRequest.outputs)).toEqual([
-      "Alice",
-      "Bob|Carol",
-    ]);
+    expect(Object.keys(splitRequest.outputs)).toEqual(["Alice", "Bob|Carol"]);
     expect(splitRequest.inputs[0].amount).toBe(101);
     expect(splitRequest.outputs.Alice[0].B_).toBe("random-keyset-alice");
-    expect(splitRequest.outputs["Bob|Carol"][0].B_).toBe(
-      "p2pk-keyset-not-alice",
-    );
+    expect(splitRequest.outputs["Bob|Carol"][0].B_).toBe("p2pk-keyset-not-alice");
     expect(result.resolvedLockOutcomeSetId).toBe("Bob|Carol");
     expect(result.resolvedKeepOutcomeSetId).toBe("Alice");
-    expect(result.lockedProofs.map((proof) => proof.id)).toEqual([
-      "keyset-not-alice",
-    ]);
+    expect(result.lockedProofs.map((proof) => proof.id)).toEqual(["keyset-not-alice"]);
     expect(result.keepProofs[0].id).toBe("keyset-alice");
   });
 
@@ -312,6 +288,7 @@ describe("splitRootCompleteSetForSwap", () => {
 
     const result = await splitRootCompleteSetForPreflightOrder({
       mintUrl: "https://mint.example",
+      baseAsset: "sat",
       conditionId,
       collateralProofs: [inputProof],
       amountSats: 100,
@@ -327,12 +304,8 @@ describe("splitRootCompleteSetForSwap", () => {
     expect(splitRequest.outputs.YES[0].B_).toBe("random-keyset-yes");
     expect(result.lockProofs[0].id).toBe("keyset-no");
     expect(result.keepProofs[0].id).toBe("keyset-yes");
-    expect(result.proofsByCollection.NO[0].secret).toBe(
-      "proof-random-keyset-no",
-    );
-    expect(result.proofsByCollection.YES[0].secret).toBe(
-      "proof-random-keyset-yes",
-    );
+    expect(result.proofsByCollection.NO[0].secret).toBe("proof-random-keyset-no");
+    expect(result.proofsByCollection.YES[0].secret).toBe("proof-random-keyset-yes");
   });
 
   it("pre-flight resolves id-keyed composite complement keysets", async () => {
@@ -349,12 +322,14 @@ describe("splitRootCompleteSetForSwap", () => {
     ctfMintState.conditionalKeysets = [
       {
         id: "keyset-a",
+        unit: "msat",
         condition_id: conditionId,
         outcome_collection: "A",
         outcome_collection_id: aCollectionId,
       },
       {
         id: "keyset-not-a",
+        unit: "msat",
         condition_id: conditionId,
         outcome_collection: "B|C|D",
         outcome_collection_id: notACollectionId,
@@ -363,6 +338,7 @@ describe("splitRootCompleteSetForSwap", () => {
 
     const result = await splitRootCompleteSetForPreflightOrder({
       mintUrl: "https://mint.example",
+      baseAsset: "sat",
       conditionId,
       collateralProofs: [inputProof],
       amountSats: 100,
@@ -375,9 +351,7 @@ describe("splitRootCompleteSetForSwap", () => {
     const splitRequest = ctfMintState.splitRequests[0];
     expect(Object.keys(splitRequest.outputs)).toEqual(["A", "B|C|D"]);
     expect(splitRequest.outputs.A[0].B_).toBe("random-keyset-a");
-    expect(splitRequest.outputs["B|C|D"][0].B_).toBe(
-      "random-keyset-not-a",
-    );
+    expect(splitRequest.outputs["B|C|D"][0].B_).toBe("random-keyset-not-a");
     expect(result.keepProofs[0].id).toBe("keyset-a");
     expect(result.lockProofs[0].id).toBe("keyset-not-a");
   });
@@ -386,37 +360,23 @@ describe("splitRootCompleteSetForSwap", () => {
     mockMintCondition([
       {
         keysets: {
-          Alpha: "usd-alpha",
-          Beta: "usd-beta",
+          Alpha: "msat-alpha",
+          Beta: "msat-beta",
         },
-        collateral: "usd",
+        collateral: "msat",
       },
     ]);
     ctfMintState.conditionalKeysets = [
       {
-        id: "sat-alpha",
-        unit: "sat",
+        id: "msat-alpha",
+        unit: "msat",
         condition_id: conditionId,
         outcome_collection: "Alpha",
         outcome_collection_id: "alpha-id",
       },
       {
-        id: "sat-beta",
-        unit: "sat",
-        condition_id: conditionId,
-        outcome_collection: "Beta",
-        outcome_collection_id: "beta-id",
-      },
-      {
-        id: "usd-alpha",
-        unit: "usd",
-        condition_id: conditionId,
-        outcome_collection: "Alpha",
-        outcome_collection_id: "alpha-id",
-      },
-      {
-        id: "usd-beta",
-        unit: "usd",
+        id: "msat-beta",
+        unit: "msat",
         condition_id: conditionId,
         outcome_collection: "Beta",
         outcome_collection_id: "beta-id",
@@ -425,47 +385,47 @@ describe("splitRootCompleteSetForSwap", () => {
 
     await splitRootCompleteSetForSwap({
       mintUrl: "https://mint.example",
-      baseAsset: "usd",
+      baseAsset: "sat",
       conditionId,
-      collateralProofs: [{ ...inputProof, id: "usd-regular" }],
+      collateralProofs: [{ ...inputProof, id: "msat-regular" }],
       amountSats: 100,
       lockOutcomeSetId: "Beta",
       keepOutcomeSetId: "Alpha",
       p2pk: { pubkey: ["02".padEnd(66, "2")], locktime: 1 },
-      operationId: "op-usd-keysets",
+      operationId: "op-msat-keysets",
       proofOperationStore: proofOperationStore(),
     });
 
     const splitRequest = ctfMintState.splitRequests[0];
-    expect(splitRequest.outputs.Alpha[0].id).toBe("usd-alpha");
-    expect(splitRequest.outputs.Beta[0].id).toBe("usd-beta");
+    expect(splitRequest.outputs.Alpha[0].id).toBe("msat-alpha");
+    expect(splitRequest.outputs.Beta[0].id).toBe("msat-beta");
   });
 
   it("fails closed before posting when input proof keysets do not match the requested unit", async () => {
     mockMintCondition([
       {
         keysets: {
-          Alpha: "usd-alpha",
-          Beta: "usd-beta",
+          Alpha: "msat-alpha",
+          Beta: "msat-beta",
         },
-        collateral: "usd",
+        collateral: "msat",
       },
     ]);
 
     await expect(
       splitRootCompleteSetForSwap({
         mintUrl: "https://mint.example",
-        baseAsset: "usd",
+        baseAsset: "sat",
         conditionId,
         collateralProofs: [{ ...inputProof, id: "sat-regular" }],
         amountSats: 100,
         lockOutcomeSetId: "Beta",
         keepOutcomeSetId: "Alpha",
         p2pk: { pubkey: ["02".padEnd(66, "2")], locktime: 1 },
-        operationId: "op-usd-wrong-input-unit",
+        operationId: "op-msat-wrong-input-unit",
         proofOperationStore: proofOperationStore(),
       }),
-    ).rejects.toThrow(/input proof keyset sat-regular unit mismatch: expected usd, got sat/);
+    ).rejects.toThrow(/input proof keyset sat-regular unit must be exactly msat/);
     expect(ctfMintState.splitRequests).toHaveLength(0);
   });
 
@@ -476,24 +436,24 @@ describe("splitRootCompleteSetForSwap", () => {
           Alpha: "sat-alpha",
           Beta: "sat-beta",
         },
-        collateral: "usd",
+        collateral: "msat",
       },
     ]);
 
     await expect(
       splitRootCompleteSetForSwap({
         mintUrl: "https://mint.example",
-        baseAsset: "usd",
+        baseAsset: "sat",
         conditionId,
-        collateralProofs: [{ ...inputProof, id: "usd-regular" }],
+        collateralProofs: [{ ...inputProof, id: "msat-regular" }],
         amountSats: 100,
         lockOutcomeSetId: "Beta",
         keepOutcomeSetId: "Alpha",
         p2pk: { pubkey: ["02".padEnd(66, "2")], locktime: 1 },
-        operationId: "op-usd-wrong-output-unit",
+        operationId: "op-msat-wrong-output-unit",
         proofOperationStore: proofOperationStore(),
       }),
-    ).rejects.toThrow(/output keyset sat-alpha for Alpha unit mismatch: expected usd, got sat/);
+    ).rejects.toThrow(/output keyset sat-alpha for Alpha unit must be exactly msat/);
     expect(ctfMintState.splitRequests).toHaveLength(0);
   });
 
@@ -503,21 +463,21 @@ describe("splitRootCompleteSetForSwap", () => {
     mockMintCondition([
       {
         keysets: {
-          [alphaCollectionId]: "usd-alpha",
-          [betaCollectionId]: "usd-beta",
+          [alphaCollectionId]: "msat-alpha",
+          [betaCollectionId]: "msat-beta",
         },
-        collateral: "usd",
+        collateral: "msat",
       },
     ]);
     ctfMintState.conditionalKeysets = [
       {
-        id: "usd-alpha",
+        id: "msat-alpha",
         condition_id: conditionId,
         outcome_collection: "Alpha",
         outcome_collection_id: alphaCollectionId,
       },
       {
-        id: "usd-beta",
+        id: "msat-beta",
         condition_id: conditionId,
         outcome_collection: "Beta",
         outcome_collection_id: betaCollectionId,
@@ -527,17 +487,17 @@ describe("splitRootCompleteSetForSwap", () => {
     await expect(
       splitRootCompleteSetForSwap({
         mintUrl: "https://mint.example",
-        baseAsset: "usd",
+        baseAsset: "sat",
         conditionId,
-        collateralProofs: [{ ...inputProof, id: "usd-regular" }],
+        collateralProofs: [{ ...inputProof, id: "msat-regular" }],
         amountSats: 100,
         lockOutcomeSetId: "Beta",
         keepOutcomeSetId: "Alpha",
         p2pk: { pubkey: ["02".padEnd(66, "2")], locktime: 1 },
-        operationId: "op-usd-missing-keyset-unit",
+        operationId: "op-msat-missing-keyset-unit",
         proofOperationStore: proofOperationStore(),
       }),
-    ).rejects.toThrow("Expected root usd CTF keysets");
+    ).rejects.toThrow(/conditional keyset msat-alpha unit must be exactly msat/);
     expect(ctfMintState.splitRequests).toHaveLength(0);
   });
 
@@ -547,22 +507,22 @@ describe("splitRootCompleteSetForSwap", () => {
     mockMintCondition([
       {
         keysets: {
-          [alphaCollectionId]: "usd-alpha",
-          [betaCollectionId]: "usd-beta",
+          [alphaCollectionId]: "msat-alpha",
+          [betaCollectionId]: "msat-beta",
         },
-        collateral: "usd",
+        collateral: "msat",
       },
     ]);
     ctfMintState.conditionalKeysets = [
       {
-        id: "usd-alpha",
+        id: "msat-alpha",
         unit: "credits",
         condition_id: conditionId,
         outcome_collection: "Alpha",
         outcome_collection_id: alphaCollectionId,
       },
       {
-        id: "usd-beta",
+        id: "msat-beta",
         unit: "credits",
         condition_id: conditionId,
         outcome_collection: "Beta",
@@ -573,17 +533,17 @@ describe("splitRootCompleteSetForSwap", () => {
     await expect(
       splitRootCompleteSetForSwap({
         mintUrl: "https://mint.example",
-        baseAsset: "usd",
+        baseAsset: "sat",
         conditionId,
-        collateralProofs: [{ ...inputProof, id: "usd-regular" }],
+        collateralProofs: [{ ...inputProof, id: "msat-regular" }],
         amountSats: 100,
         lockOutcomeSetId: "Beta",
         keepOutcomeSetId: "Alpha",
         p2pk: { pubkey: ["02".padEnd(66, "2")], locktime: 1 },
-        operationId: "op-usd-invalid-keyset-unit",
+        operationId: "op-msat-invalid-keyset-unit",
         proofOperationStore: proofOperationStore(),
       }),
-    ).rejects.toThrow("Expected root usd CTF keysets");
+    ).rejects.toThrow(/conditional keyset msat-alpha unit must be exactly msat/);
     expect(ctfMintState.splitRequests).toHaveLength(0);
   });
 
@@ -603,6 +563,7 @@ describe("splitRootCompleteSetForSwap", () => {
     await expect(
       splitRootCompleteSetForSwap({
         mintUrl: "https://mint.example",
+        baseAsset: "sat",
         conditionId,
         collateralProofs: [inputProof],
         amountSats: 100,

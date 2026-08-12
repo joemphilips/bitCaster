@@ -2,10 +2,7 @@ import type { KeyboardEvent } from "react";
 import { Trash2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { Position } from "@/types/portfolio";
-import {
-  formatMarketSubunits,
-  normalizeMarketBaseAsset,
-} from "@bitcaster/client-sdk/marketUnits";
+import { formatMarketSubunits, normalizeMarketBaseAsset } from "@bitcaster/client-sdk/marketUnits";
 
 interface PositionRowProps {
   position: Position;
@@ -29,13 +26,7 @@ function fallbackPositionLabel(position: Position, sideLabel: string): string {
   return position.side === "Outcome" ? "Position" : sideLabel;
 }
 
-export function PositionRow({
-  position,
-  onSell,
-  onClaim,
-  onDiscard,
-  onView,
-}: PositionRowProps) {
+export function PositionRow({ position, onSell, onClaim, onDiscard, onView }: PositionRowProps) {
   const { t } = useTranslation();
   const isPositive = position.profitLossSats >= 0;
   // Single source-of-truth (P22 F1/F2/F3): the "Won"/"Lost" badge, the Claim
@@ -44,12 +35,9 @@ export function PositionRow({
   // can never be offered on a position the badge calls "Won".
   const { isWinner, isLoser, isPending } = position;
   const baseAsset = normalizeMarketBaseAsset(position.baseAsset);
-  const canClaim =
-    position.canClaimPayout ??
-    (position.status === "closed" && isWinner);
+  const canClaim = position.canClaimPayout ?? (position.status === "closed" && isWinner);
   const canDiscard =
-    position.canDiscard ??
-    (position.status === "closed" && isLoser && !isWinner && !isPending);
+    position.canDiscard ?? (position.status === "closed" && isLoser && !isWinner && !isPending);
   const sideLabel = position.side.toUpperCase();
   const positionLabel = fallbackPositionLabel(position, sideLabel);
   const hasOutcomeLabel = Boolean(position.outcomeLabel?.trim());
@@ -112,39 +100,47 @@ export function PositionRow({
               {t("portfolio.awaitingResolution")}
             </span>
           ) : (
-            <span
-              className="text-xs font-semibold px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-300"
-            >
-              {positionLabel}
-            </span>
-          )}
-          {(hasOutcomeLabel && (isWinner || isLoser || isPending)) && (
             <span className="text-xs font-semibold px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-300">
               {positionLabel}
             </span>
           )}
-          <span className="text-xs text-slate-400 dark:text-slate-500">
-            {position.shares.toLocaleString()} shares
-          </span>
+          {hasOutcomeLabel && (isWinner || isLoser || isPending) && (
+            <span className="text-xs font-semibold px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-300">
+              {positionLabel}
+            </span>
+          )}
+          {position.shares !== undefined && (
+            <span className="text-xs text-slate-400 dark:text-slate-500">
+              {position.shares.toLocaleString()} shares
+            </span>
+          )}
         </div>
       </div>
 
       {/* Value & P/L */}
       <div className="text-right shrink-0">
-        <div className="text-sm font-mono font-medium text-slate-900 dark:text-white">
-          {formatMarketSubunits(position.currentValueSats, baseAsset)}
-        </div>
-        <div
-          className={`text-xs font-mono ${isPositive ? "text-emerald-500" : "text-rose-500"}`}
-        >
-          {isPositive ? "+" : ""}
-          {formatMarketSubunits(position.profitLossSats, baseAsset)} ({isPositive ? "+" : ""}
-          {position.profitLossPercent.toFixed(1)}%)
-        </div>
+        {position.valueKnown === false ? (
+          <div className="text-sm font-medium text-amber-600 dark:text-amber-300">
+            {t("portfolio.unvalued")}
+          </div>
+        ) : (
+          <>
+            <div className="text-sm font-mono font-medium text-slate-900 dark:text-white">
+              {formatMarketSubunits(position.currentValueSats, baseAsset)}
+            </div>
+            <div
+              className={`text-xs font-mono ${isPositive ? "text-emerald-500" : "text-rose-500"}`}
+            >
+              {isPositive ? "+" : ""}
+              {formatMarketSubunits(position.profitLossSats, baseAsset)} ({isPositive ? "+" : ""}
+              {position.profitLossPercent.toFixed(1)}%)
+            </div>
+          </>
+        )}
       </div>
 
       {/* Action Button */}
-      {position.status === "active" && onSell && (
+      {position.canSell !== false && position.status === "active" && onSell && (
         <button
           onClick={(e) => {
             e.stopPropagation();

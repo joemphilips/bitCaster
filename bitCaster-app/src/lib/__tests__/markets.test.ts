@@ -14,16 +14,21 @@ import {
   windowPriceHistory,
   applyMarketPriceHistory,
   priceNumeratorToPercent,
+  createAuthenticatedBrowserEngineClient,
+  generateNip98Header,
 } from "../markets";
 import type { MarketCatalogueEntry } from "../markets";
 import type { FilterState, Market } from "@/types/market";
 import type { MarketDetail } from "@/types/market-detail";
 
+const mocks = vi.hoisted(() => ({
+  eventSign: vi.fn(),
+  globalSigner: { sign: vi.fn() },
+}));
+
 vi.mock("@/lib/nostr", () => ({
   getNdk: () => ({
-    signer: {
-      sign: vi.fn(),
-    },
+    signer: mocks.globalSigner,
   }),
 }));
 
@@ -36,8 +41,8 @@ vi.mock("@nostr-dev-kit/ndk", async (importOriginal) => {
       created_at = 0;
       content = "";
       tags: string[][] = [];
-      async sign() {
-        // no-op
+      async sign(signer?: unknown) {
+        mocks.eventSign(signer);
       }
       rawEvent() {
         return {
@@ -66,10 +71,10 @@ const yesNoEntry: MarketCatalogueEntry = {
   volume24hSubunits: 12_000,
   volume30dSubunits: 340_000,
   liquiditySubunits: 88_000,
-    ammBotBudgetSubunits: 88_000,
+  ammBotBudgetSubunits: 88_000,
   volumeLifetimeSubunits: 980_000,
   baseAsset: "sat",
-  divisibility: 1_000,
+  divisibility: 10_000,
   lastTradedPrice: 0.62,
   initialProbabilities: { Yes: 62, No: 38 },
   categoryTags: ["crypto"],
@@ -88,18 +93,17 @@ const categoricalEntry: MarketCatalogueEntry = {
   volume24hSubunits: 0,
   volume30dSubunits: 0,
   liquiditySubunits: 12_000,
-    ammBotBudgetSubunits: 12_000,
+  ammBotBudgetSubunits: 12_000,
   volumeLifetimeSubunits: 45_000,
   baseAsset: "sat",
-  divisibility: 1_000,
+  divisibility: 10_000,
   lastTradedPrice: null,
   initialProbabilities: {},
   categoryTags: ["politics"],
   lastSuccessfulRefreshAt: "2026-05-02T09:58:00Z",
 };
 
-const creatorPubkey =
-  "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+const creatorPubkey = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
 describe("mapCatalogueEntryToMarket", () => {
   it("maps a 2-outcome YES/NO entry to a yesno market", () => {
@@ -109,7 +113,7 @@ describe("mapCatalogueEntryToMarket", () => {
     expect(market.title).toBe("Will BTC hit 100K?");
     expect(market.type).toBe("yesno");
     expect(market.baseAsset).toBe("sat");
-    expect(market.divisibility).toBe(1_000);
+    expect(market.divisibility).toBe(10_000);
     expect(market.baseMarket).toBe("sats");
     if (market.type === "yesno") {
       expect(market.currentOdds).toEqual({ yes: 62, no: 38 });
@@ -120,21 +124,21 @@ describe("mapCatalogueEntryToMarket", () => {
     // With lastTradedPrice present, list odds use it (not initial probabilities)
     const marketWithTrades = mapCatalogueEntryToMarket({
       ...yesNoEntry,
-      divisibility: 1_000,
-      lastTradedPrice: 620,
+      divisibility: 10_000,
+      lastTradedPrice: 6_200,
       initialProbabilities: { Yes: 77, No: 23 },
     });
 
     expect(marketWithTrades.type).toBe("yesno");
     if (marketWithTrades.type === "yesno") {
-      // lastTradedPrice=620 with D=1000 → 62%
+      // lastTradedPrice=6200 with D=10000 → 62%
       expect(marketWithTrades.currentOdds.yes).toBe(62);
     }
 
     // Without lastTradedPrice, falls back to initial probabilities
     const marketNoTrades = mapCatalogueEntryToMarket({
       ...yesNoEntry,
-      divisibility: 1_000,
+      divisibility: 10_000,
       lastTradedPrice: null,
       initialProbabilities: { Yes: 77, No: 23 },
     });
@@ -323,9 +327,7 @@ describe("getMarkets (engine catalogue proxy wiring)", () => {
   });
 
   function lastCallUrl(): string {
-    const [url] = fetchMock.mock.calls[fetchMock.mock.calls.length - 1] as [
-      string,
-    ];
+    const [url] = fetchMock.mock.calls[fetchMock.mock.calls.length - 1] as [string];
     return url;
   }
 
@@ -377,9 +379,7 @@ describe("getMarkets (engine catalogue proxy wiring)", () => {
     expect(result.markets[0].volume).toBe(980_000);
     expect(result.markets[0].liquiditySubunits).toBe(88_000);
     expect(result.nextCursor).toBeNull();
-    expect(result.lastSuccessfulRefreshAt).toBe(
-      yesNoEntry.lastSuccessfulRefreshAt,
-    );
+    expect(result.lastSuccessfulRefreshAt).toBe(yesNoEntry.lastSuccessfulRefreshAt);
   });
 
   it("throws on non-2xx so the page can render an error/retry affordance", async () => {
@@ -391,16 +391,12 @@ describe("getMarkets (engine catalogue proxy wiring)", () => {
 describe("legacy mintd-list path (markets list) is fully removed", () => {
   it("no longer exports a fetchMarkets() function", async () => {
     const mod = await import("../markets");
-    expect(Object.prototype.hasOwnProperty.call(mod, "fetchMarkets")).toBe(
-      false,
-    );
+    expect(Object.prototype.hasOwnProperty.call(mod, "fetchMarkets")).toBe(false);
   });
 
   it("no longer exports a mapConditionToMarket() function", async () => {
     const mod = await import("../markets");
-    expect(
-      Object.prototype.hasOwnProperty.call(mod, "mapConditionToMarket"),
-    ).toBe(false);
+    expect(Object.prototype.hasOwnProperty.call(mod, "mapConditionToMarket")).toBe(false);
   });
 });
 
@@ -458,7 +454,10 @@ describe("deposit API normalization", () => {
     );
 
     await expect(
-      requestEcashDeposit("deadbeef", 1000, "cashu-token"),
+      requestEcashDeposit("deadbeef", 1000, "cashu-token", {
+        unit: "msat",
+        divisibility: 10_000,
+      }),
     ).resolves.toMatchObject({ state: "requested" });
   });
 });
@@ -471,7 +470,18 @@ describe("submitOrder", () => {
     originalFetch = globalThis.fetch;
     fetchMock = vi.fn(() =>
       Promise.resolve(
-        new Response(JSON.stringify({ orderId: "order-1" }), { status: 200 }),
+        new Response(
+          JSON.stringify({
+            orderId: "bfe9f76c-0993-47c1-a301-a7d4022f8272",
+            status: "resting",
+            remainingAmountSubunits: 10_000,
+            fills: [],
+            baseAsset: "sat",
+            divisibility: 10_000,
+            activeSettlementGroup: null,
+          }),
+          { status: 200 },
+        ),
       ),
     );
     globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
@@ -484,13 +494,11 @@ describe("submitOrder", () => {
 
   it("submits an authenticated order without a maker heartbeat preflight", async () => {
     await submitOrder("cond-123-YES", {
-      outcomeId: "YES",
-      tokenSide: "Outcome",
-      side: "Buy",
-      price: 50,
-      amountSubunits: 100,
-      timeInForce: "GTC",
-      clientOrderId: "client-order-1",
+      settlementCapability: {
+        artifactId: "artifact-1",
+        bindingDigest: "a".repeat(64),
+      },
+      comment: null,
     });
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -499,12 +507,14 @@ describe("submitOrder", () => {
     );
     const init = (fetchMock.mock.calls[0] as [string, RequestInit])[1];
     expect(init.method).toBe("POST");
-    expect(JSON.parse(String(init.body))).toMatchObject({
-      clientOrderId: "client-order-1",
+    expect(JSON.parse(String(init.body))).toEqual({
+      settlementCapability: {
+        artifactId: "artifact-1",
+        bindingDigest: "a".repeat(64),
+      },
+      comment: null,
     });
-    expect((init.headers as Record<string, string>).Authorization).toMatch(
-      /^Nostr /,
-    );
+    expect((init.headers as Record<string, string>).Authorization).toMatch(/^Nostr /);
   });
 });
 
@@ -541,9 +551,7 @@ describe("fetchMarketDetail (engine merge — ADR-009 Amendment 2026-05-04)", ()
     "A|B": "05".repeat(32),
   };
 
-  function mintdConditionsResponse(
-    keysets: Record<string, string> = defaultKeysets,
-  ): Response {
+  function mintdConditionsResponse(keysets: Record<string, string> = defaultKeysets): Response {
     return new Response(
       JSON.stringify({
         conditions: [
@@ -551,10 +559,7 @@ describe("fetchMarketDetail (engine merge — ADR-009 Amendment 2026-05-04)", ()
             condition_id: "abc123",
             tags: [
               ["title", "Will BTC hit 100K?"],
-              [
-                "description",
-                "Resolve YES only if BTC trades above $100,000 before close.",
-              ],
+              ["description", "Resolve YES only if BTC trades above $100,000 before close."],
               ["t", "crypto"],
             ],
             threshold: 1,
@@ -596,8 +601,10 @@ describe("fetchMarketDetail (engine merge — ADR-009 Amendment 2026-05-04)", ()
             volume24hSubunits: 5000,
             volume30dSubunits: 50000,
             liquiditySubunits: 75000,
-    ammBotBudgetSubunits: 75000,
+            ammBotBudgetSubunits: 75000,
             volumeLifetimeSubunits: 250000,
+            baseAsset: "sat",
+            divisibility: 10_000,
             lastTradedPrice: null,
             categoryTags: ["crypto"],
             lastSuccessfulRefreshAt: "2026-05-04T00:00:00Z",
@@ -683,9 +690,7 @@ describe("fetchMarketDetail (engine merge — ADR-009 Amendment 2026-05-04)", ()
       return emptyMetadataResponse();
     });
 
-    await expect(fetchMarketDetail("abc123")).rejects.toThrow(
-      "Market not found: abc123",
-    );
+    await expect(fetchMarketDetail("abc123")).rejects.toThrow("Market not found: abc123");
     // Only one engine query — no retry loop.
     const engineCalls = fetchMock.mock.calls.filter((call) =>
       String(call[0]).includes("/api/v1/markets/query"),
@@ -709,8 +714,7 @@ describe("fetchMarketDetail (engine merge — ADR-009 Amendment 2026-05-04)", ()
     fetchMock.mockImplementation(async (url: string) => {
       if (url.includes("/v1/conditions"))
         return mintdConditionsResponse(categoricalCompositeKeysets);
-      if (url.includes("/api/v1/markets/query"))
-        return engineQueryResponse("open", null, null, []);
+      if (url.includes("/api/v1/markets/query")) return engineQueryResponse("open", null, null, []);
       return emptyMetadataResponse();
     });
 
@@ -787,31 +791,21 @@ describe("fetchMarketDetail (engine merge — ADR-009 Amendment 2026-05-04)", ()
     fetchMock.mockImplementation(async (url: string) => {
       if (url.includes("/v1/conditions")) return mintdConditionsResponse();
       if (url.includes("/api/v1/markets/query")) {
-        return engineQueryResponse(
-          "open",
-          "/api/v1/abc123/thumbnail",
-          creatorPubkey,
-        );
+        return engineQueryResponse("open", "/api/v1/abc123/thumbnail", creatorPubkey);
       }
       return emptyMetadataResponse();
     });
 
     const detail = await fetchMarketDetail("abc123");
     expect(detail.creator.id).toBe(creatorPubkey);
-    expect(detail.creator.name).toBe(
-      `${creatorPubkey.slice(0, 8)}...${creatorPubkey.slice(-4)}`,
-    );
+    expect(detail.creator.name).toBe(`${creatorPubkey.slice(0, 8)}...${creatorPubkey.slice(-4)}`);
   });
 
   it("preserves oracle identity while explicitly degrading missing mint metadata", async () => {
     fetchMock.mockImplementation(async (url: string) => {
       if (url.includes("/v1/conditions")) return mintdConditionsResponse({});
       if (url.includes("/api/v1/markets/query")) {
-        return engineQueryResponse(
-          "open",
-          "/api/v1/abc123/thumbnail",
-          creatorPubkey,
-        );
+        return engineQueryResponse("open", "/api/v1/abc123/thumbnail", creatorPubkey);
       }
       return emptyMetadataResponse();
     });
@@ -824,8 +818,7 @@ describe("fetchMarketDetail (engine merge — ADR-009 Amendment 2026-05-04)", ()
   it('regression: engine state="closed" overrides mintd attestation="pending"', async () => {
     fetchMock.mockImplementation(async (url: string) => {
       if (url.includes("/v1/conditions")) return mintdConditionsResponse();
-      if (url.includes("/api/v1/markets/query"))
-        return engineQueryResponse("closed", null);
+      if (url.includes("/api/v1/markets/query")) return engineQueryResponse("closed", null);
       return emptyMetadataResponse();
     });
     const detail = await fetchMarketDetail("abc123");
@@ -839,13 +832,10 @@ describe("fetchMarketDetail (engine merge — ADR-009 Amendment 2026-05-04)", ()
   it("fails closed when the engine query fails instead of reconstructing from mintd keysets", async () => {
     fetchMock.mockImplementation(async (url: string) => {
       if (url.includes("/v1/conditions")) return mintdConditionsResponse();
-      if (url.includes("/api/v1/markets/query"))
-        return new Response("boom", { status: 500 });
+      if (url.includes("/api/v1/markets/query")) return new Response("boom", { status: 500 });
       return emptyMetadataResponse();
     });
-    await expect(fetchMarketDetail("abc123")).rejects.toThrow(
-      "Market not found: abc123",
-    );
+    await expect(fetchMarketDetail("abc123")).rejects.toThrow("Market not found: abc123");
     expect(fetchMock).not.toHaveBeenCalledWith("/v1/conditions");
   });
 
@@ -853,14 +843,11 @@ describe("fetchMarketDetail (engine merge — ADR-009 Amendment 2026-05-04)", ()
     fetchMock.mockImplementation(async (url: string) => {
       if (url.includes("/v1/conditions"))
         return mintdConditionsResponse(categoricalCompositeKeysets);
-      if (url.includes("/api/v1/markets/query"))
-        return new Response("boom", { status: 500 });
+      if (url.includes("/api/v1/markets/query")) return new Response("boom", { status: 500 });
       return emptyMetadataResponse();
     });
 
-    await expect(fetchMarketDetail("abc123")).rejects.toThrow(
-      "Market not found: abc123",
-    );
+    await expect(fetchMarketDetail("abc123")).rejects.toThrow("Market not found: abc123");
     expect(fetchMock).not.toHaveBeenCalledWith("/v1/conditions");
   });
 
@@ -894,14 +881,11 @@ describe("fetchMarketDetail (engine merge — ADR-009 Amendment 2026-05-04)", ()
           { status: 200 },
         );
       }
-      if (url.includes("/api/v1/markets/query"))
-        return new Response("boom", { status: 500 });
+      if (url.includes("/api/v1/markets/query")) return new Response("boom", { status: 500 });
       return emptyMetadataResponse();
     });
 
-    await expect(fetchMarketDetail("abc123")).rejects.toThrow(
-      "Market not found: abc123",
-    );
+    await expect(fetchMarketDetail("abc123")).rejects.toThrow("Market not found: abc123");
     expect(fetchMock).not.toHaveBeenCalledWith("/v1/conditions");
   });
 
@@ -992,9 +976,7 @@ describe("fetchMarketDetail (engine merge — ADR-009 Amendment 2026-05-04)", ()
 
   it("uses engine registration description as resolution criteria", async () => {
     const detail = await fetchMarketDetail("abc123");
-    expect(detail.resolution.criteria).toBe(
-      "Creator supplied detailed resolution rules.",
-    );
+    expect(detail.resolution.criteria).toBe("Creator supplied detailed resolution rules.");
   });
 
   it("surfaces engine finalOutcome for oracle-closed markets", async () => {
@@ -1026,10 +1008,7 @@ describe("windowPriceHistory (P22 Link D timeframe windowing)", () => {
     const history = {
       timeframe: "all" as const,
       data: Array.from({ length: 1002 }, (_, index) =>
-        makePoint(
-          new Date(Date.UTC(2026, 0, 1, 0, 0, index)).toISOString(),
-          index,
-        ),
+        makePoint(new Date(Date.UTC(2026, 0, 1, 0, 0, index)).toISOString(), index),
       ),
     };
     const result = windowPriceHistory(history);
@@ -1061,14 +1040,14 @@ describe("windowPriceHistory (P22 Link D timeframe windowing)", () => {
 
 describe("price history normalization", () => {
   it("normalizes raw price numerators to percentages", () => {
-    expect(priceNumeratorToPercent(50, 100)).toBe(50);
-    expect(priceNumeratorToPercent(500, 1_000)).toBe(50);
-    expect(priceNumeratorToPercent(500, 100)).toBe(100);
+    expect(priceNumeratorToPercent(5_000, 10_000)).toBe(50);
+    expect(priceNumeratorToPercent(500_000, 1_000_000)).toBe(50);
+    expect(priceNumeratorToPercent(20_000, 10_000)).toBe(100);
   });
 
   it("applies market divisibility when mapping fetched history", () => {
     const market = {
-      ...mapCatalogueEntryToMarket({ ...yesNoEntry, divisibility: 1_000 }),
+      ...mapCatalogueEntryToMarket({ ...yesNoEntry, divisibility: 10_000 }),
       priceHistory: { timeframe: "7d" as const, data: [] },
       orderBook: { bids: [], asks: [], spread: 0 },
       recentTrades: [],
@@ -1098,7 +1077,7 @@ describe("price history normalization", () => {
           data: [
             {
               timestamp: "2026-05-25T10:00:00Z",
-              price: 500,
+              price: 5_000,
               volumeSubunits: 10,
               source: "fill",
             },
@@ -1108,5 +1087,53 @@ describe("price history normalization", () => {
     });
 
     expect(updated.priceHistory.data[0].price).toBe(50);
+  });
+});
+
+describe("NIP-98 signer binding", () => {
+  it("keeps an explicit signer while payload hashing observes a global signer replacement", async () => {
+    const explicitSigner = { sign: vi.fn() };
+    const replacementSigner = { sign: vi.fn() };
+    const digest = vi.spyOn(globalThis.crypto.subtle, "digest").mockImplementation(async () => {
+      mocks.globalSigner = replacementSigner;
+      return new Uint8Array(32).buffer;
+    });
+    mocks.eventSign.mockClear();
+    try {
+      const client = createAuthenticatedBrowserEngineClient(explicitSigner as never);
+      const authorization = (
+        client as unknown as {
+          authorization: (request: {
+            url: string;
+            method: string;
+            bodyText: string;
+          }) => Promise<string>;
+        }
+      ).authorization;
+
+      await authorization({
+        url: "https://engine.example/api/v1/asset-monitoring/reports",
+        method: "POST",
+        bodyText: "{}",
+      });
+
+      expect(mocks.eventSign).toHaveBeenCalledWith(explicitSigner);
+    } finally {
+      digest.mockRestore();
+    }
+  });
+
+  it("passes an explicit signer directly to NDK event signing", async () => {
+    const explicitSigner = { sign: vi.fn() };
+    mocks.eventSign.mockClear();
+
+    await generateNip98Header(
+      "https://engine.example/api",
+      "GET",
+      undefined,
+      explicitSigner as never,
+    );
+
+    expect(mocks.eventSign).toHaveBeenCalledWith(explicitSigner);
   });
 });

@@ -11,10 +11,7 @@
  */
 
 import { NDKEvent, NDKPrivateKeySigner } from "@nostr-dev-kit/ndk";
-import type {
-  StoredCreatorMarket,
-  StoredCreatorOracleMetadata,
-} from "@/stores/creatorMarkets";
+import type { StoredCreatorMarket, StoredCreatorOracleMetadata } from "@/stores/creatorMarkets";
 import { createExplicitRelayNdk, DEFAULT_RELAYS } from "./nostr";
 
 export const CREATOR_MARKETS_KIND = 30078 as const;
@@ -24,26 +21,19 @@ interface CreatorMarketsPayload {
   markets: StoredCreatorMarket[];
 }
 
-function isStoredCreatorOracle(
-  value: unknown,
-): value is StoredCreatorOracleMetadata {
+function isStoredCreatorOracle(value: unknown): value is StoredCreatorOracleMetadata {
   if (typeof value !== "object" || value === null) return false;
   const oracle = value as Record<string, unknown>;
   return (
     oracle.type === "self" &&
     typeof oracle.eventId === "string" &&
-    (oracle.announcementEventId === undefined ||
-      typeof oracle.announcementEventId === "string") &&
-    (oracle.announcementHex === undefined ||
-      typeof oracle.announcementHex === "string") &&
+    (oracle.announcementEventId === undefined || typeof oracle.announcementEventId === "string") &&
+    (oracle.announcementHex === undefined || typeof oracle.announcementHex === "string") &&
     Array.isArray(oracle.outcomes) &&
     oracle.outcomes.every((outcome) => typeof outcome === "string") &&
-    (oracle.announcementHex === undefined ||
-      typeof oracle.announcementHex === "string") &&
-    (oracle.attestationHex === undefined ||
-      typeof oracle.attestationHex === "string") &&
-    (oracle.attestedOutcome === undefined ||
-      typeof oracle.attestedOutcome === "string") &&
+    (oracle.announcementHex === undefined || typeof oracle.announcementHex === "string") &&
+    (oracle.attestationHex === undefined || typeof oracle.attestationHex === "string") &&
+    (oracle.attestedOutcome === undefined || typeof oracle.attestedOutcome === "string") &&
     (oracle.attestedAt === undefined || typeof oracle.attestedAt === "string")
   );
 }
@@ -56,12 +46,8 @@ function isStoredCreatorMarket(value: unknown): value is StoredCreatorMarket {
     typeof m.title === "string" &&
     (m.thumbnailUrl === null || typeof m.thumbnailUrl === "string") &&
     typeof m.createdAt === "string" &&
-    (m.baseAsset === undefined ||
-      m.baseAsset === "sat" ||
-      m.baseAsset === "usd" ||
-      m.baseAsset === "jpy") &&
-    (m.divisibility === undefined ||
-      (typeof m.divisibility === "number" && Number.isSafeInteger(m.divisibility))) &&
+    m.baseAsset === "sat" &&
+    (m.divisibility === 10_000 || m.divisibility === 1_000_000) &&
     typeof m.creatorFeePercent === "number" &&
     (m.oracle === undefined || isStoredCreatorOracle(m.oracle))
   );
@@ -117,9 +103,7 @@ export async function fetchNip78CreatorMarkets(
     });
     if (!event) return null;
     try {
-      const parsed = JSON.parse(
-        event.content,
-      ) as Partial<CreatorMarketsPayload>;
+      const parsed = JSON.parse(event.content) as Partial<CreatorMarketsPayload>;
       if (!Array.isArray(parsed.markets)) return null;
       return parsed.markets.filter(isStoredCreatorMarket);
     } catch {

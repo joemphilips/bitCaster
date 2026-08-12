@@ -210,9 +210,17 @@ paths:
       security:
         - nip98: []
       description: >
-        Applies order items in request order across visible books that share
-        conditionId. Each item returns an independent result; envelope, auth,
-        route, closed-market, and rate-limit failures still use HTTP errors.
+        Applies current settlement-capability references in request order
+        across visible books that share conditionId. The server loads every
+        immutable order term from each durable DCB binding; the authenticated
+        owner and route condition must exactly match the prebound intent.
+        References are not bearer authority and foreign, stale, or non-current
+        references fail closed. An exact retry by the same authenticated owner
+        for the same order, reference, and fingerprint returns its prior
+        accepted admission result even if the capability has since become
+        selected or terminal. Each item returns an independent result;
+        envelope, auth, closed-market, and rate-limit failures still use HTTP
+        errors.
       parameters:
         - $ref: '#/components/parameters/ConditionId'
       requestBody:
@@ -229,7 +237,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/BatchSubmitOrdersResponse'
         '400':
-          description: Invalid batch envelope or route mismatch
+          description: >
+            Malformed batch envelope or malformed condition path. A resolved
+            per-item condition mismatch returns a `routeMismatch` failure
+            result instead of HTTP 400.
         '401':
           description: Missing or invalid NIP-98 authentication
         '404':
@@ -300,7 +311,15 @@ paths:
       summary: Submit a new order
       security:
         - nip98: []
-      description: Submit a limit or market order to the matching engine.
+      description: >
+        Submits the current settlement capability referenced by the request.
+        The server loads every immutable order term from the durable DCB
+        binding; the authenticated owner and route market must exactly match
+        that prebound intent. The reference is not bearer authority and is
+        rejected when it is foreign, stale, or no longer current. An exact
+        retry by the same authenticated owner for the same order, reference,
+        and fingerprint returns the prior accepted admission result even if
+        the capability has since become selected or terminal.
       parameters:
         - $ref: '#/components/parameters/MarketId'
       requestBody:
@@ -324,6 +343,18 @@ paths:
                 type: string
         '401':
           description: Missing or invalid NIP-98 authentication
+        '404':
+          description: >
+            Settlement capability is absent, belongs to another authenticated
+            owner, or its binding digest does not match.
+        '409':
+          description: >
+            Route market does not match the bound intent, or the capability is
+            stale, expired, selected, or otherwise not current and no matching
+            previously accepted admission exists. An exact accepted replay
+            returns that prior result instead of this conflict.
+        '503':
+          description: Settlement capability authority is unavailable.
 
   /api/v1/orders/mine:
     get:
@@ -357,54 +388,6 @@ paths:
           description: Missing or invalid conditionId
         '401':
           description: Missing or invalid NIP-98 authentication
-
-  /api/v1/trades/{tradeId}/ephemeral-pubkey:
-    post:
-      operationId: submitTradeEphemeralPubkey
-      summary: Submit match-time ephemeral pubkey for a pending trade
-      security:
-        - nip98: []
-      description: >
-        Submits the caller's compressed secp256k1 ephemeral pubkey for a
-        pending matched trade. The conditionId query parameter identifies the
-        condition-local order book that currently owns the pending match.
-      parameters:
-        - name: tradeId
-          in: path
-          required: true
-          schema:
-            type: string
-            format: uuid
-        - name: conditionId
-          in: query
-          required: true
-          schema:
-            type: string
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/SubmitEphemeralPubkeyRequest'
-      responses:
-        '200':
-          description: Ephemeral pubkey accepted
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/SubmitEphemeralPubkeyResponse'
-        '400':
-          description: Validation error
-          content:
-            application/json:
-              schema:
-                type: string
-        '401':
-          description: Missing or invalid NIP-98 authentication
-        '404':
-          description: Trade not found or caller is not a party
-        '409':
-          description: Pubkey already differs or submission deadline expired
 
   /api/v1/{marketId}/orders/{orderId}:
     get:
@@ -460,6 +443,36 @@ paths:
           description: Missing or invalid NIP-98 authentication
         '404':
           description: Order not found
+
+  /api/v1/{marketId}/orders/{orderId}/continuation/decline:
+    post:
+      operationId: declineOrderContinuation
+      summary: Decline one suspended residual continuation
+      security:
+        - nip98: []
+      parameters:
+        - $ref: '#/components/parameters/MarketId'
+        - name: orderId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeclineOrderContinuationRequest'
+      responses:
+        '200':
+          description: Continuation is durably declined. Exact replay is idempotent.
+        '401':
+          description: Missing or invalid authentication.
+        '404':
+          description: Order or continuation is absent.
+        '409':
+          description: Stale revision or continuation already consumed.
 
   /api/v1/{marketId}/orderbook:
     get:
@@ -641,6 +654,64 @@ paths:
         '502':
           description: Wallet-service payment error
 
+  /api/v1/cashu-deliveries/{deliveryId}:
+    post:
+      operationId: submitDurableCashuDelivery
+      summary: Submit one authenticated durable Cashu delivery
+      security:
+        - nip98: []
+      parameters:
+        - $ref: '#/components/parameters/DurableCashuDeliveryId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DurableCashuDeliverySubmission'
+      responses:
+        '200':
+          description: The immutable delivery request was accepted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DurableCashuDeliveryStatus'
+        '400':
+          description: The delivery request is invalid.
+        '401':
+          description: Missing or invalid authentication.
+        '403':
+          description: The authenticated subject differs from accountSubject.
+        '409':
+          description: deliveryId is already bound to a different immutable tuple.
+        '429':
+          description: Delivery submission rate limit exceeded.
+        '502':
+          description: The durable recipient is unavailable.
+    get:
+      operationId: getDurableCashuDeliveryStatus
+      summary: Read one authenticated durable Cashu delivery status
+      security:
+        - nip98: []
+      parameters:
+        - $ref: '#/components/parameters/DurableCashuDeliveryId'
+      responses:
+        '200':
+          description: Delivery status. The bearer token is never returned.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DurableCashuDeliveryStatus'
+        '401':
+          description: Missing or invalid authentication.
+        '403':
+          description: The delivery belongs to a different subject.
+        '404':
+          description: No delivery exists for deliveryId.
+        '429':
+          description: Delivery status rate limit exceeded.
+        '502':
+          description: The durable recipient is unavailable.
+
   /api/v1/creators/{pubkey}/markets:
     get:
       operationId: listCreatorMarkets
@@ -812,6 +883,404 @@ paths:
             with a higher permit ceiling. The engine returns this when the
             applicable bucket is empty.
 
+  /api/v1/settlement-capabilities:
+    post:
+      operationId: createSettlementCapability
+      summary: Validate and bind one range-settlement authorization
+      security:
+        - nip98: []
+      description: >
+        Stages one canonical NUT-CTF range-settlement artifact, validates its
+        mint authority, reserves its exact input proofs, and binds it durably
+        to the authenticated subject's order identity before returning. The
+        artifact is a sensitive bearer capability containing conditioned proof
+        secrets and public blinded outputs, but never refund private keys,
+        output secrets, or blinding factors. A successful or
+        response-uncertain attempt must be retried byte-identically. Once the
+        key is durably associated with an artifact, changing any artifact or
+        order-binding field fails closed. A definitive rejection before
+        staging stores no key association.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateSettlementCapabilityRequest'
+      responses:
+        '200':
+          description: Capability validated, input-reserved, and durably bound.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SettlementCapabilityResponse'
+        '400':
+          description: Malformed, noncanonical, expired, or unsupported artifact.
+        '401':
+          description: Missing or invalid authentication.
+        '409':
+          description: >
+            Idempotency conflict, reused input proof, mismatched order binding,
+            or capability lifecycle conflict.
+        '413':
+          description: Artifact or request exceeds the advertised byte/count limits.
+        '429':
+          description: Per-subject capability admission is saturated.
+        '503':
+          description: Mint validation or durable capability authority is unavailable.
+
+  /api/v1/asset-monitoring/reports:
+    post:
+      operationId: submitAssetMonitoringReport
+      summary: Submit one complete display-only asset holdings report
+      security:
+        - nip98: []
+      description: >
+        Accepts one complete best-effort holdings snapshot for the authenticated
+        account and canonical wallet id. The engine does not verify proof
+        ownership and does not accept a seed signature or backup state. An
+        exact retry of the latest report returns no content. Reusing the latest
+        report id with different content, or using an invalid interval or wallet
+        lifecycle, returns a conflict.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AssetMonitoringReportRequest'
+      responses:
+        '204':
+          description: Report accepted or exact latest-report retry accepted.
+        '400':
+          description: Malformed, noncanonical, or out-of-bound report field.
+        '401':
+          description: Missing or invalid authentication.
+        '409':
+          description: Latest-report idempotency or wallet interval lifecycle conflict.
+        '413':
+          description: Request exceeds the 1 MiB report limit.
+        '429':
+          description: Authenticated-subject report rate limit exceeded.
+
+  /api/v1/asset-monitoring/summary:
+    get:
+      operationId: getAssetMonitoringSummary
+      summary: Read the active wallet asset-monitoring summary
+      security:
+        - nip98: []
+      parameters:
+        - $ref: '#/components/parameters/AssetMonitoringWalletId'
+      responses:
+        '200':
+          description: Bounded active-wallet monitoring summary.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/AssetMonitoringNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AssetMonitoringSummaryResponse'
+        '400':
+          description: Malformed wallet id.
+          headers: { Cache-Control: { $ref: '#/components/headers/AssetMonitoringNoStore' } }
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/ProblemDetails' }
+        '401':
+          description: Missing or invalid authentication.
+        '409':
+          description: Wallet is not active for the authenticated account.
+          headers: { Cache-Control: { $ref: '#/components/headers/AssetMonitoringNoStore' } }
+        '503':
+          description: The active event-store provider has no bounded monitoring reader.
+          headers: { Cache-Control: { $ref: '#/components/headers/AssetMonitoringNoStore' } }
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/ProblemDetails' }
+
+  /api/v1/asset-monitoring/assets:
+    get:
+      operationId: getAssetMonitoringAssets
+      summary: Read one page of active wallet monitored assets
+      security:
+        - nip98: []
+      parameters:
+        - $ref: '#/components/parameters/AssetMonitoringWalletId'
+        - name: pageSize
+          in: query
+          schema: { type: integer, format: int32, minimum: 1, maximum: 200, default: 50 }
+        - name: cursor
+          in: query
+          schema: { type: string, minLength: 1, maxLength: 4096 }
+      responses:
+        '200':
+          description: Canonically ordered bounded active-wallet asset page.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/AssetMonitoringNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AssetMonitoringAssetsResponse'
+        '400':
+          description: Malformed wallet id, page size, or cursor.
+          headers: { Cache-Control: { $ref: '#/components/headers/AssetMonitoringNoStore' } }
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/ProblemDetails' }
+        '401':
+          description: Missing or invalid authentication.
+        '409':
+          description: Wallet is not active for the authenticated account.
+          headers: { Cache-Control: { $ref: '#/components/headers/AssetMonitoringNoStore' } }
+        '503':
+          description: The active event-store provider has no bounded monitoring reader.
+          headers: { Cache-Control: { $ref: '#/components/headers/AssetMonitoringNoStore' } }
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/ProblemDetails' }
+
+  /api/v1/asset-monitoring/history:
+    get:
+      operationId: getAssetMonitoringHistory
+      summary: Read bounded estimated active wallet value history
+      security:
+        - nip98: []
+      parameters:
+        - $ref: '#/components/parameters/AssetMonitoringWalletId'
+        - name: timeframe
+          in: query
+          schema:
+            type: string
+            enum: [1D, 1W, 1M, ALL]
+            default: 1D
+      responses:
+        '200':
+          description: At most 300 deterministic value points from compact active-interval facts.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/AssetMonitoringNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AssetMonitoringHistoryResponse'
+        '400':
+          description: Malformed wallet id or timeframe.
+          headers: { Cache-Control: { $ref: '#/components/headers/AssetMonitoringNoStore' } }
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/ProblemDetails' }
+        '401':
+          description: Missing or invalid authentication.
+        '409':
+          description: Wallet is not active for the authenticated account.
+          headers: { Cache-Control: { $ref: '#/components/headers/AssetMonitoringNoStore' } }
+        '503':
+          description: The active event-store provider has no bounded monitoring reader.
+          headers: { Cache-Control: { $ref: '#/components/headers/AssetMonitoringNoStore' } }
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/ProblemDetails' }
+
+  /api/v1/portfolio:
+    get:
+      operationId: getPortfolio
+      summary: Read the bounded active wallet portfolio first-paint data
+      security:
+        - nip98: []
+      parameters:
+        - $ref: '#/components/parameters/AssetMonitoringWalletId'
+        - name: timeframe
+          in: query
+          schema:
+            type: string
+            enum: [1D, 1W, 1M, ALL]
+            default: ALL
+        - name: pageSize
+          in: query
+          schema: { type: integer, format: int32, minimum: 1, maximum: 200, default: 50 }
+      responses:
+        '200':
+          description: Bounded active-wallet monitoring summary, asset page, and value history.
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/AssetMonitoringNoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AssetMonitoringPortfolioResponse'
+        '400':
+          description: Malformed wallet id, timeframe, or page size.
+          headers: { Cache-Control: { $ref: '#/components/headers/AssetMonitoringNoStore' } }
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/ProblemDetails' }
+        '401':
+          description: Missing or invalid authentication.
+        '409':
+          description: Wallet is not active for the authenticated account.
+          headers: { Cache-Control: { $ref: '#/components/headers/AssetMonitoringNoStore' } }
+        '429':
+          description: Authenticated history-read rate limit exceeded.
+        '503':
+          description: The active event-store provider has no bounded monitoring reader.
+          headers: { Cache-Control: { $ref: '#/components/headers/AssetMonitoringNoStore' } }
+          content:
+            application/problem+json:
+              schema: { $ref: '#/components/schemas/ProblemDetails' }
+  /api/v1/settlement-capabilities/policy:
+    get:
+      operationId: getSettlementCapabilityAdmissionPolicy
+      summary: Read the current range-settlement admission policy
+      security:
+        - nip98: []
+      description: >
+        Returns the coordinator public key that every newly created bitCaster
+        PAY_TO_UNLOCK authorization must bind. Clients fetch this authenticated
+        policy before creating or reauthorizing a range operation. Historical
+        operations retain their persisted coordinator key.
+      responses:
+        '200':
+          description: Current coordinator-bound settlement admission policy.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+              description: The admission key must not be served from a cache.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SettlementCapabilityAdmissionPolicyResponse'
+        '401':
+          description: Missing or invalid authentication.
+        '503':
+          description: Settlement admission policy is unavailable.
+
+  /api/v1/settlement-capabilities/{artifactId}:
+    get:
+      operationId: getSettlementCapability
+      summary: Read one owned settlement-capability lifecycle
+      security:
+        - nip98: []
+      description: >
+        Returns lifecycle facts only when the capability belongs to the
+        authenticated subject and the supplied binding digest matches. A
+        reference or digest is not bearer authorization.
+      parameters:
+        - name: artifactId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: bindingDigest
+          in: query
+          required: true
+          schema:
+            $ref: '#/components/schemas/Sha256Digest'
+      responses:
+        '200':
+          description: Owner-filtered capability lifecycle.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SettlementCapabilityResponse'
+        '401':
+          description: Missing or invalid authentication.
+        '404':
+          description: Capability is absent, foreign, or has a different binding digest.
+
+  /api/v1/settlement-capability-results/{resultId}:
+    get:
+      operationId: getSettlementCapabilityResult
+      summary: Retrieve one owned settlement result envelope
+      security:
+        - nip98: []
+      parameters:
+        - name: resultId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Authenticated result envelope for the capability owner.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SettlementCapabilityResultResponse'
+        '401':
+          description: Missing or invalid authentication.
+        '404':
+          description: Result is absent or belongs to another subject.
+
+  /api/v1/settlement-capability-results/by-operation:
+    get:
+      operationId: getSettlementCapabilityResultByOperation
+      summary: Retrieve one owned result by durable SDK operation id
+      security:
+        - nip98: []
+      parameters:
+        - name: operationId
+          in: query
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 128
+      responses:
+        '200':
+          description: Authenticated result envelope for the capability owner.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SettlementCapabilityResultResponse'
+        '401':
+          description: Missing or invalid authentication.
+        '404':
+          description: Result is absent or belongs to another subject.
+
+  /api/v1/settlement-capability-results/{resultId}/acknowledgement:
+    post:
+      operationId: acknowledgeSettlementCapabilityResult
+      summary: Acknowledge durable local commit of a settlement result
+      security:
+        - nip98: []
+      description: >
+        Advances acknowledgement only after the owner has durably committed
+        the exact recovered outputs and SDK operation transition. Repeating
+        the same expected version is idempotent; stale or foreign authority
+        fails closed.
+      parameters:
+        - name: resultId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AcknowledgeSettlementCapabilityResultRequest'
+      responses:
+        '200':
+          description: Result acknowledgement recorded or already recorded.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SettlementCapabilityResultResponse'
+        '400':
+          description: Invalid expected version.
+        '401':
+          description: Missing or invalid authentication.
+        '404':
+          description: Result is absent or belongs to another subject.
+        '409':
+          description: Result lifecycle version conflict.
+
 components:
   securitySchemes:
     nip98:
@@ -824,6 +1293,13 @@ components:
         BIP-340 Schnorr signature and extracts the signer's pubkey as the
         authenticated identity. See https://github.com/nostr-protocol/nips/blob/master/98.md
 
+  headers:
+    AssetMonitoringNoStore:
+      description: The authenticated private response must not be stored.
+      schema:
+        type: string
+        enum: [no-store]
+
   parameters:
     MarketId:
       name: marketId
@@ -835,10 +1311,11 @@ components:
         The primitive outcome book to trade on, in the format
         "{conditionId}-{outcomeName}" (e.g. "deadbeef…abc-Alice"). Public
         market IDs never contain finite outcome-set separators such as "|";
-        use SubmitOrderRequest.tokenSide to choose the primitive outcome token
-        or its one-vs-rest complement. Binary YES/NO markets expose only the
-        YES route ("{conditionId}-YES"); NO is traded as tokenSide=Complement
-        on that YES route, and "{conditionId}-NO" is not a valid market ID.
+        use SettlementOrderIntent.tokenSide during capability creation to
+        choose the primitive outcome token or its one-vs-rest complement.
+        Binary YES/NO markets expose only the YES route
+        ("{conditionId}-YES"); NO is traded as tokenSide=Complement on that
+        YES route, and "{conditionId}-NO" is not a valid market ID.
 
     ConditionId:
       name: conditionId
@@ -849,7 +1326,862 @@ components:
       description: >
         The condition identifier (hex string derived from the oracle announcement).
 
+    AssetMonitoringWalletId:
+      name: walletId
+      in: query
+      required: true
+      schema:
+        type: string
+        pattern: '^[0-9a-f]{64}$'
+      description: Canonical local durable wallet identifier.
+
+    DurableCashuDeliveryId:
+      name: deliveryId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+        pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+      description: Lowercase canonical UUID delivery identifier. It must equal the required body deliveryId.
+
   schemas:
+    Sha256Digest:
+      type: string
+      pattern: '^[0-9a-f]{64}$'
+      description: Canonical lowercase SHA-256 digest.
+
+    DurableCashuRecipientKind:
+      type: string
+      enum: [matching-engine]
+
+    DurableCashuDeliveryPurpose:
+      type: string
+      enum: [market-funding, participation-score]
+
+    DurableCashuCreditPolicy:
+      type: string
+      enum: [exact-amount, net-of-receive-fee]
+
+    DurableCashuDeliveryState:
+      type: string
+      enum: [pending, received, credited]
+
+    DurableCashuCreditVerification:
+      type: string
+      enum: [exact-amount, net-of-receive-fee]
+
+    DurableCashuDeliverySubmission:
+      type: object
+      additionalProperties: false
+      required: [schemaVersion, deliveryId, accountSubject, recipientKind, purpose, destinationId, productBindingSha256, mintUrl, unit, requestedAmount, creditPolicy, tokenSha256, tokenEncodedLength, token]
+      properties:
+        schemaVersion:
+          type: integer
+          minimum: 1
+          maximum: 1
+        deliveryId:
+          type: string
+          format: uuid
+          pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{12}$'
+          description: Lowercase canonical UUID delivery identifier.
+        accountSubject:
+          type: string
+          minLength: 1
+          maxLength: 256
+          pattern: '^[!-~]+$'
+          description: Bounded ASCII subject identifier. NUL is invalid.
+        recipientKind:
+          $ref: '#/components/schemas/DurableCashuRecipientKind'
+        purpose:
+          $ref: '#/components/schemas/DurableCashuDeliveryPurpose'
+        destinationId:
+          type: string
+          minLength: 1
+          maxLength: 1024
+          pattern: '^[!-~]+$'
+          description: Bounded ASCII destination identifier. NUL is invalid.
+        productBindingSha256:
+          $ref: '#/components/schemas/Sha256Digest'
+        mintUrl:
+          type: string
+          format: uri
+          maxLength: 512
+          pattern: '^https?://[^/?#:@]+(:[0-9]+)?$'
+          description: Canonical origin only. A non-default port is allowed. Credentials, path, query, fragment, trailing slash, and explicit default ports are invalid.
+        unit:
+          type: string
+          enum: [sat, msat]
+        requestedAmount:
+          type: string
+          pattern: '^[1-9][0-9]{0,18}$'
+          description: Positive decimal amount. The value must not exceed signed 64-bit maximum 9223372036854775807.
+        creditPolicy:
+          $ref: '#/components/schemas/DurableCashuCreditPolicy'
+        tokenSha256:
+          $ref: '#/components/schemas/Sha256Digest'
+        tokenEncodedLength:
+          type: integer
+          format: int32
+          minimum: 1
+          maximum: 61440
+        token:
+          type: string
+          minLength: 1
+          maxLength: 61440
+          pattern: '^cashuB[A-Za-z0-9_-]+$'
+          writeOnly: true
+
+    DurableCashuDeliveryImmutableTuple:
+      type: object
+      additionalProperties: false
+      description: >
+        Tuple fingerprint input order is schemaVersion, deliveryId, accountSubject,
+        recipientKind, purpose, destinationId, productBindingSha256, mintUrl, unit,
+        requestedAmount, creditPolicy, tokenSha256, tokenEncodedLength. SHA-256 uses
+        UTF-8 fields joined by NUL after the domain string
+        "bitcaster/durable-cashu-delivery/v1".
+      required: [schemaVersion, deliveryId, accountSubject, recipientKind, purpose, destinationId, productBindingSha256, mintUrl, unit, requestedAmount, creditPolicy, tokenSha256, tokenEncodedLength]
+      properties:
+        schemaVersion:
+          type: integer
+          minimum: 1
+          maximum: 1
+        deliveryId:
+          type: string
+          format: uuid
+          pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+          description: Lowercase canonical UUID delivery identifier.
+        accountSubject:
+          type: string
+          minLength: 1
+          maxLength: 256
+          pattern: '^[!-~]+$'
+          description: Bounded ASCII subject identifier. NUL is invalid.
+        recipientKind:
+          $ref: '#/components/schemas/DurableCashuRecipientKind'
+        purpose:
+          $ref: '#/components/schemas/DurableCashuDeliveryPurpose'
+        destinationId:
+          type: string
+          minLength: 1
+          maxLength: 1024
+          pattern: '^[!-~]+$'
+          description: Bounded ASCII destination identifier. NUL is invalid.
+        productBindingSha256:
+          $ref: '#/components/schemas/Sha256Digest'
+        mintUrl:
+          type: string
+          format: uri
+          maxLength: 512
+          pattern: '^https?://[^/?#:@]+(:[0-9]+)?$'
+          description: Canonical origin only. A non-default port is allowed. Credentials, path, query, fragment, trailing slash, and explicit default ports are invalid.
+        unit:
+          type: string
+          enum: [sat, msat]
+        requestedAmount:
+          type: string
+          pattern: '^[1-9][0-9]{0,18}$'
+          description: Positive decimal amount. The value must not exceed signed 64-bit maximum 9223372036854775807.
+        creditPolicy:
+          $ref: '#/components/schemas/DurableCashuCreditPolicy'
+        tokenSha256:
+          $ref: '#/components/schemas/Sha256Digest'
+        tokenEncodedLength:
+          type: integer
+          format: int32
+          minimum: 1
+          maximum: 61440
+
+    DurableCashuDeliveryResult:
+      type: object
+      additionalProperties: false
+      required: [creditedAmount, receiveFee, creditVerification, receiveOperationId, receivedAt]
+      dependentRequired:
+        businessEventId: [businessEventAt]
+        businessEventAt: [businessEventId]
+      properties:
+        creditedAmount:
+          type: string
+          pattern: '^[0-9]{1,19}$'
+          description: Non-negative decimal amount. The value must not exceed signed 64-bit maximum 9223372036854775807.
+        receiveFee:
+          type: string
+          pattern: '^[0-9]{1,19}$'
+          description: Non-negative decimal amount. The value must not exceed signed 64-bit maximum 9223372036854775807.
+        creditVerification:
+          $ref: '#/components/schemas/DurableCashuCreditVerification'
+        receiveOperationId:
+          type: string
+          minLength: 1
+          maxLength: 256
+          pattern: '^[!-~]+$'
+          description: Bounded ASCII receive operation identifier. NUL is invalid.
+        receivedAt:
+          type: string
+          format: date-time
+        businessEventId:
+          type: string
+          x-nullable: true
+          minLength: 1
+          maxLength: 256
+          pattern: '^[!-~]+$'
+          description: Bounded ASCII business event identifier. NUL is invalid. This field requires businessEventAt and is valid only for a credited state.
+        businessEventAt:
+          type: string
+          format: date-time
+          x-nullable: true
+          description: Business event time. This field requires businessEventId and is valid only for a credited state.
+
+    DurableCashuDeliveryStatus:
+      type: object
+      additionalProperties: false
+      description: >
+        Delivery state. A pending state has a null result. A received state has a
+        receive result and no business event. The received result can omit both
+        business event fields or set both fields to null. A credited state has a
+        receive result and both non-null business event fields. SDK decoders enforce
+        these paired fields.
+      required: [delivery, tupleFingerprint, state, result]
+      properties:
+        delivery:
+          $ref: '#/components/schemas/DurableCashuDeliveryImmutableTuple'
+        tupleFingerprint:
+          $ref: '#/components/schemas/Sha256Digest'
+        state:
+          $ref: '#/components/schemas/DurableCashuDeliveryState'
+        result:
+          x-nullable: true
+          oneOf:
+            - $ref: '#/components/schemas/DurableCashuDeliveryResult'
+            - type: 'null'
+      allOf:
+        - if:
+            properties: { state: { const: pending } }
+          then:
+            properties: { result: { type: 'null' } }
+        - if:
+            properties: { state: { const: credited } }
+          then:
+            properties:
+              result:
+                allOf:
+                  - $ref: '#/components/schemas/DurableCashuDeliveryResult'
+                  - required: [businessEventId, businessEventAt]
+
+    AssetMonitoringUnit:
+      type: string
+      enum: [sat, msat]
+      description: >
+        Canonical Cashu unit for a monitored asset or its display base asset.
+
+    AssetMonitoringAssetKind:
+      type: string
+      enum: [collateral, conditional]
+      description: Canonical monitored-asset identity kind.
+
+    AssetMonitoringAssetReference:
+      type: object
+      oneOf:
+        - $ref: '#/components/schemas/AssetMonitoringCollateralAssetReference'
+        - $ref: '#/components/schemas/AssetMonitoringConditionalAssetReference'
+
+    AssetMonitoringCollateralAssetReference:
+      type: object
+      additionalProperties: false
+      required:
+        - canonicalMintUrl
+        - kind
+        - cashuUnit
+        - displayBaseAsset
+      properties:
+        canonicalMintUrl:
+          type: string
+          format: uri
+          maxLength: 512
+          description: Canonical mint URL. It has no trailing slash.
+        kind:
+          type: string
+          enum: [collateral]
+        cashuUnit:
+          $ref: '#/components/schemas/AssetMonitoringUnit'
+        displayBaseAsset:
+          $ref: '#/components/schemas/AssetMonitoringUnit'
+
+    AssetMonitoringConditionalAssetReference:
+      type: object
+      additionalProperties: false
+      required:
+        - canonicalMintUrl
+        - kind
+        - cashuUnit
+        - displayBaseAsset
+        - conditionId
+        - parentConditionId
+        - outcomeUniverseDigest
+        - internalOutcomeSetId
+      properties:
+        canonicalMintUrl:
+          type: string
+          format: uri
+          maxLength: 512
+          description: Canonical mint URL. It has no trailing slash.
+        kind:
+          type: string
+          enum: [conditional]
+        cashuUnit:
+          $ref: '#/components/schemas/AssetMonitoringUnit'
+        displayBaseAsset:
+          $ref: '#/components/schemas/AssetMonitoringUnit'
+        conditionId:
+          type: string
+          minLength: 1
+          maxLength: 128
+          pattern: '^[0-9A-Fa-f]+$'
+        parentConditionId:
+          type: string
+          minLength: 1
+          maxLength: 128
+          pattern: '^[0-9A-Fa-f]+$'
+        outcomeUniverseDigest:
+          $ref: '#/components/schemas/Sha256Digest'
+        internalOutcomeSetId:
+          type: string
+          minLength: 1
+          maxLength: 1024
+
+    AssetMonitoringRecoveryCounterInterval:
+      type: object
+      additionalProperties: false
+      required: [start, count]
+      properties:
+        start:
+          type: integer
+          format: int32
+          minimum: 0
+        count:
+          type: integer
+          format: int32
+          minimum: 1
+
+    AssetMonitoringRecoveryHint:
+      type: object
+      additionalProperties: false
+      required: [keysetIds, counterIntervals]
+      properties:
+        keysetIds:
+          type: array
+          maxItems: 16
+          uniqueItems: true
+          items:
+            type: string
+            pattern: '^(00[0-9a-f]{14}|0[12][0-9a-f]{64})$'
+        counterIntervals:
+          type: array
+          maxItems: 16
+          items:
+            $ref: '#/components/schemas/AssetMonitoringRecoveryCounterInterval'
+
+    AssetMonitoringReportedHolding:
+      type: object
+      additionalProperties: false
+      required: [asset, availableSubunits, pendingOutgoingSubunits]
+      properties:
+        asset:
+          $ref: '#/components/schemas/AssetMonitoringAssetReference'
+        availableSubunits:
+          type: integer
+          format: int64
+          minimum: 0
+          maximum: 9007199254740991
+        pendingOutgoingSubunits:
+          type: integer
+          format: int64
+          minimum: 0
+          maximum: 9007199254740991
+        recoveryHint:
+          oneOf:
+            - $ref: '#/components/schemas/AssetMonitoringRecoveryHint'
+            - type: 'null'
+
+    AssetMonitoringReportRequest:
+      type: object
+      additionalProperties: false
+      required: [walletId, reportId, startsNewInterval, holdings]
+      properties:
+        walletId:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+          description: Canonical local durable wallet identifier.
+        reportId:
+          type: string
+          format: uuid
+          description: Client-generated report identifier for exact retry handling.
+        startsNewInterval:
+          type: boolean
+          description: True for the first report and for a wallet switch.
+        holdings:
+          type: array
+          maxItems: 200
+          items:
+            $ref: '#/components/schemas/AssetMonitoringReportedHolding'
+
+    AssetMonitoringValuationStatus:
+      type: string
+      enum: [valued, unvalued]
+
+    AssetMonitoringAssetResponse:
+      type: object
+      additionalProperties: false
+      required: [asset, availableSubunits, pendingOutgoingSubunits, valuationStatus, recoveryHint]
+      properties:
+        asset: { $ref: '#/components/schemas/AssetMonitoringAssetReference' }
+        availableSubunits: { type: integer, format: int64, minimum: 0, maximum: 9007199254740991 }
+        pendingOutgoingSubunits:
+          { type: integer, format: int64, minimum: 0, maximum: 9007199254740991 }
+        availableValueMsat:
+          { type: [integer, 'null'], format: int64, minimum: 0, maximum: 9007199254740991 }
+        pendingOutgoingValueMsat:
+          { type: [integer, 'null'], format: int64, minimum: 0, maximum: 9007199254740991 }
+        estimatedValueMsat:
+          { type: [integer, 'null'], format: int64, minimum: 0, maximum: 9007199254740991 }
+        valuationStatus: { $ref: '#/components/schemas/AssetMonitoringValuationStatus' }
+        recoveryHint:
+          oneOf:
+            - $ref: '#/components/schemas/AssetMonitoringRecoveryHint'
+            - type: 'null'
+
+    AssetMonitoringSummaryResponse:
+      type: object
+      additionalProperties: false
+      required:
+        [
+          collateralUnit,
+          availableValueMsat,
+          pendingOutgoingValueMsat,
+          estimatedTotalValueMsat,
+          unvaluedAssetCount,
+          unvaluedAvailableSubunits,
+          unvaluedPendingOutgoingSubunits,
+          valuationRevision,
+          stale,
+          incomplete,
+          building,
+        ]
+      properties:
+        collateralUnit: { type: string, enum: [msat] }
+        availableValueMsat:
+          { type: [integer, 'null'], format: int64, minimum: 0, maximum: 9007199254740991 }
+        pendingOutgoingValueMsat:
+          { type: [integer, 'null'], format: int64, minimum: 0, maximum: 9007199254740991 }
+        estimatedTotalValueMsat:
+          { type: [integer, 'null'], format: int64, minimum: 0, maximum: 9007199254740991 }
+        unvaluedAssetCount: { type: integer, format: int32, minimum: 0 }
+        unvaluedAvailableSubunits:
+          { type: [integer, 'null'], format: int64, minimum: 0, maximum: 9007199254740991 }
+        unvaluedPendingOutgoingSubunits:
+          { type: [integer, 'null'], format: int64, minimum: 0, maximum: 9007199254740991 }
+        asOf: { type: [string, 'null'], format: date-time }
+        intervalRevision:
+          { type: [integer, 'null'], format: int64, minimum: 1, maximum: 9007199254740991 }
+        coverageBoundary: { type: [string, 'null'] }
+        valuationRevision: { type: string, minLength: 1 }
+        stale: { type: boolean }
+        incomplete: { type: boolean }
+        building: { type: boolean }
+
+    AssetMonitoringAssetsResponse:
+      type: object
+      additionalProperties: false
+      required: [assets, valuationRevision, stale, incomplete, building]
+      properties:
+        assets:
+          type: array
+          maxItems: 200
+          items: { $ref: '#/components/schemas/AssetMonitoringAssetResponse' }
+        nextCursor: { type: [string, 'null'] }
+        asOf: { type: [string, 'null'], format: date-time }
+        intervalRevision:
+          { type: [integer, 'null'], format: int64, minimum: 1, maximum: 9007199254740991 }
+        coverageBoundary: { type: [string, 'null'] }
+        valuationRevision: { type: string, minLength: 1 }
+        stale: { type: boolean }
+        incomplete: { type: boolean }
+        building: { type: boolean }
+
+    AssetMonitoringHistoryPointResponse:
+      type: object
+      additionalProperties: false
+      required: [asOf, estimatedTotalValueMsat]
+      properties:
+        asOf: { type: string, format: date-time }
+        estimatedTotalValueMsat:
+          { type: [integer, 'null'], format: int64, minimum: 0, maximum: 9007199254740991 }
+
+    AssetMonitoringHistoryResponse:
+      type: object
+      additionalProperties: false
+      required: [timeframe, points, valuationRevision, stale, incomplete, building]
+      properties:
+        timeframe: { type: string, enum: [1D, 1W, 1M, ALL] }
+        points:
+          type: array
+          maxItems: 300
+          items: { $ref: '#/components/schemas/AssetMonitoringHistoryPointResponse' }
+        asOf: { type: [string, 'null'], format: date-time }
+        intervalRevision:
+          { type: [integer, 'null'], format: int64, minimum: 1, maximum: 9007199254740991 }
+        coverageBoundary: { type: [string, 'null'] }
+        valuationRevision: { type: string, minLength: 1 }
+        stale: { type: boolean }
+        incomplete: { type: boolean }
+        building: { type: boolean }
+
+    AssetMonitoringPortfolioResponse:
+      type: object
+      additionalProperties: false
+      required: [summary, assets, history]
+      properties:
+        summary: { $ref: '#/components/schemas/AssetMonitoringSummaryResponse' }
+        assets: { $ref: '#/components/schemas/AssetMonitoringAssetsResponse' }
+        history: { $ref: '#/components/schemas/AssetMonitoringHistoryResponse' }
+
+    SettlementCapabilityReference:
+      type: object
+      additionalProperties: false
+      required:
+        - artifactId
+        - bindingDigest
+      properties:
+        artifactId:
+          type: string
+          format: uuid
+        bindingDigest:
+          $ref: '#/components/schemas/Sha256Digest'
+
+    SettlementCapabilityState:
+      type: string
+      enum:
+        - staged
+        - bindingPending
+        - bound
+        - selected
+        - uncertain
+        - terminal
+        - quarantined
+
+    SettlementOrderContinuationReference:
+      type: object
+      additionalProperties: false
+      required:
+        - predecessorOrderId
+        - settlementGroupId
+        - settlementGroupRevision
+        - continuationRevision
+      properties:
+        predecessorOrderId:
+          type: string
+          format: uuid
+        settlementGroupId:
+          type: string
+          format: uuid
+        settlementGroupRevision:
+          type: integer
+          format: int32
+          minimum: 1
+        continuationRevision:
+          type: integer
+          format: int64
+          minimum: 1
+
+    OrderContinuationState:
+      type: object
+      additionalProperties: false
+      required:
+        - settlementGroupId
+        - settlementGroupRevision
+        - revision
+        - status
+      properties:
+        settlementGroupId:
+          type: string
+          format: uuid
+        settlementGroupRevision:
+          type: integer
+          format: int32
+          minimum: 1
+        revision:
+          type: integer
+          format: int64
+          minimum: 1
+        status:
+          type: string
+          enum:
+            - open
+            - consumed
+            - declined
+
+    DeclineOrderContinuationRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - expectedContinuationRevision
+      properties:
+        expectedContinuationRevision:
+          type: integer
+          format: int64
+          minimum: 1
+
+    SettlementOrderIntent:
+      type: object
+      additionalProperties: false
+      required:
+        - outcomeId
+        - tokenSide
+        - side
+        - price
+        - amountSubunits
+        - minimumFillAmountSubunits
+        - baseAsset
+        - collateralUnit
+        - timeInForce
+        - expiresAt
+      description: >
+        Immutable economic order terms authenticated by the settlement
+        capability binding. Later order submission supplies only the resulting
+        capability reference; the server loads these terms from the current
+        durable DCB binding.
+      properties:
+        outcomeId:
+          type: string
+          minLength: 1
+          maxLength: 191
+          pattern: '^[^|]+$'
+          description: >
+            Primitive outcome segment of the top-level marketId. It must not
+            contain a finite outcome-set separator such as "|".
+        tokenSide:
+          $ref: '#/components/schemas/TokenSide'
+        side:
+          $ref: '#/components/schemas/OrderSide'
+        price:
+          $ref: '#/components/schemas/Probability'
+        amountSubunits:
+          allOf:
+            - $ref: '#/components/schemas/CollateralSubunits'
+          minimum: 1
+          description: >
+            Conditional-token face amount in the market collateral sub-unit.
+        minimumFillAmountSubunits:
+          allOf:
+            - $ref: '#/components/schemas/CollateralSubunits'
+          minimum: 1
+          description: >
+            Minimum aggregate conditional-token face amount that this order
+            accepts in one matching round. It must not exceed amountSubunits
+            and must be a whole tradable unit for the market divisibility.
+        baseAsset:
+          $ref: '#/components/schemas/BaseAsset'
+          description: >
+            Required explicit quote asset. No default is implied.
+        collateralUnit:
+          $ref: '#/components/schemas/CollateralUnit'
+          description: >
+            Required explicit collateral unit. No default is implied.
+        timeInForce:
+          $ref: '#/components/schemas/TimeInForce'
+          description: >
+            GTD requires a non-null expiresAt. GTC, FOK, and FAK forbid
+            expiresAt.
+        expiresAt:
+          type:
+            - string
+            - 'null'
+          format: date-time
+          description: >
+            Non-null for GTD intent and exactly null for every other
+            time-in-force value. Requiring the field gives the authenticated
+            intent one canonical wire representation.
+
+    CreateSettlementCapabilityRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - stageIdempotencyKey
+        - clientOrderId
+        - marketId
+        - orderIntent
+        - continuation
+        - artifact
+      properties:
+        stageIdempotencyKey:
+          type: string
+          minLength: 1
+          maxLength: 128
+          description: >
+            Client-generated idempotency key for this exact artifact and order
+            binding. It is scoped to the authenticated subject. Successful or
+            response-uncertain attempts must retry the exact request; a
+            definitive rejection before staging stores no key association.
+        clientOrderId:
+          type: string
+          minLength: 1
+          maxLength: 128
+          description: >
+            Stable client order identity used to derive the server order id.
+            Reusing it with a different authorization fingerprint conflicts.
+        marketId:
+          type: string
+          minLength: 66
+          maxLength: 256
+          pattern: '^[0-9a-f]{64}-[^|]+$'
+          description: Primitive outcome market id in `{conditionId}-{outcomeName}` form.
+        orderIntent:
+          $ref: '#/components/schemas/SettlementOrderIntent'
+          description: >
+            Economic order terms to authenticate in the durable capability
+            binding. Once the stage idempotency key is durably associated,
+            reusing it with different terms conflicts.
+        continuation:
+          oneOf:
+            - $ref: '#/components/schemas/SettlementOrderContinuationReference'
+            - type: 'null'
+          description: >
+            Exactly null for an initial order. A fresh successor binds the
+            confirmed predecessor continuation right and consumes it
+            atomically when the capability is bound.
+        artifact:
+          type: string
+          format: byte
+          minLength: 4
+          maxLength: 349528
+          description: >
+            Base64 encoding of at most 262144 canonical JSON bytes produced by
+            the shared SDK settlement-capability artifact encoder.
+
+    SettlementCapabilityResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - reference
+        - orderId
+        - clientOrderId
+        - marketId
+        - artifactDigest
+        - state
+        - version
+        - authorizationExpiresAt
+        - stageExpiresAt
+        - settlementGroup
+      properties:
+        reference:
+          $ref: '#/components/schemas/SettlementCapabilityReference'
+        orderId:
+          type: string
+          format: uuid
+        clientOrderId:
+          type: string
+        marketId:
+          type: string
+        artifactDigest:
+          $ref: '#/components/schemas/Sha256Digest'
+        state:
+          $ref: '#/components/schemas/SettlementCapabilityState'
+        version:
+          type: integer
+          format: int64
+          minimum: 0
+        authorizationExpiresAt:
+          type: string
+          format: date-time
+        stageExpiresAt:
+          type: string
+          format: date-time
+        settlementGroup:
+          oneOf:
+            - $ref: '#/components/schemas/SettlementGroupSummary'
+            - type: 'null'
+          description: >
+            Current or terminal group that selected this capability, or null
+            before selection.
+
+    SettlementCapabilityAdmissionPolicyResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - coordinatorPubkey
+      properties:
+        coordinatorPubkey:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+          minLength: 64
+          maxLength: 64
+          description: >
+            Current environment BIP-340 x-only coordinator public key. Every
+            input proof in a newly admitted bitCaster PAY_TO_UNLOCK artifact
+            must bind this exact key.
+
+    SettlementCapabilityResultResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - resultId
+        - reference
+        - operationId
+        - requestDigest
+        - envelopeDigest
+        - envelope
+        - createdAt
+        - version
+        - settlementGroup
+      properties:
+        resultId:
+          type: string
+          format: uuid
+        reference:
+          $ref: '#/components/schemas/SettlementCapabilityReference'
+        operationId:
+          type: string
+          minLength: 1
+          maxLength: 128
+        requestDigest:
+          $ref: '#/components/schemas/Sha256Digest'
+        envelopeDigest:
+          $ref: '#/components/schemas/Sha256Digest'
+        envelope:
+          type: string
+          format: byte
+          maxLength: 349528
+          description: >
+            Base64-encoded canonical owner result envelope. It contains the
+            selected bitmap and mint signatures but no unblinding material.
+        createdAt:
+          type: string
+          format: date-time
+        acknowledgedAt:
+          type:
+            - string
+            - 'null'
+          format: date-time
+        version:
+          type: integer
+          format: int64
+          minimum: 0
+        settlementGroup:
+          $ref: '#/components/schemas/SettlementGroupSummary'
+          description: Atomic group that produced this owner result envelope.
+
+    AcknowledgeSettlementCapabilityResultRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - expectedVersion
+      properties:
+        expectedVersion:
+          type: integer
+          format: int64
+          minimum: 0
+
     Sats:
       type: integer
       format: int64
@@ -861,11 +2193,10 @@ components:
       format: int64
       minimum: 0
       description: >
-        Collateral subunits — msat (1/1000 sat) for sat-denominated markets,
-        cents for USD-denominated markets. Wire amount = collateral subunits
-        per ADR-025. Request fields enforce minimum 1 at validation;
-        response fields (remainingAmountSubunits, filledAmountSubunits)
-        may be 0 for filled/cancelled orders.
+        Product collateral subunits in msat (1/1000 sat). Wire amount =
+        collateral subunits. Request fields enforce minimum 1 at validation;
+        response fields (remainingAmountSubunits, filledAmountSubunits) may be
+        0 for filled/cancelled orders.
 
     Probability:
       type: integer
@@ -873,18 +2204,23 @@ components:
       description: >
         Market price numerator `k`. Valid range is `1 <= k <= D - 1`, where
         `D` is the market's immutable `divisibility`. Immutable price
-        denominator D is per-market: sat markets use D=10000 (0.01%
-        precision), USD markets use D=1000 (0.1% precision), numeric sat
-        markets use D=1000000 (0.0001% precision).
+        denominator D is per-market: categorical markets use D=10000 (0.01%
+        precision), while future numeric markets use D=1000000 (0.0001%
+        precision).
 
     BaseAsset:
       type: string
-      enum: [sat, usd, jpy]
+      enum: [sat]
       description: >
-        Market quote/collateral base asset. `sat` and `usd` are accepted for
-        market registration. `usd`: BTC-backed; deposits are priced as BTC
-        Lightning invoices at quote time. Collateral is held in msat for `sat`
-        markets and cents (`usd`) for `usd` markets. `jpy` is reserved.
+        Product quote asset. The current product accepts only exact `sat`;
+        product collateral is held in `msat`.
+
+    CollateralUnit:
+      type: string
+      enum: [msat]
+      description: >
+        Product collateral unit. The current product accepts only exact
+        `msat`; callers must provide it explicitly where required.
 
     OrderSide:
       type: string
@@ -922,10 +2258,79 @@ components:
         - GTC
         - FOK
         - FAK
+        - GTD
       description: >
         Time-in-force policy. GTC = Good-Till-Cancel (rests on book),
         FOK = Fill-Or-Kill (reject if not fully filled),
-        FAK = Fill-And-Kill (cancel remaining after partial fill).
+        FAK = Fill-And-Kill (cancel remaining after partial fill), GTD =
+        Good-Till-Date. GTD requires a non-null `expiresAt`; GTC, FOK, and FAK
+        forbid `expiresAt`.
+
+    OrderLifecycleStatus:
+      type: string
+      enum:
+        - resting
+        - matched
+        - partially_filled
+        - awaiting_authorization
+        - filled
+        - cancelled
+        - expired
+        - evicted_capacity
+        - rejected_capacity
+        - failed
+      description: >
+        Closed public order lifecycle. `awaiting_authorization` means an
+        unfilled resting remainder is intentionally non-matchable until its
+        owner durably binds a replacement one-shot range authorization.
+
+    SettlementGroupStatus:
+      type: string
+      enum:
+        - Prepared
+        - SubmissionPending
+        - Reconciling
+        - Confirmed
+        - DefinitivelyRejected
+        - Refundable
+        - ExpiredBeforeSubmission
+      description: >
+        Public atomic settlement-group lifecycle. `Prepared` is the bounded
+        coalescing state. `SubmissionPending` means the group is frozen and its
+        exact request authority was durably committed before mint I/O.
+
+    SettlementGroupSummary:
+      type: object
+      additionalProperties: false
+      required:
+        - groupId
+        - status
+        - revision
+        - coalescingDeadline
+        - frozenAt
+      properties:
+        groupId:
+          type: string
+          format: uuid
+        status:
+          $ref: '#/components/schemas/SettlementGroupStatus'
+        revision:
+          type: integer
+          format: int32
+          minimum: 0
+        coalescingDeadline:
+          type: string
+          format: date-time
+        frozenAt:
+          type:
+            - string
+            - 'null'
+          format: date-time
+          description: >
+            Null for `Prepared` and for `ExpiredBeforeSubmission`, which
+            transitions directly from `Prepared` without mint submission.
+            Non-null for every lifecycle path that reached
+            `SubmissionPending`, and preserved through later transitions.
 
     MatchPath:
       type: string
@@ -949,9 +2354,9 @@ components:
         - Failed
       description: >
         Lifecycle status of a fill-shaped order execution row. `Matched`
-        means atomic-swap settlement is still pending; `Filled` means
-        settlement committed; `Failed` means the atomic-swap session reached
-        a terminal failure and should no longer be retried.
+        means its atomic mint settlement group is not yet confirmed; `Filled`
+        means settlement committed; `Failed` means the group was definitively
+        rejected and this fill will not be retried.
 
     OracleNostrEvent:
       type: object
@@ -1019,6 +2424,7 @@ components:
         - conditionId
         - attestedOutcome
         - oracleWitness
+        - registeredAuthority
       properties:
         conditionId:
           type: string
@@ -1028,6 +2434,49 @@ components:
           description: The single outcome attested by the DLC oracle.
         oracleWitness:
           $ref: '#/components/schemas/OracleWitness'
+        registeredAuthority:
+          $ref: '#/components/schemas/RegisteredConditionAuthority'
+
+    RegisteredConditionAuthority:
+      type: object
+      required:
+        - eventId
+        - outcomes
+        - threshold
+        - oracles
+      properties:
+        eventId:
+          type: string
+        outcomes:
+          type: array
+          minItems: 1
+          items:
+            type: string
+        threshold:
+          type: integer
+          minimum: 1
+        oracles:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/RegisteredConditionOracle'
+
+    RegisteredConditionOracle:
+      type: object
+      required:
+        - oraclePublicKey
+        - noncePoint
+        - announcementIdentity
+      properties:
+        oraclePublicKey:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+        noncePoint:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+        announcementIdentity:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
 
     ConditionAttestationProblem:
       type: object
@@ -1072,12 +2521,13 @@ components:
 
     Fill:
       type: object
+      additionalProperties: false
       description: >
         One leg of a match: the taker's incoming order crossing a single maker.
         Canonical settlement amounts are carried by `quotePaymentSubunits`,
         `outcomeFaceAmountSubunits`, `baseAsset`, `divisibility`, and `tokenSide`.
         `amountSubunits` is the conditional-token face amount in market
-        collateral subunits (msat for sat markets, cents for USD markets).
+        collateral subunits (msat).
         `quotePaymentSubunits + baseAsset + divisibility` is the authoritative
         quote payment.
       required:
@@ -1089,6 +2539,12 @@ components:
         - path
         - filledAt
         - status
+        - baseAsset
+        - divisibility
+        - quotePaymentSubunits
+        - outcomeFaceAmountSubunits
+        - tokenSide
+        - settlementGroup
       properties:
         id:
           type: string
@@ -1106,8 +2562,8 @@ components:
           allOf:
             - $ref: '#/components/schemas/CollateralSubunits'
           description: >
-             Conditional-token face amount matched for settlement in market
-             collateral subunits (msat for sat markets, cents for USD markets).
+            Conditional-token face amount matched for settlement in market
+            collateral subunits (msat).
         executionPrice:
           $ref: '#/components/schemas/Probability'
         path:
@@ -1115,95 +2571,58 @@ components:
         status:
           $ref: '#/components/schemas/FillStatus'
         baseAsset:
-          allOf:
-            - $ref: '#/components/schemas/BaseAsset'
-          default: sat
-          description: >
-            Base asset for the canonical settlement amount. Optional for
-            backward compatibility; omitting it implies the legacy `sat` base
-            asset.
+          $ref: '#/components/schemas/BaseAsset'
+          description: Required product base asset for the canonical settlement amount.
         divisibility:
           type: integer
           format: int32
-          minimum: 2
-          default: 10000
+          enum: [10000, 1000000]
           description: >
-            Immutable price denominator `D`, server-determined. Enum markets
-            use per-market D: sat markets use D=10000 (0.01% price precision,
-            one whole share = 10000 msat = 10 sats); USD markets use D=1000
-            (0.1% price precision, one whole share = 1000 cents = $10.00).
+            Immutable price denominator `D`, server-determined.
         quotePaymentSubunits:
           type: integer
           format: int64
-          nullable: true
           description: >
             Engine-computed quote payment in the market base-asset sub-unit.
             This field plus `baseAsset` and `divisibility` is the
-            authoritative quote payment. Present for new trade-start fills;
-            omitted or null for older replay data.
+            authoritative quote payment.
         outcomeFaceAmountSubunits:
           type: integer
           format: int64
-          nullable: true
           description: >
             Engine-computed conditional-token face amount in the market
-            base-asset sub-unit. Present for new trade-start fills; omitted
-            or null for older replay data.
+            base-asset sub-unit.
         tokenSide:
-          allOf:
-            - $ref: '#/components/schemas/TokenSide'
-          default: Outcome
+          $ref: '#/components/schemas/TokenSide'
           description: >
             Which token on the primitive outcome book was traded for the
-            order that produced this fill. Optional for backward
-            compatibility; omitting it implies `Outcome`.
+            order that produced this fill.
         filledAt:
           type: string
           format: date-time
           description: Timestamp when this fill was executed.
-        tradeId:
-          type: string
-          format: uuid
+        settlementGroup:
+          $ref: '#/components/schemas/SettlementGroupSummary'
           description: >
-            Atomic-swap trade session identifier for this fill. Present when
-            the client must join TradeHub to settle; omitted only for legacy
-            fills that do not have a corresponding TradeHub session.
-
+            Atomic settlement group that durably owns this fill reservation.
     SubmitOrderRequest:
       type: object
+      additionalProperties: false
       required:
-        - outcomeId
-        - tokenSide
-        - side
-        - price
-        - amountSubunits
-        - clientOrderId
+        - settlementCapability
+        - comment
+      description: >
+        Reference-only order submission. The server loads all immutable order
+        identity and economic terms from the current durable DCB binding. The
+        authenticated owner and route market must exactly match that prebound
+        intent. This reference is not bearer authority.
       properties:
-        outcomeId:
-          type: string
+        settlementCapability:
+          $ref: '#/components/schemas/SettlementCapabilityReference'
           description: >
-            The primitive outcome to trade (e.g. "Alice" or "YES"). Must match
-            the outcomeName segment of marketId and must not contain "|".
-        tokenSide:
-          $ref: '#/components/schemas/TokenSide'
-        side:
-          $ref: '#/components/schemas/OrderSide'
-        price:
-          $ref: '#/components/schemas/Probability'
-        amountSubunits:
-          allOf:
-            - $ref: '#/components/schemas/CollateralSubunits'
-          description: >
-            Limit-order size as conditional-token face amount. Must be
-            divisible by the market's whole-share face value, independent of
-            `divisibility`. Sat markets use D=10000 (10000 msat = 10 sats); USD markets
-            use D=1000 (1000 cents = $10.00). The whole-share face value is D.
-        timeInForce:
-          $ref: '#/components/schemas/TimeInForce'
-          default: GTC
-        clientOrderId:
-          type: string
-          description: Client-supplied idempotency key scoped to the authenticated pubkey and condition.
+            Current capability binding to submit. Possession does not authorize
+            use: the server verifies ownership, route identity, and current DCB
+            authorization state.
         comment:
           oneOf:
             - $ref: '#/components/schemas/NostrKind1Event'
@@ -1213,7 +2632,10 @@ components:
             comment once this order produces a fill. The event pubkey must
             match the NIP-98 submitter and include an `r` tag for the market
             detail URL.
-
+        walletId:
+          type: string
+          pattern: '^[0-9a-f]{64}$'
+          description: Display-only wallet attribution. It does not authorize custody or settlement.
     NostrKind1Event:
       type: object
       required:
@@ -1255,6 +2677,7 @@ components:
 
     OrderStatusResponse:
       type: object
+      additionalProperties: false
       required:
         - orderId
         - marketId
@@ -1262,9 +2685,17 @@ components:
         - remainingAmountSubunits
         - filledAmountSubunits
         - fills
+        - amountSubunits
+        - outcomeId
+        - side
+        - price
+        - placedAt
+        - timeInForce
         - tokenSide
         - baseAsset
         - divisibility
+        - activeSettlementGroup
+        - continuation
       properties:
         orderId:
           type: string
@@ -1274,56 +2705,65 @@ components:
           type: string
           description: The market this order belongs to.
         status:
-          type: string
-          description: >
-            One of: "resting" (on book, unmatched), "matched" (reserved for
-            atomic-swap settlement), "partially_filled", "filled",
-            "cancelled", "failed".
+          $ref: '#/components/schemas/OrderLifecycleStatus'
         remainingAmountSubunits:
           $ref: '#/components/schemas/CollateralSubunits'
         filledAmountSubunits:
           $ref: '#/components/schemas/CollateralSubunits'
           description: >
             Conditional-token face amount already consumed by committed fills
-            or currently matched atomic-swap sessions. A provisional mint match
-            is exposed here before final settlement so clients can notify
-            makers and start the atomic-swap handshake.
+            or reserved by a nonterminal atomic settlement group.
         fills:
           type: array
           items:
             $ref: '#/components/schemas/Fill'
           description: >
-            All fills and active or terminal atomic-swap sessions produced
+            All fills and active or terminal atomic settlement groups produced
             against this order so far.
-        tradeId:
+        amountSubunits:
+          $ref: '#/components/schemas/CollateralSubunits'
+          description: The order's original conditional-token face amount.
+        outcomeId:
           type: string
-          format: uuid
-          nullable: true
-          description: >
-            Pending atomic-swap trade id when status is `matched` and the
-            engine is waiting for ephemeral pubkey submission.
-        deadline:
+          description: The primitive route outcome this order trades against.
+        side:
+          $ref: '#/components/schemas/OrderSide'
+        price:
+          $ref: '#/components/schemas/Probability'
+        placedAt:
+          type: string
+          format: date-time
+        timeInForce:
+          $ref: '#/components/schemas/TimeInForce'
+        expiresAt:
           type: string
           format: date-time
           nullable: true
-          description: Deadline for pending ephemeral pubkey submission.
+        activeSettlementGroup:
+          oneOf:
+            - $ref: '#/components/schemas/SettlementGroupSummary'
+            - type: 'null'
+          description: >
+            Current nonterminal settlement group for this order, or null when
+            no group currently owns an unconfirmed fill.
+        continuation:
+          oneOf:
+            - $ref: '#/components/schemas/OrderContinuationState'
+            - type: 'null'
+          description: >
+            Current durable residual-continuation state. It is non-null only
+            after a confirmed partial resting-order settlement.
         tokenSide:
           $ref: '#/components/schemas/TokenSide'
         baseAsset:
-          allOf:
-            - $ref: '#/components/schemas/BaseAsset'
-          default: sat
+          $ref: '#/components/schemas/BaseAsset'
           description: Base asset context for amount and price fields.
         divisibility:
           type: integer
           format: int32
-          minimum: 2
-          default: 10000
+          enum: [10000, 1000000]
           description: >
-            Immutable price denominator `D`, server-determined. Enum markets
-            use per-market D: sat markets use D=10000 (0.01% price precision,
-            one whole share = 10000 msat = 10 sats); USD markets use D=1000
-            (0.1% price precision, one whole share = 1000 cents = $10.00).
+            Immutable price denominator `D`, server-determined.
 
     RestingOrderResponse:
       type: object
@@ -1371,20 +2811,14 @@ components:
           format: date-time
           nullable: true
         baseAsset:
-          allOf:
-            - $ref: '#/components/schemas/BaseAsset'
-          default: sat
+          $ref: '#/components/schemas/BaseAsset'
           description: Base asset context for amount and price fields.
         divisibility:
           type: integer
           format: int32
-          minimum: 2
-          default: 10000
+          enum: [10000, 1000000]
           description: >
-            Immutable price denominator `D`, server-determined. Enum markets
-            use per-market D: sat markets use D=10000 (0.01% price precision,
-            one whole share = 10000 msat = 10 sats); USD markets use D=1000
-            (0.1% price precision, one whole share = 1000 cents = $10.00).
+            Immutable price denominator `D`, server-determined.
 
     ListRestingOrdersResponse:
       type: object
@@ -1398,10 +2832,13 @@ components:
 
     OrderEntry:
       type: object
+      additionalProperties: false
       required:
         - orderId
         - marketId
         - conditionId
+        - baseAsset
+        - divisibility
         - side
         - price
         - amountSubunits
@@ -1409,6 +2846,7 @@ components:
         - tokenSide
         - status
         - placedAt
+        - activeSettlementGroup
       properties:
         orderId:
           type: string
@@ -1417,6 +2855,12 @@ components:
           type: string
         conditionId:
           type: string
+        baseAsset:
+          $ref: '#/components/schemas/BaseAsset'
+        divisibility:
+          type: integer
+          format: int32
+          enum: [10000, 1000000]
         side:
           $ref: '#/components/schemas/OrderSide'
         price:
@@ -1428,8 +2872,7 @@ components:
         tokenSide:
           $ref: '#/components/schemas/TokenSide'
         status:
-          type: string
-          enum: [Resting, Filled, Cancelled, Matched]
+          $ref: '#/components/schemas/OrderLifecycleStatus'
         placedAt:
           type: string
           format: date-time
@@ -1437,20 +2880,15 @@ components:
           type: string
           format: date-time
           nullable: true
-        tradeId:
-          type: string
-          format: uuid
-          nullable: true
-        deadline:
-          type: string
-          format: date-time
-          nullable: true
-        pubkeySubmitted:
-          type: boolean
-          nullable: true
         clientOrderId:
           type: string
           nullable: true
+        activeSettlementGroup:
+          oneOf:
+            - $ref: '#/components/schemas/SettlementGroupSummary'
+            - type: 'null'
+          description: >
+            Current nonterminal settlement group for this order, or null.
 
     ListMyOrdersResponse:
       type: object
@@ -1468,25 +2906,22 @@ components:
 
     SubmitOrderResponse:
       type: object
+      additionalProperties: false
       required:
         - orderId
         - status
         - remainingAmountSubunits
         - fills
-        - pendingPubkeySubmissions
         - baseAsset
         - divisibility
+        - activeSettlementGroup
       properties:
         orderId:
           type: string
           format: uuid
           description: The unique identifier assigned to this order.
         status:
-          type: string
-          description: >
-            One of: "filled", "matched" (reserved for atomic-swap
-            settlement), "partially_filled", "resting", "cancelled",
-            "failed".
+          $ref: '#/components/schemas/OrderLifecycleStatus'
         remainingAmountSubunits:
           $ref: '#/components/schemas/CollateralSubunits'
         fills:
@@ -1494,28 +2929,23 @@ components:
           items:
             $ref: '#/components/schemas/Fill'
           description: List of fills produced by this order. Empty if no matches.
-        pendingPubkeySubmissions:
-          type: array
-          items:
-            $ref: '#/components/schemas/PendingPubkeySubmission'
         baseAsset:
-          allOf:
-            - $ref: '#/components/schemas/BaseAsset'
-          default: sat
+          $ref: '#/components/schemas/BaseAsset'
           description: Base asset context for amount and price fields.
         divisibility:
           type: integer
           format: int32
-          minimum: 2
-          default: 10000
+          enum: [10000, 1000000]
+        activeSettlementGroup:
+          oneOf:
+            - $ref: '#/components/schemas/SettlementGroupSummary'
+            - type: 'null'
           description: >
-            Immutable price denominator `D`, server-determined. Enum markets
-            use per-market D: sat markets use D=10000 (0.01% price precision,
-            one whole share = 10000 msat = 10 sats); USD markets use D=1000
-            (0.1% price precision, one whole share = 1000 cents = $10.00).
+            Current nonterminal settlement group for this order, or null.
 
     BatchSubmitOrdersRequest:
       type: object
+      additionalProperties: false
       required:
         - orders
       properties:
@@ -1526,173 +2956,129 @@ components:
           items:
             $ref: '#/components/schemas/BatchSubmitOrderRequestItem'
 
-    PendingPubkeySubmission:
-      type: object
-      required:
-        - tradeId
-        - role
-        - fillAmount
-        - deadline
-      properties:
-        tradeId:
-          type: string
-          format: uuid
-        role:
-          type: string
-          enum: [maker, taker]
-        fillAmount:
-          $ref: '#/components/schemas/CollateralSubunits'
-        deadline:
-          type: string
-          format: date-time
-
-    SubmitEphemeralPubkeyRequest:
-      type: object
-      required:
-        - ephemeralPubkey
-      properties:
-        ephemeralPubkey:
-          type: string
-          description: 33-byte compressed secp256k1 public key as lowercase hex.
-          pattern: '^(02|03)[0-9a-fA-F]{64}$'
-
-    SubmitEphemeralPubkeyResponse:
-      type: object
-      required:
-        - tradeId
-        - role
-        - bothReceived
-      properties:
-        tradeId:
-          type: string
-          format: uuid
-        role:
-          type: string
-          enum: [maker, taker]
-        bothReceived:
-          type: boolean
-
     BatchSubmitOrderRequestItem:
       type: object
+      additionalProperties: false
       required:
-        - marketId
-        - outcomeId
-        - tokenSide
-        - side
-        - price
-        - amountSubunits
-        - clientOrderId
+        - settlementCapability
+      description: >
+        Reference-only batch item. The server loads every immutable order fact
+        from the current durable DCB binding. Possession of the reference is
+        not bearer authority; ownership, route condition, and current
+        authorization are verified.
       properties:
-        clientOrderId:
+        settlementCapability:
+          $ref: '#/components/schemas/SettlementCapabilityReference'
+        walletId:
           type: string
-          description: Client-supplied idempotency key scoped to the authenticated pubkey and condition.
-        marketId:
-          type: string
-          description: Visible market id for this item. Must belong to the route conditionId.
-        outcomeId:
-          type: string
-          description: Primitive outcome segment for marketId.
-        tokenSide:
-          $ref: '#/components/schemas/TokenSide'
-        side:
-          $ref: '#/components/schemas/OrderSide'
-        price:
-          $ref: '#/components/schemas/Probability'
-        amountSubunits:
-          $ref: '#/components/schemas/CollateralSubunits'
-        timeInForce:
-          $ref: '#/components/schemas/TimeInForce'
-          default: GTC
-        expiresAt:
-          type:
-            - string
-            - 'null'
-          format: date-time
-
+          pattern: '^[0-9a-f]{64}$'
+          description: Display-only wallet attribution. It does not authorize custody or settlement.
     BatchSubmitOrdersResponse:
       type: object
+      additionalProperties: false
       required:
-        - results
+        - accepted
+        - rejected
+      description: >
+        Every request item appears exactly once in either `accepted` or
+        `rejected`. Consumers may reconstruct request order by sorting both
+        arrays by `requestIndex`.
       properties:
-        results:
+        accepted:
           type: array
           items:
-            $ref: '#/components/schemas/BatchSubmitOrderResult'
+            $ref: '#/components/schemas/BatchSubmitOrderSuccess'
+        rejected:
+          type: array
+          items:
+            $ref: '#/components/schemas/BatchSubmitOrderFailure'
 
-    BatchSubmitOrderResult:
+    BatchSubmitOrderSuccess:
       type: object
+      additionalProperties: false
+      description: >
+        Accepted admission result with binding-owned order and execution facts.
       required:
         - requestIndex
-        - success
+        - clientOrderId
         - marketId
+        - orderId
         - status
         - remainingAmountSubunits
         - fills
         - baseAsset
         - divisibility
+        - activeSettlementGroup
       properties:
         requestIndex:
           type: integer
           format: int32
           minimum: 0
         clientOrderId:
-          type:
-            - string
-            - 'null'
-        success:
-          type: boolean
+          type: string
         marketId:
           type: string
         orderId:
-          type:
-            - string
-            - 'null'
+          type: string
           format: uuid
         status:
-          type: string
+          $ref: '#/components/schemas/OrderLifecycleStatus'
         remainingAmountSubunits:
           $ref: '#/components/schemas/CollateralSubunits'
         fills:
           type: array
           items:
             $ref: '#/components/schemas/Fill'
-        pendingPubkeySubmissions:
-          type: array
-          items:
-            $ref: '#/components/schemas/PendingPubkeySubmission'
         baseAsset:
           $ref: '#/components/schemas/BaseAsset'
         divisibility:
           type: integer
           format: int32
-          minimum: 2
+          enum: [10000, 1000000]
           description: >
-            Immutable price denominator `D`, server-determined. Enum markets
-            use per-market D: sat markets use D=10000 (0.01% price precision,
-            one whole share = 10000 msat = 10 sats); USD markets use D=1000
-            (0.1% price precision, one whole share = 1000 cents = $10.00).
-        errorCode:
+            Immutable price denominator `D`, server-determined.
+        activeSettlementGroup:
           oneOf:
-            - $ref: '#/components/schemas/BatchSubmitOrderErrorCode'
+            - $ref: '#/components/schemas/SettlementGroupSummary'
             - type: 'null'
-        errorMessage:
-          type:
-            - string
-            - 'null'
+          description: >
+            Current nonterminal settlement group for this order, or null.
+
+    BatchSubmitOrderFailure:
+      type: object
+      additionalProperties: false
+      description: >
+        Per-item admission failure. This variant exposes no binding-owned
+        identity, market, order, amount, fill, asset, divisibility, or
+        free-form dependency details.
+      required:
+        - requestIndex
+        - errorCode
+      properties:
+        requestIndex:
+          type: integer
+          format: int32
+          minimum: 0
+        errorCode:
+          $ref: '#/components/schemas/BatchSubmitOrderErrorCode'
 
     BatchSubmitOrderErrorCode:
       type: string
       enum:
-        - invalidMarket
-        - invalidOutcome
-        - invalidTokenSide
-        - invalidSide
-        - invalidPrice
-        - invalidAmount
-        - invalidTimeInForce
-        - duplicateClientOrderId
-        - unsupportedOrder
+        - capabilityNotFound
+        - capabilityNotCurrent
+        - routeMismatch
+        - authorityUnavailable
+        - participationScoreRequired
+        - marketClosed
         - bookRejected
+      description: >
+        `capabilityNotFound` covers absent, foreign, or digest-mismatched
+        references. `capabilityNotCurrent` covers stale, expired, selected, or
+        otherwise non-current capabilities only when no matching accepted
+        admission exists. An exact authenticated owner, order, reference, and
+        fingerprint replay returns its prior accepted admission result even if
+        the capability later became selected or terminal.
 
     BatchCancelOrdersRequest:
       type: object
@@ -1851,6 +3237,7 @@ components:
         - title
         - description
         - outcomes
+        - baseAsset
       properties:
         title:
           type: string
@@ -1863,7 +3250,8 @@ components:
           items:
             $ref: '#/components/schemas/CreateMarketOutcome'
           minItems: 2
-          description: The outcomes for the market (at least 2).
+          maxItems: 8
+          description: The outcomes for the market (2 through 8).
         outcomeType:
           type: string
           enum: [yesno, categorical, numeric]
@@ -1880,12 +3268,9 @@ components:
             collected after creation through the funding flow; create requests
             should send `0`.
         baseAsset:
-          allOf:
-            - $ref: '#/components/schemas/BaseAsset'
-          default: sat
+          $ref: '#/components/schemas/BaseAsset'
           description: >
-            Immutable market base asset. Accepted values: `sat` and `usd`.
-            `jpy` is reserved.
+            Required immutable product base asset. Must be exact `sat`.
         categoryTags:
           type: array
           items:
@@ -1905,6 +3290,8 @@ components:
       required:
         - conditionId
         - marketsCreated
+        - baseAsset
+        - divisibility
       properties:
         conditionId:
           type: string
@@ -1916,6 +3303,9 @@ components:
           description: >
             List of per-outcome market IDs created
             (format: "{conditionId}-{outcomeName}").
+        baseAsset:
+          $ref: '#/components/schemas/BaseAsset'
+          description: Required immutable product base asset. Always exact `sat`.
         thumbnailUrl:
           oneOf:
             - type: string
@@ -1924,12 +3314,9 @@ components:
         divisibility:
           type: integer
           format: int32
-          minimum: 2
+          enum: [10000, 1000000]
           description: >
-            Immutable price denominator `D`, server-determined. Enum markets
-            use per-market D: sat markets use D=10000 (0.01% price precision,
-            one whole share = 10000 msat = 10 sats); USD markets use D=1000
-            (0.1% price precision, one whole share = 1000 cents = $10.00).
+            Immutable price denominator `D`, server-determined.
 
     MarketPriceHistoryPoint:
       type: object
@@ -2038,35 +3425,6 @@ components:
           items:
             $ref: '#/components/schemas/MarketComment'
 
-    SwapFailureKind:
-      type: string
-      enum:
-        - PartialLockHeld
-        - InsufficientInventory
-        - MintError
-        - EngineRejected
-
-    SwapFailure:
-      type: object
-      required:
-        - kind
-        - detail
-      properties:
-        kind:
-          $ref: '#/components/schemas/SwapFailureKind'
-        refundLocktime:
-          type: integer
-          format: int64
-          description: Unix seconds; present when kind is PartialLockHeld.
-        affectedKeysets:
-          type: array
-          items:
-            type: string
-          description: Primitive outcome/keyset legs affected by a partial lock.
-        detail:
-          type: string
-          description: Local diagnostic detail; redact from telemetry.
-
     LiquidityStateResponse:
       type: object
       required:
@@ -2097,11 +3455,9 @@ components:
           $ref: '#/components/schemas/BaseAsset'
         divisibility:
           type: integer
+          enum: [10000, 1000000]
           description: >
-            Immutable price denominator `D`, server-determined. Enum markets
-            use per-market D: sat markets use D=10000 (0.01% price precision,
-            one whole share = 10000 msat = 10 sats); USD markets use D=1000
-            (0.1% price precision, one whole share = 1000 cents = $10.00).
+            Immutable price denominator `D`, server-determined.
         restingOrderLiquiditySubunits:
           type: integer
           format: int64
@@ -2214,6 +3570,8 @@ components:
       type: object
       required:
         - amountSubunits
+        - unit
+        - divisibility
         - proofsToken
       properties:
         amountSubunits:
@@ -2225,13 +3583,13 @@ components:
             the registered market.
         unit:
           type: string
-          minLength: 1
-          description: Cashu token unit expected for the supplied proofs.
+          enum: [msat]
+          description: Exact Cashu product-collateral unit for the supplied proofs.
         divisibility:
           type: integer
           format: int32
-          minimum: 1
-          description: Market price divisibility associated with the supplied unit.
+          enum: [10000, 1000000]
+          description: Exact market divisibility associated with the supplied proofs.
         proofsToken:
           type: string
           description: >
@@ -2266,7 +3624,6 @@ components:
         - balance
         - purchasedTotal
         - consumedTotal
-        - penaltyTotal
         - matchDebitScore
         - enabled
       properties:
@@ -2277,7 +3634,7 @@ components:
         balance:
           type: integer
           format: int64
-          description: Current participation Score balance. May be negative after soft match/penalty debits.
+          description: Current Participation Score balance. May be negative after a durable fill debit.
         purchasedTotal:
           type: integer
           format: int64
@@ -2287,20 +3644,15 @@ components:
           type: integer
           format: int64
           minimum: 0
-          description: Total Score consumed by successful match debits.
-        penaltyTotal:
-          type: integer
-          format: int64
-          minimum: 0
-          description: Total Score consumed by settlement-negligence penalties.
+          description: Total Score consumed by durable fill debits.
         matchDebitScore:
           type: integer
           format: int64
           minimum: 1
-          description: Configured Score debit charged to the taker when a match lands.
+          description: Configured Score debit charged to each non-exempt participant when a fill is durably reserved. The approved operator service is exempt.
         enabled:
           type: boolean
-          description: Whether match-time Score debit is enabled by the engine.
+          description: Whether durable fill Score debit is enabled by the engine.
 
     PayParticipationScoreEcashRequest:
       type: object
@@ -2493,34 +3845,30 @@ components:
           minimum: 0
           description: >
             Trading volume over the last 24 hours in the market collateral's
-            base subunits: msat for sat markets, cents (`usd`) for USD markets.
-            Drives the `Trending` sort dimension.
+            base subunits (msat). Drives the `Trending` sort dimension.
         volume30dSubunits:
           type: integer
           format: int64
           minimum: 0
           description: >
             Trading volume over the last 30 days in the market collateral's
-            base subunits: msat for sat markets, cents (`usd`) for USD markets.
-            Drives the `Popular` sort dimension.
+            base subunits (msat). Drives the `Popular` sort dimension.
         liquiditySubunits:
           type: integer
           format: int64
           minimum: 0
           description: >
             Total face amount of currently-resting orders across the market's
-            order books, denominated in the market collateral's base subunits:
-            msat for sat markets, cents (`usd`) for USD markets.
+            order books, denominated in product collateral subunits (msat).
         ammBotBudgetSubunits:
           type: integer
           format: int64
           minimum: 0
           description: >
             Static initial budget deposited to the LMSR bot at funding time,
-            denominated in the market collateral's base subunits (msat for sat
-            markets, cents for USD markets). Operator-owned, non-withdrawable,
-            immutable after funding (ADR-024 §2 P46 amendment). Not a live
-            residual and not orderbook depth.
+            denominated in product collateral subunits (msat).
+            Operator-owned, non-withdrawable, and immutable after funding.
+            Not a live residual and not orderbook depth.
         volumeLifetimeSubunits:
           type: integer
           format: int64
@@ -2533,12 +3881,9 @@ components:
         divisibility:
           type: integer
           format: int32
-          minimum: 2
+          enum: [10000, 1000000]
           description: >
-            Immutable price denominator `D`, server-determined. Enum markets
-            use per-market D: sat markets use D=10000 (0.01% price precision,
-            one whole share = 10000 msat = 10 sats); USD markets use D=1000
-            (0.1% price precision, one whole share = 1000 cents = $10.00).
+            Immutable price denominator `D`, server-determined.
         lastTradedPrice:
           type: number
           nullable: true

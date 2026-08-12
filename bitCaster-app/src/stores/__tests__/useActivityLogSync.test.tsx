@@ -2,12 +2,13 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ActivityItem } from "@/types/portfolio";
 
-const { mockResolveNsecIdentity, mockFetchActivityLog, mockPublishActivityLog } =
-  vi.hoisted(() => ({
+const { mockResolveNsecIdentity, mockFetchActivityLog, mockPublishActivityLog } = vi.hoisted(
+  () => ({
     mockResolveNsecIdentity: vi.fn(),
     mockFetchActivityLog: vi.fn(),
     mockPublishActivityLog: vi.fn(),
-  }));
+  }),
+);
 
 vi.mock("@/lib/identityOps", () => ({
   resolveNsecIdentity: (...args: unknown[]) => mockResolveNsecIdentity(...args),
@@ -15,8 +16,7 @@ vi.mock("@/lib/identityOps", () => ({
 
 vi.mock("@/lib/nip78ActivityLog", () => ({
   fetchNip78ActivityLog: (...args: unknown[]) => mockFetchActivityLog(...args),
-  publishNip78ActivityLog: (...args: unknown[]) =>
-    mockPublishActivityLog(...args),
+  publishNip78ActivityLog: (...args: unknown[]) => mockPublishActivityLog(...args),
 }));
 
 import { useActivityLogStore } from "../activity-log";
@@ -28,6 +28,7 @@ function activity(overrides: Partial<ActivityItem> = {}): ActivityItem {
     id: "activity-1",
     type: "deposit",
     amountSats: 1000,
+    baseAsset: "sat",
     date: "2026-05-09T00:00:00.000Z",
     status: "completed",
     txId: null,
@@ -73,17 +74,11 @@ describe("useActivityLogSync", () => {
     renderHook(() => useActivityLogSync());
 
     await waitFor(() => {
-      expect(useActivityLogStore.getState().items.map((i) => i.id)).toEqual([
-        "local",
-        "remote",
-      ]);
+      expect(useActivityLogStore.getState().items.map((i) => i.id)).toEqual(["local", "remote"]);
     });
     await waitFor(
       () => {
-        expect(mockPublishActivityLog).toHaveBeenCalledWith("private-key", [
-          local,
-          remote,
-        ]);
+        expect(mockPublishActivityLog).toHaveBeenCalledWith("private-key", [local, remote]);
       },
       { timeout: 1500 },
     );
@@ -96,16 +91,14 @@ describe("useActivityLogSync", () => {
     renderHook(() => useActivityLogSync());
 
     await waitFor(() => {
-      expect(mockFetchActivityLog).toHaveBeenCalledWith(
-        "public-key",
-        "private-key",
-      );
+      expect(mockFetchActivityLog).toHaveBeenCalledWith("public-key", "private-key");
     });
 
     act(() => {
       useActivityLogStore.getState().addActivity({
         type: "Buy",
         amountSats: 500,
+        baseAsset: "sat",
         status: "completed",
         marketId: "m1",
         marketTitle: "Will BTC hit $150k?",

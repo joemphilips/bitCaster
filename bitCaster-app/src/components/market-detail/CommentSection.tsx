@@ -1,22 +1,16 @@
-import { useRef, useState, useEffect } from 'react'
-import { Heart, ChevronUp, ChevronDown } from 'lucide-react'
-import { useTranslation } from 'react-i18next'
-import type { Comment } from '@/types/market-detail'
-import { formatTimeAgo } from '@/lib/format'
+import { useRef, useState, useEffect } from "react";
+import { Heart, ChevronUp, ChevronDown } from "lucide-react";
+import { useTranslation } from "react-i18next";
+import type { Comment } from "@/types/market-detail";
+import { formatTimeAgo } from "@/lib/format";
 
 interface CommentSectionProps {
-  comments: Comment[]
-  onCommentLike?: (commentId: string) => void
-  onLoadMoreComments?: () => void
+  comments: Comment[];
+  onCommentLike?: (commentId: string) => void;
+  onLoadMoreComments?: () => void;
 }
 
-function CommentRow({
-  comment,
-  onLike,
-}: {
-  comment: Comment
-  onLike?: () => void
-}) {
+function CommentRow({ comment, onLike }: { comment: Comment; onLike?: () => void }) {
   return (
     <div className="py-4 border-b border-slate-100 dark:border-slate-700/50 last:border-0">
       {/* Header */}
@@ -53,16 +47,16 @@ function CommentRow({
           onClick={onLike}
           className={`inline-flex items-center gap-1.5 text-xs transition-colors ${
             comment.isLiked
-              ? 'text-red-500'
-              : 'text-slate-400 dark:text-slate-500 hover:text-red-500'
+              ? "text-red-500"
+              : "text-slate-400 dark:text-slate-500 hover:text-red-500"
           }`}
         >
-          <Heart className={`w-3.5 h-3.5 ${comment.isLiked ? 'fill-current' : ''}`} />
+          <Heart className={`w-3.5 h-3.5 ${comment.isLiked ? "fill-current" : ""}`} />
           {comment.likeCount}
         </button>
       </div>
     </div>
-  )
+  );
 }
 
 export function CommentSection({
@@ -70,43 +64,43 @@ export function CommentSection({
   onCommentLike,
   onLoadMoreComments,
 }: CommentSectionProps) {
-  const { t } = useTranslation()
-  const scrollRef = useRef<HTMLDivElement>(null)
-  const [canScrollUp, setCanScrollUp] = useState(false)
-  const [canScrollDown, setCanScrollDown] = useState(false)
+  const { t } = useTranslation();
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const [canScrollUp, setCanScrollUp] = useState(false);
+  const [canScrollDown, setCanScrollDown] = useState(false);
 
   const checkScroll = () => {
     if (scrollRef.current) {
-      const { scrollTop, scrollHeight, clientHeight } = scrollRef.current
-      setCanScrollUp(scrollTop > 2)
-      setCanScrollDown(scrollTop < scrollHeight - clientHeight - 2)
+      const { scrollTop, scrollHeight, clientHeight } = scrollRef.current;
+      setCanScrollUp(scrollTop > 2);
+      setCanScrollDown(scrollTop < scrollHeight - clientHeight - 2);
     }
-  }
+  };
 
   useEffect(() => {
-    checkScroll()
-    const resizeObserver = new ResizeObserver(checkScroll)
+    checkScroll();
+    const resizeObserver = new ResizeObserver(checkScroll);
     if (scrollRef.current) {
-      resizeObserver.observe(scrollRef.current)
+      resizeObserver.observe(scrollRef.current);
     }
-    return () => resizeObserver.disconnect()
-  }, [comments])
+    return () => resizeObserver.disconnect();
+  }, [comments]);
 
-  const scroll = (direction: 'up' | 'down') => {
+  const scroll = (direction: "up" | "down") => {
     if (scrollRef.current) {
       scrollRef.current.scrollBy({
-        top: direction === 'up' ? -100 : 100,
-        behavior: 'smooth',
-      })
+        top: direction === "up" ? -100 : 100,
+        behavior: "smooth",
+      });
     }
-  }
+  };
 
   return (
     <div className="bg-white dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700">
       {/* Header */}
       <div className="px-4 py-3 border-b border-slate-200 dark:border-slate-700">
         <h3 className="text-sm font-semibold text-slate-900 dark:text-white">
-          {t('comment.title')}
+          {t("comment.title")}
           <span className="ml-1.5 text-xs text-slate-400 dark:text-slate-500 font-normal">
             ({comments.length})
           </span>
@@ -117,7 +111,7 @@ export function CommentSection({
       <div className="relative group/comments">
         {canScrollUp && (
           <button
-            onClick={() => scroll('up')}
+            onClick={() => scroll("up")}
             className="absolute left-1/2 -translate-x-1/2 top-1 z-10 w-7 h-7 bg-white dark:bg-slate-800 shadow-lg rounded-full flex items-center justify-center text-slate-600 dark:text-slate-300 opacity-0 group-hover/comments:opacity-100 transition-opacity border border-slate-200 dark:border-slate-700"
           >
             <ChevronUp className="w-4 h-4" />
@@ -128,11 +122,11 @@ export function CommentSection({
           ref={scrollRef}
           onScroll={checkScroll}
           className="p-4 max-h-96 overflow-y-auto scrollbar-hide"
-          style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}
+          style={{ scrollbarWidth: "none", msOverflowStyle: "none" }}
         >
           {comments.length === 0 ? (
             <p className="text-center text-sm text-slate-400 dark:text-slate-500 py-8">
-              {t('comment.noComments')}
+              {t("comment.noComments")}
             </p>
           ) : (
             <>
@@ -148,7 +142,7 @@ export function CommentSection({
                   onClick={onLoadMoreComments}
                   className="w-full py-3 text-sm text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 font-medium"
                 >
-                  {t('comment.loadMore')}
+                  {t("comment.loadMore")}
                 </button>
               )}
             </>
@@ -157,7 +151,7 @@ export function CommentSection({
 
         {canScrollDown && (
           <button
-            onClick={() => scroll('down')}
+            onClick={() => scroll("down")}
             className="absolute left-1/2 -translate-x-1/2 bottom-1 z-10 w-7 h-7 bg-white dark:bg-slate-800 shadow-lg rounded-full flex items-center justify-center text-slate-600 dark:text-slate-300 opacity-0 group-hover/comments:opacity-100 transition-opacity border border-slate-200 dark:border-slate-700"
           >
             <ChevronDown className="w-4 h-4" />
@@ -165,5 +159,5 @@ export function CommentSection({
         )}
       </div>
     </div>
-  )
+  );
 }

@@ -1,252 +1,666 @@
 #!/usr/bin/env node
 
 import type { Server } from 'node:http'
-import { readFile } from 'node:fs/promises'
-import { profileFromPublicKey, writeProfile } from './profile.ts'
-import { ensureRpcToken } from './rpcAuth.ts'
+import { randomUUID } from 'node:crypto'
+import { constants } from 'node:fs'
+import { open } from 'node:fs/promises'
 import {
-  createDaemonSecretsFromImport,
-  ensureSecrets,
-  readSecrets,
-  writeSecrets,
-} from './secrets.ts'
-import { ensureState, readState } from './state.ts'
+  deriveDurableCustodyScopeId,
+  deriveDurableCustodyWalletId,
+  isLoopbackHttpUrl,
+} from '@bitcaster-market/client-sdk'
+import { assertDaemonProfileStorageComplete, profileDir } from './profile.ts'
+import { createDaemonSecrets, createDaemonSecretsFromImport } from './secrets.ts'
+import { bootstrapFreshDaemonProfile } from './profileBootstrap.ts'
+import type { CtfRangeRecoveryLoop } from './ctfRangeRecoveryLoop.ts'
+import type { NonRetirementCustodyRecoveryLoop } from './startupRecovery.ts'
+import { configureDataDir } from './dataDir.ts'
+import { freezeNativeConfigAtStartup, readNativeConfig } from './nativeConfig.ts'
 
-const [, , command = 'run', ...args] = process.argv
+const MAX_SECRET_HEX_FILE_BYTES = 256
+const SECRET_FILE_READ_CHUNK_BYTES = 128
+
+const { command, args, dataDir } = parseInvocation(process.argv.slice(2))
+configureDataDir(dataDir)
 
 switch (command) {
   case 'init': {
     const initOptions = parseInitOptions(args)
+    const config = readNativeConfig(true).config
     const importedSecrets = await resolveImportedSecrets(initOptions)
-    if (importedSecrets) {
-      if ((await readSecrets()) && !initOptions.force) {
-        throw new Error('daemon secrets already exist; pass --force to replace them')
-      }
-      if (initOptions.force && !(await daemonStateIsEmpty())) {
-        throw new Error(
-          'daemon state is not empty; refusing to replace wallet/Nostr keys',
-        )
-      }
-      await writeSecrets(
-        createDaemonSecretsFromImport({
-          walletSeedHex: importedSecrets.walletSeedHex,
-          nostrSecretKeyHex: importedSecrets.nostrSecretKeyHex,
-        }),
-      )
-    }
-    const secrets = await ensureSecrets()
-    await writeProfile(
-      profileFromPublicKey(secrets.nostrPublicKeyHex, {
-        engineBaseUrl: initOptions.engineUrl,
-        mintUrl: initOptions.mintUrl,
-      }),
-    )
-    await ensureRpcToken()
-    await ensureState()
+    const secrets =
+      importedSecrets === null
+        ? createDaemonSecrets()
+        : createDaemonSecretsFromImport({
+            walletSeedHex: importedSecrets.walletSeedHex,
+            nostrSecretKeyHex: importedSecrets.nostrSecretKeyHex,
+          })
+    await bootstrapFreshDaemonProfile({
+      directory: profileDir(),
+      engineBaseUrl: config.daemon.engineUrl,
+      mintUrl: config.daemon.mintUrl,
+      walletSeedHex: secrets.walletSeedHex,
+      nostrSecretKeyHex: secrets.nostrSecretKeyHex,
+      nostrPublicKeyHex: secrets.nostrPublicKeyHex,
+      passphrase: process.env.BITCASTER_DAEMON_PASSPHRASE || undefined,
+    })
     process.stdout.write('bitcaster-daemon profile initialized\n')
     break
   }
+  case 'recover-seed': {
+    const options = parseRecoverSeedOptions(args)
+    const { runOfflineDaemonSeedRecovery } = await import('./emergencySeedRecovery.ts')
+    const result = await runOfflineDaemonSeedRecovery(options)
+    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`)
+    break
+  }
   case 'run': {
+    const nativeConfig = freezeNativeConfigAtStartup().config
+    await assertDaemonProfileStorageComplete()
     const { acquireDaemonRunLock } = await import('./runLock.ts')
     const { startDaemonServer } = await import('./server.ts')
-    const { CompositeTradeRuntimeConnection, DaemonTradeRuntime } = await import('./tradeRuntime.ts')
-    const { SignalRTradeHubConnection } = await import('./tradeHubConnection.ts')
+    const { SignalROrderLifecycleConnection } = await import('./orderHubConnection.ts')
     const { SignalRMarketHubConnection } = await import('./marketHubConnection.ts')
-    const { DaemonSwapExecutor } = await import('./swapExecutor.ts')
-    const { createRealDaemonSwapOps } = await import('./swapProtocolAdapter.ts')
     const { readProfile } = await import('./profile.ts')
     const { readSecrets } = await import('./secrets.ts')
-    const { recoverPreparedWalletSends } = await import('./walletOps.ts')
     const {
-      ensureState,
-      recordSwapMessage,
-      recordTradeCreated,
-      recordTradeStateChanged,
-    } = await import('./state.ts')
+      recoverPreparedWalletSends,
+      recoverDurableWalletReceives,
+      recoverDurableOutgoingCashuTransfers,
+    } = await import('./walletOps.ts')
+    const { recoverWalletProofConsolidations } = await import('./walletProofConsolidation.ts')
+    const { recoverCompleteSetSplits } = await import('./completeSetConversion.ts')
+    const {
+      composeStartupCustodyRecovery,
+      createCustodyReadinessTracker,
+      createNonRetirementCustodyRecoveryLoop,
+      outgoingCashuRecoveryStatus,
+    } = await import('./startupRecovery.ts')
+    const { DaemonCtfRangeOrderCoordinator } = await import('./ctfRangeOrderCoordinator.ts')
+    const { createCtfRangeRecoveryLoop } = await import('./ctfRangeRecoveryLoop.ts')
+    const { resumeDaemonConditionRetirements, retireResolvedDaemonConditions } =
+      await import('./managedConditionRetirement.ts')
+    const { BitcasterEngineClient } = await import('@bitcaster-market/client-sdk/engineClient')
+    const { signNip98 } = await import('./nostrAuth.ts')
+    const { ensureState } = await import('./state.ts')
     const runLock = await acquireDaemonRunLock()
     const profile = await readProfile()
     const secrets = await readSecrets()
-    let executor: InstanceType<typeof DaemonSwapExecutor> | undefined
-    let runtime: InstanceType<typeof DaemonTradeRuntime> | undefined
-    const tradeHub =
-      profile && secrets
-        ? new SignalRTradeHubConnection({
-            engineBaseUrl: profile.engineBaseUrl,
-            nostrSecretKeyHex: secrets.nostrSecretKeyHex,
-            onTradeCreated: async (payload) => {
-              const swap = await recordTradeCreated(payload)
-              if (swap) {
-                await runtime?.start(await ensureState())
-              }
-              await executor?.onTradeCreated(swap)
-            },
-            onSwapMessageReceived: async (
-              tradeId,
-              messageType,
-              ciphertext,
-            ) => {
-              await executor?.onSwapMessage(
-                await recordSwapMessage(tradeId, messageType, ciphertext),
-              )
-            },
-            onTradeStateChanged: async (tradeId, newState) => {
-              await executor?.onTradeStateChanged(
-                await recordTradeStateChanged(tradeId, newState),
-              )
-            },
-            onPendingPubkeyRequired: async (tradeId, _orderId, _role, marketId, _deadline) => {
-              const { signNip98 } = await import('./nostrAuth.ts')
-              const { conditionIdFromMarketId } = await import('@bitcaster-market/client-sdk/tradeIgnition')
-              const { generateOrderEphemeralKeypair } = await import('./ephemeralKey.ts')
-              const { submitEphemeralPubkey: submitPubkey } = await import('@bitcaster-market/client-sdk/engineClient')
-              const keypair = generateOrderEphemeralKeypair()
-              type AuthorizationRequest = {
-                url: string
-                method: string
-                bodyText?: string
-                payloadHash?: string
-              }
-              await submitPubkey(
-                profile.engineBaseUrl,
-                tradeId,
-                keypair.publicKeyHex,
-                null,
-                fetch,
-                async ({ url, method, bodyText, payloadHash }: AuthorizationRequest) =>
-                  signNip98(
-                    { privateKeyHex: secrets.nostrSecretKeyHex },
-                    url,
-                    method,
-                    bodyText,
-                    payloadHash,
-                  ),
-                conditionIdFromMarketId(marketId),
-              )
-            },
-            onError: (err: Error) => {
-              process.stderr.write(`TradeHub event error: ${err.message}\n`)
-            },
-          })
-        : undefined
-    const marketHub =
-      profile && secrets
-        ? new SignalRMarketHubConnection({
-            engineBaseUrl: profile.engineBaseUrl,
-            nostrSecretKeyHex: secrets.nostrSecretKeyHex,
-            onError: (err: Error) => {
-              process.stderr.write(`MarketHub event error: ${err.message}\n`)
-            },
-          })
-        : undefined
-    const runtimeConnection = tradeHub
-      ? new CompositeTradeRuntimeConnection(tradeHub, marketHub)
-      : undefined
-    executor = tradeHub
-      ? new DaemonSwapExecutor({
-          connection: tradeHub,
-          ops: createRealDaemonSwapOps(),
-        })
-      : undefined
-    runtime = runtimeConnection
-      ? new DaemonTradeRuntime(runtimeConnection, {
-          scheduleResumeActiveSwaps: (delayMs) => {
-            setTimeout(() => {
-              void (async () => {
-                await executor?.resumeActiveSwaps(await ensureState())
-              })().catch((err: unknown) => {
-                const message = err instanceof Error ? err.message : String(err)
-                process.stderr.write(`Swap recovery sweep failed: ${message}\n`)
-              })
-            }, delayMs)
-          },
-        })
-      : undefined
-    try {
-      const server = await startDaemonServer({
-        tradeRuntime: runtime,
-        swapExecutor: executor,
-      })
-      installShutdownHandlers(server, runtime, runLock.release)
-    } catch (err) {
+    if (!profile || !secrets) {
       await runLock.release()
-      throw err
+      throw new Error('daemon profile storage is incomplete')
     }
-    if (secrets) {
-      void recoverPreparedWalletSends(secrets)
-        .then((result) => {
-          if (result.recovered.length > 0) {
-            process.stderr.write(
-              `Recovered wallet operations: ${result.recovered.join(', ')}\n`,
-            )
-          }
-          for (const pending of result.pending) {
-            process.stderr.write(
-              `Wallet operation ${pending.operationId} remains pending: ${pending.error}\n`,
-            )
-          }
-        })
-        .catch((err: unknown) => {
-          const message = err instanceof Error ? err.message : String(err)
-          process.stderr.write(`Wallet recovery sweep failed: ${message}\n`)
-        })
-    }
-    if (executor) {
-      void executor.resumeActiveSwaps(await ensureState()).catch((err: unknown) => {
-        const message = err instanceof Error ? err.message : String(err)
-        process.stderr.write(`Swap recovery sweep failed: ${message}\n`)
+    const walletId = deriveDurableCustodyWalletId(Buffer.from(secrets.walletSeedHex, 'hex'))
+    const scopeId = deriveDurableCustodyScopeId({
+      scopeKind: 'wallet',
+      walletId,
+    })
+    const {
+      claimCustodyScopeLease,
+      renewCustodyScopeLease,
+      releaseCustodyScopeLease,
+      CUSTODY_SCOPE_RENEW_INTERVAL_MS,
+    } = await import('./profileFencing.ts')
+    let fence: Awaited<ReturnType<typeof claimCustodyScopeLease>>
+    try {
+      fence = await claimCustodyScopeLease(profileDir(), {
+        scopeId,
+        incarnationId: randomUUID(),
+        observedAtMs: Date.now(),
       })
+    } catch (error) {
+      await runLock.release()
+      throw error
+    }
+    let renewal: LeaseRenewal | undefined
+    let rangeRecoveryLoop: CtfRangeRecoveryLoop | undefined
+    let nonRetirementRecoveryLoop: NonRetirementCustodyRecoveryLoop | undefined
+    let assetMonitoring: { start(): void; stop(): void } | undefined
+    let assetMonitoringStarting = false
+    let retirementRetryTimer: NodeJS.Timeout | undefined
+    let leaseFailure: Error | undefined
+    let shutdown: ((reason: string, exitCode?: number) => Promise<void>) | undefined
+    const currentFence = () => {
+      if (leaseFailure !== undefined) throw leaseFailure
+      return fence
+    }
+    let resourcesReleased = false
+    const releaseResources = async () => {
+      if (resourcesReleased) return
+      resourcesReleased = true
+      renewal?.stop()
+      rangeRecoveryLoop?.stop()
+      nonRetirementRecoveryLoop?.stop()
+      assetMonitoring?.stop()
+      if (retirementRetryTimer !== undefined) clearTimeout(retirementRetryTimer)
+      try {
+        await releaseCustodyScopeLease(profileDir(), fence, Date.now())
+      } finally {
+        await runLock.release()
+      }
+    }
+    renewal = startLeaseRenewal({
+      intervalMs: CUSTODY_SCOPE_RENEW_INTERVAL_MS,
+      renew: async () => {
+        fence = await renewCustodyScopeLease(profileDir(), currentFence(), Date.now())
+      },
+      onFailure: (error) => {
+        leaseFailure = error
+        process.stderr.write(`custody lease renewal failed: ${error.message}\n`)
+        if (shutdown !== undefined) void shutdown('custody lease loss', 1)
+      },
+    })
+    const retirementEngine = new BitcasterEngineClient({
+      baseUrl: profile.engineBaseUrl,
+      authorization: ({ url, method, bodyText, payloadHash }) =>
+        signNip98({ privateKeyHex: secrets.nostrSecretKeyHex }, url, method, bodyText, payloadHash),
+    })
+    const runAutomaticRetirementScan = async () => {
+      const resumed = await resumeDaemonConditionRetirements({
+        profile,
+        secrets,
+        fence: currentFence(),
+        walletDependencies: { getCustodyFence: currentFence },
+      })
+      if (!nativeConfig.daemon.autoRetireResolvedConditionInventory) return resumed
+      const discovered = await retireResolvedDaemonConditions({
+        profile,
+        secrets,
+        fence: currentFence(),
+        engine: retirementEngine,
+        walletDependencies: { getCustodyFence: currentFence },
+      })
+      return mergeRetirementResults(resumed, discovered)
+    }
+    let wakeManagedConditionRetirements = async () => {
+      await runAutomaticRetirementScan()
+    }
+    const orderHub = new SignalROrderLifecycleConnection({
+      engineBaseUrl: profile.engineBaseUrl,
+      nostrSecretKeyHex: secrets.nostrSecretKeyHex,
+      onOrderLifecycleChanged: () => {
+        rangeRecoveryLoop?.trigger()
+      },
+      onSettlementGroupStateChanged: () => {
+        rangeRecoveryLoop?.trigger()
+      },
+      onReconnected: () => {
+        rangeRecoveryLoop?.trigger()
+      },
+      onError: (err: Error) => {
+        process.stderr.write(`Order lifecycle event error: ${err.message}\n`)
+      },
+    })
+    const marketHub = new SignalRMarketHubConnection({
+      engineBaseUrl: profile.engineBaseUrl,
+      nostrSecretKeyHex: secrets.nostrSecretKeyHex,
+      onMarketStatusChanged: async (status) => {
+        if (
+          status.state !== 'closed' ||
+          !nativeConfig.daemon.autoRetireResolvedConditionInventory
+        ) {
+          return
+        }
+        await wakeManagedConditionRetirements()
+      },
+      onReconnected: async () => {
+        await wakeManagedConditionRetirements()
+      },
+      onError: (err: Error) => {
+        process.stderr.write(`MarketHub event error: ${err.message}\n`)
+      },
+    })
+    try {
+      const rangeOrderCoordinator = new DaemonCtfRangeOrderCoordinator(profileDir(), currentFence, {
+        allowInsecureLoopbackHttp: isLoopbackHttpUrl(profile.mintUrl),
+      })
+      const rangeRecoveryClient = new BitcasterEngineClient({
+        baseUrl: profile.engineBaseUrl,
+        authorization: ({ url, method, bodyText, payloadHash }) =>
+          signNip98(
+            { privateKeyHex: secrets.nostrSecretKeyHex },
+            url,
+            method,
+            bodyText,
+            payloadHash,
+          ),
+      })
+      const logRangeRecovery = (result: {
+        readonly recovered: readonly string[]
+        readonly pending: ReadonlyArray<{ readonly operationId: string; readonly error: string }>
+      }) => {
+        if (result.recovered.length > 0) {
+          process.stderr.write(`Recovered range operations: ${result.recovered.join(', ')}\n`)
+        }
+        for (const pending of result.pending) {
+          process.stderr.write(
+            `Range operation ${pending.operationId} remains pending: ${pending.error}\n`,
+          )
+        }
+      }
+      const recoverRangeOrders = () =>
+        rangeOrderCoordinator.recover(secrets.walletSeedHex, rangeRecoveryClient)
+      const initialRangeRecovery = await recoverRangeOrders()
+      logRangeRecovery(initialRangeRecovery)
+      rangeRecoveryLoop = createCtfRangeRecoveryLoop({
+        recover: recoverRangeOrders,
+        onResult: (result) => {
+          logRangeRecovery(result)
+          void wakeManagedConditionRetirements().catch((error: unknown) => {
+            const message = error instanceof Error ? error.message : String(error)
+            process.stderr.write(`Condition retirement wake failed: ${message}\n`)
+          })
+        },
+        onError: (error: Error) => {
+          process.stderr.write(`Range recovery sweep failed: ${error.message}\n`)
+        },
+      })
+      rangeRecoveryLoop.accept(initialRangeRecovery)
+      const recoverNonRetirementCustody = async () => {
+        const consolidationRecovery = await recoverWalletProofConsolidations({
+          secrets,
+          mutation: () => ({ fence: currentFence(), observedAtMs: Date.now() }),
+        })
+        const walletRecovery = await recoverPreparedWalletSends(secrets, {
+          getCustodyFence: currentFence,
+        })
+        const receiveRecovery = await recoverDurableWalletReceives(secrets, {
+          getCustodyFence: currentFence,
+        })
+        const outgoingRecovery = await recoverDurableOutgoingCashuTransfers(
+          secrets,
+          {
+            getCustodyFence: currentFence,
+          },
+          {
+            client: rangeRecoveryClient,
+            accountSubject: secrets.nostrPublicKeyHex,
+          },
+        )
+        const completeSetRecovery = await recoverCompleteSetSplits({
+          secrets,
+          deps: { getCustodyFence: currentFence },
+        })
+        const recovery = composeStartupCustodyRecovery([
+          consolidationRecovery,
+          walletRecovery,
+          receiveRecovery,
+          outgoingRecovery,
+          completeSetRecovery,
+        ])
+        const outgoingStatus = outgoingCashuRecoveryStatus(outgoingRecovery)
+        const hasMore = receiveRecovery.hasMore || outgoingRecovery.hasMore
+        const blockingPending =
+          consolidationRecovery.pending.length > 0 ||
+          walletRecovery.pending.length > 0 ||
+          receiveRecovery.pending.length > 0 ||
+          receiveRecovery.pendingCount > 0 ||
+          receiveRecovery.hasMore ||
+          completeSetRecovery.pending.length > 0 ||
+          outgoingStatus.blockingPending
+        return {
+          recovery,
+          hasMore,
+          pending:
+            consolidationRecovery.pending.length > 0 ||
+            walletRecovery.pending.length > 0 ||
+            receiveRecovery.pending.length > 0 ||
+            receiveRecovery.pendingCount > 0 ||
+            receiveRecovery.hasMore ||
+            completeSetRecovery.pending.length > 0 ||
+            outgoingStatus.retryPending,
+          blockingPending,
+        }
+      }
+      const initialNonRetirementRecovery = await recoverNonRetirementCustody()
+      const nonRetirementRecovery = initialNonRetirementRecovery.recovery
+      const retirementRecovery = await runAutomaticRetirementScan()
+      const pendingRetirements = retirementRecovery
+        .filter((entry) => entry.error !== null)
+        .map((entry) => ({
+          operationId: `condition-retirement:${entry.conditionId}`,
+          error: entry.error!,
+        }))
+      const startupRecovery = composeStartupCustodyRecovery([
+        nonRetirementRecovery,
+        { recovered: [], pending: pendingRetirements },
+      ])
+      const readiness = createCustodyReadinessTracker({
+        nonRetirementPending: initialNonRetirementRecovery.blockingPending,
+        retryPending: initialNonRetirementRecovery.pending,
+        retirementPending: pendingRetirements.length > 0,
+      })
+      const startAssetMonitoringWhenReady = async () => {
+        if (
+          !nativeConfig.daemon.assetMonitoringEnabled ||
+          !readiness.isReady() ||
+          assetMonitoring ||
+          assetMonitoringStarting
+        )
+          return
+        assetMonitoringStarting = true
+        try {
+          const { createDaemonAssetMonitoring } = await import('./assetMonitoring.ts')
+          assetMonitoring = createDaemonAssetMonitoring({
+            directory: profileDir(),
+            scopeId,
+            walletId,
+            engineBaseUrl: profile.engineBaseUrl,
+            remote: retirementEngine,
+          })
+          assetMonitoring.start()
+        } finally {
+          assetMonitoringStarting = false
+        }
+      }
+      process.stderr.write(
+        `Startup custody recovery: recovered=${startupRecovery.recoveredCount} ` +
+          `blockingPending=${initialNonRetirementRecovery.blockingPending} ` +
+          `retryPending=${initialNonRetirementRecovery.pending} ` +
+          `hasMore=${initialNonRetirementRecovery.hasMore} ` +
+          `retirementPending=${pendingRetirements.length > 0}\n`,
+      )
+      let orderHubStarted = false
+      const startOrderHubWhenReady = async () => {
+        if (!readiness.isReady() || orderHubStarted) return
+        orderHubStarted = true
+        try {
+          const state = await ensureState()
+          for (const order of Object.values(state.orders)) {
+            await orderHub.trackOrder(order.marketId, order.orderId)
+          }
+          await orderHub.start()
+          if (nativeConfig.daemon.autoRetireResolvedConditionInventory && marketHub) {
+            await trackManagedConditionMarkets(marketHub, state)
+            await marketHub.start()
+          }
+        } catch (error) {
+          orderHubStarted = false
+          throw error
+        }
+      }
+      const markCustodyReady = () => {
+        void startAssetMonitoringWhenReady().catch((err: unknown) => {
+          const message = err instanceof Error ? err.message : String(err)
+          process.stderr.write(`asset-monitoring startup failed: ${message}\n`)
+        })
+        void startOrderHubWhenReady().catch((err: unknown) => {
+          const message = err instanceof Error ? err.message : String(err)
+          process.stderr.write(`bitcaster-daemon order lifecycle start failed: ${message}\n`)
+        })
+      }
+      const runAutomaticNonRetirementRecovery = async () => {
+        const generation = readiness.beginAutomaticNonRetirementScan()
+        try {
+          const result = await recoverNonRetirementCustody()
+          if (
+            !readiness.completeAutomaticNonRetirementScan(
+              generation,
+              result.blockingPending,
+              result.pending,
+            )
+          ) {
+            return { pending: readiness.isRetryPending() }
+          }
+          process.stderr.write(
+            `Automatic non-retirement custody recovery: recovered=${result.recovery.recoveredCount} ` +
+              `blockingPending=${result.blockingPending} retryPending=${result.pending} ` +
+              `hasMore=${result.hasMore}\n`,
+          )
+          if (readiness.isReady()) markCustodyReady()
+          return { pending: result.pending }
+        } catch (error) {
+          const applied = readiness.completeAutomaticNonRetirementScan(generation, true, true)
+          if (applied) {
+            process.stderr.write('Automatic non-retirement custody recovery remains pending\n')
+          }
+          throw error
+        }
+      }
+      nonRetirementRecoveryLoop = createNonRetirementCustodyRecoveryLoop({
+        recover: runAutomaticNonRetirementRecovery,
+        onResult: () => undefined,
+        onError: (error: Error) => {
+          process.stderr.write(
+            `Automatic non-retirement custody recovery failed: ${error.message}\n`,
+          )
+        },
+        retryAfterError: () => readiness.isRetryPending(),
+      })
+      nonRetirementRecoveryLoop.accept({ pending: initialNonRetirementRecovery.pending })
+      const scheduleRetirementRetry = () => {
+        if (retirementRetryTimer !== undefined) return
+        retirementRetryTimer = setTimeout(() => {
+          retirementRetryTimer = undefined
+          void wakeManagedConditionRetirements().catch((error: unknown) => {
+            const message = error instanceof Error ? error.message : String(error)
+            process.stderr.write(`Condition retirement retry failed: ${message}\n`)
+          })
+        }, 30_000)
+        retirementRetryTimer.unref()
+      }
+      wakeManagedConditionRetirements = async () => {
+        const generation = readiness.beginAutomaticRetirementScan()
+        try {
+          const retirements = await runAutomaticRetirementScan()
+          const pending = retirements.filter((entry) => entry.error !== null)
+          if (!readiness.completeAutomaticRetirementScan(generation, pending.length > 0)) return
+          if (pending.length > 0) {
+            for (const entry of pending) {
+              process.stderr.write(
+                `Condition retirement ${entry.conditionId} remains pending: ${entry.error}\n`,
+              )
+            }
+            scheduleRetirementRetry()
+            return
+          }
+          if (retirementRetryTimer !== undefined) {
+            clearTimeout(retirementRetryTimer)
+            retirementRetryTimer = undefined
+          }
+          if (readiness.isReady()) markCustodyReady()
+        } catch (error) {
+          if (readiness.completeAutomaticRetirementScan(generation, true)) scheduleRetirementRetry()
+          throw error
+        }
+      }
+      if (pendingRetirements.length > 0) scheduleRetirementRetry()
+      currentFence()
+      const server = await startDaemonServer({
+        trackOwnedOrder: async (marketId, orderId) => {
+          await orderHub.trackOrder(marketId, orderId)
+          await startOrderHubWhenReady()
+        },
+        prepareSettlementCapability: (input, client) =>
+          rangeOrderCoordinator.prepare(input, client),
+        triggerSettlementRecovery: () => rangeRecoveryLoop?.trigger(),
+        triggerCustodyRecovery: () => nonRetirementRecoveryLoop?.trigger(),
+        getCustodyFence: currentFence,
+        isCustodyReady: () => readiness.isReady(),
+        markCustodyReady,
+        onManualCustodyRecoveryStatus: (status) => {
+          readiness.updateManualRecovery(status)
+          nonRetirementRecoveryLoop?.accept({ pending: status.retryPending })
+          if (readiness.isReady()) markCustodyReady()
+        },
+        onOutcomeProofsReceived: async (conditionId, outcomeSetId) => {
+          if (!nativeConfig.daemon.autoRetireResolvedConditionInventory || !marketHub) return
+          try {
+            await trackManagedConditionMarket(marketHub, conditionId, outcomeSetId)
+            await wakeManagedConditionRetirements()
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error)
+            process.stderr.write(`Condition retirement rescan failed: ${message}\n`)
+          }
+        },
+      })
+      try {
+        currentFence()
+        shutdown = installShutdownHandlers(
+          server,
+          {
+            stop: async () => {
+              await Promise.all([orderHub.stop(), marketHub.stop()])
+            },
+          },
+          releaseResources,
+        )
+      } catch (error) {
+        await closeServer(server)
+        throw error
+      }
+      void startOrderHubWhenReady().catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err)
+        process.stderr.write(
+          `bitcaster-daemon order lifecycle start failed; RPC will remain available: ${message}\n`,
+        )
+      })
+      if (readiness.isReady()) markCustodyReady()
+    } catch (err) {
+      await releaseResources().catch(() => undefined)
+      throw err
     }
     break
   }
   default:
     process.stderr.write(`Unknown command: ${command}\n`)
     process.stderr.write(`Usage:
-  bitcaster-daemon init [--wallet-seed-hex <hex>|--wallet-seed-hex-file <path>]
-                         [--nostr-secret-key-hex <hex>|--nostr-secret-key-hex-file <path>]
-                         [--force]
-                         [--engine-url <url>] [--mint-url <url>]
-  bitcaster-daemon run
+  bitcaster-daemon [--datadir <path>] init [--wallet-seed-hex-file <path>]
+                         [--nostr-secret-key-hex-file <path>]
+  bitcaster-daemon [--datadir <path>] recover-seed --wallet-seed-hex-file <path>
+                         --recovery-id <id> --mint <url> --unit <sat|msat>
+                         --acknowledge-seed-disclosure
+  bitcaster-daemon [--datadir <path>] run
 `)
     process.exitCode = 1
 }
 
+function parseRecoverSeedOptions(args: readonly string[]): {
+  recoveryId: string
+  mintUrl: string
+  unit: 'sat' | 'msat'
+  walletSeedHexFile: string
+  disclosureAcknowledged: true
+} {
+  let recoveryId: string | undefined
+  let mintUrl: string | undefined
+  let unit: 'sat' | 'msat' | undefined
+  let walletSeedHexFile: string | undefined
+  let disclosureAcknowledged = false
+  for (let index = 0; index < args.length; index += 1) {
+    const option = args[index]
+    if (option === '--acknowledge-seed-disclosure') {
+      disclosureAcknowledged = true
+      continue
+    }
+    const value = requiredArg(args[++index], option ?? 'recover-seed option')
+    if (option === '--recovery-id') recoveryId = value
+    else if (option === '--mint') mintUrl = value
+    else if (option === '--unit' && (value === 'sat' || value === 'msat')) unit = value
+    else if (option === '--wallet-seed-hex-file') walletSeedHexFile = value
+    else throw new Error(`Unknown recover-seed option: ${option}`)
+  }
+  if (!disclosureAcknowledged) {
+    throw new Error('recover-seed requires --acknowledge-seed-disclosure')
+  }
+  if (unit === undefined) throw new Error('recover-seed unit must be sat or msat')
+  return {
+    recoveryId: requiredArg(recoveryId, '--recovery-id'),
+    mintUrl: requiredArg(mintUrl, '--mint'),
+    unit,
+    walletSeedHexFile: requiredArg(walletSeedHexFile, '--wallet-seed-hex-file'),
+    disclosureAcknowledged: true,
+  }
+}
+
+function parseInvocation(argv: string[]): {
+  command: string
+  args: string[]
+  dataDir?: string
+} {
+  const args = [...argv]
+  let dataDir: string | undefined
+  if (args[0]?.startsWith('--datadir=')) {
+    dataDir = requiredArg(args[0].slice('--datadir='.length), '--datadir')
+    args.splice(0, 1)
+  } else if (args[0] === '--datadir') {
+    dataDir = requiredArg(args[1], '--datadir')
+    args.splice(0, 2)
+  }
+  return {
+    command: args.shift() ?? 'run',
+    args,
+    ...(dataDir === undefined ? {} : { dataDir }),
+  }
+}
+
+function mergeRetirementResults(
+  ...groups: ReadonlyArray<ReadonlyArray<{ conditionId: string; error: string | null }>>
+): Array<{ conditionId: string; error: string | null }> {
+  const results = new Map<string, string | null>()
+  for (const group of groups) {
+    for (const entry of group) {
+      results.set(entry.conditionId, entry.error)
+    }
+  }
+  return [...results]
+    .map(([conditionId, error]) => ({ conditionId, error }))
+    .sort((left, right) => left.conditionId.localeCompare(right.conditionId))
+}
+
+async function trackManagedConditionMarkets(
+  hub: { trackMarket(marketId: string): Promise<void> },
+  state: {
+    readonly wallet: {
+      readonly proofs: ReadonlyArray<{
+        readonly asset:
+          | { readonly kind: 'sats' }
+          | {
+              readonly kind: 'Outcome'
+              readonly conditionId: string
+              readonly outcomeSetId: string
+            }
+      }>
+    }
+  },
+): Promise<void> {
+  const marketIds = new Set<string>()
+  for (const proof of state.wallet.proofs) {
+    if (proof.asset.kind !== 'Outcome') continue
+    for (const outcome of proof.asset.outcomeSetId.split('|')) {
+      if (outcome.length > 0) marketIds.add(`${proof.asset.conditionId}-${outcome}`)
+    }
+  }
+  for (const marketId of [...marketIds].sort()) await hub.trackMarket(marketId)
+}
+
+async function trackManagedConditionMarket(
+  hub: { trackMarket(marketId: string): Promise<void> },
+  conditionId: string,
+  outcomeSetId: string,
+): Promise<void> {
+  for (const outcome of outcomeSetId
+    .split('|')
+    .filter((value) => value.length > 0)
+    .sort()) {
+    await hub.trackMarket(`${conditionId}-${outcome}`)
+  }
+}
+
 function parseInitOptions(args: string[]): {
-  walletSeedHex?: string
-  nostrSecretKeyHex?: string
   walletSeedHexFile?: string
   nostrSecretKeyHexFile?: string
-  engineUrl?: string
-  mintUrl?: string
-  force: boolean
 } {
   const options: {
-    walletSeedHex?: string
-    nostrSecretKeyHex?: string
     walletSeedHexFile?: string
     nostrSecretKeyHexFile?: string
-    engineUrl?: string
-    mintUrl?: string
-    force: boolean
-  } = { force: false }
+  } = {}
   for (let i = 0; i < args.length; i += 1) {
     const arg = args[i]
-    if (arg === '--wallet-seed-hex') {
-      options.walletSeedHex = requiredArg(args[++i], '--wallet-seed-hex')
-    } else if (arg === '--wallet-seed-hex-file') {
+    if (arg === '--wallet-seed-hex-file') {
       options.walletSeedHexFile = requiredArg(args[++i], '--wallet-seed-hex-file')
-    } else if (arg === '--nostr-secret-key-hex') {
-      options.nostrSecretKeyHex = requiredArg(args[++i], '--nostr-secret-key-hex')
     } else if (arg === '--nostr-secret-key-hex-file') {
-      options.nostrSecretKeyHexFile = requiredArg(
-        args[++i],
-        '--nostr-secret-key-hex-file',
-      )
-    } else if (arg === '--engine-url') {
-      options.engineUrl = requiredArg(args[++i], '--engine-url')
-    } else if (arg === '--mint-url') {
-      options.mintUrl = requiredArg(args[++i], '--mint-url')
-    } else if (arg === '--force') {
-      options.force = true
+      options.nostrSecretKeyHexFile = requiredArg(args[++i], '--nostr-secret-key-hex-file')
     } else {
       throw new Error(`Unknown init option: ${arg}`)
     }
@@ -255,47 +669,66 @@ function parseInitOptions(args: string[]): {
 }
 
 async function resolveImportedSecrets(options: {
-  walletSeedHex?: string
-  nostrSecretKeyHex?: string
   walletSeedHexFile?: string
   nostrSecretKeyHexFile?: string
 }): Promise<{ walletSeedHex: string; nostrSecretKeyHex: string } | null> {
-  if (options.walletSeedHex && options.walletSeedHexFile) {
-    throw new Error(
-      '--wallet-seed-hex and --wallet-seed-hex-file are mutually exclusive',
-    )
-  }
-  if (options.nostrSecretKeyHex && options.nostrSecretKeyHexFile) {
-    throw new Error(
-      '--nostr-secret-key-hex and --nostr-secret-key-hex-file are mutually exclusive',
-    )
-  }
-  const walletSeedHex =
-    options.walletSeedHex ??
-    (options.walletSeedHexFile
-      ? await readSecretHexFile(options.walletSeedHexFile, '--wallet-seed-hex-file')
-      : undefined)
-  const nostrSecretKeyHex =
-    options.nostrSecretKeyHex ??
-    (options.nostrSecretKeyHexFile
-      ? await readSecretHexFile(
-          options.nostrSecretKeyHexFile,
-          '--nostr-secret-key-hex-file',
-        )
-      : undefined)
+  const walletSeedHex = options.walletSeedHexFile
+    ? await readSecretHexFile(options.walletSeedHexFile, '--wallet-seed-hex-file')
+    : undefined
+  const nostrSecretKeyHex = options.nostrSecretKeyHexFile
+    ? await readSecretHexFile(options.nostrSecretKeyHexFile, '--nostr-secret-key-hex-file')
+    : undefined
   if (!walletSeedHex && !nostrSecretKeyHex) return null
   if (!walletSeedHex || !nostrSecretKeyHex) {
     throw new Error(
-      '--wallet-seed-hex/--wallet-seed-hex-file and --nostr-secret-key-hex/--nostr-secret-key-hex-file must be supplied together',
+      '--wallet-seed-hex-file and --nostr-secret-key-hex-file must be supplied together',
     )
   }
   return { walletSeedHex, nostrSecretKeyHex }
 }
 
 async function readSecretHexFile(path: string, option: string): Promise<string> {
-  const value = (await readFile(path, 'utf8')).trim()
-  if (!value) throw new Error(`${option} was empty`)
-  return value
+  if (process.platform === 'win32') {
+    throw new Error(
+      `${option} is not supported on Windows until ACL and reparse-point validation is available`,
+    )
+  }
+  const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW)
+  try {
+    const metadata = await file.stat()
+    if (!metadata.isFile()) throw new Error(`${option} must name a regular file`)
+    if ((metadata.mode & 0o077) !== 0) {
+      throw new Error(`${option} must not be accessible by group or other users`)
+    }
+    if (metadata.size > MAX_SECRET_HEX_FILE_BYTES) {
+      throw new Error(`${option} exceeds ${MAX_SECRET_HEX_FILE_BYTES} bytes`)
+    }
+    const value = (await readBoundedSecretFile(file, option)).toString('utf8').trim()
+    if (!value) throw new Error(`${option} was empty`)
+    return value
+  } finally {
+    await file.close()
+  }
+}
+
+async function readBoundedSecretFile(
+  file: Awaited<ReturnType<typeof open>>,
+  option: string,
+): Promise<Buffer> {
+  const chunks: Buffer[] = []
+  let total = 0
+  while (total <= MAX_SECRET_HEX_FILE_BYTES) {
+    const remaining = MAX_SECRET_HEX_FILE_BYTES + 1 - total
+    const buffer = Buffer.allocUnsafe(Math.min(SECRET_FILE_READ_CHUNK_BYTES, remaining))
+    const { bytesRead } = await file.read(buffer, 0, buffer.length, total)
+    if (bytesRead === 0) break
+    chunks.push(buffer.subarray(0, bytesRead))
+    total += bytesRead
+  }
+  if (total > MAX_SECRET_HEX_FILE_BYTES) {
+    throw new Error(`${option} exceeds ${MAX_SECRET_HEX_FILE_BYTES} bytes`)
+  }
+  return Buffer.concat(chunks, total)
 }
 
 function requiredArg(value: string | undefined, option: string): string {
@@ -303,33 +736,21 @@ function requiredArg(value: string | undefined, option: string): string {
   throw new Error(`Missing value for ${option}`)
 }
 
-async function daemonStateIsEmpty(): Promise<boolean> {
-  const state = await readState()
-  if (!state) return true
-  return (
-    state.wallet.proofs.length === 0 &&
-    Object.keys(state.wallet.keysetCounters).length === 0 &&
-    Object.keys(state.proofOperations).length === 0 &&
-    Object.keys(state.orders).length === 0 &&
-    Object.keys(state.swaps).length === 0
-  )
-}
-
 function installShutdownHandlers(
   server: Server,
   runtime: { stop(): Promise<void> } | undefined,
   releaseRunLock: () => Promise<void>,
-): void {
+): (reason: string, exitCode?: number) => Promise<void> {
   let shuttingDown = false
-  const shutdown = async (signal: NodeJS.Signals) => {
+  const shutdown = async (reason: string, exitCode = 0) => {
     if (shuttingDown) return
     shuttingDown = true
-    process.stderr.write(`bitcaster-daemon received ${signal}, shutting down\n`)
+    process.stderr.write(`bitcaster-daemon received ${reason}, shutting down\n`)
     try {
       await closeServer(server)
       await runtime?.stop()
       await releaseRunLock()
-      process.exit(0)
+      process.exit(exitCode)
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       process.stderr.write(`bitcaster-daemon shutdown failed: ${message}\n`)
@@ -338,6 +759,40 @@ function installShutdownHandlers(
   }
   process.once('SIGINT', () => void shutdown('SIGINT'))
   process.once('SIGTERM', () => void shutdown('SIGTERM'))
+  return shutdown
+}
+
+interface LeaseRenewal {
+  stop(): void
+}
+
+function startLeaseRenewal(input: {
+  readonly intervalMs: number
+  readonly renew: () => Promise<void>
+  readonly onFailure: (error: Error) => void
+}): LeaseRenewal {
+  let stopped = false
+  let timer: NodeJS.Timeout | undefined
+  const schedule = () => {
+    if (stopped) return
+    timer = setTimeout(() => void tick(), input.intervalMs)
+    timer.unref()
+  }
+  const tick = async () => {
+    try {
+      await input.renew()
+      schedule()
+    } catch (error) {
+      input.onFailure(error instanceof Error ? error : new Error(String(error)))
+    }
+  }
+  schedule()
+  return {
+    stop: () => {
+      stopped = true
+      if (timer !== undefined) clearTimeout(timer)
+    },
+  }
 }
 
 function closeServer(server: Server): Promise<void> {

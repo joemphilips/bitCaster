@@ -8,4 +8,4 @@ export {
   parseOutcomeSetId,
   resolveOutcomeSets,
   type ResolvedOutcomeSets,
-} from '@bitcaster/client-sdk/outcomeSets'
+} from "@bitcaster/client-sdk/outcomeSets";

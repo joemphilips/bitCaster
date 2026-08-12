@@ -1,11 +1,11 @@
-import { Loader2, X } from 'lucide-react'
+import { Loader2, X } from "lucide-react";
 
 interface NostrAccountChooserModalProps {
-  isCreating?: boolean
-  error?: string | null
-  onUseExisting: () => void
-  onCreateImplicit: () => void
-  onClose: () => void
+  isCreating?: boolean;
+  error?: string | null;
+  onUseExisting: () => void;
+  onCreateImplicit: () => void;
+  onClose: () => void;
 }
 
 export function NostrAccountChooserModal({
@@ -25,7 +25,8 @@ export function NostrAccountChooserModal({
               Do you have a Nostr account?
             </h2>
             <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
-              bitCaster signs orders with Nostr. Use an existing account or create a local one for this browser.
+              bitCaster signs orders with Nostr. Use an existing account or create a local one for
+              this browser.
             </p>
           </div>
           <button
@@ -61,5 +62,5 @@ export function NostrAccountChooserModal({
         </div>
       </div>
     </div>
-  )
+  );
 }

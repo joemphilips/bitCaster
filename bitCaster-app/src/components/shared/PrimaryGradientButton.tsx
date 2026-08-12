@@ -1,21 +1,21 @@
-import type { ComponentType, MouseEventHandler, ReactNode } from 'react'
-import type { LucideProps } from 'lucide-react'
+import type { ComponentType, MouseEventHandler, ReactNode } from "react";
+import type { LucideProps } from "lucide-react";
 
 interface PrimaryGradientButtonProps {
-  onClick?: MouseEventHandler<HTMLButtonElement>
+  onClick?: MouseEventHandler<HTMLButtonElement>;
   /**
    * Lucide icon rendered at 20px on the left. Passed as a component
    * rather than an element so the button controls sizing / position.
    */
-  icon: ComponentType<LucideProps>
-  children: ReactNode
-  disabled?: boolean
-  type?: 'button' | 'submit'
+  icon: ComponentType<LucideProps>;
+  children: ReactNode;
+  disabled?: boolean;
+  type?: "button" | "submit";
   /**
    * Forwarded so the button is addressable in E2E tests that scope by
    * role+name. Defaults to the button's text content otherwise.
    */
-  ariaLabel?: string
+  ariaLabel?: string;
 }
 
 /**
@@ -30,7 +30,7 @@ export function PrimaryGradientButton({
   icon: Icon,
   children,
   disabled,
-  type = 'button',
+  type = "button",
   ariaLabel,
 }: PrimaryGradientButtonProps) {
   return (
@@ -45,5 +45,5 @@ export function PrimaryGradientButton({
       <Icon className="relative h-5 w-5" />
       <span className="relative">{children}</span>
     </button>
-  )
+  );
 }

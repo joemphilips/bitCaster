@@ -4,9 +4,7 @@
   "tools": {
     "nswag.consolecore": {
       "version": "14.6.3",
-      "commands": [
-        "nswag"
-      ],
+      "commands": ["nswag"],
       "rollForward": false
     }
   }

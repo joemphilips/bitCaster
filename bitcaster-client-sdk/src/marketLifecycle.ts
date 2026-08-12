@@ -3,6 +3,12 @@ import type {
   EngineAuthorizationRequest,
   EngineFetch,
 } from './engineClient.ts'
+import {
+  parseMarketBaseAsset,
+  parseMarketDivisibility,
+  type MarketBaseAsset,
+  type MarketDivisibility,
+} from './marketUnits.ts'
 
 export interface CreateMarketOutcome {
   name: string
@@ -15,7 +21,7 @@ export interface CreateMarketRequest {
   outcomes: CreateMarketOutcome[]
   outcomeType?: 'yesno' | 'categorical' | 'numeric'
   liquiditySats?: number
-  baseAsset?: 'sat' | 'usd' | 'jpy'
+  baseAsset: MarketBaseAsset
   categoryTags?: string[]
   oracleAnnouncementHex?: string | null
 }
@@ -23,8 +29,9 @@ export interface CreateMarketRequest {
 export interface CreateMarketResponse {
   conditionId: string
   marketsCreated: string[]
+  baseAsset: MarketBaseAsset
   thumbnailUrl?: string | null
-  divisibility?: number
+  divisibility: MarketDivisibility
 }
 
 export interface OracleNostrEvent {
@@ -46,7 +53,9 @@ export function isKind89NostrEvent(value: unknown): value is OracleNostrEvent {
     typeof event.sig === 'string' &&
     event.kind === 89 &&
     Array.isArray(event.tags) &&
-    event.tags.every((tag) => Array.isArray(tag) && tag.every((item) => typeof item === 'string')) &&
+    event.tags.every(
+      (tag) => Array.isArray(tag) && tag.every((item) => typeof item === 'string'),
+    ) &&
     typeof event.content === 'string' &&
     typeof event.createdAt === 'number'
   )
@@ -74,9 +83,7 @@ export interface MarketThumbnailBytes {
 interface EngineClientInternals {
   baseUrl: string
   fetchImpl: EngineFetch
-  authorization?: (
-    request: EngineAuthorizationRequest,
-  ) => string | Promise<string>
+  authorization?: (request: EngineAuthorizationRequest) => string | Promise<string>
 }
 
 export async function createMarketViaEngine(
@@ -105,8 +112,7 @@ export async function createMarketViaEngine(
   // same bytes with the same Content-Type so server-side SHA-256 matches.
   const serialized = new Request(url, { method: 'POST', body: formData })
   const bodyBytes = await serialized.arrayBuffer()
-  const contentType =
-    serialized.headers.get('Content-Type') ?? 'multipart/form-data'
+  const contentType = serialized.headers.get('Content-Type') ?? 'multipart/form-data'
   const payloadHash = await sha256Hex(bodyBytes)
   const headers: Record<string, string> = { 'Content-Type': contentType }
   if (authorization) {
@@ -123,11 +129,52 @@ export async function createMarketViaEngine(
     body: bodyBytes,
   })
   if (!response.ok) {
-    throw new Error(
-      `[Matching Engine] Failed to create market: ${await readErrorDetail(response)}`,
-    )
+    throw new Error(`[Matching Engine] Failed to create market: ${await readErrorDetail(response)}`)
   }
-  return (await response.json()) as CreateMarketResponse
+  return parseCreateMarketResponse(await response.json())
+}
+
+export function parseCreateMarketResponse(value: unknown): CreateMarketResponse {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('create-market response had an invalid shape')
+  }
+  const response = value as Record<string, unknown>
+  const conditionId =
+    typeof response.conditionId === 'string' && response.conditionId.length > 0
+      ? response.conditionId
+      : null
+  const rawMarketsCreated = response.marketsCreated
+  const rawMarketCount = Array.isArray(rawMarketsCreated) ? rawMarketsCreated.length : null
+  const marketsCreated = Array.isArray(rawMarketsCreated)
+    ? rawMarketsCreated.filter(
+        (marketId): marketId is string => typeof marketId === 'string' && marketId.length > 0,
+      )
+    : null
+  const baseAsset = parseMarketBaseAsset(response.baseAsset)
+  const divisibility = parseMarketDivisibility(response.divisibility)
+  if (
+    !conditionId ||
+    !marketsCreated ||
+    marketsCreated.length !== rawMarketCount ||
+    !baseAsset ||
+    !divisibility
+  ) {
+    throw new Error('create-market response omitted canonical product metadata')
+  }
+  const thumbnailUrl =
+    response.thumbnailUrl === null || typeof response.thumbnailUrl === 'string'
+      ? response.thumbnailUrl
+      : undefined
+  if (response.thumbnailUrl !== undefined && thumbnailUrl === undefined) {
+    throw new Error('create-market response had an invalid thumbnail URL')
+  }
+  return {
+    conditionId,
+    marketsCreated,
+    baseAsset,
+    divisibility,
+    ...(thumbnailUrl !== undefined ? { thumbnailUrl } : {}),
+  }
 }
 
 export async function submitOracleAttestationViaEngine(
@@ -142,9 +189,7 @@ export async function submitOracleAttestationViaEngine(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(event),
   })
-  const body = (await response
-    .json()
-    .catch(() => null)) as OracleAttestationResponse | null
+  const body = (await response.json().catch(() => null)) as OracleAttestationResponse | null
   if (!response.ok) {
     throw new Error(
       body?.result
@@ -156,17 +201,13 @@ export async function submitOracleAttestationViaEngine(
   return body
 }
 
-function getEngineClientInternals(
-  client: BitcasterEngineClient,
-): EngineClientInternals {
+function getEngineClientInternals(client: BitcasterEngineClient): EngineClientInternals {
   return client as unknown as EngineClientInternals
 }
 
 async function sha256Hex(data: BufferSource): Promise<string> {
   const hash = await crypto.subtle.digest('SHA-256', data)
-  return [...new Uint8Array(hash)]
-    .map((byte) => byte.toString(16).padStart(2, '0'))
-    .join('')
+  return [...new Uint8Array(hash)].map((byte) => byte.toString(16).padStart(2, '0')).join('')
 }
 
 async function readErrorDetail(response: Response): Promise<string> {
@@ -174,9 +215,8 @@ async function readErrorDetail(response: Response): Promise<string> {
   try {
     const body = await response.json()
     const candidate = readProblemDetail(body)
-    detail = typeof candidate === 'string'
-      ? candidate.slice(0, 500)
-      : String(candidate).slice(0, 500)
+    detail =
+      typeof candidate === 'string' ? candidate.slice(0, 500) : String(candidate).slice(0, 500)
   } catch {
     detail = response.statusText || detail
   }

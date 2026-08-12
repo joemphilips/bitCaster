@@ -45,22 +45,19 @@ if (mode === 'sats') {
     collateralAmountForUnit('msat', amountMinorUnits),
   )
   printToken(mintUrl, 'msat', msats)
-} else if (mode === 'usd') {
-  const usd = await mintRegularProofs(mintUrl, 'usd', amountMinorUnits)
-  printToken(mintUrl, 'usd', usd)
-} else if (mode === 'outcome' || mode === 'outcome-msats') {
+} else if (mode === 'outcome-msats') {
   if (!conditionId || !outcomeSetId) usage()
-  const unit = mode === 'outcome-msats' ? 'msat' : 'sat'
+  const unit = 'msat'
   const collateralAmount = collateralAmountForUnit(unit, amountMinorUnits)
   const sats = await mintRegularProofsForCtfSplit(mintUrl, unit, collateralAmount)
   const condition = await getCtfCondition(mintUrl, conditionId)
-  const selection = selectMintRootPartitionForOutcome(condition, outcomeSetId, unit)
+  const selection = selectMintRootPartitionForOutcome(condition, outcomeSetId)
   const split = await splitRootCompleteSet(
     new CashuMintCtfSplitTransport(mintUrl),
     conditionId,
     sats,
     collateralAmount,
-    {},
+    { baseAsset: 'sat' },
     selection,
   )
   const selectedKey = resolveSplitOutcomeSetKey(split, outcomeSetId)
@@ -75,7 +72,6 @@ if (mode === 'sats') {
 
 function collateralAmountForUnit(unit: CollateralTokenUnit, amountMinorUnits: number): number {
   if (unit === 'sat') return amountMinorUnits
-  if (unit === 'usd') return amountMinorUnits
   const amountMsats = amountMinorUnits * msatsPerSat
   if (!Number.isSafeInteger(amountMsats)) {
     throw new Error(`amount is too large to scale from sats to msat: ${amountMinorUnits}`)
@@ -128,9 +124,12 @@ async function mintRegularProofsForCtfSplit(
   return wallet.mintProofs(grossAmountSats, quote.quote)
 }
 
-type CollateralTokenUnit = 'sat' | 'msat' | 'usd'
+type CollateralTokenUnit = 'sat' | 'msat'
 
-async function getActiveCollateralKeyset(mint: CashuMint, unit: CollateralTokenUnit): Promise<MintKeys> {
+async function getActiveCollateralKeyset(
+  mint: CashuMint,
+  unit: CollateralTokenUnit,
+): Promise<MintKeys> {
   const active = (await mint.getKeySets()).keysets.find(
     (keyset) => keyset.active && keyset.unit === unit,
   )
@@ -145,10 +144,7 @@ async function getActiveCollateralKeyset(mint: CashuMint, unit: CollateralTokenU
   return keyset
 }
 
-async function getCtfCondition(
-  mintUrl: string,
-  conditionId: string,
-): Promise<CtfConditionInfo> {
+async function getCtfCondition(mintUrl: string, conditionId: string): Promise<CtfConditionInfo> {
   const mint = new CashuMint(mintUrl) as CashuMint & {
     getCtfCondition(conditionId: string): Promise<CtfConditionInfo>
   }
@@ -158,13 +154,11 @@ async function getCtfCondition(
 function selectMintRootPartitionForOutcome(
   condition: CtfConditionInfo,
   outcomeSetId: string,
-  unit: 'sat' | 'msat',
 ): CtfRootPartitionSelection {
   const target = canonicalizeOutcomeSet(parseOutcomeSetId(outcomeSetId))
   const keysetCollections = Object.keys(condition.keysets)
   const matches = keysetCollections.filter(
-    (collection) =>
-      canonicalizeOutcomeSet(parseOutcomeSetId(collection)) === target,
+    (collection) => canonicalizeOutcomeSet(parseOutcomeSetId(collection)) === target,
   )
 
   if (matches.length !== 1) {
@@ -184,7 +178,7 @@ function selectMintRootPartitionForOutcome(
   return {
     keepOutcomeSetId: outcomeSetId,
     lockOutcomeSetId: complement,
-    baseAsset: unit === 'msat' ? 'sat' : undefined,
+    baseAsset: 'sat',
   }
 }
 
@@ -195,19 +189,15 @@ function resolveSplitOutcomeSetKey(
   const target = canonicalizeOutcomeSet(parseOutcomeSetId(outcomeSetId))
   return (
     Object.keys(split).find(
-      (collection) =>
-        canonicalizeOutcomeSet(parseOutcomeSetId(collection)) === target,
+      (collection) => canonicalizeOutcomeSet(parseOutcomeSetId(collection)) === target,
     ) ?? null
   )
 }
 
-async function waitForPaidQuote(
-  wallet: CashuWallet,
-  quote: MintQuoteResponse,
-): Promise<void> {
-  const deadline = Date.now() + 20_000
+async function waitForPaidQuote(wallet: CashuWallet, quote: MintQuoteResponse): Promise<void> {
+  const deadline = performance.now() + 20_000
   let last: PartialMintQuoteResponse | null = null
-  while (Date.now() < deadline) {
+  while (performance.now() < deadline) {
     last = await wallet.checkMintQuote(quote.quote)
     if (last.state === 'PAID' || last.state === 'ISSUED') return
     await new Promise((resolve) => setTimeout(resolve, 250))
@@ -218,9 +208,7 @@ async function waitForPaidQuote(
 function printToken(mintUrl: string, unit: CollateralTokenUnit, proofs: Proof[]): void {
   const token = getEncodedToken({ mint: mintUrl, unit, proofs })
   process.stdout.write(
-    jsonOutput
-      ? `${JSON.stringify({ mintUrl, token, proofs })}\n`
-      : `${token}\n`,
+    jsonOutput ? `${JSON.stringify({ mintUrl, token, proofs })}\n` : `${token}\n`,
   )
 }
 
@@ -228,8 +216,6 @@ function usage(): never {
   process.stderr.write(
     'Usage: mint-token.ts sats <mint-url> <amount-sats> [--json] [--exact]\n' +
       '       mint-token.ts msats <mint-url> <amount-sats> [--json] [--exact]\n' +
-      '       mint-token.ts usd <mint-url> <amount-usd-subunits> [--json] [--exact]\n' +
-      '       mint-token.ts outcome <mint-url> <amount-sats> <condition-id> <outcome-set-id> [--json]\n' +
       '       mint-token.ts outcome-msats <mint-url> <amount-sats> <condition-id> <outcome-set-id> [--json]\n',
   )
   process.exit(1)

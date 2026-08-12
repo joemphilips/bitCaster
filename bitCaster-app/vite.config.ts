@@ -2,6 +2,7 @@ import path from "path";
 import { createRequire } from "node:module";
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
+import { nodePolyfills } from "vite-plugin-node-polyfills";
 import { VitePWA } from "vite-plugin-pwa";
 
 const require = createRequire(import.meta.url);
@@ -9,14 +10,22 @@ const require = createRequire(import.meta.url);
 export default defineConfig({
   plugins: [
     react(),
+    nodePolyfills({
+      include: ["buffer", "process"],
+      globals: {
+        Buffer: true,
+        global: false,
+        process: true,
+      },
+      protocolImports: false,
+    }),
     VitePWA({
       registerType: "autoUpdate",
       includeAssets: ["favicon.svg", "apple-touch-icon.png", "masked-icon.svg"],
       manifest: {
         name: "bitCaster – Bitcoin Prediction Markets",
         short_name: "bitCaster",
-        description:
-          "Free, anonymous, Bitcoin-native prediction markets powered by Cashu ecash",
+        description: "Free, anonymous, Bitcoin-native prediction markets powered by Cashu ecash",
         theme_color: "#f7931a",
         background_color: "#0a0a0a",
         display: "standalone",
@@ -69,17 +78,7 @@ export default defineConfig({
       },
       {
         find: /^@bitcaster\/client-sdk$/,
-        replacement: path.resolve(
-          __dirname,
-          "../bitcaster-client-sdk/src/index.ts",
-        ),
-      },
-      {
-        find: /^@bitcaster\/swap-protocol\/(.+)$/,
-        replacement: path.resolve(
-          __dirname,
-          "../bitCaster-swap-protocol/src/$1",
-        ),
+        replacement: path.resolve(__dirname, "../bitcaster-client-sdk/src/index.ts"),
       },
       {
         find: /^@cashu\/cashu-ts$/,

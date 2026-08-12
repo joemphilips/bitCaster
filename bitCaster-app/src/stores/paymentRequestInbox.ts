@@ -1,4 +1,5 @@
-import { create } from 'zustand'
+import { create } from "zustand";
+import type { MarketBaseAsset } from "@bitcaster/client-sdk/marketUnits";
 
 /**
  * A received payment keyed by the originating PaymentRequest id.
@@ -8,31 +9,53 @@ import { create } from 'zustand'
  * view is mounted.
  */
 export interface InboxEntry {
-  id: string
-  amountSats: number
-  receivedAt: number
+  id: string;
+  amountSubunits: number;
+  baseAsset: MarketBaseAsset;
+  receivedAt: number;
+}
+
+export interface PendingPaymentRequest {
+  id: string;
+  mintUrl: string;
+  createdAt: number;
 }
 
 interface InboxState {
-  entries: Record<string, InboxEntry>
-  markReceived: (id: string, amountSats: number) => void
-  clear: (id: string) => void
+  entries: Record<string, InboxEntry>;
+  pending: Record<string, PendingPaymentRequest>;
+  registerPending: (id: string, mintUrl: string) => void;
+  markReceived: (id: string, amountSubunits: number, baseAsset: MarketBaseAsset) => void;
+  clear: (id: string) => void;
 }
 
 export const usePaymentRequestInbox = create<InboxState>((set) => ({
   entries: {},
-  markReceived: (id, amountSats) =>
+  pending: {},
+  registerPending: (id, mintUrl) =>
     set((s) => ({
-      entries: {
-        ...s.entries,
-        [id]: { id, amountSats, receivedAt: Date.now() },
+      pending: {
+        ...s.pending,
+        [id]: { id, mintUrl, createdAt: Date.now() },
       },
     })),
+  markReceived: (id, amountSubunits, baseAsset) =>
+    set((s) => {
+      const pending = { ...s.pending };
+      delete pending[id];
+      return {
+        pending,
+        entries: {
+          ...s.entries,
+          [id]: { id, amountSubunits, baseAsset, receivedAt: Date.now() },
+        },
+      };
+    }),
   clear: (id) =>
     set((s) => {
-      if (!(id in s.entries)) return s
-      const next = { ...s.entries }
-      delete next[id]
-      return { entries: next }
+      if (!(id in s.entries)) return s;
+      const next = { ...s.entries };
+      delete next[id];
+      return { entries: next };
     }),
-}))
+}));

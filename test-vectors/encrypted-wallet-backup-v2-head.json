@@ -1,0 +1,32 @@
+{
+  "inputs": {
+    "realm": "backup.production",
+    "walletId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "enrollmentEpoch": 7,
+    "headVersion": 3,
+    "descriptorCount": 16
+  },
+  "expected": {
+    "firstDescriptorDigest": "998d75c377ecfb3e3ea191d98c7e94b4f0edeefb70949cf7bb5f160e229e3eac",
+    "emptyActiveSetDigest": "82b918fdcfbea1444d6fb39ddbd1747b53a02eea96a813f28692002d77c4539d",
+    "activeSetDigest": "4a1fd5fb04a0902cec609140e4879becaf8f3e159c2a017869edabff839299c2",
+    "head": {
+      "formatVersion": 2,
+      "realm": "backup.production",
+      "walletId": "1111111111111111111111111111111111111111111111111111111111111111",
+      "enrollmentEpoch": 7,
+      "headVersion": 3,
+      "activeBundleCount": 16,
+      "activeObjectCount": 16,
+      "activeSetDigest": "4a1fd5fb04a0902cec609140e4879becaf8f3e159c2a017869edabff839299c2"
+    },
+    "pageBundleCounts": [15, 1],
+    "pageCursors": ["0000000000000000000000000000000f", null],
+    "headWireHex": "8802716261636b75702e70726f64756374696f6e582011111111111111111111111111111111111111111111111111111111111111110703101058204a1fd5fb04a0902cec609140e4879becaf8f3e159c2a017869edabff839299c2",
+    "headWireSha256": "71e0a339533516f7a98d0efde3e05f3c183ce9e00c7760f865e6e361a4394ca2",
+    "pageWireSha256": [
+      "846c89db755c929c36feedcc887715cdc365b7a729d46428c69e36df2e01a84b",
+      "cc1bee7aa3eb21881117f2e237f7093a475a41f9a7f8a36ee6d9b55db598562b"
+    ]
+  }
+}

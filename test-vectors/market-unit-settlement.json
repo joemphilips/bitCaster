@@ -11,13 +11,13 @@
       "complementQuotePaymentSubunits": 6000
     },
     {
-      "name": "usd-default-direct",
-      "baseAsset": "usd",
-      "divisibility": 1000,
-      "faceAmountSubunits": 1000,
-      "priceSubunits": 333,
-      "quotePaymentSubunits": 333,
-      "complementQuotePaymentSubunits": 667
+      "name": "sat-numeric-direct",
+      "baseAsset": "sat",
+      "divisibility": 1000000,
+      "faceAmountSubunits": 1000000,
+      "priceSubunits": 333333,
+      "quotePaymentSubunits": 333333,
+      "complementQuotePaymentSubunits": 666667
     },
     {
       "name": "sat-high-divisibility-direct",

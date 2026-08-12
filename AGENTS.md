@@ -50,11 +50,20 @@ client obligations. Do not mention non-public service repositories or backend
 implementation choices in `BitCaster.MatchingEngine.Contracts/`,
 `bitCaster-app/`, or `bitCaster-doc/`.
 
-### User-specific state must be handled client-side
+### Keep user funds authority client-side
 
-- Matching engine **should NOT** store user information as much as possible. It's sole purpose is to keep the markets liquid and tradable.
-- Private user-specific data must be handled client-side using localStorage for reload UX and encrypted NIP-44 content inside Nostr [NIP-78](https://github.com/nostr-protocol/nips/blob/master/78.md) replaceable events when the user has configured a Nostr key. Examples: portfolio activity history, local wallet workflow records, private oracle drafts, and anything the engine cannot verify as authoritative.
-- Creator-market discovery is not private by itself; it can be mirrored publicly or indexed by the engine for UX. Keep sensitive creator-side material out of public storage unless it is already public Nostr/oracle data.
+- Keep complete private custody state in the client durable store.
+- A reviewed independent asset-monitoring domain can show a display-only
+  economic portfolio.
+- Do not use that projection for spending, settlement, proof selection, refunds,
+  penalties, Score, eviction, or deletion.
+- A browser can use a separate client-encrypted backup for quota and origin-loss
+  recovery.
+- The backup service must not learn proof secrets or spending authority.
+- Use encrypted NIP-78 records only for other approved private application
+  state.
+- Creator-market discovery can be public or indexed by the engine.
+- Keep private oracle drafts out of public storage.
 
 ### Live Market Values
 
@@ -140,3 +149,9 @@ Details scoped per subproject live in `.claude/rules/`:
 - `doc-site.md` — Astro Starlight
 - `design.md` — Design system
 - `cdk.md` — CDK (upstream) build / lint / style
+
+## Repo-Local Skills
+
+Use `.agents/skills/bitcaster-frontend-guideline` for user-visible frontend
+behavior. This includes errors, notifications, recovery progress, and browser
+persistence.

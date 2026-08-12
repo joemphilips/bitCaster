@@ -9,10 +9,7 @@ if (!root) {
 
 for (const file of await dtsFiles(root)) {
   const original = await readFile(file, 'utf8')
-  const updated = original.replace(
-    /(from\s+['"]\.[^'"]*)\.ts(['"])/g,
-    '$1.js$2',
-  )
+  const updated = original.replace(/(from\s+['"]\.[^'"]*)\.ts(['"])/g, '$1.js$2')
   if (updated !== original) {
     await writeFile(file, updated)
   }

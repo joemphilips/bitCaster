@@ -2,9 +2,9 @@
 // Deposit / Withdraw Types
 // =============================================================================
 
-export type DepositWithdrawMode = 'deposit' | 'withdraw'
+export type DepositWithdrawMode = "deposit" | "withdraw";
 
-export type MethodType = 'ecash' | 'lightning'
+export type MethodType = "ecash" | "lightning";
 
 /**
  * Current view within the deposit/withdraw flow.
@@ -15,23 +15,21 @@ export type MethodType = 'ecash' | 'lightning'
  * - 'pay-lightning'     — Pay Lightning invoice/address entry
  */
 export type DepositWithdrawView =
-  | 'chooser'
-  | 'deposit-ecash'
-  | 'deposit-lightning'
-  | 'send-ecash'
-  | 'pay-lightning'
+  | "chooser"
+  | "deposit-ecash"
+  | "deposit-lightning"
+  | "send-ecash"
+  | "pay-lightning";
 
 // =============================================================================
 // Mint Types
 // =============================================================================
 
 export interface MintInfo {
-  id: string
-  name: string
-  url: string
-  balanceSats: number
-  balancesByUnit?: Partial<Record<'sat' | 'usd' | 'jpy', number>>
-  units?: Array<'sat' | 'usd' | 'jpy'>
+  id: string;
+  name: string;
+  url: string;
+  balanceSats: number;
 }
 
 // =============================================================================
@@ -40,77 +38,75 @@ export interface MintInfo {
 
 export interface DepositWithdrawProps {
   /** Whether this was opened from Deposit or Withdraw button */
-  mode: DepositWithdrawMode
+  mode: DepositWithdrawMode;
 
   /** Current view in the flow */
-  currentView: DepositWithdrawView
+  currentView: DepositWithdrawView;
 
   /** Available mints to select from */
-  mints: MintInfo[]
+  mints: MintInfo[];
 
   /** Currently selected mint ID */
-  selectedMintId: string
+  selectedMintId: string;
 
   /** Current amount entered (in sats) */
-  amountSats: number
-  amountLabel?: string
-  selectedUnit?: 'sat' | 'usd' | 'jpy'
-  unitOptions?: Array<'sat' | 'usd' | 'jpy'>
+  amountSats: number;
+  amountLabel?: string;
 
   /** Fiat equivalent of the entered amount */
-  amountFiat: string
+  amountFiat: string;
 
   /** Fiat currency symbol (e.g., "$", "\u00a5") */
-  fiatSymbol: string
+  fiatSymbol: string;
 
   /** Whether to show fiat or sats as the primary display */
-  showFiatPrimary: boolean
+  showFiatPrimary: boolean;
 
   /** Lightning address or invoice text entered by user */
-  lightningInput: string
+  lightningInput: string;
 
   /** Called when user selects a method (ecash or lightning) from the chooser */
-  onSelectMethod?: (method: MethodType) => void
+  onSelectMethod?: (method: MethodType) => void;
 
   /** Called when user taps a numpad key */
-  onNumpadPress?: (key: string) => void
+  onNumpadPress?: (key: string) => void;
 
   /** Called when user changes the selected mint */
-  onMintChange?: (mintId: string) => void
-
-  /** Called when user changes the funding unit for the selected mint */
-  onUnitChange?: (unit: 'sat' | 'usd' | 'jpy') => void
+  onMintChange?: (mintId: string) => void;
 
   /** Called when user toggles between fiat and sats display */
-  onToggleCurrency?: () => void
+  onToggleCurrency?: () => void;
 
   /** Called when user taps "CREATE INVOICE" (deposit lightning) */
-  onCreateInvoice?: () => void
+  onCreateInvoice?: () => void;
 
   /** Called when user taps "SEND" (send ecash) */
-  onSendEcash?: () => void
+  onSendEcash?: () => void;
+  /** Resume an explicit persisted bearer-token reclaim. */
+  onReclaimEcash?: () => void;
+  hasPendingBearerReclaim?: boolean;
 
   /** Called when user taps "Paste" (deposit ecash or pay lightning) */
-  onPaste?: () => void
+  onPaste?: () => void;
 
   /** Called when user taps "Scan" (deposit ecash) */
-  onScan?: () => void
+  onScan?: () => void;
 
   /** Called when user taps "Request" (deposit ecash) */
-  onRequest?: () => void
+  onRequest?: () => void;
 
   /** Called when user taps "Scan QR Code" (pay lightning) */
-  onScanQR?: () => void
+  onScanQR?: () => void;
 
   /** Called when lightning input text changes */
-  onLightningInputChange?: (value: string) => void
+  onLightningInputChange?: (value: string) => void;
 
   /** Called when user navigates back within the flow */
-  onBack?: () => void
+  onBack?: () => void;
 
   /** Called when user closes the entire modal */
-  onClose?: () => void
+  onClose?: () => void;
 
   /** Called when user taps fullscreen toggle */
-  onToggleFullscreen?: () => void
+  onToggleFullscreen?: () => void;
 }

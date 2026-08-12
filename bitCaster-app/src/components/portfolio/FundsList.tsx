@@ -1,20 +1,20 @@
-import { useTranslation } from 'react-i18next'
-import type { Fund } from '@/types/portfolio'
-import { FundRow } from './FundRow'
+import { useTranslation } from "react-i18next";
+import type { Fund } from "@/types/portfolio";
+import { FundRow } from "./FundRow";
 
 interface FundsListProps {
-  funds: Fund[]
-  onViewFund?: (fundId: string) => void
+  funds: Fund[];
+  onViewFund?: (fundId: string) => void;
 }
 
 export function FundsList({ funds, onViewFund }: FundsListProps) {
-  const { t } = useTranslation()
+  const { t } = useTranslation();
   if (funds.length === 0) {
     return (
       <div className="py-8 text-center text-sm text-slate-400 dark:text-slate-500">
-        {t('portfolio.noFunds')}
+        {t("portfolio.noFunds")}
       </div>
-    )
+    );
   }
 
   return (
@@ -23,5 +23,5 @@ export function FundsList({ funds, onViewFund }: FundsListProps) {
         <FundRow key={fund.id} fund={fund} onView={onViewFund} />
       ))}
     </div>
-  )
+  );
 }

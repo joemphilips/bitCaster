@@ -1,15 +1,15 @@
-import type { DepositWithdrawProps } from '@/types/deposit-withdraw'
-import { MethodChooser } from './MethodChooser'
-import { DepositEcash } from './DepositEcash'
-import { DepositLightning } from './DepositLightning'
-import { SendEcash } from './SendEcash'
-import { PayLightning } from './PayLightning'
+import type { DepositWithdrawProps } from "@/types/deposit-withdraw";
+import { MethodChooser } from "./MethodChooser";
+import { DepositEcash } from "./DepositEcash";
+import { DepositLightning } from "./DepositLightning";
+import { SendEcash } from "./SendEcash";
+import { PayLightning } from "./PayLightning";
 
 export function DepositWithdraw(props: DepositWithdrawProps) {
-  const { currentView } = props
+  const { currentView } = props;
 
   switch (currentView) {
-    case 'chooser':
+    case "chooser":
       return (
         <MethodChooser
           mode={props.mode}
@@ -17,9 +17,9 @@ export function DepositWithdraw(props: DepositWithdrawProps) {
           onClose={props.onClose}
           onToggleFullscreen={props.onToggleFullscreen}
         />
-      )
+      );
 
-    case 'deposit-ecash':
+    case "deposit-ecash":
       return (
         <DepositEcash
           mints={props.mints}
@@ -31,30 +31,27 @@ export function DepositWithdraw(props: DepositWithdrawProps) {
           onBack={props.onBack}
           onToggleFullscreen={props.onToggleFullscreen}
         />
-      )
+      );
 
-    case 'deposit-lightning':
+    case "deposit-lightning":
       return (
         <DepositLightning
           mints={props.mints}
           selectedMintId={props.selectedMintId}
           amountSats={props.amountSats}
           amountLabel={props.amountLabel}
-          selectedUnit={props.selectedUnit}
-          unitOptions={props.unitOptions}
           amountFiat={props.amountFiat}
           fiatSymbol={props.fiatSymbol}
           showFiatPrimary={props.showFiatPrimary}
           onMintChange={props.onMintChange}
-          onUnitChange={props.onUnitChange}
           onNumpadPress={props.onNumpadPress}
           onToggleCurrency={props.onToggleCurrency}
           onCreateInvoice={props.onCreateInvoice}
           onClose={props.onClose}
         />
-      )
+      );
 
-    case 'send-ecash':
+    case "send-ecash":
       return (
         <SendEcash
           mints={props.mints}
@@ -67,11 +64,13 @@ export function DepositWithdraw(props: DepositWithdrawProps) {
           onNumpadPress={props.onNumpadPress}
           onToggleCurrency={props.onToggleCurrency}
           onSendEcash={props.onSendEcash}
+          onReclaimEcash={props.onReclaimEcash}
+          hasPendingBearerReclaim={props.hasPendingBearerReclaim}
           onClose={props.onClose}
         />
-      )
+      );
 
-    case 'pay-lightning':
+    case "pay-lightning":
       return (
         <PayLightning
           mints={props.mints}
@@ -83,9 +82,9 @@ export function DepositWithdraw(props: DepositWithdrawProps) {
           onScanQR={props.onScanQR}
           onClose={props.onClose}
         />
-      )
+      );
 
     default:
-      return null
+      return null;
   }
 }

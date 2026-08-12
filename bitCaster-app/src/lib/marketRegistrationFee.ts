@@ -1,49 +1,38 @@
-import {
-  Amount,
-  CheckStateEnum,
-  Mint as CashuMint,
-  OutputData,
-  Wallet as CashuWallet,
-  type MintKeys,
-  type OutputDataLike,
-  type Proof,
-  type SerializedBlindedMessage,
-  type SerializedBlindedSignature,
-} from "@cashu/cashu-ts";
-import {
-  amountToNumber,
-  sumProofs,
-  takeProofsForLock,
-} from "@bitcaster/client-sdk/proofSelection";
+import type { ProofState } from "@cashu/cashu-ts";
+import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
 import {
   registrationFeeForPolicy,
   requiredMarketCreationOutcomeCollections,
 } from "@bitcaster/client-sdk/ctfRegistration";
 import {
-  deserializeOutputGroups,
-  serializeOutputDataArray,
-} from "@bitcaster/client-sdk/ctfSplit";
-import { defaultCollateralUnit, normalizeMarketBaseAsset, parseCashuProofUnit, type CashuProofUnit } from "@bitcaster/client-sdk/marketUnits";
+  createEncryptedWalletBackupV2AssetIdentity,
+  type EncryptedWalletBackupV2AssetIdentity,
+} from "@bitcaster/client-sdk";
+import { hydrateDurableWalletProof } from "@bitcaster/client-sdk/durableWalletOperation";
+import type { DurableWalletProofDerivationLocator } from "@bitcaster/client-sdk/durableWalletProofDerivationLocator";
+import type { DurableOutgoingCashuTransfer } from "@bitcaster/client-sdk/durableOutgoingCashuTransfer";
 import {
-  MintError,
-  registerCondition,
-} from "@/lib/markets";
-import { getWalletForUnit } from "@/lib/cashu";
+  defaultCollateralUnit,
+  parseCashuProofUnit,
+  type CashuProofUnit,
+} from "@bitcaster/client-sdk/marketUnits";
 import {
-  addProofs,
-  getUnitProofs,
-  getProofOperation,
-  markProofOperationCompleted,
-  markProofOperationFailed,
-  prepareProofOperation,
-  releaseProofReservation,
-  removeProofs,
-  reserveProofs,
-  type ProofOperationRecord,
-  type StoredOutputData,
-} from "@/stores/proof-db";
+  classifyBrowserDurableOutgoingBearerTransfer,
+  executeBrowserDurableOutgoingCashuTransfer,
+  readBrowserDurableOutgoingCashuTransfer,
+} from "@/lib/browserDurableOutgoingCashuTransfer";
+import {
+  prepareBrowserDeterministicOutgoingCashuSend,
+  restoreBrowserDeterministicOutgoingCashuOutputs,
+} from "@/lib/browserDeterministicOutgoingCashu";
+import { recoverBrowserFundedAsset } from "@/lib/browserFundedAssetRecovery";
+import { captureBrowserMintPersistenceContext, getWalletForUnit } from "@/lib/cashu";
+import { MintError, registerCondition } from "@/lib/markets";
+import { getBoundedCanonicalRegularProofs, type StoredProof } from "@/stores/proof-db";
 
 export const MAX_CONDITION_REGISTRATION_FEE_SUBUNITS = 1_000_000;
+const REGISTRATION_FEE_TOKEN_BYTES_LIMIT = 61_440;
+const REGISTRATION_FEE_TOKEN_PROOF_LIMIT = 512;
 
 export interface ConditionRegistrationRequest {
   tags: string[][];
@@ -57,21 +46,28 @@ export interface ConditionRegistrationResult {
   keysets: Record<string, string>;
 }
 
-type RegistrationOutputData = OutputDataLike & {
-  blindedMessage: SerializedBlindedMessage;
-  toProof(sig: SerializedBlindedSignature, keyset: MintKeys): Proof;
-};
-
 export { registrationFeeForPolicy, requiredMarketCreationOutcomeCollections };
 
+/** Return the active profile's bounded canonical V2 regular balance for this asset. */
 export async function getAvailableRegularBalanceSubunits(
   mintUrl: string,
   baseAsset?: string | null,
 ): Promise<number> {
-  const proofs = await getUnitProofs(mintUrl, { unit: defaultCollateralUnit(baseAsset) });
+  const context = captureBrowserMintPersistenceContext();
+  const unit = requireCashuProofUnit(defaultCollateralUnit(baseAsset));
+  const proofs = await readRegistrationFeeCandidates({
+    mintUrl,
+    unit,
+    scopeId: context.scopeId,
+  });
+  context.requireCapturedProfile();
   return sumProofs(proofs);
 }
 
+/**
+ * Pay one condition registration fee through the shared durable outgoing transfer.
+ * The exact send token is persisted before the condition endpoint sees it.
+ */
 export async function registerConditionWithFee(input: {
   mintUrl: string;
   request: ConditionRegistrationRequest;
@@ -89,331 +85,247 @@ export async function registerConditionWithFee(input: {
     );
   }
 
-  const operationId = await buildOperationId(
-    input.request,
-    input.requiredFeeSubunits,
-  );
-  const feeUnit = registrationFeeUnit(input.request);
-  const existing = await getProofOperation(operationId);
-  if (existing) {
-    return resumeOrRetryRegistration(input.mintUrl, input.request, existing);
-  }
-
-  const wallet = await getWalletForUnit(input.mintUrl, feeUnit);
-  const regularKeysetIds = await getRegularKeysetIdsForUnit(wallet, feeUnit);
-  const available = await getUnitProofs(input.mintUrl, {
-    unit: feeUnit,
-  }).then((proofs) => proofs.filter((proof) => regularKeysetIds.has(proof.id)));
-  const selected = takeProofsForLock(
-    available,
-    input.requiredFeeSubunits,
-  );
-  if (!selected) {
-    throw new Error(
-      `Not enough regular ${feeUnit} proofs are available for the ${input.requiredFeeSubunits} ${feeUnit} condition registration fee.`,
-    );
-  }
-
-  const selectedTotal = sumProofs(selected);
-  const changeAmount = selectedTotal - input.requiredFeeSubunits;
-  const changeOutputs =
-    changeAmount > 0
-      ? await prepareRegularOutputs(input.mintUrl, changeAmount, feeUnit)
-      : [];
-
-  await prepareProofOperation({
-    operationId,
-    kind: "ctf-condition-registration",
-    mintUrl: input.mintUrl,
-    inputs: selected,
-    outputs: { change: serializeOutputDataArray(changeOutputs) },
-    metadata: {
-      requiredFeeSubunits: input.requiredFeeSubunits,
-      feeUnit,
+  const feeUnit = requireCashuProofUnit(registrationFeeUnit(input.request));
+  const transferId = await buildOperationId(input.request, input.requiredFeeSubunits);
+  const context = captureBrowserMintPersistenceContext();
+  const terminal = await readBrowserDurableOutgoingCashuTransfer({ transferId, context });
+  if (terminal?.deliveryState === "bearer-spent") {
+    assertTerminalRegistrationFeeTransfer({
+      transfer: terminal,
+      transferId,
+      mintUrl: input.mintUrl,
       unit: feeUnit,
-      selectedTotalSubunits: selectedTotal,
-      request: stableRegistrationRequest(input.request),
-    },
-  });
-  await reserveProofs(
-    selected.map((proof) => proof.secret),
-    operationId,
-  );
-
-  return postPreparedRegistration(input.mintUrl, input.request, {
-    operationId,
-    inputs: selected,
-    outputs: changeOutputs,
-    feeUnit,
-  });
-}
-
-async function resumeOrRetryRegistration(
-  mintUrl: string,
-  request: ConditionRegistrationRequest,
-  entry: ProofOperationRecord,
-): Promise<ConditionRegistrationResult> {
-  const feeUnit = registrationFeeUnit(request);
-  if (entry.kind !== "ctf-condition-registration") {
-    throw new Error(`proof operation ${entry.operationId} is not condition registration`);
-  }
-
-  if (entry.state === "completed") {
-    return registerCondition(request);
-  }
-  if (entry.state === "Failed") {
-    throw new Error(
-      `condition registration fee operation previously failed: ${entry.lastError ?? "unknown error"}`,
-    );
-  }
-
-  const wallet = await getWalletForUnit(mintUrl, feeUnit);
-  if (!wallet.checkProofsStates) {
-    throw new Error(
-      "Cashu wallet adapter does not support condition registration recovery checks.",
-    );
-  }
-  const states = await wallet.checkProofsStates(
-    entry.inputs.map(({ id, secret }) => ({ id, secret })),
-  );
-  if (
-    states.length > 0 &&
-    states.every((state) => state.state === CheckStateEnum.SPENT)
-  ) {
-    const changeProofs = await restoreChangeOutputs(
-      mintUrl,
-      entry.outputs.change ?? [],
-    );
-    await completeRegistrationFeeOperation(
-      entry.operationId,
-      mintUrl,
-      entry.inputs,
-      changeProofs,
-      feeUnit,
-    );
-    return registerCondition(request);
-  }
-  if (
-    states.length > 0 &&
-    states.every((state) => state.state === CheckStateEnum.UNSPENT)
-  ) {
-    const outputs = (deserializeOutputGroups({
-      change: entry.outputs.change ?? [],
-    }).change ?? []) as RegistrationOutputData[];
-    await reserveProofs(
-      entry.inputs.map((proof) => proof.secret),
-      entry.operationId,
-    );
-    return postPreparedRegistration(mintUrl, request, {
-      operationId: entry.operationId,
-      inputs: entry.inputs,
-      outputs,
-      feeUnit,
+      amount: input.requiredFeeSubunits,
     });
+    return registerCondition(input.request);
   }
-
-  throw new Error(
-    "Condition registration fee payment is still pending at the mint. Refresh wallet recovery before paying again.",
-  );
+  const wallet = await getWalletForUnit(input.mintUrl, feeUnit);
+  context.requireCapturedProfile();
+  const keepLocators: Array<DurableWalletProofDerivationLocator | null> = [];
+  const asset = ordinaryRegistrationFeeAsset(input.mintUrl, feeUnit);
+  const transfer = await executeBrowserDurableOutgoingCashuTransfer({
+    reuseTransferId: true,
+    transfer: {
+      transferId,
+      mintUrl: input.mintUrl,
+      unit: feeUnit,
+      requestedAmount: String(input.requiredFeeSubunits),
+      deliveryIntent: {
+        policy: "bearer-spend-classification",
+        tokenBytesLimit: REGISTRATION_FEE_TOKEN_BYTES_LIMIT,
+        tokenProofLimit: REGISTRATION_FEE_TOKEN_PROOF_LIMIT,
+      },
+    },
+    preflightFundedAsset: () =>
+      preflightRegistrationFeeAsset({
+        context,
+        asset,
+        mintUrl: input.mintUrl,
+        requiredAmount: input.requiredFeeSubunits,
+        unit: feeUnit,
+      }),
+    prepareWalletSendOperation: async () => {
+      context.requireCapturedProfile();
+      const proofs = await readRegistrationFeeCandidates({
+        mintUrl: input.mintUrl,
+        unit: feeUnit,
+        scopeId: context.scopeId,
+      });
+      context.requireCapturedProfile();
+      if (sumProofs(proofs) < input.requiredFeeSubunits) {
+        throw insufficientRegistrationFeeError(input.requiredFeeSubunits, feeUnit);
+      }
+      return prepareBrowserDeterministicOutgoingCashuSend({
+        operationId: transferId,
+        wallet,
+        proofs,
+        amount: input.requiredFeeSubunits,
+        mintUrl: input.mintUrl,
+        unit: feeUnit,
+        seed: context.seed,
+        keepProofDerivationLocators: keepLocators,
+        diagnosticLabel: "Condition registration fee",
+      });
+    },
+    keepProofDerivationLocators: keepLocators,
+    wallet,
+    restoreExactOutputs: (restore) =>
+      restoreBrowserDeterministicOutgoingCashuOutputs({
+        wallet,
+        restore,
+        diagnosticLabel: "Condition registration fee",
+      }),
+    context,
+  });
+  return submitRegistrationFeeToken({ transfer, request: input.request, wallet, context });
 }
 
-async function postPreparedRegistration(
-  mintUrl: string,
-  request: ConditionRegistrationRequest,
-  prepared: {
-    operationId: string;
-    inputs: Proof[];
-    outputs: RegistrationOutputData[];
-    feeUnit: string;
-  },
-): Promise<ConditionRegistrationResult> {
+/** Reject an improbable transfer-id collision before a terminal idempotent retry skips wallet I/O. */
+function assertTerminalRegistrationFeeTransfer(input: {
+  readonly transfer: DurableOutgoingCashuTransfer;
+  readonly transferId: string;
+  readonly mintUrl: string;
+  readonly unit: CashuProofUnit;
+  readonly amount: number;
+}): void {
+  if (
+    input.transfer.transferId !== input.transferId ||
+    input.transfer.mintUrl !== input.mintUrl ||
+    input.transfer.unit !== input.unit ||
+    input.transfer.requestedAmount !== String(input.amount) ||
+    input.transfer.deliveryIntent.policy !== "bearer-spend-classification" ||
+    input.transfer.deliveryIntent.tokenBytesLimit !== REGISTRATION_FEE_TOKEN_BYTES_LIMIT ||
+    input.transfer.deliveryIntent.tokenProofLimit !== REGISTRATION_FEE_TOKEN_PROOF_LIMIT
+  ) {
+    throw new Error("Condition registration fee terminal transfer conflicts with the request.");
+  }
+}
+
+async function submitRegistrationFeeToken(input: {
+  readonly transfer: DurableOutgoingCashuTransfer;
+  readonly request: ConditionRegistrationRequest;
+  readonly wallet: Awaited<ReturnType<typeof getWalletForUnit>>;
+  readonly context: ReturnType<typeof captureBrowserMintPersistenceContext>;
+}): Promise<ConditionRegistrationResult> {
+  if (input.transfer.deliveryIntent.policy !== "bearer-spend-classification") {
+    throw new Error("Condition registration fee transfer has the wrong delivery policy.");
+  }
+  if (input.transfer.deliveryState === "bearer-spent") {
+    return registerCondition(input.request);
+  }
+  if (input.transfer.token === null) {
+    throw new Error("Condition registration fee transfer has no stored token.");
+  }
+
   try {
     const response = await registerCondition({
-      ...request,
-      fee: prepared.inputs,
-      outputs:
-        prepared.outputs.length > 0
-          ? prepared.outputs.map((output) => output.blindedMessage)
-          : undefined,
+      ...input.request,
+      fee: input.transfer.token.proofs.map(hydrateDurableWalletProof),
     });
-    const changeProofs = await buildChangeProofs(
-      mintUrl,
-      prepared.outputs,
-      response.change ?? [],
-    );
-    await completeRegistrationFeeOperation(
-      prepared.operationId,
-      mintUrl,
-      prepared.inputs,
-      changeProofs,
-      prepared.feeUnit,
-    );
+    await classifyRegistrationFeeSpend(input);
     return response;
   } catch (error) {
-    if (
-      error instanceof MintError &&
-      (error.code === 13044 || error.code === 13047)
-    ) {
-      await releaseProofReservation(prepared.operationId);
-      await markProofOperationFailed(prepared.operationId, error);
+    if (error instanceof MintError && error.code === 13044) {
+      const classified = await classifyRegistrationFeeSpend(input);
+      if (classified.deliveryState === "bearer-spent") {
+        return registerCondition(input.request);
+      }
     }
     throw mapRegistrationFeeMintError(error);
   }
+}
+
+/** Classify the persisted exact token. This never selects proofs or mints a replacement token. */
+async function classifyRegistrationFeeSpend(input: {
+  readonly transfer: DurableOutgoingCashuTransfer;
+  readonly wallet: Awaited<ReturnType<typeof getWalletForUnit>>;
+  readonly context: ReturnType<typeof captureBrowserMintPersistenceContext>;
+}): Promise<DurableOutgoingCashuTransfer> {
+  if (input.transfer.token === null) {
+    throw new Error("Condition registration fee transfer has no stored token.");
+  }
+  input.context.requireCapturedProfile();
+  const states = await input.wallet.checkProofsStates(
+    input.transfer.token.proofs.map(({ id, secret }) => ({ id, secret })),
+  );
+  input.context.requireCapturedProfile();
+  return classifyBrowserDurableOutgoingBearerTransfer({
+    transfer: input.transfer,
+    states: normalizeProofStates(states),
+    context: input.context,
+  });
 }
 
 function mapRegistrationFeeMintError(error: unknown): unknown {
   if (error instanceof MintError && error.code === 13044) {
     return new Error("Registration fee was missing or insufficient.");
   }
-  if (error instanceof MintError && error.code === 13047) {
-    return new Error("Registration fee change outputs were invalid or insufficient.");
-  }
   return error;
 }
 
-async function completeRegistrationFeeOperation(
-  operationId: string,
+function ordinaryRegistrationFeeAsset(
   mintUrl: string,
-  inputs: Proof[],
-  changeProofs: Proof[],
-  unit: string,
-): Promise<void> {
-  const proofUnit = requireCashuProofUnit(unit);
-  if (changeProofs.length > 0) {
-    await addProofs(changeProofs.map((proof) => ({
-      ...proof,
-      mintUrl,
-      baseAsset: normalizeMarketBaseAsset(proofUnit),
-      unit: proofUnit,
-    })));
+  unit: CashuProofUnit,
+): EncryptedWalletBackupV2AssetIdentity {
+  return createEncryptedWalletBackupV2AssetIdentity({ mintUrl, unit, asset: { kind: "ordinary" } });
+}
+
+async function preflightRegistrationFeeAsset(input: {
+  readonly context: ReturnType<typeof captureBrowserMintPersistenceContext>;
+  readonly asset: EncryptedWalletBackupV2AssetIdentity;
+  readonly mintUrl: string;
+  readonly requiredAmount: number;
+  readonly unit: CashuProofUnit;
+}): Promise<void> {
+  const recovery = await recoverBrowserFundedAsset({
+    database: input.context.database,
+    scopeId: input.context.scopeId,
+    seed: input.context.seed,
+    mnemonic: input.context.mnemonic,
+    asset: input.asset,
+    requiredAmount: BigInt(input.requiredAmount),
+    loadPlan: async () =>
+      sumProofs(
+        await readRegistrationFeeCandidates({
+          mintUrl: input.mintUrl,
+          unit: input.unit,
+          scopeId: input.context.scopeId,
+        }),
+      ) >= input.requiredAmount
+        ? { kind: "ready" as const }
+        : { kind: "insufficient" as const },
+    isCurrentProfile: () => {
+      input.context.requireCapturedProfile();
+      return true;
+    },
+  });
+  switch (recovery.kind) {
+    case "ready":
+    case "recovered":
+      return;
+    case "unavailable":
+      throw insufficientRegistrationFeeError(input.requiredAmount, input.unit);
+    case "persistent-error":
+      throw new Error("Condition registration fee asset recovery is unavailable.");
+    case "not-recoverable":
+      throw new Error("Condition registration fee proofs require consolidation.");
+    default:
+      throw new Error("Condition registration fee recovery outcome is invalid.");
   }
-  await removeProofs(inputs.map((proof) => proof.secret));
-  await markProofOperationCompleted(operationId, { change: changeProofs });
+}
+
+async function readRegistrationFeeCandidates(input: {
+  readonly mintUrl: string;
+  readonly unit: CashuProofUnit;
+  readonly scopeId: string;
+}): Promise<StoredProof[]> {
+  return getBoundedCanonicalRegularProofs(input.mintUrl, {
+    unit: input.unit,
+    scopeId: input.scopeId,
+  });
+}
+
+function insufficientRegistrationFeeError(requiredAmount: number, unit: CashuProofUnit): Error {
+  return new Error(
+    `Not enough regular ${unit} proofs are available for the ${requiredAmount} ${unit} condition registration fee.`,
+  );
+}
+
+function sumProofs(proofs: readonly StoredProof[]): number {
+  return proofs.reduce((total, proof) => total + amountToNumber(proof.amount), 0);
+}
+
+function normalizeProofStates(states: readonly ProofState[]) {
+  return states.map(({ Y, state }) => ({
+    Y,
+    state: String(state) as "UNSPENT" | "PENDING" | "SPENT",
+  }));
 }
 
 function requireCashuProofUnit(value: string | null | undefined): CashuProofUnit {
   const unit = parseCashuProofUnit(value);
   if (!unit) throw new Error(`Unsupported Cashu proof unit '${value ?? ""}'`);
   return unit;
-}
-
-async function prepareRegularOutputs(
-  mintUrl: string,
-  amountSubunits: number,
-  unit: string,
-): Promise<RegistrationOutputData[]> {
-  const wallet = await getWalletForUnit(mintUrl, unit);
-  const keyset = await getActiveRegularKeyset(wallet, unit);
-  const positiveOutputs = OutputData.createRandomData(
-    Amount.from(amountSubunits),
-    keyset,
-  ) as RegistrationOutputData[];
-  return positiveOutputs.map(
-    (output) =>
-      new OutputData(
-        {
-          ...output.blindedMessage,
-          amount: Amount.from(0),
-        },
-        output.blindingFactor,
-        output.secret,
-      ) as RegistrationOutputData,
-  );
-}
-
-async function getActiveRegularKeyset(
-  wallet: CashuWallet,
-  unit: string,
-): Promise<MintKeys> {
-  const response = await wallet.mint.getKeys();
-  const keyset =
-    response.keysets.find(
-      (candidate) => candidate.unit === unit && candidate.active !== false,
-    ) ??
-    response.keysets.find((candidate) => candidate.unit === unit);
-  if (!keyset) throw new Error(`Mint did not return a regular ${unit} keyset`);
-  return keyset;
-}
-
-async function getRegularKeysetIdsForUnit(
-  wallet: CashuWallet,
-  unit: string,
-): Promise<Set<string>> {
-  const response = await wallet.mint.getKeys();
-  const ids = response.keysets
-    .filter((candidate) => candidate.unit === unit)
-    .map((candidate) => candidate.id)
-    .filter((id): id is string => typeof id === "string" && id.length > 0);
-  if (ids.length === 0) throw new Error(`Mint did not return a regular ${unit} keyset`);
-  return new Set(ids);
-}
-
-async function buildChangeProofs(
-  mintUrl: string,
-  outputData: RegistrationOutputData[],
-  signatures: SerializedBlindedSignature[],
-): Promise<Proof[]> {
-  if (signatures.length > outputData.length) {
-    throw new Error(
-      `Mint returned ${signatures.length} registration-fee change signatures, but only ${outputData.length} change outputs were prepared`,
-    );
-  }
-  const result: Proof[] = [];
-  for (let index = 0; index < signatures.length; index++) {
-    const output = outputData[index];
-    const signature = normalizeChangeSignature(signatures[index]);
-    validateChangeSignature(output.blindedMessage, signature);
-    const keyset = await getKeyset(mintUrl, signature.id);
-    result.push(output.toProof(signature, keyset));
-  }
-  return result;
-}
-
-function normalizeChangeSignature(
-  signature: SerializedBlindedSignature,
-): SerializedBlindedSignature {
-  return {
-    ...signature,
-    amount: Amount.from(amountToNumber(signature.amount)) as never,
-  };
-}
-
-function validateChangeSignature(
-  output: SerializedBlindedMessage,
-  signature: SerializedBlindedSignature,
-): void {
-  if (signature.id !== output.id || amountToNumber(signature.amount) <= 0) {
-    throw new Error("Mint returned a registration-fee change signature for the wrong output");
-  }
-}
-
-async function restoreChangeOutputs(
-  mintUrl: string,
-  storedOutputs: StoredOutputData[],
-): Promise<Proof[]> {
-  const outputData = (
-    deserializeOutputGroups({ change: storedOutputs }).change ?? []
-  ) as RegistrationOutputData[];
-  if (outputData.length === 0) return [];
-  const mint = new CashuMint(mintUrl);
-  const response = await mint.restore({
-    outputs: outputData.map((output) => output.blindedMessage),
-  });
-  return buildChangeProofs(mintUrl, outputData, response.signatures);
-}
-
-async function getKeyset(
-  mintUrl: string,
-  keysetId?: string,
-): Promise<MintKeys> {
-  if (!keysetId) throw new Error("Missing keyset id for registration-fee change output");
-  const mint = new CashuMint(mintUrl);
-  const response = await mint.getKeys(keysetId);
-  const keyset = response.keysets.find(
-    (candidate) => candidate.id === keysetId,
-  );
-  if (!keyset) throw new Error(`Mint did not return keys for keyset ${keysetId}`);
-  return keyset;
 }
 
 async function buildOperationId(
@@ -438,9 +350,7 @@ function stableRegistrationRequest(
     tags: request.tags.map((tag) => [...tag]),
     announcementHex: request.announcementHex,
     collateral: request.collateral,
-    outcomeCollections: request.outcomeCollections
-      ? [...request.outcomeCollections]
-      : undefined,
+    outcomeCollections: request.outcomeCollections ? [...request.outcomeCollections] : undefined,
   };
 }
 

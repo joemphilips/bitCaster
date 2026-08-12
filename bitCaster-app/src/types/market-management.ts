@@ -3,13 +3,13 @@
 // =============================================================================
 
 export interface DashboardStats {
-  activeMarketsCount: number
-  resolvedMarketsCount: number
-  refundedMarketsCount: number
-  totalVolumeSubunits: number
-  totalFeesEarnedSats: number
-  totalFeesClaimedSats: number
-  totalFeesUnclaimedSats: number
+  activeMarketsCount: number;
+  resolvedMarketsCount: number;
+  refundedMarketsCount: number;
+  totalVolumeSubunits: number;
+  totalFeesEarnedSats: number;
+  totalFeesClaimedSats: number;
+  totalFeesUnclaimedSats: number;
 }
 
 // =============================================================================
@@ -17,151 +17,151 @@ export interface DashboardStats {
 // =============================================================================
 
 export interface MarketOutcome {
-  id: string
-  label: string
-  odds: number
-  description?: string
-  imageUrl?: string
-  isWinner?: boolean // Set when market is resolved
+  id: string;
+  label: string;
+  odds: number;
+  description?: string;
+  imageUrl?: string;
+  isWinner?: boolean; // Set when market is resolved
 }
 
 export interface CurrentOdds {
-  yes: number
-  no: number
+  yes: number;
+  no: number;
 }
 
 // =============================================================================
 // Creator Market Types
 // =============================================================================
 
-export type MarketStatus = 'active' | 'resolved' | 'refunded'
-export type MarketType = 'yesno' | 'categorical'
+export type MarketStatus = "active" | "resolved" | "refunded";
+export type MarketType = "yesno" | "categorical";
 
 interface BaseCreatorMarket {
-  id: string
-  title: string
-  description: string
-  imageUrl: string
-  categoryTags: string[]
-  status: MarketStatus
-  volume: number
-  liquidity: number
-  createdDate: string
-  closingDate: string
-  creatorFeePercent: number
-  feesEarnedSats: number
-  feesClaimedSats: number
-  answerUrls: string[]
+  id: string;
+  title: string;
+  description: string;
+  imageUrl: string;
+  categoryTags: string[];
+  status: MarketStatus;
+  volume: number;
+  liquidity: number;
+  createdDate: string;
+  closingDate: string;
+  creatorFeePercent: number;
+  feesEarnedSats: number;
+  feesClaimedSats: number;
+  answerUrls: string[];
   // Optional status-specific dates
-  resolvedDate?: string
-  winningOutcomeId?: string
-  refundedDate?: string
-  refundedSats?: number
+  resolvedDate?: string;
+  winningOutcomeId?: string;
+  refundedDate?: string;
+  refundedSats?: number;
 }
 
 export interface YesNoCreatorMarket extends BaseCreatorMarket {
-  type: 'yesno'
-  currentOdds: CurrentOdds
+  type: "yesno";
+  currentOdds: CurrentOdds;
 }
 
 export interface CategoricalCreatorMarket extends BaseCreatorMarket {
-  type: 'categorical'
-  outcomes: MarketOutcome[]
+  type: "categorical";
+  outcomes: MarketOutcome[];
 }
 
-export type CreatorMarket = YesNoCreatorMarket | CategoricalCreatorMarket
+export type CreatorMarket = YesNoCreatorMarket | CategoricalCreatorMarket;
 
 // =============================================================================
 // Volume Chart Types
 // =============================================================================
 
 export interface DailyVolumeDataPoint {
-  date: string
-  volumeSubunits: number
-  feesSats: number
+  date: string;
+  volumeSubunits: number;
+  feesSats: number;
 }
 
 export interface WeeklyVolumeDataPoint {
-  weekStart: string
-  volumeSubunits: number
-  feesSats: number
+  weekStart: string;
+  volumeSubunits: number;
+  feesSats: number;
 }
 
 export interface MonthlyVolumeDataPoint {
-  month: string
-  volumeSubunits: number
-  feesSats: number
+  month: string;
+  volumeSubunits: number;
+  feesSats: number;
 }
 
 export interface VolumeChartData {
-  daily: DailyVolumeDataPoint[]
-  weekly: WeeklyVolumeDataPoint[]
-  monthly: MonthlyVolumeDataPoint[]
+  daily: DailyVolumeDataPoint[];
+  weekly: WeeklyVolumeDataPoint[];
+  monthly: MonthlyVolumeDataPoint[];
 }
 
 export interface MarketVolumeData {
-  marketId: string
-  marketTitle: string
-  daily: { date: string; volumeSubunits: number }[]
+  marketId: string;
+  marketTitle: string;
+  daily: { date: string; volumeSubunits: number }[];
 }
 
-export type TimeScale = 'daily' | 'weekly' | 'monthly'
-export type ChartMode = 'aggregate' | 'per-market'
+export type TimeScale = "daily" | "weekly" | "monthly";
+export type ChartMode = "aggregate" | "per-market";
 
 // =============================================================================
 // Wizard Types
 // =============================================================================
 
-export type OutcomeType = 'yesno' | 'categorical' | 'numeric'
+export type OutcomeType = "yesno" | "categorical" | "numeric";
 
 export interface WizardOutcome {
-  id: string
-  label: string
-  description: string
-  imageUrl?: string
-  probability?: number // 0-100, optional, for preview only
+  id: string;
+  label: string;
+  description: string;
+  imageUrl?: string;
+  probability?: number; // 0-100, optional, for preview only
 }
 
 export interface WizardStep1Data {
-  imageFile: string | null
-  title: string
-  categoryTags: string[]
-  closingDate: string
-  answerUrls: string[]
+  imageFile: string | null;
+  title: string;
+  categoryTags: string[];
+  closingDate: string;
+  answerUrls: string[];
 }
 
 export interface WizardStep2Data {
-  outcomeType: OutcomeType
-  outcomes: WizardOutcome[] | null // null for yesno, array for categorical/numeric
+  outcomeType: OutcomeType;
+  outcomes: WizardOutcome[] | null; // null for yesno, array for categorical/numeric
 }
 
 export interface WizardStep3Data {
-  liquiditySubunits: number
-  buyFeePercent: number
-  sellFeePercent: number
-  winFeePercent: number
+  liquiditySubunits: number;
+  buyFeePercent: number;
+  sellFeePercent: number;
+  winFeePercent: number;
 }
 
 export interface WizardStep4Data {
   // Review step - computed from previous steps
-  estimatedInitialCost: number
-  worstCaseLoss: number
-  confirmed: boolean
+  estimatedInitialCost: number;
+  worstCaseLoss: number;
+  confirmed: boolean;
 }
 
 export interface WizardStep5Data {
-  description: string // Rich text (HTML or markdown)
-  aiGenerated: boolean
+  description: string; // Rich text (HTML or markdown)
+  aiGenerated: boolean;
 }
 
 export interface WizardDraft {
-  currentStep: 1 | 2 | 3 | 4 | 5
-  lastModified: string
-  step1: WizardStep1Data | null
-  step2: WizardStep2Data | null
-  step3: WizardStep3Data | null
-  step4: WizardStep4Data | null
-  step5: WizardStep5Data | null
+  currentStep: 1 | 2 | 3 | 4 | 5;
+  lastModified: string;
+  step1: WizardStep1Data | null;
+  step2: WizardStep2Data | null;
+  step3: WizardStep3Data | null;
+  step4: WizardStep4Data | null;
+  step5: WizardStep5Data | null;
 }
 
 // =============================================================================
@@ -169,8 +169,8 @@ export interface WizardDraft {
 // =============================================================================
 
 export interface CategoryTag {
-  id: string
-  label: string
+  id: string;
+  label: string;
 }
 
 // =============================================================================
@@ -178,25 +178,25 @@ export interface CategoryTag {
 // =============================================================================
 
 export interface PaginationState {
-  currentPage: number
-  pageSize: number
-  totalItems: number
-  totalPages: number
+  currentPage: number;
+  pageSize: number;
+  totalItems: number;
+  totalPages: number;
 }
 
 // =============================================================================
 // Tab Types
 // =============================================================================
 
-export type ActiveTab = 'overview' | 'analytics'
+export type ActiveTab = "overview" | "analytics";
 
 // =============================================================================
 // Validation Types
 // =============================================================================
 
 export interface ValidationError {
-  field: string
-  message: string
+  field: string;
+  message: string;
 }
 
 // =============================================================================
@@ -205,107 +205,107 @@ export interface ValidationError {
 
 export interface MarketCreationProps {
   /** Dashboard statistics for the creator */
-  dashboardStats: DashboardStats
+  dashboardStats: DashboardStats;
 
   /** List of markets created by the user */
-  creatorMarkets: CreatorMarket[]
+  creatorMarkets: CreatorMarket[];
 
   /** Aggregated volume chart data across all markets */
-  volumeChartData: VolumeChartData
+  volumeChartData: VolumeChartData;
 
   /** Per-market volume data for detailed analytics */
-  volumeByMarket: MarketVolumeData[]
+  volumeByMarket: MarketVolumeData[];
 
   /** Current wizard draft state (null if no draft) */
-  wizardDraft: WizardDraft | null
+  wizardDraft: WizardDraft | null;
 
   /** Available category tags for market creation */
-  categoryTags: CategoryTag[]
+  categoryTags: CategoryTag[];
 
   /** Pagination state for market list */
-  pagination: PaginationState
+  pagination: PaginationState;
 
   /** Currently active tab */
-  activeTab: ActiveTab
+  activeTab: ActiveTab;
 
   /** Current time scale for analytics charts */
-  analyticsTimeScale: TimeScale
+  analyticsTimeScale: TimeScale;
 
   /** Current chart mode (aggregate vs per-market) */
-  analyticsChartMode: ChartMode
+  analyticsChartMode: ChartMode;
 
   /** Validation errors from last submission attempt */
-  validationErrors?: ValidationError[]
+  validationErrors?: ValidationError[];
 
   // -------------------------------------------------------------------------
   // Navigation Callbacks
   // -------------------------------------------------------------------------
 
   /** Called when user clicks to view market details (navigates to market detail page) */
-  onViewDetails?: (marketId: string) => void
+  onViewDetails?: (marketId: string) => void;
 
   /** Called when user switches between Overview and Analytics tabs */
-  onTabChange?: (tab: ActiveTab) => void
+  onTabChange?: (tab: ActiveTab) => void;
 
   // -------------------------------------------------------------------------
   // Market Management Callbacks
   // -------------------------------------------------------------------------
 
   /** Called when user submits a new market (triggers MarketCreated event) */
-  onCreateMarket?: (wizardData: WizardDraft) => void
+  onCreateMarket?: (wizardData: WizardDraft) => void;
 
   /** Called when user cancels an active market */
-  onCancelMarket?: (marketId: string) => void
+  onCancelMarket?: (marketId: string) => void;
 
   /** Called when user claims fees from a resolved market (triggers CreatorFeeClaimed event) */
-  onClaimFees?: (marketId: string) => void
+  onClaimFees?: (marketId: string) => void;
 
   // -------------------------------------------------------------------------
   // Wizard Callbacks
   // -------------------------------------------------------------------------
 
   /** Called when user saves wizard draft progress */
-  onSaveDraft?: (draft: WizardDraft) => void
+  onSaveDraft?: (draft: WizardDraft) => void;
 
   /** Called when user discards the current wizard draft */
-  onDiscardDraft?: () => void
+  onDiscardDraft?: () => void;
 
   /** Called when wizard step changes */
-  onWizardStepChange?: (step: 1 | 2 | 3 | 4 | 5) => void
+  onWizardStepChange?: (step: 1 | 2 | 3 | 4 | 5) => void;
 
   /** Called when user uploads a market thumbnail */
-  onThumbnailUpload?: (file: File) => void
+  onThumbnailUpload?: (file: File) => void;
 
   /** Called when user uploads an outcome thumbnail */
-  onOutcomeThumbnailUpload?: (outcomeId: string, file: File) => void
+  onOutcomeThumbnailUpload?: (outcomeId: string, file: File) => void;
 
   /** Called when user requests AI-generated description */
   onGenerateDescription?: (context: {
-    title: string
-    categoryTags: string[]
-    outcomeType: OutcomeType
-  }) => void
+    title: string;
+    categoryTags: string[];
+    outcomeType: OutcomeType;
+  }) => void;
 
   // -------------------------------------------------------------------------
   // Analytics Callbacks
   // -------------------------------------------------------------------------
 
   /** Called when user changes the time scale for volume charts */
-  onTimeScaleChange?: (scale: TimeScale) => void
+  onTimeScaleChange?: (scale: TimeScale) => void;
 
   /** Called when user toggles between aggregate and per-market view */
-  onChartModeChange?: (mode: ChartMode) => void
+  onChartModeChange?: (mode: ChartMode) => void;
 
   /** Called when user selects a specific market in per-market view */
-  onSelectMarketForChart?: (marketId: string) => void
+  onSelectMarketForChart?: (marketId: string) => void;
 
   // -------------------------------------------------------------------------
   // Pagination Callbacks
   // -------------------------------------------------------------------------
 
   /** Called when user navigates to a different page */
-  onPageChange?: (page: number) => void
+  onPageChange?: (page: number) => void;
 
   /** Called when user changes page size */
-  onPageSizeChange?: (pageSize: number) => void
+  onPageSizeChange?: (pageSize: number) => void;
 }

@@ -11,9 +11,9 @@
  */
 
 /**
- * Build the full URL for the TradeHub SignalR endpoint.
+ * Build the full URL for the OrderHub SignalR endpoint.
  * The server checks the `u` tag against the negotiation URL.
  */
-export function tradeHubUrl(baseUrl: string): string {
-  return `${baseUrl}/hubs/trade`
+export function orderHubUrl(baseUrl: string): string {
+  return `${baseUrl}/hubs/order`;
 }

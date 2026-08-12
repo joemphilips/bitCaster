@@ -9,7 +9,14 @@ sidebar:
 
 bitCaster is a prediction market platform built on [Bitcoin](https://bitcoin.org/) and [Cashu](https://cashu.space/). You buy and sell tokens that represent outcomes of real-world events — elections, sports, weather, anything. If your prediction is correct, the price of your tokens rises; if not, it falls.
 
-At its core, it is fully open-spec and open-source. No user information is stored on the server side. Your tokens are yours — stored locally in your browser, settled instantly over Lightning or Cashu.
+The browser serves casual participants and market creators. Professional and
+automated traders can use the CLI, daemon, and SDK. Every client uses the same
+CLOB and settlement protocol.
+
+At its core, it is fully open-spec and open-source. Your live wallet and tokens
+stay local to your browser. The web app can store an encrypted recovery copy
+that the server cannot decrypt; see [Encrypted wallet backup](./wallet-backup/)
+for its privacy boundary.
 
 For an overview of Cashu itself, see the [Bitcoin Design guide on ecash](https://bitcoin.design/guide/how-it-works/ecash/introduction/).
 
@@ -17,7 +24,11 @@ For an overview of Cashu itself, see the [Bitcoin Design guide on ecash](https:/
 
 ### Trade anything, any way you wish
 
-Browse existing markets or place limit orders at any price. Markets can be binary (Yes/No), categorical (multiple outcomes), or even two-dimensional. You trade with ecash in the market's unit: sat markets use sat ecash, and USD markets use USD ecash. You can top up through a Lightning invoice or by pasting an existing Cashu ecash token.
+Browse existing markets or place limit orders at any price. Markets can be binary
+(Yes/No) or categorical (multiple outcomes). The product
+uses sat ecash for ordinary wallet funding and msat conditional ecash for market
+positions. You can top up through a Lightning invoice or by pasting an existing
+sat Cashu token.
 
 Categorical markets show primitive outcome books such as `A / Not A`, `B / Not B`, and `C / Not C`. Under the hood, settlement can still lock complementary multi-outcome legs such as `B|C`, but users trade through the primitive book labels. The first release supports markets with up to 8 outcomes.
 
@@ -34,27 +45,32 @@ bitCaster's protocol is designed to make oracle fraud as difficult as possible. 
 
 When a market's oracle key is a Nostr public key, you should audit the oracle yourself before trading. Copy the market's oracle `npub` from the market detail page and check that identity's history and credibility in your preferred Nostr client.
 
-### Become a token issuer
+### Use the supported mint
 
-Any user can run their own Cashu mint to issue prediction market tokens. The mint software is open-source, and the protocol specification is public. Multiple independent mints can coexist, each serving different communities or markets.
+The first release supports one Cashu mint operated by bitCaster. The app does
+not support selecting or using another mint. The mint software and protocol
+specification remain public.
 
 ## How it works
 
 Every market outcome has a corresponding token. The price of a token reflects the market's collective estimate of how likely that outcome is. Prices are shown as probabilities with two decimal places, such as **53.27%**.
 
-The trade ticket asks for whole shares and shows the cost before you submit. The breakdown separates **Quote payment**, **Est. settlement fee**, and **Total**, so you can see the order payment apart from the estimated mint fee. One sat-market share pays **10 sats** if it wins. One USD-market share pays **$10.00** if it wins. Internally, sat-display markets use msat collateral subunits with `D=10000`, so the smallest price move is `0.01%`. For example, 50 shares at 30.00% quote 150 sats in a sat market before any estimated settlement fee, and pay 500 sats if they win.
+The trade ticket asks for whole shares and shows the cost before you submit. The breakdown separates **Quote payment**, **Est. settlement fee**, and **Total**, so you can see the order payment apart from the estimated mint fee. One categorical-market share pays **10 sats** if it wins. Internally, categorical markets use msat collateral subunits with `D=10000`, so the smallest price move is `0.01%`. For example, 50 shares at 30.00% quote 150 sats before any estimated settlement fee, and pay 500 sats if they win.
 
-When the event resolves, winning tokens are redeemable for their full share value, and losing tokens become worthless. Throughout this process, nobody — not even the token issuer — can know who holds which tokens or how many.
+When the event resolves, winning tokens are redeemable for their full share value, and losing tokens become worthless. Throughout this process, nobody — not even the token issuer — can know who holds which tokens or how many. The mint cannot selectively freeze an identified user's ecash. It can stop service for everyone, so users must still assess the mint before they participate.
 
 ## Your assets, your responsibility[^1]
 
-Your tokens are just signed data. They live in your browser's local storage, not on a server.
+Your tokens are just signed data. The live wallet database is in your browser's
+local storage. The default web app also keeps an encrypted recovery copy whose
+contents the server cannot read.
 
-This means the server holds as little user information as possible. There is no account to create, no password to remember, and no personal information to hand over.
+This minimizes the wallet information held by the server. The encrypted-backup
+service can still observe limited account, size, and activity metadata. It
+cannot decrypt or spend your funds.
 
-**This completely eliminates risks such as personal information leaks or having only specific individuals' assets frozen.**
-
-In return, like any other cryptocurrency wallet, you are responsible for managing your own keys. Back up your 12-word mnemonic and keep it safe.
+Like any other cryptocurrency wallet, you are responsible for managing your own
+keys. Back up your 12-word mnemonic and keep it safe.
 
 When you first open the portfolio page or try to trade, bitCaster asks you to set up a wallet. You can create a new wallet (auto-generated locally in your browser) or import an existing wallet using your 12-word recovery phrase. A Nostr signing key is also created or connected at this point. These are separate secrets. Back up both the wallet recovery phrase and the Nostr secret key shown in the app. If you already use a Nostr account, connect it instead of generating a new one.
 

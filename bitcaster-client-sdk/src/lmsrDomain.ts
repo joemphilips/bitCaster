@@ -85,15 +85,9 @@ export function computeLmsrLevels(input: LmsrDomainInput): LmsrDomainOutput {
   if (params.bSubunits <= 0 || params.levelsPerSide <= 0) return empty
   if (params.perLevelSizeCapShares <= 0) return empty
 
-  const sizeTickSubunits = normalizeSizeTickSubunits(
-    params.sizeTickSubunits,
-    input.sizeTickSats,
-  )
+  const sizeTickSubunits = normalizeSizeTickSubunits(params.sizeTickSubunits, input.sizeTickSats)
   const priceDivisibility = normalizePriceDivisibility(params.divisibility)
-  const priceStepSubunits = normalizePriceStepSubunits(
-    params.priceStepSubunits,
-    priceDivisibility,
-  )
+  const priceStepSubunits = normalizePriceStepSubunits(params.priceStepSubunits, priceDivisibility)
 
   const atoms = Object.keys(input.terminalQ).sort()
   if (atoms.length < 2) return empty
@@ -177,10 +171,7 @@ export function computeLmsrLevels(input: LmsrDomainInput): LmsrDomainOutput {
   return { levels, reserveRequests, paused: false }
 }
 
-export function normalizeSizeTickSubunits(
-  value: number | undefined,
-  fallback: number,
-): number {
+export function normalizeSizeTickSubunits(value: number | undefined, fallback: number): number {
   if (value === undefined) return fallback
   if (!Number.isInteger(value) || value < 1) return fallback
   return Math.max(value, fallback)
@@ -210,10 +201,7 @@ export function marketMemberAtoms(marketId: string): string[] {
 }
 
 /** Numerically-stable softmax: p_i = exp(q_i/b) / Σ_j exp(q_j/b). */
-export function atomPricesFromQ(
-  q: Record<string, number>,
-  b: number,
-): Record<string, number> {
+export function atomPricesFromQ(q: Record<string, number>, b: number): Record<string, number> {
   const atoms = Object.keys(q).sort()
   const scaled = atoms.map((atom) => (q[atom] ?? 0) / b)
   const max = Math.max(...scaled)
@@ -237,10 +225,7 @@ export function deltaQShares(b: number, p1: number, p2: number): number {
 }
 
 export function taperFactor(
-  world: Pick<
-    LmsrDomainInput,
-    'marketOpenedAtEpochS' | 'marketDeadlineAtEpochS' | 'nowEpochS'
-  >,
+  world: Pick<LmsrDomainInput, 'marketOpenedAtEpochS' | 'marketDeadlineAtEpochS' | 'nowEpochS'>,
 ): number {
   const opened = world.marketOpenedAtEpochS
   const deadline = world.marketDeadlineAtEpochS
@@ -305,10 +290,7 @@ export function buildLadder(
     }
 
     price = Math.max(minPrice, Math.min(maxPrice, price))
-    if (
-      (side === 'ask' && price > maxPrice) ||
-      (side === 'bid' && price < minPrice)
-    ) {
+    if ((side === 'ask' && price > maxPrice) || (side === 'bid' && price < minPrice)) {
       break
     }
 
@@ -323,10 +305,7 @@ export function buildLadder(
       while (sizeShares < minimumSizeShares && iterations < maxIterations) {
         iterations++
         const nextPrice = price + dir * priceStep
-        if (
-          (side === 'ask' && nextPrice > maxPrice) ||
-          (side === 'bid' && nextPrice < minPrice)
-        ) {
+        if ((side === 'ask' && nextPrice > maxPrice) || (side === 'bid' && nextPrice < minPrice)) {
           break
         }
         price = Math.max(minPrice, Math.min(maxPrice, nextPrice))
@@ -408,8 +387,7 @@ export function unmaterializedReservePerAtom(
 
     if (row.qDeltaShares <= 0) continue
     for (const atom of row.atoms) {
-      legacyPositiveDrawn[atom] =
-        (legacyPositiveDrawn[atom] ?? 0) + row.qDeltaShares
+      legacyPositiveDrawn[atom] = (legacyPositiveDrawn[atom] ?? 0) + row.qDeltaShares
       legacyPositiveFace += row.qDeltaShares
     }
   }
@@ -431,9 +409,7 @@ export function effectiveQ(
   const q: Record<string, number> = {}
   for (const atom of atoms) {
     q[atom] =
-      (world.seedQ?.[atom] ?? 0) +
-      (world.terminalQ[atom] ?? 0) +
-      (world.pendingQ[atom] ?? 0)
+      (world.seedQ?.[atom] ?? 0) + (world.terminalQ[atom] ?? 0) + (world.pendingQ[atom] ?? 0)
   }
   return q
 }

@@ -1,7 +1,7 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { useSettingsStore } from '@/stores/settings'
-import { useWalletStore } from '@/stores/wallet'
-import * as cashu from '@/lib/cashu'
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { useSettingsStore } from "@/stores/settings";
+import { useWalletStore } from "@/stores/wallet";
+import * as cashu from "@/lib/cashu";
 import {
   getKnownMints,
   getRelayUrlValidationError,
@@ -15,229 +15,321 @@ import {
   userRemoveMint,
   userRemoveRelay,
   userSwitchActiveMint,
-} from '../walletOps'
+} from "../walletOps";
 
-vi.mock('@/lib/cashu', () => ({
+const { mockResolveTokenImportKeysets } = vi.hoisted(() => ({
+  mockResolveTokenImportKeysets: vi.fn(),
+}));
+
+vi.mock("@/lib/cashu", () => ({
   decodeToken: vi.fn(),
-  receiveToken: vi.fn(),
-}))
+  receiveAndStoreTokenRecoverably: vi.fn(),
+}));
 
-vi.mock('@/lib/nip17', () => ({
+vi.mock("@/lib/tokenImportKeysetResolver", () => ({
+  resolveTokenImportKeysets: mockResolveTokenImportKeysets,
+}));
+
+vi.mock("@/lib/nip17", () => ({
   deriveNostrKeyPair: vi.fn().mockReturnValue({
     privateKey: new Uint8Array(32),
-    privateKeyHex: '0'.repeat(64),
-    publicKey: '1'.repeat(64),
+    privateKeyHex: "0".repeat(64),
+    publicKey: "1".repeat(64),
   }),
-  getNostrNprofile: vi.fn().mockReturnValue('nprofile1test'),
-}))
+  getNostrNprofile: vi.fn().mockReturnValue("nprofile1test"),
+}));
 
-describe('walletOps facade', () => {
-  let addMint: ReturnType<typeof vi.fn>
-  let addMintWithoutActivating: ReturnType<typeof vi.fn>
-  let removeMint: ReturnType<typeof vi.fn>
-  let setActiveMint: ReturnType<typeof vi.fn>
+const VALID_KEYSET_ID = "0011223344556677";
+
+function decodedProof() {
+  return { id: VALID_KEYSET_ID, amount: 1, secret: "decoded-secret", C: "decoded-C" };
+}
+
+describe("walletOps facade", () => {
+  let addMint: ReturnType<typeof vi.fn>;
+  let addMintWithoutActivating: ReturnType<typeof vi.fn>;
+  let removeMint: ReturnType<typeof vi.fn>;
+  let setActiveMint: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 404 }))
-    addMint = vi.fn().mockResolvedValue(undefined)
-    addMintWithoutActivating = vi.fn().mockResolvedValue(undefined)
-    removeMint = vi.fn()
-    setActiveMint = vi.fn()
-    vi.mocked(cashu.decodeToken).mockReset()
-    vi.mocked(cashu.receiveToken).mockReset()
-    vi.mocked(cashu.receiveToken).mockResolvedValue([
-      { secret: 's1', amount: 21, id: 'kid', C: 'C1' },
-      { secret: 's2', amount: 34, id: 'kid', C: 'C2' },
-    ] as never)
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, status: 404 }));
+    addMint = vi.fn().mockResolvedValue(undefined);
+    addMintWithoutActivating = vi.fn().mockResolvedValue(undefined);
+    removeMint = vi.fn();
+    setActiveMint = vi.fn();
+    vi.mocked(cashu.decodeToken).mockReset();
+    vi.mocked(cashu.receiveAndStoreTokenRecoverably).mockReset();
+    vi.mocked(cashu.receiveAndStoreTokenRecoverably).mockResolvedValue([
+      { secret: "s1", amount: 21, id: "kid", C: "C1" },
+      { secret: "s2", amount: 34, id: "kid", C: "C2" },
+    ] as never);
+    mockResolveTokenImportKeysets.mockReset();
+    mockResolveTokenImportKeysets.mockResolvedValue({
+      freshness: "fresh",
+      regularKeysets: [{ keysetId: VALID_KEYSET_ID, unit: "sat", active: true }],
+      conditionalKeysets: [],
+    });
     useWalletStore.setState({
-      mnemonic: 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about',
-      mints: [{ url: 'https://active.mint', info: { name: 'Active' } }],
-      activeMintUrl: 'https://active.mint',
+      mnemonic:
+        "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+      mints: [{ url: "https://active.mint", info: { name: "Active" } }],
+      activeMintUrl: "https://active.mint",
       _addMint: addMint as never,
       _addMintWithoutActivating: addMintWithoutActivating as never,
       _removeMint: removeMint as never,
       _setActiveMint: setActiveMint as never,
-    })
+    });
     useSettingsStore.setState({
-      relays: [{ url: 'ws://localhost:7777', connectionStatus: 'disconnected' }],
+      relays: [{ url: "ws://localhost:7777", connectionStatus: "disconnected" }],
       addRelay: vi.fn(),
       removeRelay: vi.fn(),
-    })
-  })
+    });
+  });
 
-  it('routes explicit user mint actions through the activating store path', async () => {
-    await userAddAndSelectMint('https://new.mint/')
-    userSwitchActiveMint('https://new.mint/')
-    userRemoveMint('https://old.mint/')
+  it("routes explicit user mint actions through the activating store path", async () => {
+    await userAddAndSelectMint("https://new.mint/");
+    userSwitchActiveMint("https://new.mint/");
+    userRemoveMint("https://old.mint/");
 
-    expect(addMint).toHaveBeenCalledWith('https://new.mint/')
-    expect(setActiveMint).toHaveBeenCalledWith('https://new.mint/')
-    expect(removeMint).toHaveBeenCalledWith('https://old.mint')
-    expect(addMintWithoutActivating).not.toHaveBeenCalled()
-  })
+    expect(addMint).toHaveBeenCalledWith("https://new.mint/");
+    expect(setActiveMint).toHaveBeenCalledWith("https://new.mint/");
+    expect(removeMint).toHaveBeenCalledWith("https://old.mint");
+    expect(addMintWithoutActivating).not.toHaveBeenCalled();
+  });
 
-  it('refreshes mint info without changing the active mint', async () => {
-    await refreshMintInfoWithoutActivating('https://active.mint/')
+  it("refreshes mint info without changing the active mint", async () => {
+    await refreshMintInfoWithoutActivating("https://active.mint/");
 
-    expect(addMintWithoutActivating).toHaveBeenCalledWith('https://active.mint/')
-    expect(addMint).not.toHaveBeenCalled()
-    expect(setActiveMint).not.toHaveBeenCalled()
-  })
+    expect(addMintWithoutActivating).toHaveBeenCalledWith("https://active.mint/");
+    expect(addMint).not.toHaveBeenCalled();
+    expect(setActiveMint).not.toHaveBeenCalled();
+  });
 
-  it('registers unknown ingress mints without changing the active mint', async () => {
-    const result = await ingressRegisterMint('https://unknown.mint/', 'paste')
+  it("registers unknown ingress mints without changing the active mint", async () => {
+    const result = await ingressRegisterMint("https://unknown.mint/", "paste");
 
     expect(result).toEqual({
       added: true,
-      mintUrl: 'https://unknown.mint',
-      source: 'paste',
-    })
-    expect(addMintWithoutActivating).toHaveBeenCalledWith('https://unknown.mint')
-    expect(addMint).not.toHaveBeenCalled()
-    expect(setActiveMint).not.toHaveBeenCalled()
-  })
+      mintUrl: "https://unknown.mint",
+      source: "paste",
+    });
+    expect(addMintWithoutActivating).toHaveBeenCalledWith("https://unknown.mint");
+    expect(addMint).not.toHaveBeenCalled();
+    expect(setActiveMint).not.toHaveBeenCalled();
+  });
 
-  it('redeems ingress tokens under the issuing mint and reports the received amount', async () => {
+  it("redeems ingress tokens under the issuing mint and reports the received amount", async () => {
     vi.mocked(cashu.decodeToken).mockResolvedValueOnce({
-      mint: 'https://unknown.mint/',
-      proofs: [],
-    } as never)
+      mint: "https://unknown.mint/",
+      unit: "sat",
+      proofs: [decodedProof()],
+    } as never);
 
-    const result = await ingressReceiveCashuToken('cashuB-token', 'scan')
+    const result = await ingressReceiveCashuToken("cashuB-token", "scan");
 
-    expect(cashu.receiveToken).toHaveBeenCalledWith('cashuB-token', 'https://unknown.mint', 'sat')
-    expect(addMintWithoutActivating).toHaveBeenCalledWith('https://unknown.mint')
+    expect(cashu.receiveAndStoreTokenRecoverably).toHaveBeenCalledWith(
+      "cashuB-token",
+      "https://unknown.mint",
+      "sat",
+      "sat",
+      "ordinary-sat",
+    );
+    expect(addMintWithoutActivating).toHaveBeenCalledWith("https://unknown.mint");
     expect(result).toMatchObject({
       added: true,
-      amountSats: 55,
-      unit: 'sat',
-      mintUrl: 'https://unknown.mint',
-      source: 'scan',
-    })
-  })
+      amountSubunits: 55_000,
+      baseAsset: "sat",
+      unit: "sat",
+      mintUrl: "https://unknown.mint",
+      source: "scan",
+    });
+  });
 
-  it('preserves the token unit for non-sat tokens', async () => {
+  it("keeps msat proof amounts in sat-market subunits", async () => {
+    mockResolveTokenImportKeysets.mockResolvedValueOnce({
+      freshness: "fresh",
+      regularKeysets: [{ keysetId: VALID_KEYSET_ID, unit: "msat", active: true }],
+      conditionalKeysets: [],
+    });
     vi.mocked(cashu.decodeToken).mockResolvedValueOnce({
-      mint: 'https://usd.mint/',
-      unit: 'usd',
-      proofs: [],
-    } as never)
+      mint: "https://msat.mint/",
+      unit: "msat",
+      proofs: [decodedProof()],
+    } as never);
 
-    const result = await ingressReceiveCashuToken('cashuB-usd-token', 'paste')
+    const result = await ingressReceiveCashuToken("cashuB-msat-token", "paste");
 
-    expect(cashu.receiveToken).toHaveBeenCalledWith('cashuB-usd-token', 'https://usd.mint', 'usd')
     expect(result).toMatchObject({
-      unit: 'usd',
-      mintUrl: 'https://usd.mint',
-    })
-  })
+      amountSubunits: 55,
+      baseAsset: "sat",
+      unit: "msat",
+    });
+  });
 
-  it('stamps received conditional proofs from the mint keyset registry', async () => {
+  it("returns conditional metadata persisted by the durable receiver", async () => {
+    mockResolveTokenImportKeysets.mockResolvedValueOnce({
+      freshness: "fresh",
+      regularKeysets: [],
+      conditionalKeysets: [{ keysetId: VALID_KEYSET_ID, unit: "msat", active: true }],
+    });
     vi.mocked(cashu.decodeToken).mockResolvedValueOnce({
-      mint: 'https://conditional.mint/',
-      unit: 'sat',
-      proofs: [],
-    } as never)
-    vi.stubGlobal(
-      'fetch',
-      vi.fn().mockResolvedValue({
-        ok: true,
-        json: async () => ({
-          keysets: [{
-            id: 'kid',
-            condition_id: 'condition-1',
-            outcome_collection: 'B',
-            outcome_collection_id: 'B',
-          }],
-        }),
-      }),
-    )
+      mint: "https://conditional.mint/",
+      unit: "msat",
+      proofs: [decodedProof()],
+    } as never);
+    vi.mocked(cashu.receiveAndStoreTokenRecoverably).mockResolvedValueOnce([
+      {
+        secret: "s1",
+        amount: 21,
+        id: "kid",
+        C: "C1",
+        conditionId: "condition-1",
+        outcomeCollection: "B",
+        marketId: "condition-1-B",
+      },
+      {
+        secret: "s2",
+        amount: 34,
+        id: "kid",
+        C: "C2",
+        conditionId: "condition-1",
+        outcomeCollection: "B",
+        marketId: "condition-1-B",
+      },
+    ] as never);
 
-    const result = await ingressReceiveCashuToken('cashuB-conditional-token', 'paste')
+    const result = await ingressReceiveCashuToken("cashuB-conditional-token", "paste");
 
-    expect(fetch).toHaveBeenCalledWith('https://conditional.mint/v1/conditional_keysets')
+    expect(cashu.receiveAndStoreTokenRecoverably).toHaveBeenCalledWith(
+      "cashuB-conditional-token",
+      "https://conditional.mint",
+      "sat",
+      "msat",
+      "ctf-position-msat",
+    );
+
     expect(result.proofs).toEqual([
       expect.objectContaining({
-        secret: 's1',
-        conditionId: 'condition-1',
-        outcomeCollection: 'B',
-        marketId: 'condition-1-B',
+        secret: "s1",
+        conditionId: "condition-1",
+        outcomeCollection: "B",
+        marketId: "condition-1-B",
       }),
       expect.objectContaining({
-        secret: 's2',
-        conditionId: 'condition-1',
-        outcomeCollection: 'B',
-        marketId: 'condition-1-B',
+        secret: "s2",
+        conditionId: "condition-1",
+        outcomeCollection: "B",
+        marketId: "condition-1-B",
       }),
-    ])
-  })
+    ]);
+  });
 
-  it('does not re-register known ingress mints', async () => {
+  it("does not re-register known ingress mints", async () => {
     vi.mocked(cashu.decodeToken).mockResolvedValueOnce({
-      mint: 'https://active.mint/',
-      proofs: [],
-    } as never)
+      mint: "https://active.mint/",
+      unit: "sat",
+      proofs: [decodedProof()],
+    } as never);
 
-    const result = await ingressReceiveCashuToken('token', 'nip17', {
-      mintUrl: 'https://active.mint/',
-    })
+    const result = await ingressReceiveCashuToken("token", "nip17", {
+      mintUrl: "https://active.mint/",
+    });
 
-    expect(result.added).toBe(false)
-    expect(addMintWithoutActivating).not.toHaveBeenCalled()
+    expect(result.added).toBe(false);
+    expect(addMintWithoutActivating).not.toHaveBeenCalled();
     // decodeToken is always called to read the token's unit (NUT-00)
-    expect(cashu.decodeToken).toHaveBeenCalledWith('token')
-    expect(cashu.receiveToken).toHaveBeenCalledWith('token', 'https://active.mint', 'sat')
-  })
+    expect(cashu.decodeToken).toHaveBeenCalledWith("token");
+    expect(cashu.receiveAndStoreTokenRecoverably).toHaveBeenCalledWith(
+      "token",
+      "https://active.mint",
+      "sat",
+      "sat",
+      "ordinary-sat",
+    );
+  });
 
-  it('keeps read-only mint snapshots detached from store mutation', () => {
-    const known = getKnownMints()
-    known.push({ url: 'https://local-only.mint' })
+  it("rejects decoded tokens whose unit is not supported", async () => {
+    vi.mocked(cashu.decodeToken).mockResolvedValueOnce({
+      mint: "https://active.mint/",
+      unit: "btc",
+      proofs: [decodedProof()],
+    } as never);
 
-    expect(useWalletStore.getState().mints).toHaveLength(1)
-  })
+    await expect(ingressReceiveCashuToken("token", "paste")).rejects.toThrow(
+      /missing or unsupported unit metadata/,
+    );
+    expect(cashu.receiveAndStoreTokenRecoverably).not.toHaveBeenCalled();
+  });
 
-  it('routes relay mutations through the settings store', () => {
-    const store = useSettingsStore.getState()
-    userAddRelay('ws://localhost:7778/')
-    userRemoveRelay('ws://localhost:7778')
+  it("rejects more than 128 proofs before mint keyset resolution", async () => {
+    vi.mocked(cashu.decodeToken).mockResolvedValueOnce({
+      mint: "https://active.mint/",
+      unit: "sat",
+      proofs: Array.from({ length: 129 }, (_, index) => ({
+        id: VALID_KEYSET_ID,
+        amount: 1,
+        secret: `proof-${index}`,
+        C: `C-${index}`,
+      })),
+    } as never);
 
-    expect(store.addRelay).toHaveBeenCalledWith('ws://localhost:7778')
-    expect(store.removeRelay).toHaveBeenCalledWith('ws://localhost:7778')
-  })
+    await expect(ingressReceiveCashuToken("token", "paste")).rejects.toThrow(
+      "decoded token exceeds 128 proofs",
+    );
 
-  it('keeps relay URL validation in the facade', () => {
-    expect(normalizeRelayUrl(' ws://localhost:7778/ ')).toBe('ws://localhost:7778')
-    expect(getRelayUrlValidationError('https://relay.example')).toBe(
-      'Relay URL must start with wss:// or local ws://',
-    )
-    expect(getRelayUrlValidationError('wss://relay.example')).toBe(
-      'Relay URL must be the configured bitCaster relay or a local relay.',
-    )
-    expect(getRelayUrlValidationError('wss://relay.damus.io')).toBe(
-      'Public Nostr relays are not supported. Use a bitCaster-owned relay.',
-    )
-    expect(() => userAddRelay('https://relay.example')).toThrow(
-      'Relay URL must start with wss:// or local ws://',
-    )
-    expect(() => userAddRelay('wss://nos.lol')).toThrow(
-      'Public Nostr relays are not supported. Use a bitCaster-owned relay.',
-    )
-  })
+    expect(mockResolveTokenImportKeysets).not.toHaveBeenCalled();
+    expect(cashu.receiveAndStoreTokenRecoverably).not.toHaveBeenCalled();
+  });
 
-  it('creates NIP-17 payment requests with relays and a stable request id', async () => {
-    vi.spyOn(crypto, 'randomUUID').mockReturnValueOnce('abcdef12-3456-7890-abcd-ef1234567890')
-    const nip17 = await import('@/lib/nip17')
+  it("keeps read-only mint snapshots detached from store mutation", () => {
+    const known = getKnownMints();
+    known.push({ url: "https://local-only.mint" });
 
-    const result = userCreatePaymentRequest('https://active.mint/')
+    expect(useWalletStore.getState().mints).toHaveLength(1);
+  });
 
-    expect(result.id).toBe('abcdef12')
-    expect(result.encoded).toMatch(/^creq/)
-    expect(nip17.getNostrNprofile).toHaveBeenCalledWith('1'.repeat(64), ['ws://localhost:7777'])
-  })
+  it("routes relay mutations through the settings store", () => {
+    const store = useSettingsStore.getState();
+    userAddRelay("ws://localhost:7778/");
+    userRemoveRelay("ws://localhost:7778");
 
-  it('fails payment request creation when the wallet has no mnemonic', () => {
-    useWalletStore.setState({ mnemonic: '' })
+    expect(store.addRelay).toHaveBeenCalledWith("ws://localhost:7778");
+    expect(store.removeRelay).toHaveBeenCalledWith("ws://localhost:7778");
+  });
 
-    expect(() => userCreatePaymentRequest('https://active.mint')).toThrow('Wallet not set up')
-  })
-})
+  it("keeps relay URL validation in the facade", () => {
+    expect(normalizeRelayUrl(" ws://localhost:7778/ ")).toBe("ws://localhost:7778");
+    expect(getRelayUrlValidationError("https://relay.example")).toBe(
+      "Relay URL must start with wss:// or local ws://",
+    );
+    expect(getRelayUrlValidationError("wss://relay.example")).toBe(
+      "Relay URL must be the configured bitCaster relay or a local relay.",
+    );
+    expect(getRelayUrlValidationError("wss://relay.damus.io")).toBe(
+      "Public Nostr relays are not supported. Use a bitCaster-owned relay.",
+    );
+    expect(() => userAddRelay("https://relay.example")).toThrow(
+      "Relay URL must start with wss:// or local ws://",
+    );
+    expect(() => userAddRelay("wss://nos.lol")).toThrow(
+      "Public Nostr relays are not supported. Use a bitCaster-owned relay.",
+    );
+  });
+
+  it("creates NIP-17 payment requests with relays and a stable request id", async () => {
+    vi.spyOn(crypto, "randomUUID").mockReturnValueOnce("abcdef12-3456-7890-abcd-ef1234567890");
+    const nip17 = await import("@/lib/nip17");
+
+    const result = userCreatePaymentRequest("https://active.mint/");
+
+    expect(result.id).toBe("abcdef12");
+    expect(result.encoded).toMatch(/^creq/);
+    expect(nip17.getNostrNprofile).toHaveBeenCalledWith("1".repeat(64), ["ws://localhost:7777"]);
+  });
+
+  it("fails payment request creation when the wallet has no mnemonic", () => {
+    useWalletStore.setState({ mnemonic: "" });
+
+    expect(() => userCreatePaymentRequest("https://active.mint")).toThrow("Wallet not set up");
+  });
+});

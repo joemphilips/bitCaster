@@ -2,8 +2,8 @@
 
 import { execFile } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { existsSync, readFileSync } from 'node:fs'
-import { readFile } from 'node:fs/promises'
+import { constants, existsSync, readFileSync } from 'node:fs'
+import { open, readFile } from 'node:fs/promises'
 import { normalize } from 'node:path'
 import { stdin as input, stdout as output } from 'node:process'
 import { createInterface } from 'node:readline/promises'
@@ -16,6 +16,7 @@ import {
   validateMarketCreateEngineUrl,
 } from '@bitcaster-market/client-sdk'
 import { Command, CommanderError, Option } from 'commander'
+import { configureDataDir, dataDir } from '@bitcaster-market/daemon/dataDir'
 import {
   callDaemon,
   daemonLogPath,
@@ -25,16 +26,8 @@ import {
   restartDaemon,
   stopDaemon,
 } from './rpc.ts'
-import {
-  configFilePath,
-  readConfig,
-  resolveEngineUrl,
-  resolveMintUrl,
-  writeConfig,
-  type CliConfig,
-} from './config.ts'
+import { configFilePath, readConfig, updateConfig } from './config.ts'
 import type {
-  DaemonCommand,
   DaemonResponse,
   MarketCloseParams,
   MarketCreateParams,
@@ -58,32 +51,24 @@ let globalEngineUrl: string | undefined
 let globalMintUrl: string | undefined
 let globalDryRun = false
 let globalJson = false
-let rootProgram: Command | undefined
 
 const DIRECT_ENGINE_READ_TIMEOUT_MS = 5_000
+const MAX_CASHU_TOKEN_FILE_BYTES = 4 * 1_024 * 1_024
+const MAX_WALLET_SEED_FILE_BYTES = 256
+const TOKEN_FILE_READ_CHUNK_BYTES = 64 * 1_024
 
 await main()
 
 async function main(): Promise<void> {
   const program = new Command()
-  rootProgram = program
   program
     .name('bitcaster-cli')
     .description('Command-line client for bitCaster markets.')
     .version(packageJson.version ?? '0.0.0', '-V, --version')
-    .option('--engine-url <url>', 'Override the matching engine URL for CLI-side reads')
-    .option('--mint-url <url>', 'Override the mint URL for CLI-side operations')
+    .option('--datadir <path>', 'Use one directory for config, wallet state, and daemon files')
     .option('--dry-run', 'Validate and print the intended operation without executing it')
     .option('--json', 'Print JSON output (currently the default)')
-    .addHelpText(
-      'after',
-      `
-Environment:
-  BITCASTER_DAEMON_URL   Override daemon RPC base URL.
-  BITCASTER_DAEMON_PORT  Override default daemon RPC port.
-
-Long-running wallet and swap operations are delegated to bitcaster-daemon.`,
-    )
+    .addHelpText('after', '\nLong-running wallet operations are delegated to bitcaster-daemon.')
     .exitOverride()
     .configureOutput({
       writeOut: (str) => process.stdout.write(str),
@@ -91,15 +76,16 @@ Long-running wallet and swap operations are delegated to bitcaster-daemon.`,
       outputError: (str, write) => write(str),
     })
 
-  program.hook('preAction', () => {
+  program.hook('preAction', (_thisCommand, actionCommand) => {
     const opts = program.opts<{
-      engineUrl?: string
-      mintUrl?: string
+      datadir?: string
       dryRun?: boolean
       json?: boolean
     }>()
-    globalEngineUrl = resolveEngineUrl(opts.engineUrl)
-    globalMintUrl = resolveMintUrl(opts.mintUrl)
+    configureDataDir(opts.datadir)
+    const config = readConfig(commandAllowsMissingConfig(actionCommand))
+    globalEngineUrl = config.engineUrl
+    globalMintUrl = config.mintUrl
     globalDryRun = opts.dryRun === true
     globalJson = opts.json === true
     void globalEngineUrl
@@ -130,6 +116,22 @@ Long-running wallet and swap operations are delegated to bitcaster-daemon.`,
   }
 }
 
+function commandAllowsMissingConfig(command: Command): boolean {
+  const names: string[] = []
+  for (let current: Command | null = command; current?.parent; current = current.parent) {
+    names.unshift(current.name())
+  }
+  const path = names.join(' ')
+  return (
+    path === 'completion' ||
+    path === 'config path' ||
+    path === 'config set' ||
+    path === 'daemon init' ||
+    path === 'daemon config' ||
+    path === 'daemon stop'
+  )
+}
+
 function registerCommands(program: Command): void {
   program
     .command('health')
@@ -141,7 +143,6 @@ function registerCommands(program: Command): void {
   registerMarketCommand(program)
   registerWalletCommand(program)
   registerOrderCommand(program)
-  registerTradeCommand(program)
   registerDaemonCommand(program)
   registerConfigCommand(program)
 
@@ -158,7 +159,10 @@ function registerMarketCommand(program: Command): void {
   const market = program
     .command('market')
     .description('List markets and inspect market details.')
-    .addHelpText('after', '\nExamples:\n  bitcaster-cli market list --search weather --limit 5\n  bitcaster-cli market show <condition-id>')
+    .addHelpText(
+      'after',
+      '\nExamples:\n  bitcaster-cli market list --search weather --limit 5\n  bitcaster-cli market show <condition-id>',
+    )
     .action(async () => {
       await queryMarkets({})
     })
@@ -173,7 +177,10 @@ function registerMarketCommand(program: Command): void {
     .option('--tag <tag...>', 'Category tag filter (repeatable)')
     .option('--creator <pubkey>', 'Creator Nostr pubkey filter')
     .option('--cursor <cursor>', 'Pagination cursor')
-    .addHelpText('after', '\nExamples:\n  bitcaster-cli market list --state Open --sort Trending\n  bitcaster-cli --engine-url https://engine.example market list --tag sports')
+    .addHelpText(
+      'after',
+      '\nExamples:\n  bitcaster-cli market list --state Open --sort Trending\n  bitcaster-cli market list --tag sports',
+    )
     .action(async (options: MarketListOptions) => {
       await queryMarkets(options)
     })
@@ -196,12 +203,22 @@ function registerMarketCommand(program: Command): void {
     .requiredOption('--title <title>', 'Market title')
     .requiredOption('--description <description>', 'Market description')
     .requiredOption('--outcomes <a,b,c>', 'Comma-separated outcome names', parseOutcomeList)
-    .option('--liquidity-sats <n>', 'Initial liquidity in sats', parseIntegerOption('liquidity sats'))
+    .option(
+      '--liquidity-sats <n>',
+      'Initial liquidity in sats',
+      parseIntegerOption('liquidity sats'),
+    )
     .option('--tag <tag...>', 'Category tag (repeatable)')
     .option('--thumbnail <path>', 'Thumbnail file path on the daemon host')
     .option('--trust-engine-url', 'Trust the configured engine URL without prompting')
-    .option('--dry-run', 'Validate and print the would-be market.create params without calling the daemon')
-    .addHelpText('after', '\nExample:\n  bitcaster-cli --dry-run market create --condition-id cond --title "Question" --description "Details" --outcomes YES,NO')
+    .option(
+      '--dry-run',
+      'Validate and print the would-be market.create params without calling the daemon',
+    )
+    .addHelpText(
+      'after',
+      '\nExample:\n  bitcaster-cli --dry-run market create --condition-id cond --title "Question" --description "Details" --outcomes YES,NO',
+    )
     .action(async (options: MarketCreateOptions) => {
       await ensureTrustedAuthedEngineUrl(options.trustEngineUrl === true)
       const params: MarketCreateParams = {
@@ -227,7 +244,10 @@ function registerMarketCommand(program: Command): void {
     .requiredOption('--attestation <event-json|@file>', 'Inline JSON event or @file')
     .option('--trust-engine-url', 'Trust the configured engine URL without prompting')
     .option('--dry-run', 'Validate and print an unsigned close template without calling the daemon')
-    .addHelpText('after', '\nExample:\n  bitcaster-cli --dry-run market close --condition-id cond --attestation @attestation.json')
+    .addHelpText(
+      'after',
+      '\nExample:\n  bitcaster-cli --dry-run market close --condition-id cond --attestation @attestation.json',
+    )
     .action(async (options: MarketCloseOptions) => {
       await ensureTrustedAuthedEngineUrl(options.trustEngineUrl === true)
       const attestationEvent = await parseOracleAttestationOption(options.attestation)
@@ -307,7 +327,10 @@ function registerWalletCommand(program: Command): void {
   const wallet = program
     .command('wallet')
     .description('Manage wallet balance, Cashu tokens, and wallet operations.')
-    .addHelpText('after', '\nExamples:\n  bitcaster-cli wallet balance\n  bitcaster-cli wallet send 25 --mint <url>')
+    .addHelpText(
+      'after',
+      '\nExamples:\n  bitcaster-cli wallet balance\n  bitcaster-cli wallet send 25 --mint <url>',
+    )
 
   wallet
     .command('balance')
@@ -318,17 +341,26 @@ function registerWalletCommand(program: Command): void {
     })
 
   wallet
-    .command('receive <token>')
+    .command('receive')
     .description('Import a Cashu token into the wallet.')
+    .option('--token-file <path>', 'Owner-only file containing the Cashu token')
     .option('--condition-id <id>', 'Condition id for outcome-token imports')
     .option('--outcome-set <id>', 'Outcome set id for outcome-token imports')
-    .addHelpText('after', '\nExamples:\n  bitcaster-cli wallet receive <cashu-token>\n  bitcaster-cli wallet receive <token> --condition-id cond --outcome-set YES')
-    .action(async (token: string, options: { conditionId?: string; outcomeSet?: string }) => {
+    .addHelpText(
+      'after',
+      '\nExamples:\n  bitcaster-cli wallet receive --token-file ./token.cashu\n  bitcaster-cli wallet receive --token-file ./outcome.cashu --condition-id cond --outcome-set YES',
+    )
+    .allowExcessArguments(false)
+    .action(async (options: { tokenFile?: string; conditionId?: string; outcomeSet?: string }) => {
+      if (options.tokenFile === undefined) {
+        throwUsage('wallet receive requires --token-file')
+      }
+      const importedToken = await readPrivateTokenFile(options.tokenFile)
       const params: {
         token: string
         conditionId?: string
         outcomeSetId?: string
-      } = { token }
+      } = { token: importedToken }
       if (options.conditionId !== undefined) params.conditionId = options.conditionId
       if (options.outcomeSet !== undefined) params.outcomeSetId = options.outcomeSet
       if (!!params.conditionId !== !!params.outcomeSetId) {
@@ -340,34 +372,155 @@ function registerWalletCommand(program: Command): void {
     })
 
   wallet
+    .command('recover-seed')
+    .description('Recover deterministic regular and selected CTF proofs from the wallet seed.')
+    .requiredOption(
+      '--wallet-seed-hex-file <path>',
+      'Owner-only file containing the 64-byte wallet seed as lowercase hex',
+    )
+    .requiredOption(
+      '--recovery-id <id>',
+      'Stable recovery job id. Reuse it for later invocations until recovery completes',
+    )
+    .requiredOption('--mint <url>', 'Canonical mint origin')
+    .requiredOption('--unit <unit>', 'Mint unit: sat or msat')
+    .option(
+      '--acknowledge-seed-disclosure',
+      'Acknowledge that recovery discloses deterministic proof candidates to the mint',
+    )
+    .option('--dry-run', 'Validate and print the one-shot recovery request')
+    .allowExcessArguments(false)
+    .action(
+      async (options: {
+        walletSeedHexFile: string
+        recoveryId: string
+        mint: string
+        unit: string
+        acknowledgeSeedDisclosure?: boolean
+        dryRun?: boolean
+      }) => {
+        if (options.acknowledgeSeedDisclosure !== true) {
+          throwUsage('wallet recover-seed requires --acknowledge-seed-disclosure')
+        }
+        if (options.unit !== 'sat' && options.unit !== 'msat') {
+          throwUsage('wallet recover-seed unit must be sat or msat')
+        }
+        if (isDryRun(options)) {
+          printDryRun({
+            recoveryId: options.recoveryId,
+            mintUrl: options.mint,
+            unit: options.unit,
+            walletSeedHex: await readPrivateWalletSeedFile(options.walletSeedHexFile),
+            disclosureAcknowledged: true,
+          })
+          return
+        }
+        await runDaemonCommand([
+          'recover-seed',
+          '--wallet-seed-hex-file',
+          options.walletSeedHexFile,
+          '--recovery-id',
+          options.recoveryId,
+          '--mint',
+          options.mint,
+          '--unit',
+          options.unit,
+          '--acknowledge-seed-disclosure',
+        ])
+      },
+    )
+
+  wallet
     .command('send <amountSats>')
     .description('Prepare an ecash send operation for the requested amount.')
     .option('--mint <url>', 'Mint URL')
     .option('--operation-id <id>', 'Operation id')
-    .option('--dry-run', 'Validate and print the would-be wallet.send params without calling the daemon')
-    .addHelpText('after', '\nExample:\n  bitcaster-cli --dry-run wallet send 25 --mint https://mint.example')
-    .action(async (amountSats: string, options: { mint?: string; operationId?: string; dryRun?: boolean }) => {
-      const params: { amountSats: number; mintUrl?: string; operationId?: string } = {
-        amountSats: parseIntegerArg(amountSats, 'amount sats'),
-      }
-      if (options.mint !== undefined) params.mintUrl = options.mint
-      if (options.operationId !== undefined) params.operationId = options.operationId
+    .option(
+      '--dry-run',
+      'Validate and print the would-be wallet.send params without calling the daemon',
+    )
+    .addHelpText(
+      'after',
+      '\nExample:\n  bitcaster-cli --dry-run wallet send 25 --mint https://mint.example',
+    )
+    .action(
+      async (
+        amountSats: string,
+        options: { mint?: string; operationId?: string; dryRun?: boolean },
+      ) => {
+        const params: { amountSats: number; mintUrl?: string; operationId?: string } = {
+          amountSats: parseIntegerArg(amountSats, 'amount sats'),
+        }
+        if (options.mint !== undefined) params.mintUrl = options.mint
+        if (options.operationId !== undefined) params.operationId = options.operationId
+        if (isDryRun(options)) {
+          printDryRun(params)
+          return
+        }
+        await printDaemonResult(callDaemon({ method: 'wallet.send', params }))
+      },
+    )
+
+  wallet
+    .command('reclaim <transferId>')
+    .description('Reclaim one exact outgoing bearer transfer after a fresh proof-state check.')
+    .option('--dry-run', 'Validate and print the wallet.reclaim request without calling the daemon')
+    .addHelpText('after', '\nExample:\n  bitcaster-cli wallet reclaim <transfer-id>')
+    .action(async (transferId: string, options: { dryRun?: boolean }) => {
+      const params = { transferId }
       if (isDryRun(options)) {
         printDryRun(params)
         return
       }
-      await printDaemonResult(callDaemon({ method: 'wallet.send', params }))
+      await printDaemonResult(callDaemon({ method: 'wallet.reclaim', params }))
     })
 
   registerWalletSplitCommand(wallet, 'split')
+  wallet
+    .command('consolidate-proofs')
+    .description('Consolidate available Cashu proofs through durable bounded mint operations.')
+    .option('--dry-run', 'Validate and print the proof-consolidation request')
+    .addHelpText('after', '\nExample:\n  bitcaster-cli wallet consolidate-proofs')
+    .action(async (options: { dryRun?: boolean }) => {
+      if (isDryRun(options)) {
+        printDryRun({})
+        return
+      }
+      await printDaemonResult(callDaemon({ method: 'wallet.consolidateProofs' }))
+    })
   registerConsolidateCommand(wallet, 'consolidate')
+
+  wallet
+    .command('retire-condition <conditionId>')
+    .description('Redeem winning condition proofs and retain losing proofs for audit.')
+    .option(
+      '--acknowledge',
+      'Acknowledge the current condition, action, and estimated mint fee, then execute.',
+    )
+    .option('--dry-run', 'Print the retirement request without calling the daemon')
+    .addHelpText(
+      'after',
+      '\nRun without --acknowledge to preview the current action and fee.\n' +
+        'Example:\n  bitcaster-cli wallet retire-condition <condition-id>',
+    )
+    .action(async (conditionId: string, options: { acknowledge?: boolean; dryRun?: boolean }) => {
+      const params = { conditionId, acknowledge: options.acknowledge === true }
+      if (isDryRun(options)) {
+        printDryRun(params)
+        return
+      }
+      await printDaemonResult(callDaemon({ method: 'wallet.retireCondition', params }))
+    })
 
   wallet
     .command('operations')
     .description('List prepared or recoverable wallet operations.')
     .option('--kind <kind>', 'Operation kind')
     .option('--state <state>', 'Operation state')
-    .addHelpText('after', '\nExample:\n  bitcaster-cli wallet operations --kind wallet-send --state prepared')
+    .addHelpText(
+      'after',
+      '\nExample:\n  bitcaster-cli wallet operations --kind wallet-send --state prepared',
+    )
     .action(async (options: { kind?: string; state?: string }) => {
       const params: { kind?: string; state?: string } = {}
       if (options.kind !== undefined) params.kind = options.kind
@@ -390,23 +543,35 @@ function registerWalletSplitCommand(wallet: Command, name: string, hidden = fals
     .description('Split regular ecash into a complete conditional outcome set.')
     .option('--mint <url>', 'Mint URL')
     .option('--operation-id <id>', 'Operation id')
-    .option('--dry-run', 'Validate and print the would-be wallet.split params without calling the daemon')
-    .addHelpText('after', '\nExample:\n  bitcaster-cli --dry-run wallet split <condition-id> 100 --mint https://mint.example')
-    .action(async (conditionId: string, amountSats: string, options: { mint?: string; operationId?: string; dryRun?: boolean }) => {
-      const params: {
-        conditionId: string
-        amountSats: number
-        mintUrl?: string
-        operationId?: string
-      } = { conditionId, amountSats: parseIntegerArg(amountSats, 'amount sats') }
-      if (options.mint !== undefined) params.mintUrl = options.mint
-      if (options.operationId !== undefined) params.operationId = options.operationId
-      if (isDryRun(options)) {
-        printDryRun(params)
-        return
-      }
-      await printDaemonResult(callDaemon({ method: 'wallet.splitCompleteSet', params }))
-    })
+    .option(
+      '--dry-run',
+      'Validate and print the would-be wallet.split params without calling the daemon',
+    )
+    .addHelpText(
+      'after',
+      '\nExample:\n  bitcaster-cli --dry-run wallet split <condition-id> 100 --mint https://mint.example',
+    )
+    .action(
+      async (
+        conditionId: string,
+        amountSats: string,
+        options: { mint?: string; operationId?: string; dryRun?: boolean },
+      ) => {
+        const params: {
+          conditionId: string
+          amountSats: number
+          mintUrl?: string
+          operationId?: string
+        } = { conditionId, amountSats: parseIntegerArg(amountSats, 'amount sats') }
+        if (options.mint !== undefined) params.mintUrl = options.mint
+        if (options.operationId !== undefined) params.operationId = options.operationId
+        if (isDryRun(options)) {
+          printDryRun(params)
+          return
+        }
+        await printDaemonResult(callDaemon({ method: 'wallet.splitCompleteSet', params }))
+      },
+    )
 }
 
 function registerConsolidateCommand(parent: Command, name: string, hidden = false): void {
@@ -414,23 +579,38 @@ function registerConsolidateCommand(parent: Command, name: string, hidden = fals
     .command(`${name} [marketId]`, { hidden })
     .description('Consolidate pending CTF market positions through bitcaster-daemon.')
     .option('--all', 'Sweep every market id found in wallet balance')
-    .addOption(new Option(
-      '--strategy <type>',
-      'Consolidation strategy:\n' +
-      '                       merge    - Merge singletons + collateral into the missing complement set\n' +
-      '                       sweep    - Extract collateral from overlapping complement collections\n' +
-      '                       reclaim  - Extract collateral from all mixed positions (default)',
-    ).argParser(parseConsolidationStrategy).default('t3', 'reclaim'))
-    .option('--dry-run', 'Validate and print the would-be consolidation params without calling the daemon')
-    .addHelpText('after', '\nExamples:\n  bitcaster-cli wallet consolidate <market-id> --strategy merge\n  bitcaster-cli --dry-run wallet consolidate --all --strategy reclaim')
-    .action(async (marketId: string | undefined, options: { all?: boolean; strategy: 't1' | 't2' | 't3'; dryRun?: boolean }) => {
-      await handleConsolidate({
-        all: options.all === true,
-        marketId: marketId ?? '',
-        type: options.strategy,
-        dryRun: isDryRun(options),
-      })
-    })
+    .addOption(
+      new Option(
+        '--strategy <type>',
+        'Consolidation strategy:\n' +
+          '                       merge    - Merge singletons + collateral into the missing complement set\n' +
+          '                       sweep    - Extract collateral from overlapping complement collections\n' +
+          '                       reclaim  - Extract collateral from all mixed positions (default)',
+      )
+        .argParser(parseConsolidationStrategy)
+        .default('t3', 'reclaim'),
+    )
+    .option(
+      '--dry-run',
+      'Validate and print the would-be consolidation params without calling the daemon',
+    )
+    .addHelpText(
+      'after',
+      '\nExamples:\n  bitcaster-cli wallet consolidate <market-id> --strategy merge\n  bitcaster-cli --dry-run wallet consolidate --all --strategy reclaim',
+    )
+    .action(
+      async (
+        marketId: string | undefined,
+        options: { all?: boolean; strategy: 't1' | 't2' | 't3'; dryRun?: boolean },
+      ) => {
+        await handleConsolidate({
+          all: options.all === true,
+          marketId: marketId ?? '',
+          type: options.strategy,
+          dryRun: isDryRun(options),
+        })
+      },
+    )
 }
 
 async function handleConsolidate(parsed: ConsolidateArgs): Promise<void> {
@@ -438,12 +618,16 @@ async function handleConsolidate(parsed: ConsolidateArgs): Promise<void> {
     throwUsage('wallet consolidate --all cannot be combined with a market id')
   }
   if (!parsed.all && !parsed.marketId) {
-    throwUsage('Usage: bitcaster-cli wallet consolidate <market-id> [--strategy merge|sweep|reclaim]')
+    throwUsage(
+      'Usage: bitcaster-cli wallet consolidate <market-id> [--strategy merge|sweep|reclaim]',
+    )
   }
   if (parsed.dryRun) {
-    printDryRun(parsed.all
-      ? { all: true, type: parsed.type }
-      : { marketId: parsed.marketId, type: parsed.type })
+    printDryRun(
+      parsed.all
+        ? { all: true, type: parsed.type }
+        : { marketId: parsed.marketId, type: parsed.type },
+    )
     return
   }
   if (parsed.all) {
@@ -477,7 +661,10 @@ function registerOrderCommand(program: Command): void {
   const order = program
     .command('order')
     .description('Submit, inspect, list, cancel orders, and read order books.')
-    .addHelpText('after', '\nExamples:\n  bitcaster-cli order submit --market cond-YES --outcome YES --side Buy --price 42 --amount 100\n  bitcaster-cli order book <market-id>')
+    .addHelpText(
+      'after',
+      '\nExamples:\n  bitcaster-cli order submit --market cond-YES --outcome YES --side Buy --price 4200 --amount 10000\n  bitcaster-cli order book <market-id>',
+    )
 
   order
     .command('submit')
@@ -486,12 +673,36 @@ function registerOrderCommand(program: Command): void {
     .option('--outcome <id>', 'Outcome id')
     .option('--side <side>', 'Order side: buy or sell', parseSide)
     .option('--price <n>', 'Limit price', parseIntegerOption('price'))
-    .option('--amount <sats>', 'Amount in sats', parseIntegerOption('amount sats'))
-    .option('--tif <tif>', 'Time in force: GTC, FAK, or FOK', parseTimeInForce, 'GTC')
+    .option(
+      '--amount <subunits>',
+      'Amount in market subunits',
+      parseIntegerOption('amount subunits'),
+    )
+    .option(
+      '--min-fill <subunits>',
+      'Minimum fill in market subunits (default: one whole tradable unit)',
+      parseIntegerOption('minimum fill subunits'),
+    )
+    .option(
+      '--continue-after-partial-fill',
+      'Create a fresh successor order after a confirmed partial resting-order fill',
+    )
+    .option(
+      '--consolidate-proofs',
+      'Allow bounded proof consolidation before this order (default: off)',
+    )
+    .option('--tif <tif>', 'Time in force: GTC, GTD, FAK, or FOK', parseTimeInForce, 'GTC')
+    .option('--expires-at <time>', 'Required ISO 8601 UTC expiry for GTD', parseIsoDateTime)
     .option('--token-side <side>', 'Token side: Outcome or Complement', parseTokenSide)
     .option('--no-preflight-split', 'Disable preflight complete-set split')
-    .option('--dry-run', 'Validate and print the would-be order.submit params without calling the daemon')
-    .addHelpText('after', '\nExample:\n  bitcaster-cli --dry-run order submit --market cond-YES --outcome YES --side Buy --price 42 --amount 100 --tif FAK')
+    .option(
+      '--dry-run',
+      'Validate and print the would-be order.submit params without calling the daemon',
+    )
+    .addHelpText(
+      'after',
+      '\nExample:\n  bitcaster-cli --dry-run order submit --market cond-YES --outcome YES --side Buy --price 4200 --amount 10000 --tif FAK',
+    )
     .action(async (options: OrderSubmitOptions, command: Command) => {
       const params = orderSubmitParams(options, command.args)
       if (isDryRun(options)) {
@@ -506,9 +717,7 @@ function registerOrderCommand(program: Command): void {
     .description('Show one order by market id and order id.')
     .addHelpText('after', '\nExample:\n  bitcaster-cli order status <market-id> <order-id>')
     .action(async (marketId: string, orderId: string) => {
-      await printDaemonResult(
-        callDaemon({ method: 'order.status', params: { marketId, orderId } }),
-      )
+      await printDaemonResult(callDaemon({ method: 'order.status', params: { marketId, orderId } }))
     })
 
   order
@@ -516,7 +725,10 @@ function registerOrderCommand(program: Command): void {
     .description('List orders, optionally filtered by market or status.')
     .option('--market <market-id>', 'Market id')
     .option('--status <status>', 'Order status')
-    .addHelpText('after', '\nExample:\n  bitcaster-cli order list --market <market-id> --status resting')
+    .addHelpText(
+      'after',
+      '\nExample:\n  bitcaster-cli order list --market <market-id> --status resting',
+    )
     .action(async (options: { market?: string; status?: string }) => {
       const params: { marketId?: string; status?: string } = {}
       if (options.market !== undefined) params.marketId = options.market
@@ -529,15 +741,13 @@ function registerOrderCommand(program: Command): void {
     .description('Cancel an open order.')
     .addHelpText('after', '\nExample:\n  bitcaster-cli order cancel <market-id> <order-id>')
     .action(async (marketId: string, orderId: string) => {
-      await printDaemonResult(
-        callDaemon({ method: 'order.cancel', params: { marketId, orderId } }),
-      )
+      await printDaemonResult(callDaemon({ method: 'order.cancel', params: { marketId, orderId } }))
     })
 
   order
     .command('book <marketId>')
     .description('Show the order book for one market.')
-    .addHelpText('after', '\nExample:\n  bitcaster-cli --engine-url https://engine.example order book <market-id>')
+    .addHelpText('after', '\nExample:\n  bitcaster-cli order book <market-id>')
     .action(async (marketId: string) => {
       await printDirectEngineResultOrDaemon(
         () => fetchOrderBookFromEngine(marketId),
@@ -552,7 +762,11 @@ interface OrderSubmitOptions {
   side?: 'Buy' | 'Sell'
   price?: number
   amount?: number
-  tif: 'FAK' | 'FOK' | 'GTC'
+  minFill?: number
+  continueAfterPartialFill?: boolean
+  consolidateProofs?: boolean
+  tif: 'FAK' | 'FOK' | 'GTC' | 'GTD'
+  expiresAt?: string
   tokenSide?: 'Outcome' | 'Complement'
   preflightSplit: boolean
   dryRun?: boolean
@@ -564,8 +778,12 @@ interface OrderSubmitParams {
   tokenSide: 'Outcome' | 'Complement'
   side: 'Buy' | 'Sell'
   price: number
-  amountSats: number
-  timeInForce: 'FAK' | 'FOK' | 'GTC'
+  amountSubunits: number
+  minimumFillAmountSubunits?: number
+  continueAfterPartialFill: boolean
+  consolidateProofs: boolean
+  timeInForce: 'FAK' | 'FOK' | 'GTC' | 'GTD'
+  expiresAt: string | null
   preflightSplit: boolean
 }
 
@@ -574,14 +792,25 @@ function orderSubmitParams(options: OrderSubmitOptions, positionals: string[]): 
     throwUsage(`Unexpected order submit argument: ${positionals[0]}`)
   }
 
+  const minimumFillAmountSubunits = options.minFill
+  if (options.tif === 'GTD' && options.expiresAt === undefined) {
+    throwUsage('Missing expires-at for GTD order')
+  }
+  if (options.tif !== 'GTD' && options.expiresAt !== undefined) {
+    throwUsage('expires-at is valid only for GTD order')
+  }
   return {
     marketId: requiredArg(options.market, 'market'),
     outcomeId: requiredArg(options.outcome, 'outcome'),
     tokenSide: options.tokenSide ?? 'Outcome',
     side: requiredParsedOption(options.side, 'side'),
     price: requiredParsedOption(options.price, 'price'),
-    amountSats: requiredParsedOption(options.amount, 'amount sats'),
+    amountSubunits: requiredParsedOption(options.amount, 'amount subunits'),
+    ...(minimumFillAmountSubunits === undefined ? {} : { minimumFillAmountSubunits }),
+    continueAfterPartialFill: options.continueAfterPartialFill === true,
+    consolidateProofs: options.consolidateProofs === true,
     timeInForce: options.tif,
+    expiresAt: options.expiresAt ?? null,
     preflightSplit: options.preflightSplit,
   }
 }
@@ -589,54 +818,6 @@ function orderSubmitParams(options: OrderSubmitOptions, positionals: string[]): 
 function requiredParsedOption<T>(value: T | undefined, name: string): T {
   if (value !== undefined) return value
   throwUsage(`Missing ${name}`)
-}
-
-function registerTradeCommand(program: Command): void {
-  const trade = program
-    .command('trade')
-    .description('Recover, list, and watch atomic swap trades.')
-    .addHelpText('after', '\nExamples:\n  bitcaster-cli trade list --market <market-id>\n  bitcaster-cli trade watch <trade-id> --wait')
-
-  trade
-    .command('recover')
-    .description('Resume or repair incomplete atomic swap trades.')
-    .addHelpText('after', '\nExample:\n  bitcaster-cli trade recover')
-    .action(async () => {
-      await printDaemonResult(callDaemon({ method: 'trade.recover' }))
-    })
-
-  trade
-    .command('list')
-    .description('List trades, optionally filtered by market, order, or protocol step.')
-    .option('--market <market-id>', 'Market id')
-    .option('--order <order-id>', 'Order id')
-    .option('--step <step>', 'Protocol step')
-    .addHelpText('after', '\nExample:\n  bitcaster-cli trade list --market <market-id> --order <order-id>')
-    .action(async (options: { market?: string; order?: string; step?: string }) => {
-      const params: { marketId?: string; orderId?: string; step?: string } = {}
-      if (options.market !== undefined) params.marketId = options.market
-      if (options.order !== undefined) params.orderId = options.order
-      if (options.step !== undefined) params.step = options.step
-      await printDaemonResult(callDaemon({ method: 'trade.list', params }))
-    })
-
-  trade
-    .command('watch <tradeId>')
-    .description('Show one trade, or wait until it reaches a terminal state.')
-    .option('--wait', 'Poll until the trade reaches a terminal state')
-    .option('--interval-ms <n>', 'Polling interval in milliseconds', parseIntegerOption('interval ms'), 1_000)
-    .option('--timeout-ms <n>', 'Timeout in milliseconds; 0 disables timeout', parseNonNegativeIntegerOption('timeout ms'), 0)
-    .addHelpText('after', '\nExamples:\n  bitcaster-cli trade watch <trade-id>\n  bitcaster-cli trade watch <trade-id> --wait --timeout-ms 60000')
-    .action(async (tradeId: string, options: TradeWatchOptions) => {
-      if (!options.wait && (options.intervalMs !== 1_000 || options.timeoutMs !== 0)) {
-        throwUsage('trade watch polling options require --wait')
-      }
-      if (options.wait) {
-        await watchTradeUntilTerminal(tradeId, options)
-        return
-      }
-      await printDaemonResult(callDaemon({ method: 'trade.watch', params: { tradeId } }))
-    })
 }
 
 function registerDaemonCommand(program: Command): void {
@@ -658,12 +839,12 @@ function registerDaemonCommand(program: Command): void {
     .description('Update daemon engine and mint endpoint configuration.')
     .option('--engine-url <url>', 'Engine URL')
     .option('--mint-url <url>', 'Mint URL')
-    .addHelpText('after', '\nExample:\n  bitcaster-cli daemon config --engine-url <url> --mint-url <url>')
+    .addHelpText(
+      'after',
+      '\nExample:\n  bitcaster-cli daemon config --engine-url <url> --mint-url <url>',
+    )
     .action(async (options: { engineUrl?: string; mintUrl?: string }) => {
-      const params = daemonConfigParams(options)
-      const response = await callDaemon({ method: 'daemon.config', params })
-      await printDaemonResult(Promise.resolve(response))
-      await handleRestartRequired(response)
+      await setCliConfig(options)
     })
 
   daemon
@@ -687,7 +868,12 @@ function registerDaemonCommand(program: Command): void {
   daemon
     .command('logs')
     .description('Print recent daemon log lines.')
-    .option('--lines <n>', 'Number of log lines to print', parseNonNegativeIntegerOption('lines'), 50)
+    .option(
+      '--lines <n>',
+      'Number of log lines to print',
+      parseNonNegativeIntegerOption('lines'),
+      50,
+    )
     .addHelpText('after', '\nExample:\n  bitcaster-cli daemon logs --lines 100')
     .action(async (options: { lines: number }) => {
       await printDaemonLogs(options.lines)
@@ -696,35 +882,24 @@ function registerDaemonCommand(program: Command): void {
   daemon
     .command('init')
     .description('Initialize daemon profile, wallet seed, Nostr key, and endpoints.')
-    .option('--wallet-seed-hex <hex>', 'Wallet seed hex')
     .option('--wallet-seed-hex-file <path>', 'File containing wallet seed hex')
-    .option('--nostr-secret-key-hex <hex>', 'Nostr secret key hex')
     .option('--nostr-secret-key-hex-file <path>', 'File containing Nostr secret key hex')
-    .option('--engine-url <url>', 'Engine URL')
-    .option('--mint-url <url>', 'Mint URL')
     .option('--force', 'Overwrite existing daemon profile')
-    .addHelpText('after', '\nExample:\n  bitcaster-cli daemon init --engine-url <url> --mint-url <url>')
-    .action(async (options: {
-      walletSeedHex?: string
-      walletSeedHexFile?: string
-      nostrSecretKeyHex?: string
-      nostrSecretKeyHexFile?: string
-      engineUrl?: string
-      mintUrl?: string
-      force?: boolean
-    }) => {
-      const passthrough = ['init']
-      pushOption(passthrough, '--wallet-seed-hex', options.walletSeedHex)
-      pushOption(passthrough, '--wallet-seed-hex-file', options.walletSeedHexFile)
-      pushOption(passthrough, '--nostr-secret-key-hex', options.nostrSecretKeyHex)
-      pushOption(passthrough, '--nostr-secret-key-hex-file', options.nostrSecretKeyHexFile)
-      const rootOptions = rootProgram?.opts<{ engineUrl?: string; mintUrl?: string }>() ?? {}
-      pushOption(passthrough, '--engine-url', options.engineUrl ?? rootOptions.engineUrl)
-      pushOption(passthrough, '--mint-url', options.mintUrl ?? rootOptions.mintUrl)
-      if (options.force === true) passthrough.push('--force')
-      await runDaemonCommand(passthrough)
-      process.stdout.write(`Config: ${configFilePath()}\n`)
-    })
+    .addHelpText('after', '\nExample:\n  bitcaster-cli daemon init')
+    .action(
+      async (options: {
+        walletSeedHexFile?: string
+        nostrSecretKeyHexFile?: string
+        force?: boolean
+      }) => {
+        const passthrough = ['init']
+        pushOption(passthrough, '--wallet-seed-hex-file', options.walletSeedHexFile)
+        pushOption(passthrough, '--nostr-secret-key-hex-file', options.nostrSecretKeyHexFile)
+        if (options.force === true) passthrough.push('--force')
+        await runDaemonCommand(passthrough)
+        process.stdout.write(`Config: ${configFilePath()}\n`)
+      },
+    )
 }
 
 function registerConfigCommand(program: Command): void {
@@ -736,7 +911,8 @@ function registerConfigCommand(program: Command): void {
       `
 Examples:
   bitcaster-cli config set --engine-url <url>
-  bitcaster-cli config set --mint-url <url>`,
+  bitcaster-cli config set --mint-url <url>
+  bitcaster-cli config set --asset-monitoring disabled`,
     )
 
   config
@@ -752,8 +928,9 @@ Examples:
     .description('Set CLI config values and write through to the daemon when reachable.')
     .option('--engine-url <url>', 'Engine URL')
     .option('--mint-url <url>', 'Mint URL')
+    .option('--asset-monitoring <enabled|disabled>', 'Asset monitoring. Disabled is privacy mode.')
     .addHelpText('after', '\nExample:\n  bitcaster-cli config set --engine-url <url>')
-    .action(async (options: { engineUrl?: string; mintUrl?: string }) => {
+    .action(async (options: { engineUrl?: string; mintUrl?: string; assetMonitoring?: string }) => {
       await setCliConfig(options)
     })
 
@@ -774,14 +951,20 @@ Examples:
     })
 }
 
-function daemonConfigParams(options: { engineUrl?: string; mintUrl?: string }): { engineUrl?: string; mintUrl?: string } {
-  const rootOptions = rootProgram?.opts<{ engineUrl?: string; mintUrl?: string }>() ?? {}
+function daemonConfigParams(options: {
+  engineUrl?: string
+  mintUrl?: string
+  assetMonitoring?: string
+}): {
+  engineUrl?: string
+  mintUrl?: string
+} {
   const params: { engineUrl?: string; mintUrl?: string } = {}
-  const engineUrl = options.engineUrl ?? rootOptions.engineUrl
-  const mintUrl = options.mintUrl ?? rootOptions.mintUrl
+  const engineUrl = options.engineUrl
+  const mintUrl = options.mintUrl
   if (engineUrl !== undefined) params.engineUrl = engineUrl
   if (mintUrl !== undefined) params.mintUrl = mintUrl
-  if (!params.engineUrl && !params.mintUrl) {
+  if (!params.engineUrl && !params.mintUrl && options.assetMonitoring === undefined) {
     throwUsage('Usage: bitcaster-cli daemon config [--engine-url <url>] [--mint-url <url>]')
   }
   return params
@@ -793,64 +976,40 @@ function printConfigValue(key?: string): void {
     process.stdout.write(`${JSON.stringify(config, null, 2)}\n`)
     return
   }
-  if (key !== 'engineUrl' && key !== 'mintUrl') {
+  if (key !== 'engineUrl' && key !== 'mintUrl' && key !== 'assetMonitoringEnabled') {
     throwUsage(`Unknown config key: ${key}`)
   }
   const value = config[key]
   process.stdout.write(value === undefined ? 'null\n' : `${JSON.stringify(value)}\n`)
 }
 
-async function setCliConfig(options: { engineUrl?: string; mintUrl?: string }): Promise<void> {
+async function setCliConfig(options: {
+  engineUrl?: string
+  mintUrl?: string
+  assetMonitoring?: string
+}): Promise<void> {
   const params = daemonConfigParams(options)
-  const config: CliConfig = readConfig()
-  if (params.engineUrl !== undefined) config.engineUrl = params.engineUrl
-  if (params.mintUrl !== undefined) config.mintUrl = params.mintUrl
-  writeConfig(config)
-
-  try {
-    const response = await callDaemonWithoutAutostart({ method: 'daemon.config', params })
-    await printDaemonResult(Promise.resolve(response))
-    await handleRestartRequired(response)
-  } catch {
-    process.stderr.write(
-      `daemon not reachable; config.json updated. Run 'bitcaster daemon init' to initialize the daemon. Config written to ${configFilePath()}.\n`,
-    )
-    process.stdout.write(
-      `${JSON.stringify({ ok: true, result: { config, daemonUpdated: false } }, null, 2)}\n`,
-    )
-  }
-}
-
-async function handleRestartRequired(response: unknown): Promise<void> {
-  if (!daemonRestartRequired(response)) return
+  const assetMonitoringEnabled = parseAssetMonitoringOption(options.assetMonitoring)
+  const config = updateConfig((current) => ({
+    ...current,
+    ...(params.engineUrl === undefined ? {} : { engineUrl: params.engineUrl }),
+    ...(params.mintUrl === undefined ? {} : { mintUrl: params.mintUrl }),
+    ...(assetMonitoringEnabled === undefined ? {} : { assetMonitoringEnabled }),
+  }))
   if (await isCliSpawnedDaemonRunning()) {
     await restartDaemon()
-    process.stderr.write('daemon config updated; daemon restarted\n')
-    return
+    process.stderr.write('config.json updated; daemon restarted\n')
+  } else {
+    process.stderr.write('config.json updated; restart bitcaster-daemon to apply changes\n')
   }
-  process.stderr.write('daemon config updated; restart bitcaster-daemon to apply changes\n')
+  process.stdout.write(`${JSON.stringify({ ok: true, result: { config } }, null, 2)}\n`)
 }
 
-function daemonRestartRequired(response: unknown): boolean {
-  if (!response || typeof response !== 'object') return false
-  const daemonResponse = response as { ok?: unknown; result?: unknown }
-  if (daemonResponse.ok !== true || !daemonResponse.result || typeof daemonResponse.result !== 'object') {
-    return false
-  }
-  return (daemonResponse.result as { restartRequired?: unknown }).restartRequired === true
-}
-
-async function callDaemonWithoutAutostart<T = unknown>(
-  command: DaemonCommand,
-): Promise<DaemonResponse<T>> {
-  const previous = process.env.BITCASTER_CLI_AUTOSTART_DAEMON
-  process.env.BITCASTER_CLI_AUTOSTART_DAEMON = '0'
-  try {
-    return await callDaemon<T>(command)
-  } finally {
-    if (previous === undefined) delete process.env.BITCASTER_CLI_AUTOSTART_DAEMON
-    else process.env.BITCASTER_CLI_AUTOSTART_DAEMON = previous
-  }
+function parseAssetMonitoringOption(value: string | undefined): boolean | undefined {
+  if (value === undefined) return undefined
+  if (value === 'enabled') return true
+  if (value === 'disabled') return false
+  throwUsage('asset monitoring must be enabled or disabled')
 }
 
 interface ConsolidateArgs {
@@ -894,11 +1053,15 @@ async function printConsolidationResponse(
     return
   }
   if (response.code === 'ctf-consolidation-no-gain') {
-    process.stderr.write(`Warning: skipped ${options.marketId}: ${response.error ?? 'no net collateral gain'}\n`)
+    process.stderr.write(
+      `Warning: skipped ${options.marketId}: ${response.error ?? 'no net collateral gain'}\n`,
+    )
     return
   }
   if (options.sweep && response.code === 'market-not-pending') {
-    process.stderr.write(`Warning: skipped ${options.marketId}: ${response.error ?? 'market is not pending'}\n`)
+    process.stderr.write(
+      `Warning: skipped ${options.marketId}: ${response.error ?? 'market is not pending'}\n`,
+    )
     return
   }
   process.stderr.write(`${response.error ?? 'consolidation failed'}\n`)
@@ -914,47 +1077,6 @@ function uniqueMarketIdsFromWalletBalance(balance: WalletBalanceResult | undefin
   return [...marketIds].sort()
 }
 
-interface TradeWatchOptions {
-  wait: boolean
-  intervalMs: number
-  timeoutMs: number
-}
-
-async function watchTradeUntilTerminal(
-  tradeId: string,
-  options: TradeWatchOptions,
-): Promise<void> {
-  const startedAt = Date.now()
-  let lastSnapshot = ''
-  while (true) {
-    const response = await callDaemon({ method: 'trade.watch', params: { tradeId } })
-    const snapshot = JSON.stringify(response)
-    if (snapshot !== lastSnapshot) {
-      process.stdout.write(`${snapshot}\n`)
-      lastSnapshot = snapshot
-    }
-    if (isDaemonFailure(response)) {
-      process.exitCode = 1
-      return
-    }
-    if (isTerminalTradeResult(response)) return
-    if (options.timeoutMs > 0 && Date.now() - startedAt >= options.timeoutMs) {
-      process.stderr.write(`Timed out waiting for trade ${tradeId}\n`)
-      process.exitCode = 1
-      return
-    }
-    await sleep(options.intervalMs)
-  }
-}
-
-function isTerminalTradeResult(response: unknown): boolean {
-  if (!response || typeof response !== 'object') return false
-  const result = (response as { result?: unknown }).result
-  if (!result || typeof result !== 'object') return false
-  const step = (result as { step?: unknown }).step
-  return step === 'confirmed' || step === 'refunded' || step === 'Failed'
-}
-
 async function printDirectEngineResultOrDaemon<T>(
   engineCall: () => Promise<unknown>,
   daemonCall: () => Promise<T>,
@@ -968,12 +1090,16 @@ async function printDirectEngineResultOrDaemon<T>(
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`)
   } catch (err) {
     if (isEngineHttpError(err)) {
-      process.stdout.write(`${JSON.stringify({ ok: false, error: engineHttpErrorMessage(err) }, null, 2)}\n`)
+      process.stdout.write(
+        `${JSON.stringify({ ok: false, error: engineHttpErrorMessage(err) }, null, 2)}\n`,
+      )
       process.exitCode = 1
       return
     }
     if (!isNetworkFailure(err) && !isTimeoutFailure(err)) throw err
-    process.stderr.write(`Warning: engine read failed at ${globalEngineUrl}: ${errorMessage(err)}; falling back to daemon\n`)
+    process.stderr.write(
+      `Warning: engine read failed at ${globalEngineUrl}: ${errorMessage(err)}; falling back to daemon\n`,
+    )
     await printDaemonResult(daemonCall())
   }
 }
@@ -1010,16 +1136,18 @@ function directEngineClient(): BitcasterEngineClient {
   if (globalEngineUrl === undefined) throw new Error('engine URL is not configured')
   return new BitcasterEngineClient({
     baseUrl: globalEngineUrl,
-    fetchImpl: (input, init) => fetch(input, {
-      ...init,
-      signal: init?.signal ?? AbortSignal.timeout(DIRECT_ENGINE_READ_TIMEOUT_MS),
-    }),
+    fetchImpl: (input, init) =>
+      fetch(input, {
+        ...init,
+        signal: init?.signal ?? AbortSignal.timeout(DIRECT_ENGINE_READ_TIMEOUT_MS),
+      }),
   })
 }
 
 function isEngineHttpError(value: unknown): value is EngineClientError {
-  return value instanceof EngineClientError || (
-    value instanceof Error && value.name === 'EngineClientError'
+  return (
+    value instanceof EngineClientError ||
+    (value instanceof Error && value.name === 'EngineClientError')
   )
 }
 
@@ -1029,6 +1157,75 @@ function engineHttpErrorMessage(error: EngineClientError): string {
 
 function isTimeoutFailure(value: unknown): boolean {
   return value instanceof Error && (value.name === 'TimeoutError' || value.name === 'AbortError')
+}
+
+async function readPrivateTokenFile(path: string): Promise<string> {
+  if (process.platform === 'win32') {
+    throw new Error(
+      '--token-file is not supported on Windows until ACL and reparse-point validation is available',
+    )
+  }
+  const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW)
+  try {
+    const metadata = await file.stat()
+    if (!metadata.isFile()) throw new Error('--token-file must name a regular file')
+    if ((metadata.mode & 0o077) !== 0) {
+      throw new Error('--token-file must not be accessible by group or other users')
+    }
+    if (metadata.size > MAX_CASHU_TOKEN_FILE_BYTES) {
+      throw new Error(`--token-file exceeds ${MAX_CASHU_TOKEN_FILE_BYTES} bytes`)
+    }
+    const token = (await readBoundedFile(file)).toString('utf8').trim()
+    if (!token) throw new Error('--token-file was empty')
+    return token
+  } finally {
+    await file.close()
+  }
+}
+
+async function readPrivateWalletSeedFile(path: string): Promise<string> {
+  if (process.platform === 'win32') {
+    throw new Error(
+      '--wallet-seed-hex-file is not supported on Windows until ACL and reparse-point validation is available',
+    )
+  }
+  const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW)
+  try {
+    const metadata = await file.stat()
+    if (!metadata.isFile()) {
+      throw new Error('--wallet-seed-hex-file must name a regular file')
+    }
+    if ((metadata.mode & 0o077) !== 0) {
+      throw new Error('--wallet-seed-hex-file must not be accessible by group or other users')
+    }
+    if (metadata.size > MAX_WALLET_SEED_FILE_BYTES) {
+      throw new Error(`--wallet-seed-hex-file exceeds ${MAX_WALLET_SEED_FILE_BYTES} bytes`)
+    }
+    const seed = (await file.readFile('utf8')).trim()
+    if (!/^[0-9a-f]{128}$/.test(seed)) {
+      throw new Error('--wallet-seed-hex-file must contain exactly 128 lowercase hex characters')
+    }
+    return seed
+  } finally {
+    await file.close()
+  }
+}
+
+async function readBoundedFile(file: Awaited<ReturnType<typeof open>>): Promise<Buffer> {
+  const chunks: Buffer[] = []
+  let total = 0
+  while (total <= MAX_CASHU_TOKEN_FILE_BYTES) {
+    const remaining = MAX_CASHU_TOKEN_FILE_BYTES + 1 - total
+    const buffer = Buffer.allocUnsafe(Math.min(TOKEN_FILE_READ_CHUNK_BYTES, remaining))
+    const { bytesRead } = await file.read(buffer, 0, buffer.length, total)
+    if (bytesRead === 0) break
+    chunks.push(buffer.subarray(0, bytesRead))
+    total += bytesRead
+  }
+  if (total > MAX_CASHU_TOKEN_FILE_BYTES) {
+    throw new Error(`--token-file exceeds ${MAX_CASHU_TOKEN_FILE_BYTES} bytes`)
+  }
+  return Buffer.concat(chunks, total)
 }
 
 function errorMessage(value: unknown): string {
@@ -1108,19 +1305,20 @@ function parseTokenSide(value: string): 'Outcome' | 'Complement' {
   throwUsage(`Invalid token side: ${value}`)
 }
 
-function parseTimeInForce(value: string): 'FAK' | 'FOK' | 'GTC' {
+function parseTimeInForce(value: string): 'FAK' | 'FOK' | 'GTC' | 'GTD' {
   const upper = value.toUpperCase()
-  if (upper === 'FAK' || upper === 'FOK' || upper === 'GTC') return upper
+  if (upper === 'FAK' || upper === 'FOK' || upper === 'GTC' || upper === 'GTD') return upper
   throwUsage(`Invalid time in force: ${value}`)
 }
 
+function parseIsoDateTime(value: string): string {
+  const time = Date.parse(value)
+  if (!Number.isFinite(time)) throwUsage(`Invalid ISO 8601 time: ${value}`)
+  return new Date(time).toISOString()
+}
+
 function parseMarketState(value: string): 'Open' | 'Closed' | 'Resolved' | 'All' {
-  if (
-    value === 'Open' ||
-    value === 'Closed' ||
-    value === 'Resolved' ||
-    value === 'All'
-  ) {
+  if (value === 'Open' || value === 'Closed' || value === 'Resolved' || value === 'All') {
     return value
   }
   throwUsage(`Invalid market state: ${value}`)
@@ -1157,10 +1355,10 @@ async function ensureTrustedAuthedEngineUrl(trustEngineUrl: boolean): Promise<vo
       throwValidation(`Engine URL was not trusted: ${globalEngineUrl}`)
     }
   }
-  writeConfig({
-    ...config,
-    trustedEngineUrls: Array.from(new Set([...config.trustedEngineUrls, normalizedEngineUrl])),
-  })
+  updateConfig((current) => ({
+    ...current,
+    trustedEngineUrls: Array.from(new Set([...current.trustedEngineUrls, normalizedEngineUrl])),
+  }))
 }
 
 function normalizeTrustedEngineUrl(value: string): string {
@@ -1174,20 +1372,19 @@ function validateAuthedEngineUrl(value: string): void {
   } catch {
     throwValidation(`Invalid engine URL: ${value}`)
   }
-  const validation = validateMarketCreateEngineUrl(
-    url.toString(),
-    process.env.BITCASTER_ALLOW_INSECURE_ENGINE === '1',
-  )
+  const validation = validateMarketCreateEngineUrl(url.toString(), true)
   if (validation.ok) return
   throwValidation(
-    `Refusing insecure engine URL for market create: ${value}. Use https://, or set BITCASTER_ALLOW_INSECURE_ENGINE=1 for localhost only.`,
+    `Refusing insecure engine URL for market create: ${value}. Use https:// or a loopback URL.`,
   )
 }
 
 async function confirmEngineUrlTrust(engineUrl: string): Promise<boolean> {
   process.stderr.write(`About to use engine URL for authenticated market create: ${engineUrl}\n`)
   if (!process.stdin.isTTY) {
-    throwValidation('Refusing to trust a new engine URL without --trust-engine-url in non-interactive mode')
+    throwValidation(
+      'Refusing to trust a new engine URL without --trust-engine-url in non-interactive mode',
+    )
   }
   const rl = createInterface({ input, output })
   try {
@@ -1198,7 +1395,9 @@ async function confirmEngineUrlTrust(engineUrl: string): Promise<boolean> {
   }
 }
 
-async function parseOracleAttestationOption(value: string): Promise<MarketCloseParams['attestationEvent']> {
+async function parseOracleAttestationOption(
+  value: string,
+): Promise<MarketCloseParams['attestationEvent']> {
   const fromFile = value.startsWith('@')
   const raw = fromFile ? await readAttestationFile(value.slice(1)) : value
   let parsed: unknown
@@ -1206,7 +1405,9 @@ async function parseOracleAttestationOption(value: string): Promise<MarketCloseP
     parsed = JSON.parse(raw)
   } catch {
     if (fromFile) {
-      throwValidation(`Oracle attestation file is not valid JSON (first 80 chars: ${firstChars(raw, 80)})`)
+      throwValidation(
+        `Oracle attestation file is not valid JSON (first 80 chars: ${firstChars(raw, 80)})`,
+      )
     }
     throwValidation('Oracle attestation must be valid JSON')
   }
@@ -1305,13 +1506,9 @@ async function runDaemonCommand(args: string[]): Promise<void> {
   const daemonMain = fileURLToPath(import.meta.resolve('@bitcaster-market/daemon'))
   const result = await execFileAsync(
     process.execPath,
-    ['--experimental-strip-types', daemonMain, ...args],
+    ['--experimental-strip-types', daemonMain, `--datadir=${dataDir()}`, ...args],
     { env: process.env },
   )
   process.stdout.write(result.stdout)
   process.stderr.write(result.stderr)
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms))
 }

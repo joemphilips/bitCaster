@@ -13,6 +13,19 @@ env:
   DOTNET_VERSION: 10.0.x
 
 jobs:
+  formatting:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: recursive
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - run: npm ci --ignore-scripts
+      - run: npm run format:check
+
   dotnet-build:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -39,7 +52,8 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: 22
-      - run: npm ci
+      - run: npm ci --ignore-scripts
+        working-directory: .
       - name: Check kormir-wasm provenance
         working-directory: .
         run: bash tools/check-kormir-wasm-provenance.sh

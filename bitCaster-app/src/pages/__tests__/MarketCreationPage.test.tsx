@@ -1,31 +1,26 @@
-import { render, screen } from '@testing-library/react'
-import userEvent from '@testing-library/user-event'
-import { describe, expect, it, vi } from 'vitest'
-import { MarketCreationPage } from '../MarketCreationPage'
+import { render, screen } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
+import { MarketCreationPage } from "../MarketCreationPage";
 
-const mocks = vi.hoisted(() => ({
-  onBaseAssetChange: vi.fn(),
-}))
-
-vi.mock('@/hooks/useMarketCreationState', () => ({
+vi.mock("@/hooks/useMarketCreationState", () => ({
   useMarketCreationState: () => ({
     draft: {
       currentStep: 3,
-      lastModified: '2026-06-13T00:00:00.000Z',
-      stepGetStarted: { outcomeType: 'categorical' },
+      lastModified: "2026-06-13T00:00:00.000Z",
+      stepGetStarted: { outcomeType: "categorical" },
       stepBasicInfo: {
         imageFile: null,
-        title: 'Market',
+        title: "Market",
         categoryTags: [],
-        closingDate: '',
+        closingDate: "",
       },
       stepOutcomes: {
-        outcomeType: 'categorical',
+        outcomeType: "categorical",
         outcomes: [
-          { id: 'a', label: 'A', description: '', probability: 50 },
-          { id: 'b', label: 'B', description: '', probability: 50 },
+          { id: "a", label: "A", description: "", probability: 50 },
+          { id: "b", label: "B", description: "", probability: 50 },
         ],
-        baseAsset: 'sat',
+        baseAsset: "sat",
       },
       stepReviewAndCreate: null,
     },
@@ -35,7 +30,7 @@ vi.mock('@/hooks/useMarketCreationState', () => ({
     submitError: null,
     registrationFeePrompt: null,
     registrationFeeTopUp: null,
-    registrationFeeTopUpStage: 'closed',
+    registrationFeeTopUpStage: "closed",
     onClose: vi.fn(),
     clearDraft: vi.fn(),
     onNext: vi.fn(),
@@ -54,7 +49,6 @@ vi.mock('@/hooks/useMarketCreationState', () => ({
     onHiBoundChange: vi.fn(),
     onPrecisionChange: vi.fn(),
     onUnitChange: vi.fn(),
-    onBaseAssetChange: mocks.onBaseAssetChange,
     onDescriptionChange: vi.fn(),
     onCreateMarket: vi.fn(),
     onConfirmRegistrationFee: vi.fn(),
@@ -66,28 +60,15 @@ vi.mock('@/hooks/useMarketCreationState', () => ({
     createdMarketOutcomeCount: null,
     createdMarketBaseAsset: null,
   }),
-}))
+}));
 
-vi.mock('@/components/market-creation', () => ({
-  MarketCreationWizard: (props: {
-    onBaseAssetChange?: (value: 'sat' | 'usd' | 'jpy') => void
-  }) => (
-    <div>
-      <button type="button" onClick={() => props.onBaseAssetChange?.('usd')}>
-        choose USD
-      </button>
-    </div>
-  ),
-}))
+vi.mock("@/components/market-creation", () => ({
+  MarketCreationWizard: () => <div>creation wizard</div>,
+}));
 
-describe('MarketCreationPage', () => {
-  it('passes base asset callback through to the creation wizard', async () => {
-    const user = userEvent.setup()
-
-    render(<MarketCreationPage />)
-
-    await user.click(screen.getByRole('button', { name: /choose usd/i }))
-
-    expect(mocks.onBaseAssetChange).toHaveBeenCalledWith('usd')
-  })
-})
+describe("MarketCreationPage", () => {
+  it("renders the sat-only creation wizard", () => {
+    render(<MarketCreationPage />);
+    expect(screen.getByText("creation wizard")).toBeInTheDocument();
+  });
+});

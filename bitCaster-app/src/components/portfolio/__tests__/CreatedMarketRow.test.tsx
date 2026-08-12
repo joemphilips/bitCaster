@@ -13,6 +13,8 @@ function fixture(overrides: Partial<CreatedMarket> = {}): CreatedMarket {
     volume: 0,
     creatorFeesEarned: 0,
     creatorFeePercent: 0,
+    baseAsset: "sat",
+    divisibility: 10_000,
     ...overrides,
   } as CreatedMarket;
 }
@@ -33,7 +35,7 @@ describe("CreatedMarketRow", () => {
     render(
       <CreatedMarketRow
         market={fixture({
-          baseAsset: "usd",
+          baseAsset: "sat",
           volume: 2_500,
           creatorFeesEarned: 125,
           status: "resolved",
@@ -41,9 +43,8 @@ describe("CreatedMarketRow", () => {
       />,
     );
 
-    expect(screen.getByText("Vol: $25.00")).toBeInTheDocument();
-    expect(screen.getByText("$1.25")).toBeInTheDocument();
-    expect(screen.queryByText(/sats/)).not.toBeInTheDocument();
+    expect(screen.getByText("Vol: 2.5 sats")).toBeInTheDocument();
+    expect(screen.getByText("0.125 sats")).toBeInTheDocument();
   });
 
   it("shows a working close-market control inline before the view button", async () => {
@@ -64,9 +65,7 @@ describe("CreatedMarketRow", () => {
 
     const close = screen.getByRole("button", { name: /close market/i });
     const view = screen.getByRole("button", { name: /view/i });
-    expect(
-      close.compareDocumentPosition(view) & Node.DOCUMENT_POSITION_FOLLOWING,
-    ).toBeTruthy();
+    expect(close.compareDocumentPosition(view) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 
     await userEvent.click(close);
 
@@ -74,12 +73,7 @@ describe("CreatedMarketRow", () => {
   });
 
   it("does not show a disabled close-market control when oracle metadata is missing", () => {
-    render(
-      <CreatedMarketRow
-        market={fixture()}
-        onPublishOracleAttestation={vi.fn()}
-      />,
-    );
+    render(<CreatedMarketRow market={fixture()} onPublishOracleAttestation={vi.fn()} />);
 
     expect(screen.queryByRole("button", { name: /close market/i })).toBeNull();
   });

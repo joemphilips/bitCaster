@@ -1,0 +1,365 @@
+import {
+  assertDurableRecipientDeliveryStatusAuthority,
+  deriveDurableRecipientDeliveryResultFingerprint,
+  deriveDurableRecipientTokenAllowance,
+  reconcileDurableRecipientDelivery,
+  type DurableRecipientDeliveryStatus,
+  type DurableRecipientDeliverySubmission,
+} from "@bitcaster/client-sdk/durableRecipientDelivery";
+import {
+  createParticipationScoreDeliveryMetadata,
+  createParticipationScoreDeliverySubmission,
+  participationScoreDeliveryIntent,
+  type ParticipationScoreDeliveryInput,
+} from "@bitcaster/client-sdk/participationScoreDelivery";
+import type { DurableWalletProofDerivationLocator } from "@bitcaster/client-sdk/durableWalletProofDerivationLocator";
+import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
+import {
+  createEncryptedWalletBackupV2AssetIdentity,
+  type EncryptedWalletBackupV2AssetIdentity,
+} from "@bitcaster/client-sdk";
+import type { DurableOutgoingCashuTransfer } from "@bitcaster/client-sdk/durableOutgoingCashuTransfer";
+import {
+  acknowledgeBrowserDurableOutgoingCashuRecipient,
+  executeBrowserDurableOutgoingCashuTransfer,
+  readBrowserDurableOutgoingCashuTransfer,
+  recoverBrowserDurableOutgoingCashuTransfer,
+  type BrowserDurableOutgoingCashuContext,
+} from "@/lib/browserDurableOutgoingCashuTransfer";
+import {
+  prepareBrowserDeterministicOutgoingCashuSend,
+  restoreBrowserDeterministicOutgoingCashuOutputs,
+} from "@/lib/browserDeterministicOutgoingCashu";
+import { captureBrowserMintPersistenceContext, getWalletForUnit } from "@/lib/cashu";
+import { recoverBrowserFundedAsset } from "@/lib/browserFundedAssetRecovery";
+import { getDurableCashuDeliveryStatus, submitDurableCashuDelivery } from "@/lib/markets";
+import { getBoundedCanonicalSatProofs, type StoredProof } from "@/stores/proof-db";
+
+export type ParticipationScoreDeliveryProgress = "pending" | "received" | "credited";
+
+export interface BrowserParticipationScoreDeliveryResult {
+  readonly transfer: DurableOutgoingCashuTransfer;
+  readonly progress: ParticipationScoreDeliveryProgress;
+  readonly delivery: DurableRecipientDeliveryStatus | null;
+}
+
+export class BrowserParticipationScoreInsufficientBalanceError extends Error {
+  constructor(readonly balanceSats: number) {
+    super("browser Participation Score balance is insufficient");
+    this.name = "BrowserParticipationScoreInsufficientBalanceError";
+  }
+}
+
+export class BrowserParticipationScoreConsolidationRequiredError extends Error {
+  constructor() {
+    super("browser Participation Score proofs require consolidation");
+    this.name = "BrowserParticipationScoreConsolidationRequiredError";
+  }
+}
+
+/** Persist one exact sat transfer before its durable-recipient POST. */
+export async function executeBrowserParticipationScoreDelivery(
+  input: ParticipationScoreDeliveryInput,
+): Promise<BrowserParticipationScoreDeliveryResult> {
+  const metadata = createParticipationScoreDeliveryMetadata(input);
+  const context = captureBrowserMintPersistenceContext();
+  const existing = await readBrowserDurableOutgoingCashuTransfer({
+    transferId: metadata.deliveryId,
+    context,
+  });
+  if (existing !== null && existing.token !== null) {
+    return reconcileBrowserParticipationScoreDelivery({
+      transfer: existing,
+      metadata: persistedParticipationScoreMetadata(input, existing),
+      readStatus: getDurableCashuDeliveryStatus,
+      submit: submitDurableCashuDelivery,
+      context,
+    });
+  }
+  const wallet = await getWalletForUnit(metadata.mintUrl, "sat");
+  context.requireCapturedProfile();
+  if (existing !== null) {
+    const recovered = await recoverBrowserDurableOutgoingCashuTransfer({
+      transferId: metadata.deliveryId,
+      wallet,
+      restoreExactOutputs: (restore) =>
+        restoreBrowserDeterministicOutgoingCashuOutputs({
+          wallet,
+          restore,
+          diagnosticLabel: "Participation Score",
+        }),
+      context,
+    });
+    if (recovered === null)
+      throw new Error("Participation Score transfer disappeared during recovery");
+    return reconcileBrowserParticipationScoreDelivery({
+      transfer: recovered,
+      metadata: persistedParticipationScoreMetadata(input, recovered),
+      readStatus: getDurableCashuDeliveryStatus,
+      submit: submitDurableCashuDelivery,
+      context,
+    });
+  }
+
+  const keepLocators: Array<DurableWalletProofDerivationLocator | null> = [];
+  const transfer = await executeBrowserDurableOutgoingCashuTransfer({
+    reuseTransferId: true,
+    transfer: {
+      transferId: metadata.deliveryId,
+      mintUrl: metadata.mintUrl,
+      unit: metadata.unit,
+      requestedAmount: metadata.requestedAmount,
+      deliveryIntent: participationScoreDeliveryIntent({
+        accountSubject: metadata.accountSubject,
+        productBindingSha256: metadata.productBindingSha256,
+        tokenBytesLimit: deriveDurableRecipientTokenAllowance(metadata),
+      }),
+    },
+    preflightFundedAsset: () =>
+      preflightParticipationScoreAsset({
+        context,
+        asset: ordinaryScoreAsset(metadata.mintUrl),
+        requiredAmount: metadata.requestedAmount,
+        mintUrl: metadata.mintUrl,
+      }),
+    prepareWalletSendOperation: async () => {
+      context.requireCapturedProfile();
+      const proofs = await readParticipationScoreCandidates(metadata.mintUrl, context.scopeId);
+      context.requireCapturedProfile();
+      const balanceSats = sumProofs(proofs);
+      if (balanceSats < Number(metadata.requestedAmount)) {
+        throw new BrowserParticipationScoreInsufficientBalanceError(balanceSats);
+      }
+      return prepareBrowserDeterministicOutgoingCashuSend({
+        operationId: `participation-score:${metadata.deliveryId}`,
+        wallet,
+        proofs,
+        amount: Number(metadata.requestedAmount),
+        mintUrl: metadata.mintUrl,
+        unit: "sat",
+        seed: context.seed,
+        keepProofDerivationLocators: keepLocators,
+        diagnosticLabel: "Participation Score",
+      });
+    },
+    keepProofDerivationLocators: keepLocators,
+    wallet,
+    restoreExactOutputs: (restore) =>
+      restoreBrowserDeterministicOutgoingCashuOutputs({
+        wallet,
+        restore,
+        diagnosticLabel: "Participation Score",
+      }),
+    context,
+  });
+  return reconcileBrowserParticipationScoreDelivery({
+    transfer,
+    metadata: persistedParticipationScoreMetadata(input, transfer),
+    readStatus: getDurableCashuDeliveryStatus,
+    submit: submitDurableCashuDelivery,
+    context,
+  });
+}
+
+function ordinaryScoreAsset(mintUrl: string): EncryptedWalletBackupV2AssetIdentity {
+  return createEncryptedWalletBackupV2AssetIdentity({
+    mintUrl,
+    unit: "sat",
+    asset: { kind: "ordinary" },
+  });
+}
+
+async function preflightParticipationScoreAsset(input: {
+  readonly context: ReturnType<typeof captureBrowserMintPersistenceContext>;
+  readonly asset: EncryptedWalletBackupV2AssetIdentity;
+  readonly requiredAmount: string;
+  readonly mintUrl: string;
+}): Promise<void> {
+  const recovery = await recoverBrowserFundedAsset({
+    database: input.context.database,
+    scopeId: input.context.scopeId,
+    seed: input.context.seed,
+    mnemonic: input.context.mnemonic,
+    asset: input.asset,
+    requiredAmount: BigInt(input.requiredAmount),
+    loadPlan: async () =>
+      sumProofs(await readParticipationScoreCandidates(input.mintUrl, input.context.scopeId)) >=
+      Number(input.requiredAmount)
+        ? { kind: "ready" as const }
+        : { kind: "insufficient" as const },
+    isCurrentProfile: () => {
+      input.context.requireCapturedProfile();
+      return true;
+    },
+  });
+  switch (recovery.kind) {
+    case "ready":
+    case "recovered":
+      return;
+    case "unavailable":
+      throw new BrowserParticipationScoreInsufficientBalanceError(0);
+    case "persistent-error":
+      throw new Error("Participation Score asset recovery is unavailable");
+    case "not-recoverable":
+      throw new BrowserParticipationScoreConsolidationRequiredError();
+    default:
+      throw new Error("Participation Score recovery outcome is invalid");
+  }
+}
+
+async function readParticipationScoreCandidates(
+  mintUrl: string,
+  scopeId: string,
+): Promise<StoredProof[]> {
+  return getBoundedCanonicalSatProofs(mintUrl, { scopeId });
+}
+
+/** Reconcile one exact existing delivery. This function never selects fresh proofs. */
+export async function reconcileBrowserParticipationScoreDeliveryIfPresent(input: {
+  readonly deliveryId: string;
+  readonly accountSubject: string;
+  readonly mintUrl: string;
+}): Promise<BrowserParticipationScoreDeliveryResult | null> {
+  const context = captureBrowserMintPersistenceContext();
+  const existing = await readBrowserDurableOutgoingCashuTransfer({
+    transferId: input.deliveryId,
+    context,
+  });
+  if (existing === null) return null;
+  const metadata: ParticipationScoreDeliveryInput = {
+    ...input,
+    mintUrl: existing.mintUrl,
+    requestedAmount: existing.requestedAmount,
+  };
+  if (existing.token !== null) {
+    return reconcileBrowserParticipationScoreDelivery({
+      transfer: existing,
+      metadata,
+      readStatus: getDurableCashuDeliveryStatus,
+      submit: submitDurableCashuDelivery,
+      context,
+    });
+  }
+  const wallet = await getWalletForUnit(existing.mintUrl, "sat");
+  const recovered = await recoverBrowserDurableOutgoingCashuTransfer({
+    transferId: existing.transferId,
+    wallet,
+    restoreExactOutputs: (restore) =>
+      restoreBrowserDeterministicOutgoingCashuOutputs({
+        wallet,
+        restore,
+        diagnosticLabel: "Participation Score",
+      }),
+    context,
+  });
+  if (recovered === null)
+    throw new Error("Participation Score transfer disappeared during recovery");
+  return reconcileBrowserParticipationScoreDelivery({
+    transfer: recovered,
+    metadata,
+    readStatus: getDurableCashuDeliveryStatus,
+    submit: submitDurableCashuDelivery,
+    context,
+  });
+}
+
+/** Reconcile status first. A retry presents only the stored byte-identical token. */
+export async function reconcileBrowserParticipationScoreDelivery(input: {
+  readonly transfer: DurableOutgoingCashuTransfer;
+  readonly metadata: ParticipationScoreDeliveryInput;
+  readonly readStatus: (deliveryId: string) => Promise<DurableRecipientDeliveryStatus | null>;
+  readonly submit: (
+    submission: DurableRecipientDeliverySubmission,
+  ) => Promise<DurableRecipientDeliveryStatus>;
+  readonly context: BrowserDurableOutgoingCashuContext;
+}): Promise<BrowserParticipationScoreDeliveryResult> {
+  if (input.transfer.token === null) {
+    throw new Error("Participation Score transfer has no stored token");
+  }
+  const submission = createParticipationScoreDeliverySubmission({
+    metadata: participationScoreMetadata(input.transfer, input.metadata),
+    token: input.transfer.token.encodedToken,
+  });
+  const status = await reconcileDurableRecipientDelivery({
+    client: {
+      getDurableRecipientDeliveryStatus: input.readStatus,
+      submitDurableRecipientDelivery: input.submit,
+    },
+    submission,
+  });
+  if (status === null) return { transfer: input.transfer, progress: "pending", delivery: null };
+  return persistRecipientStatus(input, submission, status);
+}
+
+function persistedParticipationScoreMetadata(
+  input: ParticipationScoreDeliveryInput,
+  transfer: DurableOutgoingCashuTransfer,
+): ParticipationScoreDeliveryInput {
+  return {
+    ...input,
+    deliveryId: transfer.transferId,
+    mintUrl: transfer.mintUrl,
+    requestedAmount: transfer.requestedAmount,
+  };
+}
+
+async function persistRecipientStatus(
+  input: Parameters<typeof reconcileBrowserParticipationScoreDelivery>[0],
+  submission: DurableRecipientDeliverySubmission,
+  status: DurableRecipientDeliveryStatus,
+): Promise<BrowserParticipationScoreDeliveryResult> {
+  assertDurableRecipientDeliveryStatusAuthority({ expected: submission, status });
+  if (status.state === "pending")
+    return { transfer: input.transfer, progress: "pending", delivery: status };
+  if (
+    input.transfer.deliveryIntent.policy !== "durable-recipient-ack" ||
+    input.transfer.token === null
+  ) {
+    throw new Error("Participation Score transfer is missing recipient delivery authority");
+  }
+  const result = status.result;
+  const transfer = await acknowledgeBrowserDurableOutgoingCashuRecipient({
+    transfer: input.transfer,
+    receipt: {
+      transferId: input.transfer.transferId,
+      expectedSubject: input.transfer.deliveryIntent.expectedSubject,
+      opaqueProductBinding: input.transfer.deliveryIntent.opaqueProductBinding,
+      mintUrl: input.transfer.mintUrl,
+      unit: input.transfer.unit,
+      requestedAmount: input.transfer.requestedAmount,
+      tokenSha256: input.transfer.token.sha256,
+      tokenLength: input.transfer.token.encodedLength,
+      receiveOperationId: result.receiveOperationId,
+      durableResultFingerprint: deriveDurableRecipientDeliveryResultFingerprint(status),
+    },
+    context: input.context,
+  });
+  return { transfer, progress: status.state, delivery: status };
+}
+
+function participationScoreMetadata(
+  transfer: DurableOutgoingCashuTransfer,
+  metadata: ParticipationScoreDeliveryInput,
+) {
+  if (transfer.deliveryIntent.policy !== "durable-recipient-ack") {
+    throw new Error("Participation Score transfer is missing recipient delivery authority");
+  }
+  if (
+    metadata.deliveryId !== transfer.transferId ||
+    metadata.accountSubject !== transfer.deliveryIntent.expectedSubject ||
+    metadata.mintUrl !== transfer.mintUrl ||
+    transfer.unit !== "sat" ||
+    metadata.requestedAmount !== transfer.requestedAmount
+  ) {
+    throw new Error("Participation Score delivery metadata conflicts with the stored transfer");
+  }
+  const durableMetadata = createParticipationScoreDeliveryMetadata(metadata);
+  if (durableMetadata.productBindingSha256 !== transfer.deliveryIntent.opaqueProductBinding) {
+    throw new Error("Participation Score product binding conflicts with the stored transfer");
+  }
+  return durableMetadata;
+}
+
+function sumProofs(proofs: readonly StoredProof[]): number {
+  return proofs.reduce((sum, proof) => sum + amountToNumber(proof.amount), 0);
+}

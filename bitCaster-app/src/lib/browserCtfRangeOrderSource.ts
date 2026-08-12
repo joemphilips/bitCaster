@@ -1,0 +1,868 @@
+import { Amount, type Proof } from "@cashu/cashu-ts";
+import {
+  deriveDurableCustodyOperationId,
+  deriveDurableCustodyScopeId,
+  deriveDurableCustodyWalletId,
+  prepareDurableCustodyExactArtifact,
+  type DurableCustodyOwnerAuthorization,
+  type DurableCustodyRecord,
+  type DurableCustodyScope,
+} from "@bitcaster/client-sdk/durableCustody";
+import {
+  decodeDurableCustodyProofOperationInput,
+  resolveDurableCustodyProofOperationFacts,
+  type DurableCustodyProofOperationInput,
+} from "@bitcaster/client-sdk/durableCustodyProofOperation";
+import { createDurableCustodyProofOperation } from "@bitcaster/client-sdk/durableCustodyProofOperationRecord";
+import {
+  assertDurableCustodyMintOperationAuthority,
+  prepareDurableCustodyMintOperationAuthority,
+  type DurableCustodyVerifiedMintResult,
+} from "@bitcaster/client-sdk/durableCustodyMintResult";
+import { locateSeedDerivedProofLineage } from "@bitcaster/client-sdk/durableSeedDerivedProofLineage";
+import {
+  deserializeDurableCustodyProofArtifact,
+  serializeDurableCustodyProofArtifact,
+} from "@bitcaster/client-sdk/durableCustodyProofMaterial";
+import {
+  assertDurableCtfRangeCustodyAuthority,
+  createDurableCtfRangeCustodyBinding,
+  decodeDurableCtfRangeOperation,
+  toDurableCtfRangeProofOperationInput,
+  type DurableCtfRangeAsset,
+  type DurableCtfRangeMintKeyset,
+  type DurableCtfRangeOperation,
+  type DurableCtfRangeRecoveredResult,
+} from "@bitcaster/client-sdk/durableCtfRangeOperation";
+import { mapDurableCtfRangeSuccessorProofs } from "@bitcaster/client-sdk/durableCtfRangeCustody";
+import type { DurableWalletProofDerivationLocator } from "@bitcaster/client-sdk/durableWalletProofDerivationLocator";
+import {
+  completeCtfRangeOrderAuthorization,
+  prepareCtfRangeOrderAuthorization,
+} from "@bitcaster/client-sdk/ctfRangeOrderPreparation";
+import {
+  ctfRangeSourceKeepDerivationLocators,
+  validateCtfRangeSourceCompletionOperation,
+  type CtfRangeSourceResult,
+} from "@bitcaster/client-sdk/ctfRangeSourceOperation";
+import {
+  ctfRangeOrderPreparationKeysetLookup,
+  encodePersistedCtfRangeOrderPreparation,
+  type CtfRangeConditionalMintKeyset,
+  exactCtfRangeOrderPreparationMintKeysets,
+  type PersistedCtfRangeOrderPreparation,
+} from "@bitcaster/client-sdk/ctfRangeOrderProtocol";
+import type { CreateSettlementCapabilityRequest } from "@bitcaster/client-sdk/engineClient";
+import {
+  createBrowserCustodyProofRow,
+  type BrowserCustodyProofAsset,
+  type BrowserDurableCustodyAdapter,
+  type StagedBrowserCustodyProof,
+} from "../stores/durable-custody-db";
+import type {
+  BrowserCustodyConditionalKeysetAuthority,
+  BrowserCustodyProofRow,
+} from "../stores/durable-custody-types";
+import { normalizeAndValidateStoredProof, type StoredProof } from "../stores/proof-db";
+
+export function browserWalletScope(
+  seed: Uint8Array,
+): Extract<DurableCustodyScope, { scopeKind: "wallet" }> {
+  const walletId = deriveDurableCustodyWalletId(seed);
+  return {
+    scopeKind: "wallet",
+    walletId,
+    scopeId: deriveDurableCustodyScopeId({ scopeKind: "wallet", walletId }),
+  };
+}
+
+export function browserCustodyOperationId(
+  scope: DurableCustodyScope,
+  retainedOperationKey: string,
+): string {
+  return deriveDurableCustodyOperationId(scope.scopeId, {
+    retainedOperationKey,
+    binding: { kind: "wallet", activityId: retainedOperationKey, stage: "send" },
+  });
+}
+
+export function browserSourceCustodyOperationId(
+  scope: DurableCustodyScope,
+  retainedOperationKey: string,
+): string {
+  return deriveDurableCustodyOperationId(scope.scopeId, {
+    retainedOperationKey,
+    binding: {
+      kind: "wallet",
+      activityId: retainedOperationKey,
+      stage: "capability-preparation",
+    },
+  });
+}
+
+export function browserRangeJournalIdentity(
+  scope: DurableCustodyScope,
+  preparation: PersistedCtfRangeOrderPreparation,
+  createdAtMs: number,
+) {
+  return {
+    scopeId: scope.scopeId,
+    rangeOperationId: preparation.operationId,
+    sourceOperationId: preparation.sourceOperationId,
+    sourceKind: preparation.sourceKind,
+    predecessorRangeOperationId: preparation.predecessorRangeOperationId,
+    authorizationId: preparation.authorizationId,
+    clientOrderId: preparation.request.clientOrderId,
+    orderRouteId: preparation.request.marketId,
+    normalizedMint: preparation.mintUrl,
+    conditionId: preparation.conditionId,
+    unit: "msat" as const,
+    tokenSide: preparation.request.tokenSide,
+    side: preparation.side,
+    priceSubunits: preparation.priceNumerator,
+    amountSubunits: preparation.amountSubunits,
+    minimumFillAmountSubunits: preparation.request.minimumFillAmountSubunits,
+    continueAfterPartialFill: false,
+    continuation: null,
+    divisibility: preparation.divisibility,
+    authorizationExpiresAtUnixSeconds: preparation.expiry,
+    preparationBytes: encodePersistedCtfRangeOrderPreparation(preparation),
+    createdAtMs,
+  };
+}
+
+export async function createBrowserRangeSourceBinding(
+  scope: DurableCustodyScope,
+  preparation: PersistedCtfRangeOrderPreparation,
+  seed: Uint8Array,
+  operation: DurableCustodyProofOperationInput,
+) {
+  validateCtfRangeSourceCompletionOperation(operation, {
+    seed,
+    keyset: preparation.offerKeyset,
+  });
+  const facts = await resolveFacts(
+    operation,
+    exactCtfRangeOrderPreparationMintKeysets(preparation),
+    false,
+  );
+  const artifacts = {
+    requestBody: prepareDurableCustodyExactArtifact(operation),
+    output: prepareDurableCustodyExactArtifact(operation.outputs),
+    privateMaterial: prepareDurableCustodyExactArtifact(operation),
+  };
+  return {
+    artifacts,
+    record: createDurableCustodyProofOperation({
+      scope,
+      operation,
+      facts,
+      inventoryAccountId: null,
+      exactBoundary: {
+        method: "POST",
+        path: "/v1/swap",
+        idempotencyKey: operation.operationId,
+        ...artifacts,
+      },
+    }),
+  };
+}
+
+export function createBrowserRangeConsolidationBinding(
+  scope: DurableCustodyScope,
+  preparation: PersistedCtfRangeOrderPreparation,
+  operation: DurableCustodyProofOperationInput,
+) {
+  const authority = prepareDurableCustodyMintOperationAuthority({
+    operation,
+    keysets: rangeConsolidationKeysets(preparation, operation),
+  });
+  return {
+    authority,
+    artifacts: {
+      requestBody: authority.exactRequest,
+      output: authority.exactOutput,
+      privateMaterial: authority.exactAuthority,
+    },
+    record: createDurableCustodyProofOperation({
+      scope,
+      operation,
+      facts: authority.facts,
+      inventoryAccountId: null,
+      exactBoundary: {
+        method: "POST",
+        path: "/v1/swap",
+        idempotencyKey: operation.operationId,
+        requestBody: authority.exactRequest,
+        output: authority.exactOutput,
+        privateMaterial: authority.exactAuthority,
+      },
+    }),
+  };
+}
+
+export function browserRangeConsolidationOperationFromSnapshot(
+  record: DurableCustodyRecord,
+  artifacts: readonly { reference: { artifactId: string }; artifact: { artifact: unknown } }[],
+): DurableCustodyProofOperationInput {
+  const reference = record.operation.privateMaterial.exactPrivateMaterial;
+  const row = findArtifact(
+    artifacts,
+    reference.artifactId,
+    "range consolidation private authority",
+  );
+  const operation = assertDurableCustodyMintOperationAuthority(
+    record,
+    prepareDurableCustodyExactArtifact(row.artifact.artifact),
+  ).operation;
+  if (operation.operationId !== record.operation.retainedOperationKey) {
+    throw new Error("range consolidation private authority is foreign");
+  }
+  return operation;
+}
+
+export function browserRangeConsolidationSuccessorProofRows(input: {
+  readonly record: DurableCustodyRecord;
+  readonly preparation: PersistedCtfRangeOrderPreparation;
+  readonly operation: DurableCustodyProofOperationInput;
+  readonly prepared: DurableCustodyVerifiedMintResult;
+  readonly seed: Uint8Array;
+  readonly receivedAtMs: number;
+}): StagedBrowserCustodyProof[] {
+  const outputPlan = rangeConsolidationOutputPlan(input.operation);
+  const locators = locateSeedDerivedProofLineage({
+    seed: input.seed,
+    keysetId: input.preparation.offerKeyset.id,
+    counterStart: outputPlan.counterStart,
+    counterCount: outputPlan.counterCount,
+    proofs: input.prepared.proofs.map(({ proof }) => ({ id: proof.id, secret: proof.secret })),
+  });
+  const bySecret = new Map(locators.map((locator) => [locator.secret, locator]));
+  const asset = browserRangeSourceAsset(input.preparation);
+  return input.prepared.proofs.map(({ proof }) => {
+    const derivationLocator = bySecret.get(proof.secret);
+    if (derivationLocator === undefined) {
+      throw new Error("range consolidation successor locator is missing");
+    }
+    return {
+      proof: createBrowserCustodyProofRow({
+        scopeId: input.record.scope.scopeId,
+        normalizedMint: input.operation.mintUrl,
+        unit: "msat",
+        proof,
+        asset,
+        receivedAtMs: input.receivedAtMs,
+      }),
+      expectedRevision: null,
+      derivationLocator: {
+        schemaVersion: derivationLocator.schemaVersion,
+        kind: derivationLocator.kind,
+        keysetId: derivationLocator.keysetId,
+        counter: derivationLocator.counter,
+      },
+      conditionalKeyset: preparationConditionalKeyset(input.preparation, proof),
+    };
+  });
+}
+
+function rangeConsolidationKeysets(
+  preparation: PersistedCtfRangeOrderPreparation,
+  operation: DurableCustodyProofOperationInput,
+) {
+  const keysets = exactCtfRangeOrderPreparationMintKeysets(preparation);
+  const ids = new Set([
+    ...operation.inputs.map(({ id }) => id),
+    ...Object.values(operation.outputs).flatMap((outputs) =>
+      outputs.map(({ blindedMessage }) => blindedMessage.id),
+    ),
+  ]);
+  const sourceAsset = browserRangeSourceAsset(preparation);
+  return [...ids].map((id) => {
+    if (id !== preparation.offerKeyset.id || !/^01[0-9a-f]{64}$/.test(id)) {
+      throw new Error("range consolidation keyset authority is foreign");
+    }
+    const keyset = keysets.get(id);
+    if (keyset === undefined) throw new Error("range consolidation keyset authority is missing");
+    return {
+      canonicalMintUrl: keyset.canonicalMintUrl,
+      id: keyset.id,
+      unit: keyset.unit,
+      keys: keyset.keys,
+      inputFeePpk: keyset.inputFeePpk,
+      finalExpiry: keyset.finalExpiry,
+      identity:
+        sourceAsset.kind === "regular"
+          ? ({ kind: "regular" } as const)
+          : {
+              kind: "conditional" as const,
+              conditionId: sourceAsset.conditionId,
+              outcomeCollection: sourceAsset.outcomeCollection,
+              outcomeCollectionId: conditionalKeysetCollectionId(preparation),
+            },
+    };
+  });
+}
+
+function conditionalKeysetCollectionId(preparation: PersistedCtfRangeOrderPreparation): string {
+  const keyset = preparation.offerKeyset as PersistedCtfRangeOrderPreparation["offerKeyset"] & {
+    outcomeCollectionId?: unknown;
+  };
+  if (typeof keyset.outcomeCollectionId !== "string") {
+    throw new Error("range consolidation conditional keyset authority is missing");
+  }
+  return keyset.outcomeCollectionId;
+}
+
+function rangeConsolidationOutputPlan(operation: DurableCustodyProofOperationInput): {
+  counterStart: number;
+  counterCount: number;
+} {
+  const plan = operation.metadata?.outputPlan;
+  if (
+    typeof plan !== "object" ||
+    plan === null ||
+    Array.isArray(plan) ||
+    !Number.isSafeInteger((plan as { counterStart?: unknown }).counterStart) ||
+    !Number.isSafeInteger((plan as { counterCount?: unknown }).counterCount)
+  ) {
+    throw new Error("range consolidation output plan is invalid");
+  }
+  return {
+    counterStart: (plan as { counterStart: number }).counterStart,
+    counterCount: (plan as { counterCount: number }).counterCount,
+  };
+}
+
+export async function createBrowserRangeBinding(
+  scope: DurableCustodyScope,
+  preparation: PersistedCtfRangeOrderPreparation,
+  operation: DurableCtfRangeOperation,
+  request: CreateSettlementCapabilityRequest,
+) {
+  const keysets = exactCtfRangeOrderPreparationMintKeysets(preparation);
+  const facts = await resolveFacts(toDurableCtfRangeProofOperationInput(operation), keysets, true);
+  return createDurableCtfRangeCustodyBinding({
+    scope,
+    operation,
+    facts,
+    mintKeysets: keysets,
+    inventoryAccountId: null,
+    boundary: {
+      method: "POST",
+      path: "/api/v1/settlement-capabilities",
+      idempotencyKey: request.stageIdempotencyKey,
+      requestBody: request,
+    },
+  });
+}
+
+export function completeBrowserRangeOperation(input: {
+  preparation: PersistedCtfRangeOrderPreparation;
+  seed: Uint8Array;
+  proofs: readonly Proof[];
+  allowInsecureLoopbackHttp: boolean;
+}): DurableCtfRangeOperation {
+  const { version: _, request: _request, ...authority } = input.preparation;
+  return completeCtfRangeOrderAuthorization({
+    preparation: prepareCtfRangeOrderAuthorization({ seed: input.seed, ...authority }),
+    inputs: input.proofs,
+    keysetLookup: ctfRangeOrderPreparationKeysetLookup(input.preparation),
+    expiryObservation: input.preparation.expiryObservation,
+    allowInsecureLoopbackHttp: input.allowInsecureLoopbackHttp,
+  });
+}
+
+export function browserSourceProofRows(
+  scope: DurableCustodyScope,
+  preparation: PersistedCtfRangeOrderPreparation,
+  result: CtfRangeSourceResult,
+  receivedAtMs: number,
+): StagedBrowserCustodyProof[] {
+  return [...result.authorization, ...result.keep].map((proof) => ({
+    proof: createProofRow(scope, preparation, proof, receivedAtMs),
+    expectedRevision: null,
+    derivationLocator: null,
+    conditionalKeyset: preparationConditionalKeyset(preparation, proof),
+  }));
+}
+
+export function browserSourceCompletionProofRows(
+  scope: DurableCustodyScope,
+  preparation: PersistedCtfRangeOrderPreparation,
+  operation: DurableCustodyProofOperationInput,
+  result: CtfRangeSourceResult,
+  receivedAtMs: number,
+): StagedBrowserCustodyProof[] {
+  const keepLocators = ctfRangeSourceKeepDerivationLocators(operation, result.keep);
+  const authorization = result.authorization.map((proof) => ({
+    proof: createProofRow(scope, preparation, proof, receivedAtMs),
+    expectedRevision: null,
+    derivationLocator: null,
+    conditionalKeyset: preparationConditionalKeyset(preparation, proof),
+  }));
+  const keep = result.keep.map((proof, index) => ({
+    proof: createProofRow(scope, preparation, proof, receivedAtMs),
+    expectedRevision: null,
+    derivationLocator: keepLocators[index]!,
+    conditionalKeyset: preparationConditionalKeyset(preparation, proof),
+  }));
+  return [...authorization, ...keep];
+}
+
+export function browserPersistedSourceResult(result: CtfRangeSourceResult) {
+  return {
+    schemaVersion: 1 as const,
+    authorization: result.authorization.map(serializeDurableCustodyProofArtifact),
+    keep: result.keep.map(serializeDurableCustodyProofArtifact),
+  };
+}
+
+export function browserSourceOperationFromSnapshot(
+  record: DurableCustodyRecord,
+  artifacts: readonly { reference: { artifactId: string }; artifact: { artifact: unknown } }[],
+): DurableCustodyProofOperationInput {
+  const reference = record.operation.privateMaterial.exactPrivateMaterial;
+  const row = findArtifact(artifacts, reference.artifactId, "range source private authority");
+  const operation = decodeDurableCustodyProofOperationInput(row.artifact.artifact);
+  if (operation.operationId !== record.operation.retainedOperationKey) {
+    throw new Error("range source private authority is foreign");
+  }
+  return operation;
+}
+
+export function browserSourceResultFromSnapshot(
+  record: DurableCustodyRecord,
+  artifacts: readonly { reference: { artifactId: string }; artifact: { artifact: unknown } }[],
+): CtfRangeSourceResult {
+  if (record.operation.result.state !== "verified-staged") {
+    throw new Error("range source result is not staged");
+  }
+  const reference = record.operation.result.exactResult;
+  if (reference === null) throw new Error("range source result reference is missing");
+  const row = findArtifact(artifacts, reference.artifactId, "range source result authority");
+  return decodeBrowserPersistedSourceResult(row.artifact.artifact);
+}
+
+export function browserRangeOperationFromSnapshot(
+  record: DurableCustodyRecord,
+  artifacts: readonly { reference: { artifactId: string }; artifact: { artifact: unknown } }[],
+): DurableCtfRangeOperation {
+  const reference = record.operation.privateMaterial.exactPrivateMaterial;
+  const row = findArtifact(artifacts, reference.artifactId, "range private authority");
+  const operation = decodeDurableCtfRangeOperation(row.artifact.artifact);
+  assertDurableCtfRangeCustodyAuthority(record, operation);
+  return operation;
+}
+
+export function browserRangeCapabilityRequestFromSnapshot(
+  record: DurableCustodyRecord,
+  artifacts: readonly { reference: { artifactId: string }; artifact: { artifact: unknown } }[],
+  expected: CreateSettlementCapabilityRequest,
+): CreateSettlementCapabilityRequest {
+  const reference = record.operation.exactRequest.body;
+  const row = findArtifact(artifacts, reference.artifactId, "range capability request");
+  const persisted = prepareDurableCustodyExactArtifact(row.artifact.artifact);
+  const currentAuthority = prepareDurableCustodyExactArtifact(expected);
+  if (
+    persisted.fingerprint !== reference.fingerprint ||
+    persisted.fingerprint !== currentAuthority.fingerprint
+  ) {
+    throw new Error("range capability request authority is foreign");
+  }
+  return structuredClone(row.artifact.artifact) as CreateSettlementCapabilityRequest;
+}
+
+export function browserRangeSuccessorProofRows(
+  record: DurableCustodyRecord,
+  operation: DurableCtfRangeOperation,
+  result: DurableCtfRangeRecoveredResult,
+  receivedAtMs: number,
+): StagedBrowserCustodyProof[] {
+  return mapDurableCtfRangeSuccessorProofs({ record, operation, result }, (authority) => ({
+    proof: createBrowserCustodyProofRow({
+      scopeId: record.scope.scopeId,
+      normalizedMint: operation.mintUrl,
+      unit: "msat",
+      proof: deserializeDurableCustodyProofArtifact({
+        schemaVersion: 1,
+        id: authority.proof.id,
+        amount: Amount.from(authority.proof.amount).toString(),
+        secret: authority.proof.secret,
+        C: authority.proof.C,
+        dleq: authority.proof.dleq,
+        p2pkE: authority.proof.p2pkE,
+        witness: authority.proof.witness,
+      }),
+      asset: browserProofAsset(authority.classification),
+      receivedAtMs,
+    }),
+    expectedRevision: null,
+    derivationLocator: authority.derivationLocator,
+    conditionalKeyset: operationConditionalKeyset(operation, authority.proof.id),
+  }));
+}
+
+export function browserRangeStoredProofs(
+  operation: DurableCtfRangeOperation,
+  result: DurableCtfRangeRecoveredResult,
+  receivedAtMs: number,
+): StoredProof[] {
+  return [
+    ...result.receive.map((proof) =>
+      browserStoredProof(operation, operation.receiveAsset, proof, receivedAtMs),
+    ),
+    ...result.change.map((proof) =>
+      browserStoredProof(operation, operation.offerAsset, proof, receivedAtMs),
+    ),
+  ];
+}
+
+export function browserRangeRefundStoredProofs(
+  operation: DurableCtfRangeOperation,
+  proofs: readonly Proof[],
+  receivedAtMs: number,
+): StoredProof[] {
+  return proofs.map((proof) =>
+    browserStoredProof(operation, operation.offerAsset, proof, receivedAtMs),
+  );
+}
+
+export function browserRangeRefundProofRows(
+  record: DurableCustodyRecord,
+  operation: DurableCtfRangeOperation,
+  proofs: readonly Proof[],
+  locators: readonly Extract<DurableWalletProofDerivationLocator, { kind: "ctf-range-refund" }>[],
+  receivedAtMs: number,
+): StagedBrowserCustodyProof[] {
+  if (proofs.length !== locators.length)
+    throw new Error("browser refund proof locator count is invalid");
+  const asset = browserCustodyAssetFromRangeAsset(operation.offerAsset);
+  return proofs.map((proof, index) => ({
+    proof: createBrowserCustodyProofRow({
+      scopeId: record.scope.scopeId,
+      normalizedMint: operation.mintUrl,
+      unit: "msat",
+      proof,
+      asset,
+      receivedAtMs,
+    }),
+    expectedRevision: null,
+    derivationLocator: locators[index]!,
+    conditionalKeyset: operationConditionalKeyset(operation, proof.id),
+  }));
+}
+
+function browserCustodyAssetFromRangeAsset(asset: DurableCtfRangeAsset): BrowserCustodyProofAsset {
+  switch (asset.kind) {
+    case "regular":
+      return { kind: "regular" };
+    case "conditional":
+      return {
+        kind: "conditional",
+        conditionId: asset.conditionId,
+        outcomeCollection: asset.outcomeCollection,
+      };
+    default:
+      return assertNever(asset);
+  }
+}
+
+export function decodeBrowserPersistedSourceResult(value: unknown): CtfRangeSourceResult {
+  if (!isRecord(value) || value.schemaVersion !== 1) {
+    throw new Error("range source result authority is invalid");
+  }
+  if (Object.keys(value).sort().join(",") !== "authorization,keep,schemaVersion") {
+    throw new Error("range source result fields are invalid");
+  }
+  if (!Array.isArray(value.authorization) || !Array.isArray(value.keep)) {
+    throw new Error("range source result proof groups are invalid");
+  }
+  if (value.authorization.length + value.keep.length > 512) {
+    throw new Error("range source result exceeds the aggregate proof limit");
+  }
+  return {
+    authorization: decodeProofGroup(value.authorization),
+    keep: decodeProofGroup(value.keep),
+  };
+}
+
+export function requireBrowserStagedResult(record: DurableCustodyRecord): {
+  resultHandle: string;
+  resultFingerprint: string;
+} {
+  const result = record.operation.result;
+  if (
+    result.state !== "verified-staged" ||
+    typeof result.resultHandle !== "string" ||
+    typeof result.resultFingerprint !== "string"
+  ) {
+    throw new Error("range source staged result authority is invalid");
+  }
+  return { resultHandle: result.resultHandle, resultFingerprint: result.resultFingerprint };
+}
+
+export async function requireBrowserCustodyOperation(
+  custody: BrowserDurableCustodyAdapter,
+  scope: DurableCustodyScope,
+  operationId: string,
+): Promise<DurableCustodyRecord> {
+  const record = await custody.readOperation(scope, operationId);
+  if (record === null) throw new Error("browser range custody operation is missing");
+  return record;
+}
+
+export function browserCustodySelection(
+  scope: DurableCustodyScope,
+  owner: DurableCustodyOwnerAuthorization,
+  operationId: string,
+  expectedRevision: number | null,
+) {
+  return { scope, owner, operationRows: [{ operationId, expectedRevision }] };
+}
+
+export function browserOwnerAt(
+  owner: DurableCustodyOwnerAuthorization,
+  observedAtMs: number,
+): DurableCustodyOwnerAuthorization {
+  return { ...owner, observedAtMs };
+}
+
+function createProofRow(
+  scope: DurableCustodyScope,
+  preparation: PersistedCtfRangeOrderPreparation,
+  proof: Proof,
+  receivedAtMs: number,
+): BrowserCustodyProofRow {
+  return createBrowserCustodyProofRow({
+    scopeId: scope.scopeId,
+    normalizedMint: preparation.mintUrl,
+    unit: "msat",
+    proof,
+    asset: browserRangeSourceAsset(preparation),
+    receivedAtMs,
+  });
+}
+
+export function browserRangeSourceAsset(
+  preparation: PersistedCtfRangeOrderPreparation,
+): BrowserCustodyProofAsset {
+  switch (preparation.side) {
+    case "Buy":
+      return { kind: "regular" };
+    case "Sell":
+      return conditionalSourceAsset(preparation);
+    default:
+      return assertNever(preparation.side);
+  }
+}
+
+function conditionalSourceAsset(
+  preparation: PersistedCtfRangeOrderPreparation,
+): BrowserCustodyProofAsset {
+  const keyset = preparation.offerKeyset as PersistedCtfRangeOrderPreparation["offerKeyset"] & {
+    conditionId?: unknown;
+    outcomeCollection?: unknown;
+  };
+  if (typeof keyset.conditionId !== "string" || typeof keyset.outcomeCollection !== "string") {
+    throw new Error("conditional range source asset is invalid");
+  }
+  return {
+    kind: "conditional",
+    conditionId: keyset.conditionId,
+    outcomeCollection: keyset.outcomeCollection,
+  };
+}
+
+function preparationConditionalKeyset(
+  preparation: PersistedCtfRangeOrderPreparation,
+  proof: Proof,
+): BrowserCustodyConditionalKeysetAuthority | undefined {
+  const keyset = preparation.offerKeyset;
+  if (!isConditionalPreparationKeyset(keyset)) return undefined;
+  if (proof.id !== keyset.id) {
+    throw new Error("conditional range source proof keyset is foreign");
+  }
+  return browserConditionalKeysetAuthority({
+    normalizedMint: preparation.mintUrl,
+    keysetId: keyset.id,
+    denominationPublicKeys: keyset.keys,
+    inputFeePpk: keyset.inputFeePpk,
+    conditionId: keyset.conditionId,
+    outcomeCollection: keyset.outcomeCollection,
+    outcomeCollectionId: keyset.outcomeCollectionId,
+    registeredAtUnixSeconds: keyset.registeredAt,
+    finalExpiryUnixSeconds: keyset.finalExpiry,
+  });
+}
+
+function isConditionalPreparationKeyset(
+  value: PersistedCtfRangeOrderPreparation["offerKeyset"],
+): value is CtfRangeConditionalMintKeyset {
+  return (
+    "conditionId" in value &&
+    typeof value.conditionId === "string" &&
+    "outcomeCollection" in value &&
+    typeof value.outcomeCollection === "string" &&
+    "outcomeCollectionId" in value &&
+    typeof value.outcomeCollectionId === "string" &&
+    "registeredAt" in value &&
+    typeof value.registeredAt === "number"
+  );
+}
+
+function operationConditionalKeyset(
+  operation: DurableCtfRangeOperation,
+  proofKeysetId: string,
+): BrowserCustodyConditionalKeysetAuthority | undefined {
+  const authority = [operation.keysetAuthority.offer, operation.keysetAuthority.receive].find(
+    (candidate) => candidate.keysetId === proofKeysetId,
+  );
+  if (authority === undefined) {
+    throw new Error("browser range successor keyset authority is unavailable");
+  }
+  if (authority.source === "regular") return undefined;
+  return browserConditionalKeysetAuthority({
+    normalizedMint: operation.mintUrl,
+    keysetId: authority.keysetId,
+    denominationPublicKeys: authority.denominationPublicKeys,
+    inputFeePpk: authority.inputFeePpk,
+    conditionId: authority.conditionId,
+    outcomeCollection: authority.outcomeCollection,
+    outcomeCollectionId: authority.outcomeCollectionId,
+    registeredAtUnixSeconds: authority.registeredAt,
+    finalExpiryUnixSeconds: authority.finalExpiry,
+  });
+}
+
+function browserConditionalKeysetAuthority(input: {
+  readonly normalizedMint: string;
+  readonly keysetId: string;
+  readonly denominationPublicKeys: Readonly<Record<string, string>> | null;
+  readonly inputFeePpk: number;
+  readonly conditionId: string | null;
+  readonly outcomeCollection: string | null;
+  readonly outcomeCollectionId: string | null;
+  readonly registeredAtUnixSeconds: number | null;
+  readonly finalExpiryUnixSeconds: number | null;
+}): BrowserCustodyConditionalKeysetAuthority {
+  if (
+    input.denominationPublicKeys === null ||
+    input.conditionId === null ||
+    input.outcomeCollection === null ||
+    input.outcomeCollectionId === null ||
+    input.registeredAtUnixSeconds === null
+  ) {
+    throw new Error("browser conditional keyset authority is incomplete");
+  }
+  return {
+    schemaVersion: 1,
+    normalizedMint: input.normalizedMint,
+    unit: "msat",
+    keysetId: input.keysetId,
+    denominationPublicKeys: { ...input.denominationPublicKeys },
+    inputFeePpk: input.inputFeePpk,
+    conditionId: input.conditionId,
+    outcomeCollection: input.outcomeCollection,
+    outcomeCollectionId: input.outcomeCollectionId,
+    registeredAtUnixSeconds: input.registeredAtUnixSeconds,
+    finalExpiryUnixSeconds: input.finalExpiryUnixSeconds,
+    curve: "secp256k1",
+  };
+}
+
+function browserProofAsset(classification: {
+  readonly conditionId: string | null;
+  readonly outcomeSetId: string | null;
+}): BrowserCustodyProofAsset {
+  if (classification.conditionId === null && classification.outcomeSetId === null) {
+    return { kind: "regular" };
+  }
+  if (
+    typeof classification.conditionId === "string" &&
+    typeof classification.outcomeSetId === "string"
+  ) {
+    return {
+      kind: "conditional",
+      conditionId: classification.conditionId,
+      outcomeCollection: classification.outcomeSetId,
+    };
+  }
+  throw new Error("browser range successor asset is incomplete");
+}
+
+function browserStoredProof(
+  operation: DurableCtfRangeOperation,
+  asset: DurableCtfRangeAsset,
+  proof: Proof,
+  receivedAtMs: number,
+): StoredProof {
+  const common: StoredProof = {
+    ...proof,
+    mintUrl: operation.mintUrl,
+    baseAsset: "sat",
+    unit: "msat",
+    receivedAt: receivedAtMs,
+  };
+  switch (asset.kind) {
+    case "regular":
+      return normalizeAndValidateStoredProof(common);
+    case "conditional":
+      return normalizeAndValidateStoredProof({
+        ...common,
+        conditionId: asset.conditionId,
+        outcomeCollection: asset.outcomeCollection,
+        marketId: `${asset.conditionId}-${asset.outcomeCollection}`,
+      });
+    default:
+      return assertNever(asset);
+  }
+}
+
+async function resolveFacts(
+  operation: DurableCustodyProofOperationInput,
+  keysets: ReadonlyMap<string, DurableCtfRangeMintKeyset>,
+  requireDleq: boolean,
+) {
+  return resolveDurableCustodyProofOperationFacts({
+    operation,
+    resolveMintKeys: async (_mintUrl, ids) =>
+      new Map(ids.map((id) => [id, requireMintKeyset(keysets, id)])),
+    requireDleq,
+  });
+}
+
+function requireMintKeyset(keysets: ReadonlyMap<string, DurableCtfRangeMintKeyset>, id: string) {
+  const keyset = keysets.get(id);
+  if (keyset === undefined) throw new Error("range keyset authority is missing");
+  return {
+    id,
+    unit: keyset.unit,
+    keys: keyset.keys,
+    ...(keyset.finalExpiry === null ? {} : { final_expiry: keyset.finalExpiry }),
+  };
+}
+
+function findArtifact<T extends { reference: { artifactId: string } }>(
+  artifacts: readonly T[],
+  artifactId: string,
+  label: string,
+): T {
+  const row = artifacts.find(({ reference }) => reference.artifactId === artifactId);
+  if (row === undefined) throw new Error(`${label} is missing`);
+  return row;
+}
+
+function decodeProofGroup(value: unknown): Proof[] {
+  if (!Array.isArray(value)) {
+    throw new Error("range source result proof group is invalid");
+  }
+  return value.map(deserializeDurableCustodyProofArtifact);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function assertNever(value: never): never {
+  throw new Error(`unhandled browser range source variant: ${String(value)}`);
+}

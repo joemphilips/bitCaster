@@ -1,8 +1,8 @@
-import { MarketCreationWizard } from '@/components/market-creation'
-import { useMarketCreationState } from '@/hooks/useMarketCreationState'
+import { MarketCreationWizard } from "@/components/market-creation";
+import { useMarketCreationState } from "@/hooks/useMarketCreationState";
 
 export function MarketCreationPage() {
-  const state = useMarketCreationState()
+  const state = useMarketCreationState();
 
   return (
     <MarketCreationWizard
@@ -32,7 +32,6 @@ export function MarketCreationPage() {
       onHiBoundChange={state.onHiBoundChange}
       onPrecisionChange={state.onPrecisionChange}
       onUnitChange={state.onUnitChange}
-      onBaseAssetChange={state.onBaseAssetChange}
       onDescriptionChange={state.onDescriptionChange}
       onCreateMarket={state.onCreateMarket}
       onConfirmRegistrationFee={state.onConfirmRegistrationFee}
@@ -44,5 +43,5 @@ export function MarketCreationPage() {
       createdMarketOutcomeCount={state.createdMarketOutcomeCount}
       createdMarketBaseAsset={state.createdMarketBaseAsset}
     />
-  )
+  );
 }

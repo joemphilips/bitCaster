@@ -3,16 +3,21 @@ import type { OracleNostrEvent } from '@bitcaster-market/client-sdk'
 export type DaemonCommand =
   | { method: 'health'; params?: undefined }
   | { method: 'daemon.status'; params?: undefined }
-  | { method: 'daemon.config'; params: { engineUrl?: string; mintUrl?: string } }
   | { method: 'market.create'; params: MarketCreateParams }
   | { method: 'market.close'; params: MarketCloseParams }
   | { method: 'markets.query'; params: QueryMarketsParams }
   | { method: 'markets.show'; params: { conditionId: string } }
   | { method: 'wallet.balance'; params?: undefined }
   | { method: 'wallet.receive'; params: WalletReceiveParams }
-  | { method: 'wallet.send'; params: { amountSats: number; mintUrl?: string; operationId?: string } }
+  | {
+      method: 'wallet.send'
+      params: { amountSats: number; mintUrl?: string; operationId?: string }
+    }
+  | { method: 'wallet.reclaim'; params: { transferId: string } }
   | { method: 'wallet.splitCompleteSet'; params: WalletSplitCompleteSetParams }
   | { method: 'wallet.consolidateMarket'; params: WalletConsolidateMarketParams }
+  | { method: 'wallet.consolidateProofs'; params?: undefined }
+  | { method: 'wallet.retireCondition'; params: WalletRetireConditionParams }
   | { method: 'wallet.operations'; params?: { kind?: string; state?: string } }
   | { method: 'wallet.recover'; params?: undefined }
   | { method: 'order.submit'; params: SubmitOrderParams }
@@ -20,9 +25,6 @@ export type DaemonCommand =
   | { method: 'order.list'; params?: { marketId?: string; status?: string } }
   | { method: 'order.cancel'; params: { marketId: string; orderId: string } }
   | { method: 'order.book'; params: { marketId: string } }
-  | { method: 'trade.list'; params?: { marketId?: string; orderId?: string; step?: string } }
-  | { method: 'trade.recover'; params?: undefined }
-  | { method: 'trade.watch'; params: { tradeId: string } }
 
 export interface SubmitOrderParams {
   marketId: string
@@ -30,9 +32,12 @@ export interface SubmitOrderParams {
   tokenSide?: 'Outcome' | 'Complement'
   side: 'Buy' | 'Sell'
   price: number
-  amountSubunits?: number
-  amountSats?: number
-  timeInForce: 'FAK' | 'FOK' | 'GTC'
+  amountSubunits: number
+  minimumFillAmountSubunits?: number
+  continueAfterPartialFill?: boolean
+  consolidateProofs?: boolean
+  timeInForce: 'FAK' | 'FOK' | 'GTC' | 'GTD'
+  expiresAt?: string | null
   /**
    * Limit-buy maker collateral should be split into a complete set before the
    * order rests. bitcaster-cli sends true by default and false for
@@ -88,6 +93,24 @@ export interface WalletConsolidateMarketParams {
   type: 't1' | 't2' | 't3'
 }
 
+export interface WalletRetireConditionParams {
+  conditionId: string
+  acknowledge: boolean
+}
+
+export interface WalletRetireConditionResult {
+  conditionId: string
+  state: 'preview' | 'retired'
+  action: 'redeem-winning-and-retain-losing'
+  proofCount: number
+  redeemableProofCount: number
+  retainedProofCount: number
+  grossAmountSubunits: number
+  retainedAmountSubunits: number
+  estimatedInputFeeSubunits: number
+  netAmountSubunits: number
+}
+
 export interface WalletConsolidationProofSummary {
   id: string
   amount: number
@@ -118,5 +141,5 @@ export interface DaemonHealth {
   status: 'ok'
   service: 'bitcaster-daemon'
   sdk: '@bitcaster-market/client-sdk'
-  state: 'ready' | 'missing-profile'
+  state: 'ready' | 'custody-recovery-pending' | 'missing-profile'
 }

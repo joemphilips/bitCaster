@@ -1,15 +1,15 @@
-import { useTranslation } from 'react-i18next'
-import type { Position } from '@/types/portfolio'
-import { PositionRow } from './PositionRow'
+import { useTranslation } from "react-i18next";
+import type { Position } from "@/types/portfolio";
+import { PositionRow } from "./PositionRow";
 
 interface PositionsListProps {
-  positions: Position[]
-  positionsTab: 'active' | 'closed'
-  onPositionsTabChange?: (tab: 'active' | 'closed') => void
-  onSellPosition?: (positionId: string) => void
-  onClaimPayout?: (positionId: string) => void
-  onDiscardLostPosition?: (positionId: string) => void
-  onViewPosition?: (positionId: string) => void
+  positions: Position[];
+  positionsTab: "active" | "closed";
+  onPositionsTabChange?: (tab: "active" | "closed") => void;
+  onSellPosition?: (positionId: string) => void;
+  onClaimPayout?: (positionId: string) => void;
+  onDiscardLostPosition?: (positionId: string) => void;
+  onViewPosition?: (positionId: string) => void;
 }
 
 export function PositionsList({
@@ -21,15 +21,15 @@ export function PositionsList({
   onDiscardLostPosition,
   onViewPosition,
 }: PositionsListProps) {
-  const { t } = useTranslation()
-  const filtered = positions.filter((p) => p.status === positionsTab)
+  const { t } = useTranslation();
+  const filtered = positions.filter((p) => p.status === positionsTab);
 
   return (
     <div>
       {/* Sub-tabs */}
       <div className="flex gap-1 mb-3" role="tablist">
-        {(['active', 'closed'] as const).map((tab) => {
-          const count = positions.filter((p) => p.status === tab).length
+        {(["active", "closed"] as const).map((tab) => {
+          const count = positions.filter((p) => p.status === tab).length;
           return (
             <button
               key={tab}
@@ -38,20 +38,22 @@ export function PositionsList({
               onClick={() => onPositionsTabChange?.(tab)}
               className={`px-3 py-1.5 text-sm font-medium rounded-lg transition-colors ${
                 positionsTab === tab
-                  ? 'bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-400'
-                  : 'text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700'
+                  ? "bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-400"
+                  : "text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700"
               }`}
             >
               {t(`common.${tab}`)} ({count})
             </button>
-          )
+          );
         })}
       </div>
 
       {/* Position List */}
       {filtered.length === 0 ? (
         <div className="py-8 text-center text-sm text-slate-400 dark:text-slate-500">
-          {positionsTab === 'active' ? t('portfolio.noActivePositions') : t('portfolio.noClosedPositions')}
+          {positionsTab === "active"
+            ? t("portfolio.noActivePositions")
+            : t("portfolio.noClosedPositions")}
         </div>
       ) : (
         <div className="space-y-1">
@@ -68,5 +70,5 @@ export function PositionsList({
         </div>
       )}
     </div>
-  )
+  );
 }

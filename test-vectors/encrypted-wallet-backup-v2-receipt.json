@@ -1,0 +1,171 @@
+{
+  "inputs": {
+    "mutation": {
+      "seedHex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+      "mutationIdHex": "01010101010101010101010101010101",
+      "auxiliaryRandomnessHex": "0202020202020202020202020202020202020202020202020202020202020202",
+      "initialHead": {
+        "formatVersion": 2,
+        "realm": "backup.production",
+        "walletId": "5ed0beee7d22da58de93adb7ca2fd724849a052f2a9595577eb3fefc3bb48e4e",
+        "enrollmentEpoch": 7,
+        "headVersion": 3,
+        "activeBundleCount": 1,
+        "activeObjectCount": 1,
+        "activeSetDigest": "e3df187ac81be46969a8a6b6a96c75b92f3452c223efb986e9b087be941364af"
+      },
+      "existingBundle": {
+        "formatVersion": 2,
+        "realm": "backup.production",
+        "walletId": "5ed0beee7d22da58de93adb7ca2fd724849a052f2a9595577eb3fefc3bb48e4e",
+        "bundleId": "00000000000000000000000000000001",
+        "assetLocator": "2121212121212121212121212121212121212121212121212121212121212121",
+        "declaredAmount": 1,
+        "custodyRevision": 1,
+        "payloadCommitment": "0000000000000000000000000000000000000000000000000000000000000021",
+        "objects": [
+          {
+            "objectId": "00000000000000000000000000000031",
+            "digest": "0000000000000000000000000000000000000000000000000000000000000041"
+          }
+        ]
+      },
+      "addedBundle": {
+        "formatVersion": 2,
+        "realm": "backup.production",
+        "walletId": "5ed0beee7d22da58de93adb7ca2fd724849a052f2a9595577eb3fefc3bb48e4e",
+        "bundleId": "00000000000000000000000000000002",
+        "assetLocator": "2121212121212121212121212121212121212121212121212121212121212121",
+        "declaredAmount": 1,
+        "custodyRevision": 2,
+        "payloadCommitment": "0000000000000000000000000000000000000000000000000000000000000022",
+        "objects": [
+          {
+            "objectId": "00000000000000000000000000000032",
+            "digest": "0000000000000000000000000000000000000000000000000000000000000042"
+          }
+        ]
+      }
+    },
+    "receiptSigner": {
+      "privateKeyHex": "0303030303030303030303030303030303030303030303030303030303030303",
+      "auxiliaryRandomnessHex": "0404040404040404040404040404040404040404040404040404040404040404",
+      "keyId": "44444444444444444444444444444444",
+      "publicKey": "531fe6068134503d2723133227c867ac8fa6c83c537e9a44c3c5bdbdcb1fe337"
+    },
+    "reachability": {
+      "head": {
+        "formatVersion": 2,
+        "realm": "backup.production",
+        "walletId": "5ed0beee7d22da58de93adb7ca2fd724849a052f2a9595577eb3fefc3bb48e4e",
+        "enrollmentEpoch": 7,
+        "headVersion": 4,
+        "activeBundleCount": 1,
+        "activeObjectCount": 1,
+        "activeSetDigest": "1a837634e3009faf4207082c38dcda1cae2f548e81fbcc9b80f4ed55478fede3"
+      },
+      "pages": [
+        {
+          "head": {
+            "formatVersion": 2,
+            "realm": "backup.production",
+            "walletId": "5ed0beee7d22da58de93adb7ca2fd724849a052f2a9595577eb3fefc3bb48e4e",
+            "enrollmentEpoch": 7,
+            "headVersion": 4,
+            "activeBundleCount": 1,
+            "activeObjectCount": 1,
+            "activeSetDigest": "1a837634e3009faf4207082c38dcda1cae2f548e81fbcc9b80f4ed55478fede3"
+          },
+          "afterBundleId": null,
+          "bundles": [
+            {
+              "formatVersion": 2,
+              "realm": "backup.production",
+              "walletId": "5ed0beee7d22da58de93adb7ca2fd724849a052f2a9595577eb3fefc3bb48e4e",
+              "bundleId": "00000000000000000000000000000002",
+              "assetLocator": "2121212121212121212121212121212121212121212121212121212121212121",
+              "declaredAmount": 1,
+              "custodyRevision": 2,
+              "payloadCommitment": "0000000000000000000000000000000000000000000000000000000000000022",
+              "objects": [
+                {
+                  "objectId": "00000000000000000000000000000032",
+                  "digest": "0000000000000000000000000000000000000000000000000000000000000042"
+                }
+              ]
+            }
+          ],
+          "nextAfterBundleId": null
+        }
+      ]
+    }
+  },
+  "expected": {
+    "signedMutation": {
+      "mutation": {
+        "formatVersion": 2,
+        "kind": "bundle-supersession",
+        "realm": "backup.production",
+        "walletId": "5ed0beee7d22da58de93adb7ca2fd724849a052f2a9595577eb3fefc3bb48e4e",
+        "enrollmentEpoch": 7,
+        "mutationId": "01010101010101010101010101010101",
+        "expectedHeadVersion": 3,
+        "expectedActiveSetDigest": "e3df187ac81be46969a8a6b6a96c75b92f3452c223efb986e9b087be941364af",
+        "addedBundle": {
+          "formatVersion": 2,
+          "realm": "backup.production",
+          "walletId": "5ed0beee7d22da58de93adb7ca2fd724849a052f2a9595577eb3fefc3bb48e4e",
+          "bundleId": "00000000000000000000000000000002",
+          "assetLocator": "2121212121212121212121212121212121212121212121212121212121212121",
+          "declaredAmount": 1,
+          "custodyRevision": 2,
+          "payloadCommitment": "0000000000000000000000000000000000000000000000000000000000000022",
+          "objects": [
+            {
+              "objectId": "00000000000000000000000000000032",
+              "digest": "0000000000000000000000000000000000000000000000000000000000000042"
+            }
+          ]
+        },
+        "supersededBundleIds": ["00000000000000000000000000000001"]
+      },
+      "requestAuthPublicKey": "8941fb08484ecf59ea6d3e331eb7a38736f80ddf5c27cd009b5326c9950baa94",
+      "requestDigest": "0d7340aa5f7976df9b4b3b11fb3f73df4c5e6a4710c327f924cb49f35f010e29",
+      "signature": "a2c680149a9e0bd77ef6f7c12819b0fd65a1eebc761e96f927f42631a8f2c37b4c5c761819524398b35273d7e84f2c42b3af498bd6fa3d01a54bd250679c6a94"
+    },
+    "receiptDigest": "c939ec9d2087c4c9ba84e298b9ce118519b5ce5b1fcb3f640481d2fec0012845",
+    "receipt": {
+      "formatVersion": 2,
+      "kind": "bundle-supersession-receipt",
+      "realm": "backup.production",
+      "walletId": "5ed0beee7d22da58de93adb7ca2fd724849a052f2a9595577eb3fefc3bb48e4e",
+      "enrollmentEpoch": 7,
+      "requestAuthPublicKey": "8941fb08484ecf59ea6d3e331eb7a38736f80ddf5c27cd009b5326c9950baa94",
+      "mutationId": "01010101010101010101010101010101",
+      "requestDigest": "0d7340aa5f7976df9b4b3b11fb3f73df4c5e6a4710c327f924cb49f35f010e29",
+      "previousHeadVersion": 3,
+      "previousActiveSetDigest": "e3df187ac81be46969a8a6b6a96c75b92f3452c223efb986e9b087be941364af",
+      "resultHead": {
+        "formatVersion": 2,
+        "realm": "backup.production",
+        "walletId": "5ed0beee7d22da58de93adb7ca2fd724849a052f2a9595577eb3fefc3bb48e4e",
+        "enrollmentEpoch": 7,
+        "headVersion": 4,
+        "activeBundleCount": 1,
+        "activeObjectCount": 1,
+        "activeSetDigest": "1a837634e3009faf4207082c38dcda1cae2f548e81fbcc9b80f4ed55478fede3"
+      },
+      "bundleId": "00000000000000000000000000000002",
+      "bundleDescriptorDigest": "11f30bc07bfc2910b823a70b911389b7d7b4d318217547543a4d9174c7d19897",
+      "finalizedObjects": [
+        {
+          "objectId": "00000000000000000000000000000032",
+          "digest": "0000000000000000000000000000000000000000000000000000000000000042"
+        }
+      ],
+      "supersededBundleIds": ["00000000000000000000000000000001"],
+      "signingKeyId": "44444444444444444444444444444444",
+      "signature": "4feb1cedfb17250d6426db8d42959c524f5c580a175b2e6020f9b8972a1cbc0ad8969bdeb144b4d499bdbb522612e09873ca8822e16d4d15ff126d87cd62a831"
+    }
+  }
+}

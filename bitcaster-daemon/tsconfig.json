@@ -17,8 +17,7 @@
     "paths": {
       "@cashu/cashu-ts": ["../cashu-ts/lib/types/index.d.ts"],
       "@bitcaster-market/client-sdk": ["../bitcaster-client-sdk/src/index.ts"],
-      "@bitcaster-market/client-sdk/*": ["../bitcaster-client-sdk/src/*"],
-      "@bitcaster-market/swap-protocol/*": ["../bitCaster-swap-protocol/src/*"]
+      "@bitcaster-market/client-sdk/*": ["../bitcaster-client-sdk/src/*"]
     }
   },
   "include": ["src"]

@@ -22,17 +22,11 @@ describe("relay defaults", () => {
 
     const module = await import("../relayDefaults");
 
-    expect(module.DEFAULT_NOSTR_RELAYS).toEqual([
-      "ws://localhost:7778",
-      "ws://localhost:7779",
-    ]);
+    expect(module.DEFAULT_NOSTR_RELAYS).toEqual(["ws://localhost:7778", "ws://localhost:7779"]);
   });
 
   it("requires an allowlisted origin for configured remote relays", async () => {
-    vi.stubEnv(
-      "VITE_NOSTR_RELAYS",
-      "wss://relay.app.example,wss://relay.other.example",
-    );
+    vi.stubEnv("VITE_NOSTR_RELAYS", "wss://relay.app.example,wss://relay.other.example");
     vi.stubEnv("VITE_NOSTR_ALLOWED_RELAY_ORIGINS", "wss://relay.app.example");
     vi.resetModules();
 
@@ -88,10 +82,7 @@ describe("relay defaults", () => {
     const module = await import("../relayDefaults");
 
     expect(
-      module.effectiveRelayUrls([
-        { url: "wss://nos.lol" },
-        { url: "wss://relay.primal.net" },
-      ]),
+      module.effectiveRelayUrls([{ url: "wss://nos.lol" }, { url: "wss://relay.primal.net" }]),
     ).toEqual(["wss://nos.lol", "wss://relay.primal.net"]);
   });
 
@@ -128,14 +119,8 @@ describe("relay defaults", () => {
   });
 
   it("drops known public relays even when a path or query is present", async () => {
-    vi.stubEnv(
-      "VITE_NOSTR_RELAYS",
-      "wss://relay.damus.io/some-path?x=1,wss://relay.app.example",
-    );
-    vi.stubEnv(
-      "VITE_NOSTR_ALLOWED_RELAY_ORIGINS",
-      "wss://relay.damus.io,wss://relay.app.example",
-    );
+    vi.stubEnv("VITE_NOSTR_RELAYS", "wss://relay.damus.io/some-path?x=1,wss://relay.app.example");
+    vi.stubEnv("VITE_NOSTR_ALLOWED_RELAY_ORIGINS", "wss://relay.damus.io,wss://relay.app.example");
     vi.resetModules();
 
     const module = await import("../relayDefaults");

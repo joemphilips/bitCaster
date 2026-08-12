@@ -1,11 +1,11 @@
 export interface DebounceOptions {
-  leading?: boolean
-  trailing?: boolean
+  leading?: boolean;
+  trailing?: boolean;
 }
 
 export interface DebouncedFunction<TArgs extends unknown[]> {
-  (...args: TArgs): void
-  cancel: () => void
+  (...args: TArgs): void;
+  cancel: () => void;
 }
 
 export function debounce<TArgs extends unknown[]>(
@@ -13,42 +13,42 @@ export function debounce<TArgs extends unknown[]>(
   waitMs: number,
   options: DebounceOptions = {},
 ): DebouncedFunction<TArgs> {
-  const leading = options.leading ?? false
-  const trailing = options.trailing ?? true
-  let timer: ReturnType<typeof setTimeout> | null = null
-  let latestArgs: TArgs | null = null
-  let hasPendingTrailing = false
+  const leading = options.leading ?? false;
+  const trailing = options.trailing ?? true;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let latestArgs: TArgs | null = null;
+  let hasPendingTrailing = false;
 
   const clear = () => {
-    if (timer !== null) clearTimeout(timer)
-    timer = null
-  }
+    if (timer !== null) clearTimeout(timer);
+    timer = null;
+  };
 
   const debounced = ((...args: TArgs) => {
-    latestArgs = args
+    latestArgs = args;
     if (leading && timer === null) {
-      fn(...args)
-      hasPendingTrailing = false
+      fn(...args);
+      hasPendingTrailing = false;
     } else {
-      hasPendingTrailing = true
+      hasPendingTrailing = true;
     }
 
-    clear()
+    clear();
     timer = setTimeout(() => {
-      timer = null
+      timer = null;
       if (trailing && latestArgs && (!leading || hasPendingTrailing)) {
-        fn(...latestArgs)
+        fn(...latestArgs);
       }
-      latestArgs = null
-      hasPendingTrailing = false
-    }, waitMs)
-  }) as DebouncedFunction<TArgs>
+      latestArgs = null;
+      hasPendingTrailing = false;
+    }, waitMs);
+  }) as DebouncedFunction<TArgs>;
 
   debounced.cancel = () => {
-    clear()
-    latestArgs = null
-    hasPendingTrailing = false
-  }
+    clear();
+    latestArgs = null;
+    hasPendingTrailing = false;
+  };
 
-  return debounced
+  return debounced;
 }

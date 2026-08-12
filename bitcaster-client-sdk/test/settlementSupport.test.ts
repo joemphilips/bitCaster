@@ -7,10 +7,7 @@ import {
 } from '../src/settlementSupport.ts'
 
 test('checkOrderSettlementSupport allows direct CTF sell by default', () => {
-  assert.deepEqual(
-    checkOrderSettlementSupport({ request: { side: 'Sell' } }),
-    { supported: true },
-  )
+  assert.deepEqual(checkOrderSettlementSupport({ request: { side: 'Sell' } }), { supported: true })
 })
 
 test('checkOrderSettlementSupport rejects direct CTF sell when disabled for old mints', () => {

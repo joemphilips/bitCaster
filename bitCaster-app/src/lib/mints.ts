@@ -18,8 +18,8 @@ import {
 
 export interface MintCapabilities {
   /** Mint advertises NUT-CTF support (the conditional-token framework). */
-  ctf: boolean
-  ctfSettings?: CtfMintSettings
+  ctf: boolean;
+  ctfSettings?: CtfMintSettings;
 }
 
 export function getMintIconUrl(
@@ -27,16 +27,16 @@ export function getMintIconUrl(
   info: Record<string, unknown> | undefined | null,
 ): string | undefined {
   const explicit =
-    typeof info?.icon_url === 'string'
+    typeof info?.icon_url === "string"
       ? info.icon_url
-      : typeof info?.iconUrl === 'string'
+      : typeof info?.iconUrl === "string"
         ? info.iconUrl
-        : undefined
-  if (explicit) return explicit
+        : undefined;
+  if (explicit) return explicit;
   try {
-    return new URL('/favicon.ico', mintUrl).toString()
+    return new URL("/favicon.ico", mintUrl).toString();
   } catch {
-    return undefined
+    return undefined;
   }
 }
 
@@ -49,26 +49,22 @@ export function getMintIconUrl(
 export function detectMintCapabilities(
   info: Record<string, unknown> | undefined | null,
 ): MintCapabilities {
-  if (info == null) return { ctf: false }
-  const nuts = info.nuts as Record<string, unknown> | undefined
-  if (nuts == null) return { ctf: false }
-  const ctfRaw = nuts.CTF
+  if (info == null) return { ctf: false };
+  const nuts = info.nuts as Record<string, unknown> | undefined;
+  if (nuts == null) return { ctf: false };
+  const ctfRaw = nuts.CTF;
   const ctf =
-    ctfRaw != null && typeof ctfRaw === 'object'
-      ? (ctfRaw as Record<string, unknown>)
-      : undefined
+    ctfRaw != null && typeof ctfRaw === "object" ? (ctfRaw as Record<string, unknown>) : undefined;
   return {
     ctf: ctfRaw != null,
     ctfSettings: ctf == null ? undefined : parseCtfSettings(ctf),
-  }
+  };
 }
 
-function parseCtfSettings(
-  ctf: Record<string, unknown>,
-): CtfMintSettings | undefined {
+function parseCtfSettings(ctf: Record<string, unknown>): CtfMintSettings | undefined {
   try {
-    return parseCtfSettingsFromMintInfo({ nuts: { CTF: ctf } })
+    return parseCtfSettingsFromMintInfo({ nuts: { CTF: ctf } });
   } catch {
-    return undefined
+    return undefined;
   }
 }

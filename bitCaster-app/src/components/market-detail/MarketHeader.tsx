@@ -13,10 +13,7 @@ import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router";
 import type { MarketDetail } from "@/types/market-detail";
-import {
-  formatMarketSubunits,
-  normalizeMarketBaseAsset,
-} from "@bitcaster/client-sdk/marketUnits";
+import { formatMarketSubunits, normalizeMarketBaseAsset } from "@bitcaster/client-sdk/marketUnits";
 import { fetchPublicNostrProfile, type PublicNostrProfile } from "@/lib/nostr";
 import { getMintIconUrl } from "@/lib/mints";
 import { assertNever } from "@/lib/enumDiscipline";
@@ -34,8 +31,7 @@ function formatCreatorNpub(creatorId: string): string | null {
   const trimmed = creatorId.trim();
   if (!trimmed || trimmed === "unknown") return null;
   if (trimmed.startsWith("npub1")) return trimmed;
-  if (HexPubkeyPattern.test(trimmed))
-    return nip19.npubEncode(trimmed.toLowerCase());
+  if (HexPubkeyPattern.test(trimmed)) return nip19.npubEncode(trimmed.toLowerCase());
   return trimmed;
 }
 
@@ -105,9 +101,7 @@ export function MarketHeader({ market, onShare }: MarketHeaderProps) {
   const navigate = useNavigate();
   const baseAsset = normalizeMarketBaseAsset(market.baseAsset);
   const activeMintUrl = useWalletStore((s) => s.activeMintUrl);
-  const activeMint = useWalletStore((s) =>
-    s.mints.find((m) => m.url === activeMintUrl),
-  );
+  const activeMint = useWalletStore((s) => s.mints.find((m) => m.url === activeMintUrl));
   const isResolved = market.resolution.status === "resolved";
   const isEngineClosed = isEngineMarketClosed(market.state);
   const isClosed = isResolved || isEngineClosed;
@@ -119,32 +113,22 @@ export function MarketHeader({ market, onShare }: MarketHeaderProps) {
   const isClosingSoon =
     !isClosed &&
     market.closingDate != null &&
-    new Date(market.closingDate).getTime() - now.getTime() <
-      7 * 24 * 60 * 60 * 1000;
+    new Date(market.closingDate).getTime() - now.getTime() < 7 * 24 * 60 * 60 * 1000;
   const isBookmarked = useBookmarkStore((s) => s.markets.includes(market.id));
   const toggleBookmark = useBookmarkStore((s) => s.toggle);
   const creatorNpub = formatCreatorNpub(market.creator.id);
-  const [oracleProfile, setOracleProfile] = useState<PublicNostrProfile | null>(
-    null,
-  );
+  const [oracleProfile, setOracleProfile] = useState<PublicNostrProfile | null>(null);
   const [oracleProfileLoaded, setOracleProfileLoaded] = useState(false);
   const creatorHex = creatorIdToHex(market.creator.id);
   const creatorLabel =
     oracleProfile?.displayName ??
-    (creatorNpub
-      ? formatShortNpub(creatorNpub)
-      : t("market.oraclePubkeyUnavailable"));
+    (creatorNpub ? formatShortNpub(creatorNpub) : t("market.oraclePubkeyUnavailable"));
   const mintIconUrl = activeMint
-    ? getMintIconUrl(
-        activeMint.url,
-        activeMint.info as Record<string, unknown> | undefined,
-      )
+    ? getMintIconUrl(activeMint.url, activeMint.info as Record<string, unknown> | undefined)
     : undefined;
   const mintLabel = market.mint
     ? `${market.mint.collateral.toUpperCase()} CTF${
-        market.mint.keysetCount > 0
-          ? ` - ${market.mint.keysetCount} keysets`
-          : ""
+        market.mint.keysetCount > 0 ? ` - ${market.mint.keysetCount} keysets` : ""
       }`
     : "Unknown";
 
@@ -174,14 +158,11 @@ export function MarketHeader({ market, onShare }: MarketHeaderProps) {
   }, [market.closingDate, isClosed]);
 
   const resolvedDate = isResolved
-    ? new Date(market.resolution.resolutionDate).toLocaleDateString(
-        i18n.language,
-        {
-          month: "long",
-          day: "numeric",
-          year: "numeric",
-        },
-      )
+    ? new Date(market.resolution.resolutionDate).toLocaleDateString(i18n.language, {
+        month: "long",
+        day: "numeric",
+        year: "numeric",
+      })
     : null;
 
   return (
@@ -189,19 +170,13 @@ export function MarketHeader({ market, onShare }: MarketHeaderProps) {
       {/* Background Image with Gradient Overlay */}
       {market.imageUrl && (
         <div className="absolute inset-0 h-64 overflow-hidden rounded-t-2xl">
-          <img
-            src={market.imageUrl}
-            alt=""
-            className="w-full h-full object-cover"
-          />
+          <img src={market.imageUrl} alt="" className="w-full h-full object-cover" />
           <div className="absolute inset-0 bg-gradient-to-b from-slate-900/60 via-slate-900/80 to-slate-900" />
         </div>
       )}
 
       {/* Content */}
-      <div
-        className={`relative ${market.imageUrl ? "pt-8 pb-6 px-6" : "py-6 px-6"}`}
-      >
+      <div className={`relative ${market.imageUrl ? "pt-8 pb-6 px-6" : "py-6 px-6"}`}>
         {/* Category Tags */}
         <div className="flex flex-wrap gap-2 mb-4">
           {market.categoryTags.map((tag) => (
@@ -248,15 +223,9 @@ export function MarketHeader({ market, onShare }: MarketHeaderProps) {
             <div
               className={`flex items-center gap-1.5 ${isClosed ? "text-slate-400" : isClosingSoon ? "text-amber-400" : market.imageUrl ? "text-slate-300" : "text-slate-600 dark:text-slate-400"}`}
             >
-              {isClosed ? (
-                <CheckCircle2 className="w-4 h-4" />
-              ) : (
-                <Clock className="w-4 h-4" />
-              )}
+              {isClosed ? <CheckCircle2 className="w-4 h-4" /> : <Clock className="w-4 h-4" />}
               <span className="text-sm font-medium">
-                {isResolved
-                  ? t("market.resolvedOn", { date: resolvedDate })
-                  : timeRemaining}
+                {isResolved ? t("market.resolvedOn", { date: resolvedDate }) : timeRemaining}
               </span>
             </div>
           )}
@@ -297,9 +266,7 @@ export function MarketHeader({ market, onShare }: MarketHeaderProps) {
               <p
                 className={`truncate text-xs font-mono ${market.imageUrl ? "text-slate-400" : "text-slate-500 dark:text-slate-400"}`}
               >
-                {oracleProfileLoaded
-                  ? creatorLabel
-                  : t("market.searchingNostr")}
+                {oracleProfileLoaded ? creatorLabel : t("market.searchingNostr")}
               </p>
             </div>
             {creatorNpub && (
@@ -319,11 +286,7 @@ export function MarketHeader({ market, onShare }: MarketHeaderProps) {
 
           <button
             type="button"
-            onClick={() =>
-              navigate(
-                `/mint-details?mintUrl=${encodeURIComponent(activeMintUrl)}`,
-              )
-            }
+            onClick={() => navigate(`/mint-details?mintUrl=${encodeURIComponent(activeMintUrl)}`)}
             className={`flex min-w-0 flex-1 items-center gap-3 p-3 rounded-xl text-left transition-colors ${market.imageUrl ? "bg-white/10 hover:bg-white/15" : "bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700"}`}
           >
             <div className="w-10 h-10 overflow-hidden rounded-full bg-amber-500/15 flex items-center justify-center text-amber-500">
@@ -333,8 +296,7 @@ export function MarketHeader({ market, onShare }: MarketHeaderProps) {
                   alt=""
                   className="h-full w-full object-cover"
                   onError={(e) => {
-                    (e.currentTarget as HTMLImageElement).style.display =
-                      "none";
+                    (e.currentTarget as HTMLImageElement).style.display = "none";
                   }}
                 />
               ) : (
@@ -382,15 +344,10 @@ export function MarketHeader({ market, onShare }: MarketHeaderProps) {
           <button
             onClick={() => toggleBookmark(market.id)}
             className={`flex items-center cursor-pointer transition-colors ${isBookmarked ? "text-rose-500" : market.imageUrl ? "text-slate-300 hover:text-rose-500" : "text-slate-600 dark:text-slate-400 hover:text-rose-500"}`}
-            title={
-              isBookmarked ? t("market.removeBookmark") : t("market.bookmark")
-            }
+            title={isBookmarked ? t("market.removeBookmark") : t("market.bookmark")}
             aria-pressed={isBookmarked}
           >
-            <Heart
-              className="w-3.5 h-3.5"
-              fill={isBookmarked ? "currentColor" : "none"}
-            />
+            <Heart className="w-3.5 h-3.5" fill={isBookmarked ? "currentColor" : "none"} />
           </button>
         </div>
       </div>

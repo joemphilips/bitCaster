@@ -1,39 +1,49 @@
-import {
-  createServer,
-  type IncomingMessage,
-  type Server,
-  type ServerResponse,
-} from 'node:http'
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { randomUUID } from 'node:crypto'
 import { createConnection } from 'node:net'
-import { readFile, unlink } from 'node:fs/promises'
+import { chmod, readFile, unlink } from 'node:fs/promises'
 import { basename } from 'node:path'
 import { Amount, OutputData, type Proof } from '@cashu/cashu-ts'
 import {
   BitcasterEngineClient,
   EngineClientError,
+  isDefinitiveOrderSubmissionError,
   type OrderBookSnapshot,
   type OrderStatusResponse,
   type ParticipationScoreResponse,
-  type PayParticipationScoreEcashResponse,
   type QueryMarketsParams,
   type QueryMarketsResponse,
+  type CreateSettlementCapabilityRequest,
+  type AcknowledgeSettlementCapabilityResultRequest,
+  type SettlementCapabilityAdmissionPolicyResponse,
+  type SettlementCapabilityResponse,
+  type SettlementCapabilityResultResponse,
   type SubmitOrderRequest,
   type SubmitOrderResponse,
+  type ConditionAttestationResponse,
 } from '@bitcaster-market/client-sdk/engineClient'
+import type {
+  DurableRecipientDeliveryStatus,
+  DurableRecipientDeliverySubmission,
+} from '@bitcaster-market/client-sdk/durableRecipientDelivery'
 import {
   createMarketViaEngine,
+  conditionIdFromMarketId,
   isKind89NostrEvent,
+  parseMarketOutcomes,
   validateMarketCreateEngineUrl,
   submitOracleAttestationViaEngine,
   type CreateMarketOutcome,
   type MarketThumbnailBytes,
 } from '@bitcaster-market/client-sdk'
-import { planParticipationScoreTopUp } from '@bitcaster-market/client-sdk/participationScore'
 import {
-  complementOutcomeSetId,
-} from '@bitcaster-market/client-sdk/outcomeSets'
-import { validateOrderIntent } from '@bitcaster-market/client-sdk/orderValidation'
+  planParticipationScoreTopUp,
+  type ParticipationScoreTopUpPlan,
+} from '@bitcaster-market/client-sdk/participationScore'
+import {
+  validateOrderIntent,
+  validateOrderRoutingIdentity,
+} from '@bitcaster-market/client-sdk/orderValidation'
 import { checkOrderSettlementSupport } from '@bitcaster-market/client-sdk/settlementSupport'
 import {
   COLLATERAL_COLLECTION,
@@ -41,222 +51,195 @@ import {
   type CtfConsolidationStrategy,
 } from '@bitcaster-market/client-sdk/ctfConsolidation'
 import {
-  CashuMintCtfSplitTransport,
-  resolveRootPreflightOutputAmountSats,
-  splitCompleteSetWithOperation,
-  splitRootCompleteSetForPreflightOrder,
-  type CtfProofOperationRecord,
-  type CtfProofOperationStore,
-} from '@bitcaster-market/client-sdk/ctfSplit'
-import { prepareSwapInputsForTrade } from '@bitcaster-market/client-sdk/tradePreparation'
-import {
-  DEFAULT_SAT_MARKET_DIVISIBILITY,
   normalizeMarketBaseAsset,
   normalizeMarketDivisibility,
   quotePaymentSubunits,
+  type MarketBaseAsset,
 } from '@bitcaster-market/client-sdk/marketUnits'
 import { canBackOrder, type TokenHoldings } from '@bitcaster-market/client-sdk/tradingClient'
-import { generateOrderEphemeralKeypair } from './ephemeralKey.ts'
 import { signNip98 } from './nostrAuth.ts'
+import { recoverCompleteSetSplits, splitWalletCompleteSet } from './completeSetConversion.ts'
+import { composeStartupCustodyRecovery, outgoingCashuRecoveryStatus } from './startupRecovery.ts'
+import type { ManualCustodyRecoveryStatus } from './startupRecovery.ts'
 import type { DaemonCommand, DaemonHealth, DaemonResponse } from './protocol.ts'
-import { ensureProfileDir, normalizeEndpointUrl, readProfile, updateProfile } from './profile.ts'
+import { profileDir, readProfile } from './profile.ts'
 import { bearerToken, readRpcToken, rpcSocketPath, tokenMatches } from './rpcAuth.ts'
-import { readSecrets, updateSecrets } from './secrets.ts'
+import { readSecrets } from './secrets.ts'
 import {
   ensureState,
-  getProofOperation,
   listProofOperations,
   listLocalOrders,
-  listLocalSwaps,
-  markProofOperationCompleted,
-  prepareProofOperation,
-  readState,
   recordSubmittedOrder,
   recordOrderStatus,
-  releaseProofReservation,
-  summarizeWalletBalance,
-  updateState,
-  type CashuProofRecord,
 } from './state.ts'
-import type { TradeRuntime } from './tradeRuntime.ts'
 import {
   recoverPreparedWalletSends,
+  recoverDurableWalletReceives,
+  recoverDurableOutgoingCashuTransfers,
+  reclaimDurableOutgoingCashuTransfer,
+  deliverParticipationScoreCashu,
   receiveWalletToken,
   sendWalletToken,
   executeCtfConsolidationPlan,
   resolveCtfConsolidationInputFees,
   resolveCtfConsolidationOutputKeysets,
   resolveMintKeysByKeyset,
-  splitAvailableSatProofsForCtfCollateral,
   type WalletOpsDependencies,
 } from './walletOps.ts'
-import { buildDaemonTokenHoldings } from './walletHoldings.ts'
+import { readDaemonTokenHoldings } from './walletHoldings.ts'
+import { readDaemonWalletBalance } from './walletBalance.ts'
+import type { CustodyScopeFence } from './profileFencing.ts'
+import {
+  consolidateWalletProofs,
+  recoverWalletProofConsolidations,
+} from './walletProofConsolidation.ts'
+import {
+  resumeDaemonConditionRetirements,
+  retireDaemonConditionInventory,
+} from './managedConditionRetirement.ts'
 
 export interface DaemonServerOptions {
   host?: string
   port?: number
   socketPath?: string
-  tradeRuntime?: TradeRuntime
-  swapExecutor?: SwapRecoveryExecutor
-}
-
-export interface SwapRecoveryExecutor {
-  resumeActiveSwaps(
-    state: Awaited<ReturnType<typeof ensureState>>,
-  ): Promise<{ activeSwaps: number }>
+  trackOwnedOrder?: (marketId: string, orderId: string) => Promise<void>
+  prepareSettlementCapability?: PrepareSettlementCapability
+  triggerSettlementRecovery?: () => void
+  triggerCustodyRecovery?: () => void
+  getCustodyFence?: () => CustodyScopeFence
+  isCustodyReady?: () => boolean
+  markCustodyReady?: () => void
+  onManualCustodyRecoveryStatus?: (status: ManualCustodyRecoveryStatus) => void
+  onOutcomeProofsReceived?: (conditionId: string, outcomeSetId: string) => Promise<void>
 }
 
 export interface EngineClientLike {
-  submitOrder(
-    marketId: string,
-    request: SubmitOrderRequest,
-  ): Promise<SubmitOrderResponse>
-  submitEphemeralPubkey?(
-    tradeId: string,
-    pubkey: string,
-    conditionId?: string,
-  ): Promise<unknown>
-  getOrderStatus(
-    marketId: string,
-    orderId: string,
-  ): Promise<OrderStatusResponse | null>
+  submitOrder(marketId: string, request: SubmitOrderRequest): Promise<SubmitOrderResponse>
+  getOrderStatus(marketId: string, orderId: string): Promise<OrderStatusResponse | null>
   cancelOrder(marketId: string, orderId: string): Promise<boolean>
   getOrderBook(marketId: string): Promise<OrderBookSnapshot>
   queryMarkets(params: QueryMarketsParams): Promise<QueryMarketsResponse>
   getParticipationScore(): Promise<ParticipationScoreResponse>
-  payParticipationScoreEcash(
-    amountSats: number,
-    proofsToken: string,
-    paymentId?: string,
-  ): Promise<PayParticipationScoreEcashResponse>
+  getDurableRecipientDeliveryStatus?(
+    deliveryId: string,
+  ): Promise<DurableRecipientDeliveryStatus | null>
+  submitDurableRecipientDelivery?(
+    submission: DurableRecipientDeliverySubmission,
+  ): Promise<DurableRecipientDeliveryStatus>
   getMarket?(conditionId: string): Promise<unknown | null>
+  getConditionAttestation?(conditionId: string): Promise<ConditionAttestationResponse | null>
+  createSettlementCapability?(
+    request: CreateSettlementCapabilityRequest,
+  ): Promise<SettlementCapabilityResponse>
+  getSettlementCapabilityAdmissionPolicy?(): Promise<SettlementCapabilityAdmissionPolicyResponse>
+  getSettlementCapabilityResultByOperation?(
+    operationId: string,
+  ): Promise<SettlementCapabilityResultResponse | null>
+  acknowledgeSettlementCapabilityResult?(
+    resultId: string,
+    request: AcknowledgeSettlementCapabilityResultRequest,
+  ): Promise<SettlementCapabilityResultResponse | null>
+  declineOrderContinuation?(
+    marketId: string,
+    orderId: string,
+    expectedContinuationRevision: number,
+  ): Promise<void>
 }
 
-interface PreparedPreflightSplit {
-  reservationId: string
+export interface PrepareSettlementCapabilityInput {
+  clientOrderId: string
+  marketId: string
   conditionId: string
-  keepOutcomeSetId: string
-  lockOutcomeSetId: string
-  amountSats: number
+  outcomeId: string
+  tokenSide: 'Outcome' | 'Complement'
+  side: 'Buy' | 'Sell'
+  price: number
+  amountSubunits: number
+  minimumFillAmountSubunits: number
+  continueAfterPartialFill: boolean
+  consolidateProofs: boolean
+  baseAsset: 'sat'
+  collateralUnit: 'msat'
+  divisibility: number
+  timeInForce: 'FAK' | 'FOK' | 'GTC' | 'GTD'
+  expiresAt: string | null
+  mintUrl: string
+  walletSeedHex: string
 }
+
+export interface PreparedSettlementCapability {
+  operationId: string
+  capability: SettlementCapabilityResponse
+  markSubmitted(): Promise<void>
+  markRejected(): Promise<void>
+  consolidation: {
+    operationIds: string[]
+    feeSubunits: number
+  }
+}
+
+export type PrepareSettlementCapability = (
+  input: PrepareSettlementCapabilityInput,
+  client: EngineClientLike,
+) => Promise<PreparedSettlementCapability>
 
 type DaemonParticipationScorePreflightResult =
   | { kind: 'disabled' | 'sufficient'; score: ParticipationScoreResponse }
   | {
       kind: 'paid'
       score: ParticipationScoreResponse
-      payment: PayParticipationScoreEcashResponse
-      paymentId: string
+      deliveryId: string
+      deliveryState: 'credited'
       operationId: string
     }
 
-const SCORE_PAYMENT_ATTEMPTS = 3
-
-async function splitWalletCompleteSet(input: {
-  mintUrl: string
-  conditionId: string
-  amountSats: number
-  operationId: string
-  secrets: Awaited<ReturnType<typeof readSecrets>>
-}): Promise<{
-  operationId: string
-  conditionId: string
-  amountSats: number
-  outcomeProofCounts: Record<string, number>
-}> {
-  if (!input.secrets) throw new Error('daemon secrets are not initialized')
-  const collateral = await splitAvailableSatProofsForCtfCollateral(
-    input.amountSats,
-    input.mintUrl,
-    `${input.operationId}:regular-split`,
-    input.secrets,
-  )
-  const transport = new CashuMintCtfSplitTransport(input.mintUrl)
-  const outcomeCollectionKeysets = await transport.getRootPartitionKeysets(
-    input.conditionId,
-  )
-  const proofsByCollection = await splitCompleteSetWithOperation({
-    mintUrl: input.mintUrl,
-    operationId: `${input.operationId}:ctf-split`,
-    transport,
-    conditionId: input.conditionId,
-    collateralProofs: collateral.inputs,
-    outcomeCollectionKeysets,
-    amountSubunits: input.amountSats,
-    proofOperationStore: ctfProofOperationStore,
-    makeOutputs: ({ amountSubunits, keyset }) =>
-      OutputData.createRandomData(Amount.from(amountSubunits), keyset),
-  })
-  await updateState((state, now) => {
-    removeProofsBySecretFromState(state, input.mintUrl, [
-      ...collateral.spent,
-      ...collateral.inputs,
-    ])
-    addProofsToState(state, input.mintUrl, collateral.keep, 'available', { kind: 'sats', baseAsset: 'sat' }, now)
-    for (const [outcomeSetId, proofs] of Object.entries(proofsByCollection)) {
-      addProofsToState(
-        state,
-        input.mintUrl,
-        proofs,
-        'available',
-        { kind: 'Outcome', conditionId: input.conditionId, outcomeSetId },
-        now,
-      )
-    }
-  })
-  return {
-    operationId: input.operationId,
-    conditionId: input.conditionId,
-    amountSats: input.amountSats,
-    outcomeProofCounts: Object.fromEntries(
-      Object.entries(proofsByCollection).map(([outcome, proofs]) => [
-        outcome,
-        proofs.length,
-      ]),
-    ),
-  }
-}
-
 export interface DispatchDependencies extends WalletOpsDependencies {
-  createEngineClient?: (options: {
-    baseUrl: string
-    nostrSecretKeyHex: string
-  }) => EngineClientLike
-  generateEphemeralKeypair?: typeof generateOrderEphemeralKeypair
-  tradeRuntime?: TradeRuntime
-  swapExecutor?: SwapRecoveryExecutor
+  createEngineClient?: (options: { baseUrl: string; nostrSecretKeyHex: string }) => EngineClientLike
+  prepareSettlementCapability?: PrepareSettlementCapability
+  trackOwnedOrder?: (marketId: string, orderId: string) => Promise<void>
+  triggerSettlementRecovery?: () => void
+  triggerCustodyRecovery?: () => void
+  getCustodyFence?: () => CustodyScopeFence
+  isCustodyReady?: () => boolean
+  markCustodyReady?: () => void
+  onManualCustodyRecoveryStatus?: (status: ManualCustodyRecoveryStatus) => void
+  onOutcomeProofsReceived?: (conditionId: string, outcomeSetId: string) => Promise<void>
 }
 
-const ctfProofOperationStore: CtfProofOperationStore = {
-  getProofOperation: async (operationId) =>
-    (await getProofOperation(operationId)) as CtfProofOperationRecord | null,
-  prepareProofOperation: async (input) =>
-    (await prepareProofOperation(input)) as CtfProofOperationRecord,
-  markProofOperationCompleted: async (operationId, resultProofs) =>
-    (await markProofOperationCompleted(
-      operationId,
-      resultProofs,
-    )) as CtfProofOperationRecord,
-}
-
-export async function startDaemonServer(
-  options: DaemonServerOptions = {},
-): Promise<Server> {
-  if (options.tradeRuntime && (await readProfile())) {
-    await startTradeRuntimeBestEffort(options.tradeRuntime)
-  }
-  const server = createServer((req, res) => {
-    void handleRequest(req, res, {
-      tradeRuntime: options.tradeRuntime,
-      swapExecutor: options.swapExecutor,
-    })
-  })
+export async function startDaemonServer(options: DaemonServerOptions = {}): Promise<Server> {
   const socketPath =
     options.socketPath ?? (options.host || options.port ? undefined : defaultRpcSocketPath())
+  const host = options.host ?? '127.0.0.1'
+  if (!socketPath && !isLoopbackBindHost(host)) {
+    throw new Error(`bitcaster-daemon refuses to bind non-loopback host ${host}`)
+  }
+  // A running daemon cannot replace its profile authority. Validate and pin
+  // the RPC token once at startup so concurrent WAL commits cannot turn
+  // per-request immutable profile inspection into a process-level failure.
+  const expectedToken = await readRpcToken()
+  const server = createServer((req, res) => {
+    void handleRequest(req, res, expectedToken, {
+      trackOwnedOrder: options.trackOwnedOrder,
+      prepareSettlementCapability: options.prepareSettlementCapability,
+      triggerSettlementRecovery: options.triggerSettlementRecovery,
+      triggerCustodyRecovery: options.triggerCustodyRecovery,
+      getCustodyFence: options.getCustodyFence,
+      isCustodyReady: options.isCustodyReady,
+      markCustodyReady: options.markCustodyReady,
+      onManualCustodyRecoveryStatus: options.onManualCustodyRecoveryStatus,
+      onOutcomeProofsReceived: options.onOutcomeProofsReceived,
+    })
+  })
   if (socketPath) {
-    await ensureProfileDir()
     await unlinkStaleSocket(socketPath)
     await new Promise<void>((resolve) => server.listen(socketPath, resolve))
+    try {
+      await chmod(socketPath, 0o600)
+    } catch (error) {
+      await new Promise<void>((resolve) => server.close(() => resolve()))
+      await unlink(socketPath).catch(() => undefined)
+      throw error
+    }
     server.once('close', () => {
       void unlink(socketPath).catch(() => undefined)
     })
@@ -264,15 +247,10 @@ export async function startDaemonServer(
     return server
   }
 
-  const host = options.host ?? '127.0.0.1'
-  if (!isLoopbackBindHost(host)) {
-    throw new Error(`bitcaster-daemon refuses to bind non-loopback host ${host}`)
-  }
-  const port = options.port ?? Number(process.env.BITCASTER_DAEMON_PORT || 42871)
+  const port = options.port ?? 42871
   await new Promise<void>((resolve) => server.listen(port, host, resolve))
   const address = server.address()
-  const boundPort =
-    typeof address === 'object' && address ? address.port : port
+  const boundPort = typeof address === 'object' && address ? address.port : port
   process.stdout.write(`bitcaster-daemon listening on http://${host}:${boundPort}\n`)
   return server
 }
@@ -280,6 +258,7 @@ export async function startDaemonServer(
 async function handleRequest(
   req: IncomingMessage,
   res: ServerResponse,
+  expectedToken: string | null,
   deps: DispatchDependencies = {},
 ): Promise<void> {
   if (!isLocalCaller(req.socket.remoteAddress)) {
@@ -297,11 +276,7 @@ async function handleRequest(
     return writeJson(res, 400, { ok: false, error: 'invalid JSON command' })
   }
 
-  const expectedToken = await readRpcToken()
-  if (
-    expectedToken &&
-    !tokenMatches(bearerToken(req.headers.authorization), expectedToken)
-  ) {
+  if (expectedToken && !tokenMatches(bearerToken(req.headers.authorization), expectedToken)) {
     return writeJson(res, 401, { ok: false, error: 'unauthorized' })
   }
   if (!expectedToken && command.method !== 'health') {
@@ -320,20 +295,34 @@ function normalizeRpcError(err: unknown): DaemonResponse {
     return { ok: false, error: String(err) }
   }
 
-  const status =
-    'status' in err && typeof err.status === 'number' ? err.status : undefined
-  const cause =
-    'cause' in err && err.cause instanceof Error ? err.cause.message : undefined
-  const detail = [err.message, status ? `status=${status}` : null, cause]
-    .filter(Boolean)
-    .join('; ')
+  const status = 'status' in err && typeof err.status === 'number' ? err.status : undefined
+  const cause = 'cause' in err && err.cause instanceof Error ? err.cause.message : undefined
+  const detail = [err.message, status ? `status=${status}` : null, cause].filter(Boolean).join('; ')
   return { ok: false, error: detail || err.message }
+}
+
+function retirementPending(
+  retirements: ReadonlyArray<{ readonly conditionId: string; readonly error: string | null }>,
+): Array<{ operationId: string; error: string }> {
+  return retirements
+    .filter((entry) => entry.error !== null)
+    .map((entry) => ({
+      operationId: `condition-retirement:${entry.conditionId}`,
+      error: entry.error!,
+    }))
 }
 
 export async function dispatch(
   command: DaemonCommand,
   deps: DispatchDependencies = {},
 ): Promise<DaemonResponse> {
+  if (deps.isCustodyReady?.() === false && requiresReadyCustody(command.method)) {
+    return {
+      ok: false,
+      code: 'custody-recovery-pending',
+      error: 'wallet recovery must complete before this command can use funds',
+    }
+  }
   switch (command.method) {
     case 'health':
       return {
@@ -342,7 +331,11 @@ export async function dispatch(
           status: 'ok',
           service: 'bitcaster-daemon',
           sdk: '@bitcaster-market/client-sdk',
-          state: (await readProfile()) ? 'ready' : 'missing-profile',
+          state: (await readProfile())
+            ? deps.isCustodyReady?.() === false
+              ? 'custody-recovery-pending'
+              : 'ready'
+            : 'missing-profile',
         } satisfies DaemonHealth,
       }
     case 'daemon.status': {
@@ -359,54 +352,8 @@ export async function dispatch(
             proofs: state.wallet.proofs.length,
             proofOperations: Object.keys(state.proofOperations).length,
             orders: Object.keys(state.orders).length,
-            swaps: Object.keys(state.swaps).length,
           },
-          wallet: summarizeWalletBalance(state),
-        },
-      }
-    }
-    case 'daemon.config': {
-      if (!command.params.engineUrl && !command.params.mintUrl) {
-        return {
-          ok: false,
-          error: 'at least one of engineUrl or mintUrl is required',
-        }
-      }
-      const currentProfile = await readProfile()
-      if (!currentProfile) {
-        return { ok: false, error: 'daemon profile is not initialized' }
-      }
-      const nextEngineBaseUrl = command.params.engineUrl
-        ? normalizeEndpointUrl(command.params.engineUrl, 'engine URL')
-        : currentProfile.engineBaseUrl
-      const nextMintUrl = command.params.mintUrl
-        ? normalizeEndpointUrl(command.params.mintUrl, 'mint URL')
-        : currentProfile.mintUrl
-      const state = await ensureState()
-      if (
-        !daemonStateIsEmpty(state) &&
-        (nextEngineBaseUrl !== currentProfile.engineBaseUrl ||
-          nextMintUrl !== currentProfile.mintUrl)
-      ) {
-        return {
-          ok: false,
-          error:
-            'daemon profile endpoints cannot be changed after wallet, proof-operation, order, or swap state exists',
-        }
-      }
-      const profile = await updateProfile({
-        ...(command.params.engineUrl !== undefined
-          ? { engineBaseUrl: nextEngineBaseUrl }
-          : {}),
-        ...(command.params.mintUrl !== undefined ? { mintUrl: nextMintUrl } : {}),
-      })
-      return {
-        ok: true,
-        result: {
-          profile,
-          restartRequired: true,
-          reason:
-            'restart bitcaster-daemon to reconnect long-lived TradeHub runtime with updated endpoints',
+          wallet: await readDaemonWalletBalance(profileDir()),
         },
       }
     }
@@ -419,10 +366,7 @@ export async function dispatch(
       if (!secrets) {
         return { ok: false, error: 'daemon secrets are not initialized' }
       }
-      const engineUrlValidation = validateMarketCreateEngineUrl(
-        profile.engineBaseUrl,
-        process.env.BITCASTER_ALLOW_INSECURE_ENGINE === '1',
-      )
+      const engineUrlValidation = validateMarketCreateEngineUrl(profile.engineBaseUrl, true)
       if (!engineUrlValidation.ok) {
         return {
           ok: false,
@@ -441,6 +385,7 @@ export async function dispatch(
         client,
         command.params.conditionId,
         {
+          baseAsset: 'sat',
           title: command.params.title,
           description: command.params.description,
           outcomes: createMarketOutcomes(command.params.outcomes),
@@ -458,10 +403,7 @@ export async function dispatch(
       if (!profile) {
         return { ok: false, error: 'daemon profile is not initialized' }
       }
-      const engineUrlValidation = validateMarketCreateEngineUrl(
-        profile.engineBaseUrl,
-        process.env.BITCASTER_ALLOW_INSECURE_ENGINE === '1',
-      )
+      const engineUrlValidation = validateMarketCreateEngineUrl(profile.engineBaseUrl, true)
       if (!engineUrlValidation.ok) {
         return {
           ok: false,
@@ -484,9 +426,10 @@ export async function dispatch(
       if (!(await readProfile())) {
         return { ok: false, error: 'daemon profile is not initialized' }
       }
+      await ensureState()
       return {
         ok: true,
-        result: summarizeWalletBalance(await ensureState()),
+        result: await readDaemonWalletBalance(profileDir()),
       }
     case 'wallet.receive': {
       const profile = await readProfile()
@@ -497,16 +440,20 @@ export async function dispatch(
       if (!secrets) {
         return { ok: false, error: 'daemon secrets are not initialized' }
       }
-      return {
-        ok: true,
-        result: await receiveWalletToken(
-          command.params.token,
-          profile,
-          secrets,
-          deps,
-          command.params,
-        ),
+      const received = await receiveWalletToken(
+        command.params.token,
+        profile,
+        secrets,
+        deps,
+        command.params,
+      )
+      if (received.asset.kind === 'Outcome') {
+        await deps.onOutcomeProofsReceived?.(
+          received.asset.conditionId,
+          received.asset.outcomeSetId,
+        )
       }
+      return { ok: true, result: received }
     }
     case 'wallet.send': {
       const profile = await readProfile()
@@ -517,16 +464,38 @@ export async function dispatch(
       if (!secrets) {
         return { ok: false, error: 'daemon secrets are not initialized' }
       }
-      return {
-        ok: true,
-        result: await sendWalletToken(
-          command.params.amountSats,
-          profile,
-          secrets,
-          deps,
-          command.params.mintUrl,
-          command.params.operationId,
-        ),
+      try {
+        return {
+          ok: true,
+          result: await sendWalletToken(
+            command.params.amountSats,
+            profile,
+            secrets,
+            deps,
+            command.params.mintUrl,
+            command.params.operationId,
+          ),
+        }
+      } finally {
+        deps.triggerCustodyRecovery?.()
+      }
+    }
+    case 'wallet.reclaim': {
+      const profile = await readProfile()
+      if (!profile) return { ok: false, error: 'daemon profile is not initialized' }
+      const secrets = await readSecrets()
+      if (!secrets) return { ok: false, error: 'daemon secrets are not initialized' }
+      try {
+        return {
+          ok: true,
+          result: await reclaimDurableOutgoingCashuTransfer(
+            command.params.transferId,
+            secrets,
+            deps,
+          ),
+        }
+      } finally {
+        deps.triggerCustodyRecovery?.()
       }
     }
     case 'wallet.splitCompleteSet': {
@@ -548,6 +517,7 @@ export async function dispatch(
             command.params.operationId ??
             `wallet-split-complete-set:${command.params.conditionId}:${Date.now()}`,
           secrets,
+          deps,
         }),
       }
     }
@@ -573,17 +543,146 @@ export async function dispatch(
         deps,
       })
     }
-    case 'wallet.recover': {
-      if (!(await readProfile())) {
+    case 'wallet.consolidateProofs': {
+      const profile = await readProfile()
+      if (!profile) {
         return { ok: false, error: 'daemon profile is not initialized' }
       }
       const secrets = await readSecrets()
       if (!secrets) {
         return { ok: false, error: 'daemon secrets are not initialized' }
       }
+      if (!deps.getCustodyFence) {
+        return { ok: false, error: 'wallet proof consolidation requires custody authority' }
+      }
+      const getCustodyFence = deps.getCustodyFence
       return {
         ok: true,
-        result: await recoverPreparedWalletSends(secrets, deps),
+        result: await consolidateWalletProofs({
+          secrets,
+          mutation: () => ({ fence: getCustodyFence(), observedAtMs: Date.now() }),
+          dependencies: deps,
+        }),
+      }
+    }
+    case 'wallet.retireCondition': {
+      const profile = await readProfile()
+      if (!profile) return { ok: false, error: 'daemon profile is not initialized' }
+      const secrets = await readSecrets()
+      if (!secrets) return { ok: false, error: 'daemon secrets are not initialized' }
+      if (!deps.getCustodyFence) {
+        return { ok: false, error: 'condition retirement requires custody authority' }
+      }
+      const client = createEngineClient(deps, {
+        baseUrl: profile.engineBaseUrl,
+        nostrSecretKeyHex: secrets.nostrSecretKeyHex,
+      })
+      if (!client.getConditionAttestation) {
+        return { ok: false, error: 'engine client does not support condition attestation' }
+      }
+      return {
+        ok: true,
+        result: await retireDaemonConditionInventory({
+          conditionId: command.params.conditionId,
+          acknowledge: command.params.acknowledge,
+          intentKind: 'explicit-user-command',
+          profile,
+          secrets,
+          fence: deps.getCustodyFence(),
+          engine: { getConditionAttestation: (id) => client.getConditionAttestation!(id) },
+          walletDependencies: deps,
+        }),
+      }
+    }
+    case 'wallet.recover': {
+      const profile = await readProfile()
+      if (!profile) {
+        return { ok: false, error: 'daemon profile is not initialized' }
+      }
+      const secrets = await readSecrets()
+      if (!secrets) {
+        return { ok: false, error: 'daemon secrets are not initialized' }
+      }
+      const wallet = await recoverPreparedWalletSends(secrets, deps)
+      if (!deps.getCustodyFence) return { ok: true, result: wallet }
+      const getCustodyFence = deps.getCustodyFence
+      const receives = await recoverDurableWalletReceives(secrets, deps)
+      const client = createEngineClient(deps, {
+        baseUrl: profile.engineBaseUrl,
+        nostrSecretKeyHex: secrets.nostrSecretKeyHex,
+      })
+      const outgoing = await recoverDurableOutgoingCashuTransfers(secrets, deps, {
+        client: {
+          getDurableRecipientDeliveryStatus: async (deliveryId) => {
+            if (!client.getDurableRecipientDeliveryStatus) {
+              throw new Error('daemon engine client does not support durable Cashu deliveries')
+            }
+            return client.getDurableRecipientDeliveryStatus(deliveryId)
+          },
+          submitDurableRecipientDelivery: async (submission) => {
+            if (!client.submitDurableRecipientDelivery) {
+              throw new Error('daemon engine client does not support durable Cashu deliveries')
+            }
+            return client.submitDurableRecipientDelivery(submission)
+          },
+        },
+        accountSubject: secrets.nostrPublicKeyHex,
+      })
+      const outgoingStatus = outgoingCashuRecoveryStatus(outgoing)
+      const consolidation = await recoverWalletProofConsolidations({
+        secrets,
+        mutation: () => ({ fence: getCustodyFence(), observedAtMs: Date.now() }),
+        dependencies: deps,
+      })
+      const completeSets = await recoverCompleteSetSplits({ secrets, deps })
+      const retirements = await resumeDaemonConditionRetirements({
+        profile,
+        secrets,
+        fence: getCustodyFence(),
+        walletDependencies: deps,
+      })
+      const retired = retirements
+        .filter((entry) => entry.error === null)
+        .map((entry) => entry.conditionId)
+      const result = composeStartupCustodyRecovery([
+        wallet,
+        receives,
+        outgoing,
+        consolidation,
+        completeSets,
+        { recovered: retired, pending: retirementPending(retirements) },
+      ])
+      deps.onManualCustodyRecoveryStatus?.({
+        nonRetirementPending:
+          wallet.pending.length > 0 ||
+          receives.pending.length > 0 ||
+          receives.pendingCount > 0 ||
+          receives.hasMore ||
+          outgoingStatus.blockingPending ||
+          consolidation.pending.length > 0 ||
+          completeSets.pending.length > 0,
+        retryPending:
+          wallet.pending.length > 0 ||
+          receives.pending.length > 0 ||
+          receives.pendingCount > 0 ||
+          receives.hasMore ||
+          outgoingStatus.retryPending ||
+          consolidation.pending.length > 0 ||
+          completeSets.pending.length > 0,
+        retirementPending: retirements.some((entry) => entry.error !== null),
+      })
+      if (
+        !deps.onManualCustodyRecoveryStatus &&
+        result.pending.length === 0 &&
+        receives.pendingCount === 0 &&
+        !receives.hasMore &&
+        !outgoingStatus.blockingPending
+      ) {
+        deps.markCustodyReady?.()
+      }
+      return {
+        ok: true,
+        result,
       }
     }
     case 'wallet.operations': {
@@ -629,13 +728,13 @@ export async function dispatch(
       const market =
         client.getMarket !== undefined
           ? await client.getMarket(command.params.conditionId)
-          : (
+          : ((
               await client.queryMarkets({
                 ids: [command.params.conditionId],
                 state: 'All',
                 limit: 1,
               })
-            ).markets[0] ?? null
+            ).markets[0] ?? null)
       return {
         ok: true,
         result: market,
@@ -646,19 +745,25 @@ export async function dispatch(
         tokenSide: 'Outcome' as const,
         ...command.params,
       }
-      const amountSubunits = orderParams.amountSubunits ?? orderParams.amountSats
+      const amountSubunits = orderParams.amountSubunits
       const orderIntent = {
         ...orderParams,
         amountSubunits,
-        ...(orderParams.amountSubunits === undefined && orderParams.amountSats !== undefined
-          ? { divisibility: 100 }
-          : {}),
+      }
+      const shapeValidation = validateOrderRoutingIdentity(orderIntent)
+      if (!shapeValidation.valid) {
+        return { ok: false, error: shapeValidation.message }
       }
       let profile: Awaited<ReturnType<typeof readProfile>> | null = null
       let secrets: Awaited<ReturnType<typeof readSecrets>> | null = null
       let client: EngineClientLike | null = null
       const ensureOrderContext = async (): Promise<
-        | { ok: true; profile: NonNullable<typeof profile>; secrets: NonNullable<typeof secrets>; client: EngineClientLike }
+        | {
+            ok: true
+            profile: NonNullable<typeof profile>
+            secrets: NonNullable<typeof secrets>
+            client: EngineClientLike
+          }
         | { ok: false; error: string }
       > => {
         profile ??= await readProfile()
@@ -676,71 +781,95 @@ export async function dispatch(
         return { ok: true, profile, secrets, client }
       }
 
-      let requestValidation = validateOrderIntent(orderIntent)
-      if (
-        !requestValidation.valid &&
-        shouldRetryOrderValidationWithMarketUnit(orderIntent, requestValidation.message)
-      ) {
-        const context = await ensureOrderContext()
-        if (!context.ok) return context
-        const marketUnit = await loadMarketUnit(
-          context.client,
-          conditionIdFromMarketId(orderParams.marketId),
-        )
-        requestValidation = validateOrderIntent({
-          ...orderIntent,
-          divisibility: marketUnit.divisibility,
-        })
-      }
+      const context = await ensureOrderContext()
+      if (!context.ok) return context
+      const conditionId = conditionIdFromMarketId(orderParams.marketId)
+      const marketUnit = await loadMarketUnit(context.client, conditionId)
+      const minimumFillAmountSubunits =
+        orderParams.minimumFillAmountSubunits === undefined
+          ? marketUnit.divisibility
+          : orderParams.minimumFillAmountSubunits
+      const requestValidation = validateOrderIntent({
+        ...orderIntent,
+        baseAsset: marketUnit.baseAsset,
+        divisibility: marketUnit.divisibility,
+      })
       if (!requestValidation.valid) {
         return { ok: false, error: requestValidation.message }
       }
-      if (typeof amountSubunits !== 'number') {
+      if (
+        !Number.isSafeInteger(minimumFillAmountSubunits) ||
+        minimumFillAmountSubunits <= 0 ||
+        minimumFillAmountSubunits > amountSubunits ||
+        minimumFillAmountSubunits % marketUnit.divisibility !== 0
+      ) {
         return {
           ok: false,
-          error: 'Order rejected: amountSubunits must be a positive integer in 100 sub-unit increments.',
+          error: `Order rejected: minimum fill must be a positive multiple of ${marketUnit.divisibility} and no larger than the order amount`,
         }
       }
-      const context = await ensureOrderContext()
-      if (!context.ok) return context
+      if (
+        orderParams.continueAfterPartialFill !== undefined &&
+        typeof orderParams.continueAfterPartialFill !== 'boolean'
+      ) {
+        return { ok: false, error: 'Order rejected: continuation policy must be boolean' }
+      }
+      if (
+        orderParams.consolidateProofs !== undefined &&
+        typeof orderParams.consolidateProofs !== 'boolean'
+      ) {
+        return { ok: false, error: 'Order rejected: proof consolidation policy must be boolean' }
+      }
+      if (
+        orderParams.continueAfterPartialFill === true &&
+        orderParams.timeInForce !== 'GTC' &&
+        orderParams.timeInForce !== 'GTD'
+      ) {
+        return { ok: false, error: 'Order rejected: continuation requires a resting order' }
+      }
+      const expiresAt = orderParams.expiresAt ?? null
+      if (
+        (orderParams.timeInForce === 'GTD' &&
+          (typeof expiresAt !== 'string' ||
+            !Number.isFinite(Date.parse(expiresAt)) ||
+            new Date(expiresAt).toISOString() !== expiresAt)) ||
+        (orderParams.timeInForce !== 'GTD' && expiresAt !== null)
+      ) {
+        return { ok: false, error: 'Order rejected: GTD requires one canonical UTC expiry' }
+      }
       const settlementSupport = checkOrderSettlementSupport({
         request: { side: orderParams.side },
       })
       if (!settlementSupport.supported) {
         return { ok: false, error: settlementSupport.message }
       }
-      const conditionId = conditionIdFromMarketId(orderParams.marketId)
-      const marketUnit = await loadMarketUnit(context.client, conditionId)
-      const currentState = await ensureState()
-      const holdings = buildDaemonTokenHoldings(currentState, {
+      const holdings = await readDaemonTokenHoldings(profileDir(), {
         mintUrl: context.profile.mintUrl,
         conditionId,
         baseAsset: marketUnit.baseAsset,
       })
-      const backingError = orderBackingError({
-        side: orderParams.side,
-        price: orderParams.price,
-        amountSubunits,
-        divisibility: marketUnit.divisibility,
-        holdings,
-      })
+      const participationScoreSnapshot = await context.client.getParticipationScore()
+      const participationScorePlan = planParticipationScoreTopUp(participationScoreSnapshot)
+      const backingError =
+        orderBackingError({
+          side: orderParams.side,
+          price: orderParams.price,
+          amountSubunits,
+          divisibility: marketUnit.divisibility,
+          holdings,
+        }) ??
+        participationScoreBackingError({
+          side: orderParams.side,
+          price: orderParams.price,
+          amountSubunits,
+          divisibility: marketUnit.divisibility,
+          holdings,
+          plan: participationScorePlan,
+        })
       if (backingError) {
         return { ok: false, error: backingError }
       }
       const clientOrderId = randomUUID()
-      const preparedPreflight = await maybePreparePreflightSplitForOrder({
-        client: context.client,
-        mintUrl: context.profile.mintUrl,
-        marketId: orderParams.marketId,
-        outcomeId: orderParams.outcomeId,
-        side: orderParams.side,
-        tokenSide: orderParams.tokenSide,
-        price: orderParams.price,
-        amountSats: amountSubunits,
-        timeInForce: orderParams.timeInForce,
-        preflightSplit: orderParams.preflightSplit,
-        clientOrderId,
-      })
       let participationScore: DaemonParticipationScorePreflightResult
       try {
         participationScore = await ensureDaemonParticipationScoreForNextMatch({
@@ -748,28 +877,45 @@ export async function dispatch(
           profile: context.profile,
           secrets: context.secrets,
           deps,
+          score: participationScoreSnapshot,
+          plan: participationScorePlan,
         })
       } catch (err) {
-        if (preparedPreflight) {
-          await releaseProofReservation(preparedPreflight.reservationId)
-        }
         throw err
       }
-      let submitted: SubmitOrderResponse
+      if (!deps.prepareSettlementCapability) {
+        return { ok: false, error: 'daemon settlement capability coordinator is unavailable' }
+      }
+      let prepared: PreparedSettlementCapability
       try {
-        submitted = await context.client.submitOrder(orderParams.marketId, {
-          outcomeId: orderParams.outcomeId,
-          tokenSide: orderParams.tokenSide,
-          side: orderParams.side,
-          price: orderParams.price,
-          amountSubunits,
-          timeInForce: orderParams.timeInForce,
+        prepared = await deps.prepareSettlementCapability(
+          {
+            clientOrderId,
+            marketId: orderParams.marketId,
+            conditionId,
+            outcomeId: orderParams.outcomeId,
+            tokenSide: orderParams.tokenSide,
+            side: orderParams.side,
+            price: orderParams.price,
+            amountSubunits,
+            minimumFillAmountSubunits,
+            continueAfterPartialFill: orderParams.continueAfterPartialFill === true,
+            consolidateProofs: orderParams.consolidateProofs === true,
+            baseAsset: marketUnit.baseAsset,
+            collateralUnit: 'msat',
+            divisibility: marketUnit.divisibility,
+            timeInForce: orderParams.timeInForce,
+            expiresAt,
+            mintUrl: context.profile.mintUrl,
+            walletSeedHex: context.secrets.walletSeedHex,
+          },
+          context.client,
+        )
+        assertPreparedSettlementCapability(prepared, {
           clientOrderId,
+          marketId: orderParams.marketId,
         })
       } catch (err) {
-        if (preparedPreflight) {
-          await releaseProofReservation(preparedPreflight.reservationId)
-        }
         if (err instanceof EngineClientError) {
           return {
             ok: false,
@@ -779,63 +925,56 @@ export async function dispatch(
         }
         throw err
       }
+      let submitted: SubmitOrderResponse
+      try {
+        submitted = await context.client.submitOrder(orderParams.marketId, {
+          settlementCapability: prepared.capability.reference,
+          comment: null,
+        })
+      } catch (err) {
+        if (err instanceof EngineClientError) {
+          if (isDefinitiveOrderSubmissionError(err)) {
+            await prepared.markRejected()
+          } else {
+            deps.triggerSettlementRecovery?.()
+          }
+          return {
+            ok: false,
+            error: err.problemDetail ?? err.message,
+            code: err.code,
+          }
+        }
+        deps.triggerSettlementRecovery?.()
+        throw err
+      }
+      if (submitted.orderId !== prepared.capability.orderId) {
+        deps.triggerSettlementRecovery?.()
+        throw new Error('engine order response does not match its settlement capability')
+      }
       const local = await recordSubmittedOrder(
         orderParams.marketId,
         clientOrderId,
         submitted,
-        preparedPreflight,
+        null,
         orderParams.tokenSide,
         orderParams.side,
         orderParams.price,
         amountSubunits,
+        marketUnit.baseAsset,
+        marketUnit.divisibility,
       )
-    await submitPendingEphemeralPubkeys({
-      client: context.client,
-      marketId: orderParams.marketId,
-      conditionId: splitMarketId(orderParams.marketId)?.conditionId,
-      orderId: submitted.orderId,
-        pendingPubkeySubmissions: submitted.pendingPubkeySubmissions,
-        generateEphemeralKeypair: deps.generateEphemeralKeypair,
-      })
-      await startTradeRuntimeBestEffort(deps.tradeRuntime)
+      await prepared.markSubmitted()
+      await trackOwnedOrderBestEffort(deps.trackOwnedOrder, local.marketId, local.orderId)
       return {
         ok: true,
-        result: { engine: submitted, local, participationScore },
-      }
-    }
-    case 'trade.watch': {
-      const profile = await readProfile()
-      if (!profile) {
-        return { ok: false, error: 'daemon profile is not initialized' }
-      }
-      const state = await readState()
-      return {
-        ok: true,
-        result: state?.swaps[command.params.tradeId] ?? null,
-      }
-    }
-    case 'trade.list': {
-      const profile = await readProfile()
-      if (!profile) {
-        return { ok: false, error: 'daemon profile is not initialized' }
-      }
-      return {
-        ok: true,
-        result: await listLocalSwaps(command.params ?? {}),
-      }
-    }
-    case 'trade.recover': {
-      const profile = await readProfile()
-      if (!profile) {
-        return { ok: false, error: 'daemon profile is not initialized' }
-      }
-      if (!deps.swapExecutor) {
-        return { ok: false, error: 'daemon swap executor is not available' }
-      }
-      await startTradeRuntimeBestEffort(deps.tradeRuntime)
-      return {
-        ok: true,
-        result: await deps.swapExecutor.resumeActiveSwaps(await ensureState()),
+        result: {
+          engine: submitted,
+          local,
+          participationScore,
+          settlementCapability: prepared.capability,
+          operationId: prepared.operationId,
+          consolidation: prepared.consolidation,
+        },
       }
     }
     case 'order.status': {
@@ -851,19 +990,21 @@ export async function dispatch(
         baseUrl: profile.engineBaseUrl,
         nostrSecretKeyHex: secrets.nostrSecretKeyHex,
       })
-      const status = await client.getOrderStatus(
-        command.params.marketId,
-        command.params.orderId,
-      )
+      const status = await client.getOrderStatus(command.params.marketId, command.params.orderId)
+      const marketUnit = status
+        ? await loadMarketUnit(client, conditionIdFromMarketId(command.params.marketId))
+        : null
       const local = status
         ? await recordOrderStatus(
             command.params.marketId,
             command.params.orderId,
             status,
+            marketUnit?.baseAsset,
+            marketUnit?.divisibility,
           )
         : null
-      if (local) {
-        await startTradeRuntimeBestEffort(deps.tradeRuntime)
+      if (local && deps.isCustodyReady?.() !== false) {
+        await trackOwnedOrderBestEffort(deps.trackOwnedOrder, local.marketId, local.orderId)
       }
       return {
         ok: true,
@@ -893,10 +1034,10 @@ export async function dispatch(
         baseUrl: profile.engineBaseUrl,
         nostrSecretKeyHex: secrets.nostrSecretKeyHex,
       })
-      const cancelled = await client.cancelOrder(
-        command.params.marketId,
-        command.params.orderId,
-      )
+      const cancelled = await client.cancelOrder(command.params.marketId, command.params.orderId)
+      const marketUnit = cancelled
+        ? await loadMarketUnit(client, conditionIdFromMarketId(command.params.marketId))
+        : null
       const local = cancelled
         ? await recordOrderStatus(
             command.params.marketId,
@@ -906,6 +1047,8 @@ export async function dispatch(
               marketId: command.params.marketId,
               status: 'cancelled',
             },
+            marketUnit?.baseAsset,
+            marketUnit?.divisibility,
           )
         : null
       return {
@@ -934,57 +1077,93 @@ export async function dispatch(
   }
 }
 
+function requiresReadyCustody(method: DaemonCommand['method']): boolean {
+  return (
+    method === 'market.create' ||
+    method === 'wallet.receive' ||
+    method === 'wallet.send' ||
+    method === 'wallet.splitCompleteSet' ||
+    method === 'wallet.consolidateMarket' ||
+    method === 'wallet.consolidateProofs' ||
+    method === 'wallet.retireCondition' ||
+    method === 'order.submit'
+  )
+}
+
 async function ensureDaemonParticipationScoreForNextMatch(input: {
   client: EngineClientLike
   profile: NonNullable<Awaited<ReturnType<typeof readProfile>>>
   secrets: NonNullable<Awaited<ReturnType<typeof readSecrets>>>
   deps: DispatchDependencies
+  score: ParticipationScoreResponse
+  plan: ParticipationScoreTopUpPlan
 }): Promise<DaemonParticipationScorePreflightResult> {
-  const score = await input.client.getParticipationScore()
-  const plan = planParticipationScoreTopUp(score)
+  const { score, plan } = input
   if (plan.kind === 'disabled') return { kind: 'disabled', score }
   if (plan.kind === 'sufficient') return { kind: 'sufficient', score }
 
-  const paymentId = randomUUID()
-  const operationId = `engine-score:${paymentId}`
-  const token = await sendWalletToken(
-    plan.deficitScore,
-    input.profile,
-    input.secrets,
-    input.deps,
-    input.profile.mintUrl,
-    operationId,
-  )
-  const payment = await payParticipationScoreEcashWithRetry(
-    input.client,
-    plan.deficitScore,
-    token.token,
-    paymentId,
-  )
-  return { kind: 'paid', score, payment, paymentId, operationId }
-}
-
-async function payParticipationScoreEcashWithRetry(
-  client: EngineClientLike,
-  amountSats: number,
-  token: string,
-  paymentId: string,
-): Promise<PayParticipationScoreEcashResponse> {
-  let lastError: unknown
-  for (let attempt = 0; attempt < SCORE_PAYMENT_ATTEMPTS; attempt += 1) {
-    try {
-      return await client.payParticipationScoreEcash(
-        amountSats,
-        token,
-        paymentId,
-      )
-    } catch (err) {
-      lastError = err
-    }
+  if (
+    input.client.getDurableRecipientDeliveryStatus === undefined ||
+    input.client.submitDurableRecipientDelivery === undefined
+  ) {
+    throw new Error('daemon engine client does not support durable Cashu deliveries')
   }
-  throw lastError instanceof Error
-    ? lastError
-    : new Error('Failed to pay Engine Score.')
+  const deliver = (deliveryId: string, amountSats: number, purchasedTotalEpoch: number) =>
+    deliverParticipationScoreCashu({
+      deliveryId,
+      accountSubject: input.secrets.nostrPublicKeyHex,
+      amountSats,
+      purchasedTotalEpoch,
+      profile: input.profile,
+      secrets: input.secrets,
+      client: {
+        getDurableRecipientDeliveryStatus: (id) =>
+          input.client.getDurableRecipientDeliveryStatus!(id),
+        submitDurableRecipientDelivery: (submission) =>
+          input.client.submitDurableRecipientDelivery!(submission),
+      },
+      deps: input.deps,
+    })
+  const deliveryId = randomUUID()
+  try {
+    let delivery = await deliver(deliveryId, plan.deficitScore, score.purchasedTotal)
+    if (delivery.state !== 'credited') {
+      throw new Error(`Participation Score delivery remains ${delivery.state}`)
+    }
+    let refreshedScore = await input.client.getParticipationScore()
+    if (refreshedScore.purchasedTotal <= score.purchasedTotal) {
+      throw new Error('Participation Score credit is not available for this order')
+    }
+    let refreshedPlan = planParticipationScoreTopUp(refreshedScore)
+    if (refreshedPlan.kind === 'needs-top-up') {
+      const purchasedBeforeSecondDelivery = refreshedScore.purchasedTotal
+      delivery = await deliver(
+        randomUUID(),
+        refreshedPlan.deficitScore,
+        purchasedBeforeSecondDelivery,
+      )
+      if (delivery.state !== 'credited') {
+        throw new Error(`Participation Score delivery remains ${delivery.state}`)
+      }
+      refreshedScore = await input.client.getParticipationScore()
+      if (refreshedScore.purchasedTotal <= purchasedBeforeSecondDelivery) {
+        throw new Error('Participation Score credit is not available for this order')
+      }
+      refreshedPlan = planParticipationScoreTopUp(refreshedScore)
+    }
+    if (refreshedPlan.kind === 'needs-top-up') {
+      throw new Error('Participation Score credit is not available for this order')
+    }
+    return {
+      kind: 'paid',
+      score: refreshedScore,
+      deliveryId: delivery.deliveryId,
+      deliveryState: 'credited',
+      operationId: delivery.transferId,
+    }
+  } finally {
+    input.deps.triggerCustodyRecovery?.()
+  }
 }
 
 async function consolidateMarket(input: {
@@ -1030,9 +1209,7 @@ async function consolidateMarket(input: {
   })
   const inputFeePpkByKeyset = await resolveCtfConsolidationInputFees(
     input.mintUrl,
-    Object.values(proofsByCollection).flatMap((proofs) =>
-      proofs.map((proof) => proof.id),
-    ),
+    Object.values(proofsByCollection).flatMap((proofs) => proofs.map((proof) => proof.id)),
     input.deps,
   )
   const outputKeysetByCollection = await resolveCtfConsolidationOutputKeysets(
@@ -1059,10 +1236,7 @@ async function consolidateMarket(input: {
       const keyset = outputKeysets[keysetId]
       if (!keyset) throw new Error(`missing mint keys for output keyset ${keysetId}`)
       const outputs = OutputData.createRandomData(Amount.from(amountSubunits), keyset)
-      outputsByCollection[collection] = [
-        ...(outputsByCollection[collection] ?? []),
-        ...outputs,
-      ]
+      outputsByCollection[collection] = [...(outputsByCollection[collection] ?? []), ...outputs]
       return outputs.map((output) => output.blindedMessage)
     },
   })
@@ -1116,6 +1290,7 @@ async function availableMarketProofs(input: {
   const groups: Record<string, Proof[]> = {}
   for (const record of state.wallet.proofs) {
     if (record.mintUrl !== input.mintUrl || record.state !== 'available') continue
+    if (record.asset.unit !== 'msat') continue
     if (record.asset.kind === 'sats') {
       groups[COLLATERAL_COLLECTION] = [
         ...(groups[COLLATERAL_COLLECTION] ?? []),
@@ -1123,10 +1298,7 @@ async function availableMarketProofs(input: {
       ]
       continue
     }
-    if (
-      record.asset.kind === 'Outcome' &&
-      record.asset.conditionId === input.conditionId
-    ) {
+    if (record.asset.kind === 'Outcome' && record.asset.conditionId === input.conditionId) {
       groups[record.asset.outcomeSetId] = [
         ...(groups[record.asset.outcomeSetId] ?? []),
         record.proof as Proof,
@@ -1136,41 +1308,21 @@ async function availableMarketProofs(input: {
   return groups
 }
 
-async function loadMarket(
-  client: EngineClientLike,
-  conditionId: string,
-): Promise<unknown | null> {
+async function loadMarket(client: EngineClientLike, conditionId: string): Promise<unknown | null> {
   if (client.getMarket) return client.getMarket(conditionId)
   return (
-    await client.queryMarkets({
-      ids: [conditionId],
-      state: 'All',
-      limit: 1,
-    })
-  ).markets[0] ?? null
+    (
+      await client.queryMarkets({
+        ids: [conditionId],
+        state: 'All',
+        limit: 1,
+      })
+    ).markets[0] ?? null
+  )
 }
 
 function extractMarketOutcomes(market: unknown): string[] {
-  if (!market || typeof market !== 'object') return []
-  const outcomes = (market as { outcomes?: unknown }).outcomes
-  if (!Array.isArray(outcomes)) return []
-  return outcomes
-    .map((outcome) => {
-      if (typeof outcome === 'string') return outcome
-      if (outcome && typeof outcome === 'object') {
-        const objectOutcome = outcome as {
-          label?: unknown
-          name?: unknown
-          id?: unknown
-        }
-        for (const key of ['label', 'name', 'id'] as const) {
-          const value = objectOutcome[key]
-          if (typeof value === 'string' && value.trim()) return value
-        }
-      }
-      return null
-    })
-    .filter((outcome): outcome is string => !!outcome)
+  return parseMarketOutcomes(market).map(({ label }) => label)
 }
 
 function extractMarketStatus(market: unknown): string | null {
@@ -1198,272 +1350,13 @@ function extractParentCollectionId(market: unknown): string | undefined {
   return undefined
 }
 
-function conditionIdFromMarketId(marketId: string): string {
-  const parsed = splitMarketId(marketId)
-  return parsed?.conditionId ?? marketId
-}
-
-function shouldRetryOrderValidationWithMarketUnit(
-  request: unknown,
-  validationMessage: string,
-): boolean {
-  if (!validationMessage.includes('price must be an integer') &&
-      !validationMessage.includes('amountSubunits must be a positive integer')) {
-    return false
-  }
-  if (typeof request !== 'object' || request === null || Array.isArray(request)) {
-    return false
-  }
-
-  const intent = request as { price?: unknown; amountSubunits?: unknown; amountSats?: unknown }
-  const price = intent.price
-  const amountSubunits = intent.amountSubunits ?? intent.amountSats
-  if (typeof price !== 'number' || typeof amountSubunits !== 'number') {
-    return false
-  }
-  if (!Number.isInteger(price) || !Number.isInteger(amountSubunits)) {
-    return false
-  }
-  if (price <= 0 || amountSubunits <= 0) {
-    return false
-  }
-  if (intent.amountSubunits !== undefined && intent.amountSats === undefined &&
-      validationMessage.includes('amountSubunits must be a positive integer')) {
-    return true
-  }
-
-  return price >= DEFAULT_SAT_MARKET_DIVISIBILITY || amountSubunits >= DEFAULT_SAT_MARKET_DIVISIBILITY
-}
-
-async function submitPendingEphemeralPubkeys(input: {
-  client: EngineClientLike
-  marketId: string
-  conditionId?: string
-  orderId: string
-  pendingPubkeySubmissions?: SubmitOrderResponse['pendingPubkeySubmissions']
-  generateEphemeralKeypair?: typeof generateOrderEphemeralKeypair
-}): Promise<void> {
-  for (const submission of input.pendingPubkeySubmissions ?? []) {
-    if (!input.client.submitEphemeralPubkey) {
-      throw new Error('engine client does not support ephemeral pubkey submission')
-    }
-    const existing = (await readSecrets())?.orderEphemeralKeys[submission.tradeId]
-    const ephemeral = existing
-      ? {
-          privateKeyHex: existing.privateKeyHex,
-          publicKeyHex: existing.publicKeyHex,
-        }
-      : input.generateEphemeralKeypair?.() ?? generateOrderEphemeralKeypair()
-    if (!existing) {
-      await updateSecrets((current, now) => {
-        current.orderEphemeralKeys[submission.tradeId] = {
-          orderId: input.orderId,
-          tradeId: submission.tradeId,
-          marketId: input.marketId,
-          privateKeyHex: ephemeral.privateKeyHex,
-          publicKeyHex: ephemeral.publicKeyHex,
-          createdAt: now,
-        }
-      })
-    }
-    await input.client.submitEphemeralPubkey(
-      submission.tradeId,
-      ephemeral.publicKeyHex,
-      input.conditionId,
-    )
-  }
-}
-
-async function maybePreparePreflightSplitForOrder(input: {
-  client: EngineClientLike
-  mintUrl: string
-  marketId: string
-  outcomeId: string
-  side: 'Buy' | 'Sell'
-  tokenSide: 'Outcome' | 'Complement'
-  price: number
-  amountSats: number
-  timeInForce: 'FAK' | 'FOK' | 'GTC'
-  preflightSplit?: boolean
-  clientOrderId: string
-}): Promise<PreparedPreflightSplit | null> {
-  if (input.preflightSplit !== true) return null
-  if (input.side !== 'Buy' || input.timeInForce !== 'GTC') return null
-
-  const market = splitMarketId(input.marketId)
-  if (!market) {
-    throw new Error(`cannot pre-flight split invalid market id ${input.marketId}`)
-  }
-  if (input.outcomeId !== market.outcomeSetId) {
-    throw new Error(
-      'pre-flight split requires outcomeId to match the submitted primitive market id',
-    )
-  }
-  const outcomeLabels = await loadOutcomeLabels(
-    input.client,
-    input.mintUrl,
-    market.conditionId,
-  )
-  if (outcomeLabels.length < 2) {
-    throw new Error('pre-flight split requires market outcome labels')
-  }
-  const complement = complementOutcomeSetId(outcomeLabels, market.outcomeSetId)
-  if (!complement) {
-    throw new Error('pre-flight split could not resolve a complementary outcome set')
-  }
-  if (await wouldOrderCross(input.client, input.marketId, input.price)) {
-    return null
-  }
-  const marketUnit = await loadMarketUnit(input.client, market.conditionId)
-
-  const reservationId = `order-preflight:${input.clientOrderId}`
-  const keepOutcomeSetId =
-    input.tokenSide === 'Complement' ? complement : market.outcomeSetId
-  const lockOutcomeSetId =
-    input.tokenSide === 'Complement' ? market.outcomeSetId : complement
-  let resolvedKeepOutcomeSetId = keepOutcomeSetId
-  let resolvedLockOutcomeSetId = lockOutcomeSetId
-  try {
-    const prepared = await prepareSwapInputsForTrade({
-      role: 'seller',
-      lockOutcomeSetId,
-      amountSats: input.amountSats,
-      outcomeProofsByCollection: {},
-      regularProofs: [],
-      splitRegularToOutcome: async () => {
-        const preflightOutputAmountSats =
-          await resolveRootPreflightOutputAmountSats({
-            mintUrl: input.mintUrl,
-            baseAsset: marketUnit.baseAsset,
-            conditionId: market.conditionId,
-            amountSats: input.amountSats,
-            keepOutcomeSetId,
-            lockOutcomeSetId,
-          })
-        const secrets = await readSecrets()
-        if (!secrets) throw new Error('daemon secrets are not initialized')
-        const collateral = await splitAvailableSatProofsForCtfCollateral(
-          preflightOutputAmountSats,
-          input.mintUrl,
-          `${reservationId}:regular-split:0`,
-          secrets,
-          {},
-          marketUnit.baseAsset,
-        )
-        if (collateral.spent.length > 0) {
-          await replaceAvailableSatProofsWithPreparedCollateral({
-            mintUrl: input.mintUrl,
-            spentSecrets: collateral.spent.map((proof) => proof.secret),
-            keepProofs: collateral.keep,
-            inputProofs: collateral.inputs,
-            reservationId,
-            baseAsset: marketUnit.baseAsset,
-          })
-        } else {
-          await reserveSelectedSatProofs(
-            input.mintUrl,
-            collateral.inputs,
-            reservationId,
-            marketUnit.baseAsset,
-          )
-        }
-        const split = await splitRootCompleteSetForPreflightOrder({
-          mintUrl: input.mintUrl,
-          baseAsset: marketUnit.baseAsset,
-          conditionId: market.conditionId,
-          collateralProofs: collateral.inputs,
-          amountSats: preflightOutputAmountSats,
-          keepOutcomeSetId,
-          lockOutcomeSetId,
-          operationId: `${reservationId}:ctf-split:0`,
-          proofOperationStore: ctfProofOperationStore,
-        })
-        resolvedKeepOutcomeSetId = split.resolvedKeepOutcomeSetId
-        resolvedLockOutcomeSetId = split.resolvedLockOutcomeSetId
-        await replaceReservedSatProofsWithReservedOutcomes({
-          mintUrl: input.mintUrl,
-          reservationId,
-          spentSecrets: split.spentSatProofs.map((proof) => proof.secret),
-          conditionId: market.conditionId,
-          proofsByCollection: split.proofsByCollection,
-          baseAsset: marketUnit.baseAsset,
-        })
-        return {
-          proofsByCollection: split.proofsByCollection,
-          spentRegularProofs: [],
-          regularChangeProofs: [],
-        }
-      },
-    })
-    if (prepared.status !== 'prepared') {
-      throw new Error(`pre-flight split unavailable: ${prepared.reason}`)
-    }
-  } catch (err) {
-    await releaseProofReservation(reservationId)
-    throw err
-  }
-
-  return {
-    reservationId,
-    conditionId: market.conditionId,
-    keepOutcomeSetId: resolvedKeepOutcomeSetId,
-    lockOutcomeSetId: resolvedLockOutcomeSetId,
-    amountSats: input.amountSats,
-  }
-}
-
-async function loadMarketOutcomeLabels(
-  client: EngineClientLike,
-  conditionId: string,
-): Promise<string[]> {
-  if (!client.getMarket) return []
-  for (let attempt = 0; attempt < 20; attempt++) {
-    const market = await client.getMarket(conditionId)
-    if (market && typeof market === 'object') {
-      const outcomes = (market as { outcomes?: unknown }).outcomes
-      if (Array.isArray(outcomes)) {
-        const labels = outcomes
-          .map((outcome) => {
-            if (typeof outcome === 'string') return outcome
-            if (outcome && typeof outcome === 'object') {
-              const objectOutcome = outcome as {
-                id?: unknown
-                label?: unknown
-                name?: unknown
-              }
-              for (const key of ['label', 'name', 'id'] as const) {
-                const value = objectOutcome[key]
-                if (typeof value === 'string' && value.trim()) return value
-              }
-            }
-            return null
-          })
-          .filter((outcome): outcome is string => !!outcome)
-        if (labels.length >= 2) return labels
-      }
-    }
-    await new Promise((resolve) => setTimeout(resolve, 250))
-  }
-  return []
-}
-
 async function loadMarketUnit(
   client: EngineClientLike,
   conditionId: string,
-): Promise<{ baseAsset: string; divisibility: number }> {
-  if (!client.getMarket) {
-    return {
-      baseAsset: normalizeMarketBaseAsset(undefined),
-      divisibility: DEFAULT_SAT_MARKET_DIVISIBILITY,
-    }
-  }
+): Promise<{ baseAsset: MarketBaseAsset; divisibility: number }> {
+  if (!client.getMarket) throw new Error('engine client does not support market unit lookup')
   const market = await client.getMarket(conditionId)
-  if (!market || typeof market !== 'object') {
-    return {
-      baseAsset: normalizeMarketBaseAsset(undefined),
-      divisibility: DEFAULT_SAT_MARKET_DIVISIBILITY,
-    }
-  }
+  if (!market || typeof market !== 'object') throw new Error('market unit metadata is unavailable')
   const record = market as {
     baseAsset?: unknown
     base_asset?: unknown
@@ -1479,225 +1372,28 @@ async function loadMarketUnit(
     ),
     divisibility: normalizeMarketDivisibility(
       typeof record.divisibility === 'number' ? record.divisibility : undefined,
+      'sat',
     ),
   }
 }
 
-async function loadOutcomeLabels(
-  client: EngineClientLike,
-  mintUrl: string,
-  conditionId: string,
-): Promise<string[]> {
-  const marketLabels = await loadMarketOutcomeLabels(client, conditionId)
-  if (marketLabels.length >= 2) return marketLabels
-  return loadMintOutcomeLabels(mintUrl, conditionId)
-}
-
-async function loadMintOutcomeLabels(
-  mintUrl: string,
-  conditionId: string,
-): Promise<string[]> {
-  try {
-    const response = await fetch(`${mintUrl.replace(/\/+$/, '')}/v1/conditions`)
-    if (!response.ok) return []
-    const body = (await response.json()) as {
-      conditions?: Array<{
-        condition_id?: unknown
-        keysets?: unknown
-      }>
-    }
-    const condition = body.conditions?.find(
-      (candidate) => candidate.condition_id === conditionId,
-    )
-    if (!condition?.keysets || typeof condition.keysets !== 'object') return []
-    const labels = new Set<string>()
-    for (const collection of Object.keys(condition.keysets as Record<string, unknown>)) {
-      for (const label of collection.split('|')) {
-        const trimmed = label.trim()
-        if (trimmed) labels.add(trimmed)
-      }
-    }
-    if (labels.size >= 2) return [...labels]
-  } catch {
-    return []
-  }
-  return []
-}
-
-async function wouldOrderCross(
-  client: EngineClientLike,
-  marketId: string,
-  price: number,
-): Promise<boolean> {
-  const selectedBook = await client.getOrderBook(marketId)
-  if ((selectedBook.asks[0]?.price ?? Number.POSITIVE_INFINITY) <= price) {
-    return true
-  }
-  return false
-}
-
-async function reserveSelectedSatProofs(
-  mintUrl: string,
-  proofs: CashuProofRecord[],
-  reservedBy: string,
-  baseAssetInput?: string | null,
-): Promise<void> {
-  const baseAsset = normalizeMarketBaseAsset(baseAssetInput)
-  const secrets = new Set(proofs.map((proof) => proof.secret))
-  await updateState((state, now) => {
-    let reserved = 0
-    for (const record of state.wallet.proofs) {
-      if (
-        record.mintUrl !== mintUrl ||
-        record.state !== 'available' ||
-        record.asset.kind !== 'sats' ||
-        normalizeMarketBaseAsset(record.asset.baseAsset) !== baseAsset ||
-        !secrets.has(record.proof.secret)
-      ) {
-        continue
-      }
-      record.state = 'reserved'
-      record.reservedBy = reservedBy
-      record.updatedAt = now
-      reserved += 1
-    }
-    if (reserved !== secrets.size) {
-      throw new Error('pre-flight split collateral was no longer available')
-    }
-  })
-}
-
-function addProofsToState(
-  state: Awaited<ReturnType<typeof ensureState>>,
-  mintUrl: string,
-  proofs: CashuProofRecord[],
-  proofState: 'available' | 'reserved' | 'locked',
-  asset: Awaited<ReturnType<typeof ensureState>>['wallet']['proofs'][number]['asset'],
-  now: string,
-  reservedBy?: string,
+function assertPreparedSettlementCapability(
+  prepared: PreparedSettlementCapability,
+  expected: { clientOrderId: string; marketId: string },
 ): void {
-  const existingSecrets = new Set(
-    state.wallet.proofs
-      .filter((record) => record.mintUrl === mintUrl)
-      .map((record) => record.proof.secret),
-  )
-  for (const proof of proofs) {
-    if (existingSecrets.has(proof.secret)) continue
-    existingSecrets.add(proof.secret)
-    state.wallet.proofs.push({
-      proof: structuredClone(proof),
-      mintUrl,
-      state: proofState,
-      reservedBy,
-      asset,
-      createdAt: now,
-      updatedAt: now,
-    })
+  if (
+    prepared.operationId.length === 0 ||
+    prepared.capability.clientOrderId !== expected.clientOrderId ||
+    prepared.capability.marketId !== expected.marketId ||
+    prepared.capability.orderId.length === 0 ||
+    prepared.capability.reference.artifactId.length === 0 ||
+    prepared.capability.reference.bindingDigest.length === 0 ||
+    !Number.isSafeInteger(prepared.consolidation.feeSubunits) ||
+    prepared.consolidation.feeSubunits < 0 ||
+    prepared.consolidation.operationIds.some((operationId) => operationId.length === 0)
+  ) {
+    throw new Error('daemon settlement capability response is foreign')
   }
-}
-
-function removeProofsBySecretFromState(
-  state: Awaited<ReturnType<typeof ensureState>>,
-  mintUrl: string,
-  proofs: CashuProofRecord[],
-): void {
-  const secrets = new Set(proofs.map((proof) => proof.secret))
-  if (secrets.size === 0) return
-  state.wallet.proofs = state.wallet.proofs.filter(
-    (record) => record.mintUrl !== mintUrl || !secrets.has(record.proof.secret),
-  )
-}
-
-async function replaceAvailableSatProofsWithPreparedCollateral(input: {
-  mintUrl: string
-  spentSecrets: string[]
-  keepProofs: CashuProofRecord[]
-  inputProofs: CashuProofRecord[]
-  reservationId: string
-  baseAsset?: string | null
-}): Promise<void> {
-  const spent = new Set(input.spentSecrets)
-  const baseAsset = normalizeMarketBaseAsset(input.baseAsset)
-  await updateState((state, now) => {
-    state.wallet.proofs = state.wallet.proofs.filter(
-      (record) => record.mintUrl !== input.mintUrl || !spent.has(record.proof.secret),
-    )
-    const existingSecrets = new Set(
-      state.wallet.proofs
-        .filter((record) => record.mintUrl === input.mintUrl)
-        .map((record) => record.proof.secret),
-    )
-    for (const proof of input.keepProofs) {
-      if (existingSecrets.has(proof.secret)) continue
-      existingSecrets.add(proof.secret)
-      state.wallet.proofs.push({
-        proof: structuredClone(proof),
-        mintUrl: input.mintUrl,
-        state: 'available',
-        asset: { kind: 'sats', baseAsset },
-        createdAt: now,
-        updatedAt: now,
-      })
-    }
-    for (const proof of input.inputProofs) {
-      if (existingSecrets.has(proof.secret)) continue
-      existingSecrets.add(proof.secret)
-      state.wallet.proofs.push({
-        proof: structuredClone(proof),
-        mintUrl: input.mintUrl,
-        state: 'reserved',
-        reservedBy: input.reservationId,
-        asset: { kind: 'sats', baseAsset },
-        createdAt: now,
-        updatedAt: now,
-      })
-    }
-  })
-}
-
-async function replaceReservedSatProofsWithReservedOutcomes(input: {
-  mintUrl: string
-  reservationId: string
-  spentSecrets: string[]
-  conditionId: string
-  proofsByCollection: Record<string, CashuProofRecord[]>
-  baseAsset?: string | null
-}): Promise<void> {
-  const spent = new Set(input.spentSecrets)
-  const baseAsset = normalizeMarketBaseAsset(input.baseAsset)
-  await updateState((state, now) => {
-    state.wallet.proofs = state.wallet.proofs.filter(
-      (record) =>
-        record.mintUrl !== input.mintUrl ||
-        record.reservedBy !== input.reservationId ||
-        !spent.has(record.proof.secret),
-    )
-    const existingSecrets = new Set(
-      state.wallet.proofs
-        .filter((record) => record.mintUrl === input.mintUrl)
-        .map((record) => record.proof.secret),
-    )
-    for (const [outcomeSetId, proofs] of Object.entries(input.proofsByCollection)) {
-      for (const proof of proofs) {
-        if (existingSecrets.has(proof.secret)) continue
-        existingSecrets.add(proof.secret)
-        state.wallet.proofs.push({
-          proof: structuredClone(proof),
-          mintUrl: input.mintUrl,
-          state: 'reserved',
-          reservedBy: input.reservationId,
-          asset: {
-            kind: 'Outcome',
-            conditionId: input.conditionId,
-            outcomeSetId,
-            baseAsset,
-          },
-          createdAt: now,
-          updatedAt: now,
-        })
-      }
-    }
-  })
 }
 
 export function orderBackingError(input: {
@@ -1708,14 +1404,7 @@ export function orderBackingError(input: {
   holdings: TokenHoldings
 }): string | null {
   if (input.side === 'Buy') {
-    const requiredCollateral = input.amountSubunits % input.divisibility === 0
-      ? quotePaymentSubunits({
-        faceAmountSubunits: input.amountSubunits,
-        priceNumerator: input.price,
-        divisibility: input.divisibility,
-      })
-      // TODO: move arbitrary-size quote-payment rounding into the SDK helper.
-      : Math.ceil(input.amountSubunits * input.price / input.divisibility)
+    const requiredCollateral = requiredBuyCollateral(input)
     if (input.holdings.baseUnitProofs >= requiredCollateral) return null
     return `insufficient backing: have ${input.holdings.baseUnitProofs} base subunits, need ${requiredCollateral}`
   }
@@ -1735,38 +1424,51 @@ export function orderBackingError(input: {
   return `insufficient backing: have ${backing.maxShares} outcome token shares, need ${requiredShares} shares`
 }
 
-function splitMarketId(
-  marketId: string,
-): { conditionId: string; outcomeSetId: string } | null {
-  const dash = marketId.lastIndexOf('-')
-  if (dash <= 0 || dash >= marketId.length - 1) return null
-  return {
-    conditionId: marketId.slice(0, dash),
-    outcomeSetId: marketId.slice(dash + 1),
+function participationScoreBackingError(input: {
+  side: 'Buy' | 'Sell'
+  price: number
+  amountSubunits: number
+  divisibility: number
+  holdings: TokenHoldings
+  plan: ParticipationScoreTopUpPlan
+}): string | null {
+  if (input.plan.kind !== 'needs-top-up') return null
+  const scoreSubunits = input.plan.deficitScore * 1_000
+  const orderSubunits = input.side === 'Buy' ? requiredBuyCollateral(input) : 0
+  const required = scoreSubunits + orderSubunits
+  if (!Number.isSafeInteger(required)) {
+    throw new Error('combined order and Participation Score backing exceeds safe range')
   }
+  if (input.holdings.baseUnitProofs >= required) return null
+  return `insufficient combined backing: have ${input.holdings.baseUnitProofs} base subunits, need ${required} for the order and Participation Score`
 }
 
-function daemonStateIsEmpty(state: Awaited<ReturnType<typeof ensureState>>): boolean {
-  return (
-    state.wallet.proofs.length === 0 &&
-    Object.keys(state.wallet.keysetCounters).length === 0 &&
-    Object.keys(state.proofOperations).length === 0 &&
-    Object.keys(state.orders).length === 0 &&
-    Object.keys(state.swaps).length === 0
-  )
+function requiredBuyCollateral(input: {
+  price: number
+  amountSubunits: number
+  divisibility: number
+}): number {
+  return input.amountSubunits % input.divisibility === 0
+    ? quotePaymentSubunits({
+        faceAmountSubunits: input.amountSubunits,
+        priceNumerator: input.price,
+        divisibility: input.divisibility,
+      })
+    : // TODO: move arbitrary-size quote-payment rounding into the SDK helper.
+      Math.ceil((input.amountSubunits * input.price) / input.divisibility)
 }
 
-async function startTradeRuntimeBestEffort(
-  tradeRuntime: TradeRuntime | undefined,
+async function trackOwnedOrderBestEffort(
+  trackOwnedOrder: DispatchDependencies['trackOwnedOrder'],
+  marketId: string,
+  orderId: string,
 ): Promise<void> {
-  if (!tradeRuntime) return
+  if (!trackOwnedOrder) return
   try {
-    await tradeRuntime.start(await ensureState())
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err)
-    process.stderr.write(
-      `bitcaster-daemon trade runtime start failed; RPC will remain available: ${message}\n`,
-    )
+    await trackOwnedOrder(marketId, orderId)
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    process.stderr.write(`order lifecycle subscription failed for ${orderId}: ${message}\n`)
   }
 }
 
@@ -1778,13 +1480,7 @@ function createEngineClient(
   return new BitcasterEngineClient({
     baseUrl: options.baseUrl,
     authorization: ({ url, method, bodyText, payloadHash }) =>
-      signNip98(
-        { privateKeyHex: options.nostrSecretKeyHex },
-        url,
-        method,
-        bodyText,
-        payloadHash,
-      ),
+      signNip98({ privateKeyHex: options.nostrSecretKeyHex }, url, method, bodyText, payloadHash),
   })
 }
 
@@ -1795,13 +1491,7 @@ function createAuthenticatedBitcasterEngineClient(options: {
   return new BitcasterEngineClient({
     baseUrl: options.baseUrl,
     authorization: ({ url, method, bodyText, payloadHash }) =>
-      signNip98(
-        { privateKeyHex: options.nostrSecretKeyHex },
-        url,
-        method,
-        bodyText,
-        payloadHash,
-      ),
+      signNip98({ privateKeyHex: options.nostrSecretKeyHex }, url, method, bodyText, payloadHash),
   })
 }
 
@@ -1833,25 +1523,17 @@ function writeJson(res: ServerResponse, status: number, body: DaemonResponse): v
 
 function isLocalCaller(address: string | undefined): boolean {
   if (!address) return true
-  return (
-    address === '127.0.0.1' ||
-    address === '::1' ||
-    address === '::ffff:127.0.0.1'
-  )
+  return address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1'
 }
 
 function isLoopbackBindHost(host: string): boolean {
   return (
-    host === 'localhost' ||
-    host === '127.0.0.1' ||
-    host === '::1' ||
-    host === '::ffff:127.0.0.1'
+    host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '::ffff:127.0.0.1'
   )
 }
 
 function defaultRpcSocketPath(): string | undefined {
   if (process.platform === 'win32') return undefined
-  if (process.env.BITCASTER_DAEMON_PORT) return undefined
   return rpcSocketPath()
 }
 

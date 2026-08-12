@@ -27,42 +27,42 @@ import type {
   Kormir as KormirType,
   Announcement as KormirAnnouncement,
   Attestation as KormirAttestation,
-} from './kormir-wasm-pkg/kormir_wasm'
-import { nip19 } from 'nostr-tools'
-import { getPublicKey } from 'nostr-tools/pure'
+} from "./kormir-wasm-pkg/kormir_wasm";
+import { nip19 } from "nostr-tools";
+import { getPublicKey } from "nostr-tools/pure";
 
 // Re-export the wasm-bindgen types under friendlier names so callers do not
 // have to reach into the generated `kormir-wasm-pkg` directory.
-export type Kormir = KormirType
-export type { KormirAnnouncement, KormirAttestation }
+export type Kormir = KormirType;
+export type { KormirAnnouncement, KormirAttestation };
 
-type KormirModule = typeof import('./kormir-wasm-pkg/kormir_wasm')
+type KormirModule = typeof import("./kormir-wasm-pkg/kormir_wasm");
 type StoredKormirEvent = {
-  event_name?: unknown
-  announcement?: unknown
-  attestation?: unknown
-  announcement_event_id?: unknown
-}
+  event_name?: unknown;
+  announcement?: unknown;
+  attestation?: unknown;
+  announcement_event_id?: unknown;
+};
 
-const NIP88_TITLE_MAX_CHARS = 100
+const NIP88_TITLE_MAX_CHARS = 100;
 
-let modulePromise: Promise<KormirModule> | null = null
-let instancePromise: Promise<KormirType> | null = null
+let modulePromise: Promise<KormirModule> | null = null;
+let instancePromise: Promise<KormirType> | null = null;
 // Relay list used to build the currently-cached Kormir instance. Tracked so
 // that a subsequent getKormir() call with different relays rebuilds instead
 // of silently returning the stale instance.
-let instanceRelayKey: string | null = null
+let instanceRelayKey: string | null = null;
 // The nsec that should be installed into kormir's IndexedDB on next load.
 // Tracked separately from the wasm module so that `loginWithNsec` can remember
 // the key without triggering the 3MB wasm download — the download is deferred
 // until the user actually enters the become-oracle flow.
-let pendingNsec: string | null = null
+let pendingNsec: string | null = null;
 
 function relayKey(relays: string[]): string {
   // Join with a delimiter unlikely to appear in URLs so key comparisons are
   // order-sensitive (changing relay order rebuilds the instance, which is
   // what we want — Kormir treats the first relay list as canonical).
-  return relays.join('|')
+  return relays.join("|");
 }
 
 /**
@@ -70,10 +70,10 @@ function relayKey(relays: string[]): string {
  * should never call this — always use the dynamic `loadKormirModule`.
  */
 export function __setKormirModuleForTest(mod: KormirModule | null): void {
-  modulePromise = mod ? Promise.resolve(mod) : null
-  instancePromise = null
-  instanceRelayKey = null
-  pendingNsec = null
+  modulePromise = mod ? Promise.resolve(mod) : null;
+  instancePromise = null;
+  instanceRelayKey = null;
+  pendingNsec = null;
 }
 
 /**
@@ -86,17 +86,17 @@ export function __setKormirModuleForTest(mod: KormirModule | null): void {
 async function loadKormirModule(): Promise<KormirModule> {
   if (!modulePromise) {
     modulePromise = (async () => {
-      const mod = await import('./kormir-wasm-pkg/kormir_wasm')
+      const mod = await import("./kormir-wasm-pkg/kormir_wasm");
       // wasm-pack --target web exposes a default export that must be awaited
       // before any class methods are available.
-      await mod.default()
-      return mod
+      await mod.default();
+      return mod;
     })().catch((e) => {
-      modulePromise = null
-      throw e
-    })
+      modulePromise = null;
+      throw e;
+    });
   }
-  return modulePromise
+  return modulePromise;
 }
 
 /**
@@ -111,10 +111,10 @@ async function loadKormirModule(): Promise<KormirModule> {
  * @param nsec - hex or bech32 (nsec1…) encoded secp256k1 private key, or null
  */
 export function setPendingKormirNsec(nsec: string | null): void {
-  pendingNsec = nsec
+  pendingNsec = nsec;
   // Force a fresh instance on the next getKormir() call so it picks up the
   // new key from IndexedDB.
-  instancePromise = null
+  instancePromise = null;
 }
 
 /**
@@ -124,28 +124,23 @@ export function setPendingKormirNsec(nsec: string | null): void {
  * {@link setPendingKormirNsec}.
  */
 export async function restoreKormirWithNsec(nsec: string): Promise<void> {
-  const mod = await loadKormirModule()
-  await mod.Kormir.restore(nsec)
-  pendingNsec = null
-  instancePromise = null
+  const mod = await loadKormirModule();
+  await mod.Kormir.restore(nsec);
+  pendingNsec = null;
+  instancePromise = null;
 }
 
-export async function ensureKormirNsec(
-  relays: string[],
-  nsec: string,
-): Promise<void> {
-  const desiredPubkey = pubkeyFromNsec(nsec)
+export async function ensureKormirNsec(relays: string[], nsec: string): Promise<void> {
+  const desiredPubkey = pubkeyFromNsec(nsec);
   try {
-    const currentPubkey = normalizeKormirPublicKey(
-      (await getKormir(relays)).get_public_key(),
-    )
-    if (currentPubkey === desiredPubkey) return
+    const currentPubkey = normalizeKormirPublicKey((await getKormir(relays)).get_public_key());
+    if (currentPubkey === desiredPubkey) return;
   } catch {
     // If kormir cannot construct with the current browser store, restore the
     // requested nsec below. The caller is about to create a new event, so
     // clearing stale kormir state is acceptable here.
   }
-  await restoreKormirWithNsec(nsec)
+  await restoreKormirWithNsec(nsec);
 }
 
 /**
@@ -162,32 +157,32 @@ export async function ensureKormirNsec(
  * cache is cleared so that subsequent calls can retry.
  */
 export async function getKormir(relays: string[]): Promise<KormirType> {
-  const key = relayKey(relays)
+  const key = relayKey(relays);
   if (!instancePromise || instanceRelayKey !== key) {
-    instanceRelayKey = key
+    instanceRelayKey = key;
     instancePromise = (async () => {
-      const mod = await loadKormirModule()
+      const mod = await loadKormirModule();
       if (pendingNsec !== null) {
-        const stagedNsec = pendingNsec
-        const existing = await mod.Kormir.new(relays).catch(() => null)
+        const stagedNsec = pendingNsec;
+        const existing = await mod.Kormir.new(relays).catch(() => null);
         if (
           existing &&
           normalizeKormirPublicKey(existing.get_public_key()) === pubkeyFromNsec(stagedNsec)
         ) {
-          pendingNsec = null
-          return existing
+          pendingNsec = null;
+          return existing;
         }
-        await mod.Kormir.restore(stagedNsec)
-        pendingNsec = null
+        await mod.Kormir.restore(stagedNsec);
+        pendingNsec = null;
       }
-      return mod.Kormir.new(relays)
+      return mod.Kormir.new(relays);
     })().catch((e) => {
-      instancePromise = null
-      instanceRelayKey = null
-      throw e
-    })
+      instancePromise = null;
+      instanceRelayKey = null;
+      throw e;
+    });
   }
-  return instancePromise
+  return instancePromise;
 }
 
 /**
@@ -196,16 +191,19 @@ export async function getKormir(relays: string[]): Promise<KormirType> {
  * forget the key must use `setPendingKormirNsec(null)` explicitly.
  */
 export function resetKormir(): void {
-  instancePromise = null
-  instanceRelayKey = null
+  instancePromise = null;
+  instanceRelayKey = null;
 }
 
 function plainTextTagValue(value: string): string {
-  return value.replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim()
+  return value
+    .replace(/[\r\n\t]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function truncateNip88Title(title: string): string {
-  return Array.from(plainTextTagValue(title)).slice(0, NIP88_TITLE_MAX_CHARS).join('')
+  return Array.from(plainTextTagValue(title)).slice(0, NIP88_TITLE_MAX_CHARS).join("");
 }
 
 /**
@@ -228,7 +226,7 @@ export async function createEnumAnnouncement(
   title = eventId,
   description = title,
 ): Promise<string> {
-  const kormir = await getKormir(relays)
+  const kormir = await getKormir(relays);
   try {
     return await kormir.create_enum_event(
       eventId,
@@ -236,9 +234,9 @@ export async function createEnumAnnouncement(
       maturityEpoch,
       truncateNip88Title(title),
       plainTextTagValue(description),
-    )
+    );
   } catch (err) {
-    throw new Error(`Failed to create DLC oracle announcement: ${describeThrown(err)}`)
+    throw new Error(`Failed to create DLC oracle announcement: ${describeThrown(err)}`);
   }
 }
 
@@ -265,11 +263,11 @@ export async function importEnumAnnouncement(
   relays: string[],
   announcementHex: string,
 ): Promise<string> {
-  const kormir = await getKormir(relays)
+  const kormir = await getKormir(relays);
   try {
-    return await kormir.import_enum_event(announcementHex)
+    return await kormir.import_enum_event(announcementHex);
   } catch (err) {
-    throw new Error(`Failed to re-import DLC oracle announcement: ${describeThrown(err)}`)
+    throw new Error(`Failed to re-import DLC oracle announcement: ${describeThrown(err)}`);
   }
 }
 
@@ -290,24 +288,24 @@ export async function signEnumAttestation(
   outcome: string,
   announcementHex?: string,
 ): Promise<string> {
-  const kormir = await getKormir(relays)
+  const kormir = await getKormir(relays);
   if (announcementHex) {
     // Recover the committed-nonce material on a fresh profile before signing.
     // Idempotent: no-op when the event already exists locally.
-    await importEnumAnnouncement(relays, announcementHex)
+    await importEnumAnnouncement(relays, announcementHex);
   }
   try {
-    return await kormir.sign_enum_event(eventId, outcome)
+    return await kormir.sign_enum_event(eventId, outcome);
   } catch (err) {
-    const stored = await findStoredKormirEvent(kormir, eventId).catch(() => null)
-    if (typeof stored?.attestation === 'string' && stored.attestation.length > 0) {
+    const stored = await findStoredKormirEvent(kormir, eventId).catch(() => null);
+    if (typeof stored?.attestation === "string" && stored.attestation.length > 0) {
       console.warn(
-        'DLC oracle attestation was signed locally, but publishing to Nostr failed. Continuing with the local attestation hex.',
+        "DLC oracle attestation was signed locally, but publishing to Nostr failed. Continuing with the local attestation hex.",
         describeThrown(err),
-      )
-      return stored.attestation
+      );
+      return stored.attestation;
     }
-    throw new Error(`Failed to sign DLC oracle attestation: ${describeThrown(err)}`)
+    throw new Error(`Failed to sign DLC oracle attestation: ${describeThrown(err)}`);
   }
 }
 
@@ -315,11 +313,9 @@ export async function getOracleAnnouncementEventId(
   relays: string[],
   eventId: string,
 ): Promise<string | null> {
-  const kormir = await getKormir(relays)
-  const stored = await findStoredKormirEvent(kormir, eventId)
-  return typeof stored?.announcement_event_id === 'string'
-    ? stored.announcement_event_id
-    : null
+  const kormir = await getKormir(relays);
+  const stored = await findStoredKormirEvent(kormir, eventId);
+  return typeof stored?.announcement_event_id === "string" ? stored.announcement_event_id : null;
 }
 
 /**
@@ -327,61 +323,60 @@ export async function getOracleAnnouncementEventId(
  * This matches the Nostr pubkey derived from the same nsec.
  */
 export async function getOraclePublicKey(relays: string[]): Promise<string> {
-  const kormir = await getKormir(relays)
-  return kormir.get_public_key()
+  const kormir = await getKormir(relays);
+  return kormir.get_public_key();
 }
 
 async function findStoredKormirEvent(
   kormir: KormirType,
   eventId: string,
 ): Promise<StoredKormirEvent | null> {
-  const events = await kormir.list_events()
-  if (!Array.isArray(events)) return null
+  const events = await kormir.list_events();
+  if (!Array.isArray(events)) return null;
   return (
     events.find(
-      (event): event is StoredKormirEvent =>
-        isRecord(event) && event.event_name === eventId,
+      (event): event is StoredKormirEvent => isRecord(event) && event.event_name === eventId,
     ) ?? null
-  )
+  );
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null
+  return typeof value === "object" && value !== null;
 }
 
 function describeThrown(err: unknown): string {
-  if (err instanceof Error && err.message) return err.message
-  if (typeof err === 'string' && err.length > 0) return err
+  if (err instanceof Error && err.message) return err.message;
+  if (typeof err === "string" && err.length > 0) return err;
   if (isRecord(err)) {
-    const message = err.message
-    if (typeof message === 'string' && message.length > 0) return message
+    const message = err.message;
+    if (typeof message === "string" && message.length > 0) return message;
   }
-  return String(err)
+  return String(err);
 }
 
 function pubkeyFromNsec(nsec: string): string {
-  const trimmed = nsec.trim()
-  if (trimmed.startsWith('nsec1')) {
-    const decoded = nip19.decode(trimmed)
-    if (decoded.type !== 'nsec') throw new Error('Expected an nsec private key')
-    return getPublicKey(decoded.data)
+  const trimmed = nsec.trim();
+  if (trimmed.startsWith("nsec1")) {
+    const decoded = nip19.decode(trimmed);
+    if (decoded.type !== "nsec") throw new Error("Expected an nsec private key");
+    return getPublicKey(decoded.data);
   }
   if (/^[0-9a-fA-F]{64}$/.test(trimmed)) {
-    return getPublicKey(hexToBytes(trimmed))
+    return getPublicKey(hexToBytes(trimmed));
   }
-  throw new Error('Expected an nsec1... or 64-character hex private key')
+  throw new Error("Expected an nsec1... or 64-character hex private key");
 }
 
 function normalizeKormirPublicKey(pubkey: string): string {
-  const trimmed = pubkey.trim().toLowerCase()
-  if (/^(02|03)[0-9a-f]{64}$/.test(trimmed)) return trimmed.slice(2)
-  return trimmed
+  const trimmed = pubkey.trim().toLowerCase();
+  if (/^(02|03)[0-9a-f]{64}$/.test(trimmed)) return trimmed.slice(2);
+  return trimmed;
 }
 
 function hexToBytes(hex: string): Uint8Array {
-  const out = new Uint8Array(hex.length / 2)
+  const out = new Uint8Array(hex.length / 2);
   for (let i = 0; i < out.length; i++) {
-    out[i] = Number.parseInt(hex.slice(i * 2, i * 2 + 2), 16)
+    out[i] = Number.parseInt(hex.slice(i * 2, i * 2 + 2), 16);
   }
-  return out
+  return out;
 }

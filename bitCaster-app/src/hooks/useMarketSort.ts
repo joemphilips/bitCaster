@@ -9,6 +9,6 @@
  *   - `popular`  — total trading volume in the rolling 30d window, desc
  *   - `new`      — engine `createdAt` timestamp, desc
  */
-export type MarketSort = 'trending' | 'popular' | 'new'
+export type MarketSort = "trending" | "popular" | "new";
 
-export const DEFAULT_MARKET_SORT: MarketSort = 'trending'
+export const DEFAULT_MARKET_SORT: MarketSort = "trending";

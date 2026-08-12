@@ -1,53 +1,64 @@
 ---
-title: "Atomic Swaps"
-description: "How bitCaster uses atomic swaps to settle trades between peers without trusting a custodian."
+title: "Atomic Settlement"
+description: "How bitCaster settles matched conditional-token orders through the mint."
 sidebar:
   order: 2
 ---
 
-# How Token Exchange Works
+# Atomic Settlement
 
-Trading on bitCaster involves two broad steps:
+bitCaster settles matched orders with the Cashu mint. It does not run a
+bilateral swap between two peers.
 
-1. You submit an order and the matching engine finds a match.
-2. The matched parties settle with an atomic swap through the mint.
+When you place an order, your wallet authorizes it with a `PAY_TO_UNLOCK`
+capability. The matching engine checks this authorization when it admits the
+order. It does not call the mint at this stage.
 
-This is true for both complementary and mint matches. A mint match
-may first require one side to split regular collateral proofs into a complete
-set of outcome tokens, but the matched trade still settles through the same
-trustless atomic swap protocol.
+When orders match, the engine creates one or more fills. Each `fillId`
+identifies one real fill. The engine can put one or more fills into an atomic
+settlement group. Each `groupId` identifies that group. Do not use a `groupId`
+as a fill identifier.
 
-Terminology matches Polymarket CTF Exchange V2: **Complementary** = Buy vs Sell, **Mint** = Buy vs Buy (maker splits a complete set), **Merge** = Sell vs Sell (combine into a complete set; not yet supported in bitCaster).
+The engine submits one multi-party conversion for each settlement group. The
+mint completes the group as one operation. A group can use one of these
+conversion types:
 
-For categorical markets, the public trading UI presents primitive books such as `A / Not A`; compound outcome collections such as `B|C` are wallet and settlement details used after a match is made.
+- **Complementary conversion.** It exchanges compatible conditional-token and
+  collateral positions.
+- **Mint conversion.** It creates a complete conditional-token set as part of
+  the conversion.
 
-## Mint vs complementary matches
+The NUT also defines merge conversion. bitCaster does not expose it in this
+release.
 
-- **Mint match** — a YES buyer is matched with a NO buyer, or in a categorical market a buyer of one outcome set is matched with a buyer of the exact complementary set. The maker creates or selects the complete outcome-token set, keeps the side they wanted, and atomically swaps the other side to the taker for regular collateral.
-- **Complementary match** — for example, someone selling YES tokens they already hold to another participant who wants to buy them with regular collateral. The seller already has the outcome tokens, so no pre-trade split is needed, but the exchange still uses the same atomic-swap safety rule.
+When the mint confirms a group, it returns exact result entries. Your wallet
+stores the submitted operation and the confirmed result. If the wallet stops or
+loses its connection, it can recover the exact operation and result later.
 
-For limit buys that may rest on the book, the CLI/daemon can optionally pre-split regular collateral proofs into the complete outcome set before the order becomes live, reserving those proofs locally for that order. This is controlled with the `--no-preflight-split` flag. The browser GUI does not pre-split; it uses a balance check (`canBackOrder`) as the only gate before submitting, and settlement splitting happens at match time.
+## Cancellation and continuation
 
-Matching is final for the order book: once a match is accepted, the matched quantity no longer rests on the book. A later swap failure returns or unlocks wallet proofs according to the atomic-swap rules, but it does not put that order quantity back into the public book automatically.
+Cancellation only retracts an order that still rests on the book. It does not
+spend a `PAY_TO_UNLOCK` capability. It does not refund a capability.
 
-## Why atomic swaps matter
+After a partial fill, a residual order needs a new capability before it can rest
+on the book again.
 
-An atomic swap guarantees that **either both sides of the trade complete, or neither does**. This is critical for trustless peer-to-peer trading:
+## What the engine can see
 
-- You never send your tokens hoping the other party will send theirs.
-- If anything goes wrong (the other party disappears, a network issue occurs), your tokens are automatically returned to you after a short timeout.
-- The matching engine relays encrypted messages between the two parties but **never holds custody** of any funds.
+Your wallet sends the exact `PAY_TO_UNLOCK` proofs that authorize the order.
+The engine sees those proofs and their secrets. It does not receive your wallet
+seed, output blinding factors, refund key, or other wallet proofs.
 
-## How it works (simplified)
+The engine can use only the output choices that your wallet authorized. It
+cannot redirect the value or extend the authorization. If the engine does not
+settle, those authorized proofs remain unavailable until their refund becomes
+valid.
 
-1. The matching engine pairs two orders and shares each party's public key with the other.
-2. Both parties establish an encrypted channel using those keys.
-3. Each party locks their tokens so only the counterparty can spend them, with a time-limited refund path.
-4. A cryptographic link (adaptor signature) ties both locks together — claiming one side automatically reveals the secret needed to claim the other.
-5. The first party claims, which reveals the secret. The second party uses that secret to claim their side.
-
-The entire process happens in seconds and requires no on-chain transactions — just ecash swaps through the mint.
+If submission is absent or uncertain, the wallet reconciles with the durable
+engine and mint authority. A `PAY_TO_UNLOCK` capability can still refund after
+its expiry under the NUT rules.
 
 ## Further reading
 
-For the full cryptographic protocol, see the [technical specification](/technical/protocol/atomic-swap/).
+See the [technical settlement protocol](/technical/protocol/atomic-swap/) for
+the lifecycle and trust boundary.

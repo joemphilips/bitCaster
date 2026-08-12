@@ -1,6 +1,15 @@
-import { chmod, mkdir, readFile, rename, writeFile } from 'node:fs/promises'
+import { lstat } from 'node:fs/promises'
 import { join } from 'node:path'
-import { homedir } from 'node:os'
+import { pathToFileURL } from 'node:url'
+import { DatabaseSync } from 'node:sqlite'
+import { DAEMON_PROFILE_DATABASE, validateDaemonProfileSchema } from './profileSchema.ts'
+import { getFinalProfileSchemaManifest } from './profileSchemaManifest.ts'
+import { withProfileStorageAccess } from './profileAccess.ts'
+import { dataDir } from './dataDir.ts'
+import { normalizeEndpointUrl } from './endpoint.ts'
+import { activeNativeConfig, defaultNativeConfig, type NativeConfig } from './nativeConfig.ts'
+
+export { normalizeEndpointUrl } from './endpoint.ts'
 
 export interface DaemonProfile {
   engineBaseUrl: string
@@ -10,62 +19,61 @@ export interface DaemonProfile {
 }
 
 export function profileDir(): string {
-  return process.env.BITCASTER_DAEMON_HOME || join(homedir(), '.bitcaster')
+  return dataDir()
+}
+
+export function profileDatabasePath(): string {
+  return join(profileDir(), DAEMON_PROFILE_DATABASE)
 }
 
 export function profilePath(): string {
-  return join(profileDir(), 'daemon-profile.json')
+  return profileDatabasePath()
 }
 
+/** Compatibility name for callers; this verifies and never creates or chmods. */
 export async function ensureProfileDir(): Promise<string> {
-  const dir = profileDir()
-  await mkdir(dir, { recursive: true, mode: 0o700 })
-  if (process.platform !== 'win32') {
-    await chmod(dir, 0o700)
-  }
-  return dir
+  await assertDaemonProfileStorageComplete()
+  return profileDir()
+}
+
+export async function assertDaemonProfileStorageComplete(): Promise<void> {
+  await validateDaemonProfileSchema(profileDir(), getFinalProfileSchemaManifest())
 }
 
 export async function readProfile(): Promise<DaemonProfile | null> {
-  try {
-    return JSON.parse(await readFile(profilePath(), 'utf8')) as DaemonProfile
-  } catch (err) {
-    if (err instanceof Error && 'code' in err && err.code === 'ENOENT') {
-      return null
+  return withProfileStorageAccess(async () => {
+    try {
+      await assertDaemonProfileStorageComplete()
+    } catch (error) {
+      if (await isMissingDaemonProfileError(error)) return null
+      throw error
     }
-    throw err
-  }
-}
-
-export async function writeProfile(profile: DaemonProfile): Promise<void> {
-  const dir = await ensureProfileDir()
-  const target = profilePath()
-  const tmp = join(dir, `.daemon-profile.${process.pid}.${Date.now()}.tmp`)
-  await writeFile(tmp, `${JSON.stringify(profile, null, 2)}\n`, {
-    mode: 0o600,
+    const database = openImmutableProfileDatabase()
+    try {
+      const row = database
+        .prepare(
+          `SELECT nostr_public_key_hex AS nostrPublicKey,
+            initialized_at_ms AS initializedAtMs
+           FROM daemon_profile WHERE singleton = 1`,
+        )
+        .get() as ProfileRow | undefined
+      if (row === undefined) throw new Error('daemon profile row is missing')
+      return decodeProfileRow(row, activeNativeConfig().config)
+    } finally {
+      database.close()
+    }
   })
-  await rename(tmp, target)
 }
 
-export async function updateProfile(
-  update: Partial<Pick<DaemonProfile, 'engineBaseUrl' | 'mintUrl'>>,
-): Promise<DaemonProfile> {
-  const profile = await readProfile()
-  if (!profile) throw new Error('daemon profile is not initialized')
-  if (update.engineBaseUrl !== undefined) {
-    profile.engineBaseUrl = normalizeEndpointUrl(update.engineBaseUrl, 'engine URL')
-  }
-  if (update.mintUrl !== undefined) {
-    profile.mintUrl = normalizeEndpointUrl(update.mintUrl, 'mint URL')
-  }
-  await writeProfile(profile)
-  return profile
+export async function writeProfile(_profile: DaemonProfile): Promise<void> {
+  throw new Error('daemon profile creation is only supported by fresh atomic init')
 }
 
 export function defaultProfile(): DaemonProfile {
+  const config = defaultNativeConfig()
   return {
-    engineBaseUrl: process.env.BITCASTER_ENGINE_URL || 'http://localhost:5000',
-    mintUrl: process.env.BITCASTER_MINT_URL || 'http://localhost:8085',
+    engineBaseUrl: config.daemon.engineUrl,
+    mintUrl: config.daemon.mintUrl,
     initializedAt: new Date().toISOString(),
   }
 }
@@ -75,24 +83,83 @@ export function profileFromPublicKey(
   overrides: Partial<Pick<DaemonProfile, 'engineBaseUrl' | 'mintUrl'>> = {},
 ): DaemonProfile {
   const profile = defaultProfile()
-  if (overrides.engineBaseUrl !== undefined) {
-    profile.engineBaseUrl = normalizeEndpointUrl(overrides.engineBaseUrl, 'engine URL')
+  return {
+    ...profile,
+    nostrPublicKey,
+    ...(overrides.engineBaseUrl === undefined
+      ? {}
+      : {
+          engineBaseUrl: normalizeEndpointUrl(overrides.engineBaseUrl, 'engine URL'),
+        }),
+    ...(overrides.mintUrl === undefined
+      ? {}
+      : { mintUrl: normalizeEndpointUrl(overrides.mintUrl, 'mint URL') }),
   }
-  if (overrides.mintUrl !== undefined) {
-    profile.mintUrl = normalizeEndpointUrl(overrides.mintUrl, 'mint URL')
-  }
-  return { ...profile, nostrPublicKey }
 }
 
-export function normalizeEndpointUrl(value: string, name: string): string {
-  let url: URL
+export function openProfileDatabase(): DatabaseSync {
+  const url = pathToFileURL(profileDatabasePath())
+  url.searchParams.set('mode', 'rw')
+  return new DatabaseSync(url, { allowExtension: false })
+}
+
+export async function profileDatabaseExists(): Promise<boolean> {
   try {
-    url = new URL(value)
-  } catch {
-    throw new Error(`Invalid ${name}: ${value}`)
+    await assertDaemonProfileStorageComplete()
+    return true
+  } catch (error) {
+    if (await isMissingDaemonProfileError(error)) return false
+    throw error
   }
-  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
-    throw new Error(`Invalid ${name}: expected http or https URL`)
+}
+
+interface ProfileRow {
+  readonly nostrPublicKey: string
+  readonly initializedAtMs: number
+}
+
+function decodeProfileRow(row: ProfileRow, config: NativeConfig): DaemonProfile {
+  if (
+    !/^[0-9a-f]{64}$/.test(row.nostrPublicKey) ||
+    !Number.isSafeInteger(row.initializedAtMs) ||
+    row.initializedAtMs < 0
+  ) {
+    throw new Error('daemon profile row is invalid')
   }
-  return value.replace(/\/+$/, '')
+  return {
+    engineBaseUrl: config.daemon.engineUrl,
+    mintUrl: config.daemon.mintUrl,
+    nostrPublicKey: row.nostrPublicKey,
+    initializedAt: new Date(row.initializedAtMs).toISOString(),
+  }
+}
+
+function openImmutableProfileDatabase(): DatabaseSync {
+  const url = pathToFileURL(profileDatabasePath())
+  url.searchParams.set('mode', 'ro')
+  url.searchParams.set('immutable', '1')
+  return new DatabaseSync(url, { readOnly: true, allowExtension: false })
+}
+
+export async function isMissingDaemonProfileError(error: unknown): Promise<boolean> {
+  if (
+    error instanceof Error &&
+    'reason' in error &&
+    (error as { reason?: unknown }).reason === 'sqlite-database-missing'
+  ) {
+    return true
+  }
+  if (
+    !(error instanceof Error) ||
+    !('reason' in error) ||
+    (error as { reason?: unknown }).reason !== 'profile-directory-not-plain'
+  ) {
+    return false
+  }
+  try {
+    await lstat(profileDir())
+    return false
+  } catch (statError) {
+    return statError instanceof Error && 'code' in statError && statError.code === 'ENOENT'
+  }
 }

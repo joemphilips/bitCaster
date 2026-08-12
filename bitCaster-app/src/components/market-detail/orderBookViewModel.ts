@@ -44,7 +44,7 @@ export function computeSpreadMidpoint(orderBook: OrderBook | null | undefined): 
 export function deriveExecutableOrderBook(input: {
   book: OrderBook;
   complementBook?: OrderBook | null;
-  divisibility?: number;
+  divisibility: number;
   completeness: OrderBookCompleteness;
 }): OrderBook {
   const depthLimit = normalizeDepthLimit(input.book.depthLimit);
@@ -54,17 +54,11 @@ export function deriveExecutableOrderBook(input: {
   }
 
   const asks = mergeOrdersByPrice(
-    [
-      ...book.asks,
-      ...ordersFromComplementBids(
-        input.complementBook.bids,
-        input.divisibility ?? 10_000,
-      ),
-    ],
+    [...book.asks, ...ordersFromComplementBids(input.complementBook.bids, input.divisibility)],
     "ask",
     depthLimit,
   );
-  return withSpread({ ...book, asks, depthLimit: input.book.depthLimit });
+  return withSpread({ ...book, asks });
 }
 
 export function recomputeBookTotals(
@@ -76,11 +70,7 @@ export function recomputeBookTotals(
   return withSpread({ ...orderBook, bids, asks });
 }
 
-export function mergeOrdersByPrice(
-  orders: Order[],
-  side: "bid" | "ask",
-  limit?: number,
-): Order[] {
+export function mergeOrdersByPrice(orders: Order[], side: "bid" | "ask", limit?: number): Order[] {
   const byPrice = new Map<number, number>();
   for (const order of orders) {
     byPrice.set(order.price, (byPrice.get(order.price) ?? 0) + order.amount);
@@ -89,17 +79,14 @@ export function mergeOrdersByPrice(
   const sorted = [...byPrice.entries()]
     .map(([price, amount]) => ({ price, amount }))
     .sort((a, b) => (side === "bid" ? b.price - a.price : a.price - b.price));
-  return (limit ? sorted.slice(0, limit) : sorted)
-    .map(({ price, amount }) => {
-      total += amount;
-      return { price, amount, total };
-    });
+  return (limit ? sorted.slice(0, limit) : sorted).map(({ price, amount }) => {
+    total += amount;
+    return { price, amount, total };
+  });
 }
 
 function normalizeDepthLimit(limit: number | undefined): number | undefined {
-  return Number.isFinite(limit) && limit !== undefined && limit > 0
-    ? Math.floor(limit)
-    : undefined;
+  return Number.isFinite(limit) && limit !== undefined && limit > 0 ? Math.floor(limit) : undefined;
 }
 
 function withSpread(orderBook: OrderBook): OrderBook {
@@ -112,14 +99,8 @@ function withSpread(orderBook: OrderBook): OrderBook {
   };
 }
 
-function ordersFromComplementBids(
-  orders: Order[],
-  divisibility: number,
-): Order[] {
-  const denominator =
-    Number.isFinite(divisibility) && divisibility > 0
-      ? divisibility
-      : 10_000;
+function ordersFromComplementBids(orders: Order[], divisibility: number): Order[] {
+  const denominator = Number.isFinite(divisibility) && divisibility > 0 ? divisibility : 10_000;
   return orders.map((order) => ({
     price: denominator - order.price,
     amount: order.amount,

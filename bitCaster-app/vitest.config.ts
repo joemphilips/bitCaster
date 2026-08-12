@@ -1,4 +1,4 @@
-import { defineConfig } from "vitest/config";
+import { configDefaults, defineConfig } from "vitest/config";
 import path from "path";
 import { createRequire } from "node:module";
 
@@ -9,6 +9,7 @@ export default defineConfig({
     environment: "jsdom",
     setupFiles: ["./vitest.setup.ts"],
     globals: true,
+    exclude: [...configDefaults.exclude, "**/*.browser.test.ts"],
     server: {
       deps: {
         // Force ndk-wallet and cashu-ts through Vite's transform pipeline so
@@ -26,17 +27,7 @@ export default defineConfig({
       },
       {
         find: /^@bitcaster\/client-sdk$/,
-        replacement: path.resolve(
-          __dirname,
-          "../bitcaster-client-sdk/src/index.ts",
-        ),
-      },
-      {
-        find: /^@bitcaster\/swap-protocol\/(.+)$/,
-        replacement: path.resolve(
-          __dirname,
-          "../bitCaster-swap-protocol/src/$1",
-        ),
+        replacement: path.resolve(__dirname, "../bitcaster-client-sdk/src/index.ts"),
       },
       // @cashu/cashu-ts v3 renamed CashuMint → Mint, CashuWallet → Wallet.
       // ndk-wallet still imports the old names. Route through a shim that

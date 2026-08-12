@@ -1,18 +1,13 @@
 import { useState, type KeyboardEvent, type SyntheticEvent } from "react";
 import { useTranslation } from "react-i18next";
 import type { CreatedMarket, CreatedMarketStatus } from "@/types/portfolio";
-import {
-  formatMarketSubunits,
-  normalizeMarketBaseAsset,
-} from "@bitcaster/client-sdk/marketUnits";
+import { formatMarketSubunits, normalizeMarketBaseAsset } from "@bitcaster/client-sdk/marketUnits";
 import { CheckCircle2, Eye } from "lucide-react";
 
 const STATUS_STYLES: Record<CreatedMarketStatus, string> = {
-  active:
-    "bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-400",
+  active: "bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-400",
   resolved: "bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-400",
-  refunded:
-    "bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400",
+  refunded: "bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400",
 };
 
 interface CreatedMarketRowProps {
@@ -32,17 +27,14 @@ export function CreatedMarketRow({
 }: CreatedMarketRowProps) {
   const { t } = useTranslation();
   const baseAsset = normalizeMarketBaseAsset(market.baseAsset);
-  const canClaimFees =
-    market.status === "resolved" && market.creatorFeesEarned > 0;
+  const canClaimFees = market.status === "resolved" && market.creatorFeesEarned > 0;
   const canPublishOracleAttestation =
     market.status === "active" &&
     market.oracle?.type === "self" &&
     !market.oracle.attestationHex &&
     market.oracle.outcomes.length > 0 &&
     !!onPublishOracleAttestation;
-  const [selectedOutcome, setSelectedOutcome] = useState(
-    market.oracle?.outcomes[0] ?? "",
-  );
+  const [selectedOutcome, setSelectedOutcome] = useState(market.oracle?.outcomes[0] ?? "");
 
   const handleRowClick = () => {
     onView?.(market.id);

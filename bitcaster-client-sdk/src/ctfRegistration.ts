@@ -46,32 +46,28 @@ export function parseCtfSettingsFromMintInfo(
   }
 
   const seenUnits = new Set<string>()
-  const registrationFees: CtfRegistrationFeeSetting[] = feesRaw.map(
-    (entry, i) => {
-      if (entry == null || typeof entry !== 'object') {
-        throw new Error(`mint CTF registration_fees[${i}] is invalid`)
-      }
-      const feeRaw = entry as Record<string, unknown>
-      if (typeof feeRaw.unit !== 'string' || feeRaw.unit.length === 0) {
-        throw new Error(`mint CTF registration_fees[${i}] is missing unit`)
-      }
-      if (seenUnits.has(feeRaw.unit)) {
-        throw new Error(
-          `mint CTF registration_fees[${i}] has duplicate unit '${feeRaw.unit}'`,
-        )
-      }
-      seenUnits.add(feeRaw.unit)
-      const registrationFeeBase = toNonNegativeInteger(
-        feeRaw.registration_fee_base,
-        'registration_fee_base',
-      )
-      const registrationFeePerKeyset = toNonNegativeInteger(
-        feeRaw.registration_fee_per_keyset,
-        'registration_fee_per_keyset',
-      )
-      return { unit: feeRaw.unit, registrationFeeBase, registrationFeePerKeyset }
-    },
-  )
+  const registrationFees: CtfRegistrationFeeSetting[] = feesRaw.map((entry, i) => {
+    if (entry == null || typeof entry !== 'object') {
+      throw new Error(`mint CTF registration_fees[${i}] is invalid`)
+    }
+    const feeRaw = entry as Record<string, unknown>
+    if (typeof feeRaw.unit !== 'string' || feeRaw.unit.length === 0) {
+      throw new Error(`mint CTF registration_fees[${i}] is missing unit`)
+    }
+    if (seenUnits.has(feeRaw.unit)) {
+      throw new Error(`mint CTF registration_fees[${i}] has duplicate unit '${feeRaw.unit}'`)
+    }
+    seenUnits.add(feeRaw.unit)
+    const registrationFeeBase = toNonNegativeInteger(
+      feeRaw.registration_fee_base,
+      'registration_fee_base',
+    )
+    const registrationFeePerKeyset = toNonNegativeInteger(
+      feeRaw.registration_fee_per_keyset,
+      'registration_fee_per_keyset',
+    )
+    return { unit: feeRaw.unit, registrationFeeBase, registrationFeePerKeyset }
+  })
 
   return { defaultKeysetCreation, registrationFees }
 }
@@ -91,21 +87,15 @@ export function registrationFeeForPolicy(
     settings.defaultKeysetCreation === 'all'
       ? Math.max(0, 2 ** outcomes.length - 2)
       : requiredMarketCreationOutcomeCollections(outcomes).length
-  const fee =
-    feeSetting.registrationFeeBase +
-    feeSetting.registrationFeePerKeyset * numKeysets
+  const fee = feeSetting.registrationFeeBase + feeSetting.registrationFeePerKeyset * numKeysets
   if (!Number.isSafeInteger(fee) || fee < 0) {
     throw new Error('Active mint registration fee settings are invalid.')
   }
   return fee
 }
 
-export function requiredMarketCreationOutcomeCollections(
-  outcomes: readonly string[],
-): string[] {
-  const universe = [...new Set(outcomes.map((outcome) => outcome.trim()))].filter(
-    Boolean,
-  )
+export function requiredMarketCreationOutcomeCollections(outcomes: readonly string[]): string[] {
+  const universe = [...new Set(outcomes.map((outcome) => outcome.trim()))].filter(Boolean)
   const collections = new Map<string, string>()
 
   for (const outcome of universe) {

@@ -1,18 +1,22 @@
-import { encodeToken, getWalletForUnit } from "@/lib/cashu";
-import { normalizeUrl } from "@/lib/url";
+import {
+  BrowserParticipationScoreInsufficientBalanceError,
+  executeBrowserParticipationScoreDelivery,
+  reconcileBrowserParticipationScoreDeliveryIfPresent,
+} from "@/lib/browserParticipationScoreDelivery";
+import {
+  claimBrowserParticipationScoreDeliveryPointer,
+  clearBrowserParticipationScoreDeliveryPointer,
+  readBrowserParticipationScoreDeliveryPointer,
+} from "@/lib/browserParticipationScoreDeliveryPointer";
+import { captureBrowserMintPersistenceContext } from "@/lib/cashu";
+import { resolveCreatorPubkey } from "@/lib/identityOps";
 import {
   getParticipationScore,
-  payParticipationScoreEcash,
   type ParticipationScoreResponse,
   type PayParticipationScoreEcashResponse,
 } from "@/lib/markets";
-import { addProofs, getUnitProofs, removeProofs } from "@/stores/proof-db";
-import type { StoredProof } from "@/stores/proof-db";
-import { useWalletStore } from "@/stores/wallet";
-import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
+import { useSettingsStore } from "@/stores/settings";
 import { planParticipationScoreTopUp } from "@bitcaster/client-sdk/participationScore";
-
-const SCORE_PAYMENT_ATTEMPTS = 3;
 
 export type ParticipationScorePreflightResult =
   | {
@@ -40,95 +44,92 @@ export async function ensureParticipationScoreForNextMatch(input: {
   if (!input.mintUrl) {
     throw new Error("Select an active mint before paying engine Score.");
   }
-
+  const settings = useSettingsStore.getState();
+  const accountSubject = resolveCreatorPubkey({
+    nostrSignerMode: settings.nostrSignerMode,
+    nsecSecret: settings.nsecSecret,
+    nostrProfilePubkey: settings.nostrProfile?.pubkey,
+  });
+  if (!accountSubject) throw new Error("The active wallet identity is unavailable.");
+  const context = captureBrowserMintPersistenceContext();
+  const pointer = await readBrowserParticipationScoreDeliveryPointer({
+    accountSubject,
+    mintUrl: input.mintUrl,
+    context,
+  });
+  let creditedPointer = null as typeof pointer;
+  if (pointer !== null) {
+    const current = await reconcileBrowserParticipationScoreDeliveryIfPresent({
+      deliveryId: pointer.deliveryId,
+      accountSubject,
+      mintUrl: input.mintUrl,
+    });
+    if (current !== null && current.progress !== "credited") {
+      throw new Error("Participation Score delivery is pending authoritative credit.");
+    }
+    if (current?.progress === "credited") {
+      creditedPointer = pointer;
+    }
+  }
   const score = await getParticipationScore();
+  if (creditedPointer !== null) {
+    if (score.purchasedTotal <= creditedPointer.purchaseEpoch) {
+      throw new Error("Participation Score credit is waiting for authoritative projection.");
+    }
+    await clearBrowserParticipationScoreDeliveryPointer({
+      pointer: creditedPointer,
+      accountSubject,
+      mintUrl: input.mintUrl,
+      context,
+    });
+  }
   const plan = planParticipationScoreTopUp(score);
   if (plan.kind === "disabled") return { kind: "disabled", score };
   if (plan.kind === "sufficient") return { kind: "sufficient", score };
-
-  const deficitSats = plan.deficitScore;
-  const satProofs = await getSatKeysetProofs(input.mintUrl);
-  const regularBalance = satProofs.reduce(
-    (sum, proof) => sum + amountToNumber(proof.amount),
-    0,
-  );
-  if (regularBalance < deficitSats) {
-    return {
-      kind: "needs-regular-top-up",
-      score,
-      requiredSats: deficitSats,
-      balanceSats: regularBalance,
-      deficitSats: deficitSats - regularBalance,
-    };
-  }
-
-  const paymentId = input.paymentId ?? crypto.randomUUID();
-  const token = await spendParticipationScoreSatsAsToken(
-    deficitSats,
-    input.mintUrl,
-    satProofs,
-  );
-  const payment = await payParticipationScoreEcashWithRetry(
-    deficitSats,
-    token,
-    paymentId,
-  );
-  return { kind: "paid", score, payment, paymentId };
-}
-
-async function spendParticipationScoreSatsAsToken(
-  amountSats: number,
-  mintUrl: string,
-  proofs: StoredProof[],
-): Promise<string> {
-  if (!Number.isSafeInteger(amountSats) || amountSats <= 0) {
-    throw new Error("Amount must be a positive integer number of sats.");
-  }
-
-  const wallet = await getWalletForUnit(mintUrl, "sat");
-  const { keep, send } = await wallet.send(amountSats, proofs);
-  await removeProofs(proofs.map((proof) => proof.secret));
-  if (keep.length > 0) {
-    await addProofs(
-      keep.map((proof) => ({
-        ...proof,
-        mintUrl,
-        baseAsset: "sat",
-        unit: "sat",
-      })),
-    );
-  }
-  return encodeToken(send, mintUrl);
-}
-
-async function getSatKeysetProofs(mintUrl: string) {
-  const normalizedMintUrl = normalizeUrl(mintUrl);
-  const proofs = await getUnitProofs(mintUrl, { unit: "sat" });
-  const satKeysetIds = new Set(
-    useWalletStore
-      .getState()
-      .mints.find((mint) => normalizeUrl(mint.url) === normalizedMintUrl)
-      ?.keysets?.filter((keyset) => keyset.unit === "sat")
-      .map((keyset) => keyset.id) ?? [],
-  );
-  if (satKeysetIds.size === 0) return [];
-  return proofs.filter((proof) => proof.id != null && satKeysetIds.has(proof.id));
-}
-
-async function payParticipationScoreEcashWithRetry(
-  amountSats: number,
-  token: string,
-  paymentId: string,
-): Promise<PayParticipationScoreEcashResponse> {
-  let lastError: unknown;
-  for (let attempt = 0; attempt < SCORE_PAYMENT_ATTEMPTS; attempt += 1) {
-    try {
-      return await payParticipationScoreEcash(amountSats, token, paymentId);
-    } catch (error) {
-      lastError = error;
+  const candidatePaymentId = input.paymentId ?? crypto.randomUUID();
+  const claimed = await claimBrowserParticipationScoreDeliveryPointer({
+    deliveryId: candidatePaymentId,
+    purchaseEpoch: score.purchasedTotal,
+    accountSubject,
+    mintUrl: input.mintUrl,
+    context,
+  });
+  try {
+    const delivery = await executeBrowserParticipationScoreDelivery({
+      deliveryId: claimed.deliveryId,
+      accountSubject,
+      mintUrl: input.mintUrl,
+      requestedAmount: String(plan.deficitScore),
+    });
+    if (delivery.progress !== "credited") {
+      throw new Error("Participation Score delivery is pending authoritative credit.");
     }
+    const result = delivery.delivery?.result;
+    if (result === null || result === undefined || result.businessEventAt === undefined) {
+      throw new Error("Participation Score delivery lacks authoritative credit evidence.");
+    }
+    return {
+      kind: "paid",
+      score,
+      paymentId: delivery.transfer.transferId,
+      payment: {
+        paymentId: delivery.transfer.transferId,
+        status: "credited",
+        amountSats: Number(delivery.transfer.requestedAmount),
+        creditedScore: Number(result.creditedAmount),
+        creditedAt: result.businessEventAt,
+      },
+    };
+  } catch (error) {
+    if (error instanceof BrowserParticipationScoreInsufficientBalanceError) {
+      return {
+        kind: "needs-regular-top-up",
+        score,
+        requiredSats: plan.deficitScore,
+        balanceSats: error.balanceSats,
+        deficitSats: plan.deficitScore - error.balanceSats,
+      };
+    }
+    throw error;
   }
-  throw lastError instanceof Error
-    ? lastError
-    : new Error("Failed to pay Engine Score.");
 }

@@ -7,7 +7,7 @@ export interface AmountProofLike {
 
 export function sumProofs(proofs: readonly AmountProofLike[]): number {
   let total = 0
-  for (const p of proofs) total += amountToNumber(p.amount)
+  for (const p of proofs) total = checkedAddAmount(total, amountToNumber(p.amount))
   return total
 }
 
@@ -20,11 +20,7 @@ export function takeProofsForLock<T extends AmountProofLike>(
     return source.length > 0 ? [...source] : null
   }
 
-  const sameKeyset = takeProofsForLockFromSingleKeyset(
-    source,
-    target,
-    inputFeePpkByKeyset,
-  )
+  const sameKeyset = takeProofsForLockFromSingleKeyset(source, target, inputFeePpkByKeyset)
   if (sameKeyset) return sameKeyset
 
   return takeGreedyProofs(source, target, inputFeePpkByKeyset)
@@ -49,9 +45,7 @@ export function keysetToOutcomeCollection<T>(
     if (!keysetId) throw new Error('Outcome proof is missing keyset id')
     const existing = result.get(keysetId)
     if (existing && existing !== outcomeCollection) {
-      throw new Error(
-        `Keyset ${keysetId} maps to both ${existing} and ${outcomeCollection}`,
-      )
+      throw new Error(`Keyset ${keysetId} maps to both ${existing} and ${outcomeCollection}`)
     }
     result.set(keysetId, outcomeCollection)
   }
@@ -76,7 +70,7 @@ export function computeInputFeeSatsForProofs(
     if (!Number.isSafeInteger(inputFeePpk) || inputFeePpk < 0) {
       throw new Error(`Missing input_fee_ppk for keyset ${proof.id}`)
     }
-    feePpk += inputFeePpk
+    feePpk = checkedAddFeePpk(feePpk, inputFeePpk)
   }
   return computeInputFeeSubunitsFromPpk(feePpk)
 }
@@ -101,20 +95,16 @@ function takeProofsForLockFromSingleKeyset<T extends AmountProofLike>(
         return taken
           ? {
               taken,
-              overpay:
-                spendableProofAmount(taken, inputFeePpkByKeyset) - target,
+              overpay: spendableProofAmount(taken, inputFeePpkByKeyset) - target,
               proofCount: taken.length,
             }
           : null
       })
       .filter(
-        (
-          candidate,
-        ): candidate is { taken: T[]; overpay: number; proofCount: number } =>
+        (candidate): candidate is { taken: T[]; overpay: number; proofCount: number } =>
           candidate !== null,
       )
-      .sort((a, b) => a.overpay - b.overpay || a.proofCount - b.proofCount)[0]
-      ?.taken ?? null
+      .sort((a, b) => a.overpay - b.overpay || a.proofCount - b.proofCount)[0]?.taken ?? null
   )
 }
 
@@ -125,11 +115,22 @@ function takeGreedyProofs<T extends AmountProofLike>(
 ): T[] | null {
   const sorted = [...source].sort((a, b) => amountToNumber(b.amount) - amountToNumber(a.amount))
   const taken: T[] = []
+  let face = 0
+  let feePpk = 0
   let spendable = 0
   for (const p of sorted) {
     if (spendable >= target) break
     taken.push(p)
-    spendable = spendableProofAmount(taken, inputFeePpkByKeyset)
+    face = checkedAddAmount(face, amountToNumber(p.amount))
+    if (inputFeePpkByKeyset) {
+      if (!p.id) throw new Error('Input proof is missing keyset id')
+      const inputFeePpk = inputFeePpkByKeyset[p.id]
+      if (!Number.isSafeInteger(inputFeePpk) || inputFeePpk < 0) {
+        throw new Error(`Missing input_fee_ppk for keyset ${p.id}`)
+      }
+      feePpk = checkedAddFeePpk(feePpk, inputFeePpk)
+    }
+    spendable = face - computeInputFeeSubunitsFromPpk(feePpk)
   }
   return spendable >= target ? taken : null
 }
@@ -141,6 +142,20 @@ function spendableProofAmount(
   const face = sumProofs(proofs)
   if (!inputFeePpkByKeyset) return face
   return face - computeInputFeeSatsForProofs(proofs, inputFeePpkByKeyset)
+}
+
+function checkedAddFeePpk(total: number, inputFeePpk: number): number {
+  if (total > Number.MAX_SAFE_INTEGER - inputFeePpk) {
+    throw new Error('input_fee_ppk total exceeds the safe integer range')
+  }
+  return total + inputFeePpk
+}
+
+function checkedAddAmount(total: number, amount: number): number {
+  if (total > Number.MAX_SAFE_INTEGER - amount) {
+    throw new Error('Cashu amount total exceeds the safe integer range')
+  }
+  return total + amount
 }
 
 function proofKey(p: AmountProofLike): string {

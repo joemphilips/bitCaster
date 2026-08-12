@@ -1,11 +1,11 @@
-import { nip19 } from 'nostr-tools'
-import { finalizeEvent } from 'nostr-tools/pure'
-import { hexToBytes } from 'nostr-tools/utils'
-import type { components } from '@/generated/api'
+import { nip19 } from "nostr-tools";
+import { finalizeEvent } from "nostr-tools/pure";
+import { hexToBytes } from "nostr-tools/utils";
+import type { components } from "@/generated/api";
 
-export type OracleNostrEvent = components['schemas']['OracleNostrEvent']
+export type OracleNostrEvent = components["schemas"]["OracleNostrEvent"];
 
-const KIND_DLC_ORACLE_ATTESTATION = 89 as const
+const KIND_DLC_ORACLE_ATTESTATION = 89 as const;
 
 /**
  * Wrap a kormir-produced DLC `oracle_attestation` payload in a signed NIP-01
@@ -43,17 +43,17 @@ export function buildOracleAttestationEvent(
   attestationHex: string,
   announcementEventId: string,
 ): OracleNostrEvent {
-  const privateKey = decodeNsecToBytes(nsec)
-  const content = base64FromBytes(decodeAttestationHex(attestationHex))
+  const privateKey = decodeNsecToBytes(nsec);
+  const content = base64FromBytes(decodeAttestationHex(attestationHex));
   const signed = finalizeEvent(
     {
       kind: KIND_DLC_ORACLE_ATTESTATION,
       created_at: Math.floor(Date.now() / 1000),
-      tags: [['e', announcementEventId]],
+      tags: [["e", announcementEventId]],
       content,
     },
     privateKey,
-  )
+  );
 
   return {
     id: signed.id,
@@ -63,34 +63,34 @@ export function buildOracleAttestationEvent(
     tags: signed.tags,
     content: signed.content,
     sig: signed.sig,
-  }
+  };
 }
 
 function decodeAttestationHex(attestationHex: string): Uint8Array {
-  const trimmed = attestationHex.trim()
+  const trimmed = attestationHex.trim();
   if (!/^[0-9a-fA-F]*$/.test(trimmed) || trimmed.length === 0 || trimmed.length % 2 !== 0) {
-    throw new Error('Oracle attestation must be a non-empty even-length hex string')
+    throw new Error("Oracle attestation must be a non-empty even-length hex string");
   }
-  return hexToBytes(trimmed)
+  return hexToBytes(trimmed);
 }
 
 function decodeNsecToBytes(nsec: string): Uint8Array {
-  const trimmed = nsec.trim()
-  if (trimmed.startsWith('nsec1')) {
-    const decoded = nip19.decode(trimmed)
-    if (decoded.type !== 'nsec') throw new Error('Expected an nsec private key')
-    return decoded.data
+  const trimmed = nsec.trim();
+  if (trimmed.startsWith("nsec1")) {
+    const decoded = nip19.decode(trimmed);
+    if (decoded.type !== "nsec") throw new Error("Expected an nsec private key");
+    return decoded.data;
   }
   if (/^[0-9a-fA-F]{64}$/.test(trimmed)) {
-    return hexToBytes(trimmed)
+    return hexToBytes(trimmed);
   }
-  throw new Error('Expected an nsec1... or 64-character hex private key')
+  throw new Error("Expected an nsec1... or 64-character hex private key");
 }
 
 function base64FromBytes(bytes: Uint8Array): string {
-  let binary = ''
+  let binary = "";
   for (const byte of bytes) {
-    binary += String.fromCharCode(byte)
+    binary += String.fromCharCode(byte);
   }
-  return btoa(binary)
+  return btoa(binary);
 }

@@ -7,6 +7,7 @@ function item(overrides: Partial<ActivityItem> = {}): ActivityItem {
     id: "activity-1",
     type: "deposit",
     amountSats: 1000,
+    baseAsset: "sat",
     date: "2026-05-09T00:00:00.000Z",
     status: "completed",
     txId: null,
@@ -26,10 +27,7 @@ describe("useActivityLogStore", () => {
 
     useActivityLogStore.getState().replace([older, newer]);
 
-    expect(useActivityLogStore.getState().items.map((i) => i.id)).toEqual([
-      "newer",
-      "older",
-    ]);
+    expect(useActivityLogStore.getState().items.map((i) => i.id)).toEqual(["newer", "older"]);
   });
 
   it("replace reorders an equal item set when dates require it", () => {
@@ -39,10 +37,7 @@ describe("useActivityLogStore", () => {
     useActivityLogStore.setState({ items: [older, newer] });
     useActivityLogStore.getState().replace([older, newer]);
 
-    expect(useActivityLogStore.getState().items.map((i) => i.id)).toEqual([
-      "newer",
-      "older",
-    ]);
+    expect(useActivityLogStore.getState().items.map((i) => i.id)).toEqual(["newer", "older"]);
   });
 
   it("clear empties the activity feed", () => {

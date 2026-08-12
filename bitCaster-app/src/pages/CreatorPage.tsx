@@ -1,5 +1,5 @@
-import { CreatorDashboard } from '@/components/creator/CreatorDashboard'
+import { CreatorDashboard } from "@/components/creator/CreatorDashboard";
 
 export function CreatorPage() {
-  return <CreatorDashboard />
+  return <CreatorDashboard />;
 }

@@ -1,27 +1,31 @@
 import type { DaemonCommand, DaemonResponse } from '@bitcaster-market/daemon/protocol'
 import { readRpcToken, rpcSocketPath } from '@bitcaster-market/daemon/rpcAuth'
+import { dataDir } from '@bitcaster-market/daemon/dataDir'
 import { execFile, spawn } from 'node:child_process'
-import { closeSync, openSync } from 'node:fs'
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { closeSync, constants, openSync } from 'node:fs'
+import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { request } from 'node:http'
-import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
+import { cliHomeDir } from './paths.ts'
 
 const DAEMON_STARTUP_TIMEOUT_MS = 10_000
 const DAEMON_STARTUP_POLL_MS = 100
+const TEST_DAEMON_URL = Symbol.for('bitcaster.test.daemon-url')
 const execFileAsync = promisify(execFile)
+let rpcTokenPromise: Promise<string | null> | undefined
 
 interface DaemonPidFile {
   pid: number
   startedAt?: string
   daemonMain?: string
+  dataDir?: string
 }
 
 export class DaemonNotReachableError extends Error {
   readonly address: string
-  readonly hint = "Run 'bitcaster daemon init' or set BITCASTER_DAEMON_URL."
+  readonly hint = "Run 'bitcaster daemon init' and verify the selected --datadir."
 
   constructor(address: string, options?: { cause?: unknown }) {
     super(`daemon not reachable at ${address}`, options)
@@ -36,15 +40,12 @@ export function daemonUrl(): string {
 }
 
 export function daemonSocketPath(): string | null {
-  if (process.env.BITCASTER_DAEMON_URL) return null
-  if (process.env.BITCASTER_DAEMON_PORT) return null
+  if (injectedDaemonBaseUrl() !== undefined) return null
   if (process.platform === 'win32') return null
   return rpcSocketPath()
 }
 
-export async function callDaemon<T = unknown>(
-  command: DaemonCommand,
-): Promise<DaemonResponse<T>> {
+export async function callDaemon<T = unknown>(command: DaemonCommand): Promise<DaemonResponse<T>> {
   const address = daemonAttemptAddress()
   try {
     return await sendDaemonCommand(command)
@@ -65,17 +66,20 @@ export function daemonAttemptAddress(): string {
 }
 
 function daemonBaseUrl(): string {
-  return process.env.BITCASTER_DAEMON_URL || defaultDaemonBaseUrl()
+  return injectedDaemonBaseUrl() ?? defaultDaemonBaseUrl()
 }
 
 function defaultDaemonBaseUrl(): string {
-  return `http://127.0.0.1:${process.env.BITCASTER_DAEMON_PORT || '42871'}`
+  return 'http://127.0.0.1:42871'
 }
 
-async function sendDaemonCommand<T = unknown>(
-  command: DaemonCommand,
-): Promise<DaemonResponse<T>> {
-  const token = await readRpcToken()
+function injectedDaemonBaseUrl(): string | undefined {
+  const value = (globalThis as Record<symbol, unknown>)[TEST_DAEMON_URL]
+  return typeof value === 'string' ? value : undefined
+}
+
+async function sendDaemonCommand<T = unknown>(command: DaemonCommand): Promise<DaemonResponse<T>> {
+  const token = await readDaemonRpcToken()
   const socketPath = daemonSocketPath()
   if (socketPath) {
     return sendDaemonCommandOverSocket(command, socketPath, token)
@@ -89,6 +93,11 @@ async function sendDaemonCommand<T = unknown>(
     body: JSON.stringify(command),
   })
   return (await response.json()) as DaemonResponse<T>
+}
+
+function readDaemonRpcToken(): Promise<string | null> {
+  rpcTokenPromise ??= readRpcToken()
+  return rpcTokenPromise
 }
 
 function sendDaemonCommandOverSocket<T = unknown>(
@@ -116,9 +125,7 @@ function sendDaemonCommandOverSocket<T = unknown>(
         })
         res.on('end', () => {
           try {
-            resolve(
-              JSON.parse(Buffer.concat(chunks).toString('utf8')) as DaemonResponse<T>,
-            )
+            resolve(JSON.parse(Buffer.concat(chunks).toString('utf8')) as DaemonResponse<T>)
           } catch (err) {
             reject(err)
           }
@@ -131,8 +138,7 @@ function sendDaemonCommandOverSocket<T = unknown>(
 }
 
 function shouldAutoStartDaemon(err: unknown): boolean {
-  if (process.env.BITCASTER_CLI_AUTOSTART_DAEMON === '0') return false
-  if (process.env.BITCASTER_DAEMON_URL) return false
+  if (injectedDaemonBaseUrl() !== undefined) return false
   if (!isNetworkFailure(err)) return false
   const socketPath = daemonSocketPath()
   return Boolean(socketPath) || daemonBaseUrl() === defaultDaemonBaseUrl()
@@ -143,9 +149,7 @@ export function isNetworkFailure(err: unknown): boolean {
   const directCode = (err as { code?: unknown }).code
   const causeObj = (err as { cause?: unknown }).cause
   const causeCode =
-    causeObj && typeof causeObj === 'object'
-      ? (causeObj as { code?: unknown }).code
-      : undefined
+    causeObj && typeof causeObj === 'object' ? (causeObj as { code?: unknown }).code : undefined
   const code = directCode ?? causeCode
   if (
     code === 'ECONNREFUSED' ||
@@ -172,13 +176,17 @@ function throwDaemonConnectionError(err: unknown, address: string): never {
 }
 
 export async function startDaemonProcess(): Promise<void> {
-  const dir = daemonProfileDir()
+  const dir = cliHomeDir()
   await mkdir(dir, { recursive: true, mode: 0o700 })
-  const logFd = openSync(daemonLogPath(), 'a', 0o600)
+  const logFd = openSync(
+    daemonLogPath(),
+    constants.O_APPEND | constants.O_CREAT | constants.O_WRONLY | (constants.O_NOFOLLOW ?? 0),
+    0o600,
+  )
   const daemonMain = fileURLToPath(import.meta.resolve('@bitcaster-market/daemon'))
   const child = spawn(
     process.execPath,
-    ['--experimental-strip-types', daemonMain, 'run'],
+    ['--experimental-strip-types', daemonMain, `--datadir=${dataDir()}`, 'run'],
     {
       detached: true,
       env: process.env,
@@ -188,29 +196,34 @@ export async function startDaemonProcess(): Promise<void> {
   closeSync(logFd)
   if (child.pid) {
     const startedAt = await readProcessStartTime(child.pid)
+    const pidPath = daemonPidPath()
+    const tempPidPath = `${pidPath}.${process.pid}.${child.pid}.tmp`
     await writeFile(
-      daemonPidPath(),
+      tempPidPath,
       `${JSON.stringify({
         pid: child.pid,
         ...(startedAt ? { startedAt } : {}),
         daemonMain,
+        dataDir: dataDir(),
       })}\n`,
-      { mode: 0o600 },
+      { mode: 0o600, flag: 'wx' },
     )
+    try {
+      await rename(tempPidPath, pidPath)
+    } catch (error) {
+      await rm(tempPidPath, { force: true })
+      throw error
+    }
   }
   child.unref()
 }
 
-export function daemonProfileDir(): string {
-  return process.env.BITCASTER_DAEMON_HOME || join(homedir(), '.bitcaster')
-}
-
 export function daemonPidPath(): string {
-  return join(daemonProfileDir(), 'daemon-autostart.pid')
+  return join(cliHomeDir(), 'daemon-autostart.pid')
 }
 
 export function daemonLogPath(): string {
-  return join(daemonProfileDir(), 'daemon.log')
+  return join(cliHomeDir(), 'daemon.log')
 }
 
 export async function waitForDaemon(): Promise<void> {
@@ -257,7 +270,8 @@ export async function stopDaemon(): Promise<{ stopped: boolean; message: string 
   try {
     process.kill(pidFile.pid, 'SIGTERM')
   } catch (err) {
-    const code = typeof err === 'object' && err !== null ? (err as { code?: unknown }).code : undefined
+    const code =
+      typeof err === 'object' && err !== null ? (err as { code?: unknown }).code : undefined
     if (code === 'ESRCH') {
       await removePidFile()
       return { stopped: false, message: 'daemon is not running' }
@@ -299,12 +313,18 @@ async function readDaemonPidFile(): Promise<DaemonPidFile | null> {
     return { pid: numericPid }
   }
   try {
-    const parsed = JSON.parse(text) as { pid?: unknown; startedAt?: unknown; daemonMain?: unknown }
+    const parsed = JSON.parse(text) as {
+      pid?: unknown
+      startedAt?: unknown
+      daemonMain?: unknown
+      dataDir?: unknown
+    }
     if (Number.isSafeInteger(parsed.pid) && Number(parsed.pid) > 0) {
       return {
         pid: Number(parsed.pid),
         ...(typeof parsed.startedAt === 'string' ? { startedAt: parsed.startedAt } : {}),
         ...(typeof parsed.daemonMain === 'string' ? { daemonMain: parsed.daemonMain } : {}),
+        ...(typeof parsed.dataDir === 'string' ? { dataDir: parsed.dataDir } : {}),
       }
     }
   } catch {
@@ -332,28 +352,28 @@ async function pidStartTimeMatches(pidFile: DaemonPidFile): Promise<boolean> {
 }
 
 async function isBitcasterDaemonProcess(pidFile: DaemonPidFile): Promise<boolean> {
-  const cmdline = await readProcessCommandLine(pidFile.pid)
-  if (!cmdline) return false
-  const daemonMainMatches = pidFile.daemonMain
-    ? cmdline.includes(pidFile.daemonMain)
-    : false
+  if (pidFile.dataDir !== dataDir()) return false
+  const args = await readProcessArguments(pidFile.pid)
+  if (!args) return false
+  const daemonMainMatches = pidFile.daemonMain ? args.includes(pidFile.daemonMain) : false
   return (
-    (daemonMainMatches || cmdline.includes('@bitcaster-market/daemon')) &&
-    /(?:^|\s)run(?:\s|$)/.test(cmdline)
+    (daemonMainMatches || args.some((arg) => arg.includes('@bitcaster-market/daemon'))) &&
+    args.includes(`--datadir=${pidFile.dataDir}`) &&
+    args.includes('run')
   )
 }
 
-async function readProcessCommandLine(pid: number): Promise<string | null> {
+async function readProcessArguments(pid: number): Promise<string[] | null> {
   if (process.platform === 'linux') {
     try {
-      return (await readFile(`/proc/${pid}/cmdline`, 'utf8')).replace(/\0/g, ' ').trim()
+      return (await readFile(`/proc/${pid}/cmdline`, 'utf8')).split('\0').filter(Boolean)
     } catch {
       return null
     }
   }
   try {
     const result = await execFileAsync('ps', ['-p', String(pid), '-o', 'args='])
-    return result.stdout.trim()
+    return result.stdout.trim().split(/\s+/).filter(Boolean)
   } catch {
     return null
   }
@@ -365,7 +385,10 @@ async function readProcessStartTime(pid: number): Promise<string | null> {
       const statText = await readFile(`/proc/${pid}/stat`, 'utf8')
       const closeParen = statText.lastIndexOf(')')
       if (closeParen === -1) return null
-      const fieldsFrom3 = statText.slice(closeParen + 2).trim().split(/\s+/)
+      const fieldsFrom3 = statText
+        .slice(closeParen + 2)
+        .trim()
+        .split(/\s+/)
       return fieldsFrom3[19] ?? null
     } catch {
       return null

@@ -1,1 +1,1 @@
-export type MintConnectionTestStatus = 'idle' | 'connecting' | 'connected' | 'failed'
+export type MintConnectionTestStatus = "idle" | "connecting" | "connected" | "failed";

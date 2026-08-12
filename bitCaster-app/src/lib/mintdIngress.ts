@@ -1,4 +1,4 @@
-import { assertNever } from './enumDiscipline'
+import { assertNever } from "./enumDiscipline";
 
 /**
  * Canonical wire form of mintd's `attestation.status` field, normalised once
@@ -15,7 +15,7 @@ import { assertNever } from './enumDiscipline'
  * the announcement window expired without a resolution. The fields stay so
  * the resolution-info panel can surface them.
  */
-export type AttestationStatus = 'pending' | 'attested' | 'expired' | 'violation'
+export type AttestationStatus = "pending" | "attested" | "expired" | "violation";
 
 /**
  * Normalise a raw mintd `attestation.status` string into the canonical
@@ -34,15 +34,19 @@ export type AttestationStatus = 'pending' | 'attested' | 'expired' | 'violation'
  *    rather than silently flipping a downstream branch.
  */
 export function normalizeMintdStatus(raw: unknown): AttestationStatus {
-  if (raw == null) return 'pending'
-  const s = String(raw).toLowerCase().trim()
+  if (raw == null) return "pending";
+  const s = String(raw).toLowerCase().trim();
   switch (s) {
-    case 'pending':   return 'pending'
-    case 'attested':  return 'attested'
-    case 'expired':   return 'expired'
-    case 'violation': return 'violation'
+    case "pending":
+      return "pending";
+    case "attested":
+      return "attested";
+    case "expired":
+      return "expired";
+    case "violation":
+      return "violation";
     default:
-      throw new Error(`unknown mintd attestation status: ${JSON.stringify(raw)}`)
+      throw new Error(`unknown mintd attestation status: ${JSON.stringify(raw)}`);
   }
 }
 
@@ -55,10 +59,15 @@ export function normalizeMintdStatus(raw: unknown): AttestationStatus {
  */
 export function isAttestationResolved(s: AttestationStatus): boolean {
   switch (s) {
-    case 'pending':   return false
-    case 'attested':  return true
-    case 'expired':   return true
-    case 'violation': return true
-    default:          return assertNever(s)
+    case "pending":
+      return false;
+    case "attested":
+      return true;
+    case "expired":
+      return true;
+    case "violation":
+      return true;
+    default:
+      return assertNever(s);
   }
 }

@@ -1,17 +1,13 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
-import type {
-  ActivityItem,
-  ActivityType,
-  ActivityStatus,
-} from "@/types/portfolio";
+import type { ActivityItem, ActivityType, ActivityStatus } from "@/types/portfolio";
 
 interface ActivityLogState {
   items: ActivityItem[];
   addActivity: (entry: {
     type: ActivityType;
     amountSats: number;
-    baseAsset?: ActivityItem["baseAsset"];
+    baseAsset: ActivityItem["baseAsset"];
     status: ActivityStatus;
     txId?: string | null;
     lightningInvoice?: string | null;
@@ -39,10 +35,7 @@ function activityItemEqual(a: ActivityItem, b: ActivityItem): boolean {
   );
 }
 
-export function activityLogsEqual(
-  a: readonly ActivityItem[],
-  b: readonly ActivityItem[],
-): boolean {
+export function activityLogsEqual(a: readonly ActivityItem[], b: readonly ActivityItem[]): boolean {
   if (a.length !== b.length) return false;
   const byId = new Map(a.map((item) => [item.id, item] as const));
   for (const item of b) {
@@ -52,10 +45,7 @@ export function activityLogsEqual(
   return true;
 }
 
-function activityLogsEqualInOrder(
-  a: readonly ActivityItem[],
-  b: readonly ActivityItem[],
-): boolean {
+function activityLogsEqualInOrder(a: readonly ActivityItem[], b: readonly ActivityItem[]): boolean {
   if (a.length !== b.length) return false;
   return a.every((item, index) => activityItemEqual(item, b[index]));
 }

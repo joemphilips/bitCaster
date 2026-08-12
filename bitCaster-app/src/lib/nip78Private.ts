@@ -14,16 +14,10 @@ import { createExplicitRelayNdk, DEFAULT_RELAYS } from "./nostr";
 
 export const BITCASTER_PRIVATE_STATE_KIND = 30078 as const;
 
-export function encryptSelfNip44(
-  privateKeyHex: string,
-  plaintext: string,
-): string {
+export function encryptSelfNip44(privateKeyHex: string, plaintext: string): string {
   const privateKey = hexToBytes(privateKeyHex);
   const publicKey = getPublicKey(privateKey);
-  const conversationKey = nip44.v2.utils.getConversationKey(
-    privateKey,
-    publicKey,
-  );
+  const conversationKey = nip44.v2.utils.getConversationKey(privateKey, publicKey);
   return nip44.v2.encrypt(plaintext, conversationKey);
 }
 
@@ -32,10 +26,7 @@ export function decryptSelfNip44(
   publicKey: string,
   ciphertext: string,
 ): string {
-  const conversationKey = nip44.v2.utils.getConversationKey(
-    hexToBytes(privateKeyHex),
-    publicKey,
-  );
+  const conversationKey = nip44.v2.utils.getConversationKey(hexToBytes(privateKeyHex), publicKey);
   return nip44.v2.decrypt(ciphertext, conversationKey);
 }
 

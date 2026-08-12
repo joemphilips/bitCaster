@@ -1,8 +1,5 @@
 import { createRequire } from 'node:module'
-import { submitEphemeralPubkey as submitEphemeralPubkeyRequest } from '@bitcaster-market/client-sdk/engineClient'
-import { generateOrderEphemeralKeypair, type OrderEphemeralKeypair } from './ephemeralKey.ts'
 import { signNip98 } from './nostrAuth.ts'
-import { readSecrets, updateSecrets } from './secrets.ts'
 
 const require = createRequire(import.meta.url)
 
@@ -11,10 +8,7 @@ interface SignalRModule {
 }
 
 interface HubConnectionBuilderLike {
-  withUrl(
-    url: string,
-    options: { accessTokenFactory: () => string },
-  ): HubConnectionBuilderLike
+  withUrl(url: string, options: { accessTokenFactory: () => string }): HubConnectionBuilderLike
   withAutomaticReconnect(retryDelays: number[]): HubConnectionBuilderLike
   build(): HubConnectionLike
 }
@@ -24,20 +18,22 @@ interface HubConnectionLike {
   stop(): Promise<void>
   on(methodName: string, callback: (...args: unknown[]) => void): void
   invoke(methodName: string, ...args: unknown[]): Promise<unknown>
-}
-
-export interface MarketMatchedDelta {
-  marketId: string
-  tradeId: string
-  makerOrderId: string
-  takerOrderId: string
-  deadline?: string
+  onreconnected?(callback: () => void): void
 }
 
 export interface SignalRMarketHubConnectionOptions {
   engineBaseUrl: string
   nostrSecretKeyHex: string
+  onMarketStatusChanged?: (status: MarketStatusChanged) => Promise<void>
+  onReconnected?: () => Promise<void>
   onError?: (err: Error) => void
+}
+
+export interface MarketStatusChanged {
+  readonly conditionId: string
+  readonly state: 'open' | 'closed'
+  readonly closedAt: string | null
+  readonly finalOutcome: string | null
 }
 
 export class SignalRMarketHubConnection {
@@ -47,9 +43,7 @@ export class SignalRMarketHubConnection {
   private readonly callbacks: SignalRMarketHubConnectionOptions
   private connection: HubConnectionLike | null = null
   private callbackChain: Promise<void> = Promise.resolve()
-  private readonly knownOrderIds = new Set<string>()
   private readonly joinedMarkets = new Set<string>()
-  private readonly processedTradeIds = new Set<string>()
 
   constructor(options: SignalRMarketHubConnectionOptions) {
     this.engineBaseUrl = options.engineBaseUrl.replace(/\/+$/, '')
@@ -60,21 +54,24 @@ export class SignalRMarketHubConnection {
 
   async start(): Promise<void> {
     if (this.connection) return
-    const { HubConnectionBuilder } = require(
-      '@microsoft/signalr',
-    ) as SignalRModule
+    const { HubConnectionBuilder } = require('@microsoft/signalr') as SignalRModule
     const connection = new HubConnectionBuilder()
       .withUrl(this.hubUrl, {
         accessTokenFactory: () =>
-          signNip98(
-            { privateKeyHex: this.nostrSecretKeyHex },
-            this.hubUrl,
-            'POST',
-          ).replace(/^Nostr\s+/, ''),
+          signNip98({ privateKeyHex: this.nostrSecretKeyHex }, this.hubUrl, 'POST').replace(
+            /^Nostr\s+/,
+            '',
+          ),
       })
       .withAutomaticReconnect([0, 2_000, 5_000, 10_000, 30_000])
       .build()
     this.registerHandlers(connection)
+    connection.onreconnected?.(() => {
+      void this.invokeCallback(async () => {
+        for (const marketId of this.joinedMarkets) await connection.invoke('JoinMarket', marketId)
+        await this.callbacks.onReconnected?.()
+      })
+    })
     await connection.start()
     this.connection = connection
     for (const marketId of this.joinedMarkets) {
@@ -88,43 +85,15 @@ export class SignalRMarketHubConnection {
     await connection?.stop()
   }
 
-  async trackOrder(marketId: string, orderId: string): Promise<void> {
-    this.knownOrderIds.add(orderId)
+  async trackMarket(marketId: string): Promise<void> {
     this.joinedMarkets.add(marketId)
     await this.connection?.invoke('JoinMarket', marketId)
   }
 
   private registerHandlers(connection: HubConnectionLike): void {
-    connection.on('Matched', (delta: unknown) => {
+    connection.on('MarketStatusChanged', (value: unknown) => {
       void this.invokeCallback(async () => {
-        await handleMatchedForMaker({
-          delta: parseMatchedDelta(delta),
-          processedTradeIds: this.processedTradeIds,
-          knownOrderIds: this.knownOrderIds,
-          getOrCreateEphemeralKeypair: (tradeId) =>
-            getOrCreateStoredEphemeralKeypair({
-              tradeId,
-              orderId: parseMatchedDelta(delta).makerOrderId,
-              marketId: parseMatchedDelta(delta).marketId,
-            }),
-          submitEphemeralPubkey: async (tradeId, pubkey, conditionId) => {
-            await submitEphemeralPubkeyRequest(
-              this.engineBaseUrl,
-              tradeId,
-              pubkey,
-              null,
-              fetch,
-              async ({ url, method, bodyText }) =>
-                signNip98(
-                  { privateKeyHex: this.nostrSecretKeyHex },
-                  url,
-                  method,
-                  bodyText,
-                ),
-              conditionId,
-            )
-          },
-        })
+        await this.callbacks.onMarketStatusChanged?.(parseMarketStatusChanged(value))
       })
     })
   }
@@ -142,82 +111,35 @@ export class SignalRMarketHubConnection {
   }
 }
 
-export async function handleMatchedForMaker(input: {
-  delta: MarketMatchedDelta
-  processedTradeIds: Set<string>
-  knownOrderIds: Set<string>
-  getOrCreateEphemeralKeypair: (tradeId: string) => Promise<OrderEphemeralKeypair>
-  submitEphemeralPubkey: (
-    tradeId: string,
-    pubkey: string,
-    conditionId?: string,
-  ) => Promise<void>
-}): Promise<void> {
-  if (input.processedTradeIds.has(input.delta.tradeId)) return
-  if (!input.knownOrderIds.has(input.delta.makerOrderId)) return
-
-  input.processedTradeIds.add(input.delta.tradeId)
-  const key = await input.getOrCreateEphemeralKeypair(input.delta.tradeId)
-  await input.submitEphemeralPubkey(
-    input.delta.tradeId,
-    key.publicKeyHex,
-    conditionIdFromMarketId(input.delta.marketId),
-  )
-}
-
-async function getOrCreateStoredEphemeralKeypair(input: {
-  tradeId: string
-  orderId: string
-  marketId: string
-}): Promise<OrderEphemeralKeypair> {
-  const existing = (await readSecrets())?.orderEphemeralKeys[input.tradeId]
-  if (existing) {
-    return {
-      privateKeyHex: existing.privateKeyHex,
-      publicKeyHex: existing.publicKeyHex,
-    }
-  }
-
-  const created = generateOrderEphemeralKeypair()
-  await updateSecrets((current, now) => {
-    current.orderEphemeralKeys[input.tradeId] = {
-      orderId: input.orderId,
-      tradeId: input.tradeId,
-      marketId: input.marketId,
-      privateKeyHex: created.privateKeyHex,
-      publicKeyHex: created.publicKeyHex,
-      createdAt: now,
-    }
-  })
-  return created
-}
-
-function parseMatchedDelta(value: unknown): MarketMatchedDelta {
+export function parseMarketStatusChanged(value: unknown): MarketStatusChanged {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-    throw new Error('Matched payload had unexpected shape')
+    throw new Error('MarketStatusChanged payload is invalid')
   }
-  const record = value as Record<string, unknown>
-  const delta = {
-    marketId: stringField(record, 'marketId') ?? stringField(record, 'MarketId'),
-    tradeId: stringField(record, 'tradeId') ?? stringField(record, 'TradeId'),
-    makerOrderId:
-      stringField(record, 'makerOrderId') ?? stringField(record, 'MakerOrderId'),
-    takerOrderId:
-      stringField(record, 'takerOrderId') ?? stringField(record, 'TakerOrderId'),
-    deadline: stringField(record, 'deadline') ?? stringField(record, 'Deadline'),
+  const status = value as Record<string, unknown>
+  const keys = Object.keys(status).sort()
+  if (keys.join('\0') !== ['closedAt', 'conditionId', 'finalOutcome', 'state'].join('\0')) {
+    throw new Error('MarketStatusChanged payload fields are invalid')
   }
-  if (!delta.marketId || !delta.tradeId || !delta.makerOrderId || !delta.takerOrderId) {
-    throw new Error('Matched payload had unexpected shape')
+  const conditionId = typeof status.conditionId === 'string' ? status.conditionId.toLowerCase() : ''
+  if (!/^[0-9a-f]{64}$/.test(conditionId)) {
+    throw new Error('MarketStatusChanged condition is invalid')
   }
-  return delta as MarketMatchedDelta
+  if (status.state !== 'open' && status.state !== 'closed') {
+    throw new Error('MarketStatusChanged state is invalid')
+  }
+  const closedAt = optionalString(status.closedAt, 'MarketStatusChanged closed time')
+  const finalOutcome = optionalString(status.finalOutcome, 'MarketStatusChanged final outcome')
+  if (
+    (status.state === 'open' && (closedAt !== null || finalOutcome !== null)) ||
+    (status.state === 'closed' && closedAt === null)
+  ) {
+    throw new Error('MarketStatusChanged lifecycle fields are invalid')
+  }
+  return { conditionId, state: status.state, closedAt, finalOutcome }
 }
 
-function stringField(record: Record<string, unknown>, key: string): string | undefined {
-  const value = record[key]
-  return typeof value === 'string' && value.trim() ? value : undefined
-}
-
-function conditionIdFromMarketId(marketId: string): string | undefined {
-  const index = marketId.lastIndexOf('-')
-  return index > 0 ? marketId.substring(0, index) : undefined
+function optionalString(value: unknown, label: string): string | null {
+  if (value === null || value === undefined) return null
+  if (typeof value !== 'string' || value.length === 0) throw new Error(`${label} is invalid`)
+  return value
 }

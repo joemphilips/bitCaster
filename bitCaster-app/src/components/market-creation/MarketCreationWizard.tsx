@@ -1,27 +1,25 @@
-import { useState } from 'react'
-import { ArrowLeft, KeyRound, Loader2, X } from 'lucide-react'
-import { Link } from 'react-router'
-import { useTranslation } from 'react-i18next'
-import type { MarketCreationWizardProps } from '@/types/market-creation'
-import { createGeneratedNostrIdentity } from '@/lib/identityOps'
-import { useSettingsStore } from '@/stores/settings'
-import { StepIndicator } from './StepIndicator'
-import { GetStarted } from './GetStarted'
-import { BasicInfo } from './BasicInfo'
-import { OutcomesStep } from './OutcomesStep'
-import { ReviewAndCreate } from './ReviewAndCreate'
-import { ResumeBanner } from './ResumeBanner'
-import { DepositStep } from './DepositStep'
-import { RegistrationFeeConfirmationModal } from './RegistrationFeeConfirmationModal'
-import { InsufficientBalanceModal } from '@/components/shared/InsufficientBalanceModal'
-import { TopUpOverlay } from '@/components/market-detail/TopUpOverlay'
-import { formatMarketSubunits } from '@bitcaster/client-sdk/marketUnits'
+import { useState } from "react";
+import { ArrowLeft, KeyRound, Loader2, X } from "lucide-react";
+import { Link } from "react-router";
+import { useTranslation } from "react-i18next";
+import type { MarketCreationWizardProps } from "@/types/market-creation";
+import { createGeneratedNostrIdentity } from "@/lib/identityOps";
+import { useSettingsStore } from "@/stores/settings";
+import { StepIndicator } from "./StepIndicator";
+import { GetStarted } from "./GetStarted";
+import { BasicInfo } from "./BasicInfo";
+import { OutcomesStep } from "./OutcomesStep";
+import { ReviewAndCreate } from "./ReviewAndCreate";
+import { ResumeBanner } from "./ResumeBanner";
+import { DepositStep } from "./DepositStep";
+import { RegistrationFeeConfirmationModal } from "./RegistrationFeeConfirmationModal";
+import { InsufficientBalanceModal } from "@/components/shared/InsufficientBalanceModal";
+import { TopUpOverlay } from "@/components/market-detail/TopUpOverlay";
+import { formatMarketSubunits } from "@bitcaster/client-sdk/marketUnits";
 
 export function MarketCreationWizard(props: MarketCreationWizardProps) {
-  const { t } = useTranslation()
-  const hasNsecOracleKey = useSettingsStore(
-    (s) => s.nostrSignerMode === 'nsec' && !!s.nsecSecret,
-  )
+  const { t } = useTranslation();
+  const hasNsecOracleKey = useSettingsStore((s) => s.nostrSignerMode === "nsec" && !!s.nsecSecret);
   const {
     draft,
     hasSavedDraft,
@@ -49,7 +47,6 @@ export function MarketCreationWizard(props: MarketCreationWizardProps) {
     onHiBoundChange,
     onPrecisionChange,
     onUnitChange,
-    onBaseAssetChange,
     onDescriptionChange,
     onCreateMarket,
     onConfirmRegistrationFee,
@@ -60,27 +57,27 @@ export function MarketCreationWizard(props: MarketCreationWizardProps) {
     createdMarketConditionId,
     createdMarketOutcomeCount,
     createdMarketBaseAsset,
-  } = props
+  } = props;
 
-  const { currentStep } = draft
+  const { currentStep } = draft;
 
-  const [bannerDismissed, setBannerDismissed] = useState(false)
-  const showResumeBanner = hasSavedDraft && !bannerDismissed
+  const [bannerDismissed, setBannerDismissed] = useState(false);
+  const showResumeBanner = hasSavedDraft && !bannerDismissed;
 
   const handleStartOver = () => {
-    clearDraft()
-    setBannerDismissed(true)
-  }
+    clearDraft();
+    setBannerDismissed(true);
+  };
 
   const handleStartTopUp = () => {
-    onStartRegistrationFeeTopUp()
-  }
+    onStartRegistrationFeeTopUp();
+  };
 
   const header = (
     <>
       <button
         onClick={onClose}
-        aria-label={t('marketCreation.closeMarketCreation')}
+        aria-label={t("marketCreation.closeMarketCreation")}
         className="fixed top-4 right-4 z-20 p-2 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800/80 backdrop-blur-sm transition-colors"
       >
         <X className="w-5 h-5" strokeWidth={1.75} />
@@ -93,13 +90,13 @@ export function MarketCreationWizard(props: MarketCreationWizardProps) {
         />
       )}
     </>
-  )
+  );
   const registrationFeeDeficit = registrationFeeTopUp
     ? Math.max(registrationFeeTopUp.feeSubunits - registrationFeeTopUp.balanceSubunits, 0)
-    : 0
+    : 0;
   const formatRegistrationFeeAmount = registrationFeeTopUp
     ? (amount: number) => formatMarketSubunits(amount, registrationFeeTopUp.baseAsset)
-    : undefined
+    : undefined;
   const feeOverlays = (
     <>
       {registrationFeePrompt && (
@@ -111,27 +108,27 @@ export function MarketCreationWizard(props: MarketCreationWizardProps) {
           onConfirm={onConfirmRegistrationFee}
         />
       )}
-      {registrationFeeTopUpStage === 'modal' && registrationFeeTopUp && (
+      {registrationFeeTopUpStage === "modal" && registrationFeeTopUp && (
         <InsufficientBalanceModal
           balance={registrationFeeTopUp.balanceSubunits}
           required={registrationFeeTopUp.feeSubunits}
-          title={t('marketCreation.registrationFeeTopUpTitle')}
-          requiredDescription={t('marketCreation.registrationFeeTopUpRequiredDescription')}
+          title={t("marketCreation.registrationFeeTopUpTitle")}
+          requiredDescription={t("marketCreation.registrationFeeTopUpRequiredDescription")}
           formatAmount={formatRegistrationFeeAmount}
           onCancel={onCancelRegistrationFeeTopUp}
           onTopUp={handleStartTopUp}
         />
       )}
-      {registrationFeeTopUpStage === 'overlay' && registrationFeeTopUp && (
+      {registrationFeeTopUpStage === "overlay" && registrationFeeTopUp && (
         <TopUpOverlay
           deficit={registrationFeeDeficit}
           feeSubunits={registrationFeeTopUp.feeSubunits}
           balanceSubunits={registrationFeeTopUp.balanceSubunits}
           baseAsset={registrationFeeTopUp.baseAsset}
-          minimumDescription={t('marketCreation.registrationFeeTopUpMinimumDescription', {
+          minimumDescription={t("marketCreation.registrationFeeTopUpMinimumDescription", {
             amount: formatMarketSubunits(registrationFeeDeficit, registrationFeeTopUp.baseAsset),
           })}
-          minimumErrorDescription={t('marketCreation.registrationFeeTopUpMinimumError', {
+          minimumErrorDescription={t("marketCreation.registrationFeeTopUpMinimumError", {
             amount: formatMarketSubunits(registrationFeeDeficit, registrationFeeTopUp.baseAsset),
           })}
           onSuccess={onRegistrationFeeTopUpSuccess}
@@ -139,7 +136,7 @@ export function MarketCreationWizard(props: MarketCreationWizardProps) {
         />
       )}
     </>
-  )
+  );
 
   // Deposit step takes priority once the market is created. `clearDraft()`
   // in `onCreateMarket` resets the draft store (currentStep becomes 1)
@@ -156,12 +153,12 @@ export function MarketCreationWizard(props: MarketCreationWizardProps) {
             conditionId={createdMarketConditionId}
             defaultAmountSats={0}
             outcomeCount={createdMarketOutcomeCount ?? 2}
-            baseAsset={createdMarketBaseAsset ?? 'sat'}
+            baseAsset={createdMarketBaseAsset ?? "sat"}
           />
         </div>
         {feeOverlays}
       </div>
-    )
+    );
   }
 
   if (!hasNsecOracleKey) {
@@ -173,7 +170,7 @@ export function MarketCreationWizard(props: MarketCreationWizardProps) {
         </div>
         {feeOverlays}
       </div>
-    )
+    );
   }
 
   // Steps 1-5: Wizard with step indicator. The old oracle-announcement
@@ -190,7 +187,7 @@ export function MarketCreationWizard(props: MarketCreationWizardProps) {
               className="flex items-center gap-1.5 text-sm font-medium text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300 transition-colors"
             >
               <ArrowLeft className="w-4 h-4" strokeWidth={1.5} />
-              {t('common.back')}
+              {t("common.back")}
             </button>
           )}
         </div>
@@ -227,7 +224,6 @@ export function MarketCreationWizard(props: MarketCreationWizardProps) {
             hiBound={draft.stepOutcomes.hiBound}
             precision={draft.stepOutcomes.precision}
             unit={draft.stepOutcomes.unit}
-            baseAsset={draft.stepOutcomes.baseAsset}
             onAddOutcome={onAddOutcome}
             onRemoveOutcome={onRemoveOutcome}
             onOutcomeLabelChange={onOutcomeLabelChange}
@@ -237,14 +233,13 @@ export function MarketCreationWizard(props: MarketCreationWizardProps) {
             onHiBoundChange={onHiBoundChange}
             onPrecisionChange={onPrecisionChange}
             onUnitChange={onUnitChange}
-            onBaseAssetChange={onBaseAssetChange}
             onNext={onNext}
           />
         )}
 
         {currentStep === 4 && !createdMarketConditionId && (
           <ReviewAndCreate
-            description={draft.stepReviewAndCreate?.description ?? ''}
+            description={draft.stepReviewAndCreate?.description ?? ""}
             basicInfo={draft.stepBasicInfo}
             outcomes={draft.stepOutcomes}
             isSubmitting={isSubmitting}
@@ -253,28 +248,27 @@ export function MarketCreationWizard(props: MarketCreationWizardProps) {
             onCreateMarket={onCreateMarket}
           />
         )}
-
       </div>
       {feeOverlays}
     </div>
-  )
+  );
 }
 
 function NostrKeyRequired() {
-  const { t } = useTranslation()
-  const [isCreating, setIsCreating] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const { t } = useTranslation();
+  const [isCreating, setIsCreating] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const handleCreate = async () => {
-    if (isCreating) return
-    setIsCreating(true)
-    setError(null)
-    const result = await createGeneratedNostrIdentity()
+    if (isCreating) return;
+    setIsCreating(true);
+    setError(null);
+    const result = await createGeneratedNostrIdentity();
     if (!result.ok) {
-      setError(result.error ?? t('marketCreation.nostrKeyCreateFailed'))
+      setError(result.error ?? t("marketCreation.nostrKeyCreateFailed"));
     }
-    setIsCreating(false)
-  }
+    setIsCreating(false);
+  };
 
   return (
     <div className="w-full max-w-xl">
@@ -282,15 +276,11 @@ function NostrKeyRequired() {
         <KeyRound className="h-5 w-5" strokeWidth={1.75} />
       </div>
       <h2 className="text-xl sm:text-2xl font-bold text-white mb-2">
-        {t('marketCreation.mustRegisterNostrKey')}
+        {t("marketCreation.mustRegisterNostrKey")}
       </h2>
-      <p className="text-sm text-slate-400 mb-6">
-        {t('marketCreation.nsecRequired')}
-      </p>
+      <p className="text-sm text-slate-400 mb-6">{t("marketCreation.nsecRequired")}</p>
       <div className="rounded-xl border border-blue-500/20 bg-blue-500/10 p-4 mb-6">
-        <p className="text-sm text-blue-100">
-          {t('marketCreation.preferExistingNostrKey')}
-        </p>
+        <p className="text-sm text-blue-100">{t("marketCreation.preferExistingNostrKey")}</p>
       </div>
 
       <div className="flex flex-col gap-3">
@@ -298,7 +288,7 @@ function NostrKeyRequired() {
           to="/settings?category=nostr"
           className="w-full rounded-full bg-blue-600 px-4 py-3 text-center text-sm font-semibold text-white shadow-lg shadow-blue-600/25 transition-colors hover:bg-blue-700"
         >
-          {t('marketCreation.registerOwnNostrKey')}
+          {t("marketCreation.registerOwnNostrKey")}
         </Link>
         <button
           type="button"
@@ -309,10 +299,10 @@ function NostrKeyRequired() {
           {isCreating ? (
             <span className="inline-flex items-center justify-center gap-2">
               <Loader2 className="h-4 w-4 animate-spin" />
-              {t('marketCreation.creatingNostrKey')}
+              {t("marketCreation.creatingNostrKey")}
             </span>
           ) : (
-            t('marketCreation.createNostrKey')
+            t("marketCreation.createNostrKey")
           )}
         </button>
       </div>
@@ -323,5 +313,5 @@ function NostrKeyRequired() {
         </div>
       )}
     </div>
-  )
+  );
 }

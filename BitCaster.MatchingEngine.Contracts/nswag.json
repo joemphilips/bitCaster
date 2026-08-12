@@ -15,6 +15,7 @@
       "generateDefaultValues": true,
       "generateDataAnnotations": false,
       "generateOptionalPropertiesAsNullable": true,
+      "generateNullableReferenceTypes": true,
       "namespace": "BitCaster.MatchingEngine.Contracts",
       "classStyle": "Record",
       "jsonLibrary": "SystemTextJson",
@@ -22,7 +23,7 @@
       "dateTimeType": "System.DateTimeOffset",
       "arrayType": "System.Collections.Generic.List",
       "dictionaryType": "System.Collections.Generic.Dictionary",
-      "excludedTypeNames": ["Sats", "Probability"],
+      "excludedTypeNames": ["Sats", "Probability", "AssetMonitoringAssetReference", "AssetMonitoringCollateralAssetReference", "AssetMonitoringConditionalAssetReference"],
       "output": "Generated/ApiContracts.g.cs"
     }
   }

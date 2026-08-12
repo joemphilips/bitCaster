@@ -6,16 +6,330 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
-import { profileFromPublicKey, writeProfile } from '../src/profile.ts'
-import { ensureRpcToken } from '../src/rpcAuth.ts'
-import { createDaemonSecrets, writeSecrets } from '../src/secrets.ts'
-import { orderBackingError, startDaemonServer } from '../src/server.ts'
+import { readRpcToken } from '../src/rpcAuth.ts'
+import { createDaemonSecrets, readSecrets } from '../src/secrets.ts'
+import { bootstrapFreshDaemonProfile } from '../src/profileBootstrap.ts'
+import { claimCustodyScopeLease } from '../src/profileFencing.ts'
+import { completedProofAuthorityDigest } from '@bitcaster-market/client-sdk/ctfSplit'
+import { emptyDaemonState, readDaemonKeysetCounters, writeState } from '../src/state.ts'
+import { dispatch, orderBackingError, startDaemonServer } from '../src/server.ts'
+import {
+  createDaemonCompleteSetOutputMode,
+  recoverCompleteSetSplits,
+} from '../src/completeSetConversion.ts'
+import {
+  composeStartupCustodyRecovery,
+  createCustodyReadinessTracker,
+} from '../src/startupRecovery.ts'
+
+async function bootstrapTestProfile(directory: string): Promise<void> {
+  await bootstrapFreshDaemonProfile({
+    directory,
+    engineBaseUrl: 'https://engine.example',
+    mintUrl: 'https://mint.example',
+    walletSeedHex: '11'.repeat(64),
+    nostrSecretKeyHex: '22'.repeat(32),
+  })
+}
 
 test('startDaemonServer rejects non-loopback bind hosts', async () => {
   await assert.rejects(
     () => startDaemonServer({ host: '0.0.0.0', port: 0 }),
     /refuses to bind non-loopback host 0\.0\.0\.0/,
   )
+})
+
+test('complete-set conversion binds its deterministic counters to the live custody fence', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-complete-set-counter-'))
+  const previousHome = process.env.BITCASTER_DAEMON_HOME
+  process.env.BITCASTER_DAEMON_HOME = directory
+  try {
+    const profile = await bootstrapFreshDaemonProfile({
+      directory,
+      engineBaseUrl: 'https://engine.example',
+      mintUrl: 'https://mint.example',
+      walletSeedHex: '11'.repeat(64),
+      nostrSecretKeyHex: '22'.repeat(32),
+    })
+    const fence = await claimCustodyScopeLease(directory, {
+      scopeId: profile.walletScopeId,
+      incarnationId: 'complete-set-test',
+      observedAtMs: 1,
+    })
+    const mode = createDaemonCompleteSetOutputMode({
+      walletSeedHex: '11'.repeat(64),
+      deps: { getCustodyFence: () => fence },
+      mintUrl: 'https://mint.example',
+    })
+
+    assert.deepEqual(await mode.counterSource.reserve(`01${'a'.repeat(64)}`, 3), {
+      start: 0,
+      count: 3,
+    })
+    assert.deepEqual(
+      await readDaemonKeysetCounters({ normalizedMint: 'https://mint.example', unit: 'msat' }),
+      { [`01${'a'.repeat(64)}`]: 3 },
+    )
+    const loopbackMode = createDaemonCompleteSetOutputMode({
+      walletSeedHex: '11'.repeat(64),
+      deps: { getCustodyFence: () => fence },
+      mintUrl: 'http://localhost:8086',
+    })
+    assert.deepEqual(await loopbackMode.counterSource.reserve(`01${'b'.repeat(64)}`, 2), {
+      start: 0,
+      count: 2,
+    })
+    assert.deepEqual(
+      await readDaemonKeysetCounters({ normalizedMint: 'http://localhost:8086', unit: 'msat' }),
+      { [`01${'b'.repeat(64)}`]: 2 },
+    )
+    assert.throws(
+      () =>
+        createDaemonCompleteSetOutputMode({
+          walletSeedHex: '11'.repeat(64),
+          deps: {},
+          mintUrl: 'https://mint.example',
+        }),
+      /authority/,
+    )
+  } finally {
+    if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
+    else process.env.BITCASTER_DAEMON_HOME = previousHome
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('complete-set startup recovery skips an atomically completed CTF operation', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-complete-set-recovery-'))
+  const previousHome = process.env.BITCASTER_DAEMON_HOME
+  process.env.BITCASTER_DAEMON_HOME = directory
+  try {
+    const profile = await bootstrapFreshDaemonProfile({
+      directory,
+      engineBaseUrl: 'https://engine.example',
+      mintUrl: 'https://mint.example',
+      walletSeedHex: '11'.repeat(64),
+      nostrSecretKeyHex: '22'.repeat(32),
+    })
+    const fence = await claimCustodyScopeLease(directory, {
+      scopeId: profile.walletScopeId,
+      incarnationId: 'complete-set-recovery-test',
+      observedAtMs: 1,
+    })
+    const state = emptyDaemonState()
+    state.proofOperations['root:ctf-split'] = completedCompleteSetOperation()
+    await writeState(state)
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = async () => {
+      throw new Error('completed complete-set recovery must not call the mint')
+    }
+    try {
+      const result = await recoverCompleteSetSplits({
+        secrets: (await readSecrets())!,
+        deps: { getCustodyFence: () => fence },
+      })
+      assert.deepEqual(result, { recovered: [], recoveredCount: 0, pending: [] })
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  } finally {
+    if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
+    else process.env.BITCASTER_DAEMON_HOME = previousHome
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('complete-set pending reports custody unavailable and later clear recovery can mark ready', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-complete-set-startup-'))
+  const previousHome = process.env.BITCASTER_DAEMON_HOME
+  process.env.BITCASTER_DAEMON_HOME = home
+  try {
+    await bootstrapTestProfile(home)
+    let recovery = composeStartupCustodyRecovery([
+      {
+        recovered: [],
+        pending: [{ operationId: 'complete-set-root', error: 'mint evidence is pending' }],
+      },
+    ])
+    let markedReady = false
+    const markCustodyReady = () => {
+      markedReady = true
+    }
+    const health = await dispatch(
+      { method: 'health' },
+      {
+        isCustodyReady: () => recovery.pending.length === 0,
+      },
+    )
+    assert.equal(health.ok, true)
+    if (!health.ok) throw new Error('health command must succeed')
+    assert.equal(health.result.state, 'custody-recovery-pending')
+
+    recovery = composeStartupCustodyRecovery([{ recovered: [], pending: [] }])
+    if (recovery.pending.length === 0) markCustodyReady()
+    assert.equal(markedReady, true)
+  } finally {
+    if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
+    else process.env.BITCASTER_DAEMON_HOME = previousHome
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('manual recovery cannot clear automatic retirement pending custody', () => {
+  const readiness = createCustodyReadinessTracker({
+    nonRetirementPending: true,
+    retryPending: true,
+    retirementPending: true,
+  })
+
+  readiness.updateManualRecovery({
+    nonRetirementPending: false,
+    retryPending: false,
+    retirementPending: false,
+  })
+  assert.equal(readiness.isReady(), false)
+})
+
+test('receive recovery paging remains not ready without sampled pending rows', () => {
+  for (const receive of [
+    { pendingCount: 1, hasMore: false },
+    { pendingCount: 0, hasMore: true },
+  ]) {
+    const readiness = createCustodyReadinessTracker({
+      nonRetirementPending: receive.pendingCount > 0 || receive.hasMore,
+      retryPending: receive.pendingCount > 0 || receive.hasMore,
+      retirementPending: false,
+    })
+    assert.equal(readiness.isReady(), false)
+  }
+})
+
+test('latest automatic retirement scan can clear custody readiness', () => {
+  const readiness = createCustodyReadinessTracker({
+    nonRetirementPending: false,
+    retryPending: false,
+    retirementPending: true,
+  })
+
+  const generation = readiness.beginAutomaticRetirementScan()
+  assert.equal(readiness.completeAutomaticRetirementScan(generation, false), true)
+  assert.equal(readiness.isReady(), true)
+})
+
+test('manual recovery can report newly pending persisted retirement work', () => {
+  const readiness = createCustodyReadinessTracker({
+    nonRetirementPending: false,
+    retryPending: false,
+    retirementPending: false,
+  })
+
+  readiness.updateManualRecovery({
+    nonRetirementPending: false,
+    retryPending: false,
+    retirementPending: true,
+  })
+  assert.equal(readiness.isReady(), false)
+})
+
+test('older automatic retirement scan result cannot overwrite newer generation', () => {
+  const readiness = createCustodyReadinessTracker({
+    nonRetirementPending: false,
+    retryPending: false,
+    retirementPending: true,
+  })
+
+  const olderGeneration = readiness.beginAutomaticRetirementScan()
+  const latestGeneration = readiness.beginAutomaticRetirementScan()
+  assert.equal(readiness.completeAutomaticRetirementScan(latestGeneration, false), true)
+  assert.equal(readiness.completeAutomaticRetirementScan(olderGeneration, true), false)
+  assert.equal(readiness.isReady(), true)
+})
+
+test('manual recovery status callback owns production ready transition', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-manual-recovery-status-'))
+  const previousHome = process.env.BITCASTER_DAEMON_HOME
+  process.env.BITCASTER_DAEMON_HOME = directory
+  try {
+    const profile = await bootstrapFreshDaemonProfile({
+      directory,
+      engineBaseUrl: 'https://engine.example',
+      mintUrl: 'https://mint.example',
+      walletSeedHex: '11'.repeat(64),
+      nostrSecretKeyHex: '22'.repeat(32),
+    })
+    const fence = await claimCustodyScopeLease(directory, {
+      scopeId: profile.walletScopeId,
+      incarnationId: 'manual-recovery-status-test',
+      observedAtMs: 1,
+    })
+    let markedReady = false
+    let status:
+      | { nonRetirementPending: boolean; retryPending: boolean; retirementPending: boolean }
+      | undefined
+
+    const response = await dispatch(
+      { method: 'wallet.recover' },
+      {
+        getCustodyFence: () => fence,
+        markCustodyReady: () => {
+          markedReady = true
+        },
+        onManualCustodyRecoveryStatus: (reported) => {
+          status = reported
+        },
+      },
+    )
+
+    assert.equal(response.ok, true)
+    assert.deepEqual(status, {
+      nonRetirementPending: false,
+      retryPending: false,
+      retirementPending: false,
+    })
+    assert.equal(markedReady, false)
+  } finally {
+    if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
+    else process.env.BITCASTER_DAEMON_HOME = previousHome
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('wallet send and reclaim wake bounded custody recovery after a durable attempt', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-custody-recovery-wake-'))
+  const previousHome = process.env.BITCASTER_DAEMON_HOME
+  process.env.BITCASTER_DAEMON_HOME = directory
+  try {
+    await bootstrapTestProfile(directory)
+    let wakes = 0
+    const dependencies = {
+      triggerCustodyRecovery: () => {
+        wakes += 1
+      },
+    }
+
+    await assert.rejects(
+      () =>
+        dispatch(
+          {
+            method: 'wallet.send',
+            params: { amountSats: 1, mintUrl: 'https://mint.example' },
+          },
+          dependencies,
+        ),
+      /requires custody authority/,
+    )
+    await assert.rejects(
+      () =>
+        dispatch({ method: 'wallet.reclaim', params: { transferId: 'transfer-1' } }, dependencies),
+      /requires custody authority/,
+    )
+
+    assert.equal(wakes, 2)
+  } finally {
+    if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
+    else process.env.BITCASTER_DAEMON_HOME = previousHome
+    await rm(directory, { recursive: true, force: true })
+  }
 })
 
 test('startDaemonServer serves local health RPC and returns a closeable server', async () => {
@@ -58,9 +372,7 @@ test('startDaemonServer serves default Unix socket RPC on Unix', async () => {
 
   const home = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-server-socket-'))
   const previousHome = process.env.BITCASTER_DAEMON_HOME
-  const previousPort = process.env.BITCASTER_DAEMON_PORT
   process.env.BITCASTER_DAEMON_HOME = home
-  delete process.env.BITCASTER_DAEMON_PORT
   const server = await startDaemonServer()
   try {
     const response = await postSocketJson(join(home, 'daemon.sock'), {
@@ -81,8 +393,6 @@ test('startDaemonServer serves default Unix socket RPC on Unix', async () => {
     await once(server, 'close')
     if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
     else process.env.BITCASTER_DAEMON_HOME = previousHome
-    if (previousPort === undefined) delete process.env.BITCASTER_DAEMON_PORT
-    else process.env.BITCASTER_DAEMON_PORT = previousPort
     await rm(home, { recursive: true, force: true })
   }
 })
@@ -92,22 +402,15 @@ test('startDaemonServer refuses to replace a live Unix socket daemon', async () 
 
   const home = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-live-socket-'))
   const previousHome = process.env.BITCASTER_DAEMON_HOME
-  const previousPort = process.env.BITCASTER_DAEMON_PORT
   process.env.BITCASTER_DAEMON_HOME = home
-  delete process.env.BITCASTER_DAEMON_PORT
   const server = await startDaemonServer()
   try {
-    await assert.rejects(
-      () => startDaemonServer(),
-      /RPC socket is already in use/,
-    )
+    await assert.rejects(() => startDaemonServer(), /RPC socket is already in use/)
   } finally {
     server.close()
     await once(server, 'close')
     if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
     else process.env.BITCASTER_DAEMON_HOME = previousHome
-    if (previousPort === undefined) delete process.env.BITCASTER_DAEMON_PORT
-    else process.env.BITCASTER_DAEMON_PORT = previousPort
     await rm(home, { recursive: true, force: true })
   }
 })
@@ -117,9 +420,7 @@ test('startDaemonServer removes stale Unix socket before restart', async () => {
 
   const home = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-stale-socket-'))
   const previousHome = process.env.BITCASTER_DAEMON_HOME
-  const previousPort = process.env.BITCASTER_DAEMON_PORT
   process.env.BITCASTER_DAEMON_HOME = home
-  delete process.env.BITCASTER_DAEMON_PORT
   const socketPath = join(home, 'daemon.sock')
   const stale = spawn(
     process.execPath,
@@ -153,8 +454,6 @@ test('startDaemonServer removes stale Unix socket before restart', async () => {
     if (!stale.killed) stale.kill('SIGKILL')
     if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
     else process.env.BITCASTER_DAEMON_HOME = previousHome
-    if (previousPort === undefined) delete process.env.BITCASTER_DAEMON_PORT
-    else process.env.BITCASTER_DAEMON_PORT = previousPort
     await rm(home, { recursive: true, force: true })
   }
 })
@@ -163,7 +462,8 @@ test('startDaemonServer requires initialized RPC token for non-health commands',
   const home = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-server-auth-'))
   const previousHome = process.env.BITCASTER_DAEMON_HOME
   process.env.BITCASTER_DAEMON_HOME = home
-  const token = await ensureRpcToken()
+  await bootstrapTestProfile(home)
+  const token = (await readRpcToken())!
   const server = await startDaemonServer({ host: '127.0.0.1', port: 0 })
   try {
     const address = server.address()
@@ -201,115 +501,54 @@ test('startDaemonServer requires initialized RPC token for non-health commands',
   }
 })
 
-test('market.create refuses insecure daemon profile engine URL before engine RPC', async () => {
-  const home = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-market-create-http-'))
-  const previousHome = process.env.BITCASTER_DAEMON_HOME
-  const previousAllowInsecure = process.env.BITCASTER_ALLOW_INSECURE_ENGINE
-  process.env.BITCASTER_DAEMON_HOME = home
-  delete process.env.BITCASTER_ALLOW_INSECURE_ENGINE
-  const token = await ensureRpcToken()
-  const secrets = createDaemonSecrets()
-  await writeSecrets(secrets)
-  await writeProfile(profileFromPublicKey(secrets.nostrPublicKeyHex, {
-    engineBaseUrl: 'http://engine.example',
-    mintUrl: 'http://localhost:8085',
-  }))
-  const server = await startDaemonServer({ host: '127.0.0.1', port: 0 })
-  try {
-    const address = server.address()
-    assert.equal(typeof address, 'object')
-    assert.ok(address)
-    const response = await fetch(`http://127.0.0.1:${address.port}/rpc`, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify({
-        method: 'market.create',
-        params: {
-          conditionId: 'cond-1',
-          title: 'Market',
-          description: 'Description',
-          outcomes: ['YES', 'NO'],
-        },
-      }),
-    })
-
-    assert.equal(response.status, 200)
-    assert.deepEqual(await response.json(), {
-      ok: false,
-      error: 'market.create requires https engine URL (or BITCASTER_ALLOW_INSECURE_ENGINE=1 for localhost)',
-      code: 'insecure-engine-url',
-    })
-  } finally {
-    server.close()
-    await once(server, 'close')
-    if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
-    else process.env.BITCASTER_DAEMON_HOME = previousHome
-    if (previousAllowInsecure === undefined) delete process.env.BITCASTER_ALLOW_INSECURE_ENGINE
-    else process.env.BITCASTER_ALLOW_INSECURE_ENGINE = previousAllowInsecure
-    await rm(home, { recursive: true, force: true })
+function completedCompleteSetOperation() {
+  const conditionId = 'ab'.repeat(32)
+  const resultProofs = {
+    A: [{ id: 'outcome-keyset', amount: 1, secret: 'outcome-A', C: 'C-A' }],
+    B: [{ id: 'outcome-keyset', amount: 1, secret: 'outcome-B', C: 'C-B' }],
   }
-})
-
-test('market.close refuses insecure daemon profile engine URL before engine RPC', async () => {
-  const home = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-market-close-http-'))
-  const previousHome = process.env.BITCASTER_DAEMON_HOME
-  const previousAllowInsecure = process.env.BITCASTER_ALLOW_INSECURE_ENGINE
-  process.env.BITCASTER_DAEMON_HOME = home
-  delete process.env.BITCASTER_ALLOW_INSECURE_ENGINE
-  const token = await ensureRpcToken()
-  const secrets = createDaemonSecrets()
-  await writeSecrets(secrets)
-  await writeProfile(profileFromPublicKey(secrets.nostrPublicKeyHex, {
-    engineBaseUrl: 'http://engine.example',
-    mintUrl: 'http://localhost:8085',
-  }))
-  const server = await startDaemonServer({ host: '127.0.0.1', port: 0 })
-  try {
-    const address = server.address()
-    assert.equal(typeof address, 'object')
-    assert.ok(address)
-    const response = await fetch(`http://127.0.0.1:${address.port}/rpc`, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify({
-        method: 'market.close',
-        params: {
-          conditionId: 'cond-1',
-          attestationEvent: {
-            id: 'e'.repeat(64),
-            pubkey: 'p'.repeat(64),
-            createdAt: 1_718_000_000,
-            kind: 89,
-            tags: [['d', 'cond-1']],
-            content: '{}',
-            sig: 's'.repeat(128),
-          },
+  return {
+    operationId: 'root:ctf-split',
+    kind: 'ctf-split' as const,
+    state: 'completed' as const,
+    mintUrl: 'https://mint.example',
+    inputs: [{ id: 'collateral-keyset', amount: 1, secret: 'collateral', C: 'C-collateral' }],
+    outputs: {
+      A: [
+        {
+          blindedMessage: { amount: 1, id: 'outcome-keyset', B_: 'blind-A' },
+          blindingFactor: 'factor-A',
+          secret: 'output-A',
         },
-      }),
-    })
-
-    assert.equal(response.status, 200)
-    assert.deepEqual(await response.json(), {
-      ok: false,
-      error: 'market.create requires https engine URL (or BITCASTER_ALLOW_INSECURE_ENGINE=1 for localhost)',
-      code: 'insecure-engine-url',
-    })
-  } finally {
-    server.close()
-    await once(server, 'close')
-    if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
-    else process.env.BITCASTER_DAEMON_HOME = previousHome
-    if (previousAllowInsecure === undefined) delete process.env.BITCASTER_ALLOW_INSECURE_ENGINE
-    else process.env.BITCASTER_ALLOW_INSECURE_ENGINE = previousAllowInsecure
-    await rm(home, { recursive: true, force: true })
+      ],
+      B: [
+        {
+          blindedMessage: { amount: 1, id: 'outcome-keyset', B_: 'blind-B' },
+          blindingFactor: 'factor-B',
+          secret: 'output-B',
+        },
+      ],
+    },
+    metadata: {
+      purpose: 'daemon-complete-set-ctf-split',
+      rootOperationId: 'root',
+      conditionId,
+      amountSats: 1,
+      amountSubunits: 1,
+      reservationId: 'root:ctf-split:reservation',
+      inputAsset: { kind: 'sats', baseAsset: 'sat', unit: 'msat' },
+      successorAssets: {
+        A: { kind: 'Outcome', conditionId, outcomeSetId: 'A', baseAsset: 'sat', unit: 'msat' },
+        B: { kind: 'Outcome', conditionId, outcomeSetId: 'B', baseAsset: 'sat', unit: 'msat' },
+      },
+    },
+    resultProofs,
+    resultProofsDigest: completedProofAuthorityDigest(resultProofs),
+    lastError: null,
+    createdAt: 1,
+    updatedAt: 2,
   }
-})
+}
 
 function postSocketJson(socketPath: string, body: unknown): Promise<unknown> {
   const text = JSON.stringify(body)

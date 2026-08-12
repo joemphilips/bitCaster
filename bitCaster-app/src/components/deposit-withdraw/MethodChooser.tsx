@@ -1,11 +1,11 @@
-import { X, Maximize2, Link, Zap } from 'lucide-react'
-import type { DepositWithdrawMode, MethodType } from '@/types/deposit-withdraw'
+import { X, Maximize2, Link, Zap } from "lucide-react";
+import type { DepositWithdrawMode, MethodType } from "@/types/deposit-withdraw";
 
 interface MethodChooserProps {
-  mode: DepositWithdrawMode
-  onSelectMethod?: (method: MethodType) => void
-  onClose?: () => void
-  onToggleFullscreen?: () => void
+  mode: DepositWithdrawMode;
+  onSelectMethod?: (method: MethodType) => void;
+  onClose?: () => void;
+  onToggleFullscreen?: () => void;
 }
 
 export function MethodChooser({
@@ -14,15 +14,12 @@ export function MethodChooser({
   onClose,
   onToggleFullscreen,
 }: MethodChooserProps) {
-  const title = mode === 'deposit' ? 'Deposit' : 'Withdrawal'
+  const title = mode === "deposit" ? "Deposit" : "Withdrawal";
 
   return (
     <div className="fixed inset-0 z-[70] flex items-end md:items-center justify-center">
       {/* Backdrop */}
-      <div
-        className="absolute inset-0 bg-black/60"
-        onClick={() => onClose?.()}
-      />
+      <div className="absolute inset-0 bg-black/60" onClick={() => onClose?.()} />
 
       {/* Sheet */}
       <div className="relative w-full md:max-w-md bg-slate-800 rounded-t-2xl md:rounded-2xl overflow-hidden animate-in slide-in-from-bottom duration-300">
@@ -46,7 +43,7 @@ export function MethodChooser({
         {/* Options */}
         <div className="px-5 pb-6 space-y-3">
           <button
-            onClick={() => onSelectMethod?.('ecash')}
+            onClick={() => onSelectMethod?.("ecash")}
             className="w-full flex items-center gap-4 p-4 bg-slate-700/60 hover:bg-slate-700 rounded-xl transition-colors group"
           >
             <div className="w-10 h-10 rounded-full bg-slate-600 flex items-center justify-center group-hover:bg-slate-500 transition-colors">
@@ -56,7 +53,7 @@ export function MethodChooser({
           </button>
 
           <button
-            onClick={() => onSelectMethod?.('lightning')}
+            onClick={() => onSelectMethod?.("lightning")}
             className="w-full flex items-center gap-4 p-4 bg-slate-700/60 hover:bg-slate-700 rounded-xl transition-colors group"
           >
             <div className="w-10 h-10 rounded-full bg-slate-600 flex items-center justify-center group-hover:bg-slate-500 transition-colors">
@@ -67,5 +64,5 @@ export function MethodChooser({
         </div>
       </div>
     </div>
-  )
+  );
 }

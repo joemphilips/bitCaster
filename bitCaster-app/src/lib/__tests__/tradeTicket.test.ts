@@ -1,9 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildTradeTicket, TradeTicketError } from "@/lib/tradeTicket";
-import {
-  computeLimitOrderPreview,
-  displaySharesToFaceSubunits,
-} from "@/lib/tradeCostPreview";
+import { computeLimitOrderPreview, displaySharesToFaceSubunits } from "@/lib/tradeCostPreview";
 import type { MarketDetail } from "@/types/market-detail";
 
 const market: MarketDetail = {
@@ -15,12 +12,14 @@ const market: MarketDetail = {
   volume: 0,
   liquidity: 0,
   liquiditySubunits: 0,
-    ammBotBudgetSubunits: 0,
+  ammBotBudgetSubunits: 0,
   volumeLifetimeSubunits: 0,
   closingDate: "2026-12-31T00:00:00Z",
   createdDate: "2026-01-01T00:00:00Z",
   activeSince: "2026-01-01T00:00:00Z",
   baseUnit: "sats",
+  baseAsset: "sat",
+  divisibility: 10_000,
   creator: {
     id: "creator",
     name: "creator",
@@ -266,7 +265,7 @@ describe("buildTradeTicket", () => {
 
   it("sends protocol face amountSubunits, not the derived display cost", () => {
     const displayShares = 10;
-    const faceAmountSats = displaySharesToFaceSubunits(displayShares, "sat");
+    const faceAmountSats = displaySharesToFaceSubunits(displayShares, "sat", 10_000);
     const ticket = buildTradeTicket({
       market,
       selection: { side: "yes" },

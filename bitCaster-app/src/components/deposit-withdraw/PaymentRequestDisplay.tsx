@@ -1,12 +1,12 @@
-import { X, Copy, Check, Loader2 } from 'lucide-react'
-import { QRCodeSVG } from 'qrcode.react'
-import { useState } from 'react'
+import { X, Copy, Check, Loader2 } from "lucide-react";
+import { QRCodeSVG } from "qrcode.react";
+import { useState } from "react";
 
 interface PaymentRequestDisplayProps {
-  paymentRequestEncoded: string
-  status: 'waiting' | 'received'
-  amountSats?: number
-  onClose?: () => void
+  paymentRequestEncoded: string;
+  status: "waiting" | "received";
+  amountSats?: number;
+  onClose?: () => void;
 }
 
 export function PaymentRequestDisplay({
@@ -15,13 +15,13 @@ export function PaymentRequestDisplay({
   amountSats,
   onClose,
 }: PaymentRequestDisplayProps) {
-  const [copied, setCopied] = useState(false)
+  const [copied, setCopied] = useState(false);
 
   const handleCopy = async () => {
-    await navigator.clipboard.writeText(paymentRequestEncoded)
-    setCopied(true)
-    setTimeout(() => setCopied(false), 2000)
-  }
+    await navigator.clipboard.writeText(paymentRequestEncoded);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
 
   return (
     <div className="fixed inset-0 z-[70] bg-slate-900 flex flex-col">
@@ -41,13 +41,13 @@ export function PaymentRequestDisplay({
       <div className="flex-1 flex flex-col items-center justify-center max-w-md mx-auto w-full px-5">
         {/* Status */}
         <div className="mb-6 flex items-center gap-2">
-          {status === 'waiting' && (
+          {status === "waiting" && (
             <>
               <Loader2 className="w-5 h-5 text-amber-400 animate-spin" />
               <span className="text-sm text-amber-400">Waiting for payment...</span>
             </>
           )}
-          {status === 'received' && (
+          {status === "received" && (
             <>
               <Check className="w-5 h-5 text-green-400" />
               <span className="text-sm text-green-400">Payment received!</span>
@@ -57,11 +57,7 @@ export function PaymentRequestDisplay({
 
         {/* QR Code */}
         <div className="bg-white p-4 rounded-2xl">
-          <QRCodeSVG
-            value={paymentRequestEncoded}
-            size={256}
-            level="M"
-          />
+          <QRCodeSVG value={paymentRequestEncoded} size={256} level="M" />
         </div>
 
         {/* Amount */}
@@ -92,5 +88,5 @@ export function PaymentRequestDisplay({
         </p>
       </div>
     </div>
-  )
+  );
 }

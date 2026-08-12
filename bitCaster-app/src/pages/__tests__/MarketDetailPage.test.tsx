@@ -9,16 +9,18 @@ import {
   decideTradeCollateralGate,
   defaultLimitPriceForDivisibility,
   fetchMarketDetailWithBooks,
-  liveTradeChartUpdate,
   marketDetailDataReducer,
   pendingTopUpOrderIntentMatches,
   resolveTradeOrderBooks,
   shouldPromptForFundedActionBackup,
 } from "@/pages/MarketDetailPage";
 import { MarketDetailPage } from "@/pages/MarketDetailPage";
-import { fetchMarketDetail, fetchOrderBook, submitOrder } from "@/lib/markets";
-import { onOrderBookUpdated, onTradeExecuted } from "@/lib/marketHub";
-import type { MarketStatusChanged, Matched, OrderBookSnapshot, TradeExecuted } from "@/lib/marketHub";
+import { fetchMarketDetail, fetchOrderBook } from "@/lib/markets";
+import {
+  previewBrowserCtfRangeOrderFees,
+  submitBrowserCtfRangeOrder,
+} from "@/lib/browserCtfRangeOrderSubmission";
+import type { MarketStatusChanged, OrderBookSnapshot } from "@/lib/marketHub";
 import type {
   CategoricalMarketDetail,
   Comment,
@@ -29,9 +31,13 @@ import type {
 const mocks = vi.hoisted(() => ({
   buildIndexedDbTokenHoldings: vi.fn(),
   getBalance: vi.fn(),
+  ensureParticipationScoreForNextMatch: vi.fn(),
   navigate: vi.fn(),
+  previewBrowserCtfRangeOrderFees: vi.fn(),
   routeParams: { id: "condition-yesno" } as { id?: string },
   walletState: {
+    mnemonic:
+      "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
     setupComplete: false,
     walletBackupState: "confirmed",
     activeMintUrl: null as string | null,
@@ -43,14 +49,10 @@ const mocks = vi.hoisted(() => ({
   },
   liveStatusHandlers: [] as Array<(status: MarketStatusChanged) => void>,
   orderBookHandlers: new Map<string, (snapshot: OrderBookSnapshot) => void>(),
-  matchedHandlers: new Map<string, (match: Matched) => void>(),
-  tradeExecutedHandlers: new Map<string, (trade: TradeExecuted) => void>(),
-  windowPriceHistory: vi.fn(
-    (history: { timeframe: string; data: Array<unknown> }) => ({
-      ...history,
-      data: history.data.slice(-1000),
-    }),
-  ),
+  windowPriceHistory: vi.fn((history: { timeframe: string; data: Array<unknown> }) => ({
+    ...history,
+    data: history.data.slice(-1000),
+  })),
 }));
 
 vi.mock("react-router", () => ({
@@ -94,25 +96,10 @@ vi.mock("@/lib/marketHub", () => ({
     mocks.orderBookHandlers.set(marketId, handler);
     return () => mocks.orderBookHandlers.delete(marketId);
   }),
-  onMatched: vi.fn((marketId: string, handler: (match: Matched) => void) => {
-    mocks.matchedHandlers.set(marketId, handler);
-    return () => mocks.matchedHandlers.delete(marketId);
-  }),
   onOrderCancelled: vi.fn(() => () => {}),
-  onTradeExecuted: vi.fn((marketId: string, handler: (trade: TradeExecuted) => void) => {
-    mocks.tradeExecutedHandlers.set(marketId, handler);
-    return () => mocks.tradeExecutedHandlers.delete(marketId);
-  }),
 }));
 
 vi.mock("@/lib/markets", () => ({
-  appendLivePricePoint: (
-    history: { timeframe: string; data: Array<unknown> },
-    point: unknown,
-  ) => ({
-    ...history,
-    data: [...history.data, point],
-  }),
   fetchMarketDetail: vi.fn(),
   fetchMarketComments: vi.fn().mockResolvedValue({ comments: [] }),
   fetchMarketPriceHistory: vi.fn().mockResolvedValue({ data: [], timeframe: "7d" }),
@@ -133,12 +120,18 @@ vi.mock("@/lib/markets", () => ({
     spread: snapshot.spread ?? 0,
     depthLimit: snapshot.depthLimit,
   }),
-  priceNumeratorToPercent: (price: number, divisibility = 100) =>
-    (price / divisibility) * 100,
+  priceNumeratorToPercent: (price: number, divisibility = 100) => (price / divisibility) * 100,
   signTradeComment: vi.fn(),
-  submitEphemeralPubkey: vi.fn(),
-  submitOrder: vi.fn(),
   windowPriceHistory: mocks.windowPriceHistory,
+}));
+
+vi.mock("@/lib/browserCtfRangeOrderSubmission", () => ({
+  previewBrowserCtfRangeOrderFees: mocks.previewBrowserCtfRangeOrderFees,
+  submitBrowserCtfRangeOrder: vi.fn(),
+}));
+
+vi.mock("@/lib/participationScorePayment", () => ({
+  ensureParticipationScoreForNextMatch: mocks.ensureParticipationScoreForNextMatch,
 }));
 
 vi.mock("@bitcaster/client-sdk/engineClient", () => ({
@@ -213,7 +206,7 @@ function yesNoMarket(overrides: Partial<MarketDetail> = {}): MarketDetail {
     activeSince: "2026-01-01T00:00:00Z",
     baseUnit: "sats",
     baseAsset: "sat",
-    divisibility: 1_000,
+    divisibility: 10_000,
     creator: {
       id: "creator",
       name: "creator",
@@ -244,13 +237,13 @@ function yesNoMarket(overrides: Partial<MarketDetail> = {}): MarketDetail {
   } as MarketDetail;
 }
 
-function usdYesNoMarket(overrides: Partial<MarketDetail> = {}): MarketDetail {
+function fundedSatYesNoMarket(overrides: Partial<MarketDetail> = {}): MarketDetail {
   return yesNoMarket({
-    baseUnit: "USD",
-    baseAsset: "usd",
-    divisibility: 100,
+    baseUnit: "sats",
+    baseAsset: "sat",
+    divisibility: 10_000,
     outcomeOrderBooks: {
-      Yes: askBook(40),
+      Yes: askBook(4_000),
       No: emptyBook,
     },
     ...overrides,
@@ -258,14 +251,14 @@ function usdYesNoMarket(overrides: Partial<MarketDetail> = {}): MarketDetail {
 }
 
 function mockAcceptedOrder() {
-  vi.mocked(submitOrder).mockResolvedValue({
+  vi.mocked(submitBrowserCtfRangeOrder).mockResolvedValue({
     orderId: "order-auto-1",
-    status: "Filled",
+    status: "filled",
     remainingAmountSubunits: 0,
     fills: [],
-    pendingPubkeySubmissions: [],
-    baseAsset: "usd",
-    divisibility: 100,
+    baseAsset: "sat",
+    divisibility: 10_000,
+    activeSettlementGroup: null,
   });
 }
 
@@ -286,7 +279,7 @@ function categoricalMarket(): MarketDetail {
     activeSince: "2026-01-01T00:00:00Z",
     baseUnit: "sats",
     baseAsset: "sat",
-    divisibility: 1_000,
+    divisibility: 10_000,
     creator: {
       id: "creator",
       name: "creator",
@@ -318,7 +311,12 @@ describe("fetchMarketDetailWithBooks", () => {
   beforeEach(() => {
     vi.mocked(fetchMarketDetail).mockReset();
     vi.mocked(fetchOrderBook).mockReset();
-    vi.mocked(submitOrder).mockReset();
+    vi.mocked(submitBrowserCtfRangeOrder).mockReset();
+    vi.mocked(previewBrowserCtfRangeOrderFees).mockReset();
+    vi.mocked(previewBrowserCtfRangeOrderFees).mockResolvedValue({
+      consolidationFeeSubunits: 0,
+      sourceFeeSubunits: 0,
+    });
     mocks.windowPriceHistory.mockClear();
     mocks.liveStatusHandlers.length = 0;
     mocks.routeParams.id = "condition-yesno";
@@ -326,16 +324,16 @@ describe("fetchMarketDetailWithBooks", () => {
 
   it("fetches singleton outcome-set books for categorical markets", async () => {
     vi.mocked(fetchMarketDetail).mockResolvedValue(categoricalMarket());
-    vi.mocked(fetchOrderBook).mockImplementation(async (marketId) =>
-      book(marketId.length),
-    );
+    vi.mocked(fetchOrderBook).mockImplementation(async (marketId) => book(marketId.length));
 
     const detail = await fetchMarketDetailWithBooks("condition-1");
 
     expect(fetchOrderBook).toHaveBeenCalledTimes(3);
-    expect(
-      vi.mocked(fetchOrderBook).mock.calls.map(([marketId]) => marketId),
-    ).toEqual(["condition-1-Alice", "condition-1-Bob", "condition-1-Carol"]);
+    expect(vi.mocked(fetchOrderBook).mock.calls.map(([marketId]) => marketId)).toEqual([
+      "condition-1-Alice",
+      "condition-1-Bob",
+      "condition-1-Carol",
+    ]);
     expect(detail.outcomeOrderBooks).toHaveProperty("Alice");
     expect(detail.outcomeOrderBooks).not.toHaveProperty("Bob|Carol");
   });
@@ -345,12 +343,21 @@ describe("MarketDetailPage live market status", () => {
   beforeEach(() => {
     vi.mocked(fetchMarketDetail).mockReset();
     vi.mocked(fetchOrderBook).mockReset();
-    vi.mocked(submitOrder).mockReset();
+    vi.mocked(submitBrowserCtfRangeOrder).mockReset();
+    vi.mocked(previewBrowserCtfRangeOrderFees).mockReset();
+    vi.mocked(previewBrowserCtfRangeOrderFees).mockResolvedValue({
+      consolidationFeeSubunits: 0,
+      sourceFeeSubunits: 0,
+    });
     mocks.buildIndexedDbTokenHoldings.mockReset();
     mocks.getBalance.mockReset();
+    mocks.ensureParticipationScoreForNextMatch.mockReset();
+    mocks.ensureParticipationScoreForNextMatch.mockResolvedValue({
+      kind: "disabled",
+      score: { enabled: false, matchDebitScore: 0 },
+    });
     mocks.liveStatusHandlers.length = 0;
     mocks.orderBookHandlers.clear();
-    mocks.tradeExecutedHandlers.clear();
     mocks.routeParams.id = "condition-yesno";
     mocks.navigate.mockReset();
     mocks.walletState.setupComplete = false;
@@ -392,62 +399,20 @@ describe("MarketDetailPage live market status", () => {
     }
 
     fireEvent.click(screen.getAllByTestId("trade-confirm")[0]);
-    expect(submitOrder).not.toHaveBeenCalled();
+    expect(submitBrowserCtfRangeOrder).not.toHaveBeenCalled();
   });
 
   it("classifies needs_backup wallets as requiring the funded-action backup prompt", () => {
     expect(shouldPromptForFundedActionBackup("needs_backup")).toBe(true);
     expect(shouldPromptForFundedActionBackup("none")).toBe(false);
     expect(shouldPromptForFundedActionBackup("confirmed")).toBe(false);
-    expect(submitOrder).not.toHaveBeenCalled();
+    expect(submitBrowserCtfRangeOrder).not.toHaveBeenCalled();
   });
 
   it("throws from the submit guard when the market is closed", () => {
-    expect(() =>
-      assertMarketAcceptsOrders(yesNoMarket({ state: "closed" })),
-    ).toThrow("This market is closed and no longer accepts orders.");
-  });
-
-  it("cancels the TradeExecuted REST fallback when OrderBookUpdated arrives first", async () => {
-    vi.mocked(fetchMarketDetail).mockResolvedValue(yesNoMarket());
-    vi.mocked(fetchOrderBook).mockResolvedValue(emptyBook);
-
-    render(<MarketDetailPage />);
-
-    await screen.findByRole("heading", { name: "Will it happen?" });
-    await waitFor(() => {
-      expect(onTradeExecuted).toHaveBeenCalledWith("condition-yesno-Yes", expect.any(Function));
-      expect(onOrderBookUpdated).toHaveBeenCalledWith("condition-yesno-Yes", expect.any(Function));
-    });
-    vi.mocked(fetchOrderBook).mockClear();
-
-    act(() => {
-      mocks.tradeExecutedHandlers.get("condition-yesno-Yes")?.({
-        tradeId: "trade-test-1",
-        executionPrice: 501,
-        amountSubunits: 10,
-        side: "Buy",
-        timestamp: "2026-06-01T00:00:00Z",
-      });
-    });
-
-    await new Promise((resolve) => setTimeout(resolve, 250));
-
-    expect(fetchOrderBook).not.toHaveBeenCalled();
-
-    act(() => {
-      mocks.orderBookHandlers.get("condition-yesno-Yes")?.({
-        marketId: "condition-yesno-Yes",
-        bids: [{ price: 777, amount: 42 }],
-        asks: [],
-        spread: 0,
-        depthLimit: 5,
-      });
-    });
-
-    await new Promise((resolve) => setTimeout(resolve, 550));
-
-    expect(fetchOrderBook).not.toHaveBeenCalled();
+    expect(() => assertMarketAcceptsOrders(yesNoMarket({ state: "closed" }))).toThrow(
+      "This market is closed and no longer accepts orders.",
+    );
   });
 
   it("requires top-up when a priced buy covers quote cost but not face value", async () => {
@@ -475,12 +440,47 @@ describe("MarketDetailPage live market status", () => {
     fireEvent.blur(screen.getAllByTestId("limit-price-input")[0]);
 
     await waitFor(() =>
-      expect(screen.getAllByTestId("trade-confirm")[0]).toHaveTextContent(
-        "Top up sats wallet",
-      ),
+      expect(screen.getAllByTestId("trade-confirm")[0]).toHaveTextContent("Top up sats wallet"),
     );
     expect(screen.getAllByTestId("trade-confirm")[0]).toBeEnabled();
     expect(screen.getAllByText("Insufficient funds").length).toBeGreaterThan(0);
+  });
+
+  it("adds the exact proof consolidation cost to the trade pane mint fee", async () => {
+    mocks.walletState.setupComplete = true;
+    mocks.walletState.activeMintUrl = "https://mint.example";
+    mocks.settingsState.nostrSignerMode = "nsec";
+    mocks.buildIndexedDbTokenHoldings.mockResolvedValue({
+      baseUnitProofs: 20_000,
+      outcomeProofsByOutcomeSetId: {},
+    });
+    vi.mocked(previewBrowserCtfRangeOrderFees).mockResolvedValue({
+      consolidationFeeSubunits: 1_500,
+      sourceFeeSubunits: 0,
+    });
+    const market = fundedSatYesNoMarket({ state: "open" });
+    vi.mocked(fetchMarketDetail).mockResolvedValue(market);
+    vi.mocked(fetchOrderBook).mockImplementation(async (marketId) =>
+      marketId === "condition-yesno-Yes" ? askBook(4_000) : emptyBook,
+    );
+    mockAcceptedOrder();
+
+    render(<MarketDetailPage />);
+
+    await screen.findByRole("heading", { name: "Will it happen?" });
+    fireEvent.click(screen.getAllByTestId("trade-outcome-yes")[0]);
+    fireEvent.change(screen.getAllByTestId("trade-amount-input")[0], {
+      target: { value: "1" },
+    });
+
+    const mintFees = await screen.findAllByTestId("trade-mint-fee");
+    expect(mintFees[0]).toHaveTextContent("1.5 sats");
+    fireEvent.click(screen.getAllByTestId("trade-confirm")[0]);
+
+    await waitFor(() => expect(submitBrowserCtfRangeOrder).toHaveBeenCalledTimes(1));
+    expect(submitBrowserCtfRangeOrder).toHaveBeenCalledWith(
+      expect.objectContaining({ expectedConsolidationFeeSubunits: 1_500 }),
+    );
   });
 
   it("opens the trade top-up overlay from the page-level buy top-up button", async () => {
@@ -518,7 +518,7 @@ describe("MarketDetailPage live market status", () => {
     expect(screen.getByTestId("top-up-amount-input")).toBeInTheDocument();
   });
 
-  it("auto-executes a USD market order once top-up success leaves enough proof-store balance", async () => {
+  it("auto-executes a sat market order once top-up success leaves enough proof-store balance", async () => {
     mocks.walletState.setupComplete = true;
     mocks.walletState.activeMintUrl = "https://mint.example";
     mocks.settingsState.nostrSignerMode = "nsec";
@@ -527,10 +527,10 @@ describe("MarketDetailPage live market status", () => {
       outcomeProofsByOutcomeSetId: {},
     });
     mocks.getBalance.mockResolvedValue(0);
-    const market = usdYesNoMarket({ state: "open" });
+    const market = fundedSatYesNoMarket({ state: "open" });
     vi.mocked(fetchMarketDetail).mockResolvedValue(market);
     vi.mocked(fetchOrderBook).mockImplementation(async (marketId) =>
-      marketId === "condition-yesno-Yes" ? askBook(40) : emptyBook,
+      marketId === "condition-yesno-Yes" ? askBook(4_000) : emptyBook,
     );
     mockAcceptedOrder();
 
@@ -545,22 +545,29 @@ describe("MarketDetailPage live market status", () => {
 
     await screen.findByTestId("insufficient-balance-top-up");
     fireEvent.click(screen.getByTestId("insufficient-balance-top-up"));
-    mocks.getBalance.mockResolvedValue(100);
+    mocks.getBalance.mockResolvedValue(10_000);
     fireEvent.click(await screen.findByTestId("top-up-success"));
 
-    await waitFor(() => expect(submitOrder).toHaveBeenCalledTimes(1));
-    expect(submitOrder).toHaveBeenCalledWith(
-      "condition-yesno-Yes",
+    await waitFor(() => expect(submitBrowserCtfRangeOrder).toHaveBeenCalledTimes(1));
+    expect(submitBrowserCtfRangeOrder).toHaveBeenCalledWith(
       expect.objectContaining({
-        amountSubunits: 100,
-        outcomeId: "Yes",
-        side: "Buy",
-        timeInForce: "FAK",
+        clientOrderId: expect.any(String),
+        mintUrl: "https://mint.example",
+        mnemonic: mocks.walletState.mnemonic,
+        ticket: expect.objectContaining({
+          marketId: "condition-yesno-Yes",
+          request: expect.objectContaining({
+            amountSubunits: 10_000,
+            outcomeId: "Yes",
+            side: "Buy",
+            timeInForce: "FAK",
+          }),
+        }),
       }),
     );
   });
 
-  it("does not auto-execute a USD market order when post-top-up balance is still insufficient", async () => {
+  it("does not auto-execute a sat market order when post-top-up balance is still insufficient", async () => {
     mocks.walletState.setupComplete = true;
     mocks.walletState.activeMintUrl = "https://mint.example";
     mocks.settingsState.nostrSignerMode = "nsec";
@@ -569,10 +576,10 @@ describe("MarketDetailPage live market status", () => {
       outcomeProofsByOutcomeSetId: {},
     });
     mocks.getBalance.mockResolvedValue(0);
-    const market = usdYesNoMarket({ state: "open" });
+    const market = fundedSatYesNoMarket({ state: "open" });
     vi.mocked(fetchMarketDetail).mockResolvedValue(market);
     vi.mocked(fetchOrderBook).mockImplementation(async (marketId) =>
-      marketId === "condition-yesno-Yes" ? askBook(40) : emptyBook,
+      marketId === "condition-yesno-Yes" ? askBook(4_000) : emptyBook,
     );
     mockAcceptedOrder();
 
@@ -587,16 +594,16 @@ describe("MarketDetailPage live market status", () => {
 
     await screen.findByTestId("insufficient-balance-top-up");
     fireEvent.click(screen.getByTestId("insufficient-balance-top-up"));
-    mocks.getBalance.mockResolvedValue(39);
+    mocks.getBalance.mockResolvedValue(3_900);
     fireEvent.click(await screen.findByTestId("top-up-success"));
 
     await screen.findAllByText(
       "Top-up completed, but the wallet balance is still below the order requirement.",
     );
-    expect(submitOrder).not.toHaveBeenCalled();
+    expect(submitBrowserCtfRangeOrder).not.toHaveBeenCalled();
   });
 
-  it("drops a pending USD market order intent when order details change during top-up", async () => {
+  it("drops a pending sat market order intent when order details change during top-up", async () => {
     mocks.walletState.setupComplete = true;
     mocks.walletState.activeMintUrl = "https://mint.example";
     mocks.settingsState.nostrSignerMode = "nsec";
@@ -605,10 +612,10 @@ describe("MarketDetailPage live market status", () => {
       outcomeProofsByOutcomeSetId: {},
     });
     mocks.getBalance.mockResolvedValue(0);
-    const market = usdYesNoMarket({ state: "open" });
+    const market = fundedSatYesNoMarket({ state: "open" });
     vi.mocked(fetchMarketDetail).mockResolvedValue(market);
     vi.mocked(fetchOrderBook).mockImplementation(async (marketId) =>
-      marketId === "condition-yesno-Yes" ? askBook(40) : emptyBook,
+      marketId === "condition-yesno-Yes" ? askBook(4_000) : emptyBook,
     );
     mockAcceptedOrder();
 
@@ -626,13 +633,13 @@ describe("MarketDetailPage live market status", () => {
     fireEvent.change(screen.getAllByTestId("trade-amount-input")[0], {
       target: { value: "2" },
     });
-    mocks.getBalance.mockResolvedValue(40);
+    mocks.getBalance.mockResolvedValue(4_000);
     fireEvent.click(await screen.findByTestId("top-up-success"));
 
     await screen.findAllByText(
       "Order details changed during top-up. Review the order and confirm again.",
     );
-    expect(submitOrder).not.toHaveBeenCalled();
+    expect(submitBrowserCtfRangeOrder).not.toHaveBeenCalled();
   });
 });
 
@@ -665,15 +672,12 @@ describe("marketDetailDataReducer", () => {
       outcomeOrderBooks: {},
     });
 
-    const state = marketDetailDataReducer(
-      createMarketDetailDataState(initial),
-      {
-        type: "marketSubmitRefreshLoaded",
-        detail: refresh,
-        booksByOutcomeSetId: booksByOutcomeSetFromDetail(refresh, []),
-        replaceOutcomeSetIds: [],
-      },
-    );
+    const state = marketDetailDataReducer(createMarketDetailDataState(initial), {
+      type: "marketSubmitRefreshLoaded",
+      detail: refresh,
+      booksByOutcomeSetId: booksByOutcomeSetFromDetail(refresh, []),
+      replaceOutcomeSetIds: [],
+    });
     const view = composeMarketDetail(state, "7d");
 
     expect(view?.state).toBe("closed");
@@ -687,9 +691,7 @@ describe("marketDetailDataReducer", () => {
       currentOdds: { yes: 50, no: 50 },
       priceHistory: {
         timeframe: "7d",
-        data: [
-          { timestamp: "2026-01-01T00:00:00Z", price: 80, source: "initial" },
-        ],
+        data: [{ timestamp: "2026-01-01T00:00:00Z", price: 80, source: "initial" }],
       },
     });
 
@@ -710,28 +712,20 @@ describe("marketDetailDataReducer", () => {
     ];
     initial.priceHistory = {
       timeframe: "7d",
-      data: [
-        { timestamp: "2026-01-01T00:00:00Z", price: 80, source: "initial" },
-      ],
+      data: [{ timestamp: "2026-01-01T00:00:00Z", price: 80, source: "initial" }],
     };
     initial.outcomePriceHistories = {
       Alice: {
         timeframe: "7d",
-        data: [
-          { timestamp: "2026-01-01T00:00:00Z", price: 80, source: "initial" },
-        ],
+        data: [{ timestamp: "2026-01-01T00:00:00Z", price: 80, source: "initial" }],
       },
       Bob: {
         timeframe: "7d",
-        data: [
-          { timestamp: "2026-01-01T00:00:00Z", price: 10, source: "initial" },
-        ],
+        data: [{ timestamp: "2026-01-01T00:00:00Z", price: 10, source: "initial" }],
       },
       Carol: {
         timeframe: "7d",
-        data: [
-          { timestamp: "2026-01-01T00:00:00Z", price: 10, source: "initial" },
-        ],
+        data: [{ timestamp: "2026-01-01T00:00:00Z", price: 10, source: "initial" }],
       },
     };
 
@@ -739,9 +733,7 @@ describe("marketDetailDataReducer", () => {
 
     expect(view?.type).toBe("categorical");
     if (view?.type === "categorical") {
-      expect(view.outcomes.map((outcome) => outcome.odds)).toEqual([
-        80, 10, 10,
-      ]);
+      expect(view.outcomes.map((outcome) => outcome.odds)).toEqual([80, 10, 10]);
     }
   });
 
@@ -775,10 +767,10 @@ describe("marketDetailDataReducer", () => {
       outcomeOrderBooks: {},
     };
 
-    const state = marketDetailDataReducer(
-      createMarketDetailDataState(initial),
-      { type: "marketSnapshotLoaded", detail: refresh },
-    );
+    const state = marketDetailDataReducer(createMarketDetailDataState(initial), {
+      type: "marketSnapshotLoaded",
+      detail: refresh,
+    });
     const view = composeMarketDetail(state, "7d");
 
     expect(view?.state).toBe("closed");
@@ -788,9 +780,7 @@ describe("marketDetailDataReducer", () => {
       expect(view.outcomePriceHistories.Alice.data).toEqual(
         initial.outcomePriceHistories.Alice.data,
       );
-      expect(view.outcomePriceHistories.Bob.data).toEqual(
-        initial.outcomePriceHistories.Bob.data,
-      );
+      expect(view.outcomePriceHistories.Bob.data).toEqual(initial.outcomePriceHistories.Bob.data);
     }
   });
 
@@ -813,15 +803,12 @@ describe("marketDetailDataReducer", () => {
       spread: 0,
     };
 
-    const state = marketDetailDataReducer(
-      createMarketDetailDataState(initial),
-      {
-        type: "orderBookUpdated",
-        marketId: initial.id,
-        outcomeSetId: "Yes",
-        orderBook: liveBook,
-      },
-    );
+    const state = marketDetailDataReducer(createMarketDetailDataState(initial), {
+      type: "orderBookUpdated",
+      marketId: initial.id,
+      outcomeSetId: "Yes",
+      orderBook: liveBook,
+    });
     const view = composeMarketDetail(state, "7d");
 
     expect(view?.orderBook).toBe(liveBook);
@@ -838,15 +825,12 @@ describe("marketDetailDataReducer", () => {
     });
     const liveBook = book(58);
     const restBook = book(51);
-    const stateWithLive = marketDetailDataReducer(
-      createMarketDetailDataState(initial),
-      {
-        type: "orderBookUpdated",
-        marketId: initial.id,
-        outcomeSetId: "Yes",
-        orderBook: liveBook,
-      },
-    );
+    const stateWithLive = marketDetailDataReducer(createMarketDetailDataState(initial), {
+      type: "orderBookUpdated",
+      marketId: initial.id,
+      outcomeSetId: "Yes",
+      orderBook: liveBook,
+    });
 
     const stateAfterRest = marketDetailDataReducer(stateWithLive, {
       type: "booksLoaded",
@@ -858,132 +842,12 @@ describe("marketDetailDataReducer", () => {
 
     expect(view?.orderBook).toBe(liveBook);
   });
-
-  it("merges late REST history without dropping live chart points", () => {
-    const initial = yesNoMarket({
-      priceHistory: {
-        timeframe: "7d",
-        data: [{ timestamp: "2026-01-01T00:00:00Z", price: 49, volume: 1 }],
-      },
-    });
-    const stateWithLive = marketDetailDataReducer(
-      createMarketDetailDataState(initial),
-      {
-        type: "tradeExecuted",
-        marketId: initial.id,
-        outcomeSetId: "Yes",
-        timeframe: "7d",
-        point: { timestamp: "2026-01-03T00:00:00Z", price: 55, volume: 2 },
-      },
-    );
-
-    const stateAfterRest = marketDetailDataReducer(stateWithLive, {
-      type: "historyLoaded",
-      marketId: initial.id,
-      timeframe: "7d",
-      historiesByOutcomeSetId: {
-        Yes: {
-          timeframe: "7d",
-          data: [
-            { timestamp: "2026-01-01T00:00:00Z", price: 49, volume: 1 },
-            { timestamp: "2026-01-02T00:00:00Z", price: 51, volume: 1 },
-          ],
-        },
-      },
-    });
-    const view = composeMarketDetail(stateAfterRest, "7d");
-
-    expect(view?.priceHistory.data).toEqual([
-      { timestamp: "2026-01-01T00:00:00Z", price: 49, volume: 1 },
-      { timestamp: "2026-01-02T00:00:00Z", price: 51, volume: 1 },
-      { timestamp: "2026-01-03T00:00:00Z", price: 55, volume: 2 },
-    ]);
-    expect(mocks.windowPriceHistory).toHaveBeenCalledWith({
-      timeframe: "7d",
-      data: [
-        { timestamp: "2026-01-01T00:00:00Z", price: 49, volume: 1 },
-        { timestamp: "2026-01-02T00:00:00Z", price: 51, volume: 1 },
-        { timestamp: "2026-01-03T00:00:00Z", price: 55, volume: 2 },
-      ],
-    });
-  });
-
-  it("merges order-submit refresh history with existing initial and live chart points", () => {
-    const initial = yesNoMarket({
-      priceHistory: {
-        timeframe: "7d",
-        data: [
-          { timestamp: "2026-01-01T00:00:00Z", price: 49, source: "initial" },
-        ],
-      },
-      outcomeOrderBooks: { Yes: book(50), No: book(50) },
-    });
-    const stateWithLive = marketDetailDataReducer(
-      createMarketDetailDataState(initial),
-      {
-        type: "tradeExecuted",
-        marketId: initial.id,
-        outcomeSetId: "Yes",
-        timeframe: "7d",
-        point: { timestamp: "2026-01-03T00:00:00Z", price: 55, volume: 2 },
-      },
-    );
-
-    const refresh = yesNoMarket({
-      ...initial,
-      priceHistory: {
-        timeframe: "7d",
-        data: [
-          { timestamp: "2026-01-02T00:00:00Z", price: 51, volume: 1 },
-          { timestamp: "2026-01-03T00:00:00Z", price: 54, volume: 1 },
-        ],
-      },
-      outcomeOrderBooks: { Yes: book(52), No: book(48) },
-    });
-
-    const stateAfterRefresh = marketDetailDataReducer(stateWithLive, {
-      type: "marketSubmitRefreshLoaded",
-      detail: refresh,
-      booksByOutcomeSetId: { Yes: book(52), No: book(48) },
-      replaceOutcomeSetIds: ["Yes", "No"],
-    });
-
-    const view = composeMarketDetail(stateAfterRefresh, "7d");
-
-    expect(view?.priceHistory.data).toEqual([
-      { timestamp: "2026-01-01T00:00:00Z", price: 49, source: "initial" },
-      { timestamp: "2026-01-02T00:00:00Z", price: 51, volume: 1 },
-      { timestamp: "2026-01-03T00:00:00Z", price: 55, volume: 2 },
-    ]);
-  });
-
-  it("projects live No trades into the visible Yes chart for yes/no markets", () => {
-    const update = liveTradeChartUpdate(
-      yesNoMarket({ divisibility: 1000 }),
-      "No",
-      {
-        timestamp: "2026-01-03T00:00:00Z",
-        executionPrice: 200,
-        amountSubunits: 1_000_000,
-      },
-    );
-
-    expect(update).toEqual({
-      outcomeSetId: "Yes",
-      point: {
-        timestamp: "2026-01-03T00:00:00Z",
-        price: 80,
-        volume: 1_000_000,
-      },
-    });
-  });
 });
 
 describe("defaultLimitPriceForDivisibility", () => {
   it("uses the midpoint for supported market denominators", () => {
-    expect(defaultLimitPriceForDivisibility(100)).toBe(50);
-    expect(defaultLimitPriceForDivisibility(1_000)).toBe(500);
-    expect(defaultLimitPriceForDivisibility(1_000)).toBe(500);
+    expect(defaultLimitPriceForDivisibility(10_000, "sat")).toBe(5_000);
+    expect(defaultLimitPriceForDivisibility(1_000_000, "sat")).toBe(500_000);
   });
 });
 
@@ -1044,12 +908,12 @@ describe("decideTradeCollateralGate", () => {
 });
 
 describe("pending top-up order intent", () => {
-  it("binds a USD top-up intent to market, selection, amount, comment, and required cents", () => {
+  it("binds a sat top-up intent to market, selection, amount, comment, and required subunits", () => {
     const market = yesNoMarket({
-      id: "condition-usd",
-      baseAsset: "usd",
-      baseUnit: "USD",
-      divisibility: 1_000,
+      id: "condition-sat",
+      baseAsset: "sat",
+      baseUnit: "sats",
+      divisibility: 10_000,
     });
 
     const intent = buildPendingTopUpOrderIntent({
@@ -1058,22 +922,22 @@ describe("pending top-up order intent", () => {
       tradeAmount: 2,
       tradeSide: "Buy",
       orderType: "limit",
-      limitPrice: 450,
+      limitPrice: 4_500,
       comment: "  auto after top-up  ",
-      baseAsset: "usd",
-      required: 900,
+      baseAsset: "sat",
+      required: 9_000,
     });
 
     expect(intent).toMatchObject({
-      marketId: "condition-usd",
+      marketId: "condition-sat",
       selectionKey: "yes:",
       tradeAmount: 2,
       tradeSide: "Buy",
       orderType: "limit",
-      limitPrice: 450,
+      limitPrice: 4_500,
       comment: "auto after top-up",
-      baseAsset: "usd",
-      required: 900,
+      baseAsset: "sat",
+      required: 9_000,
     });
     expect(
       intent &&
@@ -1083,13 +947,13 @@ describe("pending top-up order intent", () => {
           tradeAmount: 2,
           tradeSide: "Buy",
           orderType: "limit",
-          limitPrice: 450,
+          limitPrice: 4_500,
         }),
     ).toBe(true);
   });
 
   it("drops a pending top-up intent when amount or selection changes before success", () => {
-    const market = yesNoMarket({ id: "condition-usd", baseAsset: "usd" });
+    const market = yesNoMarket({ id: "condition-sat", baseAsset: "sat" });
     const intent = buildPendingTopUpOrderIntent({
       market,
       tradeSelection: { side: "yes" },
@@ -1097,7 +961,7 @@ describe("pending top-up order intent", () => {
       tradeSide: "Buy",
       orderType: "market",
       limitPrice: 999,
-      baseAsset: "usd",
+      baseAsset: "sat",
       required: 1_998,
     });
 

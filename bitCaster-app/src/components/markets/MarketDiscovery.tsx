@@ -1,11 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
-import { useTranslation } from 'react-i18next'
-import { TagBar } from './TagBar'
-import { SortBar } from './SortBar'
-import { FilterControls } from './FilterControls'
-import { MarketCard } from './MarketCard'
-import { useWalletStore } from '@/stores/wallet'
-import type { MarketDiscoveryProps, MarketType, VolumeRange, Market } from '@/types/market'
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
+import { TagBar } from "./TagBar";
+import { SortBar } from "./SortBar";
+import { FilterControls } from "./FilterControls";
+import { MarketCard } from "./MarketCard";
+import { useWalletStore } from "@/stores/wallet";
+import type { MarketDiscoveryProps, MarketType, VolumeRange, Market } from "@/types/market";
 
 export function MarketDiscovery({
   categoryTags,
@@ -13,7 +13,7 @@ export function MarketDiscovery({
   selectedTags,
   sort,
   onSortChange,
-  searchQuery: _searchQuery = '',
+  searchQuery: _searchQuery = "",
   onSearch: _onSearch,
   onTagSelect,
   onClearTags,
@@ -26,65 +26,65 @@ export function MarketDiscovery({
   onLoadMore,
   onViewSecondaryMarket,
 }: MarketDiscoveryProps) {
-  const { t } = useTranslation()
-  const walletReady = useWalletStore((s) => s.setupComplete)
-  const observerTarget = useRef<HTMLDivElement>(null)
-  const [filtersVisible, setFiltersVisible] = useState(false)
-  const [selectedMarketTypes, setSelectedMarketTypes] = useState<MarketType[]>([])
-  const [volumeRange, setVolumeRange] = useState<VolumeRange>({})
-  const [closingInDays, setClosingInDays] = useState<number | undefined>(undefined)
-  const [includeClosed, setIncludeClosed] = useState(false)
+  const { t } = useTranslation();
+  const walletReady = useWalletStore((s) => s.setupComplete);
+  const observerTarget = useRef<HTMLDivElement>(null);
+  const [filtersVisible, setFiltersVisible] = useState(false);
+  const [selectedMarketTypes, setSelectedMarketTypes] = useState<MarketType[]>([]);
+  const [volumeRange, setVolumeRange] = useState<VolumeRange>({});
+  const [closingInDays, setClosingInDays] = useState<number | undefined>(undefined);
+  const [includeClosed, setIncludeClosed] = useState(false);
 
   const marketMap = useMemo(() => {
-    const map = new Map<string, Market>()
-    markets.forEach((m) => map.set(m.id, m))
-    return map
-  }, [markets])
+    const map = new Map<string, Market>();
+    markets.forEach((m) => map.set(m.id, m));
+    return map;
+  }, [markets]);
 
   const getSecondaryMarketInfos = (market: Market) => {
     if (!market.secondaryMarkets || market.secondaryMarkets.length === 0) {
-      return undefined
+      return undefined;
     }
     return market.secondaryMarkets
       .map((id) => {
-        const secondaryMarket = marketMap.get(id)
-        if (!secondaryMarket) return null
+        const secondaryMarket = marketMap.get(id);
+        if (!secondaryMarket) return null;
         return {
           id: secondaryMarket.id,
           title: secondaryMarket.title,
-        }
+        };
       })
-      .filter((info): info is { id: string; title: string } => info !== null)
-  }
+      .filter((info): info is { id: string; title: string } => info !== null);
+  };
 
   const activeFilterCount = [
     selectedMarketTypes.length > 0 ? 1 : 0,
     volumeRange.min !== undefined ? 1 : 0,
     closingInDays !== undefined ? 1 : 0,
     includeClosed ? 1 : 0,
-  ].reduce((a, b) => a + b, 0)
+  ].reduce((a, b) => a + b, 0);
 
   useEffect(() => {
     const observer = new IntersectionObserver(
       (entries) => {
         if (entries[0].isIntersecting) {
-          onLoadMore?.()
+          onLoadMore?.();
         }
       },
-      { threshold: 0.1 }
-    )
+      { threshold: 0.1 },
+    );
 
-    const currentTarget = observerTarget.current
+    const currentTarget = observerTarget.current;
     if (currentTarget) {
-      observer.observe(currentTarget)
+      observer.observe(currentTarget);
     }
 
     return () => {
       if (currentTarget) {
-        observer.unobserve(currentTarget)
+        observer.unobserve(currentTarget);
       }
-    }
-  }, [onLoadMore])
+    };
+  }, [onLoadMore]);
 
   return (
     <div className="min-h-screen bg-slate-50 dark:bg-slate-950">
@@ -121,20 +121,20 @@ export function MarketDiscovery({
         closingInDays={closingInDays}
         includeClosed={includeClosed}
         onMarketTypeChange={(types) => {
-          setSelectedMarketTypes(types)
-          onMarketTypeChange?.(types)
+          setSelectedMarketTypes(types);
+          onMarketTypeChange?.(types);
         }}
         onVolumeRangeChange={(range) => {
-          setVolumeRange(range)
-          onVolumeRangeChange?.(range)
+          setVolumeRange(range);
+          onVolumeRangeChange?.(range);
         }}
         onClosingDateChange={(days) => {
-          setClosingInDays(days)
-          onClosingDateChange?.(days)
+          setClosingInDays(days);
+          onClosingDateChange?.(days);
         }}
         onIncludeClosedChange={(next) => {
-          setIncludeClosed(next)
-          onIncludeClosedChange?.(next)
+          setIncludeClosed(next);
+          onIncludeClosedChange?.(next);
         }}
       />
 
@@ -143,11 +143,9 @@ export function MarketDiscovery({
           <div className="text-center py-16">
             <div className="text-6xl mb-4">🔍</div>
             <h3 className="text-xl font-bold text-slate-700 dark:text-slate-300 mb-2">
-              {t('market.noMarketsFound')}
+              {t("market.noMarketsFound")}
             </h3>
-            <p className="text-slate-500 dark:text-slate-400">
-              {t('market.noMarketsFoundHint')}
-            </p>
+            <p className="text-slate-500 dark:text-slate-400">{t("market.noMarketsFoundHint")}</p>
           </div>
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 items-start">
@@ -171,11 +169,11 @@ export function MarketDiscovery({
         {hasMore && (
           <div ref={observerTarget} className="h-20 flex items-center justify-center">
             <div className="text-sm text-slate-500 dark:text-slate-400 animate-pulse">
-              {t('market.loadingMore')}
+              {t("market.loadingMore")}
             </div>
           </div>
         )}
       </div>
     </div>
-  )
+  );
 }

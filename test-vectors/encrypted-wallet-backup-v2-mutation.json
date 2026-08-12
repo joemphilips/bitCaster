@@ -1,0 +1,48 @@
+{
+  "inputs": {
+    "realm": "backup.production",
+    "walletId": "5ed0beee7d22da58de93adb7ca2fd724849a052f2a9595577eb3fefc3bb48e4e",
+    "enrollmentEpoch": 7,
+    "headVersion": 3,
+    "seedHex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+    "mutationIdHex": "01010101010101010101010101010101",
+    "auxiliaryRandomnessHex": "0202020202020202020202020202020202020202020202020202020202020202",
+    "existingBundle": {
+      "formatVersion": 2,
+      "realm": "backup.production",
+      "walletId": "5ed0beee7d22da58de93adb7ca2fd724849a052f2a9595577eb3fefc3bb48e4e",
+      "bundleId": "00000000000000000000000000000001",
+      "assetLocator": "2121212121212121212121212121212121212121212121212121212121212121",
+      "declaredAmount": 1,
+      "custodyRevision": 1,
+      "payloadCommitment": "0000000000000000000000000000000000000000000000000000000000000021",
+      "objects": [
+        {
+          "objectId": "00000000000000000000000000000031",
+          "digest": "0000000000000000000000000000000000000000000000000000000000000041"
+        }
+      ]
+    },
+    "addedBundle": {
+      "formatVersion": 2,
+      "realm": "backup.production",
+      "walletId": "5ed0beee7d22da58de93adb7ca2fd724849a052f2a9595577eb3fefc3bb48e4e",
+      "bundleId": "00000000000000000000000000000002",
+      "assetLocator": "2121212121212121212121212121212121212121212121212121212121212121",
+      "declaredAmount": 1,
+      "custodyRevision": 2,
+      "payloadCommitment": "0000000000000000000000000000000000000000000000000000000000000022",
+      "objects": [
+        {
+          "objectId": "00000000000000000000000000000032",
+          "digest": "0000000000000000000000000000000000000000000000000000000000000042"
+        }
+      ]
+    }
+  },
+  "expected": {
+    "requestAuthPublicKey": "8941fb08484ecf59ea6d3e331eb7a38736f80ddf5c27cd009b5326c9950baa94",
+    "requestDigest": "0d7340aa5f7976df9b4b3b11fb3f73df4c5e6a4710c327f924cb49f35f010e29",
+    "signature": "a2c680149a9e0bd77ef6f7c12819b0fd65a1eebc761e96f927f42631a8f2c37b4c5c761819524398b35273d7e84f2c42b3af498bd6fa3d01a54bd250679c6a94"
+  }
+}

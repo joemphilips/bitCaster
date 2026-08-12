@@ -12,7 +12,7 @@
  * markets with identical titles do not collide in the oracle's event store.
  */
 
-const MAX_SLUG_LENGTH = 64
+const MAX_SLUG_LENGTH = 64;
 
 /**
  * Convert a free-form title into a safe DLC event_id slug.
@@ -28,11 +28,11 @@ const MAX_SLUG_LENGTH = 64
 export function slugifyEventTitle(title: string): string {
   return title
     .toLowerCase()
-    .normalize('NFKD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .replace(/[^a-z0-9]+/g, '_')
-    .replace(/^_+|_+$/g, '')
-    .slice(0, MAX_SLUG_LENGTH)
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, MAX_SLUG_LENGTH);
 }
 
 /**
@@ -45,16 +45,16 @@ export function slugifyEventTitle(title: string): string {
  * avoid collisions between markets that share a title.
  */
 export function buildEventId(title: string): string {
-  const base = slugifyEventTitle(title) || 'market'
-  const suffix = randomHexSuffix(6)
+  const base = slugifyEventTitle(title) || "market";
+  const suffix = randomHexSuffix(6);
   // Leave room for "_" + suffix while staying under MAX_SLUG_LENGTH.
-  const maxBase = MAX_SLUG_LENGTH - suffix.length - 1
-  const trimmed = base.length > maxBase ? base.slice(0, maxBase) : base
-  return `${trimmed}_${suffix}`
+  const maxBase = MAX_SLUG_LENGTH - suffix.length - 1;
+  const trimmed = base.length > maxBase ? base.slice(0, maxBase) : base;
+  return `${trimmed}_${suffix}`;
 }
 
 function randomHexSuffix(bytes: number): string {
-  const buf = new Uint8Array(bytes)
-  crypto.getRandomValues(buf)
-  return Array.from(buf, (b) => b.toString(16).padStart(2, '0')).join('')
+  const buf = new Uint8Array(bytes);
+  crypto.getRandomValues(buf);
+  return Array.from(buf, (b) => b.toString(16).padStart(2, "0")).join("");
 }

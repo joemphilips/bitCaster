@@ -44,15 +44,11 @@ function relayHost(url: string): string | null {
 }
 
 const KNOWN_PUBLIC_NOSTR_RELAY_HOSTS = new Set(
-  KNOWN_PUBLIC_NOSTR_RELAYS.map((url) => relayHost(url)).filter(
-    (host): host is string => !!host,
-  ),
+  KNOWN_PUBLIC_NOSTR_RELAYS.map((url) => relayHost(url)).filter((host): host is string => !!host),
 );
 
 function configuredAllowedRelayOrigins(): string[] {
-  const raw = import.meta.env.VITE_NOSTR_ALLOWED_RELAY_ORIGINS as
-    | string
-    | undefined;
+  const raw = import.meta.env.VITE_NOSTR_ALLOWED_RELAY_ORIGINS as string | undefined;
   return (raw ?? "")
     .split(",")
     .map((url) => relayOrigin(url.trim()) ?? normalizedRelayUrl(url))
@@ -115,11 +111,7 @@ export function isKnownPublicNostrRelayUrl(url: string): boolean {
 
 export function isAllowedNostrRelayUrl(url: string): boolean {
   const normalized = normalizedRelayUrl(url);
-  if (
-    DEFAULT_NOSTR_RELAYS.some(
-      (relay) => normalizedRelayUrl(relay) === normalized,
-    )
-  ) {
+  if (DEFAULT_NOSTR_RELAYS.some((relay) => normalizedRelayUrl(relay) === normalized)) {
     return true;
   }
 
@@ -128,9 +120,7 @@ export function isAllowedNostrRelayUrl(url: string): boolean {
   return isConfiguredAppOwnedRelayUrl(url);
 }
 
-export function removeRetiredPublicDefaultRelays(
-  relays?: RelayConfig[],
-): RelayConfig[] {
+export function removeRetiredPublicDefaultRelays(relays?: RelayConfig[]): RelayConfig[] {
   if (relays === undefined) return defaultRelayConfigs();
 
   const filtered = relays.filter((relay) => isAllowedNostrRelayUrl(relay.url));

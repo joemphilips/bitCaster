@@ -37,14 +37,19 @@ public sealed record OrderCancelledDelta(
 
 public sealed record MatchedDelta(
     string MarketId,
-    Guid TradeId,
+    Guid FillId,
     Guid MakerOrderId,
     Guid TakerOrderId,
     int ExecutionPrice,
     long AmountSubunits,
     MatchPath Path,
     DateTimeOffset MatchedAt,
-    DateTimeOffset Deadline);
+    BaseAsset BaseAsset,
+    string CollateralUnit,
+    int Divisibility,
+    long QuotePaymentSubunits,
+    long OutcomeFaceAmountSubunits,
+    TokenSide TokenSide);
 
 public sealed record MarketStatusChanged(
     string ConditionId,

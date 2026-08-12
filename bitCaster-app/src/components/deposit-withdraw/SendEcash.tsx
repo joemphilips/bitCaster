@@ -1,21 +1,24 @@
-import { X, Lock, Bitcoin } from 'lucide-react'
-import type { MintInfo } from '@/types/deposit-withdraw'
-import { MintSelector } from './MintSelector'
-import { AmountDisplay } from './AmountDisplay'
-import { Numpad } from './Numpad'
+import { X, Lock, Bitcoin } from "lucide-react";
+import type { MintInfo } from "@/types/deposit-withdraw";
+import { MintSelector } from "./MintSelector";
+import { AmountDisplay } from "./AmountDisplay";
+import { Numpad } from "./Numpad";
+import { useTranslation } from "react-i18next";
 
 interface SendEcashProps {
-  mints: MintInfo[]
-  selectedMintId: string
-  amountSats: number
-  amountFiat: string
-  fiatSymbol: string
-  showFiatPrimary: boolean
-  onMintChange?: (mintId: string) => void
-  onNumpadPress?: (key: string) => void
-  onToggleCurrency?: () => void
-  onSendEcash?: () => void
-  onClose?: () => void
+  mints: MintInfo[];
+  selectedMintId: string;
+  amountSats: number;
+  amountFiat: string;
+  fiatSymbol: string;
+  showFiatPrimary: boolean;
+  onMintChange?: (mintId: string) => void;
+  onNumpadPress?: (key: string) => void;
+  onToggleCurrency?: () => void;
+  onSendEcash?: () => void;
+  onReclaimEcash?: () => void;
+  hasPendingBearerReclaim?: boolean;
+  onClose?: () => void;
 }
 
 export function SendEcash({
@@ -29,8 +32,11 @@ export function SendEcash({
   onNumpadPress,
   onToggleCurrency,
   onSendEcash,
+  onReclaimEcash,
+  hasPendingBearerReclaim,
   onClose,
 }: SendEcashProps) {
+  const { t } = useTranslation();
   return (
     <div className="fixed inset-0 z-[70] bg-slate-900 flex flex-col">
       {/* Header */}
@@ -52,11 +58,7 @@ export function SendEcash({
       <div className="flex-1 flex flex-col max-w-md mx-auto w-full">
         {/* Mint selector */}
         <div className="px-5 pt-2">
-          <MintSelector
-            mints={mints}
-            selectedMintId={selectedMintId}
-            onMintChange={onMintChange}
-          />
+          <MintSelector mints={mints} selectedMintId={selectedMintId} onMintChange={onMintChange} />
         </div>
 
         {/* Amount */}
@@ -82,8 +84,17 @@ export function SendEcash({
           >
             Send
           </button>
+          {hasPendingBearerReclaim ? (
+            <button
+              type="button"
+              onClick={() => onReclaimEcash?.()}
+              className="mt-3 w-full rounded-xl border border-amber-400 py-3 text-sm font-bold text-amber-200 transition-colors hover:bg-amber-400/10"
+            >
+              {t("deposit.reclaim")}
+            </button>
+          ) : null}
         </div>
       </div>
     </div>
-  )
+  );
 }
