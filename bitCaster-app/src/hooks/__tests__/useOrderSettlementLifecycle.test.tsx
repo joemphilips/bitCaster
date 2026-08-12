@@ -1,13 +1,15 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { listenForPortfolioInvalidation } from "@/lib/portfolioInvalidation";
+import { useNotificationsStore } from "@/stores/notifications";
 import { usePendingTradesStore } from "@/stores/pendingTrades";
 
 const walletId = "a".repeat(64);
-const { mockUseOrderHub, mockJoinOrder, mockRecover } = vi.hoisted(() => ({
+const { mockUseOrderHub, mockJoinOrder, mockRecover, mockFetchOrderStatus } = vi.hoisted(() => ({
   mockUseOrderHub: vi.fn(),
   mockJoinOrder: vi.fn(),
   mockRecover: vi.fn(),
+  mockFetchOrderStatus: vi.fn(),
 }));
 
 vi.mock("@/hooks/useOrderHub", () => ({ useOrderHub: mockUseOrderHub }));
@@ -15,6 +17,10 @@ vi.mock("@/lib/browserCtfRangeOrderSubmission", () => ({
   recoverBrowserCtfRangeOrder: mockRecover,
 }));
 vi.mock("@/lib/browserWalletProfile", () => ({ browserWalletIdFromMnemonic: () => walletId }));
+vi.mock("@/lib/orderStatus", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/orderStatus")>()),
+  fetchOrderStatus: mockFetchOrderStatus,
+}));
 
 import { useOrderSettlementLifecycle } from "../useOrderSettlementLifecycle";
 
@@ -24,7 +30,15 @@ const recoveryInput = {
   mintUrls: ["https://mint.example"],
 };
 
-function settlementDelta(orderId: string, status: "Prepared" | "Confirmed") {
+function settlementDelta(
+  orderId: string,
+  status:
+    | "Prepared"
+    | "Confirmed"
+    | "DefinitivelyRejected"
+    | "Refundable"
+    | "ExpiredBeforeSubmission",
+) {
   return {
     orderId,
     marketId: "condition-YES",
@@ -41,8 +55,10 @@ function settlementDelta(orderId: string, status: "Prepared" | "Confirmed") {
 beforeEach(() => {
   vi.clearAllMocks();
   usePendingTradesStore.setState({ byOrderId: {} });
+  useNotificationsStore.setState({ items: [] });
   mockJoinOrder.mockResolvedValue(undefined);
   mockRecover.mockResolvedValue({ recovered: 0, pending: [] });
+  mockFetchOrderStatus.mockResolvedValue(null);
   mockUseOrderHub.mockReturnValue({ joinOrder: mockJoinOrder });
 });
 
@@ -66,6 +82,7 @@ describe("useOrderSettlementLifecycle", () => {
       settlementDelta("11111111-1111-4111-8111-111111111111", "Prepared"),
     );
     expect(mockRecover).not.toHaveBeenCalled();
+    expect(mockFetchOrderStatus).not.toHaveBeenCalled();
 
     callbacks.onSettlementGroupStateChanged(
       settlementDelta("11111111-1111-4111-8111-111111111111", "Confirmed"),
@@ -127,6 +144,41 @@ describe("useOrderSettlementLifecycle", () => {
     await waitFor(() => expect(mockJoinOrder).toHaveBeenCalledTimes(2));
   });
 
+  it("uses an owner lifecycle callback for notification and terminal state", async () => {
+    const orderId = "11111111-1111-4111-8111-111111111111";
+    usePendingTradesStore.getState().add({
+      orderId,
+      clientOrderId: "client-order-1",
+      marketId: "condition-YES",
+      baseAsset: "sat",
+      divisibility: 10_000,
+      amountSubunits: 10,
+      submittedAt: Date.now(),
+    });
+    renderHook(() => useOrderSettlementLifecycle(true, recoveryInput));
+    const callbacks = mockUseOrderHub.mock.calls.at(-1)?.[1];
+
+    act(() =>
+      callbacks.onOrderLifecycleChanged({
+        orderId,
+        marketId: "condition-YES",
+        status: "cancelled",
+        remainingAmountSubunits: 10,
+        baseAsset: "sat",
+        collateralUnit: "msat",
+        divisibility: 10_000,
+        activeSettlementGroup: null,
+      }),
+    );
+
+    expect(useNotificationsStore.getState().items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: `${orderId}-cancelled`, kind: "cancelled" }),
+      ]),
+    );
+    expect(usePendingTradesStore.getState().byOrderId[orderId]).toBeUndefined();
+  });
+
   it("coalesces portfolio invalidation for confirmed owner updates", async () => {
     const invalidate = vi.fn();
     const stop = listenForPortfolioInvalidation(invalidate);
@@ -141,5 +193,25 @@ describe("useOrderSettlementLifecycle", () => {
     } finally {
       stop();
     }
+  });
+
+  it("reconciles terminal settlement state once and still recovers after a failed read", async () => {
+    const orderId = "11111111-1111-4111-8111-111111111111";
+    mockFetchOrderStatus.mockRejectedValueOnce(new Error("temporary read failure"));
+    usePendingTradesStore.getState().add({
+      orderId,
+      clientOrderId: "client-order-1",
+      marketId: "condition-YES",
+      baseAsset: "sat",
+      divisibility: 10_000,
+      submittedAt: Date.now(),
+    });
+    renderHook(() => useOrderSettlementLifecycle(true, recoveryInput));
+    const callbacks = mockUseOrderHub.mock.calls.at(-1)?.[1];
+
+    act(() => callbacks.onSettlementGroupStateChanged(settlementDelta(orderId, "Confirmed")));
+
+    await waitFor(() => expect(mockFetchOrderStatus).toHaveBeenCalledOnce());
+    await waitFor(() => expect(mockRecover).toHaveBeenCalledOnce());
   });
 });

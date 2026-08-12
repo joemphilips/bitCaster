@@ -1,10 +1,20 @@
 import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
-import type { SettlementGroupStatus } from "@bitcaster/client-sdk/engineClient";
+import type {
+  OrderLifecycleStatus,
+  SettlementGroupStatus,
+} from "@bitcaster/client-sdk/engineClient";
 import { recoverBrowserCtfRangeOrder } from "@/lib/browserCtfRangeOrderSubmission";
 import { browserWalletIdFromMnemonic } from "@/lib/browserWalletProfile";
 import { publishPortfolioInvalidation } from "@/lib/portfolioInvalidation";
+import {
+  buildOrderLifecycleNotifications,
+  buildOrderStatusNotifications,
+  fetchOrderStatus,
+} from "@/lib/orderStatus";
 import { useOrderHub } from "@/hooks/useOrderHub";
 import { usePendingTradesStore } from "@/stores/pendingTrades";
+import { useNotificationsStore } from "@/stores/notifications";
+import { useToastStore } from "@/stores/toast";
 
 const JOIN_RETRY_MS = 1_000;
 const RECOVERY_RETRY_MS = 15_000;
@@ -35,15 +45,40 @@ export function useOrderSettlementLifecycle(
   const enabled = canAuthenticateOrderHub && pendingOrders.length > 0;
   const { joinOrder } = useOrderHub(enabled, {
     onReconnected: () => setConnectionRevision((revision) => revision + 1),
-    onSettlementGroupStateChanged: (delta) => {
-      if (!isConfirmed(delta.settlementGroup.status)) return;
-      recoverConfirmedOrder(
-        delta.orderId,
-        recoveryInputRef,
-        recoveringOrderIdsRef,
-        recoveryRetryTimersRef,
+    onOrderLifecycleChanged: (delta) => {
+      const order = usePendingTradesStore.getState().byOrderId[delta.orderId];
+      if (!order) return;
+      const notifications = buildOrderLifecycleNotifications(
+        delta.status,
+        delta.remainingAmountSubunits,
+        order,
       );
-      queuePortfolioInvalidation(recoveryInputRef, invalidationQueuedRef);
+      for (const notification of notifications) {
+        useNotificationsStore.getState().add(notification);
+      }
+      if (delta.status === "filled" && notifications.length > 0) {
+        useToastStore.getState().addToast({
+          type: "success",
+          message: `All your amount for order ${shortOrderId(delta.orderId)} has been filled.`,
+        });
+      }
+      if (isDiscardableTerminalStatus(delta.status)) {
+        usePendingTradesStore.getState().remove(delta.orderId);
+      }
+    },
+    onSettlementGroupStateChanged: (delta) => {
+      if (requiresStatusReconciliation(delta.settlementGroup.status)) {
+        void reconcileOrderStatus(delta.orderId);
+      }
+      if (isConfirmed(delta.settlementGroup.status)) {
+        recoverConfirmedOrder(
+          delta.orderId,
+          recoveryInputRef,
+          recoveringOrderIdsRef,
+          recoveryRetryTimersRef,
+        );
+        queuePortfolioInvalidation(recoveryInputRef, invalidationQueuedRef);
+      }
     },
   });
 
@@ -81,6 +116,66 @@ export function useOrderSettlementLifecycle(
     },
     [],
   );
+}
+
+function isDiscardableTerminalStatus(status: OrderLifecycleStatus): boolean {
+  switch (status) {
+    case "cancelled":
+    case "expired":
+    case "evicted_capacity":
+    case "rejected_capacity":
+    case "failed":
+      return true;
+    case "resting":
+    case "matched":
+    case "partially_filled":
+    case "awaiting_authorization":
+    case "filled":
+      return false;
+    default:
+      return assertNever(status);
+  }
+}
+
+function requiresStatusReconciliation(status: SettlementGroupStatus): boolean {
+  switch (status) {
+    case "Confirmed":
+    case "DefinitivelyRejected":
+    case "Refundable":
+    case "ExpiredBeforeSubmission":
+      return true;
+    case "Prepared":
+    case "SubmissionPending":
+    case "Reconciling":
+      return false;
+    default:
+      return assertNever(status);
+  }
+}
+
+async function reconcileOrderStatus(orderId: string): Promise<void> {
+  const trade = usePendingTradesStore.getState().byOrderId[orderId];
+  if (!trade) return;
+  try {
+    const status = await fetchOrderStatus(trade.marketId, orderId);
+    if (!status) return;
+    for (const notification of buildOrderStatusNotifications(status, trade)) {
+      useNotificationsStore.getState().add(notification);
+    }
+    if (isDiscardableTerminalStatus(status.status)) {
+      usePendingTradesStore.getState().remove(orderId);
+    }
+  } catch {
+    // The next authoritative callback or application reload retries the read.
+  }
+}
+
+function assertNever(value: never): never {
+  throw new Error(`Unhandled order lifecycle status: ${value}`);
+}
+
+function shortOrderId(orderId: string): string {
+  return orderId.length > 12 ? `${orderId.slice(0, 8)}...` : orderId;
 }
 
 function recoverConfirmedOrder(

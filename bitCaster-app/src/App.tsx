@@ -13,7 +13,6 @@ import { useEffect, useRef, useState } from "react";
 import { useBookmarkSync } from "@/stores/useBookmarkSync";
 import { useCreatorSync } from "@/stores/useCreatorSync";
 import { useActivityLogSync } from "@/stores/useActivityLogSync";
-import { usePendingTradesPoller } from "@/lib/orderStatus";
 import { useOrderSettlementLifecycle } from "@/hooks/useOrderSettlementLifecycle";
 import { useLikedMarketCloseReconcile } from "@/hooks/useLikedMarketCloseReconcile";
 import { useSettingsStore } from "@/stores/settings";
@@ -132,7 +131,6 @@ function AppRoutes() {
   useBookmarkSync();
   useCreatorSync();
   useActivityLogSync();
-  usePendingTradesPoller();
   useLikedMarketCloseReconcile();
   const nostrSignerMode = useSettingsStore((s) => s.nostrSignerMode);
   const walletMnemonic = useWalletStore((s) => s.mnemonic);
