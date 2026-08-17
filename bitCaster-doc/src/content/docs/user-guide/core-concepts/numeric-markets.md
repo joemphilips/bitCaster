@@ -5,6 +5,11 @@ description: How numeric outcome markets work in bitCaster
 
 # Numeric Markets
 
+Numeric market creation and trading are not available in the current product.
+The page below describes the planned numeric outcome model for protocol readers.
+Do not submit `numeric` market creation requests or expect numeric trade prices
+until the product publishes a supported numeric trade representation.
+
 Numeric markets let you bet on the future value of something — like the price of Bitcoin on a specific date. Unlike YES/NO markets where outcomes are simple categories, numeric markets have a range of possible values.
 
 ## How They Work
@@ -32,13 +37,14 @@ Numeric markets on bitCaster use **Bitcoin (sats)** as the base asset. This is a
 - **Price precision**: 0.0001% per tick
 - **Minimum trade**: affordable for most users
 
-## Creating a Numeric Market
+## Creating a Numeric Market Later
 
-When you create a numeric market:
+When numeric markets become available in a later release:
 
 1. Choose the outcome range (e.g., BTC price $0–$100,000)
-2. Fund the market maker with sats
-3. Traders can buy HI or LO tokens based on their price prediction
+2. Register the market without an opening probability or pre-create funding
+3. Fund the market maker through the separate post-creation flow
+4. Traders can buy HI or LO tokens based on their price prediction
 
 ## Why Not Fiat Numeric Markets?
 

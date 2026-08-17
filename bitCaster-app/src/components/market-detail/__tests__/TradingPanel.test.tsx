@@ -171,6 +171,30 @@ describe("TradingPanel", () => {
     expect(screen.queryByTestId("detail-deposit-action")).not.toBeInTheDocument();
   });
 
+  it("shows only the closed-market message when a disabled empty book is rendered", () => {
+    render(
+      <TradingPanel
+        market={{ ...makeEmptyBookMarket(), state: "closed" }}
+        tradeSelection={{ side: "yes" }}
+        tradeAmount={2}
+        tradePreview={null}
+        tradeSide="Buy"
+        orderType="market"
+        disabled
+      />,
+    );
+
+    expect(screen.getByTestId("closed-trade-liquidity")).toHaveTextContent(
+      "This market is no longer accepting orders.",
+    );
+    expect(screen.queryByRole("tablist")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("trade-tab-liquidity")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("open-liquidity-tab")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("empty-trade-liquidity")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("trade-amount-input")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("trade-confirm")).not.toBeInTheDocument();
+  });
+
   it("keeps the BUY body empty when every route is empty before selection", () => {
     render(
       <TradingPanel
@@ -300,104 +324,46 @@ describe("TradingPanel", () => {
     expect(screen.getByTestId("trade-outcome-yes")).toBeInTheDocument();
   });
 
-  it("does not place a numeric range marker or fill before the first trade", () => {
-    const numericMarket = {
-      ...makeMarket(),
-      type: "numeric" as const,
-      currentPrice: null,
-      loBound: 10,
-      hiBound: 20,
-      precision: 0,
-      unit: "USD",
-      registeredPrimitiveOutcomeIds: ["HI", "LO"],
-    } as unknown as NumericMarketDetail;
-
-    render(
-      <TradingPanel
-        market={numericMarket}
-        tradeSelection={null}
-        tradeAmount={0}
-        tradePreview={null}
-        tradeSide="Buy"
-        orderType="market"
-      />,
-    );
-
-    expect(screen.getByText("market.priceUnavailable")).toBeInTheDocument();
-    expect(screen.queryByTestId("numeric-range-fill")).not.toBeInTheDocument();
-    expect(screen.queryByTestId("numeric-range-marker")).not.toBeInTheDocument();
-  });
-
-  it("keeps unresolved numeric probability ticks unavailable", () => {
+  it("fails closed for numeric markets without trading or funding controls", () => {
+    const onTradeSelect = vi.fn();
+    const onTradeConfirm = vi.fn();
     const numericMarket = {
       ...makeMarket(),
       type: "numeric" as const,
       currentPrice: 15,
-      latestConfirmedTradesValid: true,
-      latestConfirmedTrades: [
-        {
-          primitiveOutcomeId: "HI",
-          fillId: "00000000-0000-0000-0000-000000000001",
-          executedAt: "2030-01-01T00:00:00Z",
-          eventOrder: "0001",
-          priceTick: 5_000,
-          divisibility: 10_000,
-          faceAmountSubunits: 100,
-        },
-      ],
-      loBound: 10,
-      hiBound: 20,
-      precision: 0,
-      unit: "USD",
-      registeredPrimitiveOutcomeIds: ["HI", "LO"],
-    } as unknown as NumericMarketDetail;
-
-    render(
-      <TradingPanel
-        market={numericMarket}
-        tradeSelection={null}
-        tradeAmount={0}
-        tradePreview={null}
-        tradeSide="Buy"
-        orderType="market"
-      />,
-    );
-
-    expect(screen.getByText("market.priceUnavailable")).toBeInTheDocument();
-    expect(screen.queryByText("$15")).not.toBeInTheDocument();
-    expect(screen.queryByTestId("numeric-range-fill")).not.toBeInTheDocument();
-  });
-
-  it("formats a resolved attested numeric value with the market precision", () => {
-    const numericMarket = {
-      ...makeMarket(),
-      type: "numeric" as const,
-      currentPrice: null,
-      latestConfirmedTradesValid: true,
       loBound: 10,
       hiBound: 20,
       precision: 3,
       unit: "USD",
       attestedValue: 15.125,
-      resolution: {
-        ...makeMarket().resolution,
-        status: "resolved" as const,
-      },
       registeredPrimitiveOutcomeIds: ["HI", "LO"],
     } as unknown as NumericMarketDetail;
 
     render(
       <TradingPanel
         market={numericMarket}
-        tradeSelection={null}
-        tradeAmount={0}
+        tradeSelection={{ side: "hi" }}
+        tradeAmount={2}
         tradePreview={null}
         tradeSide="Buy"
         orderType="market"
+        onTradeSelect={onTradeSelect}
+        onTradeConfirm={onTradeConfirm}
       />,
     );
 
-    expect(screen.getByText("$15.125")).toBeInTheDocument();
+    expect(screen.getByTestId("numeric-trading-unavailable")).toHaveTextContent(
+      "Numeric trading is unavailable until a canonical numeric trade representation is supported.",
+    );
+    expect(screen.queryByRole("tablist")).not.toBeInTheDocument();
+    expect(screen.queryAllByRole("button")).toHaveLength(0);
+    expect(screen.queryByTestId("detail-deposit-step")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("numeric-range-fill")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("numeric-range-marker")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("trade-amount-input")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("trade-confirm")).not.toBeInTheDocument();
+    expect(onTradeSelect).not.toHaveBeenCalled();
+    expect(onTradeConfirm).not.toHaveBeenCalled();
   });
 
   it("labels an authoritative empty trade snapshot as no trades", () => {
@@ -418,7 +384,7 @@ describe("TradingPanel", () => {
       />,
     );
 
-    expect(screen.getAllByText("market.noTrades")).toHaveLength(2);
+    expect(screen.getAllByText("No trades yet")).toHaveLength(2);
     expect(screen.queryAllByText("market.priceUnavailable")).toHaveLength(0);
   });
 
@@ -441,7 +407,7 @@ describe("TradingPanel", () => {
     );
 
     expect(screen.getAllByText("market.priceUnavailable")).toHaveLength(2);
-    expect(screen.queryAllByText("market.noTrades")).toHaveLength(0);
+    expect(screen.queryAllByText("No trades yet")).toHaveLength(0);
   });
 
   it("keeps a valid partial categorical snapshot as no trades only for null outcomes", () => {
@@ -479,7 +445,7 @@ describe("TradingPanel", () => {
     );
 
     expect(screen.getByText("25.00%")).toBeInTheDocument();
-    expect(screen.getByText("market.noTrades")).toBeInTheDocument();
+    expect(screen.getByText("No trades yet")).toBeInTheDocument();
     expect(screen.queryByText("market.priceUnavailable")).not.toBeInTheDocument();
   });
 

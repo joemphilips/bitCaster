@@ -50,13 +50,13 @@ function computeCurrentDisplay(
 
   if (market.type === "yesno") {
     return market.currentOdds.yes == null
-      ? t(priceAuthorityUnavailable ? "market.priceUnavailable" : "market.noTrades")
+      ? t(priceAuthorityUnavailable ? "market.priceUnavailable" : "trade.noTrades")
       : formatPricePercentage(market.currentOdds.yes, market.divisibility);
   }
 
   return market.outcomes.some((outcome) => outcome.odds != null)
     ? ""
-    : t(priceAuthorityUnavailable ? "market.priceUnavailable" : "market.noTrades");
+    : t(priceAuthorityUnavailable ? "market.priceUnavailable" : "trade.noTrades");
 }
 
 function yesNoOutcomes(market: MarketDetailProps["market"]) {

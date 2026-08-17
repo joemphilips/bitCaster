@@ -1015,7 +1015,7 @@ export interface components {
          * @description Product collateral subunits in msat (1/1000 sat). Wire amount = collateral subunits. Request fields enforce minimum 1 at validation; response fields (remainingAmountSubunits, filledAmountSubunits) may be 0 for filled/cancelled orders.
          */
         CollateralSubunits: number;
-        /** @description Market price numerator `k`. Valid range is `1 <= k <= D - 1`, where `D` is the market's immutable `divisibility`. Immutable price denominator D is per-market: categorical markets use D=10000 (0.01% precision), while future numeric markets use D=1000000 (0.0001% precision). */
+        /** @description Market price numerator `k`. Valid range is `1 <= k <= D - 1`, where `D` is the market's immutable `divisibility`. Immutable price denominator D is per-market. Current yes/no and categorical markets use D=10000 (0.01% precision). Numeric market creation and trading are currently disabled; D=1000000 (0.0001% precision) is reserved for a future numeric trade representation. */
         Probability: number;
         /**
          * @description Product quote asset. The current product accepts only exact `sat`; product collateral is held in `msat`.
@@ -1438,7 +1438,7 @@ export interface components {
             /** @description Outcome label (e.g. "Yes", "Alice"). */
             name: string;
         };
-        /** @description JSON payload embedded in the multipart `metadata` field of the createMarket endpoint. */
+        /** @description JSON payload embedded in the multipart `metadata` field of the createMarket endpoint. This request contains market metadata only. It accepts no opening probability and no initial funding payment or proof. Use the separate post-creation deposit flow for bot funding. */
         CreateMarketRequest: {
             /** @description Human-readable market title. */
             title: string;
@@ -1447,13 +1447,13 @@ export interface components {
             /** @description The outcomes for the market (2 through 8). */
             outcomes: components["schemas"]["CreateMarketOutcome"][];
             /**
-             * @description Market outcome type. Numeric creation is disabled until finite-bin metadata is supported end-to-end.
+             * @description Market outcome type. Use `yesno` or `categorical` for currently supported markets. The `numeric` value remains in the wire enum for compatibility, but numeric market creation and trading are currently disabled.
              * @enum {string}
              */
             outcomeType?: "yesno" | "categorical" | "numeric";
             /**
              * Format: int64
-             * @description Deprecated pre-create liquidity field. Market-maker funding is collected after creation through the funding flow; create requests should send `0`.
+             * @description Deprecated compatibility field. It is inert: it does not fund, activate, or price a market and does not create a depositor position. Market-maker funding is collected through the separate post-creation deposit flow. Keep this field at `0` when sending a create request.
              * @default 0
              */
             liquiditySats: number;
@@ -1475,7 +1475,7 @@ export interface components {
             thumbnailUrl?: string | null;
             /**
              * Format: int32
-             * @description Immutable price denominator `D`, server-determined.
+             * @description Immutable price denominator `D`, server-determined. Current yes/no and categorical markets use `10000`; `1000000` is reserved for a future numeric trade representation.
              * @enum {integer}
              */
             divisibility: 10000 | 1000000;
@@ -1483,7 +1483,7 @@ export interface components {
         MarketPriceHistoryPoint: {
             /** Format: date-time */
             timestamp: string;
-            /** @description Market price numerator `k`. Valid range is `1 <= k <= D - 1`, where `D` is the market's immutable `divisibility`. Current markets use D=10000 (0.01% price precision). */
+            /** @description Market price numerator `k`. Valid range is `1 <= k <= D - 1`, where `D` is the market's immutable `divisibility`. Current yes/no and categorical markets use D=10000 (0.01% price precision). Numeric market creation and trading are currently disabled. */
             price: number;
             /**
              * Format: int64
@@ -1532,10 +1532,11 @@ export interface components {
             reserveA: number;
             /** Format: int64 */
             reserveB: number;
+            /** @description Bot-liquidity reference value for order entry. This is not the public market price, latest confirmed trade, or market value. Use `latestConfirmedTrades` from the market catalogue for the public confirmed-trade price. Before the first confirmed trade, the market has no public price. */
             impliedProbability: number;
             baseAsset: components["schemas"]["BaseAsset"];
             /**
-             * @description Immutable price denominator `D`, server-determined.
+             * @description Immutable price denominator `D`, server-determined. Current yes/no and categorical markets use `10000`; `1000000` is reserved for a future numeric trade representation.
              * @enum {integer}
              */
             divisibility: 10000 | 1000000;
@@ -1627,7 +1628,7 @@ export interface components {
             /** @description Nostr public key (hex) of the market creator */
             creatorPubkey?: string;
             /**
-             * @description Fund the automated market-maker for this market. The deposit becomes the bot quoting budget and is NOT withdrawable. If the market resolves, any residual budget becomes operator income.
+             * @description Set `true` for a post-creation deposit to fund the automated market-maker. Each accepted payment is separate and the flow can be repeated. The first accepted payment activates the bot from a uniform neutral activation state; later payments add capacity without repricing. The deposit is not withdrawable and gives the depositor no probability-bearing position or special payout. It does not set the public market price; only confirmed trades do that. Any residual budget at resolution becomes operator income.
              * @default false
              */
             fundAmm: boolean;
@@ -1724,6 +1725,7 @@ export interface components {
             /** @description Populated only when `state == Failed`. */
             failureReason?: string | null;
         };
+        /** @description One settlement-confirmed execution used by the public market-price projection. It does not represent a quote, order insertion, funding payment, or registration-time value. */
         LatestConfirmedTrade: {
             primitiveOutcomeId: string;
             /** Format: uuid */
@@ -1792,7 +1794,7 @@ export interface components {
             liquiditySubunits: number;
             /**
              * Format: int64
-             * @description Static initial budget deposited to the LMSR bot at funding time, denominated in product collateral subunits (msat). Operator-owned, non-withdrawable, and immutable after funding. Not a live residual and not orderbook depth.
+             * @description Total confirmed post-creation funding assigned to the LMSR bot, denominated in product collateral subunits (msat). It can increase after additional accepted funding payments. It is operator-owned and non-withdrawable. It is not a depositor position, live residual, or order-book depth.
              */
             ammBotBudgetSubunits: number;
             /**
@@ -1814,7 +1816,7 @@ export interface components {
              * @description When the engine last successfully pulled the mintd condition snapshot used to populate this entry's mintd-sourced fields. Mirrored on every entry so callers can render staleness indicators per market without an additional request.
              */
             lastSuccessfulRefreshAt: string;
-            /** @description Bounded latest confirmed execution per primitive outcome. The array is sorted by canonical primitive outcome ID. Missing outcomes are absent. An untraded market has an empty array. */
+            /** @description Bounded latest confirmed execution per primitive outcome. This is the public market-price authority. The array is sorted by canonical primitive outcome ID. Missing outcomes are absent. An untraded market has an empty array and no public price; clients should show `No trades yet` or an em dash rather than inventing a price from registration, funding, a uniform default, or a quote midpoint. A midpoint is an order-entry reference only. For a yes/no market, derive the complementary display price from the same confirmed fill; do not combine trades from different executions. */
             latestConfirmedTrades: components["schemas"]["LatestConfirmedTrade"][];
         };
         MarketCatalogueResponse: {

@@ -34,7 +34,11 @@ Categorical markets show primitive outcome books such as `A / Not A`, `B / Not B
 
 ### Create your own market
 
-Anyone can freely create a new market. Define the question, the possible outcomes, and the resolution criteria.
+Anyone can freely create a new market. Define the question, the possible
+outcomes, and the resolution criteria. Registration opens the market in the
+ordinary `Open` state. The create flow does not ask for an opening probability
+or a funding payment, and it does not set a market price. Optional bot funding
+is a separate post-creation flow and can be repeated.
 There is no gatekeeper deciding which markets are allowed.
 
 ### Become an oracle
@@ -53,7 +57,11 @@ specification remain public.
 
 ## How it works
 
-Every market outcome has a corresponding token. The price of a token reflects the market's collective estimate of how likely that outcome is. Prices are shown as probabilities with two decimal places, such as **53.27%**.
+Every market outcome has a corresponding token. A public market price comes
+from the latest confirmed trade. Before the first confirmed trade, the market
+has no price, so the app shows **No trades yet** or an em dash. Prices from
+confirmed trades are shown as probabilities with two decimal places, such as
+**53.27%**. A bid/ask midpoint is an order-entry reference only.
 
 The trade ticket asks for whole shares and shows the cost before you submit. The breakdown separates **Quote payment**, **Est. settlement fee**, and **Total**, so you can see the order payment apart from the estimated mint fee. One categorical-market share pays **10 sats** if it wins. Internally, categorical markets use msat collateral subunits with `D=10000`, so the smallest price move is `0.01%`. For example, 50 shares at 30.00% quote 150 sats before any estimated settlement fee, and pay 500 sats if they win.
 
@@ -76,9 +84,18 @@ When you first open the portfolio page or try to trade, bitCaster asks you to se
 
 ## Market detail pages
 
-The market chart shows recorded trades for each primitive outcome. If only one outcome has traded, only that line is shown; bitCaster does not invent prices for outcomes that have not traded.
+The market chart shows recorded trades for each primitive outcome. If only one
+outcome has traded, only that line is shown; bitCaster does not invent prices
+for outcomes that have not traded. Before any confirmed trade, the market
+shows **No trades yet** or an em dash.
 
-The order book shows asks (sell orders) above the spread and bids (buy orders) below it, with the best prices closest to the spread. Each row combines price, cumulative depth, and visual thickness. Longer bars mean more cumulative liquidity available at that price or better, normalized across both sides so you can compare bid and ask depth at a glance. Market cards and detail pages show **Bot Budget** for creator-funded AMM markets; this is the static budget deposited for the bot, not a live order-book liquidity number.
+The order book shows asks (sell orders) above the spread and bids (buy orders)
+below it, with the best prices closest to the spread. Each row combines price,
+cumulative depth, and visual thickness. Longer bars mean more cumulative
+liquidity available at that price or better, normalized across both sides so
+you can compare bid and ask depth at a glance. Market cards and detail pages
+show **Bot Budget** for post-creation funded AMM markets; additional accepted
+funding can increase it. It is not a live order-book liquidity number.
 
 Trade comments are optional and public inside bitCaster. A comment is shown only after the attached order produces a settled trade, so the comment feed is limited to verified traders for that market. P20 comments are not published to public Nostr relays.
 

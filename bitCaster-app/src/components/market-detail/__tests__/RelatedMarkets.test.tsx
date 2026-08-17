@@ -22,7 +22,7 @@ describe("RelatedMarkets", () => {
     render(<RelatedMarkets markets={[makeRelatedMarket()]} />);
 
     expect(screen.getAllByText("—")).toHaveLength(2);
-    expect(screen.getAllByLabelText("market.noTrades")).toHaveLength(2);
+    expect(screen.getAllByLabelText("No trades yet")).toHaveLength(2);
   });
 
   it("labels null compact prices as unavailable when authority is missing", () => {
@@ -38,7 +38,7 @@ describe("RelatedMarkets", () => {
     );
 
     expect(screen.getAllByLabelText("market.priceUnavailable")).toHaveLength(2);
-    expect(screen.queryAllByLabelText("market.noTrades")).toHaveLength(0);
+    expect(screen.queryAllByLabelText("No trades yet")).toHaveLength(0);
   });
 
   it("uses the exact one-million denominator and never defaults missing divisibility", () => {

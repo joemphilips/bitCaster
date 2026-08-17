@@ -80,7 +80,7 @@ describe("MarketCard", () => {
       />,
     );
 
-    expect(screen.getByText("—")).toHaveAttribute("aria-label", "market.noTrades");
+    expect(screen.getByText("—")).toHaveAttribute("aria-label", "No trades yet");
     expect(screen.queryByText("0.00%")).not.toBeInTheDocument();
   });
 

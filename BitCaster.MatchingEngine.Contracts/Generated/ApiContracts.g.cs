@@ -2684,7 +2684,7 @@ namespace BitCaster.MatchingEngine.Contracts
     }
 
     /// <summary>
-    /// JSON payload embedded in the multipart `metadata` field of the createMarket endpoint.
+    /// JSON payload embedded in the multipart `metadata` field of the createMarket endpoint. This request contains market metadata only. It accepts no opening probability and no initial funding payment or proof. Use the separate post-creation deposit flow for bot funding.
     /// <br/>
     /// </summary>
     [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
@@ -2722,7 +2722,7 @@ namespace BitCaster.MatchingEngine.Contracts
         public System.Collections.Generic.List<CreateMarketOutcome> Outcomes { get; }
 
         /// <summary>
-        /// Market outcome type. Numeric creation is disabled until finite-bin metadata is supported end-to-end.
+        /// Market outcome type. Use `yesno` or `categorical` for currently supported markets. The `numeric` value remains in the wire enum for compatibility, but numeric market creation and trading are currently disabled.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("outcomeType")]
@@ -2730,7 +2730,7 @@ namespace BitCaster.MatchingEngine.Contracts
         public CreateMarketRequestOutcomeType? OutcomeType { get; }
 
         /// <summary>
-        /// Deprecated pre-create liquidity field. Market-maker funding is collected after creation through the funding flow; create requests should send `0`.
+        /// Deprecated compatibility field. It is inert: it does not fund, activate, or price a market and does not create a depositor position. Market-maker funding is collected through the separate post-creation deposit flow. Keep this field at `0` when sending a create request.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("liquiditySats")]
@@ -2799,7 +2799,7 @@ namespace BitCaster.MatchingEngine.Contracts
         public string? ThumbnailUrl { get; }
 
         /// <summary>
-        /// Immutable price denominator `D`, server-determined.
+        /// Immutable price denominator `D`, server-determined. Current yes/no and categorical markets use `10000`; `1000000` is reserved for a future numeric trade representation.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("divisibility")]
@@ -2832,7 +2832,7 @@ namespace BitCaster.MatchingEngine.Contracts
         public System.DateTimeOffset Timestamp { get; }
 
         /// <summary>
-        /// Market price numerator `k`. Valid range is `1 &lt;= k &lt;= D - 1`, where `D` is the market's immutable `divisibility`. Current markets use D=10000 (0.01% price precision).
+        /// Market price numerator `k`. Valid range is `1 &lt;= k &lt;= D - 1`, where `D` is the market's immutable `divisibility`. Current yes/no and categorical markets use D=10000 (0.01% price precision). Numeric market creation and trading are currently disabled.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("price")]
@@ -3024,6 +3024,10 @@ namespace BitCaster.MatchingEngine.Contracts
         [System.Text.Json.Serialization.JsonPropertyName("reserveB")]
         public long ReserveB { get; }
 
+        /// <summary>
+        /// Bot-liquidity reference value for order entry. This is not the public market price, latest confirmed trade, or market value. Use `latestConfirmedTrades` from the market catalogue for the public confirmed-trade price. Before the first confirmed trade, the market has no public price.
+        /// <br/>
+        /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("impliedProbability")]
         public int ImpliedProbability { get; }
 
@@ -3032,7 +3036,7 @@ namespace BitCaster.MatchingEngine.Contracts
         public BaseAsset BaseAsset { get; }
 
         /// <summary>
-        /// Immutable price denominator `D`, server-determined.
+        /// Immutable price denominator `D`, server-determined. Current yes/no and categorical markets use `10000`; `1000000` is reserved for a future numeric trade representation.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("divisibility")]
@@ -3289,7 +3293,8 @@ namespace BitCaster.MatchingEngine.Contracts
         public string? CreatorPubkey { get; }
 
         /// <summary>
-        /// Fund the automated market-maker for this market. The deposit becomes the bot quoting budget and is NOT withdrawable. If the market resolves, any residual budget becomes operator income.
+        /// Set `true` for a post-creation deposit to fund the automated market-maker. Each accepted payment is separate and the flow can be repeated. The first accepted payment activates the bot from a uniform neutral activation state; later payments add capacity without repricing. The deposit is not withdrawable and gives the depositor no probability-bearing position or special payout. It does not set the public market price; only confirmed trades do that. Any residual budget at resolution becomes operator income.
+        /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("fundAmm")]
         public bool? FundAmm { get; }
@@ -3561,6 +3566,10 @@ namespace BitCaster.MatchingEngine.Contracts
 
     }
 
+    /// <summary>
+    /// One settlement-confirmed execution used by the public market-price projection. It does not represent a quote, order insertion, funding payment, or registration-time value.
+    /// <br/>
+    /// </summary>
     [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
     public partial class LatestConfirmedTrade
     {
@@ -3737,7 +3746,7 @@ namespace BitCaster.MatchingEngine.Contracts
         public long LiquiditySubunits { get; }
 
         /// <summary>
-        /// Static initial budget deposited to the LMSR bot at funding time, denominated in product collateral subunits (msat). Operator-owned, non-withdrawable, and immutable after funding. Not a live residual and not orderbook depth.
+        /// Total confirmed post-creation funding assigned to the LMSR bot, denominated in product collateral subunits (msat). It can increase after additional accepted funding payments. It is operator-owned and non-withdrawable. It is not a depositor position, live residual, or order-book depth.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("ammBotBudgetSubunits")]
@@ -3776,7 +3785,7 @@ namespace BitCaster.MatchingEngine.Contracts
         public System.DateTimeOffset LastSuccessfulRefreshAt { get; }
 
         /// <summary>
-        /// Bounded latest confirmed execution per primitive outcome. The array is sorted by canonical primitive outcome ID. Missing outcomes are absent. An untraded market has an empty array.
+        /// Bounded latest confirmed execution per primitive outcome. This is the public market-price authority. The array is sorted by canonical primitive outcome ID. Missing outcomes are absent. An untraded market has an empty array and no public price; clients should show `No trades yet` or an em dash rather than inventing a price from registration, funding, a uniform default, or a quote midpoint. A midpoint is an order-entry reference only. For a yes/no market, derive the complementary display price from the same confirmed fill; do not combine trades from different executions.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("latestConfirmedTrades")]
