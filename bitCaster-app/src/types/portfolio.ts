@@ -113,8 +113,8 @@ export interface Position {
    * Closed but NOT YET ATTESTED (no final outcome — closed by deadline, or
    * before the oracle attests). Win/loss is UNDECIDED (P22 Link F): the row
    * shows an "awaiting resolution" indicator and offers NEITHER Claim NOR
-   * Remove, so not-yet-decided proofs can never be destroyed. Its value is the
-   * full held amount, not zero. Always false while active.
+   * Remove, so not-yet-decided proofs can never be destroyed. Its value remains
+   * unvalued until authoritative attestation. Always false while active.
    */
   isPending: boolean;
   /**

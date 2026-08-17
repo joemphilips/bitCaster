@@ -79,6 +79,61 @@ describe("TradingPanel", () => {
     expect(screen.queryByTestId("numeric-range-marker")).not.toBeInTheDocument();
   });
 
+  it("formats an authoritative numeric current value with its unit", () => {
+    const numericMarket = {
+      ...makeMarket(),
+      type: "numeric" as const,
+      currentPrice: 15,
+      latestConfirmedTradesValid: true,
+      loBound: 10,
+      hiBound: 20,
+      precision: 0,
+      unit: "USD",
+      registeredPrimitiveOutcomeIds: ["HI", "LO"],
+    } as unknown as NumericMarketDetail;
+
+    render(
+      <TradingPanel
+        market={numericMarket}
+        tradeSelection={null}
+        tradeAmount={0}
+        tradePreview={null}
+        tradeSide="Buy"
+        orderType="market"
+      />,
+    );
+
+    expect(screen.getByText("$15")).toBeInTheDocument();
+    expect(screen.queryByText("15.00%")).not.toBeInTheDocument();
+  });
+
+  it("formats numeric current values with the market precision", () => {
+    const numericMarket = {
+      ...makeMarket(),
+      type: "numeric" as const,
+      currentPrice: 15.125,
+      latestConfirmedTradesValid: true,
+      loBound: 10,
+      hiBound: 20,
+      precision: 3,
+      unit: "USD",
+      registeredPrimitiveOutcomeIds: ["HI", "LO"],
+    } as unknown as NumericMarketDetail;
+
+    render(
+      <TradingPanel
+        market={numericMarket}
+        tradeSelection={null}
+        tradeAmount={0}
+        tradePreview={null}
+        tradeSide="Buy"
+        orderType="market"
+      />,
+    );
+
+    expect(screen.getByText("$15.125")).toBeInTheDocument();
+  });
+
   it("labels an authoritative empty trade snapshot as no trades", () => {
     const market = makeMarket({
       currentOdds: { yes: null, no: null },

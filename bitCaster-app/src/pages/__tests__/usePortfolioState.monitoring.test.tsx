@@ -350,7 +350,7 @@ describe("usePortfolioState monitoring facade", () => {
 
     expect(mapped.stats.totalValueSats).toBe(12_000);
     expect(mapped.stats.positionsValueSats).toBe(5_000);
-    expect(mapped.chart).toEqual([{ timestamp: "2026-08-09T00:00:00.000Z", cumulativePL: 12_000 }]);
+    expect(mapped.chart).toEqual([]);
     expect(mapped.funds).toHaveLength(1);
     expect(mapped.positions[0]).toMatchObject({
       marketTitle: "Condition bbbbbbbbbbbb",
@@ -419,6 +419,18 @@ describe("usePortfolioState monitoring facade", () => {
     expect(mapped.stats.totalValueKnown).toBe(false);
     expect(mapped.stats.positionsValueKnown).toBe(false);
     expect(mapped.positions[0]?.valueKnown).toBe(false);
+    expect(mapped.chart).toEqual([]);
+  });
+
+  it("keeps a non-null partial total unknown while any asset is unvalued", () => {
+    const response = portfolioResponse();
+    response.summary.estimatedTotalValueMsat = 12_000;
+    response.summary.unvaluedAssetCount = 1;
+
+    const mapped = mapMonitoringPortfolio(response);
+
+    expect(mapped.stats.totalValueKnown).toBe(false);
+    expect(mapped.stats.totalValueByUnit).toBeUndefined();
     expect(mapped.chart).toEqual([]);
   });
 

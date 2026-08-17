@@ -579,6 +579,21 @@ function compareConfirmedTradeOrder(left: LatestConfirmedTrade, right: LatestCon
   return left.eventOrder < right.eventOrder ? -1 : 1;
 }
 
+function confirmedTradeFactsEqual(
+  left: LatestConfirmedTrade,
+  right: LatestConfirmedTrade,
+): boolean {
+  return (
+    left.primitiveOutcomeId === right.primitiveOutcomeId &&
+    left.fillId === right.fillId &&
+    left.executedAt === right.executedAt &&
+    left.eventOrder === right.eventOrder &&
+    left.priceTick === right.priceTick &&
+    left.divisibility === right.divisibility &&
+    left.faceAmountSubunits === right.faceAmountSubunits
+  );
+}
+
 /** Merge a REST snapshot with the session overlay without allowing stale REST
  * completion to move a newer committed live fill backward. */
 function mergeConfirmedTradeRecords(
@@ -590,8 +605,11 @@ function mergeConfirmedTradeRecords(
   const add = (trade: LatestConfirmedTrade) => {
     const duplicateFill = byFill.get(trade.fillId);
     if (duplicateFill) {
-      if (compareConfirmedTradeOrder(duplicateFill, trade) >= 0) return;
-      byOutcome.delete(duplicateFill.primitiveOutcomeId);
+      // A fill ID is an immutable authority identity. Only a byte-for-byte
+      // duplicate is idempotent; a changed payload is invalid regardless of
+      // its event order and must never replace the accepted live fill.
+      if (!confirmedTradeFactsEqual(duplicateFill, trade)) return;
+      return;
     }
     const previous = byOutcome.get(trade.primitiveOutcomeId);
     if (previous && compareConfirmedTradeOrder(previous, trade) >= 0) return;
@@ -1067,6 +1085,11 @@ export function MarketDetailPage() {
         : null,
     [currentRouteId, marketData, chartTimeframe],
   );
+  // The route effect runs after the first render. Derive this transition state
+  // from the reducer-owned route key so a new route cannot briefly render the
+  // previous request's error or a false "not found" state.
+  const routeTransitioning = marketData.activeRouteId !== currentRouteId;
+  const visibleError = routeTransitioning ? null : error;
   const marketBaseAsset = market ? normalizeMarketBaseAsset(market.baseAsset) : "sat";
   const [tradeSelection, setTradeSelection] = useState<TradeSelection | null>(null);
   const [tradeAmount, setTradeAmount] = useState(0);
@@ -1125,11 +1148,13 @@ export function MarketDetailPage() {
         marketLoadRequestTokenRef.current === requestToken;
       const showLoading = options.showLoading ?? true;
       if (showLoading) setLoading(true);
-      setError(null);
+      if (showLoading) setError(null);
 
+      let succeeded = false;
       fetchMarketDetail(routeId)
         .then((detail) => {
           if (!isCurrentLoad() || detail.id !== routeId) return;
+          succeeded = true;
           dispatchMarketData({
             type: "marketSnapshotLoaded",
             detail,
@@ -1156,10 +1181,14 @@ export function MarketDetailPage() {
         })
         .catch(() => {
           if (!isCurrentLoad()) return;
-          setError("Failed to load market. Please check that the mint is running.");
+          // Optional reconciliation must never replace a valid page with a
+          // fatal error. Its failure is intentionally best-effort.
+          if (showLoading) {
+            setError("Failed to load market. Please check that the mint is running.");
+          }
         })
         .finally(() => {
-          if (isCurrentLoad()) setLoading(false);
+          if (isCurrentLoad() && (showLoading || succeeded)) setLoading(false);
         });
     },
     [id, isCurrentRoute],
@@ -2310,7 +2339,7 @@ export function MarketDetailPage() {
   // current title + the implicit window.location.href.
   const handleShare = useShareMarket({ title: market?.title ?? "" });
 
-  if (loading) {
+  if (routeTransitioning || loading) {
     return (
       <div className="flex items-center justify-center min-h-[50vh]">
         <div className="text-slate-400 animate-pulse">Loading market...</div>
@@ -2318,10 +2347,10 @@ export function MarketDetailPage() {
     );
   }
 
-  if (error || !market) {
+  if (visibleError || !market) {
     return (
       <div className="flex flex-col items-center justify-center min-h-[50vh] gap-4">
-        <div className="text-red-400">{error ?? "Market not found"}</div>
+        <div className="text-red-400">{visibleError ?? "Market not found"}</div>
         <button
           onClick={() => loadMarket()}
           className="px-4 py-2 bg-[#f7931a] text-black rounded-lg hover:bg-[#e8850f] transition-colors"

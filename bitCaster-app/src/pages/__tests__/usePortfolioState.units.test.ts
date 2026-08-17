@@ -94,4 +94,28 @@ describe("computeStats", () => {
     expect(stats.totalValueKnown).toBe(false);
     expect(stats.biggestWinSats).toBe(1_000);
   });
+
+  it("keeps a closed-unattested position unvalued and excludes it from totals", () => {
+    const stats = computeStats(
+      [
+        {
+          ...basePosition,
+          id: "closed-pending",
+          status: "closed",
+          currentValueSats: 10_000,
+          profitLossSats: 10_000,
+          valueKnown: false,
+          isPending: true,
+        },
+        { ...basePosition, id: "valued-active", currentValueSats: 2_000 },
+      ],
+      [],
+    );
+
+    expect(stats.positionsValueSats).toBe(2_000);
+    expect(stats.totalValueSats).toBe(2_000);
+    expect(stats.positionsValueKnown).toBe(false);
+    expect(stats.totalValueKnown).toBe(false);
+    expect(stats.biggestWinSats).toBe(0);
+  });
 });

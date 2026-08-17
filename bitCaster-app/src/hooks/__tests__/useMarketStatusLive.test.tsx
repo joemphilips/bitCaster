@@ -8,8 +8,9 @@ import { useLikedMarketStateStore } from "@/lib/likedMarketClose";
 // Hoisted mocks — must be at the top so vi.mock factories can reference them
 // ---------------------------------------------------------------------------
 
-const { capturedHandlers, mockShowWebNotification } = vi.hoisted(() => ({
+const { capturedHandlers, capturedReconciles, mockShowWebNotification } = vi.hoisted(() => ({
   capturedHandlers: [] as Array<(status: MarketStatusChanged) => void>,
+  capturedReconciles: [] as Array<unknown[]>,
   mockShowWebNotification: vi.fn(),
 }));
 
@@ -23,6 +24,19 @@ vi.mock("@/lib/marketHub", () => ({
 vi.mock("@/lib/webNotifications", () => ({
   showWebNotification: mockShowWebNotification,
 }));
+
+vi.mock("@/lib/likedMarketClose", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/likedMarketClose")>(
+    "@/lib/likedMarketClose",
+  );
+  return {
+    ...actual,
+    reconcileLikedMarketCloses: (...args: Parameters<typeof actual.reconcileLikedMarketCloses>) => {
+      capturedReconciles.push(args);
+      return actual.reconcileLikedMarketCloses(...args);
+    },
+  };
+});
 
 // ---------------------------------------------------------------------------
 // Import under test (after mocks are declared)
@@ -47,6 +61,7 @@ function makeStatus(state: "open" | "closed"): MarketStatusChanged {
 beforeEach(() => {
   vi.clearAllMocks();
   capturedHandlers.length = 0;
+  capturedReconciles.length = 0;
   // Reset shared stores to a clean state
   useNotificationsStore.setState({ items: [] });
   useLikedMarketStateStore.setState({ states: {} });
@@ -106,6 +121,21 @@ describe("useMarketStatusLive", () => {
       expect(notifications[0].kind).toBe("market_closed");
       expect(notifications[0].id).toBe(`${CONDITION_ID}-market_closed`);
       expect(notifications[0].marketId).toBe(CONDITION_ID);
+    });
+
+    it("does not invent uniform odds for lifecycle-only close reconciliation", () => {
+      useLikedMarketStateStore.setState({
+        states: { [CONDITION_ID]: "open" },
+      });
+
+      renderHook(() => useMarketStatusLive(CONDITION_ID, vi.fn()));
+      act(() => {
+        capturedHandlers[0](makeStatus("closed"));
+      });
+
+      expect(capturedReconciles[0]?.[0]).toEqual([
+        expect.objectContaining({ currentOdds: { yes: null, no: null } }),
+      ]);
     });
 
     it("updates the last-seen state store so the boot reconcile does not re-fire", () => {

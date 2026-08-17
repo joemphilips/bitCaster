@@ -206,6 +206,7 @@ describe("PortfolioPage — Remove lost position (P22 F2)", () => {
         isLoser: false,
         isPending: true,
         currentValueSats: 100,
+        valueKnown: false,
         profitLossSats: 0,
         profitLossPercent: 0,
       }),
@@ -215,6 +216,7 @@ describe("PortfolioPage — Remove lost position (P22 F2)", () => {
     // Pending shows neither Remove nor Claim.
     expect(screen.queryByLabelText(/remove.*awaiting market/i)).not.toBeInTheDocument();
     expect(screen.queryByLabelText(/claim.*awaiting market/i)).not.toBeInTheDocument();
+    expect(screen.getByText("Unvalued")).toBeInTheDocument();
     expect(removeProofs).not.toHaveBeenCalled();
     expect(getOutcomeProofs).not.toHaveBeenCalled();
   });

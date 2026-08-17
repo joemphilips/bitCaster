@@ -69,6 +69,8 @@ const TIME_RANGE_MS: Record<PLTimeSelector, number> = {
   ALL: Infinity,
 };
 
+const EMPTY_PL_CHART_DATA: PLChartData = { "1D": [], "1W": [], "1M": [], ALL: [] };
+
 /** Build P/L chart data from activity history. Sat-market amounts are collateral subunits (msat). */
 export function buildPLChartData(items: ActivityItem[]): PLChartData {
   // Sort oldest-first
@@ -144,7 +146,7 @@ export function computeStats(positions: Position[], funds: Fund[]): PortfolioSta
   const biggestWinSats = positions
     .filter((p) => p.valueKnown !== false)
     .reduce((max, p) => Math.max(max, p.profitLossSats), 0);
-  const positionsValueKnown = activePositions.every((position) => position.valueKnown !== false);
+  const positionsValueKnown = positions.every((position) => position.valueKnown !== false);
   return {
     positionsValueSats,
     totalValueSats,
@@ -371,11 +373,14 @@ export function mapMonitoringPortfolio(response: AssetMonitoringPortfolioRespons
     );
   const positionsValueKnown =
     response.assets.nextCursor == null &&
+    response.summary.unvaluedAssetCount === 0 &&
     positions.every((position) => position.valueKnown !== false);
   const positionsValueSats = positions
     .filter((position) => position.valueKnown !== false)
     .reduce((total, position) => total + position.currentValueSats, 0);
-  const totalValueKnown = response.summary.estimatedTotalValueMsat !== null;
+  const totalValueKnown =
+    response.summary.estimatedTotalValueMsat !== null &&
+    response.summary.unvaluedAssetCount === 0;
   return {
     stats: {
       positionsValueSats,
@@ -393,12 +398,14 @@ export function mapMonitoringPortfolio(response: AssetMonitoringPortfolioRespons
     },
     positions,
     funds,
-    chart: response.history.points
-      .filter((point) => point.estimatedTotalValueMsat !== null)
-      .map((point) => ({
-        timestamp: point.asOf,
-        cumulativePL: point.estimatedTotalValueMsat!,
-      })),
+    chart: totalValueKnown
+      ? response.history.points
+          .filter((point) => point.estimatedTotalValueMsat !== null)
+          .map((point) => ({
+            timestamp: point.asOf,
+            cumulativePL: point.estimatedTotalValueMsat!,
+          }))
+      : [],
     monitoring: {
       stale: response.summary.stale || response.assets.stale || response.history.stale,
       incomplete:
@@ -713,15 +720,11 @@ export function usePortfolioState(): PortfolioState & {
         // Closed but NOT YET ATTESTED (P22 Link F): win/loss undecided. The row
         // must offer NEITHER Claim NOR Remove (destroying not-yet-decided proofs
         // is permanent loss) and show an "awaiting resolution" indicator. It stays
-        // visible in the Closed tab (status 'closed'), and its value is the full
-        // held amount — an undecided outcome is not a loss, so it is NOT zeroed.
+        // visible in the Closed tab (status 'closed'), but its current value is
+        // unknown until an attestation supplies authoritative valuation.
         const isPending = winnerStatus === "pending";
         const status = isClosed ? "closed" : "active";
-        const currentValueSats = isClosed
-          ? isWinner || isPending
-            ? claimableValue
-            : 0
-          : 0;
+        const currentValueSats = isClosed && isWinner ? claimableValue : 0;
         return {
           id: `${entry.conditionId}-${entry.outcomeCollection}`,
           marketId: `${entry.conditionId}-${entry.outcomeCollection}`,
@@ -739,10 +742,11 @@ export function usePortfolioState(): PortfolioState & {
           avgBuyPrice: 0,
           currentPrice: isClosed && isWinner ? divisibility : 0,
           currentValueSats,
-          // Active local proof rows have no current market valuation until the
-          // exact display-only asset monitor supplies one. Face amount is not a
-          // current value and must not enter totals or P/L.
-          valueKnown: isClosed,
+          // Local proof rows have no current market valuation until an
+          // authoritative attestation or the exact display-only asset monitor
+          // supplies one. Face amount is not a current value and must not enter
+          // totals or P/L.
+          valueKnown: isClosed && !isPending,
           // Pending (undecided) shows no realised P&L; only attested winners/losers do.
           profitLossSats: isClosed && !isPending ? currentValueSats : 0,
           profitLossPercent: isClosed ? (isWinner ? 100 : isPending ? 0 : -100) : 0,
@@ -815,9 +819,10 @@ export function usePortfolioState(): PortfolioState & {
     ? mergeMonitoringPositions(visibleMonitoring.positions, positions)
     : positions;
   const plChartData = useMemo(() => {
+    if (stats.totalValueKnown === false) return EMPTY_PL_CHART_DATA;
     if (!visibleMonitoring) return buildPLChartData(activity);
     return { ...buildPLChartData(activity), [selectedTimeRange]: visibleMonitoring.chart };
-  }, [activity, selectedTimeRange, visibleMonitoring]);
+  }, [activity, selectedTimeRange, stats.totalValueKnown, visibleMonitoring]);
   const monitoring: PortfolioMonitoringState = {
     stale: visibleMonitoring?.monitoring.stale ?? false,
     incomplete: visibleMonitoring?.monitoring.incomplete ?? false,

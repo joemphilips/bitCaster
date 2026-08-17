@@ -459,6 +459,7 @@ describe("MarketDetailPage live market status", () => {
 
     mocks.routeParams.id = "condition-other";
     view.rerender(<MarketDetailPage />);
+    expect(screen.getByText("Loading market...")).toBeInTheDocument();
     await waitFor(() =>
       expect(vi.mocked(fetchMarketDetail)).toHaveBeenCalledWith("condition-other"),
     );
@@ -522,6 +523,29 @@ describe("MarketDetailPage live market status", () => {
     expect(screen.queryByText("Failed to load market. Please check that the mint is running.")).not
       .toBeInTheDocument();
     expect(screen.queryByText("Loading market...")).not.toBeInTheDocument();
+  });
+
+  it("preserves a loaded page when an optional background refresh fails", async () => {
+    vi.mocked(fetchMarketDetail)
+      .mockResolvedValueOnce(yesNoMarket({ title: "Loaded market" }))
+      .mockRejectedValueOnce(new Error("temporary refresh failure"));
+    vi.mocked(fetchOrderBook).mockResolvedValue(emptyBook);
+
+    render(<MarketDetailPage />);
+    expect(await screen.findByRole("heading", { name: "Loaded market" })).toBeInTheDocument();
+    await waitFor(() => expect(mocks.liveStatusHandlers.length).toBeGreaterThan(0));
+
+    act(() => {
+      mocks.liveStatusHandlers.at(-1)?.({
+        conditionId: "condition-yesno",
+        state: "open",
+      });
+    });
+
+    await waitFor(() => expect(vi.mocked(fetchMarketDetail)).toHaveBeenCalledTimes(2));
+    expect(screen.getByRole("heading", { name: "Loaded market" })).toBeInTheDocument();
+    expect(screen.queryByText("Failed to load market. Please check that the mint is running.")).not
+      .toBeInTheDocument();
   });
 
   it("classifies needs_backup wallets as requiring the funded-action backup prompt", () => {
@@ -1023,6 +1047,47 @@ describe("marketDetailDataReducer", () => {
     expect(repaired.confirmedTradesByConditionId[initial.id]).toEqual([liveTrade]);
     const composed = composeMarketDetail(repaired, "7d");
     expect(composed?.latestConfirmedTrades).toEqual([liveTrade]);
+    expect(composed && composed.type === "yesno" ? composed.currentOdds : null).toEqual({
+      yes: 6200,
+      no: 3800,
+    });
+  });
+
+  it("rejects changed REST facts for a fill already accepted from live", () => {
+    const initial = yesNoMarket();
+    const liveTrade: LatestConfirmedTrade = {
+      primitiveOutcomeId: "YES",
+      fillId: "00000000-0000-0000-0000-000000000003",
+      executedAt: "2026-08-18T00:00:00Z",
+      eventOrder: "0001",
+      priceTick: 6200,
+      divisibility: 10_000,
+      faceAmountSubunits: 1000,
+    };
+    const stateWithLive = marketDetailDataReducer(createMarketDetailDataState(initial), {
+      type: "confirmedTradeRecorded",
+      conditionId: initial.id,
+      trade: liveTrade,
+    });
+
+    const conflictingRest = marketDetailDataReducer(stateWithLive, {
+      type: "marketSnapshotLoaded",
+      detail: {
+        ...initial,
+        state: "closed",
+        latestConfirmedTrades: [
+          {
+            ...liveTrade,
+            eventOrder: "0002",
+            priceTick: 1800,
+            faceAmountSubunits: 2000,
+          },
+        ],
+      },
+    });
+
+    expect(conflictingRest.confirmedTradesByConditionId[initial.id]).toEqual([liveTrade]);
+    const composed = composeMarketDetail(conflictingRest, "7d");
     expect(composed && composed.type === "yesno" ? composed.currentOdds : null).toEqual({
       yes: 6200,
       no: 3800,
