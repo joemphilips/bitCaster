@@ -119,6 +119,10 @@ export interface RelatedMarket {
   imageUrl?: string;
   currentOdds?: CurrentOdds;
   divisibility?: ProductMarketDivisibility;
+  /** Exact bounded confirmed-trade snapshot used for compact prices. */
+  latestConfirmedTrades?: LatestConfirmedTrade[];
+  /** False or missing means compact prices are unavailable. */
+  latestConfirmedTradesValid?: boolean;
   volume: number;
   baseAsset: "sat";
   closingDate: string;

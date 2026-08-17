@@ -167,6 +167,35 @@ describe("useMarketPrice", () => {
     expect(result.current.currentPrice).toBeNull();
   });
 
+  it("rejects a confirmed price when marketId is for a different condition", () => {
+    const { result } = renderHook(() =>
+      useMarketPrice({
+        market: makeMarket({
+          divisibility: 1_000_000,
+          latestConfirmedTrades: [{
+            primitiveOutcomeId: "YES",
+            fillId: "fill-mismatched-market",
+            executedAt: "2026-01-01T00:00:00Z",
+            eventOrder: "0001",
+            priceTick: 600_000,
+            divisibility: 1_000_000,
+            faceAmountSubunits: 100,
+          }],
+        }),
+        marketId: "condition-2-Yes",
+        outcomeSetId: "Yes",
+        orderBook: {
+          bids: [{ price: 400_000, amount: 1, total: 1 }],
+          asks: [{ price: 700_000, amount: 1, total: 1 }],
+          spread: 300_000,
+        },
+      }),
+    );
+
+    expect(result.current.currentPrice).toBeNull();
+    expect(result.current.defaultOrderPrice).toBe(5_000);
+  });
+
   it("keeps categorical outcomes independent and does not normalize missing prices", () => {
     const { result } = renderHook(() =>
       useMarketPrice({
@@ -183,7 +212,7 @@ describe("useMarketPrice", () => {
             { primitiveOutcomeId: "bob", fillId: "fill-b", executedAt: "2026-01-02T00:00:00Z", eventOrder: "0002", priceTick: 2_000, divisibility: 10_000, faceAmountSubunits: 100 },
           ],
         } as Partial<MarketDetail>),
-        marketId: "condition-1-Bob|Carol",
+        marketId: "condition-1-Bob",
         outcomeSetId: "Bob",
         orderBook: emptyBook,
       }),

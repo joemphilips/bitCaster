@@ -122,8 +122,9 @@ function loadProfile(): UserProfile {
 
 export function computeStats(positions: Position[], funds: Fund[]): PortfolioStats {
   const activePositions = positions.filter((p) => p.status === "active");
+  const valuedActivePositions = activePositions.filter((p) => p.valueKnown !== false);
   const positionsValueByUnit = groupAmountsByUnit(
-    activePositions,
+    valuedActivePositions,
     (p) => p.baseAsset,
     (p) => p.currentValueSats,
   );
@@ -140,10 +141,15 @@ export function computeStats(positions: Position[], funds: Fund[]): PortfolioSta
   const positionsValueSats =
     positionsValueByUnit.find((entry) => entry.unit === "sat")?.amount ?? 0;
   const totalValueSats = totalValueByUnit.find((entry) => entry.unit === "sat")?.amount ?? 0;
-  const biggestWinSats = positions.reduce((max, p) => Math.max(max, p.profitLossSats), 0);
+  const biggestWinSats = positions
+    .filter((p) => p.valueKnown !== false)
+    .reduce((max, p) => Math.max(max, p.profitLossSats), 0);
+  const positionsValueKnown = activePositions.every((position) => position.valueKnown !== false);
   return {
     positionsValueSats,
     totalValueSats,
+    positionsValueKnown,
+    totalValueKnown: positionsValueKnown,
     positionsValueByUnit,
     totalValueByUnit,
     biggestWinSats,
@@ -366,10 +372,9 @@ export function mapMonitoringPortfolio(response: AssetMonitoringPortfolioRespons
   const positionsValueKnown =
     response.assets.nextCursor == null &&
     positions.every((position) => position.valueKnown !== false);
-  const positionsValueSats = positions.reduce(
-    (total, position) => total + position.currentValueSats,
-    0,
-  );
+  const positionsValueSats = positions
+    .filter((position) => position.valueKnown !== false)
+    .reduce((total, position) => total + position.currentValueSats, 0);
   const totalValueKnown = response.summary.estimatedTotalValueMsat !== null;
   return {
     stats: {
@@ -716,7 +721,7 @@ export function usePortfolioState(): PortfolioState & {
           ? isWinner || isPending
             ? claimableValue
             : 0
-          : entry.amount;
+          : 0;
         return {
           id: `${entry.conditionId}-${entry.outcomeCollection}`,
           marketId: `${entry.conditionId}-${entry.outcomeCollection}`,
@@ -734,6 +739,10 @@ export function usePortfolioState(): PortfolioState & {
           avgBuyPrice: 0,
           currentPrice: isClosed && isWinner ? divisibility : 0,
           currentValueSats,
+          // Active local proof rows have no current market valuation until the
+          // exact display-only asset monitor supplies one. Face amount is not a
+          // current value and must not enter totals or P/L.
+          valueKnown: isClosed,
           // Pending (undecided) shows no realised P&L; only attested winners/losers do.
           profitLossSats: isClosed && !isPending ? currentValueSats : 0,
           profitLossPercent: isClosed ? (isWinner ? 100 : isPending ? 0 : -100) : 0,

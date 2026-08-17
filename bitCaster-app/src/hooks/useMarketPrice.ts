@@ -6,7 +6,7 @@ import {
   DEFAULT_SAT_MARKET_DIVISIBILITY,
   normalizeMarketDivisibility,
 } from "@bitcaster/client-sdk/marketUnits";
-import { parseOutcomeSetId } from "@bitcaster/client-sdk/outcomeSets";
+import { outcomeSetMarketId, parseOutcomeSetId } from "@bitcaster/client-sdk/outcomeSets";
 
 export interface UseMarketPriceInput {
   market: MarketDetail | null | undefined;
@@ -215,22 +215,34 @@ export function deriveConfirmedMarketPrice(
 
 export function useMarketPrice({
   market,
+  marketId,
   outcomeSetId,
   orderBook,
 }: UseMarketPriceInput): MarketPriceState {
-  const divisibility = market
+  // Price data is scoped to the exact outcome-set market route. A detail
+  // response can still be present for one condition while navigation is
+  // moving to another, so never let that response provide a price for the
+  // active route unless both identities match exactly.
+  const exactMarketIdentity =
+    market != null &&
+    marketId != null &&
+    outcomeSetId != null &&
+    outcomeSetMarketId(market.id, outcomeSetId) === marketId;
+  const divisibility = exactMarketIdentity && market
     ? normalizeMarketDivisibility(market.divisibility, market.baseAsset)
     : DEFAULT_SAT_MARKET_DIVISIBILITY;
+  const baseAsset = exactMarketIdentity && market ? market.baseAsset : "sat";
   const currentPrice = useMemo(
-    () => (market ? deriveConfirmedMarketPrice(market, outcomeSetId) : null),
-    [market, outcomeSetId],
+    () => (exactMarketIdentity && market ? deriveConfirmedMarketPrice(market, outcomeSetId) : null),
+    [exactMarketIdentity, market, outcomeSetId],
   );
+  const scopedOrderBook = exactMarketIdentity ? orderBook : null;
   const defaultOrderPrice = useMemo(() => {
-    const midpoint = computeSpreadMidpoint(orderBook);
+    const midpoint = computeSpreadMidpoint(scopedOrderBook);
     if (midpoint != null) return clampOrderPrice(midpoint, divisibility);
     if (currentPrice != null) return clampOrderPrice(currentPrice, divisibility);
-    return defaultLimitPriceForDivisibility(divisibility, market?.baseAsset ?? "sat");
-  }, [orderBook, currentPrice, divisibility, market?.baseAsset]);
+    return defaultLimitPriceForDivisibility(divisibility, baseAsset);
+  }, [scopedOrderBook, currentPrice, divisibility, baseAsset]);
 
   return { currentPrice, defaultOrderPrice };
 }

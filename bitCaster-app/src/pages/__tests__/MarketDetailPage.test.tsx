@@ -437,6 +437,93 @@ describe("MarketDetailPage live market status", () => {
     expect(submitBrowserCtfRangeOrder).not.toHaveBeenCalled();
   });
 
+  it("keeps the current route market when an earlier detail request completes late", async () => {
+    let resolveA!: (market: MarketDetail) => void;
+    let resolveB!: (market: MarketDetail) => void;
+    const requestA = new Promise<MarketDetail>((resolve) => {
+      resolveA = resolve;
+    });
+    const requestB = new Promise<MarketDetail>((resolve) => {
+      resolveB = resolve;
+    });
+    vi.mocked(fetchMarketDetail).mockImplementation((conditionId) => {
+      if (conditionId === "condition-yesno") return requestA;
+      return requestB;
+    });
+    vi.mocked(fetchOrderBook).mockResolvedValue(emptyBook);
+
+    const view = render(<MarketDetailPage />);
+    await waitFor(() =>
+      expect(vi.mocked(fetchMarketDetail)).toHaveBeenCalledWith("condition-yesno"),
+    );
+
+    mocks.routeParams.id = "condition-other";
+    view.rerender(<MarketDetailPage />);
+    await waitFor(() =>
+      expect(vi.mocked(fetchMarketDetail)).toHaveBeenCalledWith("condition-other"),
+    );
+
+    resolveB(yesNoMarket({ id: "condition-other", title: "Market B" }));
+    expect(await screen.findByRole("heading", { name: "Market B" })).toBeInTheDocument();
+
+    resolveA(yesNoMarket({ id: "condition-yesno", title: "Market A" }));
+    await waitFor(() =>
+      expect(screen.getByRole("heading", { name: "Market B" })).toBeInTheDocument(),
+    );
+    expect(screen.queryByRole("heading", { name: "Market A" })).not.toBeInTheDocument();
+  });
+
+  it("keeps the newest same-route refresh when an older refresh completes late", async () => {
+    let resolveOld!: (market: MarketDetail) => void;
+    let resolveNewest!: (market: MarketDetail) => void;
+    const oldRequest = new Promise<MarketDetail>((resolve) => {
+      resolveOld = resolve;
+    });
+    const newestRequest = new Promise<MarketDetail>((resolve) => {
+      resolveNewest = resolve;
+    });
+    let detailRequestCount = 0;
+    vi.mocked(fetchMarketDetail).mockImplementation(() => {
+      detailRequestCount += 1;
+      if (detailRequestCount === 1) return Promise.resolve(yesNoMarket({ title: "Initial market" }));
+      if (detailRequestCount === 2) return oldRequest;
+      return newestRequest;
+    });
+    vi.mocked(fetchOrderBook).mockResolvedValue(emptyBook);
+
+    render(<MarketDetailPage />);
+    expect(await screen.findByRole("heading", { name: "Initial market" })).toBeInTheDocument();
+    await waitFor(() => expect(mocks.liveStatusHandlers.length).toBeGreaterThan(0));
+
+    act(() => {
+      mocks.liveStatusHandlers.at(-1)?.({
+        conditionId: "condition-yesno",
+        state: "open",
+      });
+    });
+    await waitFor(() => expect(vi.mocked(fetchMarketDetail)).toHaveBeenCalledTimes(2));
+
+    act(() => {
+      mocks.liveStatusHandlers.at(-1)?.({
+        conditionId: "condition-yesno",
+        state: "open",
+      });
+    });
+    await waitFor(() => expect(vi.mocked(fetchMarketDetail)).toHaveBeenCalledTimes(3));
+
+    resolveNewest(yesNoMarket({ title: "Newest market" }));
+    expect(await screen.findByRole("heading", { name: "Newest market" })).toBeInTheDocument();
+
+    resolveOld(yesNoMarket({ title: "Old market" }));
+    await waitFor(() =>
+      expect(screen.getByRole("heading", { name: "Newest market" })).toBeInTheDocument(),
+    );
+    expect(screen.queryByRole("heading", { name: "Old market" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Failed to load market. Please check that the mint is running.")).not
+      .toBeInTheDocument();
+    expect(screen.queryByText("Loading market...")).not.toBeInTheDocument();
+  });
+
   it("classifies needs_backup wallets as requiring the funded-action backup prompt", () => {
     expect(shouldPromptForFundedActionBackup("needs_backup")).toBe(true);
     expect(shouldPromptForFundedActionBackup("none")).toBe(false);
@@ -681,6 +768,24 @@ describe("MarketDetailPage live market status", () => {
 describe("marketDetailDataReducer", () => {
   beforeEach(() => {
     mocks.windowPriceHistory.mockClear();
+  });
+
+  it("rejects a snapshot whose expected route differs from the active route", () => {
+    const initial = createMarketDetailDataState(yesNoMarket());
+    const routeB = marketDetailDataReducer(initial, {
+      type: "routeChanged",
+      routeId: "condition-other",
+    });
+
+    const stale = marketDetailDataReducer(routeB, {
+      type: "marketSnapshotLoaded",
+      detail: yesNoMarket({ id: "condition-yesno", title: "Stale A" }),
+      expectedRouteId: "condition-yesno",
+    });
+
+    expect(stale).toBe(routeB);
+    expect(stale.activeRouteId).toBe("condition-other");
+    expect(stale.core).toBeNull();
   });
 
   it("preserves yes/no chart history and comments across submit refresh", () => {

@@ -65,4 +65,33 @@ describe("computeStats", () => {
     ]);
     expect(stats.totalValueSats).toBe(10_000);
   });
+
+  it("excludes unvalued active positions from totals and biggest-win P/L", () => {
+    const stats = computeStats(
+      [
+        {
+          ...basePosition,
+          id: "unvalued",
+          currentValueSats: 9_000,
+          profitLossSats: 8_000,
+          valueKnown: false,
+        },
+        {
+          ...basePosition,
+          id: "valued",
+          currentValueSats: 2_000,
+          profitLossSats: 1_000,
+        },
+      ],
+      [{ id: "sat-fund", unit: "sats", amount: 500, mintUrl: "https://mint.example" }],
+    );
+
+    expect(stats.positionsValueSats).toBe(2_000);
+    expect(stats.totalValueSats).toBe(2_500);
+    expect(stats.positionsValueByUnit).toEqual([{ unit: "sat", amount: 2_000 }]);
+    expect(stats.totalValueByUnit).toEqual([{ unit: "sat", amount: 2_500 }]);
+    expect(stats.positionsValueKnown).toBe(false);
+    expect(stats.totalValueKnown).toBe(false);
+    expect(stats.biggestWinSats).toBe(1_000);
+  });
 });

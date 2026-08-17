@@ -25,6 +25,9 @@ function formatClosingDate(dateStr: string, t: (key: string) => string, locale: 
 function RelatedMarketCard({ market, onClick }: { market: RelatedMarket; onClick?: () => void }) {
   const { t, i18n } = useTranslation();
   const formatNullablePrice = (price: number | null) => {
+    if (market.latestConfirmedTradesValid !== true) {
+      return <span aria-label={t("market.priceUnavailable")}>—</span>;
+    }
     if (price == null) return <span aria-label={t("market.noTrades")}>—</span>;
     if (market.divisibility == null) {
       return <span aria-label={t("market.priceUnavailable")}>—</span>;
