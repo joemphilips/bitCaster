@@ -265,6 +265,7 @@
     "topUpStillInsufficient": "Top-up completed, but the wallet balance is still below the order requirement.",
     "recentTrades": "Recent Trades",
     "noTrades": "No trades yet",
+    "priceUnavailable": "Price unavailable",
     "loadMoreTrades": "Load more trades"
   },
   "comment": {

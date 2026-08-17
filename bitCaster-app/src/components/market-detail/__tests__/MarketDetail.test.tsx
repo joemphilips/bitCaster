@@ -5,7 +5,9 @@ import type { MarketDetail as MarketDetailType, TradePreview } from "@/types/mar
 
 vi.mock("../MarketHeader", () => ({ MarketHeader: () => <div /> }));
 vi.mock("../TradingPanel", () => ({ TradingPanel: () => <div /> }));
-vi.mock("../PriceChart", () => ({ PriceChart: () => <div /> }));
+vi.mock("../PriceChart", () => ({
+  PriceChart: ({ currentDisplay }: { currentDisplay?: string }) => <div>{currentDisplay}</div>,
+}));
 const { orderBookSectionMock } = vi.hoisted(() => ({
   orderBookSectionMock: vi.fn(({ title }: { title?: string }) => (
     <div data-testid="order-book-panel">{title ?? "Order Book"}</div>
@@ -76,6 +78,25 @@ function makeMarket(overrides: Partial<MarketDetailType> = {}): MarketDetailType
 }
 
 describe("MarketDetail", () => {
+  it("renders the localized no-trade state without a zero or midpoint fallback", () => {
+    render(
+      <MarketDetail
+        market={makeMarket({ currentOdds: { yes: null, no: null }, latestConfirmedTrades: [] })}
+        chartTimeframe="7d"
+        tradeSelection={null}
+        tradeAmount={0}
+        tradePreview={null}
+        tradeSide="Buy"
+        orderType="market"
+        limitOrderPreview={null}
+        limitPrice={5000}
+      />,
+    );
+
+    expect(screen.getByText("market.noTrades")).toBeInTheDocument();
+    expect(screen.queryByText("0.00%")).not.toBeInTheDocument();
+  });
+
   it("renders one order book for a yes/no market", () => {
     orderBookSectionMock.mockClear();
     render(

@@ -10,7 +10,7 @@ interface PriceChartProps {
   chartTimeframe: ChartTimeframe;
   onTimeframeChange?: (timeframe: ChartTimeframe) => void;
   outcomePriceHistories?: Record<string, PriceHistory>;
-  outcomes?: Array<{ id: string; label: string; odds: number }>;
+  outcomes?: Array<{ id: string; label: string; odds: number | null }>;
   currentDisplay?: string;
   comments?: Comment[];
   unit?: string;
@@ -81,7 +81,7 @@ function buildSeries(input: {
   priceHistory: PriceHistory;
   timeframe: ChartTimeframe;
   outcomePriceHistories?: Record<string, PriceHistory>;
-  outcomes?: Array<{ id: string; label: string; odds: number }>;
+  outcomes?: Array<{ id: string; label: string; odds: number | null }>;
 }): Series[] {
   const isMultiLine = !!(
     input.outcomePriceHistories &&

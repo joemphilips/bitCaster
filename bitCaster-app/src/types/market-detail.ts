@@ -3,7 +3,13 @@
 // =============================================================================
 
 // Import shared types from market discovery
-import type { CurrentOdds, Outcome, CategoryTag, ProductMarketDivisibility } from "./market";
+import type {
+  CurrentOdds,
+  Outcome,
+  CategoryTag,
+  ProductMarketDivisibility,
+  LatestConfirmedTrade,
+} from "./market";
 import type { MarketState } from "@/hooks/useMarketState";
 
 // =============================================================================
@@ -112,6 +118,7 @@ export interface RelatedMarket {
   title: string;
   imageUrl?: string;
   currentOdds?: CurrentOdds;
+  divisibility?: ProductMarketDivisibility;
   volume: number;
   baseAsset: "sat";
   closingDate: string;
@@ -139,6 +146,10 @@ interface BaseMarketDetail {
   baseUnit: string; // e.g. "sats", "USD"
   /** Exact primitive outcome IDs from the REST registration snapshot. */
   registeredPrimitiveOutcomeIds?: string[];
+  /** Exact bounded REST/live confirmed-trade records used for price authority. */
+  latestConfirmedTrades?: LatestConfirmedTrade[];
+  /** False means the source price authority was malformed and is unavailable. */
+  latestConfirmedTradesValid?: boolean;
   mint?: MarketMintInfo;
   creator: MarketCreator;
   outcomes?: Outcome[];
@@ -180,7 +191,7 @@ export interface NumericMarketDetail extends BaseMarketDetail {
   hiBound: number; // Upper bound of the outcome range
   precision: number; // Decimal places for display
   unit: string; // Display unit (e.g. "USD", "BTC")
-  currentPrice: number; // Implied price: loBound + (hiPrice / 100) * (hiBound - loBound)
+  currentPrice: number | null; // Implied price: loBound + (hiPrice / D) * (hiBound - loBound)
   attestedValue?: number; // Set when resolved — the oracle-attested value
 }
 

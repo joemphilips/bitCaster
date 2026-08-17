@@ -1,4 +1,9 @@
-import type { CurrentOdds, Market, FilterState } from "@/types/market";
+import type {
+  CurrentOdds,
+  LatestConfirmedTrade,
+  Market,
+  FilterState,
+} from "@/types/market";
 import type { ProductMarketDivisibility } from "@/types/market";
 import type {
   MarketDetail,
@@ -171,12 +176,182 @@ export interface GetMarketsResult {
 export type MarketCatalogueEntry = components["schemas"]["MarketCatalogueEntry"];
 export type MarketCatalogueResponse = components["schemas"]["MarketCatalogueResponse"];
 
-function resolveYesNoCatalogueOdds(): CurrentOdds {
-  return { yes: 50, no: 50 };
+const MAX_REGISTERED_PRIMITIVE_OUTCOMES = 8;
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const RFC3339_DATE_TIME_RE =
+  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
+
+function compareEventOrder(left: string, right: string): number {
+  if (left === right) return 0;
+  return left < right ? -1 : 1;
 }
 
-function resolveYesNoDetailOdds(): CurrentOdds {
-  return resolveYesNoCatalogueOdds();
+/**
+ * Validate the exact bounded latest-trade REST representation at ingress.
+ * Any malformed, duplicated, unknown, or cross-denominator fact invalidates
+ * the complete snapshot so callers never display a partial guess.
+ */
+export function validateLatestConfirmedTrades(
+  raw: unknown,
+  registeredPrimitiveOutcomeIds: readonly string[],
+  divisibility: number,
+): LatestConfirmedTrade[] {
+  if (
+    !Array.isArray(registeredPrimitiveOutcomeIds) ||
+    registeredPrimitiveOutcomeIds.length < 2 ||
+    registeredPrimitiveOutcomeIds.length > MAX_REGISTERED_PRIMITIVE_OUTCOMES ||
+    new Set(registeredPrimitiveOutcomeIds).size !== registeredPrimitiveOutcomeIds.length ||
+    registeredPrimitiveOutcomeIds.some(
+      (id) => typeof id !== "string" || id.length === 0 || id.trim() !== id,
+    )
+  ) {
+    return [];
+  }
+  if (divisibility !== 10_000 && divisibility !== 1_000_000) return [];
+  if (!Array.isArray(raw) || raw.length > registeredPrimitiveOutcomeIds.length) return [];
+
+  const allowed = new Set(registeredPrimitiveOutcomeIds);
+  const seenOutcomes = new Set<string>();
+  const seenFills = new Set<string>();
+  const validated: LatestConfirmedTrade[] = [];
+  let previousPrimitiveOutcomeId: string | undefined;
+
+  for (const value of raw) {
+    if (typeof value !== "object" || value === null) return [];
+    const candidate = value as Record<string, unknown>;
+    const primitiveOutcomeId = candidate.primitiveOutcomeId;
+    const fillId = candidate.fillId;
+    const executedAt = candidate.executedAt;
+    const eventOrder = candidate.eventOrder;
+    const priceTick = candidate.priceTick;
+    const factDivisibility = candidate.divisibility;
+    const faceAmountSubunits = candidate.faceAmountSubunits;
+    if (
+      typeof primitiveOutcomeId !== "string" ||
+      !allowed.has(primitiveOutcomeId) ||
+      (previousPrimitiveOutcomeId !== undefined &&
+        primitiveOutcomeId <= previousPrimitiveOutcomeId) ||
+      seenOutcomes.has(primitiveOutcomeId) ||
+      typeof fillId !== "string" ||
+      fillId.length === 0 ||
+      fillId.trim() !== fillId ||
+      !UUID_RE.test(fillId) ||
+      seenFills.has(fillId) ||
+      typeof executedAt !== "string" ||
+      executedAt.length === 0 ||
+      !RFC3339_DATE_TIME_RE.test(executedAt) ||
+      !Number.isFinite(Date.parse(executedAt)) ||
+      typeof eventOrder !== "string" ||
+      eventOrder.length === 0 ||
+      eventOrder.trim() !== eventOrder ||
+      typeof priceTick !== "number" ||
+      !Number.isSafeInteger(priceTick) ||
+      priceTick <= 0 ||
+      priceTick >= divisibility ||
+      factDivisibility !== divisibility ||
+      typeof faceAmountSubunits !== "number" ||
+      !Number.isSafeInteger(faceAmountSubunits) ||
+      faceAmountSubunits <= 0
+    ) {
+      return [];
+    }
+    seenOutcomes.add(primitiveOutcomeId);
+    seenFills.add(fillId);
+    previousPrimitiveOutcomeId = primitiveOutcomeId;
+    validated.push(value as LatestConfirmedTrade);
+  }
+
+  // The REST contract already promises canonical primitive-outcome order.
+  // Preserve that exact representation instead of sorting malformed input
+  // into an apparently valid snapshot.
+  return validated;
+}
+
+export function latestConfirmedTradesAuthorityValid(
+  raw: unknown,
+  registeredPrimitiveOutcomeIds: readonly string[],
+  divisibility: number,
+): boolean {
+  if (!Array.isArray(raw)) return false;
+  if (
+    registeredPrimitiveOutcomeIds.length < 2 ||
+    registeredPrimitiveOutcomeIds.length > MAX_REGISTERED_PRIMITIVE_OUTCOMES ||
+    new Set(registeredPrimitiveOutcomeIds).size !== registeredPrimitiveOutcomeIds.length ||
+    registeredPrimitiveOutcomeIds.some(
+      (id) => typeof id !== "string" || id.length === 0 || id.trim() !== id,
+    )
+  ) {
+    return false;
+  }
+  const validated = validateLatestConfirmedTrades(raw, registeredPrimitiveOutcomeIds, divisibility);
+  return (
+    validated.length === raw.length &&
+    validated.every((trade, index) => trade === raw[index])
+  );
+}
+
+function latestTradeByOutcome(
+  trades: readonly LatestConfirmedTrade[],
+): Map<string, LatestConfirmedTrade> {
+  const latest = new Map<string, LatestConfirmedTrade>();
+  for (const trade of trades) {
+    const previous = latest.get(trade.primitiveOutcomeId);
+    if (!previous || compareEventOrder(previous.eventOrder, trade.eventOrder) < 0) {
+      latest.set(trade.primitiveOutcomeId, trade);
+    }
+  }
+  return latest;
+}
+
+function latestTradeAcrossOutcomes(
+  trades: readonly LatestConfirmedTrade[],
+): LatestConfirmedTrade | null {
+  return trades.reduce<LatestConfirmedTrade | null>((latest, trade) => {
+    if (!latest || compareEventOrder(latest.eventOrder, trade.eventOrder) < 0) return trade;
+    return latest;
+  }, null);
+}
+
+function primitivePriceForOutcome(
+  trade: LatestConfirmedTrade | undefined,
+  primitiveOutcomeId: string,
+): number | null {
+  if (!trade) return null;
+  return trade.primitiveOutcomeId === primitiveOutcomeId
+    ? trade.priceTick
+    : trade.divisibility - trade.priceTick;
+}
+
+export function deriveYesNoOdds(
+  trades: readonly LatestConfirmedTrade[],
+  registeredPrimitiveOutcomeIds: readonly string[],
+): CurrentOdds {
+  const latest = latestTradeAcrossOutcomes(trades);
+  if (!latest) return { yes: null, no: null };
+  const yesId = registeredPrimitiveOutcomeIds.find((id) => id.toLowerCase() === "yes");
+  const noId = registeredPrimitiveOutcomeIds.find((id) => id.toLowerCase() === "no");
+  if (
+    !yesId ||
+    !noId ||
+    (latest.primitiveOutcomeId !== yesId && latest.primitiveOutcomeId !== noId)
+  ) {
+    return { yes: null, no: null };
+  }
+  return {
+    yes: primitivePriceForOutcome(latest, yesId),
+    no: primitivePriceForOutcome(latest, noId),
+  };
+}
+
+export function deriveCategoricalOdds(
+  trades: readonly LatestConfirmedTrade[],
+  outcomes: readonly string[],
+): Record<string, number | null> {
+  const latest = latestTradeByOutcome(trades);
+  return Object.fromEntries(
+    outcomes.map((outcome) => [outcome, latest.get(outcome)?.priceTick ?? null]),
+  );
 }
 
 function buildMarketsQueryString(params: GetMarketsParams): string {
@@ -199,7 +374,8 @@ function buildMarketsQueryString(params: GetMarketsParams): string {
  * list needs; the mapper just shapes it into the existing `Market` union.
  */
 export function mapCatalogueEntryToMarket(entry: MarketCatalogueEntry): Market {
-  const outcomes = orderAtomicOutcomes(entry.outcomes ?? []);
+  const registeredPrimitiveOutcomeIds = [...(entry.outcomes ?? [])];
+  const outcomes = orderAtomicOutcomes(registeredPrimitiveOutcomeIds);
   const isYesNo = isYesNoUniverse(outcomes);
 
   const closingDate = entry.deadline ?? entry.createdAt;
@@ -207,6 +383,16 @@ export function mapCatalogueEntryToMarket(entry: MarketCatalogueEntry): Market {
   const imageUrl = entry.thumbnailUrl ?? "";
   const baseAsset = normalizeMarketBaseAsset(entry.baseAsset);
   const divisibility = normalizeMarketDivisibility(entry.divisibility, baseAsset);
+  const latestConfirmedTrades = validateLatestConfirmedTrades(
+    entry.latestConfirmedTrades,
+    registeredPrimitiveOutcomeIds,
+    divisibility,
+  );
+  const latestConfirmedTradesValid = latestConfirmedTradesAuthorityValid(
+    entry.latestConfirmedTrades,
+    registeredPrimitiveOutcomeIds,
+    divisibility,
+  );
 
   const base = {
     id: entry.conditionId,
@@ -227,6 +413,8 @@ export function mapCatalogueEntryToMarket(entry: MarketCatalogueEntry): Market {
     baseAsset,
     divisibility,
     baseMarket: marketUnitLabel(baseAsset),
+    latestConfirmedTrades,
+    latestConfirmedTradesValid,
     finalOutcome: entry.finalOutcome?.trim() || undefined,
   };
 
@@ -234,11 +422,11 @@ export function mapCatalogueEntryToMarket(entry: MarketCatalogueEntry): Market {
     return {
       ...base,
       type: "yesno",
-      currentOdds: resolveYesNoCatalogueOdds(),
+      currentOdds: deriveYesNoOdds(latestConfirmedTrades, registeredPrimitiveOutcomeIds),
     };
   }
 
-  const evenOutcomePercent = 100 / Math.max(outcomes.length, 1);
+  const categoricalOdds = deriveCategoricalOdds(latestConfirmedTrades, registeredPrimitiveOutcomeIds);
 
   return {
     ...base,
@@ -246,7 +434,7 @@ export function mapCatalogueEntryToMarket(entry: MarketCatalogueEntry): Market {
     outcomes: outcomes.map((label) => ({
       id: label,
       label,
-      odds: evenOutcomePercent,
+      odds: categoricalOdds[label] ?? null,
     })),
   };
 }
@@ -321,7 +509,7 @@ export function filterMarkets(markets: Market[], filter: FilterState): Market[] 
 
 function mapCatalogueEntryToMarketDetail(entry: MarketCatalogueEntry): MarketDetail {
   const registeredPrimitiveOutcomeIds = [...(entry.outcomes ?? [])];
-  const outcomes = orderAtomicOutcomes(entry.outcomes ?? []);
+  const outcomes = orderAtomicOutcomes(registeredPrimitiveOutcomeIds);
   const mappedOutcomes = outcomes.map((label) => ({
     id: label,
     label,
@@ -338,6 +526,18 @@ function mapCatalogueEntryToMarketDetail(entry: MarketCatalogueEntry): MarketDet
   const isYesNo = isYesNoUniverse(outcomes);
   const baseAsset = normalizeMarketBaseAsset(entry.baseAsset);
   const divisibility = normalizeMarketDivisibility(entry.divisibility, baseAsset);
+  const latestConfirmedTrades = validateLatestConfirmedTrades(
+    entry.latestConfirmedTrades,
+    registeredPrimitiveOutcomeIds,
+    divisibility,
+  );
+  const latestConfirmedTradesValid = latestConfirmedTradesAuthorityValid(
+    entry.latestConfirmedTrades,
+    registeredPrimitiveOutcomeIds,
+    divisibility,
+  );
+  const yesNoOdds = deriveYesNoOdds(latestConfirmedTrades, registeredPrimitiveOutcomeIds);
+  const categoricalOdds = deriveCategoricalOdds(latestConfirmedTrades, registeredPrimitiveOutcomeIds);
 
   const base = {
     id: entry.conditionId,
@@ -361,6 +561,8 @@ function mapCatalogueEntryToMarketDetail(entry: MarketCatalogueEntry): MarketDet
     divisibility,
     baseUnit: marketUnitLabel(baseAsset),
     registeredPrimitiveOutcomeIds,
+    latestConfirmedTrades,
+    latestConfirmedTradesValid,
     mint: {
       collateral: baseAsset,
       keysetCount: 0,
@@ -397,13 +599,19 @@ function mapCatalogueEntryToMarketDetail(entry: MarketCatalogueEntry): MarketDet
     return {
       ...base,
       type: "yesno",
-      currentOdds: resolveYesNoDetailOdds(),
+      currentOdds: yesNoOdds,
     };
   }
+
+  const categoricalOutcomes = mappedOutcomes.map((outcome) => ({
+    ...outcome,
+    odds: categoricalOdds[outcome.id] ?? null,
+  }));
 
   return {
     ...base,
     type: "categorical",
+    outcomes: categoricalOutcomes,
     outcomePriceHistories: {},
     outcomeOrderBooks: {},
   };

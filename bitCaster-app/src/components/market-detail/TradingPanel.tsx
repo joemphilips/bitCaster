@@ -23,6 +23,10 @@ import {
   normalizeMarketDivisibility,
 } from "@bitcaster/client-sdk/marketUnits";
 
+function formatNullablePrice(price: number | null, divisibility: number, noTrades: string): string {
+  return price == null ? noTrades : formatPricePercentage(price, divisibility);
+}
+
 interface TradingPanelProps {
   market: MarketDetail;
   tradeSelection: TradeSelection | null;
@@ -168,7 +172,7 @@ function YesNoOutcomes({
           {isSell ? t("trade.sellYes") : t("common.yes")}
         </div>
         <div className="text-2xl font-bold text-slate-900 dark:text-white">
-          {market.currentOdds.yes.toFixed(2)}%
+          {formatNullablePrice(market.currentOdds.yes, market.divisibility, t("market.noTrades"))}
         </div>
       </button>
 
@@ -186,7 +190,7 @@ function YesNoOutcomes({
           {isSell ? t("trade.sellNo") : t("common.no")}
         </div>
         <div className="text-2xl font-bold text-slate-900 dark:text-white">
-          {market.currentOdds.no.toFixed(2)}%
+          {formatNullablePrice(market.currentOdds.no, market.divisibility, t("market.noTrades"))}
         </div>
       </button>
     </div>
@@ -226,7 +230,7 @@ function CategoricalOutcomes({
                 {outcome.label}
               </span>
               <span className="text-sm font-bold text-slate-600 dark:text-slate-400">
-                {outcome.odds.toFixed(2)}%
+                {formatNullablePrice(outcome.odds, market.divisibility, t("market.noTrades"))}
               </span>
             </div>
             <div className="grid grid-cols-2 gap-2">
@@ -282,7 +286,9 @@ function NumericOutcomes({
     return `${value.toLocaleString()} ${market.unit}`;
   };
   const rangePercent =
-    ((market.currentPrice - market.loBound) / (market.hiBound - market.loBound)) * 100;
+    market.currentPrice == null
+      ? null
+      : ((market.currentPrice - market.loBound) / (market.hiBound - market.loBound)) * 100;
 
   return (
     <div className="space-y-4">
@@ -292,7 +298,7 @@ function NumericOutcomes({
           {t("market.impliedPrice")}
         </div>
         <div className="text-3xl font-bold text-slate-900 dark:text-white">
-          {formatPrice(market.currentPrice)}
+          {market.currentPrice == null ? t("market.noTrades") : formatPrice(market.currentPrice)}
         </div>
       </div>
 
@@ -303,14 +309,20 @@ function NumericOutcomes({
           <span>{formatPrice(market.hiBound)}</span>
         </div>
         <div className="relative h-2 bg-slate-200 dark:bg-slate-700 rounded-full overflow-hidden">
-          <div
-            className="absolute inset-y-0 left-0 bg-blue-500 rounded-full"
-            style={{ width: `${rangePercent}%` }}
-          />
-          <div
-            className="absolute top-1/2 -translate-y-1/2 w-3 h-3 bg-white border-2 border-blue-500 rounded-full shadow"
-            style={{ left: `${rangePercent}%`, transform: "translate(-50%, -50%)" }}
-          />
+          {rangePercent != null && (
+            <>
+              <div
+                data-testid="numeric-range-fill"
+                className="absolute inset-y-0 left-0 bg-blue-500 rounded-full"
+                style={{ width: `${rangePercent}%` }}
+              />
+              <div
+                data-testid="numeric-range-marker"
+                className="absolute top-1/2 -translate-y-1/2 w-3 h-3 bg-white border-2 border-blue-500 rounded-full shadow"
+                style={{ left: `${rangePercent}%`, transform: "translate(-50%, -50%)" }}
+              />
+            </>
+          )}
         </div>
       </div>
 

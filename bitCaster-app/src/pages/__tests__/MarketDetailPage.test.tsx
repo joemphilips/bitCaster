@@ -112,7 +112,27 @@ vi.mock("@/lib/marketHub", () => ({
   onOrderCancelled: vi.fn(() => () => {}),
 }));
 
-vi.mock("@/lib/markets", () => ({
+vi.mock("@/lib/markets", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/markets")>("@/lib/markets");
+  return {
+  ...actual,
+  validateLatestConfirmedTrades: actual.validateLatestConfirmedTrades,
+  deriveYesNoOdds: (trades: LatestConfirmedTrade[], allowed: readonly string[]) => {
+    const latest = [...trades].sort((a, b) => a.eventOrder.localeCompare(b.eventOrder)).at(-1);
+    if (!latest) return { yes: null, no: null };
+    const yes = allowed.find((id) => id.toLowerCase() === "yes");
+    const no = allowed.find((id) => id.toLowerCase() === "no");
+    if (!yes || !no) return { yes: null, no: null };
+    return {
+      yes: latest.primitiveOutcomeId === yes ? latest.priceTick : latest.divisibility - latest.priceTick,
+      no: latest.primitiveOutcomeId === no ? latest.priceTick : latest.divisibility - latest.priceTick,
+    };
+  },
+  deriveCategoricalOdds: (trades: LatestConfirmedTrade[], outcomes: readonly string[]) =>
+    Object.fromEntries(outcomes.map((outcome) => [
+      outcome,
+      trades.find((trade) => trade.primitiveOutcomeId === outcome)?.priceTick ?? null,
+    ])),
   fetchMarketDetail: vi.fn(),
   fetchMarketComments: vi.fn().mockResolvedValue({ comments: [] }),
   fetchMarketPriceHistory: vi.fn().mockResolvedValue({ data: [], timeframe: "7d" }),
@@ -136,7 +156,8 @@ vi.mock("@/lib/markets", () => ({
   priceNumeratorToPercent: (price: number, divisibility = 100) => (price / divisibility) * 100,
   signTradeComment: vi.fn(),
   windowPriceHistory: mocks.windowPriceHistory,
-}));
+  };
+});
 
 vi.mock("@/lib/browserCtfRangeOrderSubmission", () => ({
   previewBrowserCtfRangeOrderFees: mocks.previewBrowserCtfRangeOrderFees,
@@ -700,7 +721,7 @@ describe("marketDetailDataReducer", () => {
     expect(view?.comments).toEqual([loadedComment]);
   });
 
-  it("aligns yes/no displayed odds with the latest backend price history point", () => {
+  it("does not use price history as current market price authority", () => {
     const initial = yesNoMarket({
       currentOdds: { yes: 50, no: 50 },
       priceHistory: {
@@ -713,11 +734,11 @@ describe("marketDetailDataReducer", () => {
 
     expect(view?.type).toBe("yesno");
     if (view?.type === "yesno") {
-      expect(view.currentOdds).toEqual({ yes: 80, no: 20 });
+      expect(view.currentOdds).toEqual({ yes: null, no: null });
     }
   });
 
-  it("aligns categorical outcome odds with the latest backend outcome histories", () => {
+  it("does not use independent price histories as categorical current prices", () => {
     const initial = categoricalMarket() as CategoricalMarketDetail;
     initial.outcomes = [
       { id: "outcome-0", label: "Alice", odds: 33.33 },
@@ -747,7 +768,7 @@ describe("marketDetailDataReducer", () => {
 
     expect(view?.type).toBe("categorical");
     if (view?.type === "categorical") {
-      expect(view.outcomes.map((outcome) => outcome.odds)).toEqual([80, 10, 10]);
+      expect(view.outcomes.map((outcome) => outcome.odds)).toEqual([null, null, null]);
     }
   });
 
@@ -857,7 +878,7 @@ describe("marketDetailDataReducer", () => {
     expect(view?.orderBook).toBe(liveBook);
   });
 
-  it("clears the live confirmed-trade overlay after an authoritative REST snapshot", () => {
+  it("retains a newer live trade when a stale REST snapshot completes", () => {
     const initial = yesNoMarket();
     const initialState = createMarketDetailDataState(initial);
     expect(initialState.registeredPrimitiveOutcomeIdsByConditionId[initial.id]).toEqual([
@@ -883,10 +904,59 @@ describe("marketDetailDataReducer", () => {
 
     const repaired = marketDetailDataReducer(stateWithLive, {
       type: "marketSnapshotLoaded",
-      detail: { ...initial, state: "closed" },
+      detail: {
+        ...initial,
+        state: "closed",
+        latestConfirmedTrades: [{
+          ...liveTrade,
+          fillId: "00000000-0000-0000-0000-000000000002",
+          eventOrder: "0000",
+        }],
+      },
     });
 
-    expect(repaired.confirmedTradesByConditionId[initial.id]).toBeUndefined();
+    expect(repaired.confirmedTradesByConditionId[initial.id]).toEqual([liveTrade]);
+    const composed = composeMarketDetail(repaired, "7d");
+    expect(composed?.latestConfirmedTrades).toEqual([liveTrade]);
+    expect(composed && composed.type === "yesno" ? composed.currentOdds : null).toEqual({
+      yes: 6200,
+      no: 3800,
+    });
+  });
+
+  it("ignores a malformed live delta without erasing the confirmed price", () => {
+    const confirmed: LatestConfirmedTrade = {
+      primitiveOutcomeId: "YES",
+      fillId: "00000000-0000-0000-0000-000000000021",
+      executedAt: "2026-08-18T00:00:00Z",
+      eventOrder: "0001",
+      priceTick: 6100,
+      divisibility: 10_000,
+      faceAmountSubunits: 1000,
+    };
+    const initial = yesNoMarket({
+      latestConfirmedTrades: [confirmed],
+      latestConfirmedTradesValid: true,
+    });
+    const initialState = createMarketDetailDataState(initial);
+    const stateAfterMalformed = marketDetailDataReducer(initialState, {
+      type: "confirmedTradeRecorded",
+      conditionId: initial.id,
+      trade: {
+        ...confirmed,
+        fillId: "malformed-fill-id",
+        eventOrder: "0002",
+        priceTick: 9000,
+      },
+    });
+
+    expect(stateAfterMalformed.confirmedTradesByConditionId[initial.id]).toEqual([confirmed]);
+    const composed = composeMarketDetail(stateAfterMalformed, "7d");
+    expect(composed?.latestConfirmedTrades).toEqual([confirmed]);
+    expect(composed && composed.type === "yesno" ? composed.currentOdds : null).toEqual({
+      yes: 6100,
+      no: 3900,
+    });
   });
 });
 

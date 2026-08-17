@@ -21,7 +21,10 @@ import {
   generateNip98Header,
   getParticipationScore,
   mapSnapshotToOrderBook,
+  deriveCategoricalOdds,
+  deriveYesNoOdds,
   signTradeComment,
+  validateLatestConfirmedTrades,
   windowPriceHistory,
   type MarketPriceHistoryResponse,
   type MarketCommentsResponse,
@@ -42,7 +45,11 @@ import {
   resolveOutcomeSets,
 } from "@/lib/outcomeSets";
 import { useMarketStatusLive } from "@/hooks/useMarketStatusLive";
-import { defaultLimitPriceForDivisibility, useMarketPrice } from "@/hooks/useMarketPrice";
+import {
+  defaultLimitPriceForDivisibility,
+  deriveNumericCurrentValue,
+  useMarketPrice,
+} from "@/hooks/useMarketPrice";
 import {
   applyConfirmedTradeDelta,
   joinMarket,
@@ -470,46 +477,6 @@ function historiesByOutcomeSetFromResponse(
   };
 }
 
-function latestHistoryPrice(history: PriceHistory | undefined): number | null {
-  const latest = history?.data.at(-1)?.price;
-  return typeof latest === "number" && Number.isFinite(latest)
-    ? Math.max(0, Math.min(100, latest))
-    : null;
-}
-
-function applyLatestHistoryOdds(
-  market: MarketDetailCore,
-  historiesByOutcomeSetId: Record<string, PriceHistory>,
-): MarketDetailCore {
-  if (market.type === "yesno") {
-    const primary = primaryOutcomeSetId(market);
-    const yes = latestHistoryPrice(primary ? historiesByOutcomeSetId[primary] : undefined);
-    if (yes == null) return market;
-    return {
-      ...market,
-      currentOdds: {
-        yes,
-        no: Math.max(0, Math.min(100, 100 - yes)),
-      },
-    };
-  }
-
-  if (market.type === "categorical") {
-    return {
-      ...market,
-      outcomes: market.outcomes.map((outcome) => ({
-        ...outcome,
-        odds:
-          latestHistoryPrice(
-            historiesByOutcomeSetId[outcome.label] ?? historiesByOutcomeSetId[outcome.id],
-          ) ?? outcome.odds,
-      })),
-    };
-  }
-
-  return market;
-}
-
 function sourceMapFor<T>(
   slices: Record<string, T>,
   source: CanonicalSliceSource,
@@ -582,6 +549,97 @@ function commentsFromResponse(
   return applyMarketComments(market, response).comments;
 }
 
+function compareConfirmedTradeOrder(left: LatestConfirmedTrade, right: LatestConfirmedTrade): number {
+  if (left.eventOrder === right.eventOrder) return 0;
+  return left.eventOrder < right.eventOrder ? -1 : 1;
+}
+
+/** Merge a REST snapshot with the session overlay without allowing stale REST
+ * completion to move a newer committed live fill backward. */
+function mergeConfirmedTradeRecords(
+  current: readonly LatestConfirmedTrade[],
+  incoming: readonly LatestConfirmedTrade[],
+): LatestConfirmedTrade[] {
+  const byOutcome = new Map<string, LatestConfirmedTrade>();
+  const byFill = new Map<string, LatestConfirmedTrade>();
+  const add = (trade: LatestConfirmedTrade) => {
+    const duplicateFill = byFill.get(trade.fillId);
+    if (duplicateFill) {
+      if (compareConfirmedTradeOrder(duplicateFill, trade) >= 0) return;
+      byOutcome.delete(duplicateFill.primitiveOutcomeId);
+    }
+    const previous = byOutcome.get(trade.primitiveOutcomeId);
+    if (previous && compareConfirmedTradeOrder(previous, trade) >= 0) return;
+    if (previous) byFill.delete(previous.fillId);
+    byOutcome.set(trade.primitiveOutcomeId, trade);
+    byFill.set(trade.fillId, trade);
+  };
+  for (const trade of current) add(trade);
+  for (const trade of incoming) add(trade);
+  return [...byOutcome.values()].sort((left, right) => {
+    if (left.primitiveOutcomeId === right.primitiveOutcomeId) {
+      return compareConfirmedTradeOrder(left, right);
+    }
+    return left.primitiveOutcomeId < right.primitiveOutcomeId ? -1 : 1;
+  });
+}
+
+function applyConfirmedTradePrices(
+  market: MarketDetailCore,
+  confirmedTrades: readonly LatestConfirmedTrade[],
+): MarketDetailCore {
+  // Keep the composed market's bounded trade representation in lockstep with
+  // the reducer overlay. Consumers such as useMarketPrice must see the same
+  // monotonic state that the detail projections render.
+  const withConfirmedTrades = {
+    ...market,
+    latestConfirmedTrades: [...confirmedTrades],
+  } as MarketDetailCore;
+  if (market.latestConfirmedTradesValid === false) {
+    if (market.type === "yesno") {
+      return { ...withConfirmedTrades, currentOdds: { yes: null, no: null } } as MarketDetailCore;
+    }
+    if (market.type === "categorical") {
+      return {
+        ...withConfirmedTrades,
+        outcomes: market.outcomes.map((outcome) => ({ ...outcome, odds: null })),
+      } as MarketDetailCore;
+    }
+    return { ...withConfirmedTrades, currentPrice: null } as MarketDetailCore;
+  }
+  if (market.type === "yesno") {
+    return {
+      ...withConfirmedTrades,
+      currentOdds: deriveYesNoOdds(
+        confirmedTrades,
+        market.registeredPrimitiveOutcomeIds ?? [],
+      ),
+    } as MarketDetailCore;
+  }
+
+  if (market.type === "categorical") {
+    const odds = deriveCategoricalOdds(
+      confirmedTrades,
+      market.registeredPrimitiveOutcomeIds ?? market.outcomes.map((outcome) => outcome.id),
+    );
+    return {
+      ...withConfirmedTrades,
+      outcomes: market.outcomes.map((outcome) => ({
+        ...outcome,
+        odds: odds[outcome.id] ?? null,
+      })),
+    } as MarketDetailCore;
+  }
+
+  return {
+    ...withConfirmedTrades,
+    currentPrice: deriveNumericCurrentValue({
+      ...market,
+      latestConfirmedTrades: [...confirmedTrades],
+    }),
+  } as MarketDetailCore;
+}
+
 export function createMarketDetailDataState(detail: MarketDetailType): MarketDetailDataState {
   const booksByOutcomeSetId = booksByOutcomeSetFromDetail(detail);
   const historiesByOutcomeSetId = historiesByOutcomeSetFromDetail(
@@ -591,7 +649,9 @@ export function createMarketDetailDataState(detail: MarketDetailType): MarketDet
   return {
     marketId: detail.id,
     core: marketCoreFromDetail(detail),
-    confirmedTradesByConditionId: {},
+    confirmedTradesByConditionId: {
+      [detail.id]: detail.latestConfirmedTrades ?? [],
+    },
     registeredPrimitiveOutcomeIdsByConditionId: {
       [detail.id]: detail.registeredPrimitiveOutcomeIds ?? [],
     },
@@ -629,8 +689,16 @@ function withSnapshotLoaded(
     return createMarketDetailDataState(detail);
   }
 
-  const confirmedTradesByConditionId = { ...state.confirmedTradesByConditionId };
-  delete confirmedTradesByConditionId[detail.id];
+  const currentConfirmedTrades = state.confirmedTradesByConditionId[detail.id] ?? [];
+  const incomingConfirmedTrades = validateLatestConfirmedTrades(
+    detail.latestConfirmedTrades,
+    detail.registeredPrimitiveOutcomeIds ?? [],
+    detail.divisibility,
+  );
+  const confirmedTradesByConditionId = {
+    ...state.confirmedTradesByConditionId,
+    [detail.id]: mergeConfirmedTradeRecords(currentConfirmedTrades, incomingConfirmedTrades),
+  };
   const registeredPrimitiveOutcomeIdsByConditionId = {
     ...state.registeredPrimitiveOutcomeIdsByConditionId,
     [detail.id]: detail.registeredPrimitiveOutcomeIds ?? [],
@@ -790,6 +858,15 @@ export function marketDetailDataReducer(
       const current = state.confirmedTradesByConditionId[action.conditionId] ?? [];
       const allowedPrimitiveOutcomeIds =
         state.registeredPrimitiveOutcomeIdsByConditionId[action.conditionId] ?? [];
+      // SignalR is a best-effort overlay, but it still crosses the same
+      // authority boundary as REST. Reject malformed wire facts before the
+      // merge can turn a validator failure into an empty no-trade snapshot.
+      const incomingValidated = validateLatestConfirmedTrades(
+        [action.trade],
+        allowedPrimitiveOutcomeIds,
+        state.core?.divisibility ?? 0,
+      );
+      if (incomingValidated.length !== 1 || incomingValidated[0] !== action.trade) return state;
       const next = applyConfirmedTradeDelta(
         action.conditionId,
         allowedPrimitiveOutcomeIds,
@@ -799,11 +876,23 @@ export function marketDetailDataReducer(
           latestConfirmedTrade: action.trade,
         },
       );
+      const canonicalNext = [...next].sort((left, right) => {
+        if (left.primitiveOutcomeId === right.primitiveOutcomeId) {
+          return compareConfirmedTradeOrder(left, right);
+        }
+        return left.primitiveOutcomeId < right.primitiveOutcomeId ? -1 : 1;
+      });
+      const validated = validateLatestConfirmedTrades(
+        canonicalNext,
+        allowedPrimitiveOutcomeIds,
+        state.core?.divisibility ?? 0,
+      );
+      if (validated.length !== canonicalNext.length) return state;
       return {
         ...state,
         confirmedTradesByConditionId: {
           ...state.confirmedTradesByConditionId,
-          [action.conditionId]: next,
+          [action.conditionId]: validated,
         },
       };
     }
@@ -843,7 +932,8 @@ export function composeMarketDetail(
   const fallbackHistory = emptyPriceHistory(timeframe);
   const priceHistory = (primary ? historiesForTimeframe[primary] : undefined) ?? fallbackHistory;
   const booksByOutcomeSetId = state.booksByMarketId[core.id] ?? {};
-  const oddsAlignedCore = applyLatestHistoryOdds(core, historiesForTimeframe);
+  const confirmedTrades = state.confirmedTradesByConditionId[core.id] ?? [];
+  const oddsAlignedCore = applyConfirmedTradePrices(core, confirmedTrades);
   const enrichment = state.enrichmentByMarketId[core.id] ?? {
     comments: [],
     recentTrades: [],

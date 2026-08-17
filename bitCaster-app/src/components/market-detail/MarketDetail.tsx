@@ -11,20 +11,27 @@ import { RelatedMarkets } from "./RelatedMarkets";
 import { CommentSection } from "./CommentSection";
 import { canonicalizeOutcomeSet } from "@/lib/outcomeSets";
 import { deriveExecutableOrderBook } from "./orderBookViewModel";
+import { formatPricePercentage } from "@bitcaster/client-sdk/marketUnits";
 
 function formatNumericPrice(value: number, unit: string): string {
   if (unit === "USD") return `$${value.toLocaleString()}`;
   return `${value.toLocaleString()} ${unit}`;
 }
 
-function computeCurrentDisplay(market: MarketDetailProps["market"]): string {
+function computeCurrentDisplay(
+  market: MarketDetailProps["market"],
+  t: (key: string) => string,
+): string {
   const isResolved = market.resolution.status === "resolved";
+  const priceAuthorityUnavailable = market.latestConfirmedTradesValid === false;
 
   if (market.type === "numeric") {
     if (isResolved && market.attestedValue != null) {
       return `Resolved: ${formatNumericPrice(market.attestedValue, market.unit)}`;
     }
-    return formatNumericPrice(market.currentPrice, market.unit);
+    return market.currentPrice == null
+      ? t(priceAuthorityUnavailable ? "market.priceUnavailable" : "market.noTrades")
+      : formatNumericPrice(market.currentPrice, market.unit);
   }
 
   if (isResolved && market.resolution.finalOutcome) {
@@ -32,15 +39,14 @@ function computeCurrentDisplay(market: MarketDetailProps["market"]): string {
   }
 
   if (market.type === "yesno") {
-    const latestPoint = market.priceHistory.data.at(-1);
-    const latestYesPrice =
-      latestPoint && Number.isFinite(latestPoint.price)
-        ? latestPoint.price
-        : market.currentOdds.yes;
-    return `${latestYesPrice.toFixed(2)}%`;
+    return market.currentOdds.yes == null
+      ? t(priceAuthorityUnavailable ? "market.priceUnavailable" : "market.noTrades")
+      : formatPricePercentage(market.currentOdds.yes, market.divisibility);
   }
 
-  return "";
+  return market.outcomes.some((outcome) => outcome.odds != null)
+    ? ""
+    : t(priceAuthorityUnavailable ? "market.priceUnavailable" : "market.noTrades");
 }
 
 function yesNoOutcomes(market: MarketDetailProps["market"]) {
@@ -108,7 +114,7 @@ export function MarketDetail({
   const outcomeBookKey = (label: string) => canonicalizeOutcomeSet([label]);
 
   // Compute current display for price chart
-  const currentDisplay = computeCurrentDisplay(market);
+  const currentDisplay = computeCurrentDisplay(market, t);
 
   // Determine market state per ADR-009 (Amendment 2026-05-04 — detail-page
   // compliance). The detail page reads engine `state` for lifecycle
