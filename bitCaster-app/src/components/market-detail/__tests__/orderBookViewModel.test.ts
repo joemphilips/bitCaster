@@ -79,6 +79,21 @@ describe("deriveExecutableOrderBook", () => {
     ).toBe(true);
   });
 
+  it("counts complementary BUY liquidity when the selected direct book is absent", () => {
+    expect(
+      hasExecutableLiquidity({
+        side: "Buy",
+        divisibility: 10_000,
+        book: null,
+        complementBook: {
+          bids: [{ price: 3_000, amount: 100, total: 100 }],
+          asks: [],
+          spread: 0,
+        },
+      }),
+    ).toBe(true);
+  });
+
   it("counts only positive direct bids as SELL liquidity", () => {
     expect(
       hasExecutableLiquidity({
@@ -136,6 +151,77 @@ describe("deriveExecutableOrderBook", () => {
         },
       }).asks,
     ).toEqual([]);
+  });
+
+  it("fails closed for malformed direct and complementary levels", () => {
+    const invalidPrices = [
+      0,
+      10_000,
+      10_001,
+      1.5,
+      Number.NaN,
+      Number.POSITIVE_INFINITY,
+      Number.MAX_SAFE_INTEGER + 1,
+    ];
+    for (const price of invalidPrices) {
+      expect(
+        hasExecutableLiquidity({
+          side: "Buy",
+          divisibility: 10_000,
+          book: {
+            bids: [],
+            asks: [{ price, amount: 100, total: 100 }],
+            spread: 0,
+          },
+        }),
+      ).toBe(false);
+      expect(
+        hasExecutableLiquidity({
+          side: "Buy",
+          divisibility: 10_000,
+          book: null,
+          complementBook: {
+            bids: [{ price, amount: 100, total: 100 }],
+            asks: [],
+            spread: 0,
+          },
+        }),
+      ).toBe(false);
+    }
+
+    const invalidAmounts = [
+      0,
+      -1,
+      1.5,
+      Number.NaN,
+      Number.POSITIVE_INFINITY,
+      Number.MAX_SAFE_INTEGER + 1,
+    ];
+    for (const amount of invalidAmounts) {
+      expect(
+        hasExecutableLiquidity({
+          side: "Buy",
+          divisibility: 10_000,
+          book: {
+            bids: [],
+            asks: [{ price: 5_000, amount, total: amount }],
+            spread: 0,
+          },
+        }),
+      ).toBe(false);
+      expect(
+        hasExecutableLiquidity({
+          side: "Buy",
+          divisibility: 10_000,
+          book: null,
+          complementBook: {
+            bids: [{ price: 5_000, amount, total: amount }],
+            asks: [],
+            spread: 0,
+          },
+        }),
+      ).toBe(false);
+    }
   });
 
   it("uses the default D=10000 denominator for complement bids", () => {
