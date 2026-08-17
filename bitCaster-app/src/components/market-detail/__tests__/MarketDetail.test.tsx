@@ -97,6 +97,48 @@ describe("MarketDetail", () => {
     expect(screen.queryByText("0.00%")).not.toBeInTheDocument();
   });
 
+  it("keeps the disabled numeric current value unavailable", () => {
+    const numericMarket = {
+      ...makeMarket(),
+      type: "numeric" as const,
+      currentPrice: 75,
+      loBound: 0,
+      hiBound: 100,
+      precision: 2,
+      unit: "USD",
+      registeredPrimitiveOutcomeIds: ["HI", "LO"],
+      latestConfirmedTradesValid: true,
+      latestConfirmedTrades: [
+        {
+          primitiveOutcomeId: "HI",
+          fillId: "00000000-0000-0000-0000-000000000010",
+          executedAt: "2030-01-01T00:00:00Z",
+          eventOrder: "0001",
+          priceTick: 7_500,
+          divisibility: 10_000,
+          faceAmountSubunits: 100,
+        },
+      ],
+    } as unknown as MarketDetailType;
+
+    render(
+      <MarketDetail
+        market={numericMarket}
+        chartTimeframe="7d"
+        tradeSelection={null}
+        tradeAmount={0}
+        tradePreview={null}
+        tradeSide="Buy"
+        orderType="market"
+        limitOrderPreview={null}
+        limitPrice={5000}
+      />,
+    );
+
+    expect(screen.getByText("market.priceUnavailable")).toBeInTheDocument();
+    expect(screen.queryByText("$75.00")).not.toBeInTheDocument();
+  });
+
   it("renders one order book for a yes/no market", () => {
     orderBookSectionMock.mockClear();
     render(

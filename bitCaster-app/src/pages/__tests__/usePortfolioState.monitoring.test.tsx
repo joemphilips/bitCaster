@@ -434,6 +434,99 @@ describe("usePortfolioState monitoring facade", () => {
     expect(mapped.chart).toEqual([]);
   });
 
+  it.each(["incomplete", "building"] as const)(
+    "keeps a non-null total unknown while the summary is %s",
+    (flag) => {
+      const response = portfolioResponse();
+      response.summary.unvaluedAssetCount = 0;
+      response.summary.incomplete = false;
+      response.summary.building = false;
+      response.summary[flag] = true;
+      response.assets.incomplete = false;
+      response.assets.building = false;
+      response.assets.nextCursor = null;
+
+      const mapped = mapMonitoringPortfolio(response);
+
+      expect(mapped.stats.totalValueKnown).toBe(false);
+      expect(mapped.stats.totalValueByUnit).toBeUndefined();
+      expect(mapped.chart).toEqual([]);
+    },
+  );
+
+  it.each(["incomplete", "building"] as const)(
+    "keeps positions unknown while the asset page is %s",
+    (flag) => {
+      const response = portfolioResponse();
+      response.summary.unvaluedAssetCount = 0;
+      response.summary.incomplete = false;
+      response.summary.building = false;
+      response.assets.incomplete = false;
+      response.assets.building = false;
+      response.assets[flag] = true;
+
+      const mapped = mapMonitoringPortfolio(response);
+
+      expect(mapped.stats.positionsValueKnown).toBe(false);
+      expect(mapped.stats.totalValueKnown).toBe(true);
+      expect(mapped.stats.totalValueByUnit).toEqual([{ unit: "sat", amount: 12_000 }]);
+    },
+  );
+
+  it("keeps positions unknown until all asset pages are loaded", () => {
+    const response = portfolioResponse();
+    response.summary.unvaluedAssetCount = 0;
+    response.summary.incomplete = false;
+    response.summary.building = false;
+    response.assets.incomplete = false;
+    response.assets.building = false;
+    response.assets.nextCursor = "cursor-next";
+
+    const mapped = mapMonitoringPortfolio(response);
+
+    expect(mapped.stats.positionsValueKnown).toBe(false);
+    expect(mapped.monitoring.incomplete).toBe(true);
+  });
+
+  it.each(["incomplete", "building"] as const)(
+    "does not emit a chart while history is %s",
+    (flag) => {
+      const response = portfolioResponse();
+      response.summary.unvaluedAssetCount = 0;
+      response.summary.incomplete = false;
+      response.summary.building = false;
+      response.assets.incomplete = false;
+      response.assets.building = false;
+      response.assets.nextCursor = null;
+      response.history[flag] = true;
+
+      const mapped = mapMonitoringPortfolio(response);
+
+      expect(mapped.stats.totalValueKnown).toBe(true);
+      expect(mapped.chart).toEqual([]);
+    },
+  );
+
+  it("does not filter unknown history points into a partial chart", () => {
+    const response = portfolioResponse();
+    response.summary.unvaluedAssetCount = 0;
+    response.summary.incomplete = false;
+    response.summary.building = false;
+    response.assets.incomplete = false;
+    response.assets.building = false;
+    response.assets.nextCursor = null;
+    response.history.points = [
+      { asOf: "2026-08-09T00:00:00.000Z", estimatedTotalValueMsat: 12_000 },
+      { asOf: "2026-08-10T00:00:00.000Z", estimatedTotalValueMsat: null },
+      { asOf: "2026-08-11T00:00:00.000Z", estimatedTotalValueMsat: 13_000 },
+    ];
+
+    const mapped = mapMonitoringPortfolio(response);
+
+    expect(mapped.stats.totalValueKnown).toBe(true);
+    expect(mapped.chart).toEqual([]);
+  });
+
   it("keeps local rows when authentication or monitoring fails", async () => {
     mocks.getPortfolio.mockRejectedValue(new Error("signer unavailable"));
     const { result } = renderHook(() => usePortfolioState());

@@ -14,6 +14,8 @@ interface PriceChartProps {
   currentDisplay?: string;
   comments?: Comment[];
   unit?: string;
+  /** Numeric markets remain disabled until a native numeric trade exists. */
+  disabledNumeric?: boolean;
 }
 
 const TIMEFRAMES: ChartTimeframe[] = ["1h", "24h", "7d", "30d", "all"];
@@ -160,6 +162,7 @@ export function PriceChart({
   outcomePriceHistories,
   outcomes,
   currentDisplay,
+  disabledNumeric = false,
 }: PriceChartProps) {
   const { t } = useTranslation();
   const chartEl = useRef<HTMLDivElement | null>(null);
@@ -167,8 +170,11 @@ export function PriceChart({
   const resizeObserverRef = useRef<ResizeObserver | null>(null);
 
   const series = useMemo(
-    () => buildSeries({ priceHistory, timeframe: chartTimeframe, outcomePriceHistories, outcomes }),
-    [priceHistory, chartTimeframe, outcomePriceHistories, outcomes],
+    () =>
+      disabledNumeric
+        ? []
+        : buildSeries({ priceHistory, timeframe: chartTimeframe, outcomePriceHistories, outcomes }),
+    [priceHistory, chartTimeframe, outcomePriceHistories, outcomes, disabledNumeric],
   );
   const chartData = useMemo(() => alignSeries(series), [series]);
   const xScale = useMemo(

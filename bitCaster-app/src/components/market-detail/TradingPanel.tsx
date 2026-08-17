@@ -317,16 +317,16 @@ function NumericOutcomes({
     if (market.unit === "USD") return `$${formatted}`;
     return `${formatted} ${market.unit}`;
   };
+  const resolvedNumericValue =
+    market.resolution.status === "resolved" && market.attestedValue != null
+      ? market.attestedValue
+      : null;
   const rangePercent =
-    market.currentPrice == null
+    resolvedNumericValue == null
       ? null
-      : ((market.currentPrice - market.loBound) / (market.hiBound - market.loBound)) * 100;
+      : ((resolvedNumericValue - market.loBound) / (market.hiBound - market.loBound)) * 100;
   const currentPriceLabel =
-    market.latestConfirmedTradesValid !== true
-      ? t("market.priceUnavailable")
-      : market.currentPrice == null
-        ? t("market.noTrades")
-        : formatPrice(market.currentPrice);
+    resolvedNumericValue == null ? t("market.priceUnavailable") : formatPrice(resolvedNumericValue);
 
   return (
     <div className="space-y-4">

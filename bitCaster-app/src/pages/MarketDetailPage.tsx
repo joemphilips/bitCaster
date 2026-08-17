@@ -47,7 +47,6 @@ import {
 import { useMarketStatusLive } from "@/hooks/useMarketStatusLive";
 import {
   defaultLimitPriceForDivisibility,
-  deriveNumericCurrentValue,
   useMarketPrice,
 } from "@/hooks/useMarketPrice";
 import {
@@ -674,13 +673,11 @@ function applyConfirmedTradePrices(
     } as MarketDetailCore;
   }
 
-  return {
-    ...withConfirmedTrades,
-    currentPrice: deriveNumericCurrentValue({
-      ...market,
-      latestConfirmedTrades: [...confirmedTrades],
-    }),
-  } as MarketDetailCore;
+  // Numeric markets have no public authoritative trade representation yet.
+  // HI/LO probability ticks must not be interpolated into a native numeric
+  // value, so keep the current value unavailable until that representation
+  // exists in the contract.
+  return { ...withConfirmedTrades, currentPrice: null } as MarketDetailCore;
 }
 
 export function createMarketDetailDataState(detail: MarketDetailType): MarketDetailDataState {
