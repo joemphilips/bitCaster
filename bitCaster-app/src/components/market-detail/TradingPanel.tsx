@@ -306,14 +306,27 @@ function NumericOutcomes({
 }) {
   const { t } = useTranslation();
   const isSell = tradeSide === "Sell";
+  const numericPrecision = Number.isFinite(market.precision)
+    ? Math.min(Math.max(Math.trunc(market.precision), 0), 8)
+    : 0;
   const formatPrice = (value: number) => {
-    if (market.unit === "USD") return `$${value.toLocaleString()}`;
-    return `${value.toLocaleString()} ${market.unit}`;
+    const formatted = value.toLocaleString(undefined, {
+      minimumFractionDigits: numericPrecision,
+      maximumFractionDigits: numericPrecision,
+    });
+    if (market.unit === "USD") return `$${formatted}`;
+    return `${formatted} ${market.unit}`;
   };
   const rangePercent =
     market.currentPrice == null
       ? null
       : ((market.currentPrice - market.loBound) / (market.hiBound - market.loBound)) * 100;
+  const currentPriceLabel =
+    market.latestConfirmedTradesValid !== true
+      ? t("market.priceUnavailable")
+      : market.currentPrice == null
+        ? t("market.noTrades")
+        : formatPrice(market.currentPrice);
 
   return (
     <div className="space-y-4">
@@ -323,13 +336,7 @@ function NumericOutcomes({
           {t("market.impliedPrice")}
         </div>
         <div className="text-3xl font-bold text-slate-900 dark:text-white">
-          {formatNullablePrice(
-            market.currentPrice,
-            market.divisibility,
-            market,
-            t("market.noTrades"),
-            t("market.priceUnavailable"),
-          )}
+          {currentPriceLabel}
         </div>
       </div>
 

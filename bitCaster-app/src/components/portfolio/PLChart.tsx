@@ -18,7 +18,8 @@ export function PLChart({
   totalValueKnown,
   onTimeRangeChange,
 }: PLChartProps) {
-  const data = chartData[selectedTimeRange];
+  const valuationKnown = totalValueKnown !== false;
+  const data = valuationKnown ? chartData[selectedTimeRange] : [];
   const currentPL = data.length > 0 ? data[data.length - 1].cumulativePL : 0;
   const startPL = data.length > 0 ? data[0].cumulativePL : 0;
   const periodChange = currentPL - startPL;
@@ -64,7 +65,7 @@ export function PLChart({
             {formatMarketSubunits(currentPL, "sat")}
           </div>
         )}
-        {data.length > 0 && (
+        {valuationKnown && data.length > 0 && (
           <div
             className={`text-sm font-mono ${periodPositive ? "text-emerald-500" : "text-rose-500"}`}
           >
@@ -76,7 +77,11 @@ export function PLChart({
 
       {/* SVG Chart */}
       <div className="relative h-32 bg-slate-50 dark:bg-slate-900/50 rounded-xl overflow-hidden mb-3">
-        {data.length === 0 ? (
+        {!valuationKnown ? (
+          <div className="absolute inset-0 flex items-center justify-center text-amber-600 dark:text-amber-300 text-sm">
+            —
+          </div>
+        ) : data.length === 0 ? (
           <div className="absolute inset-0 flex items-center justify-center text-slate-400 dark:text-slate-500 text-sm">
             No data
           </div>
