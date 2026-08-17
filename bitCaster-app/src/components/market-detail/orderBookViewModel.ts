@@ -59,15 +59,17 @@ export function hasExecutableLiquidity(input: {
   side: ExecutableTradeSide;
 }): boolean {
   const divisibility = parseMarketDivisibility(input.divisibility);
-  if (divisibility === null || !input.book) return false;
+  if (divisibility === null) return false;
 
   if (input.side === "Sell") {
-    return input.book.bids.some(isPositiveExecutableOrder);
+    return input.book?.bids.some((order) => isPositiveExecutableOrder(order, divisibility)) ?? false;
   }
 
-  if (input.book.asks.some(isPositiveExecutableOrder)) return true;
-  return ordersFromComplementBids(input.complementBook?.bids ?? [], divisibility).some(
-    isPositiveExecutableOrder,
+  if (input.book?.asks.some((order) => isPositiveExecutableOrder(order, divisibility))) {
+    return true;
+  }
+  return ordersFromComplementBids(input.complementBook?.bids ?? [], divisibility).some((order) =>
+    isPositiveExecutableOrder(order, divisibility),
   );
 }
 
@@ -132,18 +134,21 @@ function withSpread(orderBook: OrderBook): OrderBook {
 }
 
 function ordersFromComplementBids(orders: Order[], divisibility: number): Order[] {
-  return orders.map((order) => ({
-    price: divisibility - order.price,
-    amount: order.amount,
-    total: order.amount,
-  }));
+  return orders
+    .filter((order) => isPositiveExecutableOrder(order, divisibility))
+    .map((order) => ({
+      price: divisibility - order.price,
+      amount: order.amount,
+      total: order.amount,
+    }));
 }
 
-function isPositiveExecutableOrder(order: Order): boolean {
+function isPositiveExecutableOrder(order: Order, divisibility: number): boolean {
   return (
-    Number.isFinite(order.price) &&
-    order.price > 0 &&
-    Number.isFinite(order.amount) &&
+    Number.isSafeInteger(order.price) &&
+    order.price >= 1 &&
+    order.price <= divisibility - 1 &&
+    Number.isSafeInteger(order.amount) &&
     order.amount > 0
   );
 }

@@ -11,10 +11,17 @@ import type {
 } from "@/types/market-detail";
 import { useState } from "react";
 
+const { depositFundingAction } = vi.hoisted(() => ({
+  depositFundingAction: vi.fn(),
+}));
+
 vi.mock("@/components/market-creation/DepositStep", () => ({
   DepositStep: ({ conditionId, divisibility }: { conditionId: string; divisibility: number }) => (
     <div data-testid="detail-deposit-step">
       {conditionId}:{divisibility}
+      <button type="button" data-testid="detail-deposit-action" onClick={depositFundingAction}>
+        Fund
+      </button>
     </div>
   ),
 }));
@@ -128,6 +135,42 @@ describe("TradingPanel", () => {
     expect(onTradeConfirm).not.toHaveBeenCalled();
   });
 
+  it("removes durable funding when an active LIQUIDITY tab becomes disabled", async () => {
+    const user = userEvent.setup();
+    depositFundingAction.mockClear();
+    const view = render(
+      <TradingPanel
+        market={makeMarket()}
+        tradeSelection={null}
+        tradeAmount={0}
+        tradePreview={null}
+        tradeSide="Buy"
+        orderType="market"
+      />,
+    );
+
+    await user.click(screen.getByTestId("trade-tab-liquidity"));
+    expect(screen.getByTestId("detail-deposit-step")).toBeInTheDocument();
+    await user.click(screen.getByTestId("detail-deposit-action"));
+    expect(depositFundingAction).toHaveBeenCalledTimes(1);
+
+    view.rerender(
+      <TradingPanel
+        market={makeMarket({ state: "closed" })}
+        tradeSelection={null}
+        tradeAmount={0}
+        tradePreview={null}
+        tradeSide="Buy"
+        orderType="market"
+        disabled
+      />,
+    );
+
+    expect(screen.getByTestId("closed-trade-liquidity")).toBeInTheDocument();
+    expect(screen.queryByTestId("detail-deposit-step")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("detail-deposit-action")).not.toBeInTheDocument();
+  });
+
   it("keeps the BUY body empty when every route is empty before selection", () => {
     render(
       <TradingPanel
@@ -186,6 +229,52 @@ describe("TradingPanel", () => {
     );
     expect(screen.queryByTestId("empty-trade-liquidity")).not.toBeInTheDocument();
     expect(screen.getByTestId("trade-outcome-yes")).toBeInTheDocument();
+  });
+
+  it("shows categorical NO trading from a singleton complement book", () => {
+    const categoricalMarket = {
+      ...makeMarket(),
+      type: "categorical" as const,
+      outcomes: [
+        { id: "outcome-0", label: "Alice", odds: null },
+        { id: "outcome-1", label: "Bob", odds: null },
+        { id: "outcome-2", label: "Carol", odds: null },
+      ],
+      outcomePriceHistories: {},
+      orderBook: emptyBook,
+      outcomeOrderBooks: {
+        Alice: { ...emptyBook, bids: [{ price: 3_000, amount: 100, total: 100 }] },
+      },
+    } as unknown as CategoricalMarketDetail;
+
+    const { unmount } = render(
+      <TradingPanel
+        market={categoricalMarket}
+        tradeSelection={{ side: "no", outcomeId: "outcome-0" }}
+        tradeAmount={0}
+        tradePreview={null}
+        tradeSide="Buy"
+        orderType="market"
+      />,
+    );
+
+    expect(screen.queryByTestId("empty-trade-liquidity")).not.toBeInTheDocument();
+    expect(screen.getByTestId("buy-no-Alice")).toBeInTheDocument();
+
+    unmount();
+    render(
+      <TradingPanel
+        market={categoricalMarket}
+        tradeSelection={null}
+        tradeAmount={0}
+        tradePreview={null}
+        tradeSide="Buy"
+        orderType="market"
+      />,
+    );
+
+    expect(screen.queryByTestId("empty-trade-liquidity")).not.toBeInTheDocument();
+    expect(screen.getByTestId("buy-no-Alice")).toBeInTheDocument();
   });
 
   it("transforms complementary BUY liquidity with the actual one-million divisibility", () => {

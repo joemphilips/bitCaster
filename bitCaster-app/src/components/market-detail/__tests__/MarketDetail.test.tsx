@@ -535,4 +535,40 @@ describe("MarketDetail", () => {
     expect(screen.getByText("No liquidity")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Confirm" })).toBeDisabled();
   });
+
+  it("keeps the mobile sticky confirm for categorical NO complement liquidity", () => {
+    const categoricalMarket = makeMarket({
+      type: "categorical",
+      outcomes: [
+        { id: "outcome-0", label: "Alice", odds: null },
+        { id: "outcome-1", label: "Bob", odds: null },
+        { id: "outcome-2", label: "Carol", odds: null },
+      ],
+      outcomePriceHistories: {},
+      orderBook: { bids: [], asks: [], spread: 0 },
+      outcomeOrderBooks: {
+        Alice: {
+          bids: [{ price: 3_000, amount: 100, total: 100 }],
+          asks: [],
+          spread: 0,
+        },
+      },
+    } as unknown as Partial<MarketDetailType>);
+
+    render(
+      <MarketDetail
+        market={categoricalMarket}
+        chartTimeframe="7d"
+        tradeSelection={{ side: "no", outcomeId: "outcome-0" }}
+        tradeAmount={1}
+        tradePreview={null}
+        tradeSide="Buy"
+        orderType="market"
+        limitOrderPreview={null}
+        limitPrice={50}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "Confirm" })).toBeEnabled();
+  });
 });

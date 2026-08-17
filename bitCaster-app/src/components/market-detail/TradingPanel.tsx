@@ -134,6 +134,19 @@ function selectedRouteIdsForMarket(
   };
 }
 
+function possibleTradeSelections(market: MarketDetail): TradeSelection[] {
+  if (market.type === "categorical") {
+    return market.outcomes.flatMap((outcome) => [
+      { side: "yes", outcomeId: outcome.id },
+      { side: "no", outcomeId: outcome.id },
+    ]);
+  }
+  if (market.type === "yesno") {
+    return [{ side: "yes" }, { side: "no" }];
+  }
+  return [{ side: "hi" }, { side: "lo" }];
+}
+
 // Buy quick-presets are user-facing display shares. Boundary code maps each
 // display share to a market-divisibility-sized conditional-token face lot
 // before submit.
@@ -799,6 +812,19 @@ export function TradingPanel({
       const resolved = selectedRouteIdsForMarket(market, tradeSelection);
       return resolved ? hasRouteLiquidity(resolved.selectedOutcomeSetId, activeTradeSide) : false;
     }
+
+    const possibleOutcomeSets = possibleTradeSelections(market)
+      .map((selection) => resolveOutcomeSets(market, selection))
+      .filter(
+        (outcomeSets): outcomeSets is NonNullable<ReturnType<typeof resolveOutcomeSets>> =>
+          outcomeSets != null,
+      );
+    if (possibleOutcomeSets.length > 0) {
+      return possibleOutcomeSets.some((outcomeSets) =>
+        hasRouteLiquidity(outcomeSets.selectedOutcomeSetId, activeTradeSide),
+      );
+    }
+
     return routeIdsForMarket(market).some((routeId) =>
       hasRouteLiquidity(routeId, activeTradeSide),
     );
@@ -900,7 +926,13 @@ export function TradingPanel({
       </div>
 
       {activeTab === "Liquidity" ? (
-        validDivisibility != null ? (
+        tradingDisabled ? (
+          <div data-testid="closed-trade-liquidity" className="space-y-3 py-4">
+            <p className="text-sm text-slate-500 dark:text-slate-400">
+              {t("market.closedBannerDescription")}
+            </p>
+          </div>
+        ) : validDivisibility != null ? (
           <DepositStep
             conditionId={market.id}
             defaultAmountSats={0}
