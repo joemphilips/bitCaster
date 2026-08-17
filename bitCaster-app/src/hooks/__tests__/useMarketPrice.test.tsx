@@ -23,6 +23,11 @@ function makeMarket(overrides: Partial<MarketDetail> = {}): MarketDetail {
     baseAsset: "sat",
     divisibility: 10_000,
     baseUnit: "sats",
+    registeredPrimitiveOutcomeIds: ["YES", "NO"],
+    outcomes: [
+      { id: "Yes", label: "Yes", odds: null },
+      { id: "No", label: "No", odds: null },
+    ],
     creator: {
       id: "creator",
       name: "Creator",
@@ -47,7 +52,7 @@ function makeMarket(overrides: Partial<MarketDetail> = {}): MarketDetail {
 }
 
 describe("useMarketPrice", () => {
-  it("falls back to the midpoint default when no trades exist", () => {
+  it("returns a nullable market price and midpoint only as the order-entry default when no trades exist", () => {
     const { result } = renderHook(() =>
       useMarketPrice({
         market: makeMarket({ currentOdds: { yes: 0, no: 100 } }),
@@ -57,7 +62,7 @@ describe("useMarketPrice", () => {
       }),
     );
 
-    expect(result.current.currentPrice).toBe(5_000);
+    expect(result.current.currentPrice).toBeNull();
     expect(result.current.defaultOrderPrice).toBe(5_000);
   });
 
@@ -75,19 +80,24 @@ describe("useMarketPrice", () => {
       }),
     );
 
-    expect(result.current.currentPrice).toBe(6_000);
+    expect(result.current.currentPrice).toBeNull();
     expect(result.current.defaultOrderPrice).toBe(5_500);
   });
 
-  it("derives a yes/no No price by inverting the primary Yes history", () => {
+  it("derives yes/no from the latest source record and its same-fill complement", () => {
     const { result } = renderHook(() =>
       useMarketPrice({
         market: makeMarket({
           currentOdds: { yes: 60, no: 40 },
-          priceHistory: {
-            timeframe: "7d",
-            data: [{ timestamp: "2026-01-01T00:00:00Z", price: 60 }],
-          },
+          latestConfirmedTrades: [{
+            primitiveOutcomeId: "YES",
+            fillId: "fill-1",
+            executedAt: "2026-01-01T00:00:00Z",
+            eventOrder: "0001",
+            priceTick: 6_000,
+            divisibility: 10_000,
+            faceAmountSubunits: 100,
+          }],
         }),
         marketId: "condition-1-No",
         outcomeSetId: "No",
@@ -99,7 +109,65 @@ describe("useMarketPrice", () => {
     expect(result.current.defaultOrderPrice).toBe(4_000);
   });
 
-  it("derives a categorical complement price from the missing primary outcome history", () => {
+  it("chooses the latest yes/no source across both primitive outcomes", () => {
+    const latestNo = {
+      primitiveOutcomeId: "NO" as const,
+      fillId: "fill-no",
+      executedAt: "2026-01-02T00:00:00Z",
+      eventOrder: "0002",
+      priceTick: 2_500,
+      divisibility: 10_000 as const,
+      faceAmountSubunits: 100,
+    };
+    const { result } = renderHook(() =>
+      useMarketPrice({
+        market: makeMarket({
+          latestConfirmedTrades: [
+            {
+              primitiveOutcomeId: "YES",
+              fillId: "fill-yes",
+              executedAt: "2026-01-01T00:00:00Z",
+              eventOrder: "0001",
+              priceTick: 8_000,
+              divisibility: 10_000,
+              faceAmountSubunits: 100,
+            },
+            latestNo,
+          ],
+        }),
+        marketId: "condition-1-No",
+        outcomeSetId: "No",
+        orderBook: emptyBook,
+      }),
+    );
+
+    expect(result.current.currentPrice).toBe(2_500);
+  });
+
+  it("rejects an unknown or wrong-case yes/no route", () => {
+    const { result } = renderHook(() =>
+      useMarketPrice({
+        market: makeMarket({
+          latestConfirmedTrades: [{
+            primitiveOutcomeId: "YES",
+            fillId: "fill-route",
+            executedAt: "2026-01-01T00:00:00Z",
+            eventOrder: "0001",
+            priceTick: 6_000,
+            divisibility: 10_000,
+            faceAmountSubunits: 100,
+          }],
+        }),
+        marketId: "condition-1-no",
+        outcomeSetId: "no",
+        orderBook: emptyBook,
+      }),
+    );
+
+    expect(result.current.currentPrice).toBeNull();
+  });
+
+  it("keeps categorical outcomes independent and does not normalize missing prices", () => {
     const { result } = renderHook(() =>
       useMarketPrice({
         market: makeMarket({
@@ -109,20 +177,50 @@ describe("useMarketPrice", () => {
             { id: "bob", label: "Bob", odds: 20 },
             { id: "carol", label: "Carol", odds: 10 },
           ],
-          outcomePriceHistories: {
-            Alice: {
-              timeframe: "7d",
-              data: [{ timestamp: "2026-01-01T00:00:00Z", price: 70 }],
-            },
-          },
+          registeredPrimitiveOutcomeIds: ["alice", "bob", "carol"],
+          latestConfirmedTrades: [
+            { primitiveOutcomeId: "alice", fillId: "fill-a", executedAt: "2026-01-01T00:00:00Z", eventOrder: "0001", priceTick: 7_000, divisibility: 10_000, faceAmountSubunits: 100 },
+            { primitiveOutcomeId: "bob", fillId: "fill-b", executedAt: "2026-01-02T00:00:00Z", eventOrder: "0002", priceTick: 2_000, divisibility: 10_000, faceAmountSubunits: 100 },
+          ],
         } as Partial<MarketDetail>),
         marketId: "condition-1-Bob|Carol",
-        outcomeSetId: "Bob|Carol",
+        outcomeSetId: "Bob",
         orderBook: emptyBook,
       }),
     );
 
-    expect(result.current.currentPrice).toBe(3_000);
+    expect(result.current.currentPrice).toBe(2_000);
+  });
+
+  it("rejects duplicate or unknown categorical complement routes", () => {
+    const market = makeMarket({
+      type: "categorical",
+      outcomes: [
+        { id: "alice", label: "Alice", odds: null },
+        { id: "bob", label: "Bob", odds: null },
+        { id: "carol", label: "Carol", odds: null },
+      ],
+      registeredPrimitiveOutcomeIds: ["alice", "bob", "carol"],
+      latestConfirmedTrades: [{
+        primitiveOutcomeId: "alice",
+        fillId: "fill-complement",
+        executedAt: "2026-01-01T00:00:00Z",
+        eventOrder: "0001",
+        priceTick: 7_000,
+        divisibility: 10_000,
+        faceAmountSubunits: 100,
+      }],
+    });
+
+    const duplicate = renderHook(() =>
+      useMarketPrice({ market, marketId: "condition-1-Bob|Bob", outcomeSetId: "Bob|Bob", orderBook: emptyBook }),
+    );
+    const unknown = renderHook(() =>
+      useMarketPrice({ market, marketId: "condition-1-Bob|Unknown", outcomeSetId: "Bob|Unknown", orderBook: emptyBook }),
+    );
+
+    expect(duplicate.result.current.currentPrice).toBeNull();
+    expect(unknown.result.current.currentPrice).toBeNull();
   });
 
   it("maps numeric currentPrice percentages onto the market divisibility range", () => {
@@ -131,11 +229,21 @@ describe("useMarketPrice", () => {
         market: makeMarket({
           type: "numeric",
           divisibility: 10_000,
-          currentPrice: 12.5,
+          currentPrice: null,
           loBound: 0,
           hiBound: 100,
           precision: 0,
           unit: "USD",
+          registeredPrimitiveOutcomeIds: ["HI", "LO"],
+          latestConfirmedTrades: [{
+            primitiveOutcomeId: "LO",
+            fillId: "numeric-fill",
+            executedAt: "2026-01-01T00:00:00Z",
+            eventOrder: "0001",
+            priceTick: 2_500,
+            divisibility: 10_000,
+            faceAmountSubunits: 100,
+          }],
         } as Partial<MarketDetail>),
         marketId: "condition-1-HI",
         outcomeSetId: "HI",
@@ -143,13 +251,74 @@ describe("useMarketPrice", () => {
       }),
     );
 
-    expect(result.current.currentPrice).toBe(1_250);
+    expect(result.current.currentPrice).toBe(7_500);
+  });
+
+  it("fails closed for numeric identity variants and invalid authority", () => {
+    const unknownIdentity = renderHook(() =>
+      useMarketPrice({
+        market: makeMarket({
+          type: "numeric",
+          currentPrice: null,
+          loBound: 0,
+          hiBound: 100,
+          precision: 0,
+          unit: "USD",
+          registeredPrimitiveOutcomeIds: ["hi", "lo"],
+          latestConfirmedTrades: [{
+            primitiveOutcomeId: "hi",
+            fillId: "numeric-unknown",
+            executedAt: "2026-01-01T00:00:00Z",
+            eventOrder: "0001",
+            priceTick: 2_500,
+            divisibility: 10_000,
+            faceAmountSubunits: 100,
+          }],
+        } as Partial<MarketDetail>),
+        marketId: "condition-1-hi",
+        outcomeSetId: "hi",
+        orderBook: emptyBook,
+      }),
+    );
+    const invalidAuthority = renderHook(() =>
+      useMarketPrice({
+        market: makeMarket({
+          latestConfirmedTradesValid: false,
+          latestConfirmedTrades: [{
+            primitiveOutcomeId: "YES",
+            fillId: "invalid-authority",
+            executedAt: "2026-01-01T00:00:00Z",
+            eventOrder: "0001",
+            priceTick: 6_000,
+            divisibility: 10_000,
+            faceAmountSubunits: 100,
+          }],
+        }),
+        marketId: "condition-1-Yes",
+        outcomeSetId: "Yes",
+        orderBook: emptyBook,
+      }),
+    );
+
+    expect(unknownIdentity.result.current.currentPrice).toBeNull();
+    expect(invalidAuthority.result.current.currentPrice).toBeNull();
   });
 
   it("uses current price as the order entry default when there is no spread", () => {
     const { result } = renderHook(() =>
       useMarketPrice({
-        market: makeMarket({ currentOdds: { yes: 65, no: 35 } }),
+        market: makeMarket({
+          currentOdds: { yes: null, no: null },
+          latestConfirmedTrades: [{
+            primitiveOutcomeId: "YES",
+            fillId: "fill-2",
+            executedAt: "2026-01-01T00:00:00Z",
+            eventOrder: "0001",
+            priceTick: 6_500,
+            divisibility: 10_000,
+            faceAmountSubunits: 100,
+          }],
+        }),
         marketId: "condition-1-Yes",
         outcomeSetId: "Yes",
         orderBook: {
@@ -180,7 +349,18 @@ describe("useMarketPrice", () => {
     const { result, rerender } = renderHook(
       ({ orderBook }: { orderBook: OrderBook }) => {
         const marketPrice = useMarketPrice({
-          market: makeMarket({ currentOdds: { yes: 60, no: 40 } }),
+          market: makeMarket({
+            currentOdds: { yes: null, no: null },
+            latestConfirmedTrades: [{
+              primitiveOutcomeId: "YES",
+              fillId: "fill-3",
+              executedAt: "2026-01-01T00:00:00Z",
+              eventOrder: "0001",
+              priceTick: 6_000,
+              divisibility: 10_000,
+              faceAmountSubunits: 100,
+            }],
+          }),
           marketId: "condition-1-Yes",
           outcomeSetId: "Yes",
           orderBook,

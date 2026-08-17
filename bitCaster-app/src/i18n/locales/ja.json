@@ -265,6 +265,7 @@
     "topUpStillInsufficient": "チャージは完了しましたが、ウォレット残高が注文に必要な金額にまだ不足しています。",
     "recentTrades": "最近の取引",
     "noTrades": "まだ取引がありません",
+    "priceUnavailable": "価格を利用できません",
     "loadMoreTrades": "さらに取引を表示"
   },
   "comment": {

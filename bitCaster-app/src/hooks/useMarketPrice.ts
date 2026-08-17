@@ -1,11 +1,12 @@
 import { useMemo } from "react";
 import { computeSpreadMidpoint } from "@/components/market-detail/orderBookViewModel";
-import type { MarketDetail, OrderBook, PriceHistory } from "@/types/market-detail";
+import type { MarketDetail, OrderBook } from "@/types/market-detail";
+import type { LatestConfirmedTrade } from "@/types/market";
 import {
   DEFAULT_SAT_MARKET_DIVISIBILITY,
   normalizeMarketDivisibility,
 } from "@bitcaster/client-sdk/marketUnits";
-import { complementOutcomeSetId, parseOutcomeSetId } from "@bitcaster/client-sdk/outcomeSets";
+import { parseOutcomeSetId } from "@bitcaster/client-sdk/outcomeSets";
 
 export interface UseMarketPriceInput {
   market: MarketDetail | null | undefined;
@@ -15,7 +16,9 @@ export interface UseMarketPriceInput {
 }
 
 export interface MarketPriceState {
-  currentPrice: number;
+  /** Confirmed-trade market price. Null means no valid confirmed trade exists. */
+  currentPrice: number | null;
+  /** Explicit order-entry seam. This may use the book midpoint or uniform midpoint. */
   defaultOrderPrice: number;
 }
 
@@ -28,6 +31,188 @@ export function clampOrderPrice(price: number, divisibility: number): number {
   return Math.max(1, Math.min(divisibility - 1, Math.round(price)));
 }
 
+function compareEventOrder(left: string, right: string): number {
+  if (left === right) return 0;
+  return left < right ? -1 : 1;
+}
+
+function latestTradeAcrossOutcomes(
+  trades: readonly LatestConfirmedTrade[],
+): LatestConfirmedTrade | null {
+  return trades.reduce<LatestConfirmedTrade | null>((latest, trade) => {
+    if (!latest || compareEventOrder(latest.eventOrder, trade.eventOrder) < 0) return trade;
+    return latest;
+  }, null);
+}
+
+function latestTradeForOutcome(
+  trades: readonly LatestConfirmedTrade[],
+  primitiveOutcomeId: string,
+): LatestConfirmedTrade | null {
+  return trades.reduce<LatestConfirmedTrade | null>((latest, trade) => {
+    if (trade.primitiveOutcomeId !== primitiveOutcomeId) return latest;
+    if (!latest || compareEventOrder(latest.eventOrder, trade.eventOrder) < 0) return trade;
+    return latest;
+  }, null);
+}
+
+function numericPrimitiveIds(
+  market: Pick<MarketDetail, "registeredPrimitiveOutcomeIds">,
+): { hi: string; lo: string } | null {
+  const registered = market.registeredPrimitiveOutcomeIds ?? [];
+  const hi = registered.find((id) => id === "HI");
+  const lo = registered.find((id) => id === "LO");
+  // Numeric markets have one exact, registered HI/LO pair. Do not infer
+  // identities from case variants or from an unregistered route.
+  if (!hi || !lo || registered.length !== 2) return null;
+  return { hi, lo };
+}
+
+function primitivePriceFromTrade(
+  trade: LatestConfirmedTrade,
+  primitiveOutcomeId: string,
+): number | null {
+  if (trade.primitiveOutcomeId === primitiveOutcomeId) return trade.priceTick;
+  return trade.divisibility - trade.priceTick;
+}
+
+function primitiveIdForOutcome(
+  market: MarketDetail,
+  outcomeSetId: string,
+): string | null {
+  const members = parseOutcomeSetId(outcomeSetId);
+  if (members.length !== 1) return null;
+  const member = members[0];
+  const registered = market.registeredPrimitiveOutcomeIds ?? [];
+  if (registered.includes(member)) return member;
+  const outcome = market.outcomes?.find(
+    (candidate) => candidate.id === member || candidate.label === member,
+  );
+  return outcome && registered.includes(outcome.id) ? outcome.id : null;
+}
+
+function deriveYesNoPrice(
+  market: Extract<MarketDetail, { type: "yesno" }>,
+  outcomeSetId: string | null | undefined,
+): number | null {
+  if (!outcomeSetId) return null;
+  const latest = latestTradeAcrossOutcomes(market.latestConfirmedTrades ?? []);
+  if (!latest) return null;
+  const yesId = market.registeredPrimitiveOutcomeIds?.find((id) => id.toLowerCase() === "yes");
+  const noId = market.registeredPrimitiveOutcomeIds?.find((id) => id.toLowerCase() === "no");
+  if (
+    !yesId ||
+    !noId ||
+    (latest.primitiveOutcomeId !== yesId && latest.primitiveOutcomeId !== noId)
+  ) {
+    return null;
+  }
+  const yesRouteIds = new Set([
+    yesId,
+    ...(market.outcomes ?? [])
+      .filter((outcome) => outcome.label.toLowerCase() === "yes")
+      .flatMap((outcome) => [outcome.id, outcome.label]),
+  ]);
+  const noRouteIds = new Set([
+    noId,
+    ...(market.outcomes ?? [])
+      .filter((outcome) => outcome.label.toLowerCase() === "no")
+      .flatMap((outcome) => [outcome.id, outcome.label]),
+  ]);
+  const requested = yesRouteIds.has(outcomeSetId)
+    ? yesId
+    : noRouteIds.has(outcomeSetId)
+      ? noId
+      : null;
+  if (!requested) return null;
+  return primitivePriceFromTrade(latest, requested);
+}
+
+function deriveCategoricalPrice(
+  market: Extract<MarketDetail, { type: "categorical" }>,
+  outcomeSetId: string | null | undefined,
+): number | null {
+  if (!outcomeSetId) return null;
+  const primitiveId = primitiveIdForOutcome(market, outcomeSetId);
+  if (primitiveId) {
+    return latestTradeForOutcome(market.latestConfirmedTrades ?? [], primitiveId)?.priceTick ?? null;
+  }
+
+  // A one-vs-rest route is the complement of one primitive outcome. Derive it
+  // from that same primitive's latest fill instead of mixing sales or making a
+  // condition-wide normalization assumption.
+  const members = parseOutcomeSetId(outcomeSetId);
+  const universe = market.registeredPrimitiveOutcomeIds ?? [];
+  if (
+    members.length !== universe.length - 1 ||
+    new Set(members).size !== members.length ||
+    members.some((member) => !universe.includes(member))
+  ) {
+    return null;
+  }
+  const missing = universe.find((id) => !members.includes(id));
+  if (!missing) return null;
+  const latest = latestTradeForOutcome(market.latestConfirmedTrades ?? [], missing);
+  return latest ? latest.divisibility - latest.priceTick : null;
+}
+
+function deriveNumericPrice(
+  market: Extract<MarketDetail, { type: "numeric" }>,
+  outcomeSetId: string | null | undefined,
+): number | null {
+  const ids = numericPrimitiveIds(market);
+  if (!ids) return null;
+  const latest = latestTradeAcrossOutcomes(market.latestConfirmedTrades ?? []);
+  if (!latest) return null;
+  if (latest.primitiveOutcomeId !== ids.hi && latest.primitiveOutcomeId !== ids.lo) return null;
+  const hiTick = latest.primitiveOutcomeId === ids.hi
+    ? latest.priceTick
+    : latest.divisibility - latest.priceTick;
+  if (!Number.isFinite(hiTick / latest.divisibility)) return null;
+  if (outcomeSetId === ids.lo) return latest.divisibility - hiTick;
+  return outcomeSetId === ids.hi || outcomeSetId == null
+    ? hiTick
+    : null;
+}
+
+export function deriveNumericCurrentValue(
+  market: Pick<Extract<MarketDetail, { type: "numeric" }>,
+    | "loBound"
+    | "hiBound"
+    | "latestConfirmedTrades"
+    | "latestConfirmedTradesValid"
+    | "registeredPrimitiveOutcomeIds">,
+): number | null {
+  if (market.latestConfirmedTradesValid === false) return null;
+  const ids = numericPrimitiveIds(market);
+  if (!ids) return null;
+  const latest = latestTradeAcrossOutcomes(market.latestConfirmedTrades ?? []);
+  if (!latest) return null;
+  if (latest.primitiveOutcomeId !== ids.hi && latest.primitiveOutcomeId !== ids.lo) return null;
+  const hiTick = latest.primitiveOutcomeId === ids.hi
+    ? latest.priceTick
+    : latest.divisibility - latest.priceTick;
+  const value = market.loBound + (hiTick / latest.divisibility) * (market.hiBound - market.loBound);
+  return Number.isFinite(value) ? value : null;
+}
+
+export function deriveConfirmedMarketPrice(
+  market: MarketDetail,
+  outcomeSetId: string | null | undefined,
+): number | null {
+  if (market.latestConfirmedTradesValid === false) return null;
+  switch (market.type) {
+    case "yesno":
+      return deriveYesNoPrice(market, outcomeSetId);
+    case "categorical":
+      return deriveCategoricalPrice(market, outcomeSetId);
+    case "numeric":
+      return deriveNumericPrice(market, outcomeSetId);
+    default:
+      return null;
+  }
+}
+
 export function useMarketPrice({
   market,
   outcomeSetId,
@@ -36,162 +221,16 @@ export function useMarketPrice({
   const divisibility = market
     ? normalizeMarketDivisibility(market.divisibility, market.baseAsset)
     : DEFAULT_SAT_MARKET_DIVISIBILITY;
-  const initialPrice = useMemo(
-    () => deriveInitialCurrentPrice(market, outcomeSetId, divisibility),
-    [market, outcomeSetId, divisibility],
+  const currentPrice = useMemo(
+    () => (market ? deriveConfirmedMarketPrice(market, outcomeSetId) : null),
+    [market, outcomeSetId],
   );
-  const currentPrice = initialPrice;
   const defaultOrderPrice = useMemo(() => {
     const midpoint = computeSpreadMidpoint(orderBook);
-    if (midpoint == null) return currentPrice;
-    return clampOrderPrice(midpoint, divisibility);
-  }, [orderBook, currentPrice, divisibility]);
+    if (midpoint != null) return clampOrderPrice(midpoint, divisibility);
+    if (currentPrice != null) return clampOrderPrice(currentPrice, divisibility);
+    return defaultLimitPriceForDivisibility(divisibility, market?.baseAsset ?? "sat");
+  }, [orderBook, currentPrice, divisibility, market?.baseAsset]);
 
   return { currentPrice, defaultOrderPrice };
-}
-
-function deriveInitialCurrentPrice(
-  market: MarketDetail | null | undefined,
-  outcomeSetId: string | null | undefined,
-  divisibility: number,
-): number {
-  if (!market) return defaultLimitPriceForDivisibility(divisibility, "sat");
-
-  const historyPrice = latestHistoryNumerator(market, outcomeSetId, divisibility);
-  if (historyPrice != null) return historyPrice;
-
-  const percent = marketOddsPercent(market, outcomeSetId);
-  if (percent != null && (percent > 0 || market.type === "numeric")) {
-    return clampOrderPrice((percent / 100) * divisibility, divisibility);
-  }
-
-  return defaultLimitPriceForDivisibility(divisibility, market.baseAsset);
-}
-
-function latestHistoryNumerator(
-  market: MarketDetail,
-  outcomeSetId: string | null | undefined,
-  divisibility: number,
-): number | null {
-  const percent = latestHistoryPercent(market, outcomeSetId);
-  if (percent == null) return null;
-  return clampOrderPrice((percent / 100) * divisibility, divisibility);
-}
-
-function latestHistoryPercent(
-  market: MarketDetail,
-  outcomeSetId: string | null | undefined,
-): number | null {
-  const history = historyForOutcome(market, outcomeSetId);
-  const latest = latestHistoryPointPercent(history);
-  if (latest != null) return latest;
-
-  if (market.type === "yesno" && isNoOutcomeSet(outcomeSetId)) {
-    const yes = latestHistoryPointPercent(market.priceHistory);
-    return yes == null ? null : 100 - yes;
-  }
-
-  if (market.type === "categorical" && outcomeSetId) {
-    const complementPercent = complementHistoryPercent(market, outcomeSetId);
-    if (complementPercent != null) return complementPercent;
-  }
-
-  return null;
-}
-
-function latestHistoryPointPercent(history: PriceHistory | null | undefined): number | null {
-  const latest = history?.data.at(-1)?.price;
-  if (typeof latest !== "number" || !Number.isFinite(latest)) return null;
-  return Math.max(0, Math.min(100, latest));
-}
-
-function historyForOutcome(
-  market: MarketDetail,
-  outcomeSetId: string | null | undefined,
-): PriceHistory | null {
-  if (market.type === "yesno" && isNoOutcomeSet(outcomeSetId)) {
-    return null;
-  }
-
-  if (market.type === "categorical" && outcomeSetId) {
-    return (
-      market.outcomePriceHistories[outcomeSetId] ??
-      market.outcomePriceHistories[outcomeLabelForSet(market, outcomeSetId) ?? ""] ??
-      null
-    );
-  }
-  return market.priceHistory;
-}
-
-function complementHistoryPercent(
-  market: Extract<MarketDetail, { type: "categorical" }>,
-  outcomeSetId: string,
-): number | null {
-  const universe = market.outcomes.map((outcome) => outcome.label);
-  if (universe.length < 2) return null;
-  const members = parseOutcomeSetId(outcomeSetId);
-  if (members.length !== universe.length - 1) return null;
-  const missing = complementOutcomeSetId(universe, outcomeSetId);
-  if (!missing) return null;
-  const primary = latestHistoryPointPercent(
-    market.outcomePriceHistories[missing] ??
-      market.outcomePriceHistories[outcomeLabelForSet(market, missing) ?? ""] ??
-      (missing === universe[0] ? market.priceHistory : null),
-  );
-  return primary == null ? null : 100 - primary;
-}
-
-function outcomeLabelForSet(
-  market: Extract<MarketDetail, { type: "categorical" }>,
-  outcomeSetId: string,
-): string | null {
-  const members = parseOutcomeSetId(outcomeSetId);
-  if (members.length !== 1) return null;
-  return (
-    market.outcomes.find(
-      (candidate) => candidate.id === members[0] || candidate.label === members[0],
-    )?.label ?? null
-  );
-}
-
-function marketOddsPercent(
-  market: MarketDetail,
-  outcomeSetId: string | null | undefined,
-): number | null {
-  if (market.type === "yesno") {
-    if (isNoOutcomeSet(outcomeSetId)) {
-      return market.currentOdds.no;
-    }
-    return market.currentOdds.yes;
-  }
-
-  if (market.type === "categorical" && outcomeSetId) {
-    const directOutcome = market.outcomes.find(
-      (candidate) => candidate.id === outcomeSetId || candidate.label === outcomeSetId,
-    );
-    if (typeof directOutcome?.odds === "number") return directOutcome.odds;
-
-    const members = parseOutcomeSetId(outcomeSetId);
-    if (members.length > 0) {
-      const total = members.reduce((sum, member) => {
-        const outcome = market.outcomes.find(
-          (candidate) => candidate.id === member || candidate.label === member,
-        );
-        return sum + (typeof outcome?.odds === "number" ? outcome.odds : 0);
-      }, 0);
-      return total > 0 ? Math.max(0, Math.min(100, total)) : null;
-    }
-
-    return null;
-  }
-
-  if (market.type === "numeric") {
-    return typeof market.currentPrice === "number" ? market.currentPrice : null;
-  }
-
-  return null;
-}
-
-function isNoOutcomeSet(outcomeSetId: string | null | undefined): boolean {
-  return typeof outcomeSetId === "string" && outcomeSetId.trim().toLowerCase() === "no";
 }

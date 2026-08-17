@@ -1,4 +1,5 @@
 import { useTranslation } from "react-i18next";
+import { formatPricePercentage } from "@bitcaster/client-sdk/marketUnits";
 import { Heart } from "lucide-react";
 import { HorizontalPager } from "@/components/common/HorizontalPager";
 import { useLikedMarkets } from "@/hooks/useLikedMarkets";
@@ -70,6 +71,9 @@ export function LikedMarkets({ onViewMarket }: LikedMarketsProps) {
 }
 
 function LikedMarketCard({ market, onClick }: { market: Market; onClick: () => void }) {
+  const { t } = useTranslation();
+  const formatNullablePrice = (price: number | null) =>
+    price == null ? <span aria-label={t("market.noTrades")}>—</span> : formatPricePercentage(price, market.divisibility);
   return (
     <button
       role="listitem"
@@ -90,7 +94,7 @@ function LikedMarketCard({ market, onClick }: { market: Market; onClick: () => v
         </p>
         {market.type === "yesno" && (
           <p className="text-xs font-mono text-slate-500 dark:text-slate-400">
-            {market.currentOdds.yes.toFixed(2)}% / {market.currentOdds.no.toFixed(2)}%
+            {formatNullablePrice(market.currentOdds.yes)} / {formatNullablePrice(market.currentOdds.no)}
           </p>
         )}
       </div>

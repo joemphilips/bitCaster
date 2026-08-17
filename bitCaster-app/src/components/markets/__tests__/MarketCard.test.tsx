@@ -68,6 +68,22 @@ describe("MarketCard", () => {
     expect(screen.getByText("Buy NO")).toBeInTheDocument();
   });
 
+  it("renders an accessible em dash instead of a zero price before the first trade", () => {
+    render(
+      <MarketCard
+        market={{
+          ...yesNoMarket,
+          currentOdds: { yes: null, no: null },
+          latestConfirmedTrades: [],
+          latestConfirmedTradesValid: true,
+        }}
+      />,
+    );
+
+    expect(screen.getByText("—")).toHaveAttribute("aria-label", "market.noTrades");
+    expect(screen.queryByText("0.00%")).not.toBeInTheDocument();
+  });
+
   it("renders resolved YES for a closed binary market without Chance or trade buttons", () => {
     render(<MarketCard market={{ ...yesNoMarket, state: "closed", finalOutcome: "Yes" }} />);
 

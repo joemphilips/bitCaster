@@ -9,6 +9,7 @@ import {
   getMarketThumbnail,
   getDepositStatus,
   mapCatalogueEntryToMarket,
+  latestConfirmedTradesAuthorityValid,
   requestEcashDeposit,
   submitOrder,
   windowPriceHistory,
@@ -16,6 +17,7 @@ import {
   priceNumeratorToPercent,
   createAuthenticatedBrowserEngineClient,
   generateNip98Header,
+  validateLatestConfirmedTrades,
 } from "../markets";
 import { applyConfirmedTradeDelta } from "@/lib/marketHub";
 import type { MarketCatalogueEntry } from "../markets";
@@ -125,11 +127,13 @@ describe("mapCatalogueEntryToMarket", () => {
     expect(market.divisibility).toBe(10_000);
     expect(market.baseMarket).toBe("sats");
     if (market.type === "yesno") {
-      expect(market.currentOdds).toEqual({ yes: 50, no: 50 });
+      expect(market.currentOdds).toEqual({ yes: 6200, no: 3800 });
+      expect(market.latestConfirmedTrades).toEqual(yesNoEntry.latestConfirmedTrades);
+      expect(market.latestConfirmedTradesValid).toBe(true);
     }
   });
 
-  it("keeps temporary neutral yes/no list odds while trade display is deferred", () => {
+  it("uses confirmed trades for yes/no list odds and leaves no-trade odds nullable", () => {
     // Confirmed trades are available to later displayed-price work, but do not
     // provide visible odds in this mapper yet.
     const marketWithTrades = mapCatalogueEntryToMarket({
@@ -148,7 +152,7 @@ describe("mapCatalogueEntryToMarket", () => {
 
     expect(marketWithTrades.type).toBe("yesno");
     if (marketWithTrades.type === "yesno") {
-      expect(marketWithTrades.currentOdds).toEqual({ yes: 50, no: 50 });
+      expect(marketWithTrades.currentOdds).toEqual({ yes: 6200, no: 3800 });
     }
 
     // Without confirmed trades, the adapter keeps the existing neutral display.
@@ -160,7 +164,7 @@ describe("mapCatalogueEntryToMarket", () => {
 
     expect(marketNoTrades.type).toBe("yesno");
     if (marketNoTrades.type === "yesno") {
-      expect(marketNoTrades.currentOdds).toEqual({ yes: 50, no: 50 });
+      expect(marketNoTrades.currentOdds).toEqual({ yes: null, no: null });
     }
   });
 
@@ -175,7 +179,7 @@ describe("mapCatalogueEntryToMarket", () => {
     expect(market.finalOutcome).toBe("No");
   });
 
-  it("falls back to 50/50 when a yes/no market has no traded price", () => {
+  it("does not invent a yes/no price when no confirmed trade exists", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
 
     const market = mapCatalogueEntryToMarket({
@@ -185,7 +189,7 @@ describe("mapCatalogueEntryToMarket", () => {
 
     expect(market.type).toBe("yesno");
     if (market.type === "yesno") {
-      expect(market.currentOdds).toEqual({ yes: 50, no: 50 });
+      expect(market.currentOdds).toEqual({ yes: null, no: null });
     }
     expect(warn).not.toHaveBeenCalled();
     warn.mockRestore();
@@ -199,7 +203,25 @@ describe("mapCatalogueEntryToMarket", () => {
     if (market.type === "categorical") {
       expect(market.outcomes).toHaveLength(3);
       expect(market.outcomes[0].label).toBe("Alice");
+      expect(market.outcomes.map((outcome) => outcome.odds)).toEqual([null, null, null]);
     }
+  });
+
+  it("fails closed for malformed or unknown latest trade facts", () => {
+    const market = mapCatalogueEntryToMarket({
+      ...yesNoEntry,
+      latestConfirmedTrades: [
+        {
+          ...yesNoEntry.latestConfirmedTrades[0],
+          primitiveOutcomeId: "Yes",
+        },
+      ],
+    });
+
+    expect(market.type).toBe("yesno");
+    expect(market.latestConfirmedTrades).toEqual([]);
+    expect(market.latestConfirmedTradesValid).toBe(false);
+    if (market.type === "yesno") expect(market.currentOdds).toEqual({ yes: null, no: null });
   });
 
   it("uses lifetime catalogue metrics for displayed market stats", () => {
@@ -223,6 +245,38 @@ describe("mapCatalogueEntryToMarket", () => {
   it("uses createdAt as closingDate when deadline is null", () => {
     const market = mapCatalogueEntryToMarket({ ...yesNoEntry, deadline: null });
     expect(market.closingDate).toBe("2026-01-01T00:00:00Z");
+  });
+});
+
+describe("latest confirmed trade authority validation", () => {
+  it("rejects noncanonical order, malformed UUID/date-time, and keeps valid empty distinct", () => {
+    const yes = yesNoEntry.latestConfirmedTrades[0];
+    const no = {
+      ...yes,
+      primitiveOutcomeId: "NO",
+      fillId: "00000000-0000-0000-0000-000000000002",
+      executedAt: "2026-05-02T10:00:00Z",
+      eventOrder: "0002",
+      priceTick: 3_800,
+    };
+
+    expect(latestConfirmedTradesAuthorityValid([], ["YES", "NO"], 10_000)).toBe(true);
+    expect(validateLatestConfirmedTrades([yes, no], ["YES", "NO"], 10_000)).toEqual([]);
+    expect(
+      validateLatestConfirmedTrades(
+        [{ ...yes, fillId: "not-a-uuid" }],
+        ["YES", "NO"],
+        10_000,
+      ),
+    ).toEqual([]);
+    expect(
+      validateLatestConfirmedTrades(
+        [{ ...yes, executedAt: "2026-05-02" }],
+        ["YES", "NO"],
+        10_000,
+      ),
+    ).toEqual([]);
+    expect(latestConfirmedTradesAuthorityValid([no, yes], ["YES", "NO"], 10_000)).toBe(true);
   });
 });
 
@@ -695,6 +749,47 @@ describe("fetchMarketDetail (engine merge — ADR-009 Amendment 2026-05-04)", ()
       },
     });
     expect(wrongCase).toEqual(applied);
+  });
+
+  it("keeps the production live overlay monotonic across duplicate, older, and newer fills", () => {
+    const allowed = ["YES", "NO"];
+    const current = {
+      primitiveOutcomeId: "YES",
+      fillId: "00000000-0000-0000-0000-000000000020",
+      executedAt: "2026-05-02T09:58:00Z",
+      eventOrder: "0002",
+      priceTick: 6200,
+      divisibility: 10_000 as const,
+      faceAmountSubunits: 1000,
+    };
+    const duplicate = applyConfirmedTradeDelta("abc123", allowed, [current], {
+      conditionId: "abc123",
+      latestConfirmedTrade: { ...current, eventOrder: "0003", priceTick: 7000 },
+    });
+    expect(duplicate).toEqual([current]);
+
+    const older = applyConfirmedTradeDelta("abc123", allowed, duplicate, {
+      conditionId: "abc123",
+      latestConfirmedTrade: {
+        ...current,
+        fillId: "00000000-0000-0000-0000-000000000021",
+        eventOrder: "0001",
+        priceTick: 4000,
+      },
+    });
+    expect(older).toEqual([current]);
+
+    const newerTrade = {
+      ...current,
+      fillId: "00000000-0000-0000-0000-000000000022",
+      eventOrder: "0004",
+      priceTick: 7100,
+    };
+    const newer = applyConfirmedTradeDelta("abc123", allowed, older, {
+      conditionId: "abc123",
+      latestConfirmedTrade: newerTrade,
+    });
+    expect(newer).toEqual([newerTrade]);
   });
 
   it("merges engine thumbnailUrl into imageUrl (Phase 7 thumbnail data path)", async () => {

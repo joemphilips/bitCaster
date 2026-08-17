@@ -2,7 +2,12 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { TradingPanel } from "../TradingPanel";
-import type { LimitOrderPreview, TradePreview, YesNoMarketDetail } from "@/types/market-detail";
+import type {
+  LimitOrderPreview,
+  NumericMarketDetail,
+  TradePreview,
+  YesNoMarketDetail,
+} from "@/types/market-detail";
 import { useState } from "react";
 
 function makeMarket(overrides: Partial<YesNoMarketDetail> = {}): YesNoMarketDetail {
@@ -45,6 +50,34 @@ function makeMarket(overrides: Partial<YesNoMarketDetail> = {}): YesNoMarketDeta
 }
 
 describe("TradingPanel", () => {
+  it("does not place a numeric range marker or fill before the first trade", () => {
+    const numericMarket = {
+      ...makeMarket(),
+      type: "numeric" as const,
+      currentPrice: null,
+      loBound: 10,
+      hiBound: 20,
+      precision: 0,
+      unit: "USD",
+      registeredPrimitiveOutcomeIds: ["HI", "LO"],
+    } as unknown as NumericMarketDetail;
+
+    render(
+      <TradingPanel
+        market={numericMarket}
+        tradeSelection={null}
+        tradeAmount={0}
+        tradePreview={null}
+        tradeSide="Buy"
+        orderType="market"
+      />,
+    );
+
+    expect(screen.getByText("market.noTrades")).toBeInTheDocument();
+    expect(screen.queryByTestId("numeric-range-fill")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("numeric-range-marker")).not.toBeInTheDocument();
+  });
+
   function StatefulLimitTradingPanel({
     initialLimitPrice = 40,
     initialTradeAmount = 2,
