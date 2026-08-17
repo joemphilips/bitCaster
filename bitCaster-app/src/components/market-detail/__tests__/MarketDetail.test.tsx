@@ -1,10 +1,17 @@
-import { render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { MarketDetail } from "../MarketDetail";
 import type { MarketDetail as MarketDetailType, TradePreview } from "@/types/market-detail";
 
 vi.mock("../MarketHeader", () => ({ MarketHeader: () => <div /> }));
-vi.mock("../TradingPanel", () => ({ TradingPanel: () => <div /> }));
+const { tradingPanelMock } = vi.hoisted(() => ({
+  tradingPanelMock: vi.fn(
+    (props: { tradeTab?: string; onTradeTabChange?: (tab: string) => void }) => (
+      <div data-testid="trading-panel-mock" data-trade-tab={props.tradeTab} />
+    ),
+  ),
+}));
+vi.mock("../TradingPanel", () => ({ TradingPanel: tradingPanelMock }));
 vi.mock("../PriceChart", () => ({
   PriceChart: ({ currentDisplay }: { currentDisplay?: string }) => <div>{currentDisplay}</div>,
 }));
@@ -78,6 +85,103 @@ function makeMarket(overrides: Partial<MarketDetailType> = {}): MarketDetailType
 }
 
 describe("MarketDetail", () => {
+  it("mounts exactly one responsive trading panel", () => {
+    tradingPanelMock.mockClear();
+    render(
+      <MarketDetail
+        market={makeMarket()}
+        chartTimeframe="7d"
+        tradeSelection={null}
+        tradeAmount={0}
+        tradePreview={null}
+        tradeSide="Buy"
+        orderType="market"
+        limitOrderPreview={null}
+        limitPrice={50}
+      />,
+    );
+
+    expect(tradingPanelMock).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId("trading-panel-mock")).toBeInTheDocument();
+  });
+
+  it("does not expose sticky confirm for an empty selected route or LIQUIDITY", () => {
+    const emptyMarket = makeMarket({
+      orderBook: { bids: [], asks: [], spread: 0 },
+      outcomeOrderBooks: {
+        Yes: { bids: [], asks: [], spread: 0 },
+        No: { bids: [], asks: [], spread: 0 },
+      },
+    });
+    const { rerender } = render(
+      <MarketDetail
+        market={emptyMarket}
+        chartTimeframe="7d"
+        tradeSelection={{ side: "yes" }}
+        tradeAmount={1}
+        tradePreview={null}
+        tradeSide="Buy"
+        orderType="market"
+        limitOrderPreview={null}
+        limitPrice={50}
+      />,
+    );
+
+    expect(screen.queryByText("market.confirm")).not.toBeInTheDocument();
+    rerender(
+      <MarketDetail
+        market={emptyMarket}
+        chartTimeframe="7d"
+        tradeSelection={{ side: "yes" }}
+        tradeAmount={1}
+        tradePreview={null}
+        tradeSide="Buy"
+        tradeTab="Liquidity"
+        orderType="market"
+        limitOrderPreview={null}
+        limitPrice={50}
+      />,
+    );
+    expect(screen.queryByText("market.confirm")).not.toBeInTheDocument();
+  });
+
+  it("resets a local LIQUIDITY tab when the market route changes", () => {
+    const view = render(
+      <MarketDetail
+        market={makeMarket({ id: "market-a" })}
+        chartTimeframe="7d"
+        tradeSelection={null}
+        tradeAmount={0}
+        tradePreview={null}
+        tradeSide="Buy"
+        orderType="market"
+        limitOrderPreview={null}
+        limitPrice={50}
+      />,
+    );
+    act(() => {
+      tradingPanelMock.mock.calls.at(-1)?.[0].onTradeTabChange?.("Liquidity");
+    });
+    expect(tradingPanelMock.mock.calls.at(-1)?.[0].tradeTab).toBe("Liquidity");
+
+    act(() => {
+      view.rerender(
+        <MarketDetail
+          market={makeMarket({ id: "market-b" })}
+          chartTimeframe="7d"
+          tradeSelection={null}
+          tradeAmount={0}
+          tradePreview={null}
+          tradeSide="Buy"
+          orderType="market"
+          limitOrderPreview={null}
+          limitPrice={50}
+        />,
+      );
+    });
+    expect(tradingPanelMock.mock.calls.at(-1)?.[0].tradeTab).toBe("Buy");
+  });
+
   it("renders the localized no-trade state without a zero or midpoint fallback", () => {
     render(
       <MarketDetail

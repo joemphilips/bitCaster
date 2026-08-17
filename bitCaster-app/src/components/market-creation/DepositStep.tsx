@@ -24,6 +24,8 @@ import {
   DEFAULT_SAT_MARKET_DIVISIBILITY,
   defaultCollateralUnit,
   formatMarketSubunits,
+  normalizeMarketDivisibility,
+  type MarketDivisibility,
 } from "@bitcaster/client-sdk/marketUnits";
 
 function customBudgetInputToSubunits(customBudgetInput: number): number {
@@ -39,18 +41,26 @@ interface DepositStepProps {
   outcomeCount?: number;
   /** Market collateral unit. Legacy `*Sats` fields below are base subunits. */
   baseAsset?: MarketBaseAsset;
+  /** Controls whether this component is the creation handoff or an embedded detail view. */
+  presentation?: "creation" | "detail";
+  /** Registered market divisibility. Defaults to the sat market denominator. */
+  divisibility?: MarketDivisibility;
 }
 
 export function DepositStep({
   conditionId,
   outcomeCount = 2,
   baseAsset = "sat",
+  presentation = "creation",
+  divisibility: divisibilityInput,
 }: DepositStepProps) {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const [selectedTier, setSelectedTier] = useState<AmmFundingTierId>("standard");
   const [customBudgetInput, setCustomBudgetInput] = useState(0);
-  const [stage, setStage] = useState<"created" | "funding">("created");
+  const [stage, setStage] = useState<"created" | "funding">(
+    presentation === "detail" ? "funding" : "created",
+  );
   const [deliveryProgress, setDeliveryProgress] = useState<MarketFundingDeliveryProgress | null>(
     null,
   );
@@ -60,13 +70,17 @@ export function DepositStep({
   const cashuUnit = defaultCollateralUnit(baseAsset);
   const activeMintUrl = useWalletStore((state) => state.activeMintUrl);
   const balance = useBalance(activeMintUrl, { baseAsset });
-  const divisibility = DEFAULT_SAT_MARKET_DIVISIBILITY;
+  const divisibility = normalizeMarketDivisibility(
+    divisibilityInput ?? DEFAULT_SAT_MARKET_DIVISIBILITY,
+    baseAsset,
+  );
   const customBudgetSubunits = customBudgetInputToSubunits(customBudgetInput);
 
   useEffect(() => {
+    if (presentation === "detail") return undefined;
     const timer = window.setTimeout(() => setStage("funding"), 5_000);
     return () => window.clearTimeout(timer);
-  }, []);
+  }, [presentation]);
 
   const tiers = useMemo(
     () =>
@@ -87,17 +101,22 @@ export function DepositStep({
       : estimateDepthPreview({ budgetSubunits: budgetSats, outcomeCount });
 
   const continueToMarket = useCallback(() => {
+    if (presentation === "detail") return;
     navigate(`/markets/${conditionId}`);
-  }, [conditionId, navigate]);
+  }, [conditionId, navigate, presentation]);
 
   useEffect(() => {
-    if (deliveryProgress !== "credited") return undefined;
+    if (presentation === "detail" || deliveryProgress !== "credited") return undefined;
     const timer = window.setTimeout(continueToMarket, 5_000);
     return () => window.clearTimeout(timer);
-  }, [continueToMarket, deliveryProgress]);
+  }, [continueToMarket, deliveryProgress, presentation]);
 
   const submitMarketFunding = useCallback(async () => {
     if (budgetSats < 1 || fundingBusy || deliveryProgress === "credited") return;
+    if (budgetSats % divisibility !== 0) {
+      setError(t("marketCreation.ammFundingDivisibilityError", { divisibility }));
+      return;
+    }
     setError(null);
     setFundingBusy(true);
     try {

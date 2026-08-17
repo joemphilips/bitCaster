@@ -1,8 +1,11 @@
 import type { Order, OrderBook } from "@/types/market-detail";
+import { parseMarketDivisibility } from "@bitcaster/client-sdk/marketUnits";
 
 export type OrderBookCompleteness = "direct" | "executable";
 
 export type OrderBookDepthSide = "bid" | "ask";
+
+export type ExecutableTradeSide = "Buy" | "Sell";
 
 export interface OrderBookDepthRow {
   side: OrderBookDepthSide;
@@ -41,6 +44,33 @@ export function computeSpreadMidpoint(orderBook: OrderBook | null | undefined): 
   return (bestBid + bestAsk) / 2;
 }
 
+/**
+ * Return whether a route has at least one order that can execute for a side.
+ *
+ * A BUY can consume direct asks or bids from the complementary route after
+ * converting their price with the market divisibility. A SELL can only consume
+ * direct bids. Invalid divisibility fails closed so a legacy/default
+ * denominator cannot create a false liquidity signal.
+ */
+export function hasExecutableLiquidity(input: {
+  book: OrderBook | null | undefined;
+  complementBook?: OrderBook | null;
+  divisibility: number;
+  side: ExecutableTradeSide;
+}): boolean {
+  const divisibility = parseMarketDivisibility(input.divisibility);
+  if (divisibility === null || !input.book) return false;
+
+  if (input.side === "Sell") {
+    return input.book.bids.some(isPositiveExecutableOrder);
+  }
+
+  if (input.book.asks.some(isPositiveExecutableOrder)) return true;
+  return ordersFromComplementBids(input.complementBook?.bids ?? [], divisibility).some(
+    isPositiveExecutableOrder,
+  );
+}
+
 export function deriveExecutableOrderBook(input: {
   book: OrderBook;
   complementBook?: OrderBook | null;
@@ -52,9 +82,11 @@ export function deriveExecutableOrderBook(input: {
   if (input.completeness === "executable" || !input.complementBook) {
     return book;
   }
+  const divisibility = parseMarketDivisibility(input.divisibility);
+  if (divisibility === null) return book;
 
   const asks = mergeOrdersByPrice(
-    [...book.asks, ...ordersFromComplementBids(input.complementBook.bids, input.divisibility)],
+    [...book.asks, ...ordersFromComplementBids(input.complementBook.bids, divisibility)],
     "ask",
     depthLimit,
   );
@@ -100,10 +132,18 @@ function withSpread(orderBook: OrderBook): OrderBook {
 }
 
 function ordersFromComplementBids(orders: Order[], divisibility: number): Order[] {
-  const denominator = Number.isFinite(divisibility) && divisibility > 0 ? divisibility : 10_000;
   return orders.map((order) => ({
-    price: denominator - order.price,
+    price: divisibility - order.price,
     amount: order.amount,
     total: order.amount,
   }));
+}
+
+function isPositiveExecutableOrder(order: Order): boolean {
+  return (
+    Number.isFinite(order.price) &&
+    order.price > 0 &&
+    Number.isFinite(order.amount) &&
+    order.amount > 0
+  );
 }

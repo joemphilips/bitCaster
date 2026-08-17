@@ -6,6 +6,7 @@ import type {
   TradePreview,
   LimitOrderPreview,
   TradeSide,
+  TradeTab,
   OrderType,
   YesNoMarketDetail,
   CategoricalMarketDetail,
@@ -20,8 +21,15 @@ import {
   estimatedSettlementFeeSubunits,
   type MarketBaseAsset,
   normalizeMarketBaseAsset,
-  normalizeMarketDivisibility,
+  parseMarketDivisibility,
 } from "@bitcaster/client-sdk/marketUnits";
+import { DepositStep } from "@/components/market-creation/DepositStep";
+import {
+  complementOutcomeSetId,
+  outcomeSetIdsForMarketBooks,
+  resolveOutcomeSets,
+} from "@/lib/outcomeSets";
+import { hasExecutableLiquidity } from "./orderBookViewModel";
 
 function formatNullablePrice(
   price: number | null,
@@ -61,12 +69,69 @@ interface TradingPanelProps {
   onTradeConfirm?: (comment?: string) => void;
   onCommentPost?: (content: string) => void;
   onTradeSideChange?: (side: TradeSide) => void;
+  tradeTab?: TradeTab;
+  onTradeTabChange?: (tab: TradeTab) => void;
   onOrderTypeChange?: (type: OrderType) => void;
   onLimitPriceChange?: (price: number) => void;
   walletReady?: boolean;
   onWalletRequired?: (comment?: string) => void;
   onTopUpRequired?: (comment?: string) => void;
   disabled?: boolean;
+}
+
+type TradingTab = TradeTab;
+
+function fallbackOutcomeLabels(market: MarketDetail): string[] {
+  if (market.type === "yesno") {
+    return market.outcomes?.map((outcome) => outcome.label) ?? ["Yes", "No"];
+  }
+  if (market.type === "categorical") return market.outcomes.map((outcome) => outcome.label);
+  return ["HI", "LO"];
+}
+
+function routeIdsForMarket(market: MarketDetail): string[] {
+  const configuredIds = outcomeSetIdsForMarketBooks(market);
+  const bookIds = Object.keys(market.outcomeOrderBooks ?? {});
+  const ids = [...new Set([...configuredIds, ...bookIds])];
+  if (ids.length > 0) return ids;
+  return fallbackOutcomeLabels(market).map((label) => label.trim()).filter(Boolean);
+}
+
+function routeBookForMarket(market: MarketDetail, routeId: string) {
+  const primaryRouteId = routeIdsForMarket(market)[0];
+  return market.outcomeOrderBooks?.[routeId] ??
+    (routeId === primaryRouteId ? market.orderBook : undefined);
+}
+
+function complementRouteIdForMarket(market: MarketDetail, routeId: string): string {
+  return complementOutcomeSetId(fallbackOutcomeLabels(market), routeId);
+}
+
+function selectedRouteIdsForMarket(
+  market: MarketDetail,
+  selection: TradeSelection,
+): { selectedOutcomeSetId: string; complementOutcomeSetId: string } | null {
+  const resolved = resolveOutcomeSets(market, selection);
+  if (resolved) {
+    return {
+      selectedOutcomeSetId: resolved.selectedOutcomeSetId,
+      complementOutcomeSetId: resolved.complementOutcomeSetId,
+    };
+  }
+
+  const routeIds = routeIdsForMarket(market);
+  if (routeIds.length === 0) return null;
+  const selectedIndex =
+    market.type === "categorical"
+      ? routeIds.findIndex((routeId) => routeId === selection.outcomeId)
+      : selection.side === "no" || selection.side === "lo"
+        ? 1
+        : 0;
+  const selectedOutcomeSetId = routeIds[selectedIndex >= 0 ? selectedIndex : 0];
+  return {
+    selectedOutcomeSetId,
+    complementOutcomeSetId: complementRouteIdForMarket(market, selectedOutcomeSetId),
+  };
 }
 
 // Buy quick-presets are user-facing display shares. Boundary code maps each
@@ -404,44 +469,6 @@ function NumericOutcomes({
   );
 }
 
-function BuySellToggle({
-  tradeSide,
-  onTradeSideChange,
-  disabled = false,
-}: {
-  tradeSide: TradeSide;
-  onTradeSideChange?: (side: TradeSide) => void;
-  disabled?: boolean;
-}) {
-  const { t } = useTranslation();
-  return (
-    <div className="grid grid-cols-2 mb-3">
-      <button
-        onClick={() => onTradeSideChange?.("Buy")}
-        disabled={disabled}
-        className={`py-2.5 text-sm font-semibold transition-colors border-b-2 ${
-          tradeSide === "Buy"
-            ? "text-slate-900 dark:text-white border-slate-900 dark:border-white"
-            : "text-slate-500 dark:text-slate-400 border-transparent hover:text-slate-700 dark:hover:text-slate-300"
-        }`}
-      >
-        {t("trade.buy")}
-      </button>
-      <button
-        onClick={() => onTradeSideChange?.("Sell")}
-        disabled={disabled}
-        className={`py-2.5 text-sm font-semibold transition-colors border-b-2 ${
-          tradeSide === "Sell"
-            ? "text-slate-900 dark:text-white border-slate-900 dark:border-white"
-            : "text-slate-500 dark:text-slate-400 border-transparent hover:text-slate-700 dark:hover:text-slate-300"
-        }`}
-      >
-        {t("trade.sell")}
-      </button>
-    </div>
-  );
-}
-
 function MarketLimitToggle({
   orderType,
   onOrderTypeChange,
@@ -695,6 +722,8 @@ export function TradingPanel({
   tradeFeasibility,
   isTradeSubmitting = false,
   onTradeSideChange,
+  tradeTab: controlledTradeTab,
+  onTradeTabChange,
   onOrderTypeChange,
   onLimitPriceChange,
   walletReady = true,
@@ -704,12 +733,16 @@ export function TradingPanel({
 }: TradingPanelProps) {
   const { t } = useTranslation();
   const [tradeComment, setTradeComment] = useState("");
-  const isSell = tradeSide === "Sell";
+  const [localActiveTab, setLocalActiveTab] = useState<TradingTab>(tradeSide);
+  const activeTab = controlledTradeTab ?? localActiveTab;
+  const activeTradeSide: TradeSide = activeTab === "Sell" ? "Sell" : "Buy";
+  const isSell = activeTradeSide === "Sell";
   const isLimit = orderType === "limit";
   const baseAsset = normalizeMarketBaseAsset(market.baseAsset);
   const unitLabel = marketUnitLabel(baseAsset);
-  const divisibility = normalizeMarketDivisibility(market.divisibility, baseAsset);
-  const wholeShareLabel = formatShareFace(baseAsset, divisibility);
+  const validDivisibility = parseMarketDivisibility(market.divisibility);
+  const divisibility = validDivisibility ?? 0;
+  const wholeShareLabel = divisibility > 0 ? formatShareFace(baseAsset, divisibility) : "";
   const formatAmount = (amount: number) => formatMarketSubunits(amount, baseAsset);
   const estimatedSettlementFee = estimatedSettlementFeeSubunits(baseAsset);
   const shareCountLabel = (shares: number) =>
@@ -732,6 +765,51 @@ export function TradingPanel({
       ? t("trade.insufficientOutcomeTokens")
       : t("trade.insufficientFunds");
   const buyNeedsTopUp = backingBlocked && backingBlockReason === "funds";
+
+  useEffect(() => {
+    if (controlledTradeTab == null) {
+      setLocalActiveTab((current) => (current === "Liquidity" ? current : tradeSide));
+    }
+  }, [controlledTradeTab, tradeSide]);
+
+  const selectTradeTab = (side: TradeSide) => {
+    setLocalActiveTab(side);
+    onTradeTabChange?.(side);
+    onTradeSideChange?.(side);
+  };
+
+  const selectLiquidityTab = () => {
+    setLocalActiveTab("Liquidity");
+    onTradeTabChange?.("Liquidity");
+  };
+
+  const hasRouteLiquidity = (routeId: string, side: TradeSide): boolean => {
+    const complementRouteId = complementRouteIdForMarket(market, routeId);
+    return hasExecutableLiquidity({
+      book: routeBookForMarket(market, routeId),
+      complementBook: routeBookForMarket(market, complementRouteId),
+      divisibility,
+      side,
+    });
+  };
+
+  const hasTradeLiquidity = (() => {
+    if (activeTab === "Liquidity") return true;
+    if (tradeSelection) {
+      const resolved = selectedRouteIdsForMarket(market, tradeSelection);
+      return resolved ? hasRouteLiquidity(resolved.selectedOutcomeSetId, activeTradeSide) : false;
+    }
+    return routeIdsForMarket(market).some((routeId) =>
+      hasRouteLiquidity(routeId, activeTradeSide),
+    );
+  })();
+
+  const outcomeCount =
+    market.type === "categorical"
+      ? market.outcomes.length
+      : market.type === "yesno"
+        ? market.outcomes?.length ?? market.registeredPrimitiveOutcomeIds?.length ?? 2
+        : market.registeredPrimitiveOutcomeIds?.length ?? 2;
 
   useEffect(() => {
     if (!isTradeAmountFocused) {
@@ -785,51 +863,115 @@ export function TradingPanel({
         {t("trade.title")}
       </h3>
 
-      {/* Buy/Sell Toggle */}
-      <BuySellToggle
-        tradeSide={tradeSide}
-        onTradeSideChange={onTradeSideChange}
-        disabled={tradingDisabled}
-      />
+      <div role="tablist" aria-label={t("trade.title")} className="grid grid-cols-3 mb-4">
+        {(["Buy", "Sell"] as const).map((side) => (
+          <button
+            key={side}
+            type="button"
+            role="tab"
+            aria-selected={activeTab === side}
+            data-testid={`trade-tab-${side.toLowerCase()}`}
+            onClick={() => selectTradeTab(side)}
+            disabled={tradingDisabled}
+            className={`py-2.5 text-sm font-semibold transition-colors border-b-2 ${
+              activeTab === side
+                ? "text-slate-900 dark:text-white border-slate-900 dark:border-white"
+                : "text-slate-500 dark:text-slate-400 border-transparent hover:text-slate-700 dark:hover:text-slate-300"
+            }`}
+          >
+            {t(`trade.${side.toLowerCase()}`)}
+          </button>
+        ))}
+        <button
+          type="button"
+          role="tab"
+          aria-selected={activeTab === "Liquidity"}
+          data-testid="trade-tab-liquidity"
+          onClick={selectLiquidityTab}
+          disabled={tradingDisabled}
+          className={`py-2.5 text-sm font-semibold transition-colors border-b-2 ${
+            activeTab === "Liquidity"
+              ? "text-slate-900 dark:text-white border-slate-900 dark:border-white"
+              : "text-slate-500 dark:text-slate-400 border-transparent hover:text-slate-700 dark:hover:text-slate-300"
+          }`}
+        >
+          {t("market.liquidity")}
+        </button>
+      </div>
 
-      {/* Market/Limit Sub-tabs */}
-      <MarketLimitToggle
-        orderType={orderType}
-        onOrderTypeChange={onOrderTypeChange}
-        disabled={tradingDisabled}
-      />
+      {activeTab === "Liquidity" ? (
+        validDivisibility != null ? (
+          <DepositStep
+            conditionId={market.id}
+            defaultAmountSats={0}
+            outcomeCount={outcomeCount}
+            baseAsset={baseAsset}
+            divisibility={validDivisibility}
+            presentation="detail"
+          />
+        ) : (
+          <div data-testid="empty-trade-liquidity" className="space-y-3 py-4">
+            <p className="text-sm text-slate-500 dark:text-slate-400">
+              {t("trade.emptyBookDescription")}
+            </p>
+          </div>
+        )
+      ) : !hasTradeLiquidity ? (
+        <div data-testid="empty-trade-liquidity" className="space-y-3 py-4">
+          <p className="text-sm text-slate-500 dark:text-slate-400">
+            {t("trade.emptyBookDescription")}
+          </p>
+          <button
+            type="button"
+            data-testid="open-liquidity-tab"
+            onClick={selectLiquidityTab}
+            disabled={tradingDisabled}
+            className="rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-slate-300 dark:disabled:bg-slate-700"
+          >
+            {t("market.liquidity")}
+          </button>
+        </div>
+      ) : (
+        <>
+          <MarketLimitToggle
+            orderType={orderType}
+            onOrderTypeChange={onOrderTypeChange}
+            disabled={tradingDisabled}
+          />
 
-      {/* Outcomes based on market type */}
-      {market.type === "yesno" && (
-        <YesNoOutcomes
-          market={market}
-          tradeSelection={tradeSelection}
-          tradeSide={tradeSide}
-          onTradeSelect={onTradeSelect}
-          disabled={tradingDisabled}
-        />
-      )}
-      {market.type === "categorical" && (
-        <CategoricalOutcomes
-          market={market}
-          tradeSelection={tradeSelection}
-          tradeSide={tradeSide}
-          onTradeSelect={onTradeSelect}
-          disabled={tradingDisabled}
-        />
-      )}
-      {market.type === "numeric" && (
-        <NumericOutcomes
-          market={market}
-          tradeSelection={tradeSelection}
-          tradeSide={tradeSide}
-          onTradeSelect={onTradeSelect}
-          disabled={tradingDisabled}
-        />
+          {/* Outcomes based on market type */}
+          {market.type === "yesno" && (
+            <YesNoOutcomes
+              market={market}
+              tradeSelection={tradeSelection}
+              tradeSide={activeTradeSide}
+              onTradeSelect={onTradeSelect}
+              disabled={tradingDisabled}
+            />
+          )}
+          {market.type === "categorical" && (
+            <CategoricalOutcomes
+              market={market}
+              tradeSelection={tradeSelection}
+              tradeSide={activeTradeSide}
+              onTradeSelect={onTradeSelect}
+              disabled={tradingDisabled}
+            />
+          )}
+          {market.type === "numeric" && (
+            <NumericOutcomes
+              market={market}
+              tradeSelection={tradeSelection}
+              tradeSide={activeTradeSide}
+              onTradeSelect={onTradeSelect}
+              disabled={tradingDisabled}
+            />
+          )}
+        </>
       )}
 
       {/* Trade Form (shown when outcome selected) */}
-      {tradeSelection && (
+      {activeTab !== "Liquidity" && hasTradeLiquidity && tradeSelection && (
         <div className="mt-5 pt-5 border-t border-slate-200 dark:border-slate-700">
           <div className="flex items-center justify-between mb-1">
             <span className="text-sm font-medium text-slate-600 dark:text-slate-400">
