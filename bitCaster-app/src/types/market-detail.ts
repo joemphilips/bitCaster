@@ -206,6 +206,7 @@ export type MarketDetail = YesNoMarketDetail | CategoricalMarketDetail | Numeric
 // =============================================================================
 
 export type TradeSide = "Buy" | "Sell";
+export type TradeTab = TradeSide | "Liquidity";
 export type OrderType = "market" | "limit";
 
 export interface LimitOrderPreview {
@@ -327,6 +328,12 @@ export interface MarketDetailProps {
 
   /** Called when user toggles between buy and sell */
   onTradeSideChange?: (side: TradeSide) => void;
+
+  /** Current trade pane tab. */
+  tradeTab?: TradeTab;
+
+  /** Called when the trade pane tab changes. */
+  onTradeTabChange?: (tab: TradeTab) => void;
 
   /** Current order type (market or limit) */
   orderType: OrderType;

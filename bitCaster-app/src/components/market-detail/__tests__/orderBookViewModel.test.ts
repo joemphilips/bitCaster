@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { buildOrderBookDepthRows, deriveExecutableOrderBook } from "../orderBookViewModel";
+import {
+  buildOrderBookDepthRows,
+  deriveExecutableOrderBook,
+  hasExecutableLiquidity,
+} from "../orderBookViewModel";
 
 describe("buildOrderBookDepthRows", () => {
   it("scales row depth by the largest displayed amount across both sides", () => {
@@ -47,6 +51,91 @@ describe("deriveExecutableOrderBook", () => {
       ],
       spread: 2_500,
     });
+  });
+
+  it("counts direct asks and transformed complementary bids as BUY liquidity", () => {
+    expect(
+      hasExecutableLiquidity({
+        side: "Buy",
+        divisibility: 1_000_000,
+        book: { bids: [], asks: [], spread: 0 },
+        complementBook: {
+          bids: [{ price: 301_000, amount: 100, total: 100 }],
+          asks: [],
+          spread: 0,
+        },
+      }),
+    ).toBe(true);
+    expect(
+      hasExecutableLiquidity({
+        side: "Buy",
+        divisibility: 1_000_000,
+        book: {
+          bids: [],
+          asks: [{ price: 700_000, amount: 100, total: 100 }],
+          spread: 0,
+        },
+      }),
+    ).toBe(true);
+  });
+
+  it("counts only positive direct bids as SELL liquidity", () => {
+    expect(
+      hasExecutableLiquidity({
+        side: "Sell",
+        divisibility: 10_000,
+        book: {
+          bids: [{ price: 4_000, amount: 100, total: 100 }],
+          asks: [],
+          spread: 0,
+        },
+        complementBook: {
+          bids: [{ price: 3_000, amount: 100, total: 100 }],
+          asks: [],
+          spread: 0,
+        },
+      }),
+    ).toBe(true);
+    expect(
+      hasExecutableLiquidity({
+        side: "Sell",
+        divisibility: 10_000,
+        book: { bids: [], asks: [], spread: 0 },
+        complementBook: {
+          bids: [{ price: 3_000, amount: 100, total: 100 }],
+          asks: [],
+          spread: 0,
+        },
+      }),
+    ).toBe(false);
+  });
+
+  it("fails closed for invalid divisibility and does not transform with a fallback", () => {
+    expect(
+      hasExecutableLiquidity({
+        side: "Buy",
+        divisibility: 12_345,
+        book: { bids: [], asks: [], spread: 0 },
+        complementBook: {
+          bids: [{ price: 3_000, amount: 100, total: 100 }],
+          asks: [],
+          spread: 0,
+        },
+      }),
+    ).toBe(false);
+
+    expect(
+      deriveExecutableOrderBook({
+        completeness: "direct",
+        divisibility: 12_345,
+        book: { bids: [], asks: [], spread: 0 },
+        complementBook: {
+          bids: [{ price: 3_000, amount: 100, total: 100 }],
+          asks: [],
+          spread: 0,
+        },
+      }).asks,
+    ).toEqual([]);
   });
 
   it("uses the default D=10000 denominator for complement bids", () => {

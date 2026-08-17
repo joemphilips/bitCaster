@@ -405,7 +405,7 @@ describe("MarketDetailPage live market status", () => {
 
   it("applies a MarketStatusChanged close push to the detail page and disables trading", async () => {
     vi.mocked(fetchMarketDetail).mockResolvedValue(yesNoMarket({ state: "open" }));
-    vi.mocked(fetchOrderBook).mockResolvedValue(emptyBook);
+    vi.mocked(fetchOrderBook).mockResolvedValue(askBook(4_000));
 
     render(<MarketDetailPage />);
 
@@ -570,7 +570,7 @@ describe("MarketDetailPage live market status", () => {
       outcomeProofsByOutcomeSetId: {},
     });
     vi.mocked(fetchMarketDetail).mockResolvedValue(yesNoMarket({ state: "open" }));
-    vi.mocked(fetchOrderBook).mockResolvedValue(emptyBook);
+    vi.mocked(fetchOrderBook).mockResolvedValue(askBook(4_000));
 
     render(<MarketDetailPage />);
 
@@ -638,7 +638,7 @@ describe("MarketDetailPage live market status", () => {
       outcomeProofsByOutcomeSetId: {},
     });
     vi.mocked(fetchMarketDetail).mockResolvedValue(yesNoMarket({ state: "open" }));
-    vi.mocked(fetchOrderBook).mockResolvedValue(emptyBook);
+    vi.mocked(fetchOrderBook).mockResolvedValue(askBook(4_000));
 
     render(<MarketDetailPage />);
 

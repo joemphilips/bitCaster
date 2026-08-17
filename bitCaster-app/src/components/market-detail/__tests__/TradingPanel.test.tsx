@@ -11,6 +11,14 @@ import type {
 } from "@/types/market-detail";
 import { useState } from "react";
 
+vi.mock("@/components/market-creation/DepositStep", () => ({
+  DepositStep: ({ conditionId, divisibility }: { conditionId: string; divisibility: number }) => (
+    <div data-testid="detail-deposit-step">
+      {conditionId}:{divisibility}
+    </div>
+  ),
+}));
+
 function makeMarket(overrides: Partial<YesNoMarketDetail> = {}): YesNoMarketDetail {
   return {
     id: "sat-market",
@@ -41,7 +49,11 @@ function makeMarket(overrides: Partial<YesNoMarketDetail> = {}): YesNoMarketDeta
       status: "open",
     },
     priceHistory: { data: [], timeframe: "7d" },
-    orderBook: { bids: [], asks: [], spread: 0 },
+    orderBook: {
+      bids: [{ price: 4_000, amount: 100, total: 100 }],
+      asks: [{ price: 6_000, amount: 100, total: 100 }],
+      spread: 2_000,
+    },
     recentTrades: [],
     comments: [],
     relatedMarkets: [],
@@ -51,6 +63,154 @@ function makeMarket(overrides: Partial<YesNoMarketDetail> = {}): YesNoMarketDeta
 }
 
 describe("TradingPanel", () => {
+  const emptyBook = {
+    bids: [],
+    asks: [],
+    spread: 0,
+  };
+
+  function makeEmptyBookMarket(divisibility: 10_000 | 1_000_000 = 10_000): YesNoMarketDetail {
+    return makeMarket({
+      divisibility,
+      orderBook: emptyBook,
+      outcomes: [
+        { id: "Yes", label: "Yes", odds: null },
+        { id: "No", label: "No", odds: null },
+      ],
+      outcomeOrderBooks: {
+        Yes: emptyBook,
+        No: emptyBook,
+      },
+    });
+  }
+
+  it("renders selectable BUY, SELL, and LIQUIDITY tabs", async () => {
+    const user = userEvent.setup();
+    render(
+      <TradingPanel
+        market={makeMarket()}
+        tradeSelection={null}
+        tradeAmount={0}
+        tradePreview={null}
+        tradeSide="Buy"
+        orderType="market"
+      />,
+    );
+
+    expect(screen.getAllByRole("tab")).toHaveLength(3);
+    await user.click(screen.getByTestId("trade-tab-liquidity"));
+    expect(screen.getByTestId("detail-deposit-step")).toHaveTextContent("sat-market:10000");
+  });
+
+  it("renders no BUY or SELL controls for an empty book and opens LIQUIDITY", async () => {
+    const user = userEvent.setup();
+    const onTradeConfirm = vi.fn();
+    render(
+      <TradingPanel
+        market={makeEmptyBookMarket()}
+        tradeSelection={{ side: "yes" }}
+        tradeAmount={2}
+        tradePreview={null}
+        tradeSide="Buy"
+        orderType="limit"
+        onTradeConfirm={onTradeConfirm}
+      />,
+    );
+
+    expect(screen.getByTestId("empty-trade-liquidity")).toBeInTheDocument();
+    expect(screen.queryByTestId("trade-amount-input")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("trade-confirm")).not.toBeInTheDocument();
+    await user.click(screen.getByTestId("trade-tab-sell"));
+    expect(screen.getByTestId("empty-trade-liquidity")).toBeInTheDocument();
+    expect(screen.queryByTestId("trade-confirm")).not.toBeInTheDocument();
+    await user.click(screen.getByTestId("open-liquidity-tab"));
+    expect(screen.getByTestId("detail-deposit-step")).toBeInTheDocument();
+    expect(onTradeConfirm).not.toHaveBeenCalled();
+  });
+
+  it("keeps the BUY body empty when every route is empty before selection", () => {
+    render(
+      <TradingPanel
+        market={makeEmptyBookMarket()}
+        tradeSelection={null}
+        tradeAmount={0}
+        tradePreview={null}
+        tradeSide="Buy"
+        orderType="market"
+      />,
+    );
+
+    expect(screen.getByTestId("empty-trade-liquidity")).toBeInTheDocument();
+    expect(screen.queryByTestId("trade-amount-input")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("trade-confirm")).not.toBeInTheDocument();
+  });
+
+  it("counts complementary bids as BUY liquidity and direct bids as SELL liquidity", () => {
+    const market = makeEmptyBookMarket();
+    const withComplementBid = {
+      ...market,
+      outcomeOrderBooks: {
+        Yes: emptyBook,
+        No: { ...emptyBook, bids: [{ price: 3_000, amount: 100, total: 100 }] },
+      },
+    } satisfies YesNoMarketDetail;
+    const { unmount } = render(
+      <TradingPanel
+        market={withComplementBid}
+        tradeSelection={{ side: "yes" }}
+        tradeAmount={0}
+        tradePreview={null}
+        tradeSide="Buy"
+        orderType="market"
+      />,
+    );
+    expect(screen.queryByTestId("empty-trade-liquidity")).not.toBeInTheDocument();
+    expect(screen.getByTestId("trade-outcome-yes")).toBeInTheDocument();
+
+    unmount();
+    render(
+      <TradingPanel
+        market={{
+          ...market,
+          outcomeOrderBooks: {
+            Yes: { ...emptyBook, bids: [{ price: 4_000, amount: 100, total: 100 }] },
+            No: emptyBook,
+          },
+        }}
+        tradeSelection={{ side: "yes" }}
+        tradeAmount={0}
+        tradePreview={null}
+        tradeSide="Sell"
+        orderType="market"
+      />,
+    );
+    expect(screen.queryByTestId("empty-trade-liquidity")).not.toBeInTheDocument();
+    expect(screen.getByTestId("trade-outcome-yes")).toBeInTheDocument();
+  });
+
+  it("transforms complementary BUY liquidity with the actual one-million divisibility", () => {
+    const market = makeEmptyBookMarket(1_000_000);
+    render(
+      <TradingPanel
+        market={{
+          ...market,
+          outcomeOrderBooks: {
+            Yes: emptyBook,
+            No: { ...emptyBook, bids: [{ price: 301_000, amount: 100, total: 100 }] },
+          },
+        }}
+        tradeSelection={{ side: "yes" }}
+        tradeAmount={0}
+        tradePreview={null}
+        tradeSide="Buy"
+        orderType="market"
+      />,
+    );
+
+    expect(screen.queryByTestId("empty-trade-liquidity")).not.toBeInTheDocument();
+    expect(screen.getByTestId("trade-outcome-yes")).toBeInTheDocument();
+  });
+
   it("does not place a numeric range marker or fill before the first trade", () => {
     const numericMarket = {
       ...makeMarket(),

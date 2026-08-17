@@ -1,6 +1,7 @@
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Loader2 } from "lucide-react";
-import type { MarketDetailProps } from "@/types/market-detail";
+import type { MarketDetailProps, TradeTab } from "@/types/market-detail";
 import { useMarketState } from "@/hooks/useMarketState";
 import { MarketHeader } from "./MarketHeader";
 import { TradingPanel } from "./TradingPanel";
@@ -10,7 +11,8 @@ import { ResolutionInfo } from "./ResolutionInfo";
 import { RelatedMarkets } from "./RelatedMarkets";
 import { CommentSection } from "./CommentSection";
 import { canonicalizeOutcomeSet } from "@/lib/outcomeSets";
-import { deriveExecutableOrderBook } from "./orderBookViewModel";
+import { deriveExecutableOrderBook, hasExecutableLiquidity } from "./orderBookViewModel";
+import { outcomeSetIdsForMarketBooks, resolveOutcomeSets } from "@/lib/outcomeSets";
 import { formatPricePercentage } from "@bitcaster/client-sdk/marketUnits";
 
 function formatNumericPrice(value: number, unit: string, precision: number): string {
@@ -64,7 +66,27 @@ function yesNoOutcomes(market: MarketDetailProps["market"]) {
     : [
         { id: "Yes", label: "Yes", odds: market.currentOdds.yes },
         { id: "No", label: "No", odds: market.currentOdds.no },
-      ];
+  ];
+}
+
+function hasSelectedTradeLiquidity(
+  market: MarketDetailProps["market"],
+  tradeSelection: MarketDetailProps["tradeSelection"],
+  tradeSide: MarketDetailProps["tradeSide"],
+): boolean {
+  if (!tradeSelection) return false;
+  const resolved = resolveOutcomeSets(market, tradeSelection);
+  if (!resolved) return false;
+  const primaryRouteId = outcomeSetIdsForMarketBooks(market)[0] ?? resolved.selectedOutcomeSetId;
+  const bookFor = (routeId: string) =>
+    market.outcomeOrderBooks?.[routeId] ??
+    (routeId === primaryRouteId ? market.orderBook : undefined);
+  return hasExecutableLiquidity({
+    book: bookFor(resolved.selectedOutcomeSetId),
+    complementBook: bookFor(resolved.complementOutcomeSetId),
+    divisibility: market.divisibility,
+    side: tradeSide,
+  });
 }
 
 export function MarketDetail({
@@ -92,6 +114,8 @@ export function MarketDetail({
   onLoadMoreComments,
   onRelatedMarketClick,
   onTradeSideChange,
+  tradeTab: controlledTradeTab,
+  onTradeTabChange,
   onOrderTypeChange,
   onLimitPriceChange,
   userHoldings,
@@ -100,6 +124,20 @@ export function MarketDetail({
   onTopUpRequired,
 }: MarketDetailProps) {
   const { t } = useTranslation();
+  const [localTradeTab, setLocalTradeTab] = useState<TradeTab>(tradeSide);
+  const activeTradeTab = controlledTradeTab ?? localTradeTab;
+  const previousMarketIdRef = useRef(market.id);
+  useEffect(() => {
+    if (previousMarketIdRef.current === market.id) return;
+    previousMarketIdRef.current = market.id;
+    setLocalTradeTab(tradeSide);
+    onTradeTabChange?.(tradeSide);
+  }, [market.id, onTradeTabChange, tradeSide]);
+  useEffect(() => {
+    if (controlledTradeTab == null) {
+      setLocalTradeTab((current) => (current === "Liquidity" ? current : tradeSide));
+    }
+  }, [controlledTradeTab, tradeSide]);
   const outcomes =
     market.type === "categorical"
       ? market.outcomes
@@ -139,20 +177,62 @@ export function MarketDetail({
   const marketState = useMarketState(market.state);
   const isEffectivelyClosed = marketState === "Closed";
   const isTradingDisabled = isEffectivelyClosed;
+  const activeTradeSide = activeTradeTab === "Sell" ? "Sell" : "Buy";
+  const selectedTradeHasLiquidity = hasSelectedTradeLiquidity(
+    market,
+    tradeSelection,
+    activeTradeSide,
+  );
+
+  const handleTradeTabChange = (tab: TradeTab) => {
+    setLocalTradeTab(tab);
+    onTradeTabChange?.(tab);
+  };
+
+  const tradingPanel = (
+    <TradingPanel
+      market={market}
+      tradeSelection={tradeSelection}
+      tradeAmount={tradeAmount}
+      tradePreview={tradePreview}
+      tradeSide={tradeSide}
+      orderType={orderType}
+      limitOrderPreview={limitOrderPreview}
+      limitPrice={limitPrice}
+      onTradeSelect={onTradeSelect}
+      onTradeClear={onTradeClear}
+      onAmountChange={onAmountChange}
+      onTradeConfirm={onTradeConfirm}
+      tradeSubmitStatus={tradeSubmitStatus}
+      onTradeSubmitStatusDismiss={onTradeSubmitStatusDismiss}
+      tradeFeasibility={tradeFeasibility}
+      isTradeSubmitting={isTradeSubmitting}
+      onCommentPost={onCommentPost}
+      onTradeSideChange={onTradeSideChange}
+      tradeTab={activeTradeTab}
+      onTradeTabChange={handleTradeTabChange}
+      onOrderTypeChange={onOrderTypeChange}
+      onLimitPriceChange={onLimitPriceChange}
+      userHoldings={userHoldings}
+      walletReady={walletReady}
+      onWalletRequired={onWalletRequired}
+      onTopUpRequired={onTopUpRequired}
+      disabled={isTradingDisabled}
+    />
+  );
 
   return (
     <div className="min-h-screen bg-slate-50 pb-[calc(9rem+env(safe-area-inset-bottom))] dark:bg-slate-900 lg:pb-0">
       {/* Desktop Layout: Two Columns (single column when resolved) */}
       <div className="max-w-7xl mx-auto">
         <div className="p-4 lg:grid lg:grid-cols-[1fr_380px] lg:gap-6 lg:p-6">
-          {/* Left Column - Main Content */}
-          <div className="space-y-6">
-            {/* Header */}
+          {/* Header stays before the panel on mobile and occupies the first
+              column above the content on desktop. */}
+          <div className="order-1 space-y-6 lg:col-start-1 lg:row-start-1">
             <div className="bg-white dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 overflow-hidden">
               <MarketHeader market={market} onShare={onShare} />
             </div>
 
-            {/* Resolution Info (shown immediately after header for resolved markets) */}
             {isResolved && <ResolutionInfo resolution={market.resolution} />}
 
             {isEffectivelyClosed && (
@@ -165,39 +245,16 @@ export function MarketDetail({
                 <p>{t("market.closedBannerDescription")}</p>
               </div>
             )}
+          </div>
 
-            {/* Mobile: Trading Panel (disabled, not hidden, after close). */}
-            <div className="lg:hidden" data-testid="trading-panel-mobile">
-              <TradingPanel
-                market={market}
-                tradeSelection={tradeSelection}
-                tradeAmount={tradeAmount}
-                tradePreview={tradePreview}
-                tradeSide={tradeSide}
-                orderType={orderType}
-                limitOrderPreview={limitOrderPreview}
-                limitPrice={limitPrice}
-                onTradeSelect={onTradeSelect}
-                onTradeClear={onTradeClear}
-                onAmountChange={onAmountChange}
-                onTradeConfirm={onTradeConfirm}
-                tradeSubmitStatus={tradeSubmitStatus}
-                onTradeSubmitStatusDismiss={onTradeSubmitStatusDismiss}
-                tradeFeasibility={tradeFeasibility}
-                isTradeSubmitting={isTradeSubmitting}
-                onCommentPost={onCommentPost}
-                onTradeSideChange={onTradeSideChange}
-                onOrderTypeChange={onOrderTypeChange}
-                onLimitPriceChange={onLimitPriceChange}
-                userHoldings={userHoldings}
-                walletReady={walletReady}
-                onWalletRequired={onWalletRequired}
-                onTopUpRequired={onTopUpRequired}
-                disabled={isTradingDisabled}
-              />
-            </div>
+          <div
+            className="order-2 lg:col-start-2 lg:row-start-1 lg:row-span-full"
+            data-testid="trading-panel-responsive"
+          >
+            <div className="lg:sticky lg:top-6">{tradingPanel}</div>
+          </div>
 
-            {/* Price Chart */}
+          <div className="order-3 space-y-6 lg:col-start-1 lg:row-start-2">
             <PriceChart
               priceHistory={market.priceHistory}
               chartTimeframe={chartTimeframe}
@@ -273,59 +330,21 @@ export function MarketDetail({
               </div>
             )}
 
-            {/* Resolution Info (in normal position for open markets) */}
             {!isResolved && <ResolutionInfo resolution={market.resolution} />}
-
-            {/* Related Markets */}
             <RelatedMarkets markets={market.relatedMarkets} onMarketClick={onRelatedMarketClick} />
-
-            {/* Comments */}
             <CommentSection
               comments={market.comments}
               onCommentLike={onCommentLike}
               onLoadMoreComments={onLoadMoreComments}
             />
           </div>
-
-          {/* Right Column - Trading Panel (disabled, not hidden, after close). */}
-          <div className="hidden lg:block" data-testid="trading-panel-desktop">
-            <div className="sticky top-6">
-              <TradingPanel
-                market={market}
-                tradeSelection={tradeSelection}
-                tradeAmount={tradeAmount}
-                tradePreview={tradePreview}
-                tradeSide={tradeSide}
-                orderType={orderType}
-                limitOrderPreview={limitOrderPreview}
-                limitPrice={limitPrice}
-                onTradeSelect={onTradeSelect}
-                onTradeClear={onTradeClear}
-                onAmountChange={onAmountChange}
-                onTradeConfirm={onTradeConfirm}
-                tradeSubmitStatus={tradeSubmitStatus}
-                onTradeSubmitStatusDismiss={onTradeSubmitStatusDismiss}
-                tradeFeasibility={tradeFeasibility}
-                isTradeSubmitting={isTradeSubmitting}
-                onCommentPost={onCommentPost}
-                onTradeSideChange={onTradeSideChange}
-                onOrderTypeChange={onOrderTypeChange}
-                onLimitPriceChange={onLimitPriceChange}
-                userHoldings={userHoldings}
-                walletReady={walletReady}
-                onWalletRequired={onWalletRequired}
-                onTopUpRequired={onTopUpRequired}
-                disabled={isTradingDisabled}
-              />
-            </div>
-          </div>
         </div>
       </div>
 
       {/* Mobile: Sticky Bottom Trade Bar (only for open markets) */}
-      {!isTradingDisabled && (
+      {!isTradingDisabled && activeTradeTab !== "Liquidity" && (
         <div className="fixed left-0 right-0 bottom-[calc(4rem+env(safe-area-inset-bottom))] z-40 border-t border-slate-200 bg-white p-4 dark:border-slate-700 dark:bg-slate-800 lg:hidden">
-          {tradeSelection ? (
+          {tradeSelection && selectedTradeHasLiquidity ? (
             <div className="flex items-center gap-3">
               <div className="flex-1">
                 <p className="text-xs text-slate-500 dark:text-slate-400">
