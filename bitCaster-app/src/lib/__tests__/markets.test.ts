@@ -75,7 +75,17 @@ const yesNoEntry: MarketCatalogueEntry = {
   volumeLifetimeSubunits: 980_000,
   baseAsset: "sat",
   divisibility: 10_000,
-  lastTradedPrice: 0.62,
+  latestConfirmedTrades: [
+    {
+      primitiveOutcomeId: "YES",
+      fillId: "00000000-0000-0000-0000-000000000001",
+      executedAt: "2026-05-02T09:58:00Z",
+      eventOrder: "0001",
+      priceTick: 6200,
+      divisibility: 10_000,
+      faceAmountSubunits: 1000,
+    },
+  ],
   categoryTags: ["crypto"],
   lastSuccessfulRefreshAt: "2026-05-02T09:58:00Z",
 };
@@ -96,7 +106,7 @@ const categoricalEntry: MarketCatalogueEntry = {
   volumeLifetimeSubunits: 45_000,
   baseAsset: "sat",
   divisibility: 10_000,
-  lastTradedPrice: null,
+  latestConfirmedTrades: [],
   categoryTags: ["politics"],
   lastSuccessfulRefreshAt: "2026-05-02T09:58:00Z",
 };
@@ -114,29 +124,37 @@ describe("mapCatalogueEntryToMarket", () => {
     expect(market.divisibility).toBe(10_000);
     expect(market.baseMarket).toBe("sats");
     if (market.type === "yesno") {
-      expect(market.currentOdds).toEqual({ yes: 62, no: 38 });
+      expect(market.currentOdds).toEqual({ yes: 50, no: 50 });
     }
   });
 
-  it("prefers last traded price for yes/no list odds, falling back to neutral odds", () => {
-    // With lastTradedPrice present, list odds use it.
+  it("keeps temporary neutral yes/no list odds while trade display is deferred", () => {
+    // Confirmed trades are available to later displayed-price work, but do not
+    // provide visible odds in this mapper yet.
     const marketWithTrades = mapCatalogueEntryToMarket({
       ...yesNoEntry,
       divisibility: 10_000,
-      lastTradedPrice: 6_200,
+      latestConfirmedTrades: [{
+        primitiveOutcomeId: "YES",
+        fillId: "00000000-0000-0000-0000-000000000002",
+        executedAt: "2026-05-02T09:58:00Z",
+        eventOrder: "0002",
+        priceTick: 6_200,
+        divisibility: 10_000,
+        faceAmountSubunits: 1_000,
+      }],
     });
 
     expect(marketWithTrades.type).toBe("yesno");
     if (marketWithTrades.type === "yesno") {
-      // lastTradedPrice=6200 with D=10000 → 62%
-      expect(marketWithTrades.currentOdds.yes).toBe(62);
+      expect(marketWithTrades.currentOdds).toEqual({ yes: 50, no: 50 });
     }
 
-    // Without lastTradedPrice, registration has no creator price authority.
+    // Without confirmed trades, the adapter keeps the existing neutral display.
     const marketNoTrades = mapCatalogueEntryToMarket({
       ...yesNoEntry,
       divisibility: 10_000,
-      lastTradedPrice: null,
+      latestConfirmedTrades: [],
     });
 
     expect(marketNoTrades.type).toBe("yesno");
@@ -161,7 +179,7 @@ describe("mapCatalogueEntryToMarket", () => {
 
     const market = mapCatalogueEntryToMarket({
       ...yesNoEntry,
-      lastTradedPrice: null,
+      latestConfirmedTrades: [],
     });
 
     expect(market.type).toBe("yesno");
@@ -600,7 +618,7 @@ describe("fetchMarketDetail (engine merge — ADR-009 Amendment 2026-05-04)", ()
             volumeLifetimeSubunits: 250000,
             baseAsset: "sat",
             divisibility: 10_000,
-            lastTradedPrice: null,
+            latestConfirmedTrades: [],
             categoryTags: ["crypto"],
             lastSuccessfulRefreshAt: "2026-05-04T00:00:00Z",
           },

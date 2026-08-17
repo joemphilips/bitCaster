@@ -171,40 +171,12 @@ export interface GetMarketsResult {
 export type MarketCatalogueEntry = components["schemas"]["MarketCatalogueEntry"];
 export type MarketCatalogueResponse = components["schemas"]["MarketCatalogueResponse"];
 
-function clampPercent(value: number): number {
-  return Math.max(0, Math.min(100, value));
-}
-
-function probabilityFromLastTradedPrice(
-  lastTradedPrice: number | null | undefined,
-  divisibility: number,
-): number | null {
-  if (!Number.isFinite(lastTradedPrice)) return null;
-  const price = Number(lastTradedPrice);
-  // The catalogue currently documents lastTradedPrice as a decimal ratio, while
-  // runtime price fields use integer numerators against divisibility. Accept
-  // both shapes so generated-contract clients render correctly during the
-  // compatibility window.
-  return clampPercent(price <= 1 ? price * 100 : (price / divisibility) * 100);
-}
-
-function resolveYesNoCatalogueOdds(entry: MarketCatalogueEntry, divisibility: number): CurrentOdds {
-  // Prefer last traded price (already in the paginated DTO — no N+1 calls)
-  if (Number.isFinite(entry.lastTradedPrice)) {
-    const yes = probabilityFromLastTradedPrice(entry.lastTradedPrice, divisibility) ?? 50;
-    return { yes, no: 100 - yes };
-  }
-
+function resolveYesNoCatalogueOdds(): CurrentOdds {
   return { yes: 50, no: 50 };
 }
 
-function resolveYesNoDetailOdds(entry: MarketCatalogueEntry, divisibility: number): CurrentOdds {
-  if (Number.isFinite(entry.lastTradedPrice)) {
-    const yes = probabilityFromLastTradedPrice(entry.lastTradedPrice, divisibility) ?? 50;
-    return { yes, no: 100 - yes };
-  }
-
-  return resolveYesNoCatalogueOdds(entry, divisibility);
+function resolveYesNoDetailOdds(): CurrentOdds {
+  return resolveYesNoCatalogueOdds();
 }
 
 function buildMarketsQueryString(params: GetMarketsParams): string {
@@ -262,7 +234,7 @@ export function mapCatalogueEntryToMarket(entry: MarketCatalogueEntry): Market {
     return {
       ...base,
       type: "yesno",
-      currentOdds: resolveYesNoCatalogueOdds(entry, divisibility),
+      currentOdds: resolveYesNoCatalogueOdds(),
     };
   }
 
@@ -423,7 +395,7 @@ function mapCatalogueEntryToMarketDetail(entry: MarketCatalogueEntry): MarketDet
     return {
       ...base,
       type: "yesno",
-      currentOdds: resolveYesNoDetailOdds(entry, divisibility),
+      currentOdds: resolveYesNoDetailOdds(),
     };
   }
 

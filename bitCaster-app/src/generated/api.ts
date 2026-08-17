@@ -429,7 +429,7 @@ export interface paths {
          * Catalogue proxy — list markets with filters, sort, and pagination
          * @description Returns the public market catalogue with matching-engine market state, mint condition data, and trading summary fields. This is the read endpoint the markets list page (`/markets`) and discovery surfaces consume.
          *     Anonymous by default. NIP-98 is OPTIONAL — when present, the request is authenticated and routed to a higher per-pubkey rate-limit bucket; when absent, the per-IP bucket applies. Authentication does NOT change the response shape or visibility — every market visible to an anonymous caller is also visible to an authenticated caller and vice versa.
-         *     The response combines condition metadata (`outcomes`, `creatorPubkey`, `deadline`, and oracle attestation/close metadata) with trading state (`state`, `volume*`, `lastTradedPrice`, and `createdAt`). A market missing either side of that public data is omitted from the catalogue until both are available.
+         *     The response combines condition metadata (`outcomes`, `creatorPubkey`, `deadline`, and oracle attestation/close metadata) with trading state (`state`, `volume*`, and `createdAt`). A market missing either side of that public data is omitted from the catalogue until both are available.
          */
         get: operations["queryMarkets"];
         put?: never;
@@ -1487,14 +1487,14 @@ export interface components {
             price: number;
             /**
              * Format: int64
-             * @description Volume represented in the market's collateral/share subunits. Initial anchor points always carry zero volume.
+             * @description Volume represented in the market's collateral/share subunits.
              */
             volumeSubunits: number;
             /**
-             * @description `initial` is the creator-probability anchor and is clamped to the selected timeframe boundary when used as carry-forward context. `fill` is a settlement-committed trade tick inside the selected timeframe.
+             * @description `fill` is a settlement-committed trade tick inside the selected timeframe.
              * @enum {string}
              */
-            source: "initial" | "fill";
+            source: "fill";
         };
         MarketOutcomePriceHistory: {
             /** @description Primitive outcome id. Compound outcome ids are not returned. */
@@ -1724,6 +1724,22 @@ export interface components {
             /** @description Populated only when `state == Failed`. */
             failureReason?: string | null;
         };
+        LatestConfirmedTrade: {
+            primitiveOutcomeId: string;
+            /** Format: uuid */
+            fillId: string;
+            /** Format: date-time */
+            executedAt: string;
+            eventOrder: string;
+            priceTick: number;
+            /**
+             * Format: int32
+             * @enum {integer}
+             */
+            divisibility: 10000 | 1000000;
+            /** Format: int64 */
+            faceAmountSubunits: number;
+        };
         MarketCatalogueEntry: {
             /** @description The condition identifier (hex string derived from the oracle announcement). Stable identifier for the market. */
             conditionId: string;
@@ -1791,8 +1807,6 @@ export interface components {
              * @enum {integer}
              */
             divisibility: 10000 | 1000000;
-            /** @description Most recent execution price as a decimal ratio in `[0, 1]`, null if the market has never traded. Runtime order, fill, orderbook, and price-history price fields use integer numerators against the market's `divisibility`; this catalogue summary keeps the legacy ratio form for sorting/display compatibility. */
-            lastTradedPrice?: number | null;
             /** @description Category tags supplied at market registration. Filterable via the `tag` query parameter. */
             categoryTags: string[];
             /**
@@ -1800,6 +1814,8 @@ export interface components {
              * @description When the engine last successfully pulled the mintd condition snapshot used to populate this entry's mintd-sourced fields. Mirrored on every entry so callers can render staleness indicators per market without an additional request.
              */
             lastSuccessfulRefreshAt: string;
+            /** @description Bounded latest confirmed execution per primitive outcome. The array is sorted by canonical primitive outcome ID. Missing outcomes are absent. An untraded market has an empty array. */
+            latestConfirmedTrades: components["schemas"]["LatestConfirmedTrade"][];
         };
         MarketCatalogueResponse: {
             /** @description Page of markets matching the supplied filters, ordered by the requested `sort` dimension. Empty when no markets match. */

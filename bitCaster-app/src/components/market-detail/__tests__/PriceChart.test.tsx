@@ -278,24 +278,6 @@ describe("PriceChart", () => {
     });
   });
 
-  it("uses an initial-only timeframe anchor as the left edge", () => {
-    render(
-      <PriceChart
-        priceHistory={{
-          timeframe: "1h",
-          data: [{ timestamp: "2026-05-25T09:00:00Z", price: 50, source: "initial" }],
-        }}
-        chartTimeframe="1h"
-      />,
-    );
-
-    const anchor = Date.parse("2026-05-25T09:00:00Z") / 1000;
-    expect(plotInstances[0].options.scales?.x).toMatchObject({
-      min: anchor,
-      max: anchor + 60 * 60,
-    });
-  });
-
   it("destroys the plot on unmount", () => {
     const { unmount } = render(
       <PriceChart

@@ -67,7 +67,7 @@ export interface PricePoint {
   timestamp: string;
   price: number; // 0-100
   volume?: number;
-  source?: "initial" | "fill";
+  source?: "fill";
 }
 
 export interface PriceHistory {
