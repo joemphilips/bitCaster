@@ -61,6 +61,16 @@ channels:
         $ref: '#/components/messages/MatchedMessage'
     description: Server pushes a public match delta to affected market groups.
 
+  confirmedTradeRecorded:
+    address: ConfirmedTradeRecorded
+    messages:
+      confirmedTradeRecordedMessage:
+        $ref: '#/components/messages/ConfirmedTradeRecordedMessage'
+    description: >
+      Server pushes a committed confirmed-trade price delta to the market
+      groups for the condition. The REST market catalogue remains authoritative
+      when a client reconnects or misses a live delta.
+
   marketStatusChanged:
     address: MarketStatusChanged
     messages:
@@ -153,6 +163,18 @@ operations:
     messages:
       - $ref: '#/channels/matched/messages/matchedMessage'
 
+  confirmedTradeRecorded:
+    action: receive
+    channel:
+      $ref: '#/channels/confirmedTradeRecorded'
+    summary: Receive committed confirmed-trade price delta
+    description: >
+      Server pushes a confirmed trade only after its settlement is committed.
+      The message contains one bounded latest-trade value. Clients must reload
+      the REST market catalogue after reconnect or an explicit refresh.
+    messages:
+      - $ref: '#/channels/confirmedTradeRecorded/messages/confirmedTradeRecordedMessage'
+
   marketStatusChanged:
     action: receive
     channel:
@@ -232,6 +254,19 @@ components:
     MatchedMessage:
       payload:
         $ref: '#/components/schemas/MatchedDelta'
+
+    ConfirmedTradeRecordedMessage:
+      payload:
+        type: object
+        additionalProperties: false
+        required:
+          - conditionId
+          - latestConfirmedTrade
+        properties:
+          conditionId:
+            type: string
+          latestConfirmedTrade:
+            $ref: '#/components/schemas/LatestConfirmedTrade'
 
     MarketStatusChangedMessage:
       payload:
@@ -470,6 +505,40 @@ components:
         tokenSide:
           $ref: '#/components/schemas/TokenSide'
           description: Which token on the primitive outcome book was traded.
+
+    LatestConfirmedTrade:
+      type: object
+      additionalProperties: false
+      required:
+        - primitiveOutcomeId
+        - fillId
+        - executedAt
+        - eventOrder
+        - priceTick
+        - divisibility
+        - faceAmountSubunits
+      properties:
+        primitiveOutcomeId:
+          type: string
+        fillId:
+          type: string
+          format: uuid
+        executedAt:
+          type: string
+          format: date-time
+        eventOrder:
+          type: string
+        priceTick:
+          type: integer
+          minimum: 1
+        divisibility:
+          type: integer
+          format: int32
+          enum: [10000, 1000000]
+        faceAmountSubunits:
+          type: integer
+          format: int64
+          minimum: 1
 
     MarketStatusChanged:
       type: object

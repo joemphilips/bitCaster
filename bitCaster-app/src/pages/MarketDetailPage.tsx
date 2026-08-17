@@ -44,11 +44,14 @@ import {
 import { useMarketStatusLive } from "@/hooks/useMarketStatusLive";
 import { defaultLimitPriceForDivisibility, useMarketPrice } from "@/hooks/useMarketPrice";
 import {
+  applyConfirmedTradeDelta,
   joinMarket,
   leaveMarket,
+  onConfirmedTradeRecorded,
   onMarketRejoined,
   onOrderCancelled,
   onOrderBookUpdated,
+  type LatestConfirmedTrade,
   type MarketStatusChanged,
 } from "@/lib/marketHub";
 import { BitcasterEngineClient } from "@bitcaster/client-sdk/engineClient";
@@ -323,6 +326,7 @@ async function fetchMarketOrderBooks(
 export type MarketDetailDataState = {
   marketId: string | null;
   core: MarketDetailCore | null;
+  confirmedTradesByConditionId: Record<string, LatestConfirmedTrade[]>;
   booksByMarketId: Record<string, Record<string, OrderBook>>;
   bookSourcesByMarketId: Record<string, Record<string, CanonicalSliceSource>>;
   historiesByMarketId: Record<
@@ -370,11 +374,17 @@ export type MarketDetailDataAction =
       historiesByOutcomeSetId: Record<string, PriceHistory>;
     }
   | { type: "marketStatusChanged"; status: MarketStatusChanged }
+  | {
+      type: "confirmedTradeRecorded";
+      conditionId: string;
+      trade: LatestConfirmedTrade;
+    }
   | { type: "commentsLoaded"; marketId: string; comments: Comment[] };
 
 const emptyMarketDetailDataState: MarketDetailDataState = {
   marketId: null,
   core: null,
+  confirmedTradesByConditionId: {},
   booksByMarketId: {},
   bookSourcesByMarketId: {},
   historiesByMarketId: {},
@@ -579,6 +589,7 @@ export function createMarketDetailDataState(detail: MarketDetailType): MarketDet
   return {
     marketId: detail.id,
     core: marketCoreFromDetail(detail),
+    confirmedTradesByConditionId: {},
     booksByMarketId: {
       [detail.id]: booksByOutcomeSetId,
     },
@@ -613,9 +624,13 @@ function withSnapshotLoaded(
     return createMarketDetailDataState(detail);
   }
 
+  const confirmedTradesByConditionId = { ...state.confirmedTradesByConditionId };
+  delete confirmedTradesByConditionId[detail.id];
+
   return {
     ...state,
     core: marketCoreFromDetail(detail),
+    confirmedTradesByConditionId,
   };
 }
 
@@ -758,6 +773,21 @@ export function marketDetailDataReducer(
             ...(action.status.finalOutcome ? { finalOutcome: action.status.finalOutcome } : {}),
           },
         } as MarketDetailCore,
+      };
+    }
+    case "confirmedTradeRecorded": {
+      if (state.marketId !== action.conditionId) return state;
+      const current = state.confirmedTradesByConditionId[action.conditionId] ?? [];
+      const next = applyConfirmedTradeDelta(action.conditionId, current, {
+        conditionId: action.conditionId,
+        latestConfirmedTrade: action.trade,
+      });
+      return {
+        ...state,
+        confirmedTradesByConditionId: {
+          ...state.confirmedTradesByConditionId,
+          [action.conditionId]: next,
+        },
       };
     }
     case "commentsLoaded":
@@ -976,6 +1006,25 @@ export function MarketDetailPage() {
     reconcileOwnOrders();
     cleanups.push(reconcileOwnOrders.cancel);
 
+    // SignalR is a best-effort delta channel. Reconnect repair must go
+    // through the existing condition-authoritative REST read, once for the
+    // page, before the live order-book refreshes are applied.
+    const refreshAuthoritativeMarket = debounce(() => {
+      loadMarket({ showLoading: false });
+    }, 200);
+    cleanups.push(refreshAuthoritativeMarket.cancel);
+
+    cleanups.push(
+      onConfirmedTradeRecorded(id, (message) => {
+        if (cancelled || message.conditionId !== id) return;
+        dispatchMarketData({
+          type: "confirmedTradeRecorded",
+          conditionId: id,
+          trade: message.latestConfirmedTrade,
+        });
+      }),
+    );
+
     for (const outcomeSetId of outcomeSetIds) {
       const liveMarketId = outcomeSetMarketId(id, outcomeSetId);
       const refreshLiveOrderBook = debounce(() => {
@@ -1016,6 +1065,7 @@ export function MarketDetailPage() {
       );
       cleanups.push(
         onMarketRejoined(liveMarketId, () => {
+          refreshAuthoritativeMarket();
           refreshLiveOrderBook();
           reconcileOwnOrders();
         }),
@@ -1032,7 +1082,7 @@ export function MarketDetailPage() {
         void leaveMarket(outcomeSetMarketId(id, outcomeSetId));
       }
     };
-  }, [id, market?.id]);
+  }, [id, loadMarket, market?.id]);
 
   useEffect(() => {
     loadMarket();
