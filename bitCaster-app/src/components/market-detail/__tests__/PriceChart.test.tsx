@@ -77,6 +77,26 @@ describe("PriceChart", () => {
     expect(options.axes[1].values?.({}, [0, 50, 100])).toEqual(["0.00%", "50.00%", "100.00%"]);
   });
 
+  it("renders no synthetic numeric chart when numeric authority is disabled", () => {
+    render(
+      <PriceChart
+        priceHistory={{
+          timeframe: "7d",
+          data: [{ timestamp: "2026-05-20T10:00:00Z", price: 75 }],
+        }}
+        chartTimeframe="7d"
+        currentDisplay="market.priceUnavailable"
+        disabledNumeric
+      />,
+    );
+
+    expect(screen.getByText("market.priceUnavailable")).toBeInTheDocument();
+    expect(screen.queryByTestId("price-chart-uplot")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("latest-price-pill")).not.toBeInTheDocument();
+    expect(screen.queryByText("75.00%")).not.toBeInTheDocument();
+    expect(plotInstances).toHaveLength(0);
+  });
+
   it("updates the existing plot data when history changes", () => {
     const { rerender } = render(
       <PriceChart

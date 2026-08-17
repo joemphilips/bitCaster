@@ -374,13 +374,22 @@ export function mapMonitoringPortfolio(response: AssetMonitoringPortfolioRespons
   const positionsValueKnown =
     response.assets.nextCursor == null &&
     response.summary.unvaluedAssetCount === 0 &&
+    !response.assets.incomplete &&
+    !response.assets.building &&
     positions.every((position) => position.valueKnown !== false);
   const positionsValueSats = positions
     .filter((position) => position.valueKnown !== false)
     .reduce((total, position) => total + position.currentValueSats, 0);
   const totalValueKnown =
     response.summary.estimatedTotalValueMsat !== null &&
-    response.summary.unvaluedAssetCount === 0;
+    response.summary.unvaluedAssetCount === 0 &&
+    !response.summary.incomplete &&
+    !response.summary.building;
+  const historyComplete =
+    !response.history.incomplete &&
+    !response.history.building &&
+    response.history.points.every((point) => point.estimatedTotalValueMsat !== null);
+  const chartComplete = totalValueKnown && historyComplete;
   return {
     stats: {
       positionsValueSats,
@@ -398,13 +407,11 @@ export function mapMonitoringPortfolio(response: AssetMonitoringPortfolioRespons
     },
     positions,
     funds,
-    chart: totalValueKnown
-      ? response.history.points
-          .filter((point) => point.estimatedTotalValueMsat !== null)
-          .map((point) => ({
-            timestamp: point.asOf,
-            cumulativePL: point.estimatedTotalValueMsat!,
-          }))
+    chart: chartComplete
+      ? response.history.points.map((point) => ({
+          timestamp: point.asOf,
+          cumulativePL: point.estimatedTotalValueMsat!,
+        }))
       : [],
     monitoring: {
       stale: response.summary.stale || response.assets.stale || response.history.stale,

@@ -175,27 +175,6 @@ function deriveNumericPrice(
     : null;
 }
 
-export function deriveNumericCurrentValue(
-  market: Pick<Extract<MarketDetail, { type: "numeric" }>,
-    | "loBound"
-    | "hiBound"
-    | "latestConfirmedTrades"
-    | "latestConfirmedTradesValid"
-    | "registeredPrimitiveOutcomeIds">,
-): number | null {
-  if (market.latestConfirmedTradesValid === false) return null;
-  const ids = numericPrimitiveIds(market);
-  if (!ids) return null;
-  const latest = latestTradeAcrossOutcomes(market.latestConfirmedTrades ?? []);
-  if (!latest) return null;
-  if (latest.primitiveOutcomeId !== ids.hi && latest.primitiveOutcomeId !== ids.lo) return null;
-  const hiTick = latest.primitiveOutcomeId === ids.hi
-    ? latest.priceTick
-    : latest.divisibility - latest.priceTick;
-  const value = market.loBound + (hiTick / latest.divisibility) * (market.hiBound - market.loBound);
-  return Number.isFinite(value) ? value : null;
-}
-
 export function deriveConfirmedMarketPrice(
   market: MarketDetail,
   outcomeSetId: string | null | undefined,

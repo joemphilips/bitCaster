@@ -901,6 +901,40 @@ describe("marketDetailDataReducer", () => {
     }
   });
 
+  it("keeps composed numeric current value unavailable without a native trade representation", () => {
+    const numericMarket = {
+      ...yesNoMarket(),
+      type: "numeric" as const,
+      outcomes: [
+        { id: "HI", label: "HI", odds: null },
+        { id: "LO", label: "LO", odds: null },
+      ],
+      registeredPrimitiveOutcomeIds: ["HI", "LO"],
+      currentPrice: 75,
+      loBound: 0,
+      hiBound: 100,
+      precision: 2,
+      unit: "USD",
+      latestConfirmedTradesValid: true,
+      latestConfirmedTrades: [
+        {
+          primitiveOutcomeId: "HI",
+          fillId: "00000000-0000-0000-0000-000000000011",
+          executedAt: "2026-08-18T00:00:00Z",
+          eventOrder: "0001",
+          priceTick: 7_500,
+          divisibility: 10_000,
+          faceAmountSubunits: 100,
+        },
+      ],
+    } as unknown as MarketDetail;
+
+    const composed = composeMarketDetail(createMarketDetailDataState(numericMarket), "7d");
+
+    expect(composed?.type).toBe("numeric");
+    expect(composed && composed.type === "numeric" ? composed.currentPrice : null).toBeNull();
+  });
+
   it("preserves categorical histories and comments across lifecycle refresh", () => {
     const initial = categoricalMarket() as CategoricalMarketDetail;
     initial.priceHistory = {

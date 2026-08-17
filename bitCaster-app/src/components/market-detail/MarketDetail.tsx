@@ -13,9 +13,16 @@ import { canonicalizeOutcomeSet } from "@/lib/outcomeSets";
 import { deriveExecutableOrderBook } from "./orderBookViewModel";
 import { formatPricePercentage } from "@bitcaster/client-sdk/marketUnits";
 
-function formatNumericPrice(value: number, unit: string): string {
-  if (unit === "USD") return `$${value.toLocaleString()}`;
-  return `${value.toLocaleString()} ${unit}`;
+function formatNumericPrice(value: number, unit: string, precision: number): string {
+  const safePrecision = Number.isFinite(precision)
+    ? Math.min(Math.max(Math.trunc(precision), 0), 8)
+    : 0;
+  const formatted = value.toLocaleString(undefined, {
+    minimumFractionDigits: safePrecision,
+    maximumFractionDigits: safePrecision,
+  });
+  if (unit === "USD") return `$${formatted}`;
+  return `${formatted} ${unit}`;
 }
 
 function computeCurrentDisplay(
@@ -27,11 +34,12 @@ function computeCurrentDisplay(
 
   if (market.type === "numeric") {
     if (isResolved && market.attestedValue != null) {
-      return `Resolved: ${formatNumericPrice(market.attestedValue, market.unit)}`;
+      return `Resolved: ${formatNumericPrice(market.attestedValue, market.unit, market.precision)}`;
     }
-    return market.currentPrice == null
-      ? t(priceAuthorityUnavailable ? "market.priceUnavailable" : "market.noTrades")
-      : formatNumericPrice(market.currentPrice, market.unit);
+    // Numeric HI/LO probability ticks are not a native numeric trade
+    // representation. Keep the public current value unavailable until the
+    // contract carries one, regardless of any legacy currentPrice field.
+    return t("market.priceUnavailable");
   }
 
   if (isResolved && market.resolution.finalOutcome) {
@@ -199,6 +207,7 @@ export function MarketDetail({
               currentDisplay={currentDisplay}
               comments={market.comments}
               unit={market.type === "numeric" ? market.unit : undefined}
+              disabledNumeric={market.type === "numeric"}
             />
 
             {/* Order Book. Live state is owned by MarketDetailPage so depth,

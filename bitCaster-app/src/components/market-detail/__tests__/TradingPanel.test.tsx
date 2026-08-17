@@ -79,12 +79,23 @@ describe("TradingPanel", () => {
     expect(screen.queryByTestId("numeric-range-marker")).not.toBeInTheDocument();
   });
 
-  it("formats an authoritative numeric current value with its unit", () => {
+  it("keeps unresolved numeric probability ticks unavailable", () => {
     const numericMarket = {
       ...makeMarket(),
       type: "numeric" as const,
       currentPrice: 15,
       latestConfirmedTradesValid: true,
+      latestConfirmedTrades: [
+        {
+          primitiveOutcomeId: "HI",
+          fillId: "00000000-0000-0000-0000-000000000001",
+          executedAt: "2030-01-01T00:00:00Z",
+          eventOrder: "0001",
+          priceTick: 5_000,
+          divisibility: 10_000,
+          faceAmountSubunits: 100,
+        },
+      ],
       loBound: 10,
       hiBound: 20,
       precision: 0,
@@ -103,20 +114,26 @@ describe("TradingPanel", () => {
       />,
     );
 
-    expect(screen.getByText("$15")).toBeInTheDocument();
-    expect(screen.queryByText("15.00%")).not.toBeInTheDocument();
+    expect(screen.getByText("market.priceUnavailable")).toBeInTheDocument();
+    expect(screen.queryByText("$15")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("numeric-range-fill")).not.toBeInTheDocument();
   });
 
-  it("formats numeric current values with the market precision", () => {
+  it("formats a resolved attested numeric value with the market precision", () => {
     const numericMarket = {
       ...makeMarket(),
       type: "numeric" as const,
-      currentPrice: 15.125,
+      currentPrice: null,
       latestConfirmedTradesValid: true,
       loBound: 10,
       hiBound: 20,
       precision: 3,
       unit: "USD",
+      attestedValue: 15.125,
+      resolution: {
+        ...makeMarket().resolution,
+        status: "resolved" as const,
+      },
       registeredPrimitiveOutcomeIds: ["HI", "LO"],
     } as unknown as NumericMarketDetail;
 
