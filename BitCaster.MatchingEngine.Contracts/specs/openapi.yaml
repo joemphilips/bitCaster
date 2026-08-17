@@ -878,6 +878,15 @@ paths:
             NIP-98-authenticated callers have their own per-pubkey bucket
             with a higher permit ceiling. The engine returns this when the
             applicable bucket is empty.
+        '503':
+          description: >
+            Latest confirmed trade data is temporarily unavailable. Retry the
+            request later. The ProblemDetails `type` is
+            `/errors/market-latest-trades-unavailable`.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
 
   /api/v1/settlement-capabilities:
     post:
