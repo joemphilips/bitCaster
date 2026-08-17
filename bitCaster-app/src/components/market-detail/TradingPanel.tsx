@@ -23,7 +23,14 @@ import {
   normalizeMarketDivisibility,
 } from "@bitcaster/client-sdk/marketUnits";
 
-function formatNullablePrice(price: number | null, divisibility: number, noTrades: string): string {
+function formatNullablePrice(
+  price: number | null,
+  divisibility: number,
+  authority: Pick<MarketDetail, "latestConfirmedTrades" | "latestConfirmedTradesValid">,
+  noTrades: string,
+  priceUnavailable: string,
+): string {
+  if (authority.latestConfirmedTradesValid !== true) return priceUnavailable;
   return price == null ? noTrades : formatPricePercentage(price, divisibility);
 }
 
@@ -172,7 +179,13 @@ function YesNoOutcomes({
           {isSell ? t("trade.sellYes") : t("common.yes")}
         </div>
         <div className="text-2xl font-bold text-slate-900 dark:text-white">
-          {formatNullablePrice(market.currentOdds.yes, market.divisibility, t("market.noTrades"))}
+          {formatNullablePrice(
+            market.currentOdds.yes,
+            market.divisibility,
+            market,
+            t("market.noTrades"),
+            t("market.priceUnavailable"),
+          )}
         </div>
       </button>
 
@@ -190,7 +203,13 @@ function YesNoOutcomes({
           {isSell ? t("trade.sellNo") : t("common.no")}
         </div>
         <div className="text-2xl font-bold text-slate-900 dark:text-white">
-          {formatNullablePrice(market.currentOdds.no, market.divisibility, t("market.noTrades"))}
+          {formatNullablePrice(
+            market.currentOdds.no,
+            market.divisibility,
+            market,
+            t("market.noTrades"),
+            t("market.priceUnavailable"),
+          )}
         </div>
       </button>
     </div>
@@ -230,7 +249,13 @@ function CategoricalOutcomes({
                 {outcome.label}
               </span>
               <span className="text-sm font-bold text-slate-600 dark:text-slate-400">
-                {formatNullablePrice(outcome.odds, market.divisibility, t("market.noTrades"))}
+                {formatNullablePrice(
+                  outcome.odds,
+                  market.divisibility,
+                  market,
+                  t("market.noTrades"),
+                  t("market.priceUnavailable"),
+                )}
               </span>
             </div>
             <div className="grid grid-cols-2 gap-2">
@@ -298,7 +323,13 @@ function NumericOutcomes({
           {t("market.impliedPrice")}
         </div>
         <div className="text-3xl font-bold text-slate-900 dark:text-white">
-          {market.currentPrice == null ? t("market.noTrades") : formatPrice(market.currentPrice)}
+          {formatNullablePrice(
+            market.currentPrice,
+            market.divisibility,
+            market,
+            t("market.noTrades"),
+            t("market.priceUnavailable"),
+          )}
         </div>
       </div>
 

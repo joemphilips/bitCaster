@@ -72,8 +72,13 @@ export function LikedMarkets({ onViewMarket }: LikedMarketsProps) {
 
 function LikedMarketCard({ market, onClick }: { market: Market; onClick: () => void }) {
   const { t } = useTranslation();
-  const formatNullablePrice = (price: number | null) =>
-    price == null ? <span aria-label={t("market.noTrades")}>—</span> : formatPricePercentage(price, market.divisibility);
+  const formatNullablePrice = (price: number | null) => {
+    if (market.latestConfirmedTradesValid !== true) {
+      return <span aria-label={t("market.priceUnavailable")}>—</span>;
+    }
+    if (price == null) return <span aria-label={t("market.noTrades")}>—</span>;
+    return formatPricePercentage(price, market.divisibility);
+  };
   return (
     <button
       role="listitem"

@@ -106,6 +106,25 @@ describe("LikedMarkets (P5.1)", () => {
     expect(screen.getAllByLabelText("market.noTrades")).toHaveLength(2);
   });
 
+  it("labels null compact prices as unavailable when authority is missing", async () => {
+    mockGetMarkets.mockResolvedValue(
+      makeResult([
+        {
+          ...makeMarket("a"),
+          currentOdds: { yes: 2_500, no: 7_500 },
+          latestConfirmedTrades: [],
+          latestConfirmedTradesValid: false,
+        },
+      ]),
+    );
+    useBookmarkStore.setState({ markets: ["a"] });
+    render(<LikedMarkets />);
+
+    await screen.findByTestId("liked-market-card-a");
+    expect(screen.getAllByLabelText("market.priceUnavailable")).toHaveLength(2);
+    expect(screen.queryAllByLabelText("market.noTrades")).toHaveLength(0);
+  });
+
   it("shows an error message when the bulk fetch fails", async () => {
     mockGetMarkets.mockRejectedValue(new Error("boom"));
     useBookmarkStore.setState({ markets: ["a"] });

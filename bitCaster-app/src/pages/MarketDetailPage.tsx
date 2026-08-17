@@ -331,6 +331,8 @@ async function fetchMarketOrderBooks(
 }
 
 export type MarketDetailDataState = {
+  /** Route condition currently allowed to write into this state. */
+  activeRouteId: string | null;
   marketId: string | null;
   core: MarketDetailCore | null;
   confirmedTradesByConditionId: Record<string, LatestConfirmedTrade[]>;
@@ -356,40 +358,63 @@ export type MarketDetailDataState = {
 };
 
 export type MarketDetailDataAction =
-  | { type: "marketSnapshotLoaded"; detail: MarketDetailType }
+  | {
+      type: "routeChanged";
+      routeId: string | null;
+    }
+  | {
+      type: "marketSnapshotLoaded";
+      detail: MarketDetailType;
+      expectedRouteId?: string;
+    }
   | {
       type: "marketSubmitRefreshLoaded";
       detail: MarketDetailType;
       booksByOutcomeSetId: Record<string, OrderBook>;
       replaceOutcomeSetIds: string[];
+      expectedRouteId?: string;
     }
   | {
       type: "booksLoaded";
       marketId: string;
       booksByOutcomeSetId: Record<string, OrderBook>;
       replaceOutcomeSetIds: string[];
+      expectedRouteId?: string;
     }
   | {
       type: "orderBookUpdated";
       marketId: string;
       outcomeSetId: string;
       orderBook: OrderBook;
+      expectedRouteId?: string;
     }
   | {
       type: "historyLoaded";
       marketId: string;
       timeframe: ChartTimeframe;
       historiesByOutcomeSetId: Record<string, PriceHistory>;
+      expectedRouteId?: string;
     }
-  | { type: "marketStatusChanged"; status: MarketStatusChanged }
+  | {
+      type: "marketStatusChanged";
+      status: MarketStatusChanged;
+      expectedRouteId?: string;
+    }
   | {
       type: "confirmedTradeRecorded";
       conditionId: string;
       trade: LatestConfirmedTrade;
+      expectedRouteId?: string;
     }
-  | { type: "commentsLoaded"; marketId: string; comments: Comment[] };
+  | {
+      type: "commentsLoaded";
+      marketId: string;
+      comments: Comment[];
+      expectedRouteId?: string;
+    };
 
 const emptyMarketDetailDataState: MarketDetailDataState = {
+  activeRouteId: null,
   marketId: null,
   core: null,
   confirmedTradesByConditionId: {},
@@ -647,6 +672,7 @@ export function createMarketDetailDataState(detail: MarketDetailType): MarketDet
     detail.priceHistory.timeframe,
   );
   return {
+    activeRouteId: detail.id,
     marketId: detail.id,
     core: marketCoreFromDetail(detail),
     confirmedTradesByConditionId: {
@@ -678,6 +704,13 @@ export function createMarketDetailDataState(detail: MarketDetailType): MarketDet
         relatedMarkets: detail.relatedMarkets,
       },
     },
+  };
+}
+
+function emptyMarketDetailDataStateForRoute(routeId: string | null): MarketDetailDataState {
+  return {
+    ...emptyMarketDetailDataState,
+    activeRouteId: routeId,
   };
 }
 
@@ -717,9 +750,20 @@ export function marketDetailDataReducer(
   action: MarketDetailDataAction,
 ): MarketDetailDataState {
   switch (action.type) {
-    case "marketSnapshotLoaded":
+    case "routeChanged":
+      return emptyMarketDetailDataStateForRoute(action.routeId);
+    case "marketSnapshotLoaded": {
+      const expectedRouteId = action.expectedRouteId ?? action.detail.id;
+      if (state.activeRouteId !== expectedRouteId || action.detail.id !== expectedRouteId) {
+        return state;
+      }
       return withSnapshotLoaded(state, action.detail);
+    }
     case "marketSubmitRefreshLoaded": {
+      const expectedRouteId = action.expectedRouteId ?? action.detail.id;
+      if (state.activeRouteId !== expectedRouteId || action.detail.id !== expectedRouteId) {
+        return state;
+      }
       const next = withSnapshotLoaded(state, action.detail);
       if (next.marketId !== action.detail.id) return next;
       const currentBooks = next.booksByMarketId[action.detail.id] ?? {};
@@ -769,6 +813,8 @@ export function marketDetailDataReducer(
       };
     }
     case "booksLoaded": {
+      const expectedRouteId = action.expectedRouteId ?? action.marketId;
+      if (state.activeRouteId !== expectedRouteId) return state;
       if (state.marketId !== action.marketId) return state;
       const merged = mergeBookUpdates(
         state.booksByMarketId[action.marketId] ?? {},
@@ -789,7 +835,9 @@ export function marketDetailDataReducer(
         },
       };
     }
-    case "orderBookUpdated":
+    case "orderBookUpdated": {
+      const expectedRouteId = action.expectedRouteId ?? action.marketId;
+      if (state.activeRouteId !== expectedRouteId) return state;
       if (state.marketId !== action.marketId) return state;
       return {
         ...state,
@@ -808,7 +856,10 @@ export function marketDetailDataReducer(
           },
         },
       };
+    }
     case "historyLoaded": {
+      const expectedRouteId = action.expectedRouteId ?? action.marketId;
+      if (state.activeRouteId !== expectedRouteId) return state;
       if (state.marketId !== action.marketId) return state;
       const historiesForMarket = state.historiesByMarketId[action.marketId] ?? {};
       const historiesForTimeframe = historiesForMarket[action.timeframe] ?? {};
@@ -839,6 +890,8 @@ export function marketDetailDataReducer(
       };
     }
     case "marketStatusChanged": {
+      const expectedRouteId = action.expectedRouteId ?? action.status.conditionId;
+      if (state.activeRouteId !== expectedRouteId) return state;
       const core = state.core;
       if (!core || core.id !== action.status.conditionId) return state;
       return {
@@ -854,6 +907,8 @@ export function marketDetailDataReducer(
       };
     }
     case "confirmedTradeRecorded": {
+      const expectedRouteId = action.expectedRouteId ?? action.conditionId;
+      if (state.activeRouteId !== expectedRouteId) return state;
       if (state.marketId !== action.conditionId) return state;
       const current = state.confirmedTradesByConditionId[action.conditionId] ?? [];
       const allowedPrimitiveOutcomeIds =
@@ -896,7 +951,9 @@ export function marketDetailDataReducer(
         },
       };
     }
-    case "commentsLoaded":
+    case "commentsLoaded": {
+      const expectedRouteId = action.expectedRouteId ?? action.marketId;
+      if (state.activeRouteId !== expectedRouteId) return state;
       if (state.marketId !== action.marketId) return state;
       {
         const current = state.enrichmentByMarketId[action.marketId] ?? {
@@ -915,6 +972,7 @@ export function marketDetailDataReducer(
           },
         };
       }
+    }
     default:
       return assertNever(action);
   }
@@ -925,7 +983,7 @@ export function composeMarketDetail(
   timeframe: ChartTimeframe,
 ): MarketDetailType | null {
   const core = state.core;
-  if (!core) return null;
+  if (!core || state.activeRouteId !== core.id) return null;
 
   const primary = primaryOutcomeSetId(core);
   const historiesForTimeframe = state.historiesByMarketId[core.id]?.[timeframe] ?? {};
@@ -968,6 +1026,18 @@ export function MarketDetailPage() {
   const { id } = useParams();
   const navigate = useNavigate();
   const { t } = useTranslation();
+  const currentRouteId = id ?? null;
+  const activeRouteIdRef = useRef<string | null>(currentRouteId);
+  const routeGenerationRef = useRef(0);
+  const marketLoadRequestTokenRef = useRef(0);
+  // Update this during render so a promise that resolves between route render
+  // and the route effect cannot write the previous condition into state.
+  activeRouteIdRef.current = currentRouteId;
+  const isCurrentRoute = useCallback(
+    (routeId: string, generation: number) =>
+      activeRouteIdRef.current === routeId && routeGenerationRef.current === generation,
+    [],
+  );
   const setupComplete = useWalletStore((s) => s.setupComplete);
   const walletBackupState = useWalletStore((s) => s.walletBackupState);
   const activeMintUrl = useWalletStore((s) => s.activeMintUrl);
@@ -991,8 +1061,11 @@ export function MarketDetailPage() {
   // UI state
   const [chartTimeframe, setChartTimeframe] = useState<ChartTimeframe>("7d");
   const market = useMemo(
-    () => composeMarketDetail(marketData, chartTimeframe),
-    [marketData, chartTimeframe],
+    () =>
+      marketData.activeRouteId === currentRouteId
+        ? composeMarketDetail(marketData, chartTimeframe)
+        : null,
+    [currentRouteId, marketData, chartTimeframe],
   );
   const marketBaseAsset = market ? normalizeMarketBaseAsset(market.baseAsset) : "sat";
   const [tradeSelection, setTradeSelection] = useState<TradeSelection | null>(null);
@@ -1043,15 +1116,27 @@ export function MarketDetailPage() {
   // Load market data
   const loadMarket = useCallback(
     (options: { showLoading?: boolean } = {}) => {
-      if (!id) return;
+      const routeId = id;
+      if (!routeId) return;
+      const generation = routeGenerationRef.current;
+      const requestToken = ++marketLoadRequestTokenRef.current;
+      const isCurrentLoad = () =>
+        isCurrentRoute(routeId, generation) &&
+        marketLoadRequestTokenRef.current === requestToken;
       const showLoading = options.showLoading ?? true;
       if (showLoading) setLoading(true);
       setError(null);
 
-      fetchMarketDetail(id)
+      fetchMarketDetail(routeId)
         .then((detail) => {
-          dispatchMarketData({ type: "marketSnapshotLoaded", detail });
-          void fetchMarketOrderBooks(id, detail).then((books) => {
+          if (!isCurrentLoad() || detail.id !== routeId) return;
+          dispatchMarketData({
+            type: "marketSnapshotLoaded",
+            detail,
+            expectedRouteId: routeId,
+          });
+          void fetchMarketOrderBooks(routeId, detail).then((books) => {
+            if (!isCurrentLoad()) return;
             const detailWithBooks = {
               ...detail,
               orderBook: books.orderBook,
@@ -1059,7 +1144,8 @@ export function MarketDetailPage() {
             };
             dispatchMarketData({
               type: "booksLoaded",
-              marketId: id,
+              marketId: routeId,
+              expectedRouteId: routeId,
               booksByOutcomeSetId: booksByOutcomeSetFromDetail(
                 detailWithBooks,
                 books.fetchedOutcomeSetIds,
@@ -1069,14 +1155,53 @@ export function MarketDetailPage() {
           });
         })
         .catch(() => {
+          if (!isCurrentLoad()) return;
           setError("Failed to load market. Please check that the mint is running.");
         })
         .finally(() => {
-          if (showLoading) setLoading(false);
+          if (isCurrentLoad()) setLoading(false);
         });
     },
-    [id],
+    [id, isCurrentRoute],
   );
+
+  useEffect(() => {
+    const generation = ++routeGenerationRef.current;
+    dispatchMarketData({ type: "routeChanged", routeId: currentRouteId });
+
+    // Route-owned order and interstitial state must not survive navigation.
+    // In particular, a top-up completion for A must never prepare a ticket
+    // after the user has moved to B.
+    setTradeSelection(null);
+    setTradeAmount(0);
+    setPriceManuallyEdited(false);
+    setTradeSubmitStatus(null);
+    setTradeFeasibility(null);
+    setIsTradeSubmitting(false);
+    setRangeFeePreview(null);
+    setTopUpStage("closed");
+    setTopUpReason(null);
+    setBalanceAtCheck(0);
+    setPendingTopUpComment(undefined);
+    setPendingTopUpIntent(null);
+    setShowNostrAuthModal(false);
+    setShowNostrChooser(false);
+    setShowFundedActionBackupPrompt(false);
+    tradeSubmitInFlightRef.current = false;
+
+    if (!currentRouteId) {
+      setLoading(false);
+      setError(null);
+      return;
+    }
+
+    setLoading(true);
+    setError(null);
+    // loadMarket reads the generation set above. Keep this local read to make
+    // the intended route token explicit and prevent future refactors from
+    // accidentally loading a previous route.
+    if (routeGenerationRef.current === generation) loadMarket();
+  }, [currentRouteId, loadMarket]);
 
   // Secondary live close-detection: subscribe to MarketStatusChanged pushes
   // while this detail page is mounted and joined to at least one per-outcome
@@ -1085,15 +1210,24 @@ export function MarketDetailPage() {
   // fallback. Do not add list-page joins or polling for lifecycle changes.
   const handleLiveStatus = useCallback(
     (status: MarketStatusChanged) => {
-      dispatchMarketData({ type: "marketStatusChanged", status });
+      const routeId = market?.id;
+      const generation = routeGenerationRef.current;
+      if (!routeId || status.conditionId !== routeId || !isCurrentRoute(routeId, generation)) return;
+      dispatchMarketData({
+        type: "marketStatusChanged",
+        status,
+        expectedRouteId: routeId,
+      });
       loadMarket({ showLoading: false });
     },
-    [loadMarket],
+    [isCurrentRoute, loadMarket, market?.id],
   );
   useMarketStatusLive(market?.id ?? null, handleLiveStatus);
 
   useEffect(() => {
     if (!id || !market) return;
+    const generation = routeGenerationRef.current;
+    if (!isCurrentRoute(id, generation)) return;
     const outcomeSetIds = outcomeSetIdsForMarketBooks(market).slice(0, 8);
     if (outcomeSetIds.length === 0) return;
 
@@ -1123,11 +1257,12 @@ export function MarketDetailPage() {
 
     cleanups.push(
       onConfirmedTradeRecorded(id, (message) => {
-        if (cancelled || message.conditionId !== id) return;
+        if (cancelled || !isCurrentRoute(id, generation) || message.conditionId !== id) return;
         dispatchMarketData({
           type: "confirmedTradeRecorded",
           conditionId: id,
           trade: message.latestConfirmedTrade,
+          expectedRouteId: id,
         });
       }),
     );
@@ -1137,12 +1272,13 @@ export function MarketDetailPage() {
       const refreshLiveOrderBook = debounce(() => {
         void refreshOrderBook(liveMarketId)
           .then((orderBook) => {
-            if (cancelled) return;
+            if (cancelled || !isCurrentRoute(id, generation)) return;
             dispatchMarketData({
               type: "orderBookUpdated",
               marketId: id,
               outcomeSetId,
               orderBook,
+              expectedRouteId: id,
             });
           })
           .catch((err) => {
@@ -1152,7 +1288,7 @@ export function MarketDetailPage() {
       cleanups.push(refreshLiveOrderBook.cancel);
       cleanups.push(
         onOrderBookUpdated(liveMarketId, (snapshot) => {
-          if (cancelled) return;
+          if (cancelled || !isCurrentRoute(id, generation)) return;
           refreshLiveOrderBook.cancel();
           const liveBook = mapSnapshotToOrderBook(snapshot);
           dispatchMarketData({
@@ -1160,18 +1296,20 @@ export function MarketDetailPage() {
             marketId: id,
             outcomeSetId,
             orderBook: liveBook,
+            expectedRouteId: id,
           });
         }),
       );
       cleanups.push(
         onOrderCancelled(liveMarketId, () => {
-          if (cancelled) return;
+          if (cancelled || !isCurrentRoute(id, generation)) return;
           refreshLiveOrderBook();
           reconcileOwnOrders();
         }),
       );
       cleanups.push(
         onMarketRejoined(liveMarketId, () => {
+          if (cancelled || !isCurrentRoute(id, generation)) return;
           refreshAuthoritativeMarket();
           refreshLiveOrderBook();
           reconcileOwnOrders();
@@ -1189,14 +1327,12 @@ export function MarketDetailPage() {
         void leaveMarket(outcomeSetMarketId(id, outcomeSetId));
       }
     };
-  }, [id, loadMarket, market?.id]);
-
-  useEffect(() => {
-    loadMarket();
-  }, [loadMarket]);
+  }, [id, isCurrentRoute, loadMarket, market?.id]);
 
   useEffect(() => {
     if (!id || !market || !needsEngineDetailRefresh(market)) return;
+    const generation = routeGenerationRef.current;
+    if (!isCurrentRoute(id, generation)) return;
 
     let cancelled = false;
     let attempts = 0;
@@ -1213,7 +1349,7 @@ export function MarketDetailPage() {
           orderBook: books.orderBook,
           outcomeOrderBooks: books.outcomeOrderBooks,
         };
-        if (cancelled) return;
+        if (cancelled || !isCurrentRoute(id, generation) || latest.id !== id) return;
         if (!marketShapeMatches(market, latest)) return;
         const unchangedPartialSnapshot =
           market.closingDate === latest.closingDate &&
@@ -1223,6 +1359,7 @@ export function MarketDetailPage() {
           dispatchMarketData({
             type: "marketSubmitRefreshLoaded",
             detail: latest,
+            expectedRouteId: id,
             booksByOutcomeSetId: booksByOutcomeSetFromDetail(latest, books.fetchedOutcomeSetIds),
             replaceOutcomeSetIds: books.fetchedOutcomeSetIds,
           });
@@ -1234,7 +1371,7 @@ export function MarketDetailPage() {
         if (attempts >= maxAttempts) return;
       }
 
-      if (!cancelled) {
+      if (!cancelled && isCurrentRoute(id, generation)) {
         timeoutId = window.setTimeout(refresh, 2_000);
       }
     };
@@ -1244,15 +1381,17 @@ export function MarketDetailPage() {
       cancelled = true;
       if (timeoutId != null) window.clearTimeout(timeoutId);
     };
-  }, [id, market?.id, market?.closingDate, market?.state]);
+  }, [id, isCurrentRoute, market?.id, market?.closingDate, market?.state]);
 
   useEffect(() => {
     if (!market?.id) return;
+    const generation = routeGenerationRef.current;
+    if (!isCurrentRoute(market.id, generation)) return;
     let cancelled = false;
     const loadHistory = async () => {
       try {
         const history = await fetchMarketPriceHistory(market.id, chartTimeframe);
-        if (!cancelled) {
+        if (!cancelled && isCurrentRoute(market.id, generation)) {
           const { timeframe, historiesByOutcomeSetId } = historiesByOutcomeSetFromResponse(
             market,
             history,
@@ -1262,6 +1401,7 @@ export function MarketDetailPage() {
             marketId: market.id,
             timeframe,
             historiesByOutcomeSetId,
+            expectedRouteId: market.id,
           });
         }
       } catch {
@@ -1272,19 +1412,22 @@ export function MarketDetailPage() {
     return () => {
       cancelled = true;
     };
-  }, [market?.id, chartTimeframe]);
+  }, [isCurrentRoute, market?.id, chartTimeframe]);
 
   useEffect(() => {
     if (!market?.id) return;
+    const generation = routeGenerationRef.current;
+    if (!isCurrentRoute(market.id, generation)) return;
     let cancelled = false;
     const loadComments = async () => {
       try {
         const comments = await fetchMarketComments(market.id);
-        if (!cancelled) {
+        if (!cancelled && isCurrentRoute(market.id, generation)) {
           dispatchMarketData({
             type: "commentsLoaded",
             marketId: market.id,
             comments: commentsFromResponse(market, comments),
+            expectedRouteId: market.id,
           });
         }
       } catch {
@@ -1295,7 +1438,7 @@ export function MarketDetailPage() {
     return () => {
       cancelled = true;
     };
-  }, [market?.id]);
+  }, [isCurrentRoute, market?.id]);
 
   useEffect(() => {
     if (!walletReady) {
@@ -1342,7 +1485,10 @@ export function MarketDetailPage() {
   }, [market, priceOutcomeSetId]);
   const marketPrice = useMarketPrice({
     market,
-    marketId: market && priceOutcomeSetId ? outcomeSetMarketId(market.id, priceOutcomeSetId) : null,
+    marketId:
+      currentRouteId && priceOutcomeSetId
+        ? outcomeSetMarketId(currentRouteId, priceOutcomeSetId)
+        : null,
     outcomeSetId: priceOutcomeSetId,
     orderBook: priceOrderBook,
   });
@@ -1538,6 +1684,12 @@ export function MarketDetailPage() {
       return;
     }
 
+    const routeId = market.id;
+    const generation = routeGenerationRef.current;
+    if (!isCurrentRoute(routeId, generation)) {
+      setTradeFeasibility(null);
+      return;
+    }
     let cancelled = false;
     const evaluate = async () => {
       try {
@@ -1546,7 +1698,7 @@ export function MarketDetailPage() {
           conditionId: market.id,
           baseAsset: market.baseAsset,
         });
-        if (cancelled) return;
+        if (cancelled || !isCurrentRoute(routeId, generation)) return;
         const canBack = canBackOrder(
           {
             side: tradeSide === "Buy" ? "bid" : "ask",
@@ -1563,7 +1715,7 @@ export function MarketDetailPage() {
             ticket: currentTradeTicket,
             mintUrl: activeMintUrl,
           });
-          if (cancelled) return;
+          if (cancelled || !isCurrentRoute(routeId, generation)) return;
           setRangeFeePreview({
             key: rangeFeePreviewKey,
             consolidationFeeSubunits: feePreview.consolidationFeeSubunits,
@@ -1577,7 +1729,7 @@ export function MarketDetailPage() {
           message: tradeSide === "Sell" ? "Insufficient outcome tokens" : "Insufficient funds",
         });
       } catch {
-        if (!cancelled) setTradeFeasibility(null);
+        if (!cancelled && isCurrentRoute(routeId, generation)) setTradeFeasibility(null);
       }
     };
     void evaluate();
@@ -1592,6 +1744,7 @@ export function MarketDetailPage() {
     tradeAmount,
     marketDivisibility,
     currentTradeTicket,
+    isCurrentRoute,
     rangeFeePreviewKey,
   ]);
 
@@ -1600,6 +1753,10 @@ export function MarketDetailPage() {
   const placeOrder = useCallback(
     async (comment?: string) => {
       if (!market || !tradeSelection || !tradeAmount) return;
+      const routeId = market.id;
+      const generation = routeGenerationRef.current;
+      const routeStillActive = () => isCurrentRoute(routeId, generation);
+      if (!routeStillActive()) return;
       try {
         assertMarketAcceptsOrders(market);
       } catch (error) {
@@ -1619,8 +1776,10 @@ export function MarketDetailPage() {
 
       let latestMarket: MarketDetailType;
       try {
-        const latestDetail = await fetchMarketDetail(market.id);
-        const books = await fetchMarketOrderBooks(market.id, latestDetail);
+        const latestDetail = await fetchMarketDetail(routeId);
+        if (!routeStillActive() || latestDetail.id !== routeId) return;
+        const books = await fetchMarketOrderBooks(routeId, latestDetail);
+        if (!routeStillActive()) return;
         latestMarket = {
           ...latestDetail,
           orderBook: books.orderBook,
@@ -1628,6 +1787,7 @@ export function MarketDetailPage() {
         };
         dispatchMarketData({
           type: "marketSubmitRefreshLoaded",
+          expectedRouteId: routeId,
           detail: latestMarket,
           booksByOutcomeSetId: booksByOutcomeSetFromDetail(
             latestMarket,
@@ -1636,6 +1796,7 @@ export function MarketDetailPage() {
           replaceOutcomeSetIds: books.fetchedOutcomeSetIds,
         });
       } catch {
+        if (!routeStillActive()) return;
         setTradeSubmitStatus({
           kind: "error",
           message: "Could not refresh market status before submitting the order.",
@@ -1644,6 +1805,7 @@ export function MarketDetailPage() {
         setIsTradeSubmitting(false);
         return;
       }
+      if (!routeStillActive()) return;
       if (isClosedForTrading(latestMarket)) {
         setTradeSubmitStatus({
           kind: "error",
@@ -1697,9 +1859,11 @@ export function MarketDetailPage() {
 
       const clientOrderId = crypto.randomUUID();
       try {
+        if (!routeStillActive()) return;
         const signedComment = comment?.trim()
           ? await signTradeComment(latestMarket.id, comment.trim())
           : undefined;
+        if (!routeStillActive()) return;
         const walletState = useWalletStore.getState();
         if (!activeMintUrl) throw new Error("The active mint is unavailable.");
         const exactFeePreviewKey = JSON.stringify({
@@ -1718,6 +1882,7 @@ export function MarketDetailPage() {
             mintUrl: activeMintUrl,
           });
           expectedConsolidationFeeSubunits = feePreview.consolidationFeeSubunits;
+          if (!routeStillActive()) return;
           setRangeFeePreview({
             key: exactFeePreviewKey,
             consolidationFeeSubunits: expectedConsolidationFeeSubunits,
@@ -1726,6 +1891,7 @@ export function MarketDetailPage() {
             throw new Error("Wallet proof fees changed. Review the updated trade cost and retry.");
           }
         }
+        if (!routeStillActive()) return;
         const response = await submitBrowserCtfRangeOrder({
           market: latestMarket,
           ticket,
@@ -1735,6 +1901,7 @@ export function MarketDetailPage() {
           comment: signedComment ?? null,
           expectedConsolidationFeeSubunits,
         });
+        if (!routeStillActive()) return;
         const acceptedBaseAsset = normalizeMarketBaseAsset(response.baseAsset);
         const acceptedDivisibility = normalizeMarketDivisibility(
           response.divisibility,
@@ -1780,6 +1947,7 @@ export function MarketDetailPage() {
         }
         loadMarket({ showLoading: false });
       } catch (e) {
+        if (!routeStillActive()) return;
         if (e instanceof Error && e.message.includes("No Nostr signer configured")) {
           setShowNostrAuthModal(true);
           return;
@@ -1789,8 +1957,10 @@ export function MarketDetailPage() {
           message: e instanceof Error ? e.message : "Failed to submit order.",
         });
       } finally {
-        tradeSubmitInFlightRef.current = false;
-        setIsTradeSubmitting(false);
+        if (routeStillActive()) {
+          tradeSubmitInFlightRef.current = false;
+          setIsTradeSubmitting(false);
+        }
       }
     },
     [
@@ -1803,6 +1973,7 @@ export function MarketDetailPage() {
       activeMintUrl,
       loadMarket,
       addPendingTrade,
+      isCurrentRoute,
       rangeFeePreview,
     ],
   );
@@ -1813,6 +1984,10 @@ export function MarketDetailPage() {
   const handleTradeConfirm = useCallback(
     async (comment?: string) => {
       if (!market || !tradeSelection || !tradeAmount) return;
+      const routeId = market.id;
+      const generation = routeGenerationRef.current;
+      const routeStillActive = () => isCurrentRoute(routeId, generation);
+      if (!routeStillActive()) return;
       if (shouldPromptForFundedActionBackup(useWalletStore.getState().walletBackupState)) {
         setShowFundedActionBackupPrompt(true);
         return;
@@ -1855,6 +2030,7 @@ export function MarketDetailPage() {
           conditionId: market.id,
           baseAsset: market.baseAsset,
         });
+        if (!routeStillActive()) return;
         const backing = canBackOrder(
           {
             side: tradeSide === "Buy" ? "bid" : "ask",
@@ -1869,6 +2045,7 @@ export function MarketDetailPage() {
           tradeSide === "Sell"
             ? backing.maxShares * marketDivisibility
             : await getBalance(activeMintUrl, { baseAsset: marketBaseAsset });
+        if (!routeStillActive()) return;
         const collateralGate = decideTradeCollateralGate({
           balance: backing.canBack ? tradeFaceAmountSubunits : current,
           tradeFaceAmountSubunits,
@@ -1900,6 +2077,7 @@ export function MarketDetailPage() {
         const score = await ensureParticipationScoreForNextMatch({
           mintUrl: activeMintUrl,
         });
+        if (!routeStillActive()) return;
         if (score.kind === "needs-regular-top-up") {
           setBalanceAtCheck(score.balanceSats);
           setPendingTopUpComment(comment?.trim() || undefined);
@@ -1924,6 +2102,7 @@ export function MarketDetailPage() {
           return;
         }
       } catch (error) {
+        if (!routeStillActive()) return;
         if (error instanceof Error && error.message.includes("No Nostr signer configured")) {
           setShowNostrAuthModal(true);
           return;
@@ -1937,9 +2116,12 @@ export function MarketDetailPage() {
         });
         return;
       } finally {
-        tradeSubmitInFlightRef.current = false;
-        setIsTradeSubmitting(false);
+        if (routeStillActive()) {
+          tradeSubmitInFlightRef.current = false;
+          setIsTradeSubmitting(false);
+        }
       }
+      if (!routeStillActive()) return;
       await placeOrder(comment);
     },
     [
@@ -1953,6 +2135,7 @@ export function MarketDetailPage() {
       marketDivisibility,
       orderType,
       limitPrice,
+      isCurrentRoute,
       placeOrder,
     ],
   );
@@ -2019,6 +2202,7 @@ export function MarketDetailPage() {
     setPendingTopUpIntent(null);
     setPendingTopUpComment(undefined);
     if (!intent) return;
+    if (!isCurrentRoute(intent.marketId, routeGenerationRef.current)) return;
     if (
       !pendingTopUpOrderIntentMatches(intent, {
         market,
@@ -2043,6 +2227,7 @@ export function MarketDetailPage() {
       return;
     }
     const balance = await getBalance(activeMintUrl, { baseAsset: intent.baseAsset });
+    if (!isCurrentRoute(intent.marketId, routeGenerationRef.current)) return;
     if (balance < intent.required) {
       setTradeSubmitStatus({
         kind: "error",
@@ -2059,6 +2244,7 @@ export function MarketDetailPage() {
     orderType,
     pendingTopUpComment,
     pendingTopUpIntent,
+    isCurrentRoute,
     t,
     tradeAmount,
     tradeSelection,

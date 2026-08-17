@@ -8,6 +8,8 @@ function makeRelatedMarket(overrides: Partial<RelatedMarket> = {}): RelatedMarke
     id: "related-1",
     title: "Related market",
     currentOdds: { yes: null, no: null },
+    latestConfirmedTrades: [],
+    latestConfirmedTradesValid: true,
     volume: 0,
     baseAsset: "sat",
     closingDate: "2030-01-01T00:00:00Z",
@@ -21,6 +23,22 @@ describe("RelatedMarkets", () => {
 
     expect(screen.getAllByText("—")).toHaveLength(2);
     expect(screen.getAllByLabelText("market.noTrades")).toHaveLength(2);
+  });
+
+  it("labels null compact prices as unavailable when authority is missing", () => {
+    render(
+      <RelatedMarkets
+        markets={[
+          makeRelatedMarket({
+            currentOdds: { yes: 2_500, no: 7_500 },
+            latestConfirmedTradesValid: false,
+          }),
+        ]}
+      />,
+    );
+
+    expect(screen.getAllByLabelText("market.priceUnavailable")).toHaveLength(2);
+    expect(screen.queryAllByLabelText("market.noTrades")).toHaveLength(0);
   });
 
   it("uses the exact one-million denominator and never defaults missing divisibility", () => {

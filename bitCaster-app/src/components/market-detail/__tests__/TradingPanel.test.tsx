@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { TradingPanel } from "../TradingPanel";
 import type {
+  CategoricalMarketDetail,
   LimitOrderPreview,
   NumericMarketDetail,
   TradePreview,
@@ -73,9 +74,92 @@ describe("TradingPanel", () => {
       />,
     );
 
-    expect(screen.getByText("market.noTrades")).toBeInTheDocument();
+    expect(screen.getByText("market.priceUnavailable")).toBeInTheDocument();
     expect(screen.queryByTestId("numeric-range-fill")).not.toBeInTheDocument();
     expect(screen.queryByTestId("numeric-range-marker")).not.toBeInTheDocument();
+  });
+
+  it("labels an authoritative empty trade snapshot as no trades", () => {
+    const market = makeMarket({
+      currentOdds: { yes: null, no: null },
+      latestConfirmedTrades: [],
+      latestConfirmedTradesValid: true,
+    });
+
+    render(
+      <TradingPanel
+        market={market}
+        tradeSelection={null}
+        tradeAmount={0}
+        tradePreview={null}
+        tradeSide="Buy"
+        orderType="market"
+      />,
+    );
+
+    expect(screen.getAllByText("market.noTrades")).toHaveLength(2);
+    expect(screen.queryAllByText("market.priceUnavailable")).toHaveLength(0);
+  });
+
+  it("labels malformed or missing price authority as unavailable", () => {
+    const market = makeMarket({
+      currentOdds: { yes: 2_500, no: 7_500 },
+      latestConfirmedTrades: [],
+      latestConfirmedTradesValid: false,
+    });
+
+    render(
+      <TradingPanel
+        market={market}
+        tradeSelection={null}
+        tradeAmount={0}
+        tradePreview={null}
+        tradeSide="Buy"
+        orderType="market"
+      />,
+    );
+
+    expect(screen.getAllByText("market.priceUnavailable")).toHaveLength(2);
+    expect(screen.queryAllByText("market.noTrades")).toHaveLength(0);
+  });
+
+  it("keeps a valid partial categorical snapshot as no trades only for null outcomes", () => {
+    const categoricalMarket = {
+      ...makeMarket({
+        latestConfirmedTrades: [
+          {
+            primitiveOutcomeId: "Alice",
+            fillId: "00000000-0000-0000-0000-000000000001",
+            executedAt: "2030-01-01T00:00:00Z",
+            eventOrder: "0001",
+            priceTick: 2_500,
+            divisibility: 10_000,
+            faceAmountSubunits: 100,
+          },
+        ],
+        latestConfirmedTradesValid: true,
+      }),
+      type: "categorical" as const,
+      outcomes: [
+        { id: "Alice", label: "Alice", odds: 2_500 },
+        { id: "Bob", label: "Bob", odds: null },
+      ],
+    } as unknown as CategoricalMarketDetail;
+
+    render(
+      <TradingPanel
+        market={categoricalMarket}
+        tradeSelection={null}
+        tradeAmount={0}
+        tradePreview={null}
+        tradeSide="Buy"
+        orderType="market"
+      />,
+    );
+
+    expect(screen.getByText("25.00%")).toBeInTheDocument();
+    expect(screen.getByText("market.noTrades")).toBeInTheDocument();
+    expect(screen.queryByText("market.priceUnavailable")).not.toBeInTheDocument();
   });
 
   function StatefulLimitTradingPanel({

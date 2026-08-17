@@ -513,7 +513,7 @@ function mapCatalogueEntryToMarketDetail(entry: MarketCatalogueEntry): MarketDet
   const mappedOutcomes = outcomes.map((label) => ({
     id: label,
     label,
-    odds: 100 / Math.max(outcomes.length, 1),
+    odds: null,
   }));
   const now = new Date().toISOString();
   const createdAt = entry.createdAt ?? now;
