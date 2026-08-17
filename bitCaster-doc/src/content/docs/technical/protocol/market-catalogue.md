@@ -11,14 +11,26 @@ The catalogue exposes lifetime/display metrics for market cards and discovery pa
 
 | Field | Type | Meaning |
 | --- | --- | --- |
-| `ammBotBudgetSubunits` | `int64` | Static initial budget deposited to the automated market-making bot, denominated in msat. This is the value clients display as **Bot Budget**. It is not live order-book liquidity, remaining bot inventory, or a withdrawable creator balance. |
+| `ammBotBudgetSubunits` | `int64` | Total confirmed post-creation funding assigned to the automated market-making bot, denominated in msat. This is the value clients display as **Bot Budget**. Additional accepted payments can increase it. It is not live order-book liquidity, remaining bot inventory, a depositor position, or a withdrawable balance. |
 | `liquiditySubunits` | `int64` | Total face amount of currently resting orders across the market's order books, denominated in msat. |
 | `traderCount` | `int32` | Number of distinct traders that have settled a trade in this market. |
 | `volumeLifetimeSubunits` | `int64` | Cumulative settled collateral face amount of all fills in the market's history, in collateral subunits. |
 
 The response also includes `volume24hSubunits` and `volume30dSubunits` for rolling-volume views and sort dimensions. Clients should use `volumeLifetimeSubunits`, `ammBotBudgetSubunits`, and `traderCount` when rendering the visible Volume, Bot Budget, and Traders metrics for a market. `liquiditySubunits` remains a resting-order summary field for clients that need it, but it should not be labeled as the bot budget.
 
-Other public market summaries use the same naming rule: price-history points expose `volumeSubunits`, market metadata snapshots expose `totalVolumeSubunits` and `totalLiquiditySubunits`, and liquidity snapshots expose `restingOrderLiquiditySubunits`, `completeSetLiquiditySubunits`, and `totalLiquiditySubunits`. The deprecated `liquiditySats` create-market metadata field is still accepted for compatibility, but market-maker funding is collected after creation and create requests should send `0`.
+The `latestConfirmedTrades` array is the public market-price authority. It
+contains the bounded latest confirmed execution for each primitive outcome and
+is sorted by canonical primitive outcome ID. Missing outcomes are absent. An
+empty array means that no confirmed trade exists, so the market has no public
+price. Clients should show `No trades yet` or an em dash. Do not use a
+registration value, funding value, uniform default, or bid/ask midpoint as the
+market price. A midpoint is an order-entry reference only.
+
+Other public market summaries use the same naming rule: price-history points expose `volumeSubunits`, market metadata snapshots expose `totalVolumeSubunits` and `totalLiquiditySubunits`, and liquidity snapshots expose `restingOrderLiquiditySubunits`, `completeSetLiquiditySubunits`, and `totalLiquiditySubunits`. The deprecated `liquiditySats` create-market metadata field is still accepted for compatibility, but it is inert and create requests should send `0`. Market-maker funding is collected after creation through the deposit flow and can be repeated.
+
+The liquidity endpoint's `impliedProbability` is an order-entry reference from
+the bot-liquidity view. It is not the public market price or a confirmed trade.
+Use `latestConfirmedTrades` for public price display.
 
 ## Real-time lifecycle updates
 

@@ -10,7 +10,6 @@ import type {
   OrderType,
   YesNoMarketDetail,
   CategoricalMarketDetail,
-  NumericMarketDetail,
 } from "@/types/market-detail";
 import { useTranslation } from "react-i18next";
 import {
@@ -261,7 +260,7 @@ function YesNoOutcomes({
             market.currentOdds.yes,
             market.divisibility,
             market,
-            t("market.noTrades"),
+            t("trade.noTrades"),
             t("market.priceUnavailable"),
           )}
         </div>
@@ -285,7 +284,7 @@ function YesNoOutcomes({
             market.currentOdds.no,
             market.divisibility,
             market,
-            t("market.noTrades"),
+            t("trade.noTrades"),
             t("market.priceUnavailable"),
           )}
         </div>
@@ -331,7 +330,7 @@ function CategoricalOutcomes({
                   outcome.odds,
                   market.divisibility,
                   market,
-                  t("market.noTrades"),
+                  t("trade.noTrades"),
                   t("market.priceUnavailable"),
                 )}
               </span>
@@ -366,119 +365,6 @@ function CategoricalOutcomes({
         );
       })}
     </ScrollableContainer>
-  );
-}
-
-function NumericOutcomes({
-  market,
-  tradeSelection,
-  tradeSide,
-  onTradeSelect,
-  disabled = false,
-}: {
-  market: NumericMarketDetail;
-  tradeSelection: TradeSelection | null;
-  tradeSide: TradeSide;
-  onTradeSelect?: (selection: TradeSelection) => void;
-  disabled?: boolean;
-}) {
-  const { t } = useTranslation();
-  const isSell = tradeSide === "Sell";
-  const numericPrecision = Number.isFinite(market.precision)
-    ? Math.min(Math.max(Math.trunc(market.precision), 0), 8)
-    : 0;
-  const formatPrice = (value: number) => {
-    const formatted = value.toLocaleString(undefined, {
-      minimumFractionDigits: numericPrecision,
-      maximumFractionDigits: numericPrecision,
-    });
-    if (market.unit === "USD") return `$${formatted}`;
-    return `${formatted} ${market.unit}`;
-  };
-  const resolvedNumericValue =
-    market.resolution.status === "resolved" && market.attestedValue != null
-      ? market.attestedValue
-      : null;
-  const rangePercent =
-    resolvedNumericValue == null
-      ? null
-      : ((resolvedNumericValue - market.loBound) / (market.hiBound - market.loBound)) * 100;
-  const currentPriceLabel =
-    resolvedNumericValue == null ? t("market.priceUnavailable") : formatPrice(resolvedNumericValue);
-
-  return (
-    <div className="space-y-4">
-      {/* Current implied price */}
-      <div className="text-center p-4 bg-slate-50 dark:bg-slate-900 rounded-xl">
-        <div className="text-xs font-medium text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1">
-          {t("market.impliedPrice")}
-        </div>
-        <div className="text-3xl font-bold text-slate-900 dark:text-white">
-          {currentPriceLabel}
-        </div>
-      </div>
-
-      {/* Range bar */}
-      <div className="px-1">
-        <div className="flex justify-between text-[10px] text-slate-400 dark:text-slate-500 mb-1">
-          <span>{formatPrice(market.loBound)}</span>
-          <span>{formatPrice(market.hiBound)}</span>
-        </div>
-        <div className="relative h-2 bg-slate-200 dark:bg-slate-700 rounded-full overflow-hidden">
-          {rangePercent != null && (
-            <>
-              <div
-                data-testid="numeric-range-fill"
-                className="absolute inset-y-0 left-0 bg-blue-500 rounded-full"
-                style={{ width: `${rangePercent}%` }}
-              />
-              <div
-                data-testid="numeric-range-marker"
-                className="absolute top-1/2 -translate-y-1/2 w-3 h-3 bg-white border-2 border-blue-500 rounded-full shadow"
-                style={{ left: `${rangePercent}%`, transform: "translate(-50%, -50%)" }}
-              />
-            </>
-          )}
-        </div>
-      </div>
-
-      {/* Higher / Lower buttons */}
-      <div className="grid grid-cols-2 gap-3">
-        <button
-          onClick={() => onTradeSelect?.({ side: "hi" })}
-          disabled={disabled}
-          className={`relative p-4 rounded-xl border-2 transition-all ${
-            tradeSelection?.side === "hi"
-              ? "border-emerald-500 bg-emerald-500/10"
-              : "border-slate-200 dark:border-slate-700 hover:border-emerald-500/50 hover:bg-emerald-500/5"
-          }`}
-        >
-          <div className="text-xs font-medium text-emerald-600 dark:text-emerald-400 uppercase tracking-wider mb-1">
-            {isSell ? t("trade.sellHigher") : t("trade.buyHigher")}
-          </div>
-          <div className="text-sm font-bold text-slate-900 dark:text-white">
-            {t("market.hiToken")}
-          </div>
-        </button>
-
-        <button
-          onClick={() => onTradeSelect?.({ side: "lo" })}
-          disabled={disabled}
-          className={`relative p-4 rounded-xl border-2 transition-all ${
-            tradeSelection?.side === "lo"
-              ? "border-red-500 bg-red-500/10"
-              : "border-slate-200 dark:border-slate-700 hover:border-red-500/50 hover:bg-red-500/5"
-          }`}
-        >
-          <div className="text-xs font-medium text-red-600 dark:text-red-400 uppercase tracking-wider mb-1">
-            {isSell ? t("trade.sellLower") : t("trade.buyLower")}
-          </div>
-          <div className="text-sm font-bold text-slate-900 dark:text-white">
-            {t("market.loToken")}
-          </div>
-        </button>
-      </div>
-    </div>
   );
 }
 
@@ -880,6 +766,25 @@ export function TradingPanel({
     return t("trade.confirmBuy", { side: sideLabel, amount: amountLabel });
   };
 
+  if (market.type === "numeric") {
+    return (
+      <div
+        data-trading-panel
+        className="bg-white dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 p-5"
+      >
+        <h3 className="text-lg font-semibold text-slate-900 dark:text-white mb-4">
+          {t("trade.title")}
+        </h3>
+        <p
+          data-testid="numeric-trading-unavailable"
+          className="py-4 text-sm text-slate-500 dark:text-slate-400"
+        >
+          {t("market.numericTradingUnavailable")}
+        </p>
+      </div>
+    );
+  }
+
   return (
     <div
       data-trading-panel
@@ -889,50 +794,50 @@ export function TradingPanel({
         {t("trade.title")}
       </h3>
 
-      <div role="tablist" aria-label={t("trade.title")} className="grid grid-cols-3 mb-4">
-        {(["Buy", "Sell"] as const).map((side) => (
+      {!tradingDisabled && (
+        <div role="tablist" aria-label={t("trade.title")} className="grid grid-cols-3 mb-4">
+          {(["Buy", "Sell"] as const).map((side) => (
+            <button
+              key={side}
+              type="button"
+              role="tab"
+              aria-selected={activeTab === side}
+              data-testid={`trade-tab-${side.toLowerCase()}`}
+              onClick={() => selectTradeTab(side)}
+              className={`py-2.5 text-sm font-semibold transition-colors border-b-2 ${
+                activeTab === side
+                  ? "text-slate-900 dark:text-white border-slate-900 dark:border-white"
+                  : "text-slate-500 dark:text-slate-400 border-transparent hover:text-slate-700 dark:hover:text-slate-300"
+              }`}
+            >
+              {t(`trade.${side.toLowerCase()}`)}
+            </button>
+          ))}
           <button
-            key={side}
             type="button"
             role="tab"
-            aria-selected={activeTab === side}
-            data-testid={`trade-tab-${side.toLowerCase()}`}
-            onClick={() => selectTradeTab(side)}
-            disabled={tradingDisabled}
+            aria-selected={activeTab === "Liquidity"}
+            data-testid="trade-tab-liquidity"
+            onClick={selectLiquidityTab}
             className={`py-2.5 text-sm font-semibold transition-colors border-b-2 ${
-              activeTab === side
+              activeTab === "Liquidity"
                 ? "text-slate-900 dark:text-white border-slate-900 dark:border-white"
                 : "text-slate-500 dark:text-slate-400 border-transparent hover:text-slate-700 dark:hover:text-slate-300"
             }`}
           >
-            {t(`trade.${side.toLowerCase()}`)}
+            {t("market.liquidity")}
           </button>
-        ))}
-        <button
-          type="button"
-          role="tab"
-          aria-selected={activeTab === "Liquidity"}
-          data-testid="trade-tab-liquidity"
-          onClick={selectLiquidityTab}
-          disabled={tradingDisabled}
-          className={`py-2.5 text-sm font-semibold transition-colors border-b-2 ${
-            activeTab === "Liquidity"
-              ? "text-slate-900 dark:text-white border-slate-900 dark:border-white"
-              : "text-slate-500 dark:text-slate-400 border-transparent hover:text-slate-700 dark:hover:text-slate-300"
-          }`}
-        >
-          {t("market.liquidity")}
-        </button>
-      </div>
+        </div>
+      )}
 
-      {activeTab === "Liquidity" ? (
-        tradingDisabled ? (
-          <div data-testid="closed-trade-liquidity" className="space-y-3 py-4">
-            <p className="text-sm text-slate-500 dark:text-slate-400">
-              {t("market.closedBannerDescription")}
-            </p>
-          </div>
-        ) : validDivisibility != null ? (
+      {tradingDisabled ? (
+        <div data-testid="closed-trade-liquidity" className="space-y-3 py-4">
+          <p className="text-sm text-slate-500 dark:text-slate-400">
+            {t("market.closedBannerDescription")}
+          </p>
+        </div>
+      ) : activeTab === "Liquidity" ? (
+        validDivisibility != null ? (
           <DepositStep
             conditionId={market.id}
             defaultAmountSats={0}
@@ -957,7 +862,6 @@ export function TradingPanel({
             type="button"
             data-testid="open-liquidity-tab"
             onClick={selectLiquidityTab}
-            disabled={tradingDisabled}
             className="rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-slate-300 dark:disabled:bg-slate-700"
           >
             {t("market.liquidity")}
@@ -990,20 +894,11 @@ export function TradingPanel({
               disabled={tradingDisabled}
             />
           )}
-          {market.type === "numeric" && (
-            <NumericOutcomes
-              market={market}
-              tradeSelection={tradeSelection}
-              tradeSide={activeTradeSide}
-              onTradeSelect={onTradeSelect}
-              disabled={tradingDisabled}
-            />
-          )}
         </>
       )}
 
       {/* Trade Form (shown when outcome selected) */}
-      {activeTab !== "Liquidity" && hasTradeLiquidity && tradeSelection && (
+      {!tradingDisabled && activeTab !== "Liquidity" && hasTradeLiquidity && tradeSelection && (
         <div className="mt-5 pt-5 border-t border-slate-200 dark:border-slate-700">
           <div className="flex items-center justify-between mb-1">
             <span className="text-sm font-medium text-slate-600 dark:text-slate-400">

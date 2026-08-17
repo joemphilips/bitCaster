@@ -71,6 +71,9 @@ describe("DepositStep", () => {
     const view = renderStep();
 
     expect(screen.getByText("Market created!")).toBeInTheDocument();
+    expect(
+      screen.getByText("You can optionally fund the market maker after creation."),
+    ).toBeInTheDocument();
     const transition = timeoutSpy.mock.calls.find(([, delay]) => delay === 5_000);
     expect(transition).toBeDefined();
 
@@ -86,6 +89,11 @@ describe("DepositStep", () => {
     renderStep({ presentation: "detail" });
 
     expect(screen.getByText("Fund the market maker")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Choose the bot quoting budget for this market, or continue without bot liquidity.",
+      ),
+    ).toBeInTheDocument();
     expect(screen.queryByText("Market created!")).not.toBeInTheDocument();
     expect(timeoutSpy.mock.calls.some(([, delay]) => delay === 5_000)).toBe(false);
     timeoutSpy.mockRestore();

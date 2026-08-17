@@ -103,7 +103,7 @@ describe("LikedMarkets (P5.1)", () => {
 
     await screen.findByTestId("liked-market-card-a");
     expect(screen.getAllByText("—")).toHaveLength(2);
-    expect(screen.getAllByLabelText("market.noTrades")).toHaveLength(2);
+    expect(screen.getAllByLabelText("No trades yet")).toHaveLength(2);
   });
 
   it("labels null compact prices as unavailable when authority is missing", async () => {
@@ -122,7 +122,7 @@ describe("LikedMarkets (P5.1)", () => {
 
     await screen.findByTestId("liked-market-card-a");
     expect(screen.getAllByLabelText("market.priceUnavailable")).toHaveLength(2);
-    expect(screen.queryAllByLabelText("market.noTrades")).toHaveLength(0);
+    expect(screen.queryAllByLabelText("No trades yet")).toHaveLength(0);
   });
 
   it("shows an error message when the bulk fetch fails", async () => {

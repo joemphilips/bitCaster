@@ -138,7 +138,7 @@ function CategoricalOutcomes({
                       ? t(
                             priceAuthorityUnavailable
                             ? "market.priceUnavailable"
-                            : "market.noTrades",
+                            : "trade.noTrades",
                         )
                       : undefined
                   }
@@ -327,7 +327,7 @@ export function MarketCard({
                     ? t(
                         yesNoMarket.latestConfirmedTradesValid === false
                           ? "market.priceUnavailable"
-                          : "market.noTrades",
+                          : "trade.noTrades",
                       )
                     : undefined
                 }

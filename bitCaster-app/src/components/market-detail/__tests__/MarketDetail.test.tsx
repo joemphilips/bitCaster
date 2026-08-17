@@ -197,7 +197,7 @@ describe("MarketDetail", () => {
       />,
     );
 
-    expect(screen.getByText("market.noTrades")).toBeInTheDocument();
+    expect(screen.getByText("No trades yet")).toBeInTheDocument();
     expect(screen.queryByText("0.00%")).not.toBeInTheDocument();
   });
 

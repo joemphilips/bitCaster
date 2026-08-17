@@ -76,7 +76,7 @@ function LikedMarketCard({ market, onClick }: { market: Market; onClick: () => v
     if (market.latestConfirmedTradesValid !== true) {
       return <span aria-label={t("market.priceUnavailable")}>—</span>;
     }
-    if (price == null) return <span aria-label={t("market.noTrades")}>—</span>;
+    if (price == null) return <span aria-label={t("trade.noTrades")}>—</span>;
     return formatPricePercentage(price, market.divisibility);
   };
   return (

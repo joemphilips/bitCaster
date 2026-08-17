@@ -28,7 +28,7 @@ function RelatedMarketCard({ market, onClick }: { market: RelatedMarket; onClick
     if (market.latestConfirmedTradesValid !== true) {
       return <span aria-label={t("market.priceUnavailable")}>—</span>;
     }
-    if (price == null) return <span aria-label={t("market.noTrades")}>—</span>;
+    if (price == null) return <span aria-label={t("trade.noTrades")}>—</span>;
     if (market.divisibility == null) {
       return <span aria-label={t("market.priceUnavailable")}>—</span>;
     }

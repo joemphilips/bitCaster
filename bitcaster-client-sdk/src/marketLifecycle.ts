@@ -18,7 +18,15 @@ export interface CreateMarketRequest {
   title: string
   description: string
   outcomes: CreateMarketOutcome[]
+  /**
+   * Use `yesno` or `categorical`. The `numeric` wire value is retained for
+   * compatibility, but numeric market creation and trading are unavailable.
+   */
   outcomeType?: 'yesno' | 'categorical' | 'numeric'
+  /**
+   * Deprecated compatibility field. Keep it at zero. Market-maker funding is
+   * a separate post-creation deposit flow and can be repeated.
+   */
   liquiditySats?: number
   baseAsset: MarketBaseAsset
   categoryTags?: string[]

@@ -11,14 +11,18 @@ sidebar:
 
 | フィールド | 型 | 意味 |
 | --- | --- | --- |
-| `ammBotBudgetSubunits` | `int64` | 自動マーケットメイキングBotへ入金された静的な初期予算。単位はmsatです。クライアントはこの値を **Bot Budget** として表示します。ライブの注文板流動性、Botの残り在庫、作成者が引き出せる残高ではありません。 |
+| `ammBotBudgetSubunits` | `int64` | 作成後に自動マーケットメイキングBotへ割り当てられた承認済み資金の合計。単位はmsatです。クライアントはこの値を **Bot Budget** として表示します。後続の承認済み入金で増加することがあります。ライブの注文板流動性、Botの残り在庫、入金者のポジション、引き出し可能な残高ではありません。 |
 | `liquiditySubunits` | `int64` | そのマーケットの注文板に現在残っている注文の額面合計。単位はmsatです。 |
 | `traderCount` | `int32` | そのマーケットで約定済み取引を決済した重複なしのトレーダー数。 |
 | `volumeLifetimeSubunits` | `int64` | そのマーケットの履歴全体における全約定の決済済み担保額面の累計。単位は担保サブユニット。 |
 
 レスポンスには、ローリング出来高やソート用の `volume24hSubunits` と `volume30dSubunits` も含まれます。クライアントがマーケットの Volume、Bot Budget、Traders 指標を表示する場合は、`volumeLifetimeSubunits`、`ammBotBudgetSubunits`、`traderCount` を使ってください。`liquiditySubunits` は、それを必要とするクライアント向けの残存注文サマリとして残りますが、Bot Budgetとして表示すべきではありません。
 
-他の公開マーケットサマリも同じ命名規則を使います。価格履歴ポイントは `volumeSubunits`、マーケットメタデータスナップショットは `totalVolumeSubunits` と `totalLiquiditySubunits`、流動性スナップショットは `restingOrderLiquiditySubunits`、`completeSetLiquiditySubunits`、`totalLiquiditySubunits` を公開します。非推奨の `liquiditySats` 作成メタデータフィールドは互換性のため引き続き受け付けますが、マーケットメイカー資金は作成後のフローで集めるため、作成リクエストでは `0` を送ってください。
+`latestConfirmedTrades` 配列が公開マーケット価格の正です。各プリミティブアウトカムの最新の承認済み約定を一定数まで含み、正規のプリミティブアウトカムID順に並びます。取引されていないアウトカムは含まれません。空の配列は承認済み取引がないことを示すため、マーケットに公開価格はありません。クライアントは `No trades yet` または em dash を表示します。登録値、資金提供額、均一な初期値、Bid/Askのミッドポイントをマーケット価格に使わないでください。ミッドポイントは注文入力の参考値にすぎません。
+
+他の公開マーケットサマリも同じ命名規則を使います。価格履歴ポイントは `volumeSubunits`、マーケットメタデータスナップショットは `totalVolumeSubunits` と `totalLiquiditySubunits`、流動性スナップショットは `restingOrderLiquiditySubunits`、`completeSetLiquiditySubunits`、`totalLiquiditySubunits` を公開します。非推奨の `liquiditySats` 作成メタデータフィールドは互換性のため引き続き受け付けますが、値は無効であり、作成リクエストでは `0` を送ってください。マーケットメイカー資金は作成後の入金フローで集め、複数回実行できます。
+
+流動性エンドポイントの `impliedProbability` は、Bot流動性ビューから得られる注文入力の参考値です。公開マーケット価格や承認済み取引ではありません。公開価格の表示には `latestConfirmedTrades` を使ってください。
 
 ## ライフサイクルのリアルタイム更新
 
