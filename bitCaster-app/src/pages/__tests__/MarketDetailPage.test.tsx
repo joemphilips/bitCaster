@@ -96,6 +96,7 @@ vi.mock("@/lib/marketHub", () => ({
   applyConfirmedTradeDelta: vi.fn(
     (
       _conditionId: string,
+      _allowedPrimitiveOutcomeIds: readonly string[],
       current: LatestConfirmedTrade[],
       message: { latestConfirmedTrade: LatestConfirmedTrade },
     ) => [...current, message.latestConfirmedTrade],
@@ -219,6 +220,7 @@ function yesNoMarket(overrides: Partial<MarketDetail> = {}): MarketDetail {
     baseUnit: "sats",
     baseAsset: "sat",
     divisibility: 10_000,
+    registeredPrimitiveOutcomeIds: ["YES", "NO"],
     creator: {
       id: "creator",
       name: "creator",
@@ -857,6 +859,11 @@ describe("marketDetailDataReducer", () => {
 
   it("clears the live confirmed-trade overlay after an authoritative REST snapshot", () => {
     const initial = yesNoMarket();
+    const initialState = createMarketDetailDataState(initial);
+    expect(initialState.registeredPrimitiveOutcomeIdsByConditionId[initial.id]).toEqual([
+      "YES",
+      "NO",
+    ]);
     const liveTrade: LatestConfirmedTrade = {
       primitiveOutcomeId: "YES",
       fillId: "00000000-0000-0000-0000-000000000001",
@@ -866,7 +873,7 @@ describe("marketDetailDataReducer", () => {
       divisibility: 10_000,
       faceAmountSubunits: 1000,
     };
-    const stateWithLive = marketDetailDataReducer(createMarketDetailDataState(initial), {
+    const stateWithLive = marketDetailDataReducer(initialState, {
       type: "confirmedTradeRecorded",
       conditionId: initial.id,
       trade: liveTrade,

@@ -327,6 +327,7 @@ export type MarketDetailDataState = {
   marketId: string | null;
   core: MarketDetailCore | null;
   confirmedTradesByConditionId: Record<string, LatestConfirmedTrade[]>;
+  registeredPrimitiveOutcomeIdsByConditionId: Record<string, string[]>;
   booksByMarketId: Record<string, Record<string, OrderBook>>;
   bookSourcesByMarketId: Record<string, Record<string, CanonicalSliceSource>>;
   historiesByMarketId: Record<
@@ -385,6 +386,7 @@ const emptyMarketDetailDataState: MarketDetailDataState = {
   marketId: null,
   core: null,
   confirmedTradesByConditionId: {},
+  registeredPrimitiveOutcomeIdsByConditionId: {},
   booksByMarketId: {},
   bookSourcesByMarketId: {},
   historiesByMarketId: {},
@@ -590,6 +592,9 @@ export function createMarketDetailDataState(detail: MarketDetailType): MarketDet
     marketId: detail.id,
     core: marketCoreFromDetail(detail),
     confirmedTradesByConditionId: {},
+    registeredPrimitiveOutcomeIdsByConditionId: {
+      [detail.id]: detail.registeredPrimitiveOutcomeIds ?? [],
+    },
     booksByMarketId: {
       [detail.id]: booksByOutcomeSetId,
     },
@@ -626,11 +631,16 @@ function withSnapshotLoaded(
 
   const confirmedTradesByConditionId = { ...state.confirmedTradesByConditionId };
   delete confirmedTradesByConditionId[detail.id];
+  const registeredPrimitiveOutcomeIdsByConditionId = {
+    ...state.registeredPrimitiveOutcomeIdsByConditionId,
+    [detail.id]: detail.registeredPrimitiveOutcomeIds ?? [],
+  };
 
   return {
     ...state,
     core: marketCoreFromDetail(detail),
     confirmedTradesByConditionId,
+    registeredPrimitiveOutcomeIdsByConditionId,
   };
 }
 
@@ -778,10 +788,17 @@ export function marketDetailDataReducer(
     case "confirmedTradeRecorded": {
       if (state.marketId !== action.conditionId) return state;
       const current = state.confirmedTradesByConditionId[action.conditionId] ?? [];
-      const next = applyConfirmedTradeDelta(action.conditionId, current, {
-        conditionId: action.conditionId,
-        latestConfirmedTrade: action.trade,
-      });
+      const allowedPrimitiveOutcomeIds =
+        state.registeredPrimitiveOutcomeIdsByConditionId[action.conditionId] ?? [];
+      const next = applyConfirmedTradeDelta(
+        action.conditionId,
+        allowedPrimitiveOutcomeIds,
+        current,
+        {
+          conditionId: action.conditionId,
+          latestConfirmedTrade: action.trade,
+        },
+      );
       return {
         ...state,
         confirmedTradesByConditionId: {

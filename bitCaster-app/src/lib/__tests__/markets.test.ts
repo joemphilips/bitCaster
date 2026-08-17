@@ -17,6 +17,7 @@ import {
   createAuthenticatedBrowserEngineClient,
   generateNip98Header,
 } from "../markets";
+import { applyConfirmedTradeDelta } from "@/lib/marketHub";
 import type { MarketCatalogueEntry } from "../markets";
 import type { FilterState, Market } from "@/types/market";
 import type { MarketDetail } from "@/types/market-detail";
@@ -654,6 +655,46 @@ describe("fetchMarketDetail (engine merge — ADR-009 Amendment 2026-05-04)", ()
   it("merges engine state into the detail (Phase 2 lifecycle authority)", async () => {
     const detail = await fetchMarketDetail("abc123");
     expect(detail.state).toBe("open");
+  });
+
+  it("preserves exact REST primitive IDs for bounded live trade deltas", async () => {
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url.includes("/api/v1/markets/query")) {
+        return engineQueryResponse("open", null, null, ["YES", "NO"]);
+      }
+      return emptyMetadataResponse();
+    });
+
+    const detail = await fetchMarketDetail("abc123");
+    const allowed = detail.registeredPrimitiveOutcomeIds ?? [];
+    const yesTrade = {
+      primitiveOutcomeId: "YES",
+      fillId: "00000000-0000-0000-0000-000000000010",
+      executedAt: "2026-05-02T09:58:00Z",
+      eventOrder: "0001",
+      priceTick: 6200,
+      divisibility: 10_000 as const,
+      faceAmountSubunits: 1000,
+    };
+
+    expect(allowed).toEqual(["YES", "NO"]);
+    expect(detail.outcomes?.map((outcome) => outcome.label)).toEqual(["Yes", "No"]);
+    const applied = applyConfirmedTradeDelta("abc123", allowed, [], {
+      conditionId: "abc123",
+      latestConfirmedTrade: yesTrade,
+    });
+    expect(applied).toEqual([yesTrade]);
+
+    const wrongCase = applyConfirmedTradeDelta("abc123", allowed, applied, {
+      conditionId: "abc123",
+      latestConfirmedTrade: {
+        ...yesTrade,
+        primitiveOutcomeId: "Yes",
+        fillId: "00000000-0000-0000-0000-000000000011",
+        eventOrder: "0002",
+      },
+    });
+    expect(wrongCase).toEqual(applied);
   });
 
   it("merges engine thumbnailUrl into imageUrl (Phase 7 thumbnail data path)", async () => {

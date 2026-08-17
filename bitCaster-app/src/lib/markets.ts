@@ -320,6 +320,7 @@ export function filterMarkets(markets: Market[], filter: FilterState): Market[] 
 // =============================================================================
 
 function mapCatalogueEntryToMarketDetail(entry: MarketCatalogueEntry): MarketDetail {
+  const registeredPrimitiveOutcomeIds = [...(entry.outcomes ?? [])];
   const outcomes = orderAtomicOutcomes(entry.outcomes ?? []);
   const mappedOutcomes = outcomes.map((label) => ({
     id: label,
@@ -359,6 +360,7 @@ function mapCatalogueEntryToMarketDetail(entry: MarketCatalogueEntry): MarketDet
     baseAsset,
     divisibility,
     baseUnit: marketUnitLabel(baseAsset),
+    registeredPrimitiveOutcomeIds,
     mint: {
       collateral: baseAsset,
       keysetCount: 0,

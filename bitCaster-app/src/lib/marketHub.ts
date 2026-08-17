@@ -84,25 +84,47 @@ function compareConfirmedTrades(left: LatestConfirmedTrade, right: LatestConfirm
   return left.primitiveOutcomeId < right.primitiveOutcomeId ? -1 : 1;
 }
 
+function isRegisteredPrimitiveOutcomeAllowlist(value: readonly string[]): boolean {
+  if (!Array.isArray(value) || value.length < 2 || value.length > 8) return false;
+  const unique = new Set(value);
+  return (
+    unique.size === value.length &&
+    value.every(
+      (outcomeId) =>
+        typeof outcomeId === "string" && outcomeId.length > 0 && outcomeId === outcomeId.trim(),
+    )
+  );
+}
+
 /**
  * Apply one committed trade delta to the page's bounded in-memory view.
  *
  * REST remains the authority. This helper only provides the live SignalR
- * merge seam: it rejects another condition, deduplicates by fill ID, and
- * refuses to move an existing fill backwards in wrapper event order.
+ * merge seam: it accepts only registered primitive outcomes, rejects another
+ * condition, deduplicates by fill ID, and refuses to move an existing fill
+ * backwards in wrapper event order.
  */
 export function applyConfirmedTradeDelta(
   conditionId: string,
+  allowedPrimitiveOutcomeIds: readonly string[],
   current: readonly LatestConfirmedTrade[],
   message: ConfirmedTradeRecordedMessage,
 ): LatestConfirmedTrade[] {
-  if (message.conditionId !== conditionId) return [...current];
+  if (!isRegisteredPrimitiveOutcomeAllowlist(allowedPrimitiveOutcomeIds)) {
+    return [];
+  }
+  const allowed = new Set(allowedPrimitiveOutcomeIds);
 
   // The REST projection exposes one latest record per primitive outcome. Keep
-  // the live overlay bounded to the same shape while using fillId to reject
-  // duplicate deliveries and eventOrder to reject stale replacements.
+  // the live overlay bounded to the registered outcome universe while using
+  // fillId to reject duplicate deliveries and eventOrder to reject stale
+  // replacements.
   const nextByOutcome = new Map<string, LatestConfirmedTrade>();
   const nextByFillId = new Map<string, LatestConfirmedTrade>();
+  const boundedOverlay = (): LatestConfirmedTrade[] => {
+    const result = [...nextByOutcome.values()].sort(compareConfirmedTrades);
+    return result.length <= allowed.size ? result : [];
+  };
 
   const remove = (trade: LatestConfirmedTrade): void => {
     if (nextByOutcome.get(trade.primitiveOutcomeId)?.fillId === trade.fillId) {
@@ -114,6 +136,7 @@ export function applyConfirmedTradeDelta(
   };
 
   for (const trade of current) {
+    if (!allowed.has(trade.primitiveOutcomeId)) continue;
     if (nextByFillId.has(trade.fillId)) continue;
     const previousForOutcome = nextByOutcome.get(trade.primitiveOutcomeId);
     if (
@@ -127,23 +150,30 @@ export function applyConfirmedTradeDelta(
     nextByFillId.set(trade.fillId, trade);
   }
 
+  if (
+    message.conditionId !== conditionId ||
+    !allowed.has(message.latestConfirmedTrade.primitiveOutcomeId)
+  ) {
+    return boundedOverlay();
+  }
+
   const incoming = message.latestConfirmedTrade;
   // A fill ID is immutable identity. A duplicate delivery is ignored even if
   // an invalid sender attaches a later wrapper order or changed payload.
   if (nextByFillId.has(incoming.fillId)) {
-    return [...nextByOutcome.values()].sort(compareConfirmedTrades);
+    return boundedOverlay();
   }
   const previousForOutcome = nextByOutcome.get(incoming.primitiveOutcomeId);
   if (
     previousForOutcome &&
     compareEventOrder(incoming.eventOrder, previousForOutcome.eventOrder) <= 0
   ) {
-    return [...nextByOutcome.values()].sort(compareConfirmedTrades);
+    return boundedOverlay();
   }
   if (previousForOutcome) remove(previousForOutcome);
   nextByOutcome.set(incoming.primitiveOutcomeId, incoming);
   nextByFillId.set(incoming.fillId, incoming);
-  return [...nextByOutcome.values()].sort(compareConfirmedTrades);
+  return boundedOverlay();
 }
 
 export function parseOrderCancelled(payload: unknown): OrderCancelled | null {
