@@ -12,7 +12,6 @@ import {
 
 export interface CreateMarketOutcome {
   name: string
-  probability: number
 }
 
 export interface CreateMarketRequest {

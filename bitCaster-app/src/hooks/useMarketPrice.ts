@@ -60,83 +60,12 @@ function deriveInitialCurrentPrice(
   const historyPrice = latestHistoryNumerator(market, outcomeSetId, divisibility);
   if (historyPrice != null) return historyPrice;
 
-  const initialPrice = initialProbabilityNumerator(market, outcomeSetId, divisibility);
-  if (initialPrice != null) return initialPrice;
-
   const percent = marketOddsPercent(market, outcomeSetId);
   if (percent != null && (percent > 0 || market.type === "numeric")) {
     return clampOrderPrice((percent / 100) * divisibility, divisibility);
   }
 
   return defaultLimitPriceForDivisibility(divisibility, market.baseAsset);
-}
-
-function initialProbabilityNumerator(
-  market: MarketDetail,
-  outcomeSetId: string | null | undefined,
-  divisibility: number,
-): number | null {
-  const percent = initialProbabilityPercent(market, outcomeSetId);
-  if (percent == null) return null;
-  return clampOrderPrice((percent / 100) * divisibility, divisibility);
-}
-
-function initialProbabilityPercent(
-  market: MarketDetail,
-  outcomeSetId: string | null | undefined,
-): number | null {
-  const probabilities = market.initialProbabilities;
-  if (!probabilities) return null;
-
-  if (market.type === "yesno") {
-    if (isNoOutcomeSet(outcomeSetId)) {
-      return (
-        probabilityForOutcome(probabilities, "No") ??
-        complementPercent(probabilityForOutcome(probabilities, "Yes"))
-      );
-    }
-
-    return (
-      probabilityForOutcome(probabilities, "Yes") ??
-      complementPercent(probabilityForOutcome(probabilities, "No"))
-    );
-  }
-
-  if (market.type === "categorical" && outcomeSetId) {
-    const direct =
-      probabilityForOutcome(probabilities, outcomeSetId) ??
-      probabilityForOutcome(probabilities, outcomeLabelForSet(market, outcomeSetId) ?? "");
-    if (direct != null) return direct;
-
-    const members = parseOutcomeSetId(outcomeSetId);
-    if (members.length > 0) {
-      const total = members.reduce(
-        (sum, member) => sum + (probabilityForOutcome(probabilities, member) ?? 0),
-        0,
-      );
-      return total > 0 ? Math.max(0, Math.min(100, total)) : null;
-    }
-  }
-
-  return null;
-}
-
-function probabilityForOutcome(
-  probabilities: Record<string, number>,
-  outcome: string,
-): number | null {
-  const direct = probabilities[outcome];
-  if (Number.isFinite(direct)) return Math.max(0, Math.min(100, Number(direct)));
-  const caseInsensitive = Object.entries(probabilities).find(
-    ([key]) => key.toLowerCase() === outcome.toLowerCase(),
-  )?.[1];
-  return Number.isFinite(caseInsensitive)
-    ? Math.max(0, Math.min(100, Number(caseInsensitive)))
-    : null;
-}
-
-function complementPercent(percent: number | null): number | null {
-  return percent == null ? null : 100 - percent;
 }
 
 function latestHistoryNumerator(

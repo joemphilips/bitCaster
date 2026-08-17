@@ -75,48 +75,10 @@ async function activeMintCapabilities() {
   return capabilities;
 }
 
-/** Check whether outcome probabilities sum to exactly 100. */
-export function probabilitySumValid(outcomes: WizardOutcome[]): boolean {
-  return outcomes.reduce((sum, o) => sum + (o.probability ?? 0), 0) === 100;
-}
-
-/** Check whether every outcome probability is in the backend-enforced [1, 99] range. */
-export function allProbabilitiesInRange(outcomes: WizardOutcome[]): boolean {
-  return outcomes.every((o) => {
-    const p = o.probability ?? 0;
-    return p >= 1 && p <= 99;
-  });
-}
-
-/**
- * Normalize outcome probabilities to sum to exactly 100 using largest-remainder rounding.
- * Returns outcomes unchanged when all probabilities are zero.
- */
-export function normalizeProbabilities(outcomes: WizardOutcome[]): WizardOutcome[] {
-  const total = outcomes.reduce((sum, o) => sum + (o.probability ?? 0), 0);
-  if (total === 0) return outcomes;
-  const raw = outcomes.map((o) => ((o.probability ?? 0) / total) * 100);
-  const floors = raw.map(Math.floor);
-  let remainder = 100 - floors.reduce((a, b) => a + b, 0);
-  const fracs = raw.map((v, i) => ({ i, f: v - floors[i] })).sort((a, b) => b.f - a.f);
-  for (let j = 0; j < remainder; j++) floors[fracs[j].i] += 1;
-  return outcomes.map((o, i) => ({ ...o, probability: floors[i] }));
-}
-
-function distributeProbabilitiesEqually(outcomes: WizardOutcome[]): WizardOutcome[] {
-  if (outcomes.length === 0) return outcomes;
-  const base = Math.floor(100 / outcomes.length);
-  let remainder = 100 - base * outcomes.length;
-  return outcomes.map((outcome) => ({
-    ...outcome,
-    probability: base + (remainder-- > 0 ? 1 : 0),
-  }));
-}
-
 function defaultYesNoOutcomes(): WizardOutcome[] {
   return [
-    { id: "yes", label: "Yes", description: "", probability: 50 },
-    { id: "no", label: "No", description: "", probability: 50 },
+    { id: "yes", label: "Yes", description: "" },
+    { id: "no", label: "No", description: "" },
   ];
 }
 
@@ -294,22 +256,12 @@ export function useMarketCreationState() {
         id: `outcome-${Date.now()}`,
         label: "",
         description: "",
-        probability: 0,
       };
-      const withNew = [...prev.stepOutcomes.outcomes, newOutcome];
-      // Auto-normalize: give every outcome an equal fair share of 100.
-      const n = withNew.length;
-      const base = Math.floor(100 / n);
-      let r = 100 - base * n;
-      const normalized = withNew.map((o, i) => ({
-        ...o,
-        probability: base + (i < r ? 1 : 0),
-      }));
       return {
         ...prev,
         stepOutcomes: {
           ...prev.stepOutcomes,
-          outcomes: normalized,
+          outcomes: [...prev.stepOutcomes.outcomes, newOutcome],
         },
         lastModified: new Date().toISOString(),
       };
@@ -320,15 +272,11 @@ export function useMarketCreationState() {
     setDraft((prev) => {
       if (!prev.stepOutcomes?.outcomes) return prev;
       const filtered = prev.stepOutcomes.outcomes.filter((o) => o.id !== outcomeId);
-      // Auto-normalize so the remaining outcomes still sum to 100.
-      const normalized = filtered.every((outcome) => (outcome.probability ?? 0) === 0)
-        ? distributeProbabilitiesEqually(filtered)
-        : normalizeProbabilities(filtered);
       return {
         ...prev,
         stepOutcomes: {
           ...prev.stepOutcomes,
-          outcomes: normalized,
+          outcomes: filtered,
         },
         lastModified: new Date().toISOString(),
       };
@@ -345,39 +293,6 @@ export function useMarketCreationState() {
           outcomes: prev.stepOutcomes.outcomes.map((o) =>
             o.id === outcomeId ? { ...o, label } : o,
           ),
-        },
-        lastModified: new Date().toISOString(),
-      };
-    });
-  }, []);
-
-  const onOutcomeProbabilityChange = useCallback((outcomeId: string, probability: number) => {
-    setDraft((prev) => {
-      if (!prev.stepOutcomes?.outcomes) return prev;
-      return {
-        ...prev,
-        stepOutcomes: {
-          ...prev.stepOutcomes,
-          outcomes: prev.stepOutcomes.outcomes.map((o) =>
-            o.id === outcomeId ? { ...o, probability } : o,
-          ),
-        },
-        lastModified: new Date().toISOString(),
-      };
-    });
-  }, []);
-
-  const onNormalizeProbabilities = useCallback(() => {
-    setDraft((prev) => {
-      if (!prev.stepOutcomes?.outcomes) return prev;
-      const outcomes = prev.stepOutcomes.outcomes;
-      const total = outcomes.reduce((sum, o) => sum + (o.probability ?? 0), 0);
-      if (total === 0) return prev;
-      return {
-        ...prev,
-        stepOutcomes: {
-          ...prev.stepOutcomes,
-          outcomes: normalizeProbabilities(outcomes),
         },
         lastModified: new Date().toISOString(),
       };
@@ -593,11 +508,7 @@ export function useMarketCreationState() {
           {
             title,
             description,
-            outcomes: outcomes.map((name) => ({
-              name,
-              probability:
-                draft.stepOutcomes?.outcomes?.find((o) => o.label === name)?.probability ?? 50,
-            })),
+            outcomes: outcomes.map((name) => ({ name })),
             outcomeType:
               draft.stepOutcomes?.outcomeType ?? draft.stepGetStarted?.outcomeType ?? "yesno",
             liquiditySats,
@@ -716,8 +627,6 @@ export function useMarketCreationState() {
     onAddOutcome,
     onRemoveOutcome,
     onOutcomeLabelChange,
-    onOutcomeProbabilityChange,
-    onNormalizeProbabilities,
     onLoBoundChange,
     onHiBoundChange,
     onPrecisionChange,

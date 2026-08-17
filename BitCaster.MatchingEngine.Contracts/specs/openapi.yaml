@@ -115,14 +115,10 @@ paths:
       summary: Fetch primitive outcome price history for a market
       description: >
         Returns primitive outcome price points grouped by primitive outcome id.
-        A newly registered market includes an initial zero-volume anchor point
-        (`source = initial`) sourced from the creator probabilities. Initial
-        anchors act as a left-edge carry-forward value and are clamped to the
-        requested timeframe boundary when needed; settled trade ticks
-        (`source = fill`) are added only when settlement commits and are
-        filtered to the requested timeframe. Compound outcome-set matches are
-        projected only when settlement commits, and the response never uses
-        compound outcome ids.
+        Settled trade ticks (`source = fill`) are added only when settlement
+        commits and are filtered to the requested timeframe. Compound
+        outcome-set matches are projected only when settlement commits, and
+        the response never uses compound outcome ids.
       parameters:
         - $ref: '#/components/parameters/ConditionId'
         - name: timeframe
@@ -3217,16 +3213,10 @@ components:
       type: object
       required:
         - name
-        - probability
       properties:
         name:
           type: string
           description: Outcome label (e.g. "Yes", "Alice").
-        probability:
-          type: integer
-          minimum: 1
-          maximum: 99
-          description: Initial implied probability for this outcome [1, 99].
 
     CreateMarketRequest:
       type: object
@@ -3762,7 +3752,6 @@ components:
         - lastSuccessfulRefreshAt
         - baseAsset
         - divisibility
-        - initialProbabilities
       properties:
         conditionId:
           type: string
@@ -3893,18 +3882,6 @@ components:
             price-history price fields use integer numerators against the
             market's `divisibility`; this catalogue summary keeps the legacy
             ratio form for sorting/display compatibility.
-        initialProbabilities:
-          type: object
-          additionalProperties:
-            type: integer
-            format: int32
-            minimum: 1
-            maximum: 99
-          description: >
-            Creator-specified registration-time probability per atomic outcome,
-            expressed as integer percentages that sum to 100. Clients use this
-            as the default market price before any trade has established a live
-            last-traded price.
         categoryTags:
           type: array
           items:

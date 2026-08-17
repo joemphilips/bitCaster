@@ -155,7 +155,6 @@ interface BaseMarketDetail {
   recentTrades: Trade[];
   comments: Comment[];
   relatedMarkets: RelatedMarket[];
-  initialProbabilities?: Record<string, number>;
 }
 
 export interface YesNoMarketDetail extends BaseMarketDetail {

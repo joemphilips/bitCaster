@@ -76,7 +76,6 @@ const yesNoEntry: MarketCatalogueEntry = {
   baseAsset: "sat",
   divisibility: 10_000,
   lastTradedPrice: 0.62,
-  initialProbabilities: { Yes: 62, No: 38 },
   categoryTags: ["crypto"],
   lastSuccessfulRefreshAt: "2026-05-02T09:58:00Z",
 };
@@ -98,7 +97,6 @@ const categoricalEntry: MarketCatalogueEntry = {
   baseAsset: "sat",
   divisibility: 10_000,
   lastTradedPrice: null,
-  initialProbabilities: {},
   categoryTags: ["politics"],
   lastSuccessfulRefreshAt: "2026-05-02T09:58:00Z",
 };
@@ -120,13 +118,12 @@ describe("mapCatalogueEntryToMarket", () => {
     }
   });
 
-  it("prefers last traded price for yes/no list odds, falling back to creator initial probabilities", () => {
-    // With lastTradedPrice present, list odds use it (not initial probabilities)
+  it("prefers last traded price for yes/no list odds, falling back to neutral odds", () => {
+    // With lastTradedPrice present, list odds use it.
     const marketWithTrades = mapCatalogueEntryToMarket({
       ...yesNoEntry,
       divisibility: 10_000,
       lastTradedPrice: 6_200,
-      initialProbabilities: { Yes: 77, No: 23 },
     });
 
     expect(marketWithTrades.type).toBe("yesno");
@@ -135,17 +132,16 @@ describe("mapCatalogueEntryToMarket", () => {
       expect(marketWithTrades.currentOdds.yes).toBe(62);
     }
 
-    // Without lastTradedPrice, falls back to initial probabilities
+    // Without lastTradedPrice, registration has no creator price authority.
     const marketNoTrades = mapCatalogueEntryToMarket({
       ...yesNoEntry,
       divisibility: 10_000,
       lastTradedPrice: null,
-      initialProbabilities: { Yes: 77, No: 23 },
     });
 
     expect(marketNoTrades.type).toBe("yesno");
     if (marketNoTrades.type === "yesno") {
-      expect(marketNoTrades.currentOdds).toEqual({ yes: 77, no: 23 });
+      expect(marketNoTrades.currentOdds).toEqual({ yes: 50, no: 50 });
     }
   });
 
@@ -166,7 +162,6 @@ describe("mapCatalogueEntryToMarket", () => {
     const market = mapCatalogueEntryToMarket({
       ...yesNoEntry,
       lastTradedPrice: null,
-      initialProbabilities: {},
     });
 
     expect(market.type).toBe("yesno");

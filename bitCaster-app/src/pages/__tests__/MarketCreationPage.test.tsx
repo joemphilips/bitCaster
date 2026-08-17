@@ -17,8 +17,8 @@ vi.mock("@/hooks/useMarketCreationState", () => ({
       stepOutcomes: {
         outcomeType: "categorical",
         outcomes: [
-          { id: "a", label: "A", description: "", probability: 50 },
-          { id: "b", label: "B", description: "", probability: 50 },
+          { id: "a", label: "A", description: "" },
+          { id: "b", label: "B", description: "" },
         ],
         baseAsset: "sat",
       },
@@ -43,8 +43,6 @@ vi.mock("@/hooks/useMarketCreationState", () => ({
     onAddOutcome: vi.fn(),
     onRemoveOutcome: vi.fn(),
     onOutcomeLabelChange: vi.fn(),
-    onOutcomeProbabilityChange: vi.fn(),
-    onNormalizeProbabilities: vi.fn(),
     onLoBoundChange: vi.fn(),
     onHiBoundChange: vi.fn(),
     onPrecisionChange: vi.fn(),

@@ -4,12 +4,11 @@ import { describe, it, expect, vi } from "vitest";
 import { OutcomesStep } from "../OutcomesStep";
 import type { WizardOutcome } from "@/types/market-creation";
 
-function makeOutcomes(probs: number[]): WizardOutcome[] {
-  return probs.map((p, i) => ({
+function makeOutcomes(count: number): WizardOutcome[] {
+  return Array.from({ length: count }, (_, i) => ({
     id: `o${i}`,
     label: `Outcome ${i}`,
     description: "",
-    probability: p,
   }));
 }
 
@@ -17,7 +16,7 @@ function makeOutcomes(probs: number[]): WizardOutcome[] {
 
 describe("OutcomesStep auto-normalize — add/remove", () => {
   it("shows the Add Outcome button for categorical markets", () => {
-    render(<OutcomesStep outcomeType="categorical" outcomes={makeOutcomes([50, 50])} />);
+    render(<OutcomesStep outcomeType="categorical" outcomes={makeOutcomes(2)} />);
     expect(screen.getByRole("button", { name: /add outcome/i })).toBeInTheDocument();
   });
 
@@ -27,7 +26,7 @@ describe("OutcomesStep auto-normalize — add/remove", () => {
     render(
       <OutcomesStep
         outcomeType="categorical"
-        outcomes={makeOutcomes([50, 50])}
+        outcomes={makeOutcomes(2)}
         onAddOutcome={onAddOutcome}
       />,
     );
@@ -37,7 +36,7 @@ describe("OutcomesStep auto-normalize — add/remove", () => {
 
   it("disables Add Outcome when at maximum outcomes", () => {
     // MAX_MARKET_OUTCOMES = 8
-    const outcomes = makeOutcomes([13, 13, 12, 12, 12, 12, 13, 13]);
+    const outcomes = makeOutcomes(8);
     render(<OutcomesStep outcomeType="categorical" outcomes={outcomes} />);
     expect(screen.getByRole("button", { name: /add outcome/i })).toBeDisabled();
   });
@@ -48,7 +47,7 @@ describe("OutcomesStep auto-normalize — add/remove", () => {
     render(
       <OutcomesStep
         outcomeType="categorical"
-        outcomes={makeOutcomes([60, 40])}
+        outcomes={makeOutcomes(2)}
         onRemoveOutcome={onRemoveOutcome}
       />,
     );
@@ -64,50 +63,18 @@ describe("OutcomesStep auto-normalize — add/remove", () => {
 
 describe("OutcomesStep market unit controls", () => {
   it("does not render a divisibility selector or denominator guidance", () => {
-    render(<OutcomesStep outcomeType="categorical" outcomes={makeOutcomes([50, 50])} />);
+    render(<OutcomesStep outcomeType="categorical" outcomes={makeOutcomes(2)} />);
     expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
     expect(screen.queryByText(/divisibility/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/price moves/i)).not.toBeInTheDocument();
   });
 });
 
-// ── Auto-normalize: probability edit ───────────────────────────────────────
-
-describe("OutcomesStep auto-normalize — probability edit", () => {
-  it("calls onOutcomeProbabilityChange when a probability input changes", async () => {
-    const user = userEvent.setup();
-    const onOutcomeProbabilityChange = vi.fn();
-    render(
-      <OutcomesStep
-        outcomeType="categorical"
-        outcomes={makeOutcomes([50, 50])}
-        onOutcomeProbabilityChange={onOutcomeProbabilityChange}
-      />,
-    );
-    const inputs = screen.getAllByRole("spinbutton");
-    // Find the first probability spinbutton
-    await user.clear(inputs[0]);
-    await user.type(inputs[0], "70");
-    expect(onOutcomeProbabilityChange).toHaveBeenCalled();
-  });
-
-  it('does not render a "Normalize to 100%" button (auto-normalize replaces it)', () => {
-    render(<OutcomesStep outcomeType="categorical" outcomes={makeOutcomes([30, 70])} />);
-    expect(screen.queryByRole("button", { name: /normalize/i })).not.toBeInTheDocument();
-  });
-
-  it('does not render a "Normalize to 100%" button in yes/no mode either', () => {
-    const outcomes: WizardOutcome[] = [
-      { id: "yes", label: "Yes", description: "", probability: 50 },
-      { id: "no", label: "No", description: "", probability: 50 },
-    ];
-    render(<OutcomesStep outcomeType="yesno" outcomes={outcomes} />);
-    expect(screen.queryByRole("button", { name: /normalize/i })).not.toBeInTheDocument();
-  });
-
-  it("disables Next when categorical probabilities do not sum to 100", () => {
-    render(<OutcomesStep outcomeType="categorical" outcomes={makeOutcomes([70, 50])} />);
-
-    expect(screen.getByRole("button", { name: /next/i })).toBeDisabled();
+describe("OutcomesStep creator pricing removal", () => {
+  it("does not render creator probability inputs or summaries", () => {
+    render(<OutcomesStep outcomeType="categorical" outcomes={makeOutcomes(2)} />);
+    expect(screen.queryAllByRole("spinbutton")).toHaveLength(0);
+    expect(screen.queryByText(/probability/i)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /next/i })).not.toBeDisabled();
   });
 });

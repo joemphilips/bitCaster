@@ -61,23 +61,6 @@ describe("useMarketPrice", () => {
     expect(result.current.defaultOrderPrice).toBe(5_000);
   });
 
-  it("uses creator initial probability before any trades exist", () => {
-    const { result } = renderHook(() =>
-      useMarketPrice({
-        market: makeMarket({
-          currentOdds: { yes: 50, no: 50 },
-          initialProbabilities: { Yes: 70, No: 30 },
-        }),
-        marketId: "condition-1-Yes",
-        outcomeSetId: "Yes",
-        orderBook: emptyBook,
-      }),
-    );
-
-    expect(result.current.currentPrice).toBe(7_000);
-    expect(result.current.defaultOrderPrice).toBe(7_000);
-  });
-
   it("uses the spread midpoint as the order entry default when both sides exist", () => {
     const { result } = renderHook(() =>
       useMarketPrice({

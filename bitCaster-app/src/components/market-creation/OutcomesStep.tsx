@@ -2,11 +2,7 @@ import { Plus, Trash2 } from "lucide-react";
 import { useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import type { WizardOutcome, OutcomeType } from "@/types/market-creation";
-import {
-  MAX_MARKET_OUTCOMES,
-  probabilitySumValid,
-  allProbabilitiesInRange,
-} from "@/hooks/useMarketCreationState";
+import { MAX_MARKET_OUTCOMES } from "@/hooks/useMarketCreationState";
 
 interface OutcomesStepProps {
   outcomeType: OutcomeType;
@@ -18,60 +14,11 @@ interface OutcomesStepProps {
   onAddOutcome?: () => void;
   onRemoveOutcome?: (outcomeId: string) => void;
   onOutcomeLabelChange?: (outcomeId: string, label: string) => void;
-  onOutcomeProbabilityChange?: (outcomeId: string, probability: number) => void;
-  onNormalizeProbabilities?: () => void;
   onLoBoundChange?: (value: number) => void;
   onHiBoundChange?: (value: number) => void;
   onPrecisionChange?: (value: number) => void;
   onUnitChange?: (value: string) => void;
   onNext?: () => void;
-}
-
-function ProbabilityBar({
-  outcomes,
-  sumOk,
-  rangeOk,
-}: {
-  outcomes: WizardOutcome[];
-  sumOk: boolean;
-  rangeOk: boolean;
-}) {
-  const { t } = useTranslation();
-  const totalProbability = outcomes.reduce((sum, o) => sum + (o.probability ?? 0), 0);
-
-  return (
-    <div>
-      <div className="flex items-center justify-between text-xs text-slate-400 mb-2">
-        <span>{t("marketCreation.outcomeProbabilitySummary")}</span>
-        <span className={sumOk ? "text-green-400" : totalProbability > 100 ? "text-red-400" : ""}>
-          {totalProbability}%
-        </span>
-      </div>
-      <div className="h-2 rounded-full bg-slate-800 overflow-hidden flex">
-        {outcomes.map((outcome, i) => (
-          <div
-            key={outcome.id}
-            className={`h-full ${
-              outcomes.length === 2 && i === 0
-                ? "bg-green-500"
-                : outcomes.length === 2 && i === 1
-                  ? "bg-red-500"
-                  : "bg-blue-500"
-            } first:rounded-l-full last:rounded-r-full`}
-            style={{ width: `${Math.min(outcome.probability ?? 0, 100)}%` }}
-          />
-        ))}
-      </div>
-      {!sumOk && (
-        <p className="text-xs text-red-400 mt-2">
-          {t("marketCreation.probabilitiesMustSumTo100", { total: totalProbability })}
-        </p>
-      )}
-      {!rangeOk && (
-        <p className="text-xs text-red-400 mt-1">{t("marketCreation.probabilityRangeError")}</p>
-      )}
-    </div>
-  );
 }
 
 export function OutcomesStep({
@@ -84,9 +31,6 @@ export function OutcomesStep({
   onAddOutcome,
   onRemoveOutcome,
   onOutcomeLabelChange,
-  onOutcomeProbabilityChange,
-  // onNormalizeProbabilities kept in props interface for callers; not rendered
-  // because add/remove handlers perform the only automatic redistribution.
   onLoBoundChange,
   onHiBoundChange,
   onPrecisionChange,
@@ -195,9 +139,7 @@ export function OutcomesStep({
 
   // Yes/No market
   if (outcomeType === "yesno" && outcomes) {
-    const sumOk = probabilitySumValid(outcomes);
-    const rangeOk = allProbabilitiesInRange(outcomes);
-    const canProceedYesNo = sumOk && rangeOk;
+    const canProceedYesNo = outcomes.every((outcome) => outcome.label.trim().length > 0);
 
     return (
       <div className="w-full max-w-xl">
@@ -224,31 +166,9 @@ export function OutcomesStep({
                 <div>
                   <p className="font-medium text-white text-sm">{outcome.label}</p>
                 </div>
-                <div className="ml-auto w-20 shrink-0">
-                  <div className="relative">
-                    <input
-                      data-outcome-probability-input={outcome.id}
-                      type="number"
-                      min={0}
-                      max={100}
-                      value={outcome.probability ?? ""}
-                      onChange={(e) =>
-                        onOutcomeProbabilityChange?.(outcome.id, Number(e.target.value))
-                      }
-                      className="w-full px-3 py-2 rounded-lg bg-slate-800 border border-slate-700 text-white text-sm text-right pr-7 focus:outline-none focus:ring-2 focus:ring-blue-500/40 focus:border-blue-500 transition-colors"
-                    />
-                    <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-xs text-slate-500">
-                      %
-                    </span>
-                  </div>
-                </div>
               </div>
             </div>
           ))}
-        </div>
-
-        <div className="mb-8">
-          <ProbabilityBar outcomes={outcomes} sumOk={sumOk} rangeOk={rangeOk} />
         </div>
 
         <button
@@ -267,8 +187,6 @@ export function OutcomesStep({
   }
 
   // Categorical outcomes
-  const catSumOk = outcomes ? probabilitySumValid(outcomes) : false;
-  const catRangeOk = outcomes ? allProbabilitiesInRange(outcomes) : false;
   const labelsAvoidOutcomeSetSeparator = outcomes
     ? outcomes.every((o) => !o.label.includes("|"))
     : false;
@@ -278,9 +196,7 @@ export function OutcomesStep({
     outcomes.length >= 2 &&
     outcomes.length <= MAX_MARKET_OUTCOMES &&
     outcomes.every((o) => o.label.trim().length > 0) &&
-    labelsAvoidOutcomeSetSeparator &&
-    catSumOk &&
-    catRangeOk;
+    labelsAvoidOutcomeSetSeparator;
 
   return (
     <div className="w-full max-w-xl">
@@ -302,26 +218,6 @@ export function OutcomesStep({
                   placeholder={t("marketCreation.outcomeLabelPlaceholder")}
                   className="w-full px-3 py-2 rounded-lg bg-slate-800 border border-slate-700 text-white text-sm placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500/40 focus:border-blue-500 transition-colors"
                 />
-              </div>
-
-              <div className="w-20 shrink-0">
-                <div className="relative">
-                  <input
-                    data-outcome-probability-input={outcome.id}
-                    type="number"
-                    min={1}
-                    max={99}
-                    value={outcome.probability ?? ""}
-                    onChange={(e) =>
-                      onOutcomeProbabilityChange?.(outcome.id, Number(e.target.value))
-                    }
-                    placeholder="0"
-                    className="w-full px-3 py-2 rounded-lg bg-slate-800 border border-slate-700 text-white text-sm text-right pr-7 focus:outline-none focus:ring-2 focus:ring-blue-500/40 focus:border-blue-500 transition-colors"
-                  />
-                  <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-xs text-slate-500">
-                    %
-                  </span>
-                </div>
               </div>
 
               <button
@@ -348,17 +244,12 @@ export function OutcomesStep({
         {t("marketCreation.addOutcome")}
       </button>
 
-      {outcomes && outcomes.length > 0 && (
-        <>
-          <div className="mb-8">
-            <ProbabilityBar outcomes={outcomes} sumOk={catSumOk} rangeOk={catRangeOk} />
-            {!labelsAvoidOutcomeSetSeparator && (
-              <p className="text-xs text-red-400 mt-2">
-                {t("marketCreation.outcomeLabelSeparatorError")}
-              </p>
-            )}
-          </div>
-        </>
+      {outcomes && outcomes.length > 0 && !labelsAvoidOutcomeSetSeparator && (
+        <div className="mb-8">
+          <p className="text-xs text-red-400 mt-2">
+            {t("marketCreation.outcomeLabelSeparatorError")}
+          </p>
+        </div>
       )}
 
       <button

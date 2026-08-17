@@ -198,7 +198,7 @@ async function setupDraftForSubmission() {
   await act(async () => {
     result.current.onNext();
   });
-  // Step 3: outcomes (default 50/50)
+  // Step 3: outcomes (default names)
   await act(async () => {
     result.current.onNext();
   });
@@ -226,69 +226,26 @@ function setCategoricalOutcomes(outcomes: WizardOutcome[]) {
   });
 }
 
-function makeOutcome(id: string, probability: number): WizardOutcome {
-  return { id, label: id.toUpperCase(), description: "", probability };
+function makeOutcome(id: string): WizardOutcome {
+  return { id, label: id.toUpperCase(), description: "" };
 }
 
-describe("useMarketCreationState – categorical outcome probabilities", () => {
-  it("edits one outcome probability without changing the other outcomes", async () => {
-    setCategoricalOutcomes([makeOutcome("a", 60), makeOutcome("b", 30), makeOutcome("c", 10)]);
-    const { result } = renderHook(() => useMarketCreationState(), { wrapper });
-
-    await act(async () => {
-      result.current.onOutcomeProbabilityChange("a", 70);
-    });
-
-    expect(
-      useMarketDraftStore
-        .getState()
-        .draft.stepOutcomes?.outcomes?.map((outcome) => outcome.probability),
-    ).toEqual([70, 30, 10]);
-  });
-
-  it("still redistributes categorical outcomes equally when adding an outcome", async () => {
-    setCategoricalOutcomes([makeOutcome("a", 70), makeOutcome("b", 30)]);
+describe("useMarketCreationState – categorical outcomes", () => {
+  it("adds and removes outcomes without creator probability state", async () => {
+    setCategoricalOutcomes([makeOutcome("a"), makeOutcome("b")]);
     const { result } = renderHook(() => useMarketCreationState(), { wrapper });
 
     await act(async () => {
       result.current.onAddOutcome();
     });
-
-    expect(
-      useMarketDraftStore
-        .getState()
-        .draft.stepOutcomes?.outcomes?.map((outcome) => outcome.probability),
-    ).toEqual([34, 33, 33]);
-  });
-
-  it("still proportionally rescales categorical outcomes when removing an outcome", async () => {
-    setCategoricalOutcomes([makeOutcome("a", 50), makeOutcome("b", 25), makeOutcome("c", 25)]);
-    const { result } = renderHook(() => useMarketCreationState(), { wrapper });
-
     await act(async () => {
       result.current.onRemoveOutcome("a");
     });
 
-    expect(
-      useMarketDraftStore
-        .getState()
-        .draft.stepOutcomes?.outcomes?.map((outcome) => outcome.probability),
-    ).toEqual([50, 50]);
-  });
-
-  it("redistributes remaining zero-probability outcomes equally when removing an outcome", async () => {
-    setCategoricalOutcomes([makeOutcome("a", 100), makeOutcome("b", 0), makeOutcome("c", 0)]);
-    const { result } = renderHook(() => useMarketCreationState(), { wrapper });
-
-    await act(async () => {
-      result.current.onRemoveOutcome("a");
-    });
-
-    expect(
-      useMarketDraftStore
-        .getState()
-        .draft.stepOutcomes?.outcomes?.map((outcome) => outcome.probability),
-    ).toEqual([50, 50]);
+    expect(useMarketDraftStore.getState().draft.stepOutcomes?.outcomes).toEqual([
+      { id: "b", label: "B", description: "" },
+      { id: expect.any(String), label: "", description: "" },
+    ]);
   });
 });
 

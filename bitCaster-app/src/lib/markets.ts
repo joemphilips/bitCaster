@@ -195,12 +195,6 @@ function resolveYesNoCatalogueOdds(entry: MarketCatalogueEntry, divisibility: nu
     return { yes, no: 100 - yes };
   }
 
-  // Fall back to creator-specified initial probabilities
-  const yesInitial = initialProbabilityForOutcome(entry.initialProbabilities, "Yes");
-  const noInitial = initialProbabilityForOutcome(entry.initialProbabilities, "No");
-  if (yesInitial != null) return { yes: yesInitial, no: 100 - yesInitial };
-  if (noInitial != null) return { yes: 100 - noInitial, no: noInitial };
-
   return { yes: 50, no: 50 };
 }
 
@@ -211,19 +205,6 @@ function resolveYesNoDetailOdds(entry: MarketCatalogueEntry, divisibility: numbe
   }
 
   return resolveYesNoCatalogueOdds(entry, divisibility);
-}
-
-function initialProbabilityForOutcome(
-  initialProbabilities: Record<string, number> | null | undefined,
-  outcome: string,
-): number | null {
-  if (!initialProbabilities) return null;
-  const direct = initialProbabilities[outcome];
-  if (Number.isFinite(direct)) return clampPercent(Number(direct));
-  const caseInsensitive = Object.entries(initialProbabilities).find(
-    ([key]) => key.toLowerCase() === outcome.toLowerCase(),
-  )?.[1];
-  return Number.isFinite(caseInsensitive) ? clampPercent(Number(caseInsensitive)) : null;
 }
 
 function buildMarketsQueryString(params: GetMarketsParams): string {
@@ -293,7 +274,7 @@ export function mapCatalogueEntryToMarket(entry: MarketCatalogueEntry): Market {
     outcomes: outcomes.map((label) => ({
       id: label,
       label,
-      odds: initialProbabilityForOutcome(entry.initialProbabilities, label) ?? evenOutcomePercent,
+      odds: evenOutcomePercent,
     })),
   };
 }
@@ -371,9 +352,7 @@ function mapCatalogueEntryToMarketDetail(entry: MarketCatalogueEntry): MarketDet
   const mappedOutcomes = outcomes.map((label) => ({
     id: label,
     label,
-    odds:
-      initialProbabilityForOutcome(entry.initialProbabilities, label) ??
-      100 / Math.max(outcomes.length, 1),
+    odds: 100 / Math.max(outcomes.length, 1),
   }));
   const now = new Date().toISOString();
   const createdAt = entry.createdAt ?? now;
@@ -438,7 +417,6 @@ function mapCatalogueEntryToMarketDetail(entry: MarketCatalogueEntry): MarketDet
     recentTrades: [],
     comments: [],
     relatedMarkets: [],
-    initialProbabilities: entry.initialProbabilities,
   };
 
   if (isYesNo) {
