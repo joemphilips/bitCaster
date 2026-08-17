@@ -2839,14 +2839,14 @@ namespace BitCaster.MatchingEngine.Contracts
         public int Price { get; }
 
         /// <summary>
-        /// Volume represented in the market's collateral/share subunits. Initial anchor points always carry zero volume.
+        /// Volume represented in the market's collateral/share subunits.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("volumeSubunits")]
         public long VolumeSubunits { get; }
 
         /// <summary>
-        /// `initial` is the creator-probability anchor and is clamped to the selected timeframe boundary when used as carry-forward context. `fill` is a settlement-committed trade tick inside the selected timeframe.
+        /// `fill` is a settlement-committed trade tick inside the selected timeframe.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("source")]
@@ -3562,10 +3562,57 @@ namespace BitCaster.MatchingEngine.Contracts
     }
 
     [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class LatestConfirmedTrade
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public LatestConfirmedTrade(LatestConfirmedTradeDivisibility @divisibility, string @eventOrder, System.DateTimeOffset @executedAt, long @faceAmountSubunits, System.Guid @fillId, int @priceTick, string @primitiveOutcomeId)
+        {
+            this.PrimitiveOutcomeId = @primitiveOutcomeId;
+            this.FillId = @fillId;
+            this.ExecutedAt = @executedAt;
+            this.EventOrder = @eventOrder;
+            this.PriceTick = @priceTick;
+            this.Divisibility = @divisibility;
+            this.FaceAmountSubunits = @faceAmountSubunits;
+        }
+
+        [System.Text.Json.Serialization.JsonPropertyName("primitiveOutcomeId")]
+        public string PrimitiveOutcomeId { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("fillId")]
+        public System.Guid FillId { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("executedAt")]
+        public System.DateTimeOffset ExecutedAt { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("eventOrder")]
+        public string EventOrder { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("priceTick")]
+        public int PriceTick { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("divisibility")]
+        public LatestConfirmedTradeDivisibility Divisibility { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("faceAmountSubunits")]
+        public long FaceAmountSubunits { get; }
+
+        private System.Collections.Generic.IDictionary<string, object>? _additionalProperties;
+
+        [System.Text.Json.Serialization.JsonExtensionData]
+        public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
+        {
+            get { return _additionalProperties ?? (_additionalProperties = new System.Collections.Generic.Dictionary<string, object>()); }
+            set { _additionalProperties = value; }
+        }
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
     public partial class MarketCatalogueEntry
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public MarketCatalogueEntry(long @ammBotBudgetSubunits, BaseAsset @baseAsset, System.Collections.Generic.List<string> @categoryTags, System.DateTimeOffset? @closedAt, string @conditionId, System.DateTimeOffset @createdAt, string? @creatorPubkey, System.DateTimeOffset? @deadline, string? @description, MarketCatalogueEntryDivisibility @divisibility, string? @finalOutcome, System.DateTimeOffset @lastSuccessfulRefreshAt, double? @lastTradedPrice, long @liquiditySubunits, System.Collections.Generic.List<string> @outcomes, MarketCatalogueEntryState @state, string? @thumbnailUrl, string? @title, long @volume24hSubunits, long @volume30dSubunits, long @volumeLifetimeSubunits)
+        public MarketCatalogueEntry(long @ammBotBudgetSubunits, BaseAsset @baseAsset, System.Collections.Generic.List<string> @categoryTags, System.DateTimeOffset? @closedAt, string @conditionId, System.DateTimeOffset @createdAt, string? @creatorPubkey, System.DateTimeOffset? @deadline, string? @description, MarketCatalogueEntryDivisibility @divisibility, string? @finalOutcome, System.DateTimeOffset @lastSuccessfulRefreshAt, System.Collections.Generic.List<LatestConfirmedTrade> @latestConfirmedTrades, long @liquiditySubunits, System.Collections.Generic.List<string> @outcomes, MarketCatalogueEntryState @state, string? @thumbnailUrl, string? @title, long @volume24hSubunits, long @volume30dSubunits, long @volumeLifetimeSubunits)
         {
             this.ConditionId = @conditionId;
             this.Outcomes = @outcomes;
@@ -3585,9 +3632,9 @@ namespace BitCaster.MatchingEngine.Contracts
             this.VolumeLifetimeSubunits = @volumeLifetimeSubunits;
             this.BaseAsset = @baseAsset;
             this.Divisibility = @divisibility;
-            this.LastTradedPrice = @lastTradedPrice;
             this.CategoryTags = @categoryTags;
             this.LastSuccessfulRefreshAt = @lastSuccessfulRefreshAt;
+            this.LatestConfirmedTrades = @latestConfirmedTrades;
         }
 
         /// <summary>
@@ -3715,13 +3762,6 @@ namespace BitCaster.MatchingEngine.Contracts
         public MarketCatalogueEntryDivisibility Divisibility { get; }
 
         /// <summary>
-        /// Most recent execution price as a decimal ratio in `[0, 1]`, null if the market has never traded. Runtime order, fill, orderbook, and price-history price fields use integer numerators against the market's `divisibility`; this catalogue summary keeps the legacy ratio form for sorting/display compatibility.
-        /// <br/>
-        /// </summary>
-        [System.Text.Json.Serialization.JsonPropertyName("lastTradedPrice")]
-        public double? LastTradedPrice { get; }
-
-        /// <summary>
         /// Category tags supplied at market registration. Filterable via the `tag` query parameter.
         /// <br/>
         /// </summary>
@@ -3734,6 +3774,13 @@ namespace BitCaster.MatchingEngine.Contracts
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("lastSuccessfulRefreshAt")]
         public System.DateTimeOffset LastSuccessfulRefreshAt { get; }
+
+        /// <summary>
+        /// Bounded latest confirmed execution per primitive outcome. The array is sorted by canonical primitive outcome ID. Missing outcomes are absent. An untraded market has an empty array.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("latestConfirmedTrades")]
+        public System.Collections.Generic.List<LatestConfirmedTrade> LatestConfirmedTrades { get; }
 
         private System.Collections.Generic.IDictionary<string, object>? _additionalProperties;
 
@@ -4177,11 +4224,8 @@ namespace BitCaster.MatchingEngine.Contracts
     public enum MarketPriceHistoryPointSource
     {
 
-        [System.Runtime.Serialization.EnumMember(Value = @"initial")]
-        Initial = 0,
-
         [System.Runtime.Serialization.EnumMember(Value = @"fill")]
-        Fill = 1,
+        Fill = 0,
 
     }
 
@@ -4253,6 +4297,16 @@ namespace BitCaster.MatchingEngine.Contracts
 
         [System.Runtime.Serialization.EnumMember(Value = @"credited")]
         Credited = 0,
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public enum LatestConfirmedTradeDivisibility
+    {
+
+        _10000 = 10000,
+
+        _1000000 = 1000000,
 
     }
 

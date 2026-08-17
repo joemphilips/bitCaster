@@ -691,7 +691,7 @@ describe("marketDetailDataReducer", () => {
       currentOdds: { yes: 50, no: 50 },
       priceHistory: {
         timeframe: "7d",
-        data: [{ timestamp: "2026-01-01T00:00:00Z", price: 80, source: "initial" }],
+        data: [{ timestamp: "2026-01-01T00:00:00Z", price: 80, source: "fill" }],
       },
     });
 
@@ -712,20 +712,20 @@ describe("marketDetailDataReducer", () => {
     ];
     initial.priceHistory = {
       timeframe: "7d",
-      data: [{ timestamp: "2026-01-01T00:00:00Z", price: 80, source: "initial" }],
+      data: [{ timestamp: "2026-01-01T00:00:00Z", price: 80, source: "fill" }],
     };
     initial.outcomePriceHistories = {
       Alice: {
         timeframe: "7d",
-        data: [{ timestamp: "2026-01-01T00:00:00Z", price: 80, source: "initial" }],
+        data: [{ timestamp: "2026-01-01T00:00:00Z", price: 80, source: "fill" }],
       },
       Bob: {
         timeframe: "7d",
-        data: [{ timestamp: "2026-01-01T00:00:00Z", price: 10, source: "initial" }],
+        data: [{ timestamp: "2026-01-01T00:00:00Z", price: 10, source: "fill" }],
       },
       Carol: {
         timeframe: "7d",
-        data: [{ timestamp: "2026-01-01T00:00:00Z", price: 10, source: "initial" }],
+        data: [{ timestamp: "2026-01-01T00:00:00Z", price: 10, source: "fill" }],
       },
     };
 

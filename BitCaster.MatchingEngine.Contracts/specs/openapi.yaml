@@ -751,7 +751,7 @@ paths:
 
         The response combines condition metadata (`outcomes`, `creatorPubkey`,
         `deadline`, and oracle attestation/close metadata) with trading state
-        (`state`, `volume*`, `lastTradedPrice`, and `createdAt`). A market
+        (`state`, `volume*`, and `createdAt`). A market
         missing either side of that public data is omitted from the catalogue
         until both are available.
       security:
@@ -3334,13 +3334,10 @@ components:
           minimum: 0
           description: >
             Volume represented in the market's collateral/share subunits.
-            Initial anchor points always carry zero volume.
         source:
           type: string
-          enum: [initial, fill]
+          enum: [fill]
           description: >
-            `initial` is the creator-probability anchor and is clamped to the
-            selected timeframe boundary when used as carry-forward context.
             `fill` is a settlement-committed trade tick inside the selected
             timeframe.
 
@@ -3738,6 +3735,39 @@ components:
           nullable: true
           description: Populated only when `state == Failed`.
 
+    LatestConfirmedTrade:
+      type: object
+      required:
+        - primitiveOutcomeId
+        - fillId
+        - executedAt
+        - eventOrder
+        - priceTick
+        - divisibility
+        - faceAmountSubunits
+      properties:
+        primitiveOutcomeId:
+          type: string
+        fillId:
+          type: string
+          format: uuid
+        executedAt:
+          type: string
+          format: date-time
+        eventOrder:
+          type: string
+        priceTick:
+          type: integer
+          minimum: 1
+        divisibility:
+          type: integer
+          format: int32
+          enum: [10000, 1000000]
+        faceAmountSubunits:
+          type: integer
+          format: int64
+          minimum: 1
+
     MarketCatalogueEntry:
       type: object
       required:
@@ -3752,6 +3782,7 @@ components:
         - volumeLifetimeSubunits
         - categoryTags
         - lastSuccessfulRefreshAt
+        - latestConfirmedTrades
         - baseAsset
         - divisibility
       properties:
@@ -3875,15 +3906,6 @@ components:
           enum: [10000, 1000000]
           description: >
             Immutable price denominator `D`, server-determined.
-        lastTradedPrice:
-          type: number
-          nullable: true
-          description: >
-            Most recent execution price as a decimal ratio in `[0, 1]`, null
-            if the market has never traded. Runtime order, fill, orderbook, and
-            price-history price fields use integer numerators against the
-            market's `divisibility`; this catalogue summary keeps the legacy
-            ratio form for sorting/display compatibility.
         categoryTags:
           type: array
           items:
@@ -3899,6 +3921,16 @@ components:
             snapshot used to populate this entry's mintd-sourced fields.
             Mirrored on every entry so callers can render staleness
             indicators per market without an additional request.
+        latestConfirmedTrades:
+          type: array
+          minItems: 0
+          maxItems: 8
+          items:
+            $ref: '#/components/schemas/LatestConfirmedTrade'
+          description: >
+            Bounded latest confirmed execution per primitive outcome. The
+            array is sorted by canonical primitive outcome ID. Missing outcomes
+            are absent. An untraded market has an empty array.
 
     MarketCatalogueResponse:
       type: object

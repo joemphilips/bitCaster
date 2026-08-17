@@ -130,17 +130,11 @@ function alignSeries(series: Series[]): uPlot.AlignedData {
 function xScaleFor(
   data: uPlot.AlignedData,
   timeframe: ChartTimeframe,
-  series: Series[],
 ): { min: number; max: number } | null {
   const times = data[0] as number[];
   if (times.length === 0) return null;
   if (timeframe !== "all") {
     const windowSeconds = TIMEFRAME_SECONDS[timeframe];
-    const points = series.flatMap((s) => s.data);
-    if (points.length > 0 && points.every((point) => point.source === "initial")) {
-      const min = times[0];
-      return { min, max: min + windowSeconds };
-    }
     const max = times[times.length - 1];
     return { min: max - windowSeconds, max };
   }
@@ -178,8 +172,8 @@ export function PriceChart({
   );
   const chartData = useMemo(() => alignSeries(series), [series]);
   const xScale = useMemo(
-    () => xScaleFor(chartData, chartTimeframe, series),
-    [chartData, chartTimeframe, series],
+    () => xScaleFor(chartData, chartTimeframe),
+    [chartData, chartTimeframe],
   );
   const hasChartData = series.length > 0 && chartData[0].length > 0;
   const latestValues = series
