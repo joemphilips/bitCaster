@@ -137,6 +137,8 @@ interface BaseMarketDetail {
   baseAsset: "sat";
   divisibility: ProductMarketDivisibility;
   baseUnit: string; // e.g. "sats", "USD"
+  /** Exact primitive outcome IDs from the REST registration snapshot. */
+  registeredPrimitiveOutcomeIds?: string[];
   mint?: MarketMintInfo;
   creator: MarketCreator;
   outcomes?: Outcome[];

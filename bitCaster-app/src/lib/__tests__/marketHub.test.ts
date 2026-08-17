@@ -75,6 +75,8 @@ function tradeMessage(
   return { conditionId, latestConfirmedTrade: trade };
 }
 
+const ALLOWED_OUTCOME_IDS = ["YES", "NO"] as const;
+
 beforeEach(async () => {
   await disconnect();
   signalrMock.connection.state = "Disconnected";
@@ -142,10 +144,16 @@ describe("ConfirmedTradeRecorded live deltas", () => {
 
   it("deduplicates by fill ID, ignores older event order, and accepts a newer event", () => {
     const first = confirmedTrade();
-    const current = applyConfirmedTradeDelta("cond", [], tradeMessage(first));
-    const duplicate = applyConfirmedTradeDelta("cond", current, tradeMessage(first));
+    const current = applyConfirmedTradeDelta("cond", ALLOWED_OUTCOME_IDS, [], tradeMessage(first));
+    const duplicate = applyConfirmedTradeDelta(
+      "cond",
+      ALLOWED_OUTCOME_IDS,
+      current,
+      tradeMessage(first),
+    );
     const older = applyConfirmedTradeDelta(
       "cond",
+      ALLOWED_OUTCOME_IDS,
       duplicate,
       tradeMessage({ ...first, eventOrder: "0000", priceTick: 1000 }),
     );
@@ -155,9 +163,15 @@ describe("ConfirmedTradeRecorded live deltas", () => {
       eventOrder: "0002",
       priceTick: 7000,
     };
-    const newer = applyConfirmedTradeDelta("cond", older, tradeMessage(newerTrade));
+    const newer = applyConfirmedTradeDelta(
+      "cond",
+      ALLOWED_OUTCOME_IDS,
+      older,
+      tradeMessage(newerTrade),
+    );
     const conflictingDuplicate = applyConfirmedTradeDelta(
       "cond",
+      ALLOWED_OUTCOME_IDS,
       newer,
       tradeMessage({ ...newerTrade, eventOrder: "0003", priceTick: 8000 }),
     );
@@ -180,10 +194,16 @@ describe("ConfirmedTradeRecorded live deltas", () => {
       fillId: "fill-1",
       eventOrder: "0001",
     });
-    const current = applyConfirmedTradeDelta("cond", [], tradeMessage(later));
-    const ordered = applyConfirmedTradeDelta("cond", current, tradeMessage(earlier));
+    const current = applyConfirmedTradeDelta("cond", ALLOWED_OUTCOME_IDS, [], tradeMessage(later));
+    const ordered = applyConfirmedTradeDelta(
+      "cond",
+      ALLOWED_OUTCOME_IDS,
+      current,
+      tradeMessage(earlier),
+    );
     const wrongCondition = applyConfirmedTradeDelta(
       "cond",
+      ALLOWED_OUTCOME_IDS,
       ordered,
       tradeMessage(confirmedTrade({ fillId: "fill-3", eventOrder: "0003" }), "other"),
     );
@@ -197,6 +217,7 @@ describe("ConfirmedTradeRecorded live deltas", () => {
     for (let index = 1; index <= 25; index += 1) {
       current = applyConfirmedTradeDelta(
         "cond",
+        ALLOWED_OUTCOME_IDS,
         current,
         tradeMessage(
           confirmedTrade({
@@ -209,6 +230,7 @@ describe("ConfirmedTradeRecorded live deltas", () => {
     }
     current = applyConfirmedTradeDelta(
       "cond",
+      ALLOWED_OUTCOME_IDS,
       current,
       tradeMessage(
         confirmedTrade({ primitiveOutcomeId: "NO", fillId: "no-fill", eventOrder: "0026" }),
@@ -218,6 +240,62 @@ describe("ConfirmedTradeRecorded live deltas", () => {
     expect(current).toHaveLength(2);
     expect(current.find((trade) => trade.primitiveOutcomeId === "YES")?.fillId).toBe("yes-fill-25");
     expect(current.find((trade) => trade.primitiveOutcomeId === "NO")?.fillId).toBe("no-fill");
+  });
+
+  it("rejects unknown primitive outcomes without growing the bounded overlay", () => {
+    const yes = confirmedTrade({ fillId: "yes-fill", eventOrder: "0001" });
+    let current = applyConfirmedTradeDelta("cond", ALLOWED_OUTCOME_IDS, [], tradeMessage(yes));
+
+    for (let index = 1; index <= 100; index += 1) {
+      current = applyConfirmedTradeDelta(
+        "cond",
+        ALLOWED_OUTCOME_IDS,
+        current,
+        tradeMessage(
+          confirmedTrade({
+            primitiveOutcomeId: `unknown-${index}`,
+            fillId: `unknown-fill-${index}`,
+            eventOrder: String(index + 1).padStart(4, "0"),
+          }),
+        ),
+      );
+    }
+
+    expect(current).toEqual([yes]);
+    expect(current.length).toBeLessThanOrEqual(ALLOWED_OUTCOME_IDS.length);
+  });
+
+  it("filters existing overlay records outside the registered outcome universe", () => {
+    const yes = confirmedTrade({ fillId: "yes-fill", eventOrder: "0001" });
+    const unknown = confirmedTrade({
+      primitiveOutcomeId: "unknown",
+      fillId: "unknown-fill",
+      eventOrder: "0002",
+    });
+    const current = applyConfirmedTradeDelta(
+      "cond",
+      ALLOWED_OUTCOME_IDS,
+      [yes, unknown],
+      tradeMessage(yes),
+    );
+
+    expect(current).toEqual([yes]);
+  });
+
+  it("fails closed for empty or duplicate registered outcome allowlists", () => {
+    const yes = confirmedTrade();
+
+    expect(applyConfirmedTradeDelta("cond", [], [yes], tradeMessage(yes))).toEqual([]);
+    expect(applyConfirmedTradeDelta("cond", ["YES"], [yes], tradeMessage(yes))).toEqual([]);
+    expect(
+      applyConfirmedTradeDelta(
+        "cond",
+        ["YES", "NO", "A", "B", "C", "D", "E", "F", "G"],
+        [yes],
+        tradeMessage(yes),
+      ),
+    ).toEqual([]);
+    expect(applyConfirmedTradeDelta("cond", ["YES", "YES"], [yes], tradeMessage(yes))).toEqual([]);
   });
 
   it("fails closed for malformed or out-of-bound committed fill payloads", () => {
