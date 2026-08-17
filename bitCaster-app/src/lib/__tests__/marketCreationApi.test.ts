@@ -149,8 +149,8 @@ const createMarketParams = {
   title: "Test Market",
   description: "Test description",
   outcomes: [
-    { name: "Yes", probability: 50 },
-    { name: "No", probability: 50 },
+    { name: "Yes" },
+    { name: "No" },
   ],
   liquiditySats: 10000,
   baseAsset: "sat" as const,

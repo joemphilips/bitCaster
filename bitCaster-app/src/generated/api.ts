@@ -53,7 +53,7 @@ export interface paths {
         };
         /**
          * Fetch primitive outcome price history for a market
-         * @description Returns primitive outcome price points grouped by primitive outcome id. A newly registered market includes an initial zero-volume anchor point (`source = initial`) sourced from the creator probabilities. Initial anchors act as a left-edge carry-forward value and are clamped to the requested timeframe boundary when needed; settled trade ticks (`source = fill`) are added only when settlement commits and are filtered to the requested timeframe. Compound outcome-set matches are projected only when settlement commits, and the response never uses compound outcome ids.
+         * @description Returns primitive outcome price points grouped by primitive outcome id. Settled trade ticks (`source = fill`) are added only when settlement commits and are filtered to the requested timeframe. Compound outcome-set matches are projected only when settlement commits, and the response never uses compound outcome ids.
          */
         get: operations["getMarketPriceHistory"];
         put?: never;
@@ -1437,8 +1437,6 @@ export interface components {
         CreateMarketOutcome: {
             /** @description Outcome label (e.g. "Yes", "Alice"). */
             name: string;
-            /** @description Initial implied probability for this outcome [1, 99]. */
-            probability: number;
         };
         /** @description JSON payload embedded in the multipart `metadata` field of the createMarket endpoint. */
         CreateMarketRequest: {
@@ -1795,10 +1793,6 @@ export interface components {
             divisibility: 10000 | 1000000;
             /** @description Most recent execution price as a decimal ratio in `[0, 1]`, null if the market has never traded. Runtime order, fill, orderbook, and price-history price fields use integer numerators against the market's `divisibility`; this catalogue summary keeps the legacy ratio form for sorting/display compatibility. */
             lastTradedPrice?: number | null;
-            /** @description Creator-specified registration-time probability per atomic outcome, expressed as integer percentages that sum to 100. Clients use this as the default market price before any trade has established a live last-traded price. */
-            initialProbabilities: {
-                [key: string]: number;
-            };
             /** @description Category tags supplied at market registration. Filterable via the `tag` query parameter. */
             categoryTags: string[];
             /**

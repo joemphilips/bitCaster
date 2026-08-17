@@ -61,8 +61,8 @@ test('createMarketViaEngine signs a NIP-98 payload tag for the exact serialized 
       title: 'Will it rain?',
       description: 'Weather market',
       outcomes: [
-        { name: 'Yes', probability: 50 },
-        { name: 'No', probability: 50 },
+        { name: 'Yes' },
+        { name: 'No' },
       ],
       baseAsset: 'sat',
       liquiditySats: 0,
@@ -134,8 +134,8 @@ test('createMarketViaEngine can use the daemon NIP-98 signer for exact multipart
       title: 'Will real NIP-98 bind the body?',
       description: 'Signer integration market',
       outcomes: [
-        { name: 'Yes', probability: 50 },
-        { name: 'No', probability: 50 },
+        { name: 'Yes' },
+        { name: 'No' },
       ],
       baseAsset: 'sat',
       liquiditySats: 0,

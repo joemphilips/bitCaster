@@ -1496,8 +1496,7 @@ function createAuthenticatedBitcasterEngineClient(options: {
 }
 
 function createMarketOutcomes(outcomes: string[]): CreateMarketOutcome[] {
-  const probability = outcomes.length > 0 ? 1 / outcomes.length : 0
-  return outcomes.map((name) => ({ name, probability }))
+  return outcomes.map((name) => ({ name }))
 }
 
 async function readMarketThumbnail(path: string): Promise<MarketThumbnailBytes> {
