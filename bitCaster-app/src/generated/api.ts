@@ -2921,6 +2921,15 @@ export interface operations {
                 };
                 content?: never;
             };
+            /** @description Latest confirmed trade data is temporarily unavailable. Retry the request later. The ProblemDetails `type` is `/errors/market-latest-trades-unavailable`. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
         };
     };
     createSettlementCapability: {
