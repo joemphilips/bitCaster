@@ -21,9 +21,129 @@ import { refreshOrderBook } from "@/lib/orderBookRefresh";
 
 export type OrderBookSnapshot = components["schemas"]["OrderBookSnapshot"];
 export type MarketStatusChanged = components["schemas"]["MarketStatusChanged"];
+export type LatestConfirmedTrade = components["schemas"]["LatestConfirmedTrade"];
+export interface ConfirmedTradeRecordedMessage {
+  conditionId: string;
+  latestConfirmedTrade: LatestConfirmedTrade;
+}
 export interface OrderCancelled {
   marketId: string;
   orderId: string;
+}
+
+function isLatestConfirmedTrade(value: unknown): value is LatestConfirmedTrade {
+  if (typeof value !== "object" || value === null) return false;
+  const raw = value as Record<string, unknown>;
+  const divisibility = raw.divisibility;
+  return (
+    typeof raw.primitiveOutcomeId === "string" &&
+    raw.primitiveOutcomeId.trim().length > 0 &&
+    typeof raw.fillId === "string" &&
+    raw.fillId.trim().length > 0 &&
+    typeof raw.executedAt === "string" &&
+    raw.executedAt.trim().length > 0 &&
+    typeof raw.eventOrder === "string" &&
+    raw.eventOrder.trim().length > 0 &&
+    typeof raw.priceTick === "number" &&
+    Number.isInteger(raw.priceTick) &&
+    typeof divisibility === "number" &&
+    (divisibility === 10_000 || divisibility === 1_000_000) &&
+    raw.priceTick > 0 &&
+    raw.priceTick < divisibility &&
+    typeof raw.faceAmountSubunits === "number" &&
+    Number.isInteger(raw.faceAmountSubunits) &&
+    raw.faceAmountSubunits > 0
+  );
+}
+
+export function parseConfirmedTradeRecorded(
+  payload: unknown,
+): ConfirmedTradeRecordedMessage | null {
+  if (typeof payload !== "object" || payload === null) return null;
+  const raw = payload as Record<string, unknown>;
+  const conditionId =
+    typeof raw.conditionId === "string"
+      ? raw.conditionId
+      : typeof raw.ConditionId === "string"
+        ? raw.ConditionId
+        : null;
+  const latestConfirmedTrade = raw.latestConfirmedTrade ?? raw.LatestConfirmedTrade;
+  if (!conditionId || !isLatestConfirmedTrade(latestConfirmedTrade)) return null;
+  return { conditionId, latestConfirmedTrade };
+}
+
+function compareEventOrder(left: string, right: string): number {
+  if (left === right) return 0;
+  return left < right ? -1 : 1;
+}
+
+function compareConfirmedTrades(left: LatestConfirmedTrade, right: LatestConfirmedTrade): number {
+  const byEventOrder = compareEventOrder(left.eventOrder, right.eventOrder);
+  if (byEventOrder !== 0) return byEventOrder;
+  if (left.primitiveOutcomeId === right.primitiveOutcomeId) return 0;
+  return left.primitiveOutcomeId < right.primitiveOutcomeId ? -1 : 1;
+}
+
+/**
+ * Apply one committed trade delta to the page's bounded in-memory view.
+ *
+ * REST remains the authority. This helper only provides the live SignalR
+ * merge seam: it rejects another condition, deduplicates by fill ID, and
+ * refuses to move an existing fill backwards in wrapper event order.
+ */
+export function applyConfirmedTradeDelta(
+  conditionId: string,
+  current: readonly LatestConfirmedTrade[],
+  message: ConfirmedTradeRecordedMessage,
+): LatestConfirmedTrade[] {
+  if (message.conditionId !== conditionId) return [...current];
+
+  // The REST projection exposes one latest record per primitive outcome. Keep
+  // the live overlay bounded to the same shape while using fillId to reject
+  // duplicate deliveries and eventOrder to reject stale replacements.
+  const nextByOutcome = new Map<string, LatestConfirmedTrade>();
+  const nextByFillId = new Map<string, LatestConfirmedTrade>();
+
+  const remove = (trade: LatestConfirmedTrade): void => {
+    if (nextByOutcome.get(trade.primitiveOutcomeId)?.fillId === trade.fillId) {
+      nextByOutcome.delete(trade.primitiveOutcomeId);
+    }
+    if (nextByFillId.get(trade.fillId)?.primitiveOutcomeId === trade.primitiveOutcomeId) {
+      nextByFillId.delete(trade.fillId);
+    }
+  };
+
+  for (const trade of current) {
+    if (nextByFillId.has(trade.fillId)) continue;
+    const previousForOutcome = nextByOutcome.get(trade.primitiveOutcomeId);
+    if (
+      previousForOutcome &&
+      compareEventOrder(previousForOutcome.eventOrder, trade.eventOrder) >= 0
+    ) {
+      continue;
+    }
+    if (previousForOutcome) remove(previousForOutcome);
+    nextByOutcome.set(trade.primitiveOutcomeId, trade);
+    nextByFillId.set(trade.fillId, trade);
+  }
+
+  const incoming = message.latestConfirmedTrade;
+  // A fill ID is immutable identity. A duplicate delivery is ignored even if
+  // an invalid sender attaches a later wrapper order or changed payload.
+  if (nextByFillId.has(incoming.fillId)) {
+    return [...nextByOutcome.values()].sort(compareConfirmedTrades);
+  }
+  const previousForOutcome = nextByOutcome.get(incoming.primitiveOutcomeId);
+  if (
+    previousForOutcome &&
+    compareEventOrder(incoming.eventOrder, previousForOutcome.eventOrder) <= 0
+  ) {
+    return [...nextByOutcome.values()].sort(compareConfirmedTrades);
+  }
+  if (previousForOutcome) remove(previousForOutcome);
+  nextByOutcome.set(incoming.primitiveOutcomeId, incoming);
+  nextByFillId.set(incoming.fillId, incoming);
+  return [...nextByOutcome.values()].sort(compareConfirmedTrades);
 }
 
 export function parseOrderCancelled(payload: unknown): OrderCancelled | null {
@@ -45,6 +165,7 @@ export function parseOrderCancelled(payload: unknown): OrderCancelled | null {
 
 type OrderBookHandler = (snapshot: OrderBookSnapshot) => void;
 type MarketStatusHandler = (status: MarketStatusChanged) => void;
+type ConfirmedTradeRecordedHandler = (message: ConfirmedTradeRecordedMessage) => void;
 type OrderCancelledHandler = (cancelled: OrderCancelled) => void;
 type MarketRejoinedHandler = () => void;
 
@@ -81,6 +202,7 @@ let _startPromise: Promise<void> | null = null;
 // can cleanly leave the server group.
 const _orderBookHandlers = new Map<string, Set<OrderBookHandler>>();
 const _orderCancelledHandlers = new Map<string, Set<OrderCancelledHandler>>();
+const _confirmedTradeRecordedHandlers = new Map<string, Set<ConfirmedTradeRecordedHandler>>();
 const _marketJoinCounts = new Map<string, number>();
 const _desiredMarketJoins = new Set<string>();
 const _marketRejoinedHandlers = new Map<string, Set<MarketRejoinedHandler>>();
@@ -132,6 +254,20 @@ function buildConnection(): HubConnection {
         handler(status);
       } catch (err) {
         console.warn("[marketHub] MarketStatusChanged handler threw:", err);
+      }
+    }
+  });
+
+  conn.on("ConfirmedTradeRecorded", (payload: unknown) => {
+    const message = parseConfirmedTradeRecorded(payload);
+    if (!message) return;
+    const handlers = _confirmedTradeRecordedHandlers.get(message.conditionId);
+    if (!handlers) return;
+    for (const handler of handlers) {
+      try {
+        handler(message);
+      } catch (err) {
+        console.warn("[marketHub] ConfirmedTradeRecorded handler threw:", err);
       }
     }
   });
@@ -301,6 +437,29 @@ export function onOrderCancelled(marketId: string, handler: OrderCancelledHandle
   };
 }
 
+/**
+ * Register for committed fill deltas for one condition. The callback is
+ * best-effort and must merge through {@link applyConfirmedTradeDelta}; REST
+ * latest-trade reads remain authoritative after reconnect and refresh.
+ */
+export function onConfirmedTradeRecorded(
+  conditionId: string,
+  handler: ConfirmedTradeRecordedHandler,
+): () => void {
+  let set = _confirmedTradeRecordedHandlers.get(conditionId);
+  if (!set) {
+    set = new Set();
+    _confirmedTradeRecordedHandlers.set(conditionId, set);
+  }
+  set.add(handler);
+  return () => {
+    const s = _confirmedTradeRecordedHandlers.get(conditionId);
+    if (!s) return;
+    s.delete(handler);
+    if (s.size === 0) _confirmedTradeRecordedHandlers.delete(conditionId);
+  };
+}
+
 export function onMarketRejoined(marketId: string, handler: MarketRejoinedHandler): () => void {
   let set = _marketRejoinedHandlers.get(marketId);
   if (!set) {
@@ -325,6 +484,7 @@ export async function disconnect(): Promise<void> {
   _connection = null;
   _startPromise = null;
   _orderBookHandlers.clear();
+  _confirmedTradeRecordedHandlers.clear();
   _marketStatusHandlers.clear();
   _marketRejoinedHandlers.clear();
   for (const refresh of _rejoinRefreshers.values()) refresh.cancel();

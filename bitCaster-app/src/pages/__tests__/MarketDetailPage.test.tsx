@@ -20,7 +20,11 @@ import {
   previewBrowserCtfRangeOrderFees,
   submitBrowserCtfRangeOrder,
 } from "@/lib/browserCtfRangeOrderSubmission";
-import type { MarketStatusChanged, OrderBookSnapshot } from "@/lib/marketHub";
+import type {
+  LatestConfirmedTrade,
+  MarketStatusChanged,
+  OrderBookSnapshot,
+} from "@/lib/marketHub";
 import type {
   CategoricalMarketDetail,
   Comment,
@@ -89,6 +93,14 @@ vi.mock("@/hooks/useMarketStatusLive", () => ({
 }));
 
 vi.mock("@/lib/marketHub", () => ({
+  applyConfirmedTradeDelta: vi.fn(
+    (
+      _conditionId: string,
+      current: LatestConfirmedTrade[],
+      message: { latestConfirmedTrade: LatestConfirmedTrade },
+    ) => [...current, message.latestConfirmedTrade],
+  ),
+  onConfirmedTradeRecorded: vi.fn(() => () => {}),
   joinMarket: vi.fn().mockResolvedValue(undefined),
   leaveMarket: vi.fn().mockResolvedValue(undefined),
   onMarketRejoined: vi.fn(() => () => {}),
@@ -841,6 +853,33 @@ describe("marketDetailDataReducer", () => {
     const view = composeMarketDetail(stateAfterRest, "7d");
 
     expect(view?.orderBook).toBe(liveBook);
+  });
+
+  it("clears the live confirmed-trade overlay after an authoritative REST snapshot", () => {
+    const initial = yesNoMarket();
+    const liveTrade: LatestConfirmedTrade = {
+      primitiveOutcomeId: "YES",
+      fillId: "00000000-0000-0000-0000-000000000001",
+      executedAt: "2026-08-18T00:00:00Z",
+      eventOrder: "0001",
+      priceTick: 6200,
+      divisibility: 10_000,
+      faceAmountSubunits: 1000,
+    };
+    const stateWithLive = marketDetailDataReducer(createMarketDetailDataState(initial), {
+      type: "confirmedTradeRecorded",
+      conditionId: initial.id,
+      trade: liveTrade,
+    });
+
+    expect(stateWithLive.confirmedTradesByConditionId[initial.id]).toEqual([liveTrade]);
+
+    const repaired = marketDetailDataReducer(stateWithLive, {
+      type: "marketSnapshotLoaded",
+      detail: { ...initial, state: "closed" },
+    });
+
+    expect(repaired.confirmedTradesByConditionId[initial.id]).toBeUndefined();
   });
 });
 

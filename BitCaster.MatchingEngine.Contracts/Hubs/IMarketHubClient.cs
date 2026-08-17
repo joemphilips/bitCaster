@@ -16,6 +16,8 @@ public interface IMarketHubClient
 
     Task Matched(MatchedDelta delta);
 
+    Task ConfirmedTradeRecorded(ConfirmedTradeRecordedMessage message);
+
     /// <summary>
     /// Pushed to every per-outcome market group of a condition when its
     /// lifecycle state changes (e.g. open -> closed on oracle/deadline close).
@@ -50,6 +52,10 @@ public sealed record MatchedDelta(
     long QuotePaymentSubunits,
     long OutcomeFaceAmountSubunits,
     TokenSide TokenSide);
+
+public sealed record ConfirmedTradeRecordedMessage(
+    string ConditionId,
+    LatestConfirmedTrade LatestConfirmedTrade);
 
 public sealed record MarketStatusChanged(
     string ConditionId,
