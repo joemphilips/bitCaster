@@ -205,7 +205,7 @@ function registerMarketCommand(program: Command): void {
     .requiredOption('--outcomes <a,b,c>', 'Comma-separated outcome names', parseOutcomeList)
     .option(
       '--liquidity-sats <n>',
-      'Deprecated compatibility value; send 0. Fund the bot after market creation.',
+      'Deprecated compatibility value; send 0. Market-maker funding is a separate post-creation flow and can be repeated.',
       parseIntegerOption('liquidity sats'),
     )
     .option('--tag <tag...>', 'Category tag (repeatable)')
