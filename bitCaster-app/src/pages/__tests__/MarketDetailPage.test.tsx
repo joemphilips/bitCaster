@@ -403,7 +403,7 @@ describe("MarketDetailPage live market status", () => {
     mocks.settingsState.signerBackupState = "confirmed";
   });
 
-  it("applies a MarketStatusChanged close push to the detail page and disables trading", async () => {
+  it("applies a MarketStatusChanged close push to the detail page and removes trading", async () => {
     vi.mocked(fetchMarketDetail).mockResolvedValue(yesNoMarket({ state: "open" }));
     vi.mocked(fetchOrderBook).mockResolvedValue(askBook(4_000));
 
@@ -426,15 +426,13 @@ describe("MarketDetailPage live market status", () => {
     });
 
     expect(await screen.findByText("Market Closed")).toBeInTheDocument();
-    for (const input of screen.getAllByTestId("trade-amount-input")) {
-      expect(input).toBeDisabled();
-    }
-    for (const button of screen.getAllByTestId("trade-confirm")) {
-      expect(button).toBeDisabled();
-    }
-
-    fireEvent.click(screen.getAllByTestId("trade-confirm")[0]);
-    expect(submitBrowserCtfRangeOrder).not.toHaveBeenCalled();
+    expect(screen.queryByTestId("trade-amount-input")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("trade-confirm")).not.toBeInTheDocument();
+    expect(screen.queryByRole("tablist")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("trade-tab-buy")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("trade-tab-sell")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("trade-tab-liquidity")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("confirm-amm-funding")).not.toBeInTheDocument();
   });
 
   it("keeps the current route market when an earlier detail request completes late", async () => {
