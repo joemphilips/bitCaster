@@ -10,6 +10,12 @@ sidebar:
 bitCaster settles matched orders with the Cashu mint. It does not run a
 bilateral swap between two peers.
 
+The first release accepts public FAK orders only. Each public attempt uses one
+one-shot capability. A partial FAK settles its committed fills and cancels the
+remainder. A zero-fill FAK cancels. Public GTC, GTD, FOK, continuation, and
+residual reauthorization are not available. Internal LMSR bot GTC is not a
+public client feature.
+
 When you place an order, your wallet authorizes it with a `PAY_TO_UNLOCK`
 capability. The matching engine checks this authorization when it admits the
 order. It does not call the mint at this stage.
@@ -35,13 +41,13 @@ When the mint confirms a group, it returns exact result entries. Your wallet
 stores the submitted operation and the confirmed result. If the wallet stops or
 loses its connection, it can recover the exact operation and result later.
 
-## Cancellation and continuation
+## Cancellation
 
 Cancellation only retracts an order that still rests on the book. It does not
 spend a `PAY_TO_UNLOCK` capability. It does not refund a capability.
 
-After a partial fill, a residual order needs a new capability before it can rest
-on the book again.
+After a partial public FAK, the remainder is cancelled. The public client does
+not reauthorize a residual order.
 
 ## What the engine can see
 

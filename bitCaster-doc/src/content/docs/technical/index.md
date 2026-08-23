@@ -6,6 +6,11 @@ sidebar:
 
 This section describes the public technical behavior of bitCaster.
 
+The first release accepts public FAK orders only. Each public attempt uses one
+one-shot capability. A partial FAK settles committed fills and cancels the
+remainder. A zero-fill FAK cancels. Public GTC, GTD, FOK, continuation, and
+residual reauthorization are not available.
+
 ## Settlement groups
 
 Orders use `PAY_TO_UNLOCK` capabilities. Order admission makes no mint network
