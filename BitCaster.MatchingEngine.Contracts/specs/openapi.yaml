@@ -439,6 +439,14 @@ paths:
           description: Missing or invalid NIP-98 authentication
         '404':
           description: Order not found
+        '409':
+          description: >
+            Order state changed before cancellation could be committed. The
+            response uses the RFC 7807 ProblemDetails shape.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
 
   /api/v1/{marketId}/orders/{orderId}/continuation/decline:
     post:
