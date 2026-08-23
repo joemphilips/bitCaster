@@ -11,11 +11,15 @@ bitCaster は中央指値注文板（CLOB）を使用します。指値注文は
 
 公開マーケット板はプリミティブな outcome route を使用します。カテゴリカルマーケットでは `A / Not A`、`B / Not B` などの板を公開します。クライアントは `{conditionId}-{outcomeName}` のマーケット ID を使い、必要な token side を選択します。
 
+## 初回リリースの公開範囲
+
+公開 GUI と CLI が送信できる注文は FAK だけです。各公開試行は 1 件の one-shot capability を使用します。一部約定では、確定した fill を決済し、残りを取り消します。約定がない FAK も取り消します。公開 GTC、GTD、FOK、継続、および残余注文の再認可は利用できません。内部 LMSR bot の GTC は operator の機能であり、公開クライアントの機能ではありません。
+
 ## 注文の認可
 
-ウォレットは注文を送信するときに `PAY_TO_UNLOCK` capability を提供します。エンジンは注文受付で capability を検証します。受付中にミントへのネットワーク呼び出しは行いません。
+ウォレットは公開 FAK 注文を送信するときに 1 件の `PAY_TO_UNLOCK` capability を提供します。エンジンは注文受付で capability を検証します。受付中にミントへのネットワーク呼び出しは行いません。
 
-capability は認可された range を対象にします。range の継続には新しい認可が必要です。取消は板に残る注文だけを取り消します。capability を使用せず、capability の返金も開始しません。
+capability はその 1 回の試行で認可された range を対象にします。公開継続は利用できません。取消は板に残る注文だけを取り消します。capability を使用せず、capability の返金も開始しません。
 
 ## Fill と決済グループ
 
@@ -27,7 +31,7 @@ capability は認可された range を対象にします。range の継続に�
 
 ## Participation Score
 
-Participation Score は公開注文の受付を保護し、永続的な fill に課金します。免除されていない各参加者は、永続的な fill ごとに設定済みの debit を支払います。これは決済を怠ったことへのペナルティではありません。承認済みの operator wallet service には Score debit を適用しません。
+Participation Score は公開注文の受付を保護します。versioned projector は、確定した source facts から durable acceptance 時の charge を導出します。fill ごとには課金せず、決済失敗のペナルティも適用しません。内部 engine bot の注文には Score を課金しません。
 
 ## 信頼境界
 

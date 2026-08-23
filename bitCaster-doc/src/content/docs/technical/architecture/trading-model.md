@@ -14,15 +14,23 @@ Public market books use primitive outcome routes. A categorical market exposes
 `A / Not A`, `B / Not B`, and similar books. Clients use the market identifier
 `{conditionId}-{outcomeName}` and select the required token side.
 
+## First-release public scope
+
+Public GUI and CLI submission supports FAK only. Each public attempt uses one
+one-shot capability. A partial FAK settles the committed fills and cancels the
+remainder. A zero-fill FAK cancels. Public GTC, GTD, FOK, continuation, and
+residual reauthorization are not available. Internal LMSR bot GTC is an
+operator function, not a public client feature.
+
 ## Order authorization
 
-A wallet supplies a `PAY_TO_UNLOCK` capability when it submits an order. The
-engine validates the capability during order admission. It makes no mint
-network call during admission.
+A wallet supplies one `PAY_TO_UNLOCK` capability when it submits a public FAK
+order. The engine validates the capability during order admission. It makes no
+mint network call during admission.
 
-The capability covers an authorized range. A range continuation requires a new
-authorization. Cancellation retracts only a resting order. It does not spend a
-capability and it does not trigger a capability refund.
+The capability covers an authorized range for that one attempt. Public
+continuation is not available. Cancellation retracts only a resting order. It
+does not spend a capability and it does not trigger a capability refund.
 
 ## Fills and settlement groups
 
@@ -40,10 +48,10 @@ and mint authority.
 
 ## Participation Score
 
-Participation Score protects public order admission and charges durable fills.
-Each non-exempt participant pays the configured debit for each durable fill. It
-is not a settlement-negligence penalty. The approved operator wallet service
-does not receive Score debits.
+Participation Score protects public order admission. A versioned projector
+derives any charge from verified source facts at durable acceptance. It does not
+charge per fill and it does not apply a settlement-failure penalty. Internal
+engine bot orders do not receive Score charges.
 
 ## Trust boundary
 
