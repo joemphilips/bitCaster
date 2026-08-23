@@ -2394,6 +2394,15 @@ export interface operations {
                 };
                 content?: never;
             };
+            /** @description Order state changed before cancellation could be committed. The response uses the RFC 7807 ProblemDetails shape. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
         };
     };
     declineOrderContinuation: {
