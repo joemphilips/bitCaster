@@ -10,13 +10,15 @@ sidebar:
 bitCaster settles matched orders with the Cashu mint. It does not run a
 bilateral swap between two peers.
 
-The first release accepts public FAK orders only. Each public attempt uses one
-one-shot capability. A partial FAK settles its committed fills and cancels the
-remainder. A zero-fill FAK cancels. Public GTC, GTD, FOK, continuation, and
-residual reauthorization are not available. Internal LMSR bot GTC is not a
+The first-release server accepts public FAK and FOK orders. The GUI exposes
+FAK. The CLI exposes FAK and FOK. Each public attempt uses one one-shot
+capability. A partial FAK settles its committed fills and cancels the remainder.
+A zero-fill FAK cancels. FOK commits the full requested quantity or cancels the
+complete request from the admission snapshot. Public GTC, GTD, continuation,
+and residual reauthorization are not available. Internal LMSR bot GTC is not a
 public client feature.
 
-When you place an order, your wallet authorizes it with a `PAY_TO_UNLOCK`
+When you place a FAK or FOK order, your wallet authorizes it with a `PAY_TO_UNLOCK`
 capability. The matching engine checks this authorization when it admits the
 order. It does not call the mint at this stage.
 

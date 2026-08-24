@@ -9,11 +9,11 @@ sidebar:
 
 bitCaster は NUT-CTF range settlement を使用します。2 者間の HTLC、peer ECDH、または adaptor signature プロトコルは使用しません。
 
-初回リリースで公開できる注文は FAK だけです。各公開試行は 1 件の one-shot capability を使用します。一部約定では、確定した fill を決済し、残りを取り消します。約定がない FAK も取り消します。公開 GTC、GTD、FOK、継続、および残余注文の再認可は利用できません。内部 LMSR bot の GTC は公開クライアントの機能ではありません。
+初回リリースで公開サーバーが受け付ける注文は FAK と FOK です。GUI には FAK を表示します。CLI は FAK と FOK に対応します。各公開試行は 1 件の one-shot capability を使用します。一部約定では、確定した fill を決済し、残りを取り消します。約定がない FAK も取り消します。FOK は admission snapshot に基づき、要求数量全体を確定するか、注文全体を取り消します。公開 GTC、GTD、継続、および残余注文の再認可は利用できません。内部 LMSR bot の GTC は公開クライアントの機能ではありません。
 
 ## 注文の認可
 
-ウォレットは公開 FAK の 1 回の試行を 1 件の `PAY_TO_UNLOCK` capability で認可します。注文受付では capability を確認します。受付時にミントへのネットワーク呼び出しは行いません。
+ウォレットは公開 FAK または FOK の 1 回の試行を 1 件の `PAY_TO_UNLOCK` capability で認可します。注文受付では capability を確認します。受付時にミントへのネットワーク呼び出しは行いません。
 
 認可はその試行で許可された range を対象とします。公開継続は利用できません。板に残る注文を取り消しても、その注文だけを取り消します。capability の使用や返金は行いません。
 

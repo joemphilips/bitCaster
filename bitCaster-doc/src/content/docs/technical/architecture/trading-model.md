@@ -16,17 +16,19 @@ Public market books use primitive outcome routes. A categorical market exposes
 
 ## First-release public scope
 
-Public GUI and CLI submission supports FAK only. Each public attempt uses one
-one-shot capability. A partial FAK settles the committed fills and cancels the
-remainder. A zero-fill FAK cancels. Public GTC, GTD, FOK, continuation, and
-residual reauthorization are not available. Internal LMSR bot GTC is an
+The public server accepts FAK and FOK. The GUI exposes FAK. The CLI exposes FAK
+and FOK. Each public attempt uses one one-shot capability. A partial FAK
+settles the committed fills and cancels the remainder. A zero-fill FAK
+cancels. FOK commits the full requested quantity or cancels the complete
+request from the admission snapshot. Public GTC, GTD, continuation, and
+residual reauthorization are not available. Internal LMSR bot GTC is a private
 operator function, not a public client feature.
 
 ## Order authorization
 
-A wallet supplies one `PAY_TO_UNLOCK` capability when it submits a public FAK
-order. The engine validates the capability during order admission. It makes no
-mint network call during admission.
+A wallet supplies one `PAY_TO_UNLOCK` capability when it submits a public FAK or
+FOK order. The engine validates the capability during order admission. It
+makes no mint network call during admission.
 
 The capability covers an authorized range for that one attempt. Public
 continuation is not available. Cancellation retracts only a resting order. It

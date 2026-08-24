@@ -6,10 +6,12 @@ sidebar:
 
 This section describes the public technical behavior of bitCaster.
 
-The first release accepts public FAK orders only. Each public attempt uses one
-one-shot capability. A partial FAK settles committed fills and cancels the
-remainder. A zero-fill FAK cancels. Public GTC, GTD, FOK, continuation, and
-residual reauthorization are not available.
+The first-release server accepts public FAK and FOK orders. The GUI exposes
+FAK. The CLI exposes FAK and FOK. Each public attempt uses one one-shot
+capability. A partial FAK settles committed fills and cancels the remainder. A
+zero-fill FAK cancels. FOK commits the full requested quantity or cancels the
+complete request from the admission snapshot. Public GTC, GTD, continuation,
+and residual reauthorization are not available.
 
 ## Settlement groups
 
