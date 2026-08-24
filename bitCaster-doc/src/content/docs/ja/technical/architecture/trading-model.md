@@ -13,11 +13,11 @@ bitCaster は中央指値注文板（CLOB）を使用します。指値注文は
 
 ## 初回リリースの公開範囲
 
-公開 GUI と CLI が送信できる注文は FAK だけです。各公開試行は 1 件の one-shot capability を使用します。一部約定では、確定した fill を決済し、残りを取り消します。約定がない FAK も取り消します。公開 GTC、GTD、FOK、継続、および残余注文の再認可は利用できません。内部 LMSR bot の GTC は operator の機能であり、公開クライアントの機能ではありません。
+公開サーバーは FAK と FOK を受け付けます。GUI には FAK を表示します。CLI は FAK と FOK に対応します。各公開試行は 1 件の one-shot capability を使用します。一部約定では、確定した fill を決済し、残りを取り消します。約定がない FAK も取り消します。FOK は admission snapshot に基づき、要求数量全体を確定するか、注文全体を取り消します。公開 GTC、GTD、継続、および残余注文の再認可は利用できません。内部 LMSR bot の GTC は private operator 機能であり、公開クライアントの機能ではありません。
 
 ## 注文の認可
 
-ウォレットは公開 FAK 注文を送信するときに 1 件の `PAY_TO_UNLOCK` capability を提供します。エンジンは注文受付で capability を検証します。受付中にミントへのネットワーク呼び出しは行いません。
+ウォレットは公開 FAK または FOK 注文を送信するときに 1 件の `PAY_TO_UNLOCK` capability を提供します。エンジンは注文受付で capability を検証します。受付中にミントへのネットワーク呼び出しは行いません。
 
 capability はその 1 回の試行で認可された range を対象にします。公開継続は利用できません。取消は板に残る注文だけを取り消します。capability を使用せず、capability の返金も開始しません。
 

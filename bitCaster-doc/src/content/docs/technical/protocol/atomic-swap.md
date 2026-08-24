@@ -10,16 +10,19 @@ sidebar:
 bitCaster uses NUT-CTF range settlement. It does not use a bilateral HTLC,
 peer ECDH, or adaptor-signature protocol.
 
-The first release accepts public FAK orders only. Each public attempt uses one
-one-shot capability. A partial FAK settles its committed fills and cancels the
-remainder. A zero-fill FAK cancels. Public GTC, GTD, FOK, continuation, and
-residual reauthorization are not available. Internal LMSR bot GTC is not a
+The first-release server accepts public FAK and FOK orders. The GUI exposes
+FAK. The CLI exposes FAK and FOK. Each public attempt uses one one-shot
+capability. A partial FAK settles its committed fills and cancels the remainder.
+A zero-fill FAK cancels. FOK commits the full requested quantity or cancels the
+complete request from the admission snapshot. Public GTC, GTD, continuation,
+and residual reauthorization are not available. Internal LMSR bot GTC is not a
 public client feature.
 
 ## Order authorization
 
-A wallet authorizes one public FAK attempt with one `PAY_TO_UNLOCK` capability.
-Order admission checks that capability. Admission makes no mint network call.
+A wallet authorizes one public FAK or FOK attempt with one `PAY_TO_UNLOCK`
+capability. Order admission checks that capability. Admission makes no mint
+network call.
 
 The authorization covers its permitted range for that attempt. Public
 continuation is not available. Cancelling a resting order only retracts that
