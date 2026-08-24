@@ -84,11 +84,13 @@ import {
   createCtfRangeOrderPreparationKeysetResolver,
   decodeSettlementCoordinatorPublicKey,
   decodeCtfRangeOrderPreparationFromRecord,
+  settlementCapabilityV1WorkFacts,
   validateAndProjectCtfRangeSettlementCapabilityResponse,
   type CtfRangeOrderRequest,
   type CtfRangeReviewedMintFacts,
   type PersistedCtfRangeOrderPreparation,
 } from "@bitcaster/client-sdk/ctfRangeOrderProtocol";
+import { calculateSettlementCapabilityV1Tariff } from "@bitcaster/client-sdk/participationScore";
 import type {
   CreateSettlementCapabilityRequest,
   NostrKind1Event,
@@ -196,6 +198,10 @@ export interface BrowserCtfRangeOrderCoordinatorDependencies {
     | BrowserCtfRangeWallet
     | ((mintUrl: string) => BrowserCtfRangeWallet | Promise<BrowserCtfRangeWallet>);
   readonly engine: BrowserCtfRangeEngine;
+  readonly beforeCreateCapability?: (input: {
+    mintUrl: string;
+    requiredScore: number;
+  }) => Promise<void>;
   readonly database?: BitcasterDB;
   readonly lockManager?: WalletLockManager;
   readonly now?: () => number;
@@ -283,6 +289,9 @@ export function buildBrowserCtfRangeOrderPreparation(input: {
 export class BrowserCtfRangeOrderCoordinator {
   readonly #walletForMint: (mintUrl: string) => Promise<BrowserCtfRangeWallet>;
   readonly #engine: BrowserCtfRangeEngine;
+  readonly #beforeCreateCapability: NonNullable<
+    BrowserCtfRangeOrderCoordinatorDependencies["beforeCreateCapability"]
+  >;
   readonly #database: BitcasterDB;
   readonly #custody: BrowserDurableCustodyAdapter;
   readonly #lockManager: WalletLockManager | undefined;
@@ -306,6 +315,7 @@ export class BrowserCtfRangeOrderCoordinator {
     this.#walletForMint =
       typeof wallet === "function" ? async (mintUrl) => wallet(mintUrl) : async () => wallet;
     this.#engine = input.engine;
+    this.#beforeCreateCapability = input.beforeCreateCapability ?? (async () => {});
     this.#database = input.database ?? db;
     this.#custody = new BrowserDurableCustodyAdapter(this.#database);
     this.#lockManager = input.lockManager;
@@ -331,7 +341,7 @@ export class BrowserCtfRangeOrderCoordinator {
   }): Promise<SubmitOrderResponse> {
     requireImmediateOrder(input.preparation);
     const scope = browserWalletScope(input.seed);
-    return withWalletProfileLock(
+    const completed = await withWalletProfileLock(
       scope.scopeId,
       () =>
         this.#withScopeOwner(scope, async (owner) => {
@@ -344,14 +354,28 @@ export class BrowserCtfRangeOrderCoordinator {
             scope,
             owner,
           );
-          return this.#createCapabilityAndSubmit(
+          return completed;
+        }),
+      this.#lockManager,
+    );
+    await this.#beforeCreateCapability({
+      mintUrl: input.preparation.mintUrl,
+      requiredScore: calculateSettlementCapabilityV1Tariff(
+        settlementCapabilityV1WorkFacts(completed.operation),
+      ),
+    });
+    return withWalletProfileLock(
+      scope.scopeId,
+      () =>
+        this.#withScopeOwner(scope, () =>
+          this.#createCapabilityAndSubmit(
             scope,
             input.preparation,
             completed.operation,
             completed.capabilityRequest,
             input.comment ?? null,
-          );
-        }),
+          ),
+        ),
       this.#lockManager,
     );
   }
@@ -1727,12 +1751,11 @@ export class BrowserCtfRangeOrderCoordinator {
     request: CreateSettlementCapabilityRequest,
     comment: NostrKind1Event | null,
   ): Promise<SubmitOrderResponse> {
-    const scopeId = scope.scopeId;
     let requested: Awaited<ReturnType<typeof transitionCtfRangePreparation>>;
     try {
       requested = await transitionCtfRangePreparation(
         {
-          scopeId,
+          scopeId: scope.scopeId,
           rangeOperationId: preparation.operationId,
           expectedRevision: 0,
           from: "prepared",
@@ -1747,7 +1770,7 @@ export class BrowserCtfRangeOrderCoordinator {
     const capability = await this.#createVerifiedCapability(preparation, operation, request);
     const bound = await bindCtfRangePreparationCapability(
       {
-        scopeId,
+        scopeId: scope.scopeId,
         rangeOperationId: preparation.operationId,
         expectedRevision: requested.revision,
         capability,

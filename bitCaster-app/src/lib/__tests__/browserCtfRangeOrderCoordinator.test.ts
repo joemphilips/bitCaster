@@ -47,9 +47,11 @@ import {
   type CtfRangeOrderRequest,
   type PersistedCtfRangeOrderPreparation,
 } from "@bitcaster/client-sdk/ctfRangeOrderProtocol";
+import { calculateSettlementCapabilityV1Tariff } from "@bitcaster/client-sdk/participationScore";
 import {
   decodeSettlementCapabilityArtifactBytes,
   deriveSettlementCapabilityArtifactDigest,
+  encodeSettlementCapabilityArtifact,
 } from "@bitcaster/client-sdk/settlementCapabilityArtifact";
 import type {
   CreateSettlementCapabilityRequest,
@@ -506,6 +508,102 @@ describe("browser CTF range order coordinator", () => {
     ).toBe(true);
   });
 
+  it("funds the exact capability tariff before the first capability request", async () => {
+    const database = createDatabase();
+    const preparation = persistedPreparation("range-score-tariff");
+    const calls: string[] = [];
+    let fundedScore = 0;
+    let expectedScore = 0;
+    const engine = engineMock({
+      onCreate: async (request) => {
+        const artifact = decodeSettlementCapabilityArtifactBytes(base64Bytes(request.artifact));
+        if (artifact.authorizationMode !== "pool") throw new Error("expected pool artifact");
+        expectedScore = calculateSettlementCapabilityV1Tariff({
+          inputCount: artifact.inputs.length,
+          manifestCount: artifact.manifest.entries.length,
+          artifactByteCount: encodeSettlementCapabilityArtifact(artifact).byteLength,
+        });
+        calls.push("capability");
+      },
+    });
+    const coordinator = createCoordinator(database, sourceWallet(), engine, {
+      beforeCreateCapability: async ({ requiredScore }) => {
+        fundedScore = requiredScore;
+        calls.push("score");
+      },
+    });
+
+    await coordinator.prepareAndSubmit({
+      seed: SEED,
+      preparation,
+      candidates: [sourceProof(preparation.offerKeyset.id)],
+    });
+
+    expect(fundedScore).toBe(expectedScore);
+    expect(calls).toEqual(["score", "capability"]);
+  });
+
+  it("does not re-enter the profile lock while funding Score", async () => {
+    const database = createDatabase();
+    const preparation = persistedPreparation("range-score-lock");
+    let active = false;
+    const lockManager: Pick<LockManager, "request"> = {
+      request: (async (name, _options, callback) => {
+        if (active) throw new Error("wallet profile lock was re-entered");
+        active = true;
+        try {
+          return await callback({ name, mode: "exclusive" } as Lock);
+        } finally {
+          active = false;
+        }
+      }) as LockManager["request"],
+    };
+    const coordinator = createCoordinator(database, sourceWallet(), engineMock(), {
+      lockManager,
+      beforeCreateCapability: async () => {
+        await lockManager.request(
+          `bitcaster:wallet-profile:${walletScopeId()}`,
+          { mode: "exclusive" },
+          async () => undefined,
+        );
+      },
+    });
+
+    await expect(
+      coordinator.prepareAndSubmit({
+        seed: SEED,
+        preparation,
+        candidates: [sourceProof(preparation.offerKeyset.id)],
+      }),
+    ).resolves.toMatchObject({ orderId: "44444444-4444-4444-8444-444444444444" });
+  });
+
+  it("keeps the source prepared when Score funding fails and never creates during recovery", async () => {
+    const database = createDatabase();
+    const preparation = persistedPreparation("range-score-funding-failed");
+    const engine = engineMock();
+    const coordinator = createCoordinator(database, sourceWallet(), engine, {
+      beforeCreateCapability: async () => {
+        throw new Error("Score funding unavailable");
+      },
+    });
+
+    await expect(
+      coordinator.prepareAndSubmit({
+        seed: SEED,
+        preparation,
+        candidates: [sourceProof(preparation.offerKeyset.id)],
+      }),
+    ).rejects.toThrow("Score funding unavailable");
+    expect(
+      (await readCtfRangePreparation(walletScopeId(), preparation.operationId, database))
+        ?.lifecycleState,
+    ).toBe("prepared");
+
+    await coordinator.recoverPage({ seed: SEED, limit: 8 }).catch(() => undefined);
+    expect(engine.createCalls).toBe(0);
+  });
+
   it("rolls back the composed source journal, custody, and legacy reservation", async () => {
     const database = createDatabase();
     const preparation = persistedPreparation("range-source-composed-rollback");
@@ -947,6 +1045,7 @@ describe("browser CTF range order coordinator", () => {
     const database = createDatabase();
     const preparation = persistedPreparation("range-capability-lost");
     const requests: CreateSettlementCapabilityRequest[] = [];
+    let fundingCalls = 0;
     let failResponse = true;
     const engine = engineMock({
       onCreate: async (request) => {
@@ -957,7 +1056,11 @@ describe("browser CTF range order coordinator", () => {
         }
       },
     });
-    const coordinator = createCoordinator(database, sourceWallet(), engine);
+    const coordinator = createCoordinator(database, sourceWallet(), engine, {
+      beforeCreateCapability: async () => {
+        fundingCalls += 1;
+      },
+    });
 
     await expect(
       coordinator.prepareAndSubmit({
@@ -978,6 +1081,7 @@ describe("browser CTF range order coordinator", () => {
     ]);
     expect(requests).toHaveLength(2);
     expect(requests[1]).toEqual(requests[0]);
+    expect(fundingCalls).toBe(1);
     expect(engine.createCalls).toBe(2);
     expect(engine.submitCalls).toBe(0);
     expect(
@@ -1269,6 +1373,7 @@ describe("browser CTF range order coordinator", () => {
     });
 
     expect(locks).toEqual([
+      { name: `bitcaster:wallet-profile:${walletScopeId()}`, mode: "exclusive" },
       { name: `bitcaster:wallet-profile:${walletScopeId()}`, mode: "exclusive" },
     ]);
   });
@@ -1586,7 +1691,6 @@ describe("browser CTF range order coordinator", () => {
         ?.lifecycleState,
     ).toBe("terminal");
   });
-
 });
 
 function createCoordinator(
@@ -1595,6 +1699,7 @@ function createCoordinator(
   engine: ReturnType<typeof engineMock>,
   options: {
     isDefinitiveOrderRejection?: (error: unknown) => boolean;
+    beforeCreateCapability?: BrowserCtfRangeOrderCoordinatorDependencies["beforeCreateCapability"];
     lockManager?: Pick<LockManager, "request">;
     restoreOutputs?: BrowserCtfRangeOrderCoordinatorDependencies["restoreOutputs"];
     restoreRefundOutputs?: BrowserCtfRangeOrderCoordinatorDependencies["restoreRefundOutputs"];
@@ -1618,6 +1723,9 @@ function createCoordinator(
     ...(options.isDefinitiveOrderRejection === undefined
       ? {}
       : { isDefinitiveOrderRejection: options.isDefinitiveOrderRejection }),
+    ...(options.beforeCreateCapability === undefined
+      ? {}
+      : { beforeCreateCapability: options.beforeCreateCapability }),
     ...(options.restoreOutputs === undefined ? {} : { restoreOutputs: options.restoreOutputs }),
     ...(options.restoreRefundOutputs === undefined
       ? {}

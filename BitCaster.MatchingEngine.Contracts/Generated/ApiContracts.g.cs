@@ -2344,14 +2344,11 @@ namespace BitCaster.MatchingEngine.Contracts
         [System.Runtime.Serialization.EnumMember(Value = @"authorityUnavailable")]
         AuthorityUnavailable = 3,
 
-        [System.Runtime.Serialization.EnumMember(Value = @"participationScoreRequired")]
-        ParticipationScoreRequired = 4,
-
         [System.Runtime.Serialization.EnumMember(Value = @"marketClosed")]
-        MarketClosed = 5,
+        MarketClosed = 4,
 
         [System.Runtime.Serialization.EnumMember(Value = @"bookRejected")]
-        BookRejected = 6,
+        BookRejected = 5,
 
     }
 
@@ -3275,13 +3272,12 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class ParticipationScoreResponse
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public ParticipationScoreResponse(long @balance, long @consumedTotal, bool @enabled, long @matchDebitScore, string @pubkey, long @purchasedTotal)
+        public ParticipationScoreResponse(long @balance, long @consumedTotal, bool @enabled, string @pubkey, long @purchasedTotal)
         {
             this.Pubkey = @pubkey;
             this.Balance = @balance;
             this.PurchasedTotal = @purchasedTotal;
             this.ConsumedTotal = @consumedTotal;
-            this.MatchDebitScore = @matchDebitScore;
             this.Enabled = @enabled;
         }
 
@@ -3292,7 +3288,7 @@ namespace BitCaster.MatchingEngine.Contracts
         public string Pubkey { get; }
 
         /// <summary>
-        /// Current Participation Score balance. May be negative after a durable fill debit.
+        /// Current Participation Score balance. It may be negative after a capability-admission charge.
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("balance")]
         public long Balance { get; }
@@ -3304,19 +3300,13 @@ namespace BitCaster.MatchingEngine.Contracts
         public long PurchasedTotal { get; }
 
         /// <summary>
-        /// Total Score consumed by durable fill debits.
+        /// Total Score consumed by capability-admission and invalid-validation charges.
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("consumedTotal")]
         public long ConsumedTotal { get; }
 
         /// <summary>
-        /// Configured Score debit charged to each non-exempt participant when a fill is durably reserved. The approved operator service is exempt.
-        /// </summary>
-        [System.Text.Json.Serialization.JsonPropertyName("matchDebitScore")]
-        public long MatchDebitScore { get; }
-
-        /// <summary>
-        /// Whether durable fill Score debit is enabled by the engine.
+        /// Whether Participation Score purchase and payment is enabled by the engine.
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("enabled")]
         public bool Enabled { get; }

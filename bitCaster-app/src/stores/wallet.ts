@@ -442,6 +442,15 @@ export async function getBalance(
   return proofs.reduce((sum: number, p: StoredProof) => sum + amountToNumber(p.amount), 0);
 }
 
+/** Read the spendable balance for one exact Cashu unit. */
+export async function getExactUnitBalance(
+  mintUrl: string | undefined,
+  unit: string,
+): Promise<number> {
+  const proofs = await getUnitProofs(mintUrl, { unit });
+  return proofs.reduce((sum: number, p: StoredProof) => sum + amountToNumber(p.amount), 0);
+}
+
 /**
  * Per-input mint fee (`input_fee_ppk`, parts-per-thousand) advertised by the
  * keysets the wallet already holds for `mintUrl`. The mint applies the same

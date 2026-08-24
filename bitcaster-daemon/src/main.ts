@@ -471,8 +471,8 @@ switch (command) {
           await orderHub.trackOrder(marketId, orderId)
           await startOrderHubWhenReady()
         },
-        prepareSettlementCapability: (input, client) =>
-          rangeOrderCoordinator.prepare(input, client),
+        prepareSettlementCapability: (input, client, beforeCreateCapability) =>
+          rangeOrderCoordinator.prepare(input, client, beforeCreateCapability),
         triggerSettlementRecovery: () => rangeRecoveryLoop?.trigger(),
         triggerCustodyRecovery: () => nonRetirementRecoveryLoop?.trigger(),
         getCustodyFence: currentFence,

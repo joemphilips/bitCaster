@@ -332,7 +332,7 @@ export interface paths {
         };
         /**
          * Read the authenticated user's participation Score
-         * @description Returns the caller's non-withdrawable participation Score balance and current match-debit policy. Score is a sat-denominated engine-use fee balance, separate from market collateral units.
+         * @description Returns the caller's non-withdrawable Participation Score balance and ledger totals. Score is a sat-denominated engine-use credit, separate from market collateral units. The server applies the immutable capability-admission tariff from verified capability work facts. The tariff is not a per-order, per-fill, or settlement-failure fee and is not returned by this endpoint.
          */
         get: operations["getParticipationScore"];
         put?: never;
@@ -1343,7 +1343,7 @@ export interface components {
          * @description `capabilityNotFound` covers absent, foreign, or digest-mismatched references. `capabilityNotCurrent` covers stale, expired, selected, or otherwise non-current capabilities only when no matching accepted admission exists. An exact authenticated owner, order, reference, and fingerprint replay returns its prior accepted admission result even if the capability later became selected or terminal.
          * @enum {string}
          */
-        BatchSubmitOrderErrorCode: "capabilityNotFound" | "capabilityNotCurrent" | "routeMismatch" | "authorityUnavailable" | "participationScoreRequired" | "marketClosed" | "bookRejected";
+        BatchSubmitOrderErrorCode: "capabilityNotFound" | "capabilityNotCurrent" | "routeMismatch" | "authorityUnavailable" | "marketClosed" | "bookRejected";
         BatchCancelOrdersRequest: {
             orderIds: string[];
         };
@@ -1606,7 +1606,7 @@ export interface components {
             pubkey: string;
             /**
              * Format: int64
-             * @description Current Participation Score balance. May be negative after a durable fill debit.
+             * @description Current Participation Score balance. It may be negative after a capability-admission charge.
              */
             balance: number;
             /**
@@ -1616,15 +1616,10 @@ export interface components {
             purchasedTotal: number;
             /**
              * Format: int64
-             * @description Total Score consumed by durable fill debits.
+             * @description Total Score consumed by capability-admission and invalid-validation charges.
              */
             consumedTotal: number;
-            /**
-             * Format: int64
-             * @description Configured Score debit charged to each non-exempt participant when a fill is durably reserved. The approved operator service is exempt.
-             */
-            matchDebitScore: number;
-            /** @description Whether durable fill Score debit is enabled by the engine. */
+            /** @description Whether Participation Score purchase and payment is enabled by the engine. */
             enabled: boolean;
         };
         PayParticipationScoreEcashRequest: {

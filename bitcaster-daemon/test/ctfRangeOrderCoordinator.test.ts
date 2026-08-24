@@ -156,8 +156,11 @@ test('daemon retries the exact capability request after its acknowledgement is l
       const wallet = new FakeWallet([sourceProof])
       const mint = fakeMint()
       const posted: CreateSettlementCapabilityRequest[] = []
+      const callOrder: string[] = []
+      const requiredScores: number[] = []
       let createAttempts = 0
       const client = fakeEngineClient((request) => {
+        callOrder.push('create-capability')
         posted.push(structuredClone(request))
         createAttempts += 1
         if (createAttempts === 1) throw new Error('capability acknowledgement lost')
@@ -172,7 +175,10 @@ test('daemon retries the exact capability request after its acknowledgement is l
       })
 
       await assert.rejects(
-        coordinator.prepare(orderRequest(), client),
+        coordinator.prepare(orderRequest(), client, async (requiredScore) => {
+          callOrder.push('fund-score')
+          requiredScores.push(requiredScore)
+        }),
         /capability acknowledgement lost/,
       )
       assert.equal(wallet.completeCalls, 1)
@@ -193,6 +199,17 @@ test('daemon retries the exact capability request after its acknowledgement is l
       assert.deepEqual(recovered.pending, [])
       assert.equal(wallet.completeCalls, 1)
       assert.equal(posted.length, 2)
+      assert.deepEqual(callOrder, ['fund-score', 'create-capability', 'create-capability'])
+      assert.equal(requiredScores.length, 1)
+      const artifactBytes = Buffer.from(posted[0]!.artifact, 'base64')
+      const artifact = decodeSettlementCapabilityArtifactBytes(artifactBytes)
+      assert.equal(
+        requiredScores[0],
+        1 +
+          artifact.inputs.length +
+          Math.ceil(artifact.manifest.entries.length / 16) +
+          Math.ceil(artifactBytes.byteLength / 4_096),
+      )
       assert.deepEqual(posted[1], posted[0])
       assert.equal(JSON.stringify(posted[0]), canonicalJson(posted[0]))
       const database = await openDaemonStateSqlite(directory)

@@ -30,6 +30,7 @@ import { recordBrowserCtfRangeMessage } from "@/stores/ctf-range-order-messages"
 import { recoverBrowserFundedAsset } from "./browserFundedAssetRecovery";
 import { activeBrowserWalletScopeId } from "./browserWalletProfile";
 import { browserRangeSourceAsset } from "./browserCtfRangeOrderSource";
+import { ensureParticipationScoreForNextMatch } from "./participationScorePayment";
 
 const MINT_METADATA_CACHE_TTL_MS = 30_000;
 const MINT_METADATA_CACHE_LIMIT = 64;
@@ -58,6 +59,10 @@ export interface BrowserCtfRangeOrderSubmission {
   readonly mnemonic: string;
   readonly comment?: NostrKind1Event | null;
   readonly expectedConsolidationFeeSubunits: number;
+  readonly onScoreTopUpRequired?: (input: {
+    readonly requiredSats: number;
+    readonly balanceSats: number;
+  }) => Promise<void>;
 }
 
 export interface BrowserCtfRangeOrderFeePreview {
@@ -103,6 +108,7 @@ export async function submitBrowserCtfRangeOrder(
     engine,
     input.mnemonic,
     isLoopbackMint(input.mintUrl),
+    input.onScoreTopUpRequired,
   );
   try {
     const candidates = await consolidateBrowserRangeSource({
@@ -305,6 +311,27 @@ function rangeSourceAsset(preparation: ReturnType<typeof buildBrowserCtfRangeOrd
       finalExpiry: offer.finalExpiry,
     },
   });
+}
+
+export class BrowserCtfRangeScoreTopUpRequiredError extends Error {
+  readonly requiredSats: number;
+  readonly balanceSats: number;
+
+  constructor(input: { requiredSats: number; balanceSats: number }) {
+    super(
+      "Participation Score balance is insufficient for this capability. Top up and retry to recover the prepared capability.",
+    );
+    this.name = "BrowserCtfRangeScoreTopUpRequiredError";
+    this.requiredSats = input.requiredSats;
+    this.balanceSats = input.balanceSats;
+  }
+}
+
+export class BrowserCtfRangeScoreTopUpCancelledError extends Error {
+  constructor() {
+    super("Participation Score top-up was cancelled.");
+    this.name = "BrowserCtfRangeScoreTopUpCancelledError";
+  }
 }
 
 function rangeSourceRequiredAmount(
@@ -580,11 +607,39 @@ function createBrowserCtfRangeCoordinator(
   engine: ReturnType<typeof createAuthenticatedBrowserEngineClient>,
   mnemonic: string,
   allowInsecureLoopbackHttp: boolean,
+  onScoreTopUpRequired?: BrowserCtfRangeOrderSubmission["onScoreTopUpRequired"],
 ): BrowserCtfRangeOrderCoordinator {
   return new BrowserCtfRangeOrderCoordinator({
     wallet: (mintUrl) => getWalletForMnemonicUnit(mintUrl, "msat", mnemonic),
     engine,
     allowInsecureLoopbackHttp,
+    beforeCreateCapability: async ({ mintUrl, requiredScore }) => {
+      const score = await ensureParticipationScoreForNextMatch({
+        mintUrl,
+        requiredScore,
+      });
+      if (score.kind !== "needs-regular-top-up") return;
+      if (onScoreTopUpRequired === undefined) {
+        throw new BrowserCtfRangeScoreTopUpRequiredError({
+          requiredSats: score.requiredSats,
+          balanceSats: score.balanceSats,
+        });
+      }
+      await onScoreTopUpRequired({
+        requiredSats: score.requiredSats,
+        balanceSats: score.balanceSats,
+      });
+      const afterTopUp = await ensureParticipationScoreForNextMatch({
+        mintUrl,
+        requiredScore,
+      });
+      if (afterTopUp.kind === "needs-regular-top-up") {
+        throw new BrowserCtfRangeScoreTopUpRequiredError({
+          requiredSats: afterTopUp.requiredSats,
+          balanceSats: afterTopUp.balanceSats,
+        });
+      }
+    },
     isDefinitiveOrderRejection: (error) =>
       error instanceof EngineClientError && isDefinitiveOrderSubmissionError(error),
   });

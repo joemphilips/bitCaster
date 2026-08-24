@@ -959,8 +959,8 @@ test('daemon dispatch persists wallet and order state', async (t) => {
             getParticipationScore: async () => {
               scoreReads += 1
               return scoreReads === 1 || scoreReads === 2 || scoreReads === 3
-                ? scoreResponse({ balance: -1, matchDebitScore: 1 })
-                : scoreResponse({ balance: 1, purchasedTotal: 2, matchDebitScore: 1 })
+                ? scoreResponse({ balance: -1 })
+                : scoreResponse({ balance: 1, purchasedTotal: 2 })
             },
             getDurableRecipientDeliveryStatus: async () => null,
             submitDurableRecipientDelivery: async (submission) => {
@@ -985,7 +985,7 @@ test('daemon dispatch persists wallet and order state', async (t) => {
 
         await assert.rejects(
           () => dispatch(command, dispatchDeps),
-          /Participation Score credit is not available for this order/,
+          /Participation Score credit is not available for this capability/,
         )
         const response = await dispatch(command, dispatchDeps)
 
@@ -1624,17 +1624,24 @@ test('daemon dispatch persists wallet and order state', async (t) => {
     )
 
     await t.test(
-      'order.submit checks combined order and Score backing before spending either',
+      'order.submit checks regular sat Score backing before Score payment or capability admission',
       async () => {
         const priorState = await readState()
         const state = emptyDaemonState()
         state.wallet.proofs.push(
           proofRecord(
             'https://mint-a.example',
-            6,
+            4_200,
+            'available',
+            { kind: 'sats', baseAsset: 'sat', unit: 'msat' },
+            'order-backing-proof',
+          ),
+          proofRecord(
+            'https://mint-a.example',
+            1,
             'available',
             { kind: 'sats', baseAsset: 'sat', unit: 'sat' },
-            'joint-backing-proof',
+            'score-backing-proof',
           ),
         )
         await writeState(state)
@@ -1661,8 +1668,7 @@ test('daemon dispatch persists wallet and order state', async (t) => {
                   baseAsset: 'sat',
                   divisibility: 10_000,
                 }),
-                getParticipationScore: async () =>
-                  scoreResponse({ balance: -1, matchDebitScore: 1 }),
+                getParticipationScore: async () => scoreResponse({ balance: -1 }),
                 payParticipationScoreEcash: async () => {
                   scorePayments += 1
                   throw new Error('Score payment must not start')
@@ -1675,10 +1681,13 @@ test('daemon dispatch persists wallet and order state', async (t) => {
           )
 
           assert.equal(response.ok, false)
-          assert.match(response.error, /insufficient combined backing/)
+          assert.match(response.error, /insufficient Participation Score backing/)
           assert.equal(scorePayments, 0)
-          assert.equal(preparations, 0)
-          assert.equal((await readState())?.wallet.proofs[0]?.proof.secret, 'joint-backing-proof')
+          assert.equal(preparations, 1)
+          assert.deepEqual(
+            (await readState())?.wallet.proofs.map((record) => record.proof.secret).sort(),
+            ['order-backing-proof', 'score-backing-proof'],
+          )
         } finally {
           if (priorState) await writeState(priorState)
         }
@@ -2069,7 +2078,7 @@ test('daemon dispatch persists wallet and order state', async (t) => {
               side: 'Sell',
               price: 4_200,
               amountSubunits: 10_000,
-            timeInForce: 'FAK',
+              timeInForce: 'FAK',
             },
           },
           {
@@ -2264,8 +2273,13 @@ function prepareSettlementCapability(
   onPrepare?: (input: PrepareSettlementCapabilityInput) => void,
   onRejected?: () => void,
 ) {
-  return async (input: PrepareSettlementCapabilityInput) => {
+  return async (
+    input: PrepareSettlementCapabilityInput,
+    _client: EngineClientLike,
+    beforeCreateCapability?: (requiredScore: number) => Promise<void>,
+  ) => {
     onPrepare?.(input)
+    await beforeCreateCapability?.(1)
     return {
       operationId: `range:${input.clientOrderId}`,
       markSubmitted: async () => undefined,
@@ -2405,8 +2419,6 @@ function scoreResponse(
     balance: 0,
     purchasedTotal: 0,
     consumedTotal: 0,
-    penaltyTotal: 0,
-    matchDebitScore: 1,
     enabled: true,
     ...overrides,
   }

@@ -87,6 +87,42 @@ export async function readDaemonTokenHoldings(
   })
 }
 
+export async function readDaemonAvailableRegularSatBalance(
+  directory: string,
+  input: { mintUrl: string },
+): Promise<number> {
+  return createDaemonStateSqliteSession(directory).read((database) => {
+    const scopeRows = database
+      .prepare(
+        `SELECT scope_id AS scopeId
+         FROM custody_scopes
+         WHERE scope_kind = 'wallet'
+         LIMIT 2`,
+      )
+      .all() as Array<{ scopeId: unknown }>
+    if (scopeRows.length !== 1 || typeof scopeRows[0]?.scopeId !== 'string') {
+      throw new Error('daemon Score balance requires exactly one custody scope')
+    }
+    const row = database
+      .prepare(
+        `SELECT COALESCE(SUM(amount), 0) AS totalAmount
+         FROM target_wallet_proofs INDEXED BY target_wallet_proofs_selection_idx
+         WHERE scope_id = ?
+           AND normalized_mint = ?
+           AND unit = 'sat'
+           AND asset_kind = 'sats'
+           AND condition_id IS NULL
+           AND outcome_set_id IS NULL
+           AND state = 'available'`,
+      )
+      .get(scopeRows[0].scopeId, input.mintUrl) as { totalAmount: unknown }
+    if (!Number.isSafeInteger(row.totalAmount) || Number(row.totalAmount) < 0) {
+      throw new Error('daemon Score balance aggregate is invalid')
+    }
+    return Number(row.totalAmount)
+  })
+}
+
 function holdingsFromRows(rows: readonly HoldingsRow[]): TokenHoldings {
   const primitiveByAtom = new Map<string, number>()
   let baseUnitProofs = 0
