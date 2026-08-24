@@ -32,6 +32,7 @@ const mocks = vi.hoisted(() => ({
   recoverClientOrder: vi.fn(),
   recoverFundedAsset: vi.fn(),
   recordMessage: vi.fn(),
+  ensureParticipationScoreForNextMatch: vi.fn(),
   database: {},
   wallet: {},
 }));
@@ -73,6 +74,10 @@ vi.mock("@/stores/wallet", () => ({
 
 vi.mock("../markets", () => ({
   createAuthenticatedBrowserEngineClient: () => mocks.engine,
+}));
+
+vi.mock("../participationScorePayment", () => ({
+  ensureParticipationScoreForNextMatch: mocks.ensureParticipationScoreForNextMatch,
 }));
 
 vi.mock("../browserCtfRangeOrderCoordinator", () => ({
@@ -156,6 +161,7 @@ describe("submitBrowserCtfRangeOrder", () => {
     mocks.recoverPage.mockReset();
     mocks.recoverClientOrder.mockReset();
     mocks.recordMessage.mockResolvedValue(undefined);
+    mocks.ensureParticipationScoreForNextMatch.mockReset();
     mocks.recoverFundedAsset.mockImplementation(async ({ loadPlan }) => ({
       kind: "ready",
       plan: await loadPlan(),
@@ -305,6 +311,79 @@ describe("submitBrowserCtfRangeOrder", () => {
         asset: { kind: "regular" },
       }),
     );
+  });
+
+  it("awaits Score top-up before rerunning the exact required tariff", async () => {
+    const score = { purchasedTotal: 0, balance: -3, enabled: true };
+    mocks.ensureParticipationScoreForNextMatch
+      .mockResolvedValueOnce({
+        kind: "needs-regular-top-up",
+        score,
+        requiredSats: 3,
+        balanceSats: 0,
+        deficitSats: 3,
+      })
+      .mockResolvedValueOnce({ kind: "sufficient", score: { ...score, balance: 3 } });
+    let releaseTopUp!: () => void;
+    const onScoreTopUpRequired = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          releaseTopUp = resolve;
+        }),
+    );
+
+    await submitBrowserCtfRangeOrder({
+      market: market(),
+      ticket: {
+        marketId: "condition-1-YES",
+        request: {
+          outcomeId: "YES",
+          tokenSide: "Outcome",
+          side: "Buy",
+          price: 4_000,
+          amountSubunits: 10_000,
+          timeInForce: "FAK",
+        },
+      },
+      clientOrderId: "client-score-top-up",
+      mintUrl: "https://mint.example",
+      mnemonic:
+        "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+      expectedConsolidationFeeSubunits: 0,
+      onScoreTopUpRequired,
+    });
+
+    const beforeCreateCapability = (
+      mocks.coordinatorInput as {
+        beforeCreateCapability: (input: {
+          mintUrl: string;
+          requiredScore: number;
+        }) => Promise<void>;
+      }
+    ).beforeCreateCapability;
+    const continuation = beforeCreateCapability({
+      mintUrl: "https://mint.example",
+      requiredScore: 7,
+    });
+    await Promise.resolve();
+    expect(onScoreTopUpRequired).toHaveBeenCalledWith({ requiredSats: 3, balanceSats: 0 });
+    expect(mocks.ensureParticipationScoreForNextMatch).toHaveBeenNthCalledWith(1, {
+      mintUrl: "https://mint.example",
+      requiredScore: 7,
+    });
+    let completed = false;
+    void continuation.then(() => {
+      completed = true;
+    });
+    await Promise.resolve();
+    expect(completed).toBe(false);
+
+    releaseTopUp();
+    await continuation;
+    expect(mocks.ensureParticipationScoreForNextMatch).toHaveBeenNthCalledWith(2, {
+      mintUrl: "https://mint.example",
+      requiredScore: 7,
+    });
   });
 
   it.each(["Outcome", "Complement"] as const)(

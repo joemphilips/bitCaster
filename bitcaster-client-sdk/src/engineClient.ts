@@ -285,7 +285,6 @@ export type BatchSubmitOrderErrorCode =
   | 'capabilityNotCurrent'
   | 'routeMismatch'
   | 'authorityUnavailable'
-  | 'participationScoreRequired'
   | 'marketClosed'
   | 'bookRejected'
 
@@ -426,8 +425,6 @@ export interface ParticipationScoreResponse {
   balance: number
   purchasedTotal: number
   consumedTotal: number
-  penaltyTotal: number
-  matchDebitScore: number
   enabled: boolean
 }
 

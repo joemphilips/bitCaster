@@ -36,6 +36,7 @@ import {
   type SettlementCapabilityResponse,
 } from './engineClient.ts'
 import type { MarketDivisibility } from './marketUnits.ts'
+import type { SettlementCapabilityScoreWorkFacts } from './participationScore.ts'
 
 const RANGE_REFUND_SAFETY_MARGIN_SECONDS = 300
 const COORDINATOR_PUBLIC_KEY_PATTERN = /^[0-9a-f]{64}$/
@@ -338,6 +339,18 @@ export function createCtfRangeSettlementCapabilityRequest(
       expiresAt: request.expiresAt,
     },
     artifact: bytesToBase64(encodeSettlementCapabilityArtifact(artifact)),
+  }
+}
+
+export function settlementCapabilityV1WorkFacts(
+  operation: DurableCtfRangeOperation,
+): SettlementCapabilityScoreWorkFacts {
+  const artifact = createPoolSettlementCapabilityArtifact(operation)
+  const canonicalBytes = encodeSettlementCapabilityArtifact(artifact)
+  return {
+    inputCount: artifact.inputs.length,
+    manifestCount: artifact.manifest.entries.length,
+    artifactByteCount: canonicalBytes.byteLength,
   }
 }
 

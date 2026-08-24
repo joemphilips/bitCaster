@@ -340,8 +340,6 @@ test('BitcasterEngineClient.getParticipationScore reads authenticated Score stat
           balance: -1,
           purchasedTotal: 3,
           consumedTotal: 4,
-          penaltyTotal: 0,
-          matchDebitScore: 1,
           enabled: true,
         }),
         {

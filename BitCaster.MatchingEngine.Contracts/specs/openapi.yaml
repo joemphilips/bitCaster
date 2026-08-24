@@ -582,9 +582,12 @@ paths:
       security:
         - nip98: []
       description: >
-        Returns the caller's non-withdrawable participation Score balance and
-        current match-debit policy. Score is a sat-denominated engine-use fee
-        balance, separate from market collateral units.
+        Returns the caller's non-withdrawable Participation Score balance and
+        ledger totals. Score is a sat-denominated engine-use credit, separate
+        from market collateral units. The server applies the immutable
+        capability-admission tariff from verified capability work facts. The
+        tariff is not a per-order, per-fill, or settlement-failure fee and is
+        not returned by this endpoint.
       responses:
         '200':
           description: Participation Score state for the authenticated pubkey
@@ -2981,7 +2984,6 @@ components:
         - capabilityNotCurrent
         - routeMismatch
         - authorityUnavailable
-        - participationScoreRequired
         - marketClosed
         - bookRejected
       description: >
@@ -3555,7 +3557,6 @@ components:
         - balance
         - purchasedTotal
         - consumedTotal
-        - matchDebitScore
         - enabled
       properties:
         pubkey:
@@ -3565,7 +3566,7 @@ components:
         balance:
           type: integer
           format: int64
-          description: Current Participation Score balance. May be negative after a durable fill debit.
+          description: Current Participation Score balance. It may be negative after a capability-admission charge.
         purchasedTotal:
           type: integer
           format: int64
@@ -3575,15 +3576,10 @@ components:
           type: integer
           format: int64
           minimum: 0
-          description: Total Score consumed by durable fill debits.
-        matchDebitScore:
-          type: integer
-          format: int64
-          minimum: 1
-          description: Configured Score debit charged to each non-exempt participant when a fill is durably reserved. The approved operator service is exempt.
+          description: Total Score consumed by capability-admission and invalid-validation charges.
         enabled:
           type: boolean
-          description: Whether durable fill Score debit is enabled by the engine.
+          description: Whether Participation Score purchase and payment is enabled by the engine.
 
     PayParticipationScoreEcashRequest:
       type: object

@@ -29,6 +29,7 @@ import {
   decodePersistedCtfRangeOrderPreparationBytes,
   encodePersistedCtfRangeOrderPreparation,
   planPersistedCtfRangeOrderAuthorization,
+  settlementCapabilityV1WorkFacts,
   validateAndProjectCtfRangeSettlementCapabilityResponse,
   type CtfRangeOrderRequest,
 } from '../src/ctfRangeOrderProtocol.ts'
@@ -398,9 +399,9 @@ test('builds one capability request and validates its exact engine projection', 
   const request = preparation.request
   const operation = completedOperation(preparation)
   const capabilityRequest = createCtfRangeSettlementCapabilityRequest(preparation, operation)
-  const artifactDigest = deriveSettlementCapabilityArtifactDigest(
-    createPoolSettlementCapabilityArtifact(operation),
-  )
+  const artifact = createPoolSettlementCapabilityArtifact(operation)
+  const artifactDigest = deriveSettlementCapabilityArtifactDigest(artifact)
+  const workFacts = settlementCapabilityV1WorkFacts(operation)
   const capability = {
     reference: {
       artifactId: '11111111-1111-4111-8111-111111111111',
@@ -422,6 +423,11 @@ test('builds one capability request and validates its exact engine projection', 
     Buffer.from(capabilityRequest.artifact, 'base64').toString('base64'),
     capabilityRequest.artifact,
   )
+  assert.deepEqual(workFacts, {
+    inputCount: artifact.inputs.length,
+    manifestCount: artifact.manifest.entries.length,
+    artifactByteCount: Buffer.from(capabilityRequest.artifact, 'base64').byteLength,
+  })
   assert.deepEqual(
     validateAndProjectCtfRangeSettlementCapabilityResponse({
       capability,

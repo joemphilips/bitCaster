@@ -40,6 +40,7 @@ export type ParticipationScorePreflightResult =
 export async function ensureParticipationScoreForNextMatch(input: {
   mintUrl: string;
   paymentId?: string;
+  requiredScore: number;
 }): Promise<ParticipationScorePreflightResult> {
   if (!input.mintUrl) {
     throw new Error("Select an active mint before paying engine Score.");
@@ -83,7 +84,7 @@ export async function ensureParticipationScoreForNextMatch(input: {
       context,
     });
   }
-  const plan = planParticipationScoreTopUp(score);
+  const plan = planParticipationScoreTopUp(score, input.requiredScore);
   if (plan.kind === "disabled") return { kind: "disabled", score };
   if (plan.kind === "sufficient") return { kind: "sufficient", score };
   const candidatePaymentId = input.paymentId ?? crypto.randomUUID();

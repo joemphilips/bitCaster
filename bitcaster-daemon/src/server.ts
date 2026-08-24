@@ -86,7 +86,7 @@ import {
   resolveMintKeysByKeyset,
   type WalletOpsDependencies,
 } from './walletOps.ts'
-import { readDaemonTokenHoldings } from './walletHoldings.ts'
+import { readDaemonAvailableRegularSatBalance, readDaemonTokenHoldings } from './walletHoldings.ts'
 import { readDaemonWalletBalance } from './walletBalance.ts'
 import type { CustodyScopeFence } from './profileFencing.ts'
 import {
@@ -172,9 +172,12 @@ export interface PreparedSettlementCapability {
   }
 }
 
+export type BeforeCreateSettlementCapability = (requiredScore: number) => Promise<void>
+
 export type PrepareSettlementCapability = (
   input: PrepareSettlementCapabilityInput,
   client: EngineClientLike,
+  beforeCreateCapability?: BeforeCreateSettlementCapability,
 ) => Promise<PreparedSettlementCapability>
 
 type DaemonParticipationScorePreflightResult =
@@ -186,6 +189,13 @@ type DaemonParticipationScorePreflightResult =
       deliveryState: 'credited'
       operationId: string
     }
+
+class InsufficientParticipationScoreBackingError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'InsufficientParticipationScoreBackingError'
+  }
+}
 
 export interface DispatchDependencies extends WalletOpsDependencies {
   createEngineClient?: (options: { baseUrl: string; nostrSecretKeyHex: string }) => EngineClientLike
@@ -826,44 +836,21 @@ export async function dispatch(
         conditionId,
         baseAsset: marketUnit.baseAsset,
       })
-      const participationScoreSnapshot = await context.client.getParticipationScore()
-      const participationScorePlan = planParticipationScoreTopUp(participationScoreSnapshot)
-      const backingError =
-        orderBackingError({
-          side: orderParams.side,
-          price: orderParams.price,
-          amountSubunits,
-          divisibility: marketUnit.divisibility,
-          holdings,
-        }) ??
-        participationScoreBackingError({
-          side: orderParams.side,
-          price: orderParams.price,
-          amountSubunits,
-          divisibility: marketUnit.divisibility,
-          holdings,
-          plan: participationScorePlan,
-        })
+      const backingError = orderBackingError({
+        side: orderParams.side,
+        price: orderParams.price,
+        amountSubunits,
+        divisibility: marketUnit.divisibility,
+        holdings,
+      })
       if (backingError) {
         return { ok: false, error: backingError }
       }
       const clientOrderId = randomUUID()
-      let participationScore: DaemonParticipationScorePreflightResult
-      try {
-        participationScore = await ensureDaemonParticipationScoreForNextMatch({
-          client: context.client,
-          profile: context.profile,
-          secrets: context.secrets,
-          deps,
-          score: participationScoreSnapshot,
-          plan: participationScorePlan,
-        })
-      } catch (err) {
-        throw err
-      }
       if (!deps.prepareSettlementCapability) {
         return { ok: false, error: 'daemon settlement capability coordinator is unavailable' }
       }
+      let participationScore: DaemonParticipationScorePreflightResult | undefined
       let prepared: PreparedSettlementCapability
       try {
         prepared = await deps.prepareSettlementCapability(
@@ -887,12 +874,41 @@ export async function dispatch(
             walletSeedHex: context.secrets.walletSeedHex,
           },
           context.client,
+          async (requiredScore) => {
+            const participationScoreSnapshot = await context.client.getParticipationScore()
+            const participationScorePlan = planParticipationScoreTopUp(
+              participationScoreSnapshot,
+              requiredScore,
+            )
+            const availableScoreSats = await readDaemonAvailableRegularSatBalance(profileDir(), {
+              mintUrl: context.profile.mintUrl,
+            })
+            const participationScoreError = participationScoreBackingError({
+              availableScoreSats,
+              plan: participationScorePlan,
+            })
+            if (participationScoreError) {
+              throw new InsufficientParticipationScoreBackingError(participationScoreError)
+            }
+            participationScore = await ensureDaemonParticipationScoreForNextMatch({
+              client: context.client,
+              profile: context.profile,
+              secrets: context.secrets,
+              deps,
+              score: participationScoreSnapshot,
+              plan: participationScorePlan,
+              requiredScore,
+            })
+          },
         )
         assertPreparedSettlementCapability(prepared, {
           clientOrderId,
           marketId: orderParams.marketId,
         })
       } catch (err) {
+        if (err instanceof InsufficientParticipationScoreBackingError) {
+          return { ok: false, error: err.message }
+        }
         if (err instanceof EngineClientError) {
           return {
             ok: false,
@@ -901,6 +917,9 @@ export async function dispatch(
           }
         }
         throw err
+      }
+      if (participationScore === undefined) {
+        throw new Error('daemon settlement capability coordinator skipped Score admission')
       }
       let submitted: SubmitOrderResponse
       try {
@@ -1074,8 +1093,9 @@ async function ensureDaemonParticipationScoreForNextMatch(input: {
   deps: DispatchDependencies
   score: ParticipationScoreResponse
   plan: ParticipationScoreTopUpPlan
+  requiredScore: number
 }): Promise<DaemonParticipationScorePreflightResult> {
-  const { score, plan } = input
+  const { score, plan, requiredScore } = input
   if (plan.kind === 'disabled') return { kind: 'disabled', score }
   if (plan.kind === 'sufficient') return { kind: 'sufficient', score }
 
@@ -1109,9 +1129,9 @@ async function ensureDaemonParticipationScoreForNextMatch(input: {
     }
     let refreshedScore = await input.client.getParticipationScore()
     if (refreshedScore.purchasedTotal <= score.purchasedTotal) {
-      throw new Error('Participation Score credit is not available for this order')
+      throw new Error('Participation Score credit is not available for this capability')
     }
-    let refreshedPlan = planParticipationScoreTopUp(refreshedScore)
+    let refreshedPlan = planParticipationScoreTopUp(refreshedScore, requiredScore)
     if (refreshedPlan.kind === 'needs-top-up') {
       const purchasedBeforeSecondDelivery = refreshedScore.purchasedTotal
       delivery = await deliver(
@@ -1124,12 +1144,12 @@ async function ensureDaemonParticipationScoreForNextMatch(input: {
       }
       refreshedScore = await input.client.getParticipationScore()
       if (refreshedScore.purchasedTotal <= purchasedBeforeSecondDelivery) {
-        throw new Error('Participation Score credit is not available for this order')
+        throw new Error('Participation Score credit is not available for this capability')
       }
-      refreshedPlan = planParticipationScoreTopUp(refreshedScore)
+      refreshedPlan = planParticipationScoreTopUp(refreshedScore, requiredScore)
     }
     if (refreshedPlan.kind === 'needs-top-up') {
-      throw new Error('Participation Score credit is not available for this order')
+      throw new Error('Participation Score credit is not available for this capability')
     }
     return {
       kind: 'paid',
@@ -1402,22 +1422,15 @@ export function orderBackingError(input: {
 }
 
 function participationScoreBackingError(input: {
-  side: 'Buy' | 'Sell'
-  price: number
-  amountSubunits: number
-  divisibility: number
-  holdings: TokenHoldings
+  availableScoreSats: number
   plan: ParticipationScoreTopUpPlan
 }): string | null {
   if (input.plan.kind !== 'needs-top-up') return null
-  const scoreSubunits = input.plan.deficitScore * 1_000
-  const orderSubunits = input.side === 'Buy' ? requiredBuyCollateral(input) : 0
-  const required = scoreSubunits + orderSubunits
-  if (!Number.isSafeInteger(required)) {
-    throw new Error('combined order and Participation Score backing exceeds safe range')
+  if (!Number.isSafeInteger(input.availableScoreSats) || input.availableScoreSats < 0) {
+    throw new Error('Participation Score backing exceeds safe range')
   }
-  if (input.holdings.baseUnitProofs >= required) return null
-  return `insufficient combined backing: have ${input.holdings.baseUnitProofs} base subunits, need ${required} for the order and Participation Score`
+  if (input.availableScoreSats >= input.plan.deficitScore) return null
+  return `insufficient Participation Score backing: have ${input.availableScoreSats} sat, need ${input.plan.deficitScore} sat`
 }
 
 function requiredBuyCollateral(input: {

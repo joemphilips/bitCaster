@@ -56,6 +56,7 @@ import {
   createCtfRangeOrderPreparationKeysetResolver,
   createCtfRangeSettlementCapabilityRequest,
   ctfRangeOrderPreparationKeysetLookup,
+  settlementCapabilityV1WorkFacts,
   decodeCtfRangeOrderPreparationFromRecord as decodePreparationFromJournal,
   decodeSettlementCoordinatorPublicKey as requireCoordinatorKey,
   encodePersistedCtfRangeOrderPreparation as encodeCanonicalRangePreparation,
@@ -63,6 +64,7 @@ import {
   validateAndProjectCtfRangeSettlementCapabilityResponse,
   type PersistedCtfRangeOrderPreparation,
 } from '@bitcaster-market/client-sdk/ctfRangeOrderProtocol'
+import { calculateSettlementCapabilityV1Tariff } from '@bitcaster-market/client-sdk/participationScore'
 import {
   loadCtfRangeMintKeys as loadMintKeys,
   loadCtfRangeMintMetadata,
@@ -142,6 +144,7 @@ import {
   serializeOutputDataArray,
 } from './walletOps.ts'
 import type {
+  BeforeCreateSettlementCapability,
   EngineClientLike,
   PreparedSettlementCapability,
   PrepareSettlementCapabilityInput,
@@ -267,6 +270,7 @@ export class DaemonCtfRangeOrderCoordinator {
   async prepare(
     request: PrepareSettlementCapabilityInput,
     client: EngineClientLike,
+    beforeCreateCapability?: BeforeCreateSettlementCapability,
   ): Promise<PreparedSettlementCapability> {
     const authority = await this.#prepareMintAuthority(request, client)
     const source = await this.#prepareWalletSource(authority, request.walletSeedHex)
@@ -293,7 +297,6 @@ export class DaemonCtfRangeOrderCoordinator {
       proofStateClient: authority.mint,
       observedAtMs: nowMs,
     })
-    await this.#markCapabilityRequested(operation.operationId)
     const exactCapabilityRequest = await this.#exactCapabilityRequest(
       request.walletSeedHex,
       operation.operationId,
@@ -303,6 +306,10 @@ export class DaemonCtfRangeOrderCoordinator {
     if (createCapability === undefined) {
       throw new Error('engine client does not support settlement capability creation')
     }
+    await beforeCreateCapability?.(
+      calculateSettlementCapabilityV1Tariff(settlementCapabilityV1WorkFacts(operation)),
+    )
+    await this.#markCapabilityRequested(operation.operationId)
     const capability = await createCapability.call(client, exactCapabilityRequest)
     const projectedCapability = validateAndProjectCtfRangeSettlementCapabilityResponse({
       capability,
@@ -418,10 +425,7 @@ export class DaemonCtfRangeOrderCoordinator {
       expiryObservation: authority.observation,
       allowInsecureLoopbackHttp: this.#dependencies.allowInsecureLoopbackHttp === true,
     })
-    const capabilityRequest = createCtfRangeSettlementCapabilityRequest(
-      preparationInput,
-      operation,
-    )
+    const capabilityRequest = createCtfRangeSettlementCapabilityRequest(preparationInput, operation)
     const binding = await createRangeBinding(
       walletSeedHex,
       operation,
@@ -866,10 +870,7 @@ export class DaemonCtfRangeOrderCoordinator {
           loaded.operation,
           recovered,
         )
-        await this.#completeSubmittedLifecycle(
-          input,
-          status,
-        )
+        await this.#completeSubmittedLifecycle(input, status)
         return
       }
       const response = await this.#getEngineResult(client, input.operationId)
@@ -913,10 +914,7 @@ export class DaemonCtfRangeOrderCoordinator {
         loaded.operation,
         decision.result,
       )
-      await this.#completeSubmittedLifecycle(
-        input,
-        persistedStatus,
-      )
+      await this.#completeSubmittedLifecycle(input, persistedStatus)
       return
     }
     const response = await this.#getEngineResult(client, input.operationId)
@@ -979,10 +977,7 @@ export class DaemonCtfRangeOrderCoordinator {
           loaded.operation,
           decision.result,
         )
-        await this.#completeSubmittedLifecycle(
-          input,
-          status,
-        )
+        await this.#completeSubmittedLifecycle(input, status)
         return
       }
       case 'waiting':
@@ -1446,11 +1441,7 @@ async function loadMintMetadata(
 function persistedOrderRequest(
   input: PrepareSettlementCapabilityInput,
 ): PersistedPreparationInput['request'] {
-  const {
-    walletSeedHex: _,
-    consolidateProofs: ___,
-    ...request
-  } = input
+  const { walletSeedHex: _, consolidateProofs: ___, ...request } = input
   return structuredClone(request) as PersistedPreparationInput['request']
 }
 

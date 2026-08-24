@@ -20,11 +20,7 @@ import {
   previewBrowserCtfRangeOrderFees,
   submitBrowserCtfRangeOrder,
 } from "@/lib/browserCtfRangeOrderSubmission";
-import type {
-  LatestConfirmedTrade,
-  MarketStatusChanged,
-  OrderBookSnapshot,
-} from "@/lib/marketHub";
+import type { LatestConfirmedTrade, MarketStatusChanged, OrderBookSnapshot } from "@/lib/marketHub";
 import type {
   CategoricalMarketDetail,
   Comment,
@@ -35,7 +31,7 @@ import type {
 const mocks = vi.hoisted(() => ({
   buildIndexedDbTokenHoldings: vi.fn(),
   getBalance: vi.fn(),
-  ensureParticipationScoreForNextMatch: vi.fn(),
+  getExactUnitBalance: vi.fn(),
   navigate: vi.fn(),
   previewBrowserCtfRangeOrderFees: vi.fn(),
   routeParams: { id: "condition-yesno" } as { id?: string },
@@ -115,57 +111,62 @@ vi.mock("@/lib/marketHub", () => ({
 vi.mock("@/lib/markets", async () => {
   const actual = await vi.importActual<typeof import("@/lib/markets")>("@/lib/markets");
   return {
-  ...actual,
-  validateLatestConfirmedTrades: actual.validateLatestConfirmedTrades,
-  deriveYesNoOdds: (trades: LatestConfirmedTrade[], allowed: readonly string[]) => {
-    const latest = [...trades].sort((a, b) => a.eventOrder.localeCompare(b.eventOrder)).at(-1);
-    if (!latest) return { yes: null, no: null };
-    const yes = allowed.find((id) => id.toLowerCase() === "yes");
-    const no = allowed.find((id) => id.toLowerCase() === "no");
-    if (!yes || !no) return { yes: null, no: null };
-    return {
-      yes: latest.primitiveOutcomeId === yes ? latest.priceTick : latest.divisibility - latest.priceTick,
-      no: latest.primitiveOutcomeId === no ? latest.priceTick : latest.divisibility - latest.priceTick,
-    };
-  },
-  deriveCategoricalOdds: (trades: LatestConfirmedTrade[], outcomes: readonly string[]) =>
-    Object.fromEntries(outcomes.map((outcome) => [
-      outcome,
-      trades.find((trade) => trade.primitiveOutcomeId === outcome)?.priceTick ?? null,
-    ])),
-  fetchMarketDetail: vi.fn(),
-  fetchMarketComments: vi.fn().mockResolvedValue({ comments: [] }),
-  fetchMarketPriceHistory: vi.fn().mockResolvedValue({ data: [], timeframe: "7d" }),
-  fetchOrderBook: vi.fn(),
-  generateNip98Header: vi.fn(),
-  getParticipationScore: vi.fn().mockResolvedValue({ enabled: false, matchDebitScore: 0 }),
-  mapSnapshotToOrderBook: (snapshot: OrderBookSnapshot) => ({
-    bids: snapshot.bids.map((level) => ({
-      price: level.price,
-      amount: level.amount,
-      total: level.amount,
-    })),
-    asks: snapshot.asks.map((level) => ({
-      price: level.price,
-      amount: level.amount,
-      total: level.amount,
-    })),
-    spread: snapshot.spread ?? 0,
-    depthLimit: snapshot.depthLimit,
-  }),
-  priceNumeratorToPercent: (price: number, divisibility = 100) => (price / divisibility) * 100,
-  signTradeComment: vi.fn(),
-  windowPriceHistory: mocks.windowPriceHistory,
+    ...actual,
+    validateLatestConfirmedTrades: actual.validateLatestConfirmedTrades,
+    deriveYesNoOdds: (trades: LatestConfirmedTrade[], allowed: readonly string[]) => {
+      const latest = [...trades].sort((a, b) => a.eventOrder.localeCompare(b.eventOrder)).at(-1);
+      if (!latest) return { yes: null, no: null };
+      const yes = allowed.find((id) => id.toLowerCase() === "yes");
+      const no = allowed.find((id) => id.toLowerCase() === "no");
+      if (!yes || !no) return { yes: null, no: null };
+      return {
+        yes:
+          latest.primitiveOutcomeId === yes
+            ? latest.priceTick
+            : latest.divisibility - latest.priceTick,
+        no:
+          latest.primitiveOutcomeId === no
+            ? latest.priceTick
+            : latest.divisibility - latest.priceTick,
+      };
+    },
+    deriveCategoricalOdds: (trades: LatestConfirmedTrade[], outcomes: readonly string[]) =>
+      Object.fromEntries(
+        outcomes.map((outcome) => [
+          outcome,
+          trades.find((trade) => trade.primitiveOutcomeId === outcome)?.priceTick ?? null,
+        ]),
+      ),
+    fetchMarketDetail: vi.fn(),
+    fetchMarketComments: vi.fn().mockResolvedValue({ comments: [] }),
+    fetchMarketPriceHistory: vi.fn().mockResolvedValue({ data: [], timeframe: "7d" }),
+    fetchOrderBook: vi.fn(),
+    generateNip98Header: vi.fn(),
+    mapSnapshotToOrderBook: (snapshot: OrderBookSnapshot) => ({
+      bids: snapshot.bids.map((level) => ({
+        price: level.price,
+        amount: level.amount,
+        total: level.amount,
+      })),
+      asks: snapshot.asks.map((level) => ({
+        price: level.price,
+        amount: level.amount,
+        total: level.amount,
+      })),
+      spread: snapshot.spread ?? 0,
+      depthLimit: snapshot.depthLimit,
+    }),
+    priceNumeratorToPercent: (price: number, divisibility = 100) => (price / divisibility) * 100,
+    signTradeComment: vi.fn(),
+    windowPriceHistory: mocks.windowPriceHistory,
   };
 });
 
 vi.mock("@/lib/browserCtfRangeOrderSubmission", () => ({
+  BrowserCtfRangeScoreTopUpCancelledError: class extends Error {},
+  BrowserCtfRangeScoreTopUpRequiredError: class extends Error {},
   previewBrowserCtfRangeOrderFees: mocks.previewBrowserCtfRangeOrderFees,
   submitBrowserCtfRangeOrder: vi.fn(),
-}));
-
-vi.mock("@/lib/participationScorePayment", () => ({
-  ensureParticipationScoreForNextMatch: mocks.ensureParticipationScoreForNextMatch,
 }));
 
 vi.mock("@bitcaster/client-sdk/engineClient", () => ({
@@ -186,6 +187,7 @@ vi.mock("@/stores/wallet", () => {
   useWalletStore.getState = () => mocks.walletState;
   return {
     getBalance: mocks.getBalance,
+    getExactUnitBalance: mocks.getExactUnitBalance,
     useActiveMintInputFeePpk: () => 0,
     useWalletStore,
   };
@@ -386,11 +388,7 @@ describe("MarketDetailPage live market status", () => {
     });
     mocks.buildIndexedDbTokenHoldings.mockReset();
     mocks.getBalance.mockReset();
-    mocks.ensureParticipationScoreForNextMatch.mockReset();
-    mocks.ensureParticipationScoreForNextMatch.mockResolvedValue({
-      kind: "disabled",
-      score: { enabled: false, matchDebitScore: 0 },
-    });
+    mocks.getExactUnitBalance.mockReset();
     mocks.liveStatusHandlers.length = 0;
     mocks.orderBookHandlers.clear();
     mocks.routeParams.id = "condition-yesno";
@@ -484,7 +482,8 @@ describe("MarketDetailPage live market status", () => {
     let detailRequestCount = 0;
     vi.mocked(fetchMarketDetail).mockImplementation(() => {
       detailRequestCount += 1;
-      if (detailRequestCount === 1) return Promise.resolve(yesNoMarket({ title: "Initial market" }));
+      if (detailRequestCount === 1)
+        return Promise.resolve(yesNoMarket({ title: "Initial market" }));
       if (detailRequestCount === 2) return oldRequest;
       return newestRequest;
     });
@@ -518,8 +517,9 @@ describe("MarketDetailPage live market status", () => {
       expect(screen.getByRole("heading", { name: "Newest market" })).toBeInTheDocument(),
     );
     expect(screen.queryByRole("heading", { name: "Old market" })).not.toBeInTheDocument();
-    expect(screen.queryByText("Failed to load market. Please check that the mint is running.")).not
-      .toBeInTheDocument();
+    expect(
+      screen.queryByText("Failed to load market. Please check that the mint is running."),
+    ).not.toBeInTheDocument();
     expect(screen.queryByText("Loading market...")).not.toBeInTheDocument();
   });
 
@@ -542,8 +542,9 @@ describe("MarketDetailPage live market status", () => {
 
     await waitFor(() => expect(vi.mocked(fetchMarketDetail)).toHaveBeenCalledTimes(2));
     expect(screen.getByRole("heading", { name: "Loaded market" })).toBeInTheDocument();
-    expect(screen.queryByText("Failed to load market. Please check that the mint is running.")).not
-      .toBeInTheDocument();
+    expect(
+      screen.queryByText("Failed to load market. Please check that the mint is running."),
+    ).not.toBeInTheDocument();
   });
 
   it("classifies needs_backup wallets as requiring the funded-action backup prompt", () => {
@@ -709,6 +710,95 @@ describe("MarketDetailPage live market status", () => {
         }),
       }),
     );
+  });
+
+  it("resumes the same submission after an exact Score top-up", async () => {
+    mocks.walletState.setupComplete = true;
+    mocks.walletState.activeMintUrl = "https://mint.example";
+    mocks.settingsState.nostrSignerMode = "nsec";
+    mocks.buildIndexedDbTokenHoldings.mockResolvedValue({
+      baseUnitProofs: 20_000,
+      outcomeProofsByOutcomeSetId: {},
+    });
+    mocks.getExactUnitBalance.mockResolvedValue(5);
+    const market = fundedSatYesNoMarket({ state: "open" });
+    vi.mocked(fetchMarketDetail).mockResolvedValue(market);
+    vi.mocked(fetchOrderBook).mockImplementation(async (marketId) =>
+      marketId === "condition-yesno-Yes" ? askBook(4_000) : emptyBook,
+    );
+    vi.mocked(submitBrowserCtfRangeOrder).mockImplementation(async (input) => {
+      await input.onScoreTopUpRequired?.({ requiredSats: 5, balanceSats: 0 });
+      return {
+        orderId: "order-score-1",
+        status: "filled",
+        remainingAmountSubunits: 0,
+        fills: [],
+        baseAsset: "sat",
+        divisibility: 10_000,
+        activeSettlementGroup: null,
+      };
+    });
+
+    render(<MarketDetailPage />);
+
+    await screen.findByRole("heading", { name: "Will it happen?" });
+    fireEvent.click(screen.getAllByTestId("trade-outcome-yes")[0]);
+    fireEvent.change(screen.getAllByTestId("trade-amount-input")[0], {
+      target: { value: "1" },
+    });
+    fireEvent.click(screen.getAllByTestId("trade-confirm")[0]);
+
+    await screen.findByTestId("insufficient-balance-top-up");
+    expect(submitBrowserCtfRangeOrder).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByTestId("insufficient-balance-top-up"));
+    fireEvent.click(await screen.findByTestId("top-up-success"));
+
+    await waitFor(() => expect(submitBrowserCtfRangeOrder).toHaveBeenCalledTimes(1));
+    expect(mocks.getExactUnitBalance).toHaveBeenCalledWith("https://mint.example", "sat");
+    expect(screen.queryByRole("dialog", { name: "Top Up Wallet" })).not.toBeInTheDocument();
+  });
+
+  it("cancels an in-flight Score top-up without starting another submission", async () => {
+    mocks.walletState.setupComplete = true;
+    mocks.walletState.activeMintUrl = "https://mint.example";
+    mocks.settingsState.nostrSignerMode = "nsec";
+    mocks.buildIndexedDbTokenHoldings.mockResolvedValue({
+      baseUnitProofs: 20_000,
+      outcomeProofsByOutcomeSetId: {},
+    });
+    const market = fundedSatYesNoMarket({ state: "open" });
+    vi.mocked(fetchMarketDetail).mockResolvedValue(market);
+    vi.mocked(fetchOrderBook).mockImplementation(async (marketId) =>
+      marketId === "condition-yesno-Yes" ? askBook(4_000) : emptyBook,
+    );
+    vi.mocked(submitBrowserCtfRangeOrder).mockImplementation(async (input) => {
+      await input.onScoreTopUpRequired?.({ requiredSats: 5, balanceSats: 0 });
+      return {
+        orderId: "order-score-cancelled",
+        status: "filled",
+        remainingAmountSubunits: 0,
+        fills: [],
+        baseAsset: "sat",
+        divisibility: 10_000,
+        activeSettlementGroup: null,
+      };
+    });
+
+    render(<MarketDetailPage />);
+
+    await screen.findByRole("heading", { name: "Will it happen?" });
+    fireEvent.click(screen.getAllByTestId("trade-outcome-yes")[0]);
+    fireEvent.change(screen.getAllByTestId("trade-amount-input")[0], {
+      target: { value: "1" },
+    });
+    fireEvent.click(screen.getAllByTestId("trade-confirm")[0]);
+
+    await screen.findByTestId("insufficient-balance-cancel");
+    fireEvent.click(screen.getByTestId("insufficient-balance-cancel"));
+
+    await waitFor(() => expect(submitBrowserCtfRangeOrder).toHaveBeenCalledTimes(1));
+    expect(screen.queryByTestId("insufficient-balance-cancel")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("insufficient-balance-top-up")).not.toBeInTheDocument();
   });
 
   it("does not auto-execute a sat market order when post-top-up balance is still insufficient", async () => {
@@ -1068,11 +1158,13 @@ describe("marketDetailDataReducer", () => {
       detail: {
         ...initial,
         state: "closed",
-        latestConfirmedTrades: [{
-          ...liveTrade,
-          fillId: "00000000-0000-0000-0000-000000000002",
-          eventOrder: "0000",
-        }],
+        latestConfirmedTrades: [
+          {
+            ...liveTrade,
+            fillId: "00000000-0000-0000-0000-000000000002",
+            eventOrder: "0000",
+          },
+        ],
       },
     });
 

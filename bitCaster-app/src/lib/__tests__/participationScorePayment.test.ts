@@ -54,7 +54,6 @@ const baseScore = {
   balance: 0,
   purchasedTotal: 0,
   consumedTotal: 0,
-  matchDebitScore: 1,
   enabled: true,
 };
 
@@ -93,7 +92,7 @@ describe("ensureParticipationScoreForNextMatch", () => {
   it("does not select funds when Score is disabled or sufficient", async () => {
     mocks.getParticipationScore.mockResolvedValue({ ...baseScore, enabled: false });
     await expect(
-      ensureParticipationScoreForNextMatch({ mintUrl: "https://mint.example" }),
+      ensureParticipationScoreForNextMatch({ mintUrl: "https://mint.example", requiredScore: 1 }),
     ).resolves.toMatchObject({ kind: "disabled" });
 
     mocks.getParticipationScore.mockResolvedValue({
@@ -102,7 +101,7 @@ describe("ensureParticipationScoreForNextMatch", () => {
       purchasedTotal: 1,
     });
     await expect(
-      ensureParticipationScoreForNextMatch({ mintUrl: "https://mint.example" }),
+      ensureParticipationScoreForNextMatch({ mintUrl: "https://mint.example", requiredScore: 1 }),
     ).resolves.toMatchObject({ kind: "sufficient" });
 
     expect(mocks.executeBrowserParticipationScoreDelivery).not.toHaveBeenCalled();
@@ -112,12 +111,12 @@ describe("ensureParticipationScoreForNextMatch", () => {
     mocks.getParticipationScore.mockResolvedValue({
       ...baseScore,
       balance: -1,
-      matchDebitScore: 1,
     });
 
     const result = await ensureParticipationScoreForNextMatch({
       mintUrl: "https://mint.example",
       paymentId: "3ab0f6ef-00f6-4ca3-bd69-1140528a0e83",
+      requiredScore: 4,
     });
 
     expect(result).toMatchObject({
@@ -128,13 +127,14 @@ describe("ensureParticipationScoreForNextMatch", () => {
       deliveryId: "3ab0f6ef-00f6-4ca3-bd69-1140528a0e83",
       accountSubject: "subject-1",
       mintUrl: "https://mint.example",
-      requestedAmount: "2",
+      requestedAmount: "5",
     });
   });
 
   it("claims a random canonical delivery id before the first payment", async () => {
     const result = await ensureParticipationScoreForNextMatch({
       mintUrl: "https://mint.example",
+      requiredScore: 1,
     });
 
     const claimedId = mocks.claimBrowserParticipationScoreDeliveryPointer.mock.calls[0]?.[0]
@@ -161,7 +161,7 @@ describe("ensureParticipationScoreForNextMatch", () => {
     });
 
     await expect(
-      ensureParticipationScoreForNextMatch({ mintUrl: "https://mint.example" }),
+      ensureParticipationScoreForNextMatch({ mintUrl: "https://mint.example", requiredScore: 1 }),
     ).rejects.toThrow(/pending authoritative credit/);
 
     expect(mocks.executeBrowserParticipationScoreDelivery).not.toHaveBeenCalled();
@@ -183,7 +183,7 @@ describe("ensureParticipationScoreForNextMatch", () => {
     });
 
     await expect(
-      ensureParticipationScoreForNextMatch({ mintUrl: "https://mint.example" }),
+      ensureParticipationScoreForNextMatch({ mintUrl: "https://mint.example", requiredScore: 1 }),
     ).resolves.toMatchObject({ kind: "sufficient" });
 
     expect(mocks.reconcileBrowserParticipationScoreDeliveryIfPresent).toHaveBeenCalledOnce();
@@ -206,7 +206,7 @@ describe("ensureParticipationScoreForNextMatch", () => {
     });
 
     await expect(
-      ensureParticipationScoreForNextMatch({ mintUrl: "https://mint.example" }),
+      ensureParticipationScoreForNextMatch({ mintUrl: "https://mint.example", requiredScore: 1 }),
     ).resolves.toMatchObject({ kind: "sufficient" });
 
     expect(mocks.reconcileBrowserParticipationScoreDeliveryIfPresent).toHaveBeenCalledWith(
@@ -231,10 +231,10 @@ describe("ensureParticipationScoreForNextMatch", () => {
       .mockResolvedValueOnce(undefined);
 
     await expect(
-      ensureParticipationScoreForNextMatch({ mintUrl: "https://mint.example" }),
+      ensureParticipationScoreForNextMatch({ mintUrl: "https://mint.example", requiredScore: 1 }),
     ).rejects.toThrow(/crash before clear/);
     await expect(
-      ensureParticipationScoreForNextMatch({ mintUrl: "https://mint.example" }),
+      ensureParticipationScoreForNextMatch({ mintUrl: "https://mint.example", requiredScore: 1 }),
     ).resolves.toMatchObject({ kind: "sufficient" });
 
     expect(mocks.reconcileBrowserParticipationScoreDeliveryIfPresent).toHaveBeenCalledTimes(2);
@@ -253,7 +253,10 @@ describe("ensureParticipationScoreForNextMatch", () => {
       progress: "credited",
     });
 
-    await ensureParticipationScoreForNextMatch({ mintUrl: "https://mint.example" });
+    await ensureParticipationScoreForNextMatch({
+      mintUrl: "https://mint.example",
+      requiredScore: 1,
+    });
 
     expect(mocks.executeBrowserParticipationScoreDelivery).toHaveBeenCalledOnce();
     expect(mocks.reconcileBrowserParticipationScoreDeliveryIfPresent).toHaveBeenCalledWith(

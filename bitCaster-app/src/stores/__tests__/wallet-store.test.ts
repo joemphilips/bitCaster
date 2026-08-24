@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import "fake-indexeddb/auto";
-import { createBrowserWalletCounterSource, useWalletStore } from "../wallet";
+import { createBrowserWalletCounterSource, getExactUnitBalance, useWalletStore } from "../wallet";
 import * as bip39 from "@/lib/bip39";
 import {
   activeBrowserWalletScopeId,
@@ -60,7 +60,12 @@ vi.mock("@cashu/cashu-ts", () => {
     return wallet;
   });
 
-  return { Mint: MockMint, Wallet: MockWallet, setGlobalRequestOptions: vi.fn() };
+  return {
+    Amount: { from: (value: number) => value },
+    Mint: MockMint,
+    Wallet: MockWallet,
+    setGlobalRequestOptions: vi.fn(),
+  };
 });
 
 const initialAddMint = useWalletStore.getState()._addMint;
@@ -310,6 +315,34 @@ describe("useWalletStore", () => {
       await expect(oldCounterSource.reserve(KEYSET_ID, 1)).rejects.toThrow(
         /wallet profile changed/,
       );
+    });
+  });
+
+  describe("getExactUnitBalance", () => {
+    it("reads only proofs from the requested Cashu unit", async () => {
+      const mintUrl = "http://exact-unit-balance.test";
+      await db.proofs.bulkPut([
+        {
+          secret: "exact-unit-sat",
+          amount: 7,
+          id: "sat-keyset",
+          C: "sat-C",
+          mintUrl,
+          baseAsset: "sat",
+          unit: "sat",
+        },
+        {
+          secret: "exact-unit-msat",
+          amount: 11,
+          id: "msat-keyset",
+          C: "msat-C",
+          mintUrl,
+          baseAsset: "sat",
+          unit: "msat",
+        },
+      ]);
+
+      await expect(getExactUnitBalance(mintUrl, "sat")).resolves.toBe(7);
     });
   });
 
