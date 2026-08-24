@@ -355,45 +355,30 @@ test('derives the exact authorization plan from persisted Buy and Sell preparati
   }
 })
 
-test('GTD preparation preserves the original order expiry and rejects an expired horizon', () => {
-  const expiresAt = '1970-01-01T00:05:00.000Z'
-  const persisted = buildPersistedCtfRangeOrderPreparation({
-    request: {
-      ...rangeOrderRequest(),
-      timeInForce: 'GTD',
-      expiresAt,
-    },
-    coordinatorPublicKey: COORDINATOR_PUBLIC_KEY,
-    mintFacts: reviewedMintFacts(),
-    market: {
-      outcomes: [
-        { id: 'yes-id', label: 'YES' },
-        { id: 'no-id', label: 'NO' },
-      ],
-    },
-    nowUnixSeconds: 20,
-    randomId: sequentialId('range-operation-gtd', 'authorization-gtd'),
-  })
-
-  assert.equal(persisted.request.expiresAt, expiresAt)
-  assert.equal(persisted.expiry, 300)
-  assert.throws(
-    () =>
-      buildPersistedCtfRangeOrderPreparation({
-        request: persisted.request,
-        coordinatorPublicKey: COORDINATOR_PUBLIC_KEY,
-        mintFacts: reviewedMintFacts(),
-        market: {
-          outcomes: [
-            { id: 'yes-id', label: 'YES' },
-            { id: 'no-id', label: 'NO' },
-          ],
-        },
-        nowUnixSeconds: 300,
-        randomId: sequentialId('range-operation-expired', 'authorization-expired'),
-      }),
-    /GTD order expiry horizon is exhausted/,
-  )
+test('public capability preparation rejects resting and dated orders', () => {
+  for (const timeInForce of ['GTC', 'GTD'] as const) {
+    assert.throws(
+      () =>
+        buildPersistedCtfRangeOrderPreparation({
+          request: {
+            ...rangeOrderRequest(),
+            timeInForce,
+            expiresAt: timeInForce === 'GTD' ? '2030-01-01T00:05:00.000Z' : null,
+          },
+          coordinatorPublicKey: COORDINATOR_PUBLIC_KEY,
+          mintFacts: reviewedMintFacts(),
+          market: {
+            outcomes: [
+              { id: 'yes-id', label: 'YES' },
+              { id: 'no-id', label: 'NO' },
+            ],
+          },
+          nowUnixSeconds: 20,
+          randomId: sequentialId(`range-operation-${timeInForce}`, `authorization-${timeInForce}`),
+        }),
+      /time in force/,
+    )
+  }
 })
 
 test('builds one capability request and validates its exact engine projection', () => {
@@ -433,25 +418,6 @@ test('builds one capability request and validates its exact engine projection', 
   }
 
   assert.equal(capabilityRequest.stageIdempotencyKey, operation.authorizationId)
-  assert.equal(capabilityRequest.continuation, null)
-  const continuation = {
-    predecessorOrderId: '11111111-1111-4111-8111-111111111111',
-    settlementGroupId: '22222222-2222-4222-8222-222222222222',
-    settlementGroupRevision: 3,
-    continuationRevision: 4,
-  }
-  assert.deepEqual(
-    createCtfRangeSettlementCapabilityRequest(preparation, operation, continuation).continuation,
-    continuation,
-  )
-  assert.throws(
-    () =>
-      createCtfRangeSettlementCapabilityRequest(preparation, operation, {
-        ...continuation,
-        continuationRevision: 0,
-      }),
-    /continuation revision is invalid/,
-  )
   assert.equal(
     Buffer.from(capabilityRequest.artifact, 'base64').toString('base64'),
     capabilityRequest.artifact,
@@ -932,7 +898,7 @@ function rangeOrderRequest(): CtfRangeOrderRequest {
     baseAsset: 'sat',
     collateralUnit: 'msat',
     divisibility: 10_000,
-    timeInForce: 'GTC',
+    timeInForce: 'FAK',
     expiresAt: null,
     mintUrl: MINT_URL,
   }
@@ -1026,8 +992,6 @@ function preparationRecord(
     scopeId: `custody:wallet:${'11'.repeat(32)}`,
     rangeOperationId: persisted.operationId,
     sourceOperationId: persisted.sourceOperationId,
-    sourceKind: persisted.sourceKind,
-    predecessorRangeOperationId: persisted.predecessorRangeOperationId,
     authorizationId: persisted.authorizationId,
     clientOrderId: persisted.request.clientOrderId,
     orderRouteId: persisted.request.marketId,
@@ -1039,8 +1003,6 @@ function preparationRecord(
     priceSubunits: persisted.priceNumerator,
     amountSubunits: persisted.amountSubunits,
     minimumFillAmountSubunits: persisted.request.minimumFillAmountSubunits,
-    continueAfterPartialFill: false,
-    continuation: null,
     divisibility: persisted.divisibility,
     authorizationExpiresAtUnixSeconds: persisted.expiry,
     preparationBytes,

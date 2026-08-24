@@ -684,15 +684,15 @@ function registerOrderCommand(program: Command): void {
       parseIntegerOption('minimum fill subunits'),
     )
     .option(
-      '--continue-after-partial-fill',
-      'Create a fresh successor order after a confirmed partial resting-order fill',
-    )
-    .option(
       '--consolidate-proofs',
       'Allow bounded proof consolidation before this order (default: off)',
     )
-    .option('--tif <tif>', 'Time in force: GTC, GTD, FAK, or FOK', parseTimeInForce, 'GTC')
-    .option('--expires-at <time>', 'Required ISO 8601 UTC expiry for GTD', parseIsoDateTime)
+    .option(
+      '--tif <tif>',
+      'Time in force: FAK (partial or zero fill cancels the remainder) or FOK (complete fill or cancel)',
+      parseTimeInForce,
+      'FAK',
+    )
     .option('--token-side <side>', 'Token side: Outcome or Complement', parseTokenSide)
     .option('--no-preflight-split', 'Disable preflight complete-set split')
     .option(
@@ -763,9 +763,8 @@ interface OrderSubmitOptions {
   price?: number
   amount?: number
   minFill?: number
-  continueAfterPartialFill?: boolean
   consolidateProofs?: boolean
-  tif: 'FAK' | 'FOK' | 'GTC' | 'GTD'
+  tif: 'FAK' | 'FOK'
   expiresAt?: string
   tokenSide?: 'Outcome' | 'Complement'
   preflightSplit: boolean
@@ -780,9 +779,8 @@ interface OrderSubmitParams {
   price: number
   amountSubunits: number
   minimumFillAmountSubunits?: number
-  continueAfterPartialFill: boolean
   consolidateProofs: boolean
-  timeInForce: 'FAK' | 'FOK' | 'GTC' | 'GTD'
+  timeInForce: 'FAK' | 'FOK'
   expiresAt: string | null
   preflightSplit: boolean
 }
@@ -793,11 +791,8 @@ function orderSubmitParams(options: OrderSubmitOptions, positionals: string[]): 
   }
 
   const minimumFillAmountSubunits = options.minFill
-  if (options.tif === 'GTD' && options.expiresAt === undefined) {
-    throwUsage('Missing expires-at for GTD order')
-  }
-  if (options.tif !== 'GTD' && options.expiresAt !== undefined) {
-    throwUsage('expires-at is valid only for GTD order')
+  if (options.expiresAt !== undefined) {
+    throwUsage('expires-at is not available for public FAK/FOK orders')
   }
   return {
     marketId: requiredArg(options.market, 'market'),
@@ -807,7 +802,6 @@ function orderSubmitParams(options: OrderSubmitOptions, positionals: string[]): 
     price: requiredParsedOption(options.price, 'price'),
     amountSubunits: requiredParsedOption(options.amount, 'amount subunits'),
     ...(minimumFillAmountSubunits === undefined ? {} : { minimumFillAmountSubunits }),
-    continueAfterPartialFill: options.continueAfterPartialFill === true,
     consolidateProofs: options.consolidateProofs === true,
     timeInForce: options.tif,
     expiresAt: options.expiresAt ?? null,
@@ -1305,16 +1299,10 @@ function parseTokenSide(value: string): 'Outcome' | 'Complement' {
   throwUsage(`Invalid token side: ${value}`)
 }
 
-function parseTimeInForce(value: string): 'FAK' | 'FOK' | 'GTC' | 'GTD' {
+function parseTimeInForce(value: string): 'FAK' | 'FOK' {
   const upper = value.toUpperCase()
-  if (upper === 'FAK' || upper === 'FOK' || upper === 'GTC' || upper === 'GTD') return upper
+  if (upper === 'FAK' || upper === 'FOK') return upper
   throwUsage(`Invalid time in force: ${value}`)
-}
-
-function parseIsoDateTime(value: string): string {
-  const time = Date.parse(value)
-  if (!Number.isFinite(time)) throwUsage(`Invalid ISO 8601 time: ${value}`)
-  return new Date(time).toISOString()
 }
 
 function parseMarketState(value: string): 'Open' | 'Closed' | 'Resolved' | 'All' {

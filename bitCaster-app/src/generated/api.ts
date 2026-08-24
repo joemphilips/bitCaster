@@ -209,23 +209,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/{marketId}/orders/{orderId}/continuation/decline": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Decline one suspended residual continuation */
-        post: operations["declineOrderContinuation"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/v1/{marketId}/orderbook": {
         parameters: {
             query?: never;
@@ -557,7 +540,7 @@ export interface paths {
         };
         /**
          * Read the current range-settlement admission policy
-         * @description Returns the coordinator public key that every newly created bitCaster PAY_TO_UNLOCK authorization must bind. Clients fetch this authenticated policy before creating or reauthorizing a range operation. Historical operations retain their persisted coordinator key.
+         * @description Returns the coordinator public key that every newly created bitCaster PAY_TO_UNLOCK authorization must bind. Clients fetch this authenticated policy before creating a range operation. Historical operations retain their persisted coordinator key.
          */
         get: operations["getSettlementCapabilityAdmissionPolicy"];
         put?: never;
@@ -895,30 +878,6 @@ export interface components {
         };
         /** @enum {string} */
         SettlementCapabilityState: "staged" | "bindingPending" | "bound" | "selected" | "uncertain" | "terminal" | "quarantined";
-        SettlementOrderContinuationReference: {
-            /** Format: uuid */
-            predecessorOrderId: string;
-            /** Format: uuid */
-            settlementGroupId: string;
-            /** Format: int32 */
-            settlementGroupRevision: number;
-            /** Format: int64 */
-            continuationRevision: number;
-        };
-        OrderContinuationState: {
-            /** Format: uuid */
-            settlementGroupId: string;
-            /** Format: int32 */
-            settlementGroupRevision: number;
-            /** Format: int64 */
-            revision: number;
-            /** @enum {string} */
-            status: "open" | "consumed" | "declined";
-        };
-        DeclineOrderContinuationRequest: {
-            /** Format: int64 */
-            expectedContinuationRevision: number;
-        };
         /** @description Immutable economic order terms authenticated by the settlement capability binding. Later order submission supplies only the resulting capability reference; the server loads these terms from the current durable DCB binding. */
         SettlementOrderIntent: {
             /** @description Primitive outcome segment of the top-level marketId. It must not contain a finite outcome-set separator such as "|". */
@@ -934,11 +893,11 @@ export interface components {
             baseAsset: components["schemas"]["BaseAsset"];
             /** @description Required explicit collateral unit. No default is implied. */
             collateralUnit: components["schemas"]["CollateralUnit"];
-            /** @description GTD requires a non-null expiresAt. GTC, FOK, and FAK forbid expiresAt. */
-            timeInForce: components["schemas"]["TimeInForce"];
+            /** @description Public settlement capabilities accept only FOK and FAK. Both values forbid expiresAt. */
+            timeInForce: components["schemas"]["SettlementCapabilityTimeInForce"];
             /**
              * Format: date-time
-             * @description Non-null for GTD intent and exactly null for every other time-in-force value. Requiring the field gives the authenticated intent one canonical wire representation.
+             * @description Exactly null for FOK and FAK. Requiring the field gives the authenticated intent one canonical wire representation.
              */
             expiresAt: string | null;
         };
@@ -951,8 +910,6 @@ export interface components {
             marketId: string;
             /** @description Economic order terms to authenticate in the durable capability binding. Once the stage idempotency key is durably associated, reusing it with different terms conflicts. */
             orderIntent: components["schemas"]["SettlementOrderIntent"];
-            /** @description Exactly null for an initial order. A fresh successor binds the confirmed predecessor continuation right and consumes it atomically when the capability is bound. */
-            continuation: components["schemas"]["SettlementOrderContinuationReference"] | null;
             /**
              * Format: byte
              * @description Base64 encoding of at most 262144 canonical JSON bytes produced by the shared SDK settlement-capability artifact encoder.
@@ -1049,10 +1006,15 @@ export interface components {
          */
         TimeInForce: "GTC" | "FOK" | "FAK" | "GTD";
         /**
-         * @description Closed public order lifecycle. `awaiting_authorization` means an unfilled resting remainder is intentionally non-matchable until its owner durably binds a replacement one-shot range authorization.
+         * @description Public settlement capability time-in-force. FOK means Fill-Or-Kill. FAK means Fill-And-Kill. Public capabilities cannot rest on the book and cannot carry an expiry.
          * @enum {string}
          */
-        OrderLifecycleStatus: "resting" | "matched" | "partially_filled" | "awaiting_authorization" | "filled" | "cancelled" | "expired" | "evicted_capacity" | "rejected_capacity" | "failed";
+        SettlementCapabilityTimeInForce: "FOK" | "FAK";
+        /**
+         * @description Public order lifecycle. A partial FAK ends with a cancelled remainder. A FOK order is filled or cancelled.
+         * @enum {string}
+         */
+        OrderLifecycleStatus: "resting" | "matched" | "partially_filled" | "filled" | "cancelled" | "expired" | "evicted_capacity" | "rejected_capacity" | "failed";
         /**
          * @description Public atomic settlement-group lifecycle. `Prepared` is the bounded coalescing state. `SubmissionPending` means the group is frozen and its exact request authority was durably committed before mint I/O.
          * @enum {string}
@@ -1245,8 +1207,6 @@ export interface components {
             expiresAt?: string | null;
             /** @description Current nonterminal settlement group for this order, or null when no group currently owns an unconfirmed fill. */
             activeSettlementGroup: components["schemas"]["SettlementGroupSummary"] | null;
-            /** @description Current durable residual-continuation state. It is non-null only after a confirmed partial resting-order settlement. */
-            continuation: components["schemas"]["OrderContinuationState"] | null;
             tokenSide: components["schemas"]["TokenSide"];
             /** @description Base asset context for amount and price fields. */
             baseAsset: components["schemas"]["BaseAsset"];
@@ -2402,53 +2362,6 @@ export interface operations {
                 content: {
                     "application/problem+json": components["schemas"]["ProblemDetails"];
                 };
-            };
-        };
-    };
-    declineOrderContinuation: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description The primitive outcome book to trade on, in the format "{conditionId}-{outcomeName}" (e.g. "deadbeef…abc-Alice"). Public market IDs never contain finite outcome-set separators such as "|"; use SettlementOrderIntent.tokenSide during capability creation to choose the primitive outcome token or its one-vs-rest complement. Binary YES/NO markets expose only the YES route ("{conditionId}-YES"); NO is traded as tokenSide=Complement on that YES route, and "{conditionId}-NO" is not a valid market ID. */
-                marketId: components["parameters"]["MarketId"];
-                orderId: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["DeclineOrderContinuationRequest"];
-            };
-        };
-        responses: {
-            /** @description Continuation is durably declined. Exact replay is idempotent. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Missing or invalid authentication. */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Order or continuation is absent. */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Stale revision or continuation already consumed. */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
             };
         };
     };

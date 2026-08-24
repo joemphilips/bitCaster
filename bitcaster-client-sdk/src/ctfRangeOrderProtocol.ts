@@ -14,7 +14,6 @@ import {
   encodeCtfRangeOrderPreparationArtifact,
   type CtfRangeOrderPreparationCapability,
   type CtfRangeOrderPreparationRecord,
-  type CtfRangeOrderPreparationSourceKind,
 } from './ctfRangeOrderJournal.ts'
 import { assertOrderRouteBelongsToCondition } from './orderRoute.ts'
 import { decodeCanonicalMintOrigin } from './durableCustody.ts'
@@ -32,11 +31,9 @@ import {
 } from './ctfRangeOrderAuthorization.ts'
 import type { TokenImportKeysetLookup } from './tokenImportValidation.ts'
 import {
-  decodeSettlementOrderContinuationReference,
   type CreateSettlementCapabilityRequest,
   type SettlementCapabilityAdmissionPolicyResponse,
   type SettlementCapabilityResponse,
-  type SettlementOrderContinuationReference,
 } from './engineClient.ts'
 import type { MarketDivisibility } from './marketUnits.ts'
 
@@ -48,8 +45,6 @@ const PREPARATION_FIELDS = [
   'version',
   'operationId',
   'sourceOperationId',
-  'sourceKind',
-  'predecessorRangeOperationId',
   'authorizationId',
   'mintUrl',
   'conditionId',
@@ -132,7 +127,7 @@ export interface CtfRangeOrderRequest {
   readonly baseAsset: 'sat'
   readonly collateralUnit: 'msat'
   readonly divisibility: MarketDivisibility
-  readonly timeInForce: 'FAK' | 'FOK' | 'GTC' | 'GTD'
+  readonly timeInForce: 'FAK' | 'FOK'
   readonly expiresAt: string | null
   readonly mintUrl: string
 }
@@ -156,8 +151,6 @@ export interface PersistedCtfRangeOrderPreparation {
   readonly version: 2
   readonly operationId: string
   readonly sourceOperationId: string
-  readonly sourceKind: CtfRangeOrderPreparationSourceKind
-  readonly predecessorRangeOperationId: string | null
   readonly authorizationId: string
   readonly mintUrl: string
   readonly conditionId: string
@@ -200,8 +193,6 @@ export function buildPersistedCtfRangeOrderPreparation(input: {
   readonly nowUnixSeconds: number
   readonly randomId: () => string
   readonly authorizationAmountSubunits?: number
-  readonly sourceKind?: CtfRangeOrderPreparationSourceKind
-  readonly predecessorRangeOperationId?: string | null
 }): PersistedCtfRangeOrderPreparation {
   const request = decodeCtfRangeOrderRequest(input.request)
   const coordinatorPublicKey = decodeCoordinatorPublicKey(input.coordinatorPublicKey)
@@ -220,15 +211,12 @@ export function buildPersistedCtfRangeOrderPreparation(input: {
     input.nowUnixSeconds,
     'range preparation current time',
   )
-  const expiry = derivePreparationExpiry(input.mintFacts.observation, nowUnixSeconds, request)
+  const expiry = derivePreparationExpiry(input.mintFacts.observation, nowUnixSeconds)
   const operationId = requireText(input.randomId(), 'range preparation operation id')
-  const sourceKind = input.sourceKind ?? 'wallet-prepared'
   return decodePersistedCtfRangeOrderPreparation({
     version: 2,
     operationId,
     sourceOperationId: `${operationId}:source`,
-    sourceKind,
-    predecessorRangeOperationId: input.predecessorRangeOperationId ?? null,
     authorizationId: requireText(input.randomId(), 'range preparation authorization id'),
     mintUrl: input.mintFacts.observation.canonicalMintUrl,
     conditionId: request.conditionId,
@@ -259,17 +247,7 @@ export function decodePersistedCtfRangeOrderPreparation(
 ): PersistedCtfRangeOrderPreparation {
   const input = exactRecord(value, PREPARATION_FIELDS, 'range preparation input')
   const request = decodeCtfRangeOrderRequest(input.request)
-  const sourceKind = requireClosed(
-    input.sourceKind,
-    ['wallet-prepared', 'residual-change'],
-    'range preparation source kind',
-  )
   const operationId = requireText(input.operationId, 'range preparation operation id')
-  const predecessorRangeOperationId = optionalText(
-    input.predecessorRangeOperationId,
-    'range preparation predecessor operation id',
-  )
-  assertSourceLineage(sourceKind, operationId, predecessorRangeOperationId)
   const mintUrl = decodeCanonicalMintOrigin(input.mintUrl)
   const conditionId = requireText(input.conditionId, 'range preparation condition id')
   const offerKeyset = decodeActiveKeyset(input.offerKeyset, mintUrl)
@@ -285,8 +263,6 @@ export function decodePersistedCtfRangeOrderPreparation(
       input.sourceOperationId,
       'range preparation source operation id',
     ),
-    sourceKind,
-    predecessorRangeOperationId,
     authorizationId: requireText(input.authorizationId, 'range preparation authorization id'),
     mintUrl,
     conditionId,
@@ -340,14 +316,11 @@ export function decodeSettlementCoordinatorPublicKey(
 export function createCtfRangeSettlementCapabilityRequest(
   preparationValue: PersistedCtfRangeOrderPreparation,
   operation: DurableCtfRangeOperation,
-  continuation: SettlementOrderContinuationReference | null = null,
 ): CreateSettlementCapabilityRequest {
   const preparation = decodePersistedCtfRangeOrderPreparation(preparationValue)
   const request = preparation.request
   assertOperationMatchesPreparation(operation, preparation)
   const artifact = createPoolSettlementCapabilityArtifact(operation)
-  const continuationReference =
-    continuation === null ? null : decodeSettlementOrderContinuationReference(continuation)
   return {
     stageIdempotencyKey: operation.authorizationId,
     clientOrderId: request.clientOrderId,
@@ -364,7 +337,6 @@ export function createCtfRangeSettlementCapabilityRequest(
       timeInForce: request.timeInForce,
       expiresAt: request.expiresAt,
     },
-    continuation: continuationReference,
     artifact: bytesToBase64(encodeSettlementCapabilityArtifact(artifact)),
   }
 }
@@ -482,10 +454,10 @@ function decodeCtfRangeOrderRequest(value: unknown): CtfRangeOrderRequest {
   }
   const timeInForce = requireClosed(
     request.timeInForce,
-    ['FAK', 'FOK', 'GTC', 'GTD'],
+    ['FAK', 'FOK'],
     'range preparation request time in force',
   )
-  const expiresAt = decodeOrderExpiry(request.expiresAt, timeInForce)
+  const expiresAt = decodeOrderExpiry(request.expiresAt)
   return {
     clientOrderId: requireText(request.clientOrderId, 'range preparation request client order id'),
     marketId,
@@ -557,7 +529,6 @@ function compareKeysetPreference(
 function derivePreparationExpiry(
   observation: DurableCtfRangeExpiryObservation,
   nowUnixSeconds: number,
-  request: CtfRangeOrderRequest,
 ): number {
   const fallback = observation.observedAt + observation.maxExpirySeconds
   if (!Number.isSafeInteger(fallback)) {
@@ -570,39 +541,15 @@ function derivePreparationExpiry(
       : Math.min(current, requirePositiveSafeInteger(finalExpiry, 'condition keyset final expiry'))
   }, fallback)
   const mintExpiry = ceiling - RANGE_REFUND_SAFETY_MARGIN_SECONDS
-  const orderExpiry =
-    request.timeInForce === 'GTD'
-      ? Math.floor(Date.parse(requireGtdExpiry(request.expiresAt)) / 1_000)
-      : Number.MAX_SAFE_INTEGER
-  if (request.timeInForce === 'GTD' && orderExpiry <= nowUnixSeconds) {
-    throw new Error('GTD order expiry horizon is exhausted')
-  }
-  const expiry = Math.min(mintExpiry, orderExpiry)
+  const expiry = mintExpiry
   if (expiry <= nowUnixSeconds) {
     throw new Error('mint CTF range authorization horizon is exhausted')
   }
   return expiry
 }
 
-function decodeOrderExpiry(
-  value: unknown,
-  timeInForce: CtfRangeOrderRequest['timeInForce'],
-): string | null {
-  if (timeInForce === 'GTD') return requireGtdExpiry(value)
+function decodeOrderExpiry(value: unknown): string | null {
   return requireExact(value, null, 'range preparation request expiry')
-}
-
-function requireGtdExpiry(value: unknown): string {
-  if (
-    typeof value !== 'string' ||
-    value.length < 20 ||
-    value.length > 64 ||
-    !Number.isFinite(Date.parse(value)) ||
-    new Date(value).toISOString() !== value
-  ) {
-    throw new Error('range preparation GTD order expiry is invalid')
-  }
-  return value
 }
 
 function selectedOutcomeCollection(market: unknown, request: CtfRangeOrderRequest): string {
@@ -631,8 +578,6 @@ function recordMatchesPreparation(
   return (
     input.operationId === record.rangeOperationId &&
     input.sourceOperationId === record.sourceOperationId &&
-    input.sourceKind === record.sourceKind &&
-    input.predecessorRangeOperationId === record.predecessorRangeOperationId &&
     input.authorizationId === record.authorizationId &&
     input.request.clientOrderId === record.clientOrderId &&
     input.request.marketId === record.orderRouteId &&
@@ -658,9 +603,7 @@ function sourceAmountMatchesRecord(
   input: PersistedCtfRangeOrderPreparation,
   recordAmount: number,
 ): boolean {
-  return input.sourceKind === 'wallet-prepared'
-    ? input.request.amountSubunits === recordAmount
-    : input.request.amountSubunits >= recordAmount
+  return input.request.amountSubunits === recordAmount
 }
 
 function requestMatches(
@@ -833,20 +776,6 @@ function decodeKeysetKeys(value: unknown): Record<string, string> {
   return { ...(keys as Record<string, string>) }
 }
 
-function assertSourceLineage(
-  sourceKind: CtfRangeOrderPreparationSourceKind,
-  operationId: string,
-  predecessorRangeOperationId: string | null,
-): void {
-  if (
-    (sourceKind === 'wallet-prepared' && predecessorRangeOperationId !== null) ||
-    (sourceKind === 'residual-change' &&
-      (predecessorRangeOperationId === null || predecessorRangeOperationId === operationId))
-  ) {
-    throw new Error('range preparation predecessor authority is invalid')
-  }
-}
-
 function assertPreparationConsistency(input: PersistedCtfRangeOrderPreparation): void {
   const offerIsConditional = hasConditionalMetadata(input.offerKeyset)
   const receiveIsConditional = hasConditionalMetadata(input.receiveKeyset)
@@ -880,9 +809,7 @@ function assertPreparationConsistency(input: PersistedCtfRangeOrderPreparation):
 }
 
 function sourceAmountIsConsistent(input: PersistedCtfRangeOrderPreparation): boolean {
-  return input.sourceKind === 'wallet-prepared'
-    ? input.amountSubunits === input.request.amountSubunits
-    : input.amountSubunits <= input.request.amountSubunits
+  return input.amountSubunits === input.request.amountSubunits
 }
 
 function assertOperationMatchesPreparation(
@@ -1062,10 +989,6 @@ function requireTextArray(value: unknown, label: string): string[] {
 function requireText(value: unknown, label: string): string {
   if (typeof value !== 'string' || value.length === 0) throw new Error(`${label} is invalid`)
   return value
-}
-
-function optionalText(value: unknown, label: string): string | null {
-  return value === null ? null : requireText(value, label)
 }
 
 function requirePositiveSafeInteger(value: unknown, label: string): number {

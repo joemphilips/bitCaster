@@ -62,7 +62,7 @@ const categoricalMarket: MarketDetail = {
 };
 
 describe("buildTradeTicket", () => {
-  it("builds limit orders with oracle-verbatim Yes outcome names and valid GTC price", () => {
+  it("builds limit orders with oracle-verbatim Yes outcome names and FAK price", () => {
     const ticket = buildTradeTicket({
       market,
       selection: { side: "yes" },
@@ -80,7 +80,7 @@ describe("buildTradeTicket", () => {
       side: "Buy",
       price: 500,
       amountSubunits: 1_000_000,
-      timeInForce: "GTC",
+      timeInForce: "FAK",
     });
   });
 

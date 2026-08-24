@@ -1142,9 +1142,8 @@ test('daemon dispatch persists wallet and order state', async (t) => {
               price: 4_200,
               amountSubunits: 20_000,
               minimumFillAmountSubunits: 10_000,
-              continueAfterPartialFill: true,
               consolidateProofs: true,
-              timeInForce: 'GTC',
+              timeInForce: 'FAK',
             },
           },
           {
@@ -1185,12 +1184,11 @@ test('daemon dispatch persists wallet and order state', async (t) => {
           price: 4_200,
           amountSubunits: 20_000,
           minimumFillAmountSubunits: 10_000,
-          continueAfterPartialFill: true,
           consolidateProofs: true,
           baseAsset: 'sat',
           collateralUnit: 'msat',
           divisibility: 10_000,
-          timeInForce: 'GTC',
+          timeInForce: 'FAK',
           expiresAt: null,
           mintUrl: 'https://mint-a.example',
           walletSeedHex: secrets.walletSeedHex,
@@ -1250,7 +1248,7 @@ test('daemon dispatch persists wallet and order state', async (t) => {
               side: 'Buy',
               price: 500_000,
               amountSubunits: 1_000_000,
-              timeInForce: 'GTC',
+              timeInForce: 'FOK',
             },
           },
           {
@@ -1283,11 +1281,6 @@ test('daemon dispatch persists wallet and order state', async (t) => {
           (capturedPreparation as unknown as PrepareSettlementCapabilityInput)
             .minimumFillAmountSubunits,
           1_000_000,
-        )
-        assert.equal(
-          (capturedPreparation as unknown as PrepareSettlementCapabilityInput)
-            .continueAfterPartialFill,
-          false,
         )
         assert.equal(
           (capturedPreparation as unknown as PrepareSettlementCapabilityInput).consolidateProofs,
@@ -1333,7 +1326,7 @@ test('daemon dispatch persists wallet and order state', async (t) => {
               side: 'Buy',
               price: 500_000,
               amountSubunits: 2_000_000,
-              timeInForce: 'GTC',
+              timeInForce: 'FAK',
             },
           },
           { createEngineClient: () => engine },
@@ -1406,7 +1399,7 @@ test('daemon dispatch persists wallet and order state', async (t) => {
             side: 'Buy',
             price: 500_000,
             amountSubunits: 2_000_000,
-            timeInForce: 'GTC',
+            timeInForce: 'FAK',
           },
         },
         {
@@ -1474,7 +1467,7 @@ test('daemon dispatch persists wallet and order state', async (t) => {
               side: 'Buy',
               price: 9_900,
               amountSubunits: 10_000,
-              timeInForce: 'GTC',
+              timeInForce: 'FAK',
             },
           },
           {
@@ -1535,7 +1528,7 @@ test('daemon dispatch persists wallet and order state', async (t) => {
             side: 'Buy',
             price: 4_200,
             amountSubunits: 10_000,
-            timeInForce: 'GTC',
+            timeInForce: 'FAK',
           },
         },
         {
@@ -1603,7 +1596,7 @@ test('daemon dispatch persists wallet and order state', async (t) => {
               side: 'Buy',
               price: 4_200,
               amountSubunits: 10_000,
-              timeInForce: 'GTC',
+              timeInForce: 'FAK',
             },
           },
           {
@@ -1657,7 +1650,7 @@ test('daemon dispatch persists wallet and order state', async (t) => {
                 side: 'Buy',
                 price: 4_200,
                 amountSubunits: 10_000,
-                timeInForce: 'GTC',
+                timeInForce: 'FAK',
               },
             },
             {
@@ -1757,7 +1750,6 @@ test('daemon dispatch persists wallet and order state', async (t) => {
               side: 'Buy',
               price: 4_200,
               amountSubunits: 10_000,
-              continueAfterPartialFill: 'yes',
               timeInForce: 'GTC',
             },
             {
@@ -1775,8 +1767,7 @@ test('daemon dispatch persists wallet and order state', async (t) => {
               side: 'Buy',
               price: 4_200,
               amountSubunits: 10_000,
-              continueAfterPartialFill: true,
-              timeInForce: 'FAK',
+              timeInForce: 'GTC',
             },
             {
               marketId: 'cond-Bob|Carol',
@@ -2040,7 +2031,7 @@ test('daemon dispatch persists wallet and order state', async (t) => {
             side: 'Buy',
             price: 4_200,
             amountSubunits: 10_000,
-            timeInForce: 'GTC',
+            timeInForce: 'FAK',
           },
         },
         {
@@ -2078,7 +2069,7 @@ test('daemon dispatch persists wallet and order state', async (t) => {
               side: 'Sell',
               price: 4_200,
               amountSubunits: 10_000,
-              timeInForce: 'GTC',
+            timeInForce: 'FAK',
             },
           },
           {

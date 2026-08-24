@@ -43,12 +43,6 @@ describe("order lifecycle notifications", () => {
     },
   );
 
-  it("retains a GTC residual that awaits authorization", () => {
-    expect(buildOrderStatusNotifications(status("awaiting_authorization", 4, 6), trade, 1)).toEqual(
-      [],
-    );
-  });
-
   it("derives filled amount from a lifecycle delta", () => {
     expect(buildOrderLifecycleNotifications("partially_filled", 6, trade, 1)).toEqual([
       expect.objectContaining({ filledAmountSubunits: 4, remainingAmountSubunits: 6 }),

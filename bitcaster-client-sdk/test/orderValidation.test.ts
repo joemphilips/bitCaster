@@ -11,11 +11,11 @@ const validOrder = {
   amountSubunits: 1_000_000,
   baseAsset: 'sat',
   divisibility: 10_000,
-  timeInForce: 'GTC',
+  timeInForce: 'FAK',
 }
 
 test('validateOrderIntent accepts supported order intent shapes', () => {
-  for (const timeInForce of ['FAK', 'FOK', 'GTC']) {
+  for (const timeInForce of ['FAK', 'FOK']) {
     assert.deepEqual(validateOrderIntent({ ...validOrder, timeInForce }), { valid: true })
   }
 })
@@ -80,7 +80,8 @@ test('validateOrderIntent rejects malformed or unsupported order intent', () => 
       { ...validOrder, amountSubunits: 10_001 },
       /amountSubunits must be a positive integer in 10000 sub-unit increments/,
     ],
-    [{ ...validOrder, timeInForce: 'IOC' }, /timeInForce must be FAK, FOK, or GTC/],
+    [{ ...validOrder, timeInForce: 'GTC' }, /timeInForce must be FAK or FOK/],
+    [{ ...validOrder, timeInForce: 'GTD' }, /timeInForce must be FAK or FOK/],
   ] as const) {
     const result = validateOrderIntent(request)
     assert.equal(result.valid, false)

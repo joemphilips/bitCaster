@@ -27,7 +27,6 @@ function notificationKindForTerminalStatus(status: OrderLifecycleStatus): Notifi
     case "resting":
     case "matched":
     case "partially_filled":
-    case "awaiting_authorization":
       throw new Error(`OrderStatus is not terminal: ${status}`);
     default:
       return assertNever(status);
@@ -137,7 +136,6 @@ function buildOrderNotifications(
         },
       ];
     case "resting":
-    case "awaiting_authorization":
       return [];
     default:
       return assertNever(current);

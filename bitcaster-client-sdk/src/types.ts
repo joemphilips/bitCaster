@@ -40,5 +40,5 @@ export interface SdkSubmitOrderRequest {
   side: 'Buy' | 'Sell'
   price: number
   amountSubunits: number
-  timeInForce: 'FAK' | 'FOK' | 'GTC'
+  timeInForce: 'FAK' | 'FOK'
 }

@@ -36,8 +36,6 @@ import {
   createDeterministicDurableCtfRangeRefundOutputs,
   deriveDurableCtfRangeFeeBounds,
   deriveDurableCtfRangeRefundOperationId,
-  deriveDurableCtfResidualDecision,
-  deriveDurableCtfRangeSelectionRemainingAmount,
   toDurableCtfRangeProofOperationInput,
   type DurableCtfRangeExpiryObservation,
   type DurableCtfRangeMintKeyset,
@@ -97,7 +95,6 @@ import type {
   OrderStatusResponse,
   SettlementCapabilityResultResponse,
   SettlementCapabilityResponse,
-  SettlementOrderContinuationReference,
 } from '@bitcaster-market/client-sdk/engineClient'
 import { DaemonCtfRangeCoordinator } from './ctfRangeCoordinator.ts'
 import type { CustodyScopeFence } from './profileFencing.ts'
@@ -112,7 +109,6 @@ import {
   readAvailableWalletProofPage,
   recordDiscoveredOrder,
   recordOrderStatus,
-  recordSubmittedOrder,
   releasePreparedProofReservationFenced,
   type CashuProofRecord,
   type FencedStateMutation,
@@ -123,19 +119,15 @@ import {
   appendRangePreparationConsolidation,
   bindRangePreparationCapability,
   insertRangePreparation,
-  insertRangeSuccessorIntent,
   linkRangePreparationSource,
   pageActiveRangePreparations,
   readActiveRangePreparationByClientOrderId,
-  readResidualRangePreparationByPredecessor,
-  readRangeSuccessorIntent,
   readRangePreparation,
   toSdkRangePreparationRecord,
   transitionRangePreparation,
   type RangePreparationCapability,
   type RangePreparationPageCursor,
   type RangePreparationRecord,
-  type RangeSuccessorIntent,
 } from './ctfRangeOrderJournalSqlite.ts'
 import {
   withDurableCustodyFencedRead,
@@ -288,7 +280,6 @@ export class DaemonCtfRangeOrderCoordinator {
     const capabilityRequest = createCtfRangeSettlementCapabilityRequest(
       authority.preparationInput,
       operation,
-      null,
     )
     const binding = await createRangeBinding(
       request.walletSeedHex,
@@ -373,12 +364,6 @@ export class DaemonCtfRangeOrderCoordinator {
     walletSeedHex: string,
     client: EngineClientLike,
   ): Promise<void> {
-    if (
-      preparationRecord.sourceKind === 'residual-change' &&
-      preparationRecord.capability !== null
-    ) {
-      await this.#markResidualPredecessorTerminal(preparationInput)
-    }
     switch (preparationRecord.lifecycleState) {
       case 'order-submitted':
       case 'submission-rejected':
@@ -412,39 +397,19 @@ export class DaemonCtfRangeOrderCoordinator {
       preparationRecord.consolidateProofs,
       this.#mutation.bind(this),
     )
+    const wallet =
+      this.#dependencies.createWallet?.(authority.preparation.mintUrl, walletSeedHex) ??
+      (new CashuWallet(new CashuMint(authority.preparation.mintUrl), {
+        unit: 'msat',
+        bip39seed: walletSeed(walletSeedHex),
+      }) as CtfRangeWalletLike)
+    await wallet.loadMint()
     let sourceResult: SourceResult
-    let residualSpentInputs: readonly Proof[] | null = null
-    if (preparationInput.sourceKind === 'residual-change') {
-      const candidates = await this.#loadResidualSource(preparationInput, walletSeedHex)
-      const wallet =
-        this.#dependencies.createWallet?.(authority.preparation.mintUrl, walletSeedHex) ??
-        (new CashuWallet(new CashuMint(authority.preparation.mintUrl), {
-          unit: 'msat',
-          bip39seed: walletSeed(walletSeedHex),
-        }) as CtfRangeWalletLike)
-      await wallet.loadMint()
-      const residual = await prepareOrResumeResidualSource(
-        authority,
-        wallet,
-        candidates.authorization,
-        this.#dependencies,
-      )
-      sourceResult = residual
-      residualSpentInputs = residual.spentInputs
-    } else {
-      const wallet =
-        this.#dependencies.createWallet?.(authority.preparation.mintUrl, walletSeedHex) ??
-        (new CashuWallet(new CashuMint(authority.preparation.mintUrl), {
-          unit: 'msat',
-          bip39seed: walletSeed(walletSeedHex),
-        }) as CtfRangeWalletLike)
-      await wallet.loadMint()
-      try {
-        sourceResult = await this.#prepareWalletSource(authority, walletSeedHex, wallet)
-      } catch (error) {
-        if (error instanceof RangeSourceReleasedError) return
-        throw error
-      }
+    try {
+      sourceResult = await this.#prepareWalletSource(authority, walletSeedHex, wallet)
+    } catch (error) {
+      if (error instanceof RangeSourceReleasedError) return
+      throw error
     }
     const operation = completeCtfRangeOrderAuthorization({
       preparation: authority.preparation,
@@ -456,7 +421,6 @@ export class DaemonCtfRangeOrderCoordinator {
     const capabilityRequest = createCtfRangeSettlementCapabilityRequest(
       preparationInput,
       operation,
-      preparationRecord.continuation,
     )
     const binding = await createRangeBinding(
       walletSeedHex,
@@ -470,27 +434,7 @@ export class DaemonCtfRangeOrderCoordinator {
       proofStateClient: authority.mint,
       observedAtMs: this.#nowMs(),
     }
-    if (preparationInput.sourceKind === 'residual-change') {
-      if (residualSpentInputs === null) {
-        throw new Error('residual range source inputs are missing')
-      }
-      await rangeCoordinator.bindResidualPreparedSource({
-        ...bindInput,
-        spentSourceProofs: residualSpentInputs,
-      })
-    } else {
-      await rangeCoordinator.bindPreparedSource(bindInput)
-    }
-    if (preparationInput.sourceKind === 'residual-change') {
-      await this.#submitRecoveredResidual(
-        preparationInput,
-        operation,
-        capabilityRequest,
-        walletSeedHex,
-        client,
-      )
-      return
-    }
+    await rangeCoordinator.bindPreparedSource(bindInput)
     if (preparationRecord.lifecycleState === 'capability-requested') {
       await this.#recoverRequestedCapability(
         preparationInput,
@@ -528,46 +472,6 @@ export class DaemonCtfRangeOrderCoordinator {
       recovering: true,
     })
     await this.#bindCapability(operation.operationId, capability)
-  }
-
-  async #submitRecoveredResidual(
-    input: PersistedPreparationInput,
-    operation: DurableCtfRangeOperation,
-    request: CreateSettlementCapabilityRequest,
-    walletSeedHex: string,
-    client: EngineClientLike,
-  ): Promise<void> {
-    await this.#markCapabilityRequested(operation.operationId)
-    const createCapability = client.createSettlementCapability
-    if (createCapability === undefined) {
-      throw new Error('engine client does not support settlement capability creation')
-    }
-    const exactRequest = await this.#exactCapabilityRequest(
-      walletSeedHex,
-      operation.operationId,
-      request,
-    )
-    const response = await createCapability.call(client, exactRequest)
-    if (
-      request.continuation === null ||
-      response.orderId === request.continuation.predecessorOrderId
-    ) {
-      throw new Error('engine residual successor order identity is not fresh')
-    }
-    const capability = validateAndProjectCtfRangeSettlementCapabilityResponse({
-      capability: response,
-      preparation: input,
-      operation,
-      recovering: true,
-    })
-    await this.#bindCapability(operation.operationId, capability)
-    await this.#markResidualPredecessorTerminal(input)
-    await submitRecoveredResidualOrder(client, input.request, capability)
-    await this.#markOrderSubmitted(operation.operationId)
-    throw new RangeRecoveryDeferredError(
-      'recovered residual range order was submitted and remains pending settlement',
-      this.#nowMs() + 30_000,
-    )
   }
 
   async #recoverCapabilityBoundOrder(
@@ -675,59 +579,6 @@ export class DaemonCtfRangeOrderCoordinator {
     }
   }
 
-  async #loadResidualSource(
-    input: PersistedPreparationInput,
-    walletSeedHex: string,
-  ): Promise<SourceResult> {
-    const predecessorOperationId = input.predecessorRangeOperationId
-    if (predecessorOperationId === null) {
-      throw new Error('residual range predecessor authority is missing')
-    }
-    const predecessor = await withDurableCustodyFencedRead(
-      this.#storage,
-      this.#getFence(),
-      this.#nowMs(),
-      (database) => {
-        const record = readRangePreparation(
-          database,
-          this.#getFence().scopeId,
-          predecessorOperationId,
-        )
-        if (record === null) throw new Error('residual range predecessor is missing')
-        return preparationFromJournal(record)
-      },
-    )
-    if (
-      predecessor.operationId !== predecessorOperationId ||
-      predecessor.request.clientOrderId === input.request.clientOrderId ||
-      !sameResidualOrderTerms(predecessor.request, input.request)
-    ) {
-      throw new Error('residual range predecessor identity is foreign')
-    }
-    const rangeCoordinator = new DaemonCtfRangeCoordinator(this.#directory, this.#getFence())
-    const custodyOperationId = rangeCustodyOperationId(walletSeedHex, predecessorOperationId)
-    const loaded = await rangeCoordinator.load(custodyOperationId)
-    if (loaded === null) throw new Error('residual range custody authority is missing')
-    const result = await rangeCoordinator.readAppliedResult({
-      custodyOperationId,
-      resolveKeyset: createCtfRangeOrderPreparationKeysetResolver(predecessor),
-    })
-    const residual = deriveDurableCtfResidualDecision({
-      source: loaded.operation,
-      result,
-      originalOrderAmount: predecessor.request.amountSubunits,
-      remainingOrderAmount: input.amountSubunits,
-      restingOrder: true,
-    })
-    if (
-      residual.kind !== 'awaiting-authorization' ||
-      residual.predecessorOperationId !== predecessorOperationId
-    ) {
-      throw new Error('residual range predecessor has no returned change authority')
-    }
-    return { authorization: residual.sourceProofs, keep: [] }
-  }
-
   async #prepareMintAuthority(
     request: PrepareSettlementCapabilityInput,
     client: EngineClientLike,
@@ -768,7 +619,6 @@ export class DaemonCtfRangeOrderCoordinator {
     })
     const durablePreparation = await this.#persistPreparation(
       preparationInput,
-      request.continueAfterPartialFill,
       request.consolidateProofs,
     )
     return preparedMintAuthority(
@@ -796,11 +646,7 @@ export class DaemonCtfRangeOrderCoordinator {
           request.clientOrderId,
         )
         if (record === null) return null
-        if (
-          record.continueAfterPartialFill !== request.continueAfterPartialFill ||
-          record.consolidateProofs !== request.consolidateProofs ||
-          record.continuation !== null
-        ) {
+        if (record.consolidateProofs !== request.consolidateProofs) {
           throw new Error('daemon CTF range preparation policy conflicts with its journal')
         }
         return preparationFromJournal(record, persistedOrderRequest(request))
@@ -810,7 +656,6 @@ export class DaemonCtfRangeOrderCoordinator {
 
   async #persistPreparation(
     input: PersistedPreparationInput,
-    continueAfterPartialFill: boolean,
     consolidateProofs: boolean,
   ): Promise<PersistedPreparationInput> {
     const mutation = this.#mutation()
@@ -825,11 +670,7 @@ export class DaemonCtfRangeOrderCoordinator {
           input.request.clientOrderId,
         )
         if (existing !== null) {
-          if (
-            existing.continueAfterPartialFill !== continueAfterPartialFill ||
-            existing.consolidateProofs !== consolidateProofs ||
-            existing.continuation !== null
-          ) {
+          if (existing.consolidateProofs !== consolidateProofs) {
             throw new Error('daemon CTF range preparation policy conflicts with its journal')
           }
           return preparationFromJournal(existing, input.request)
@@ -839,8 +680,6 @@ export class DaemonCtfRangeOrderCoordinator {
             scopeId: mutation.fence.scopeId,
             rangeOperationId: input.operationId,
             sourceOperationId: input.sourceOperationId,
-            sourceKind: input.sourceKind,
-            predecessorRangeOperationId: input.predecessorRangeOperationId,
             authorizationId: input.authorizationId,
             clientOrderId: input.request.clientOrderId,
             orderRouteId: input.request.marketId,
@@ -852,9 +691,7 @@ export class DaemonCtfRangeOrderCoordinator {
             priceSubunits: input.priceNumerator,
             amountSubunits: input.amountSubunits,
             minimumFillAmountSubunits: input.request.minimumFillAmountSubunits,
-            continueAfterPartialFill,
             consolidateProofs,
-            continuation: null,
             divisibility: input.divisibility as 10_000 | 1_000_000,
             authorizationExpiresAtUnixSeconds: input.expiry,
             preparationBytes: encodeCanonicalRangePreparation(input),
@@ -1030,14 +867,8 @@ export class DaemonCtfRangeOrderCoordinator {
           recovered,
         )
         await this.#completeSubmittedLifecycle(
-          preparation,
           input,
-          walletSeedHex,
-          client,
-          loaded.operation,
-          recovered,
           status,
-          null,
         )
         return
       }
@@ -1082,23 +913,9 @@ export class DaemonCtfRangeOrderCoordinator {
         loaded.operation,
         decision.result,
       )
-      if (persistedStatus?.status === 'awaiting_authorization') {
-        requirePendingContinuation(
-          persistedStatus,
-          preparation,
-          loaded.operation,
-          persistedEngineResult,
-        )
-      }
       await this.#completeSubmittedLifecycle(
-        preparation,
         input,
-        walletSeedHex,
-        client,
-        loaded.operation,
-        decision.result,
         persistedStatus,
-        persistedEngineResult,
       )
       return
     }
@@ -1162,18 +979,9 @@ export class DaemonCtfRangeOrderCoordinator {
           loaded.operation,
           decision.result,
         )
-        if (status?.status === 'awaiting_authorization') {
-          requirePendingContinuation(status, preparation, loaded.operation, engineResult)
-        }
         await this.#completeSubmittedLifecycle(
-          preparation,
           input,
-          walletSeedHex,
-          client,
-          loaded.operation,
-          decision.result,
           status,
-          engineResult,
         )
         return
       }
@@ -1459,64 +1267,21 @@ export class DaemonCtfRangeOrderCoordinator {
   }
 
   async #completeSubmittedLifecycle(
-    preparation: RangePreparationRecord,
     input: PersistedPreparationInput,
-    walletSeedHex: string,
-    client: EngineClientLike,
-    operation: DurableCtfRangeOperation,
-    result: Extract<DurableCtfRangeRecoveryDecision, { kind: 'confirmed' }>['result'],
     status: OrderStatusResponse | null,
-    engineResult: CtfRangeEngineResult | null,
   ): Promise<void> {
     if (status === null) {
       await this.#markTerminal(input.operationId)
       return
     }
-    const residual = deriveDurableCtfResidualDecision({
-      source: operation,
-      result,
-      originalOrderAmount: input.request.amountSubunits,
-      remainingOrderAmount: status.remainingAmountSubunits,
-      restingOrder: status.status === 'awaiting_authorization',
-    })
-    if (residual.kind === 'awaiting-authorization') {
-      const continuation = requirePendingContinuation(status, preparation, operation, engineResult)
-      if (status.continuation?.status === 'declined') {
-        await this.#declineContinuation(input, continuation, client)
-        await this.#markTerminal(input.operationId)
-        return
-      }
-      if (
-        !preparation.continueAfterPartialFill ||
-        BigInt(residual.remainingOrderAmount) < BigInt(preparation.minimumFillAmountSubunits)
-      ) {
-        await this.#declineContinuation(input, continuation, client)
-        await this.#markTerminal(input.operationId)
-        return
-      }
-      await this.#reauthorizeResidual(
-        preparation,
-        input,
-        walletSeedHex,
-        client,
-        Number(residual.remainingOrderAmount),
-        continuation,
-      )
-      return
-    }
-    if (
-      input.request.timeInForce === 'FAK' &&
-      status.status === 'partially_filled' &&
-      residual.kind === 'none'
-    ) {
+    if (input.request.timeInForce === 'FAK' && status.status === 'partially_filled') {
       await this.#markTerminal(input.operationId)
       return
     }
     if (
       status.status === 'resting' ||
       status.status === 'matched' ||
-      status.status === 'partially_filled' ||
-      status.status === 'awaiting_authorization'
+      status.status === 'partially_filled'
     ) {
       throw new Error('range result and order lifecycle disagree')
     }
@@ -1543,190 +1308,6 @@ export class DaemonCtfRangeOrderCoordinator {
       cancelled,
       input.request.baseAsset,
       input.request.divisibility,
-    )
-  }
-
-  async #declineContinuation(
-    input: PersistedPreparationInput,
-    continuation: SettlementOrderContinuationReference,
-    client: EngineClientLike,
-  ): Promise<void> {
-    const decline = client.declineOrderContinuation
-    if (decline === undefined) {
-      throw new Error('engine client does not support residual continuation decline')
-    }
-    await decline.call(
-      client,
-      input.request.marketId,
-      continuation.predecessorOrderId,
-      continuation.continuationRevision,
-    )
-  }
-
-  async #reauthorizeResidual(
-    predecessor: RangePreparationRecord,
-    predecessorInput: PersistedPreparationInput,
-    walletSeedHex: string,
-    client: EngineClientLike,
-    remainingAmountSubunits: number,
-    continuation: SettlementOrderContinuationReference,
-  ): Promise<void> {
-    if (!Number.isSafeInteger(remainingAmountSubunits) || remainingAmountSubunits <= 0) {
-      throw new Error('residual range amount is invalid')
-    }
-    const intent = await this.#persistSuccessorIntent(
-      predecessor,
-      remainingAmountSubunits,
-      continuation,
-    )
-    const getPolicy = client.getSettlementCapabilityAdmissionPolicy
-    if (getPolicy === undefined) {
-      throw new Error('engine client does not expose settlement admission policy')
-    }
-    const mint = this.#createMint(predecessorInput.mintUrl)
-    const [policy, metadata, market] = await Promise.all([
-      getPolicy.call(client),
-      loadMintMetadata(
-        mint,
-        predecessorInput.mintUrl,
-        predecessorInput.conditionId,
-        this.#nowSeconds(),
-        this.#dependencies.allowInsecureLoopbackHttp === true,
-      ),
-      loadEngineMarket(client, predecessorInput.conditionId),
-    ])
-    const proposed = buildPersistedCtfRangeOrderPreparation({
-      request: {
-        ...predecessorInput.request,
-        clientOrderId: intent.successorClientOrderId,
-        amountSubunits: intent.remainingAmountSubunits,
-      },
-      coordinatorPublicKey: requireCoordinatorKey(policy),
-      mintFacts: metadata,
-      market,
-      nowUnixSeconds: this.#nowSeconds(),
-      randomId: sequentialStableIds(
-        intent.successorRangeOperationId,
-        intent.successorAuthorizationId,
-      ),
-      sourceKind: 'residual-change',
-      predecessorRangeOperationId: predecessorInput.operationId,
-    })
-    const successor = await this.#persistResidualPreparation(predecessor, proposed, continuation)
-    await this.#recoverPreparation(successor.record, successor.input, walletSeedHex, client)
-  }
-
-  async #persistSuccessorIntent(
-    predecessor: RangePreparationRecord,
-    remainingAmountSubunits: number,
-    continuation: SettlementOrderContinuationReference,
-  ): Promise<RangeSuccessorIntent> {
-    const mutation = this.#mutation()
-    return withDurableCustodyUnitOfWork(
-      this.#storage,
-      mutation.fence,
-      mutation.observedAtMs,
-      (database) => {
-        const existing = readRangeSuccessorIntent(
-          database,
-          mutation.fence.scopeId,
-          predecessor.rangeOperationId,
-        )
-        if (existing !== null) {
-          if (
-            existing.remainingAmountSubunits !== remainingAmountSubunits ||
-            !sameContinuationReference(existing.continuation, continuation)
-          ) {
-            throw new Error('daemon residual successor intent conflicts with its journal')
-          }
-          return existing
-        }
-        return insertRangeSuccessorIntent(database, {
-          scopeId: mutation.fence.scopeId,
-          predecessorRangeOperationId: predecessor.rangeOperationId,
-          successorClientOrderId: this.#randomId(),
-          successorRangeOperationId: this.#randomId(),
-          successorAuthorizationId: this.#randomId(),
-          remainingAmountSubunits,
-          continuation,
-          createdAtMs: mutation.observedAtMs,
-        })
-      },
-    )
-  }
-
-  async #persistResidualPreparation(
-    predecessor: RangePreparationRecord,
-    proposed: PersistedPreparationInput,
-    continuation: SettlementOrderContinuationReference,
-  ): Promise<{ record: RangePreparationRecord; input: PersistedPreparationInput }> {
-    const mutation = this.#mutation()
-    return withDurableCustodyUnitOfWork(
-      this.#storage,
-      mutation.fence,
-      mutation.observedAtMs,
-      (database) => {
-        const active = readResidualRangePreparationByPredecessor(
-          database,
-          mutation.fence.scopeId,
-          predecessor.rangeOperationId,
-        )
-        if (active !== null) {
-          const input = preparationFromJournal(active)
-          if (
-            input.sourceKind !== 'residual-change' ||
-            input.predecessorRangeOperationId !== predecessor.rangeOperationId ||
-            !sameContinuationReference(active.continuation, continuation) ||
-            !sameResidualOrderTerms(preparationFromJournal(predecessor).request, input.request) ||
-            input.amountSubunits !== proposed.amountSubunits
-          ) {
-            throw new Error('daemon residual range successor conflicts with active authority')
-          }
-          return { record: active, input }
-        }
-        const current = readRangePreparation(
-          database,
-          mutation.fence.scopeId,
-          predecessor.rangeOperationId,
-        )
-        if (current === null) throw new Error('daemon residual range predecessor is missing')
-        if (current.lifecycleState !== 'terminal') {
-          transitionRangePreparation(database, {
-            scopeId: mutation.fence.scopeId,
-            rangeOperationId: current.rangeOperationId,
-            expectedRevision: current.revision,
-            from: current.lifecycleState,
-            to: 'terminal',
-            updatedAtMs: mutation.observedAtMs,
-          })
-        }
-        const record = insertRangePreparation(database, {
-          scopeId: mutation.fence.scopeId,
-          rangeOperationId: proposed.operationId,
-          sourceOperationId: proposed.sourceOperationId,
-          sourceKind: proposed.sourceKind,
-          predecessorRangeOperationId: proposed.predecessorRangeOperationId,
-          authorizationId: proposed.authorizationId,
-          clientOrderId: proposed.request.clientOrderId,
-          orderRouteId: proposed.request.marketId,
-          normalizedMint: proposed.mintUrl,
-          conditionId: proposed.conditionId,
-          unit: 'msat',
-          tokenSide: proposed.request.tokenSide,
-          side: proposed.side,
-          priceSubunits: proposed.priceNumerator,
-          amountSubunits: proposed.amountSubunits,
-          minimumFillAmountSubunits: proposed.request.minimumFillAmountSubunits,
-          continueAfterPartialFill: true,
-          consolidateProofs: false,
-          continuation,
-          divisibility: proposed.divisibility as 10_000 | 1_000_000,
-          authorizationExpiresAtUnixSeconds: proposed.expiry,
-          preparationBytes: encodeCanonicalRangePreparation(proposed),
-          createdAtMs: mutation.observedAtMs,
-        })
-        return { record, input: preparationFromJournal(record, proposed.request) }
-      },
     )
   }
 
@@ -1798,13 +1379,6 @@ export class DaemonCtfRangeOrderCoordinator {
     }
   }
 
-  async #markResidualPredecessorTerminal(input: PersistedPreparationInput): Promise<void> {
-    if (input.sourceKind !== 'residual-change' || input.predecessorRangeOperationId === null) {
-      return
-    }
-    await this.#markTerminal(input.predecessorRangeOperationId)
-  }
-
   #createMint(mintUrl: string): CtfRangeMintLike {
     return this.#dependencies.createMint?.(mintUrl) ?? (new CashuMint(mintUrl) as CtfRangeMintLike)
   }
@@ -1827,117 +1401,6 @@ export class DaemonCtfRangeOrderCoordinator {
       observedAtMs: this.#nowMs(),
     }
   }
-}
-
-function sameResidualOrderTerms(
-  predecessor: PersistedPreparationInput['request'],
-  successor: PersistedPreparationInput['request'],
-): boolean {
-  return (
-    predecessor.marketId === successor.marketId &&
-    predecessor.conditionId === successor.conditionId &&
-    predecessor.outcomeId === successor.outcomeId &&
-    predecessor.tokenSide === successor.tokenSide &&
-    predecessor.side === successor.side &&
-    predecessor.price === successor.price &&
-    predecessor.minimumFillAmountSubunits === successor.minimumFillAmountSubunits &&
-    predecessor.baseAsset === successor.baseAsset &&
-    predecessor.collateralUnit === successor.collateralUnit &&
-    predecessor.divisibility === successor.divisibility &&
-    predecessor.timeInForce === successor.timeInForce &&
-    predecessor.expiresAt === successor.expiresAt &&
-    successor.amountSubunits < predecessor.amountSubunits
-  )
-}
-
-function sequentialStableIds(first: string, second: string): () => string {
-  let index = 0
-  return () => {
-    index += 1
-    if (index === 1) return first
-    if (index === 2) return second
-    throw new Error('daemon residual successor requested an unexpected identity')
-  }
-}
-
-async function submitRecoveredResidualOrder(
-  client: EngineClientLike,
-  request: PersistedPreparationInput['request'],
-  capability: RangePreparationCapability,
-): Promise<void> {
-  const submitted = await client.submitOrder(request.marketId, {
-    settlementCapability: {
-      artifactId: capability.artifactId,
-      bindingDigest: capability.bindingDigest,
-    },
-    comment: null,
-  })
-  if (submitted.orderId !== capability.orderId) {
-    throw new Error('recovered residual order differs from its settlement capability')
-  }
-  await recordSubmittedOrder(
-    request.marketId,
-    request.clientOrderId,
-    submitted,
-    null,
-    request.tokenSide,
-    request.side,
-    request.price,
-    request.amountSubunits,
-    request.baseAsset,
-    request.divisibility,
-  )
-}
-
-function requirePendingContinuation(
-  status: OrderStatusResponse,
-  predecessor: RangePreparationRecord,
-  operation: DurableCtfRangeOperation,
-  engineResult: CtfRangeEngineResult | null,
-): SettlementOrderContinuationReference {
-  const capability = predecessor.capability
-  const continuation = status.continuation
-  if (
-    capability === null ||
-    status.status !== 'awaiting_authorization' ||
-    continuation === null ||
-    (continuation.status !== 'open' && continuation.status !== 'declined') ||
-    status.orderId !== capability.orderId ||
-    engineResult === null ||
-    continuation.settlementGroupId !== engineResult.settlementGroupId ||
-    continuation.settlementGroupRevision !== engineResult.settlementGroupRevision
-  ) {
-    throw new Error('daemon residual continuation authority is unavailable')
-  }
-  const exactRemaining = Number(
-    deriveDurableCtfRangeSelectionRemainingAmount({
-      source: operation,
-      selection: engineResult.envelope.selection,
-      originalOrderAmount: predecessor.amountSubunits,
-    }),
-  )
-  if (!Number.isSafeInteger(exactRemaining) || status.remainingAmountSubunits !== exactRemaining) {
-    throw new Error('daemon residual continuation amount differs from the exact result')
-  }
-  return {
-    predecessorOrderId: status.orderId,
-    settlementGroupId: continuation.settlementGroupId,
-    settlementGroupRevision: continuation.settlementGroupRevision,
-    continuationRevision: continuation.revision,
-  }
-}
-
-function sameContinuationReference(
-  left: SettlementOrderContinuationReference | null,
-  right: SettlementOrderContinuationReference,
-): boolean {
-  return (
-    left !== null &&
-    left.predecessorOrderId === right.predecessorOrderId &&
-    left.settlementGroupId === right.settlementGroupId &&
-    left.settlementGroupRevision === right.settlementGroupRevision &&
-    left.continuationRevision === right.continuationRevision
-  )
 }
 
 function preparedMintAuthority(
@@ -1985,7 +1448,6 @@ function persistedOrderRequest(
 ): PersistedPreparationInput['request'] {
   const {
     walletSeedHex: _,
-    continueAfterPartialFill: __,
     consolidateProofs: ___,
     ...request
   } = input
@@ -2041,10 +1503,6 @@ function persistedMintAuthority(
 interface SourceResult {
   readonly authorization: Proof[]
   readonly keep: Proof[]
-}
-
-interface ResidualSourceResult extends SourceResult {
-  readonly spentInputs: Proof[]
 }
 
 function sourceResultRecord(result: SourceResult): Record<string, CashuProofRecord[]> {
@@ -2103,31 +1561,6 @@ async function prepareOrResumeSource(
   const source = await prepareSourceOperation(authority, wallet, consolidated.proofs)
   if (source === null) throw new Error('range consolidation plan did not make the source fundable')
   return completeNewSource(authority, source, wallet)
-}
-
-async function prepareOrResumeResidualSource(
-  authority: PreparedMintAuthority,
-  wallet: CtfRangeWalletLike,
-  candidates: readonly Proof[],
-  dependencies: DaemonCtfRangeOrderCoordinatorDependencies,
-): Promise<ResidualSourceResult> {
-  const existing = await getProofOperation(authority.preparation.sourceOperationId)
-  if (existing !== null) {
-    const result = await resumeSourceOperation(existing, authority, wallet, dependencies)
-    return { ...result, spentInputs: existing.inputs.map(toProof) }
-  }
-  const source = await prepareSourceOperation(authority, wallet, [...candidates])
-  if (source === null) {
-    throw new Error('returned residual change cannot fund its replacement authorization')
-  }
-  await persistPreparedSource(authority, source, candidates)
-  const result = await completePreparedSource(source, wallet)
-  await markProofOperationCompletedFenced(
-    authority.preparation.sourceOperationId,
-    sourceResultRecord(result),
-    authority.mutation(),
-  )
-  return { ...result, spentInputs: source.inputs }
 }
 
 async function resumeExistingConsolidations(

@@ -448,36 +448,6 @@ paths:
               schema:
                 $ref: '#/components/schemas/ProblemDetails'
 
-  /api/v1/{marketId}/orders/{orderId}/continuation/decline:
-    post:
-      operationId: declineOrderContinuation
-      summary: Decline one suspended residual continuation
-      security:
-        - nip98: []
-      parameters:
-        - $ref: '#/components/parameters/MarketId'
-        - name: orderId
-          in: path
-          required: true
-          schema:
-            type: string
-            format: uuid
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/DeclineOrderContinuationRequest'
-      responses:
-        '200':
-          description: Continuation is durably declined. Exact replay is idempotent.
-        '401':
-          description: Missing or invalid authentication.
-        '404':
-          description: Order or continuation is absent.
-        '409':
-          description: Stale revision or continuation already consumed.
-
   /api/v1/{marketId}/orderbook:
     get:
       operationId: getOrderBook
@@ -1149,7 +1119,7 @@ paths:
       description: >
         Returns the coordinator public key that every newly created bitCaster
         PAY_TO_UNLOCK authorization must bind. Clients fetch this authenticated
-        policy before creating or reauthorizing a range operation. Historical
+        policy before creating a range operation. Historical
         operations retain their persisted coordinator key.
       responses:
         '200':
@@ -1883,68 +1853,6 @@ components:
         - terminal
         - quarantined
 
-    SettlementOrderContinuationReference:
-      type: object
-      additionalProperties: false
-      required:
-        - predecessorOrderId
-        - settlementGroupId
-        - settlementGroupRevision
-        - continuationRevision
-      properties:
-        predecessorOrderId:
-          type: string
-          format: uuid
-        settlementGroupId:
-          type: string
-          format: uuid
-        settlementGroupRevision:
-          type: integer
-          format: int32
-          minimum: 1
-        continuationRevision:
-          type: integer
-          format: int64
-          minimum: 1
-
-    OrderContinuationState:
-      type: object
-      additionalProperties: false
-      required:
-        - settlementGroupId
-        - settlementGroupRevision
-        - revision
-        - status
-      properties:
-        settlementGroupId:
-          type: string
-          format: uuid
-        settlementGroupRevision:
-          type: integer
-          format: int32
-          minimum: 1
-        revision:
-          type: integer
-          format: int64
-          minimum: 1
-        status:
-          type: string
-          enum:
-            - open
-            - consumed
-            - declined
-
-    DeclineOrderContinuationRequest:
-      type: object
-      additionalProperties: false
-      required:
-        - expectedContinuationRevision
-      properties:
-        expectedContinuationRevision:
-          type: integer
-          format: int64
-          minimum: 1
-
     SettlementOrderIntent:
       type: object
       additionalProperties: false
@@ -2002,19 +1910,18 @@ components:
           description: >
             Required explicit collateral unit. No default is implied.
         timeInForce:
-          $ref: '#/components/schemas/TimeInForce'
+          $ref: '#/components/schemas/SettlementCapabilityTimeInForce'
           description: >
-            GTD requires a non-null expiresAt. GTC, FOK, and FAK forbid
-            expiresAt.
+            Public settlement capabilities accept only FOK and FAK. Both
+            values forbid expiresAt.
         expiresAt:
           type:
             - string
             - 'null'
           format: date-time
           description: >
-            Non-null for GTD intent and exactly null for every other
-            time-in-force value. Requiring the field gives the authenticated
-            intent one canonical wire representation.
+            Exactly null for FOK and FAK. Requiring the field gives the
+            authenticated intent one canonical wire representation.
 
     CreateSettlementCapabilityRequest:
       type: object
@@ -2024,7 +1931,6 @@ components:
         - clientOrderId
         - marketId
         - orderIntent
-        - continuation
         - artifact
       properties:
         stageIdempotencyKey:
@@ -2055,14 +1961,6 @@ components:
             Economic order terms to authenticate in the durable capability
             binding. Once the stage idempotency key is durably associated,
             reusing it with different terms conflicts.
-        continuation:
-          oneOf:
-            - $ref: '#/components/schemas/SettlementOrderContinuationReference'
-            - type: 'null'
-          description: >
-            Exactly null for an initial order. A fresh successor binds the
-            confirmed predecessor continuation right and consumes it
-            atomically when the capability is bound.
         artifact:
           type: string
           format: byte
@@ -2280,13 +2178,22 @@ components:
         Good-Till-Date. GTD requires a non-null `expiresAt`; GTC, FOK, and FAK
         forbid `expiresAt`.
 
+    SettlementCapabilityTimeInForce:
+      type: string
+      enum:
+        - FOK
+        - FAK
+      description: >
+        Public settlement capability time-in-force. FOK means Fill-Or-Kill.
+        FAK means Fill-And-Kill. Public capabilities cannot rest on the book
+        and cannot carry an expiry.
+
     OrderLifecycleStatus:
       type: string
       enum:
         - resting
         - matched
         - partially_filled
-        - awaiting_authorization
         - filled
         - cancelled
         - expired
@@ -2294,9 +2201,8 @@ components:
         - rejected_capacity
         - failed
       description: >
-        Closed public order lifecycle. `awaiting_authorization` means an
-        unfilled resting remainder is intentionally non-matchable until its
-        owner durably binds a replacement one-shot range authorization.
+        Public order lifecycle. A partial FAK ends with a cancelled remainder.
+        A FOK order is filled or cancelled.
 
     SettlementGroupStatus:
       type: string
@@ -2709,7 +2615,6 @@ components:
         - baseAsset
         - divisibility
         - activeSettlementGroup
-        - continuation
       properties:
         orderId:
           type: string
@@ -2760,13 +2665,6 @@ components:
           description: >
             Current nonterminal settlement group for this order, or null when
             no group currently owns an unconfirmed fill.
-        continuation:
-          oneOf:
-            - $ref: '#/components/schemas/OrderContinuationState'
-            - type: 'null'
-          description: >
-            Current durable residual-continuation state. It is non-null only
-            after a confirmed partial resting-order settlement.
         tokenSide:
           $ref: '#/components/schemas/TokenSide'
         baseAsset:

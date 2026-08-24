@@ -32,7 +32,7 @@ const liquidBook: SdkOrderBook = {
   spread: 600,
 }
 
-test('buildTradeTicket builds limit orders with oracle-verbatim YES outcome names', () => {
+test('buildTradeTicket builds limit orders with oracle-verbatim YES outcome names as FAK', () => {
   const ticket = buildTradeTicket({
     market: yesNoMarket,
     selection: { side: 'yes' },
@@ -50,7 +50,7 @@ test('buildTradeTicket builds limit orders with oracle-verbatim YES outcome name
     side: 'Buy',
     price: 500,
     amountSubunits: 1_000_000,
-    timeInForce: 'GTC',
+    timeInForce: 'FAK',
   })
 })
 
@@ -207,6 +207,6 @@ test('buildTradeTicket builds direct sell orders after same-outcome CTF swaps ar
     side: 'Sell',
     price: 500,
     amountSubunits: 1_000_000,
-    timeInForce: 'GTC',
+    timeInForce: 'FAK',
   })
 })
