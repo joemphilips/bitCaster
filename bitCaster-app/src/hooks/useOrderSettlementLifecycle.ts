@@ -129,7 +129,6 @@ function isDiscardableTerminalStatus(status: OrderLifecycleStatus): boolean {
     case "resting":
     case "matched":
     case "partially_filled":
-    case "awaiting_authorization":
     case "filled":
       return false;
     default:

@@ -69,34 +69,6 @@ export interface SettlementCapabilityReference {
   bindingDigest: string
 }
 
-export interface SettlementOrderContinuationReference {
-  predecessorOrderId: string
-  settlementGroupId: string
-  settlementGroupRevision: number
-  continuationRevision: number
-}
-
-export function decodeSettlementOrderContinuationReference(
-  value: unknown,
-): SettlementOrderContinuationReference {
-  const reference = exactEngineRecord(value, [
-    'predecessorOrderId',
-    'settlementGroupId',
-    'settlementGroupRevision',
-    'continuationRevision',
-  ])
-  requireUuid(reference.predecessorOrderId, 'continuation predecessor order id')
-  requireUuid(reference.settlementGroupId, 'continuation settlement group id')
-  requirePositiveSafeInteger(reference.settlementGroupRevision, 'continuation group revision')
-  requirePositiveSafeInteger(reference.continuationRevision, 'continuation revision')
-  return {
-    predecessorOrderId: reference.predecessorOrderId as string,
-    settlementGroupId: reference.settlementGroupId as string,
-    settlementGroupRevision: reference.settlementGroupRevision as number,
-    continuationRevision: reference.continuationRevision as number,
-  }
-}
-
 export type SettlementCapabilityState =
   | 'staged'
   | 'bindingPending'
@@ -110,7 +82,6 @@ export type OrderLifecycleStatus =
   | 'resting'
   | 'matched'
   | 'partially_filled'
-  | 'awaiting_authorization'
   | 'filled'
   | 'cancelled'
   | 'expired'
@@ -119,6 +90,7 @@ export type OrderLifecycleStatus =
   | 'failed'
 
 export type OrderTimeInForce = 'GTC' | 'FOK' | 'FAK' | 'GTD'
+export type SettlementCapabilityTimeInForce = 'FAK' | 'FOK'
 
 export interface SettlementOrderIntent {
   outcomeId: string
@@ -129,7 +101,7 @@ export interface SettlementOrderIntent {
   minimumFillAmountSubunits: number
   baseAsset: MarketBaseAsset
   collateralUnit: CtfCollateralUnit
-  timeInForce: OrderTimeInForce
+  timeInForce: SettlementCapabilityTimeInForce
   expiresAt: string | null
 }
 
@@ -138,7 +110,6 @@ export interface CreateSettlementCapabilityRequest {
   clientOrderId: string
   marketId: string
   orderIntent: SettlementOrderIntent
-  continuation: SettlementOrderContinuationReference | null
   artifact: string
 }
 
@@ -361,14 +332,6 @@ export interface OrderStatusResponse {
   baseAsset: MarketBaseAsset
   divisibility: MarketDivisibility
   activeSettlementGroup: SettlementGroupSummary | null
-  continuation: OrderContinuationState | null
-}
-
-export interface OrderContinuationState {
-  settlementGroupId: string
-  settlementGroupRevision: number
-  revision: number
-  status: 'open' | 'consumed' | 'declined'
 }
 
 export interface OrderEntry {
@@ -687,25 +650,6 @@ export class BitcasterEngineClient {
     if (response.status === 404) return null
     return decodeOrderStatusResponse(
       await readAllocationBoundedJsonResponse(response, SUBMIT_ORDER_RESPONSE_BYTES_MAX),
-    )
-  }
-
-  async declineOrderContinuation(
-    marketId: string,
-    orderId: string,
-    expectedContinuationRevision: number,
-  ): Promise<void> {
-    requireUuid(orderId, 'continuation order id')
-    requirePositiveSafeInteger(expectedContinuationRevision, 'continuation revision')
-    const bodyText = JSON.stringify({ expectedContinuationRevision })
-    await this.request(
-      `/api/v1/${encodePathSegment(marketId)}/orders/${encodePathSegment(orderId)}/continuation/decline`,
-      {
-        method: 'POST',
-        body: bodyText,
-        headers: { 'content-type': 'application/json' },
-      },
-      bodyText,
     )
   }
 
@@ -1108,7 +1052,6 @@ export function decodeOrderStatusResponse(value: unknown): OrderStatusResponse {
       'baseAsset',
       'divisibility',
       'activeSettlementGroup',
-      'continuation',
     ],
     ['expiresAt'],
   )
@@ -1131,8 +1074,6 @@ export function decodeOrderStatusResponse(value: unknown): OrderStatusResponse {
     response.activeSettlementGroup === null
       ? null
       : decodeSettlementGroup(response.activeSettlementGroup)
-  const continuation =
-    response.continuation === null ? null : decodeOrderContinuationState(response.continuation)
   return {
     orderId: response.orderId as string,
     marketId: response.marketId,
@@ -1145,7 +1086,6 @@ export function decodeOrderStatusResponse(value: unknown): OrderStatusResponse {
     baseAsset: 'sat',
     divisibility,
     activeSettlementGroup,
-    continuation,
   }
 }
 
@@ -1188,27 +1128,6 @@ function decodeOrderStatusFields(
 
 function requireOptionalIsoEngineTime(value: unknown, name: string): void {
   if (value !== undefined && value !== null) requireIsoEngineTime(value, name)
-}
-
-function decodeOrderContinuationState(value: unknown): OrderContinuationState {
-  const state = exactEngineRecord(value, [
-    'settlementGroupId',
-    'settlementGroupRevision',
-    'revision',
-    'status',
-  ])
-  requireUuid(state.settlementGroupId, 'continuation settlement group id')
-  requirePositiveSafeInteger(state.settlementGroupRevision, 'continuation group revision')
-  requirePositiveSafeInteger(state.revision, 'continuation revision')
-  if (state.status !== 'open' && state.status !== 'consumed' && state.status !== 'declined') {
-    throw new Error('order continuation status is invalid')
-  }
-  return {
-    settlementGroupId: state.settlementGroupId as string,
-    settlementGroupRevision: state.settlementGroupRevision as number,
-    revision: state.revision as number,
-    status: state.status,
-  }
 }
 
 function decodeFill(value: unknown): Fill {
@@ -1415,7 +1334,6 @@ function requireOrderStatus(value: unknown): asserts value is OrderLifecycleStat
     value !== 'resting' &&
     value !== 'matched' &&
     value !== 'partially_filled' &&
-    value !== 'awaiting_authorization' &&
     value !== 'filled' &&
     value !== 'cancelled' &&
     value !== 'expired' &&

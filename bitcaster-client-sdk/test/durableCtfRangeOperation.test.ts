@@ -36,7 +36,6 @@ import {
   deriveDurableCtfRangeSettledFaceAmount,
   deriveDurableCtfRangeRefundOperationId,
   deriveDurableCtfRangeRefundRequestFingerprint,
-  deriveDurableCtfResidualDecision,
   deriveRootCtfOutcomeCollectionId,
   prepareDurableCtfRangeRecoveredResult,
   prepareDurableCtfRangeVerifiedResult,
@@ -1489,9 +1488,8 @@ test('mint-verified recovery stages the exact durable result without an engine e
   )
 })
 
-test('refund preserves offered class and residual reauthorization links exact change', async () => {
+test('refund preserves offered class and exact change authority', async () => {
   const operation = fixture()
-  const record = await recordFor(operation)
   const refundOutput = OutputData.createSingleDeterministicData('3', SEED, 80, OFFER_KEYSET)
   const refund = createDurableCtfRangeRefundOperation({
     operationId: 'refund-operation-1',
@@ -1512,59 +1510,6 @@ test('refund preserves offered class and residual reauthorization links exact ch
         outputs: [OutputData.serialize(refundOutput)],
       }),
     /offered asset class/,
-  )
-
-  const selection = createCtfSelectionBitmap(4, [1, 3])
-  const result = recoverDurableCtfRangeResult(
-    operation,
-    createDurableCtfRangeResultEnvelope({
-      operation,
-      requestDigest: 'ef'.repeat(32),
-      selection,
-      signatures: signaturesFor(operation, selection),
-    }),
-    record,
-    resolveKeyset,
-  )
-  const residual = deriveDurableCtfResidualDecision({
-    source: operation,
-    result,
-    originalOrderAmount: 4,
-    remainingOrderAmount: 2,
-    restingOrder: true,
-  })
-  assert.equal(residual.kind, 'awaiting-authorization')
-  assert.equal(
-    residual.kind === 'awaiting-authorization' ? residual.predecessorOperationId : '',
-    operation.operationId,
-  )
-  assert.equal(
-    residual.kind === 'awaiting-authorization'
-      ? residual.sourceProofs.every((proof) => Amount.from(proof.amount).toBigInt() > 0n)
-      : false,
-    true,
-  )
-  assert.throws(
-    () =>
-      deriveDurableCtfResidualDecision({
-        source: operation,
-        result: { ...result, operationId: 'foreign-operation' },
-        originalOrderAmount: 4,
-        remainingOrderAmount: 2,
-        restingOrder: true,
-      }),
-    /result is foreign/,
-  )
-  assert.throws(
-    () =>
-      deriveDurableCtfResidualDecision({
-        source: operation,
-        result,
-        originalOrderAmount: 4,
-        remainingOrderAmount: 3,
-        restingOrder: true,
-      }),
-    /remaining amount differs/,
   )
 })
 

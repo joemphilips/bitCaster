@@ -207,7 +207,7 @@ test('bitcaster-cli delegates commands to bitcaster-daemon RPC', async () => {
       '--amount',
       '200',
       '--tif',
-      'GTC',
+      'FOK',
       '--no-preflight-split',
     ])
     await runCli(daemonUrl, [
@@ -290,7 +290,6 @@ test('bitcaster-cli delegates commands to bitcaster-daemon RPC', async () => {
           price: 42,
           amountSubunits: 100,
           minimumFillAmountSubunits: 50,
-          continueAfterPartialFill: false,
           consolidateProofs: false,
           timeInForce: 'FAK',
           expiresAt: null,
@@ -306,9 +305,8 @@ test('bitcaster-cli delegates commands to bitcaster-daemon RPC', async () => {
           side: 'Buy',
           price: 55,
           amountSubunits: 200,
-          continueAfterPartialFill: false,
           consolidateProofs: false,
-          timeInForce: 'GTC',
+          timeInForce: 'FOK',
           expiresAt: null,
           preflightSplit: false,
         },
@@ -322,7 +320,6 @@ test('bitcaster-cli delegates commands to bitcaster-daemon RPC', async () => {
           side: 'Buy',
           price: 60,
           amountSubunits: 100,
-          continueAfterPartialFill: false,
           consolidateProofs: false,
           timeInForce: 'FAK',
           expiresAt: null,
@@ -1903,8 +1900,9 @@ test('P47-4: bitcaster-cli order submit accepts named flags', async () => {
       '55',
       '--amount',
       '200',
-      '--continue-after-partial-fill',
       '--consolidate-proofs',
+      '--tif',
+      'FOK',
       '--no-preflight-split',
     ])
     await runCli(`http://127.0.0.1:${address.port}`, [
@@ -1921,10 +1919,7 @@ test('P47-4: bitcaster-cli order submit accepts named flags', async () => {
       '--amount',
       '100',
       '--tif',
-      'GTD',
-      '--expires-at',
-      '2030-01-01T00:00:00Z',
-      '--continue-after-partial-fill',
+      'FAK',
     ])
     assert.deepEqual(received, [
       {
@@ -1936,7 +1931,6 @@ test('P47-4: bitcaster-cli order submit accepts named flags', async () => {
           side: 'Buy',
           price: 42,
           amountSubunits: 100,
-          continueAfterPartialFill: false,
           consolidateProofs: false,
           timeInForce: 'FAK',
           expiresAt: null,
@@ -1952,9 +1946,8 @@ test('P47-4: bitcaster-cli order submit accepts named flags', async () => {
           side: 'Buy',
           price: 55,
           amountSubunits: 200,
-          continueAfterPartialFill: true,
           consolidateProofs: true,
-          timeInForce: 'GTC',
+          timeInForce: 'FOK',
           expiresAt: null,
           preflightSplit: false,
         },
@@ -1968,10 +1961,9 @@ test('P47-4: bitcaster-cli order submit accepts named flags', async () => {
           side: 'Sell',
           price: 40,
           amountSubunits: 100,
-          continueAfterPartialFill: true,
           consolidateProofs: false,
-          timeInForce: 'GTD',
-          expiresAt: '2030-01-01T00:00:00.000Z',
+          timeInForce: 'FAK',
+          expiresAt: null,
           preflightSplit: true,
         },
       },
@@ -2481,13 +2473,53 @@ test('P47-7: bitcaster-cli order submit --dry-run prints payload without calling
     price: 42,
     amountSubunits: 100,
     minimumFillAmountSubunits: 50,
-    continueAfterPartialFill: false,
     consolidateProofs: false,
     timeInForce: 'FAK',
     expiresAt: null,
     preflightSplit: true,
   })
   assert.doesNotMatch(result.stdout, /secret|witness|mnemonic|nwc|authorization|sig/i)
+})
+
+test('public order submit accepts only FAK and FOK time in force values', async () => {
+  await assertCliFailure(
+    [
+      'order',
+      'submit',
+      '--market',
+      'cond-YES',
+      '--outcome',
+      'YES',
+      '--side',
+      'Buy',
+      '--price',
+      '42',
+      '--amount',
+      '100',
+      '--tif',
+      'GTC',
+    ],
+    /Invalid time in force: GTC/,
+  )
+  await assertCliFailure(
+    [
+      'order',
+      'submit',
+      '--market',
+      'cond-YES',
+      '--outcome',
+      'YES',
+      '--side',
+      'Buy',
+      '--price',
+      '42',
+      '--amount',
+      '100',
+      '--tif',
+      'GTD',
+    ],
+    /Invalid time in force: GTD/,
+  )
 })
 
 test('P47-7: bitcaster-cli wallet and market --dry-run commands do not call daemon and redact sensitive fields', async () => {

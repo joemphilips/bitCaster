@@ -130,7 +130,7 @@ export function buildTradeTicket(params: {
     side: requestSide,
     price,
     amountSubunits,
-    timeInForce: orderType === 'market' ? 'FAK' : 'GTC',
+    timeInForce: 'FAK',
   }
 
   return {

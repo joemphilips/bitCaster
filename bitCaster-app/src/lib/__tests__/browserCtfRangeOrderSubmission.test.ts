@@ -254,8 +254,8 @@ describe("submitBrowserCtfRangeOrder", () => {
 
   it.each([
     ["FAK", "FAK"],
-    ["GTC", "FOK"],
-  ] as const)("submits a durable %s ticket as immediate %s", async (ticketTif, expectedTif) => {
+    ["FOK", "FAK"],
+  ] as const)("submits a durable %s ticket as GUI FAK", async (ticketTif, expectedTif) => {
     const ticket: TradeTicket = {
       marketId: "condition-1-YES",
       request: {

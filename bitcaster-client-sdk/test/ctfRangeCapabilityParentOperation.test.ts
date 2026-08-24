@@ -462,7 +462,7 @@ function request(clientOrderId: string, side: 'Buy' | 'Sell'): CtfRangeOrderRequ
     baseAsset: 'sat',
     collateralUnit: 'msat',
     divisibility: 10_000,
-    timeInForce: 'GTC',
+    timeInForce: 'FAK',
     expiresAt: null,
     mintUrl: MINT_URL,
   }

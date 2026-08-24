@@ -354,8 +354,7 @@ async function loadBrowserRangePreparation(input: {
         baseAsset: "sat",
         collateralUnit: "msat",
         divisibility: input.market.divisibility,
-        timeInForce:
-          input.ticket.request.timeInForce === "GTC" ? "FOK" : input.ticket.request.timeInForce,
+        timeInForce: "FAK",
         expiresAt: null,
         mintUrl: input.mintUrl,
       },

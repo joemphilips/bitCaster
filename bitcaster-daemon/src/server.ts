@@ -139,11 +139,6 @@ export interface EngineClientLike {
     resultId: string,
     request: AcknowledgeSettlementCapabilityResultRequest,
   ): Promise<SettlementCapabilityResultResponse | null>
-  declineOrderContinuation?(
-    marketId: string,
-    orderId: string,
-    expectedContinuationRevision: number,
-  ): Promise<void>
 }
 
 export interface PrepareSettlementCapabilityInput {
@@ -156,12 +151,11 @@ export interface PrepareSettlementCapabilityInput {
   price: number
   amountSubunits: number
   minimumFillAmountSubunits: number
-  continueAfterPartialFill: boolean
   consolidateProofs: boolean
   baseAsset: 'sat'
   collateralUnit: 'msat'
   divisibility: number
-  timeInForce: 'FAK' | 'FOK' | 'GTC' | 'GTD'
+  timeInForce: 'FAK' | 'FOK'
   expiresAt: string | null
   mintUrl: string
   walletSeedHex: string
@@ -809,33 +803,17 @@ export async function dispatch(
         }
       }
       if (
-        orderParams.continueAfterPartialFill !== undefined &&
-        typeof orderParams.continueAfterPartialFill !== 'boolean'
-      ) {
-        return { ok: false, error: 'Order rejected: continuation policy must be boolean' }
-      }
-      if (
         orderParams.consolidateProofs !== undefined &&
         typeof orderParams.consolidateProofs !== 'boolean'
       ) {
         return { ok: false, error: 'Order rejected: proof consolidation policy must be boolean' }
       }
-      if (
-        orderParams.continueAfterPartialFill === true &&
-        orderParams.timeInForce !== 'GTC' &&
-        orderParams.timeInForce !== 'GTD'
-      ) {
-        return { ok: false, error: 'Order rejected: continuation requires a resting order' }
-      }
       const expiresAt = orderParams.expiresAt ?? null
       if (
-        (orderParams.timeInForce === 'GTD' &&
-          (typeof expiresAt !== 'string' ||
-            !Number.isFinite(Date.parse(expiresAt)) ||
-            new Date(expiresAt).toISOString() !== expiresAt)) ||
-        (orderParams.timeInForce !== 'GTD' && expiresAt !== null)
+        expiresAt !== null ||
+        (orderParams.timeInForce !== 'FAK' && orderParams.timeInForce !== 'FOK')
       ) {
-        return { ok: false, error: 'Order rejected: GTD requires one canonical UTC expiry' }
+        return { ok: false, error: 'Order rejected: public capability orders require FAK or FOK' }
       }
       const settlementSupport = checkOrderSettlementSupport({
         request: { side: orderParams.side },
@@ -899,13 +877,12 @@ export async function dispatch(
             price: orderParams.price,
             amountSubunits,
             minimumFillAmountSubunits,
-            continueAfterPartialFill: orderParams.continueAfterPartialFill === true,
             consolidateProofs: orderParams.consolidateProofs === true,
             baseAsset: marketUnit.baseAsset,
             collateralUnit: 'msat',
             divisibility: marketUnit.divisibility,
             timeInForce: orderParams.timeInForce,
-            expiresAt,
+            expiresAt: null,
             mintUrl: context.profile.mintUrl,
             walletSeedHex: context.secrets.walletSeedHex,
           },

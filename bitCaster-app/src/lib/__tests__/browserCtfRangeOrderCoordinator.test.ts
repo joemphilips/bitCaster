@@ -62,7 +62,6 @@ import type {
 import { sha256 } from "@noble/hashes/sha2.js";
 import {
   BrowserCtfRangeOrderCoordinator,
-  BrowserCtfRangeOrderError,
   type BrowserCtfRangeEngine,
   type BrowserCtfRangeOrderCoordinatorDependencies,
 } from "../browserCtfRangeOrderCoordinator";
@@ -1588,23 +1587,6 @@ describe("browser CTF range order coordinator", () => {
     ).toBe("terminal");
   });
 
-  it("rejects GTC before any durable or network mutation", async () => {
-    const database = createDatabase();
-    const preparation = persistedPreparation("range-gtc", "GTC");
-    const engine = engineMock();
-    const coordinator = createCoordinator(database, sourceWallet(), engine);
-
-    await expect(
-      coordinator.prepareAndSubmit({
-        seed: SEED,
-        preparation,
-        candidates: [sourceProof(preparation.offerKeyset.id)],
-      }),
-    ).rejects.toBeInstanceOf(BrowserCtfRangeOrderError);
-    expect(await database.ctfRangePreparations.count()).toBe(0);
-    expect(await database.custodyOperations.count()).toBe(0);
-    expect(engine.createCalls).toBe(0);
-  });
 });
 
 function createCoordinator(
@@ -2067,13 +2049,12 @@ function discoveredOrderStatus(): OrderStatusResponse {
     baseAsset: "sat",
     divisibility: 10_000,
     activeSettlementGroup: null,
-    continuation: null,
   };
 }
 
 function persistedPreparation(
   operationId: string,
-  timeInForce: "FAK" | "FOK" | "GTC" = "FAK",
+  timeInForce: "FAK" | "FOK" = "FAK",
   order: Partial<Pick<CtfRangeOrderRequest, "side" | "tokenSide">> = {},
   mintFacts = reviewedMintFacts(),
 ) {
@@ -2092,7 +2073,7 @@ function persistedPreparation(
   });
 }
 
-function rangeRequest(timeInForce: "FAK" | "FOK" | "GTC"): CtfRangeOrderRequest {
+function rangeRequest(timeInForce: "FAK" | "FOK"): CtfRangeOrderRequest {
   return {
     clientOrderId: `client-${timeInForce.toLowerCase()}`,
     marketId: `${CONDITION_ID}-YES`,

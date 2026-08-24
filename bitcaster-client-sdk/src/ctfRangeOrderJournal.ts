@@ -4,10 +4,6 @@ import {
   encodeBoundedDurableArtifact,
 } from './durableCustody.ts'
 import { assertOrderRouteBelongsToCondition } from './orderRoute.ts'
-import {
-  decodeSettlementOrderContinuationReference,
-  type SettlementOrderContinuationReference,
-} from './engineClient.ts'
 
 export const CTF_RANGE_ORDER_PREPARATION_BYTES_MAX = 256 * 1_024
 export const CTF_RANGE_ORDER_PREPARATION_PAGE_LIMIT_MAX = 256
@@ -20,8 +16,6 @@ const IDENTITY_FIELDS = [
   'scopeId',
   'rangeOperationId',
   'sourceOperationId',
-  'sourceKind',
-  'predecessorRangeOperationId',
   'authorizationId',
   'clientOrderId',
   'orderRouteId',
@@ -33,8 +27,6 @@ const IDENTITY_FIELDS = [
   'priceSubunits',
   'amountSubunits',
   'minimumFillAmountSubunits',
-  'continueAfterPartialFill',
-  'continuation',
   'divisibility',
   'authorizationExpiresAtUnixSeconds',
   'preparationBytes',
@@ -57,8 +49,6 @@ export type CtfRangeOrderPreparationLifecycle =
   | 'submission-rejected'
   | 'terminal'
 
-export type CtfRangeOrderPreparationSourceKind = 'wallet-prepared' | 'residual-change'
-
 export interface CtfRangeOrderPreparationCapability {
   readonly artifactId: string
   readonly bindingDigest: string
@@ -70,8 +60,6 @@ export interface CtfRangeOrderPreparationIdentity {
   readonly scopeId: string
   readonly rangeOperationId: string
   readonly sourceOperationId: string
-  readonly sourceKind: CtfRangeOrderPreparationSourceKind
-  readonly predecessorRangeOperationId: string | null
   readonly authorizationId: string
   readonly clientOrderId: string
   readonly orderRouteId: string
@@ -83,8 +71,6 @@ export interface CtfRangeOrderPreparationIdentity {
   readonly priceSubunits: number
   readonly amountSubunits: number
   readonly minimumFillAmountSubunits: number
-  readonly continueAfterPartialFill: boolean
-  readonly continuation: SettlementOrderContinuationReference | null
   readonly divisibility: 10_000 | 1_000_000
   readonly authorizationExpiresAtUnixSeconds: number
   readonly preparationBytes: Uint8Array
@@ -266,8 +252,6 @@ export function sameCtfRangeOrderPreparationIdentity(
     left.scopeId === right.scopeId &&
     left.rangeOperationId === right.rangeOperationId &&
     left.sourceOperationId === right.sourceOperationId &&
-    left.sourceKind === right.sourceKind &&
-    left.predecessorRangeOperationId === right.predecessorRangeOperationId &&
     left.authorizationId === right.authorizationId &&
     left.clientOrderId === right.clientOrderId &&
     left.orderRouteId === right.orderRouteId &&
@@ -279,8 +263,6 @@ export function sameCtfRangeOrderPreparationIdentity(
     left.priceSubunits === right.priceSubunits &&
     left.amountSubunits === right.amountSubunits &&
     left.minimumFillAmountSubunits === right.minimumFillAmountSubunits &&
-    left.continueAfterPartialFill === right.continueAfterPartialFill &&
-    sameContinuation(left.continuation, right.continuation) &&
     left.divisibility === right.divisibility &&
     left.authorizationExpiresAtUnixSeconds === right.authorizationExpiresAtUnixSeconds &&
     left.createdAtMs === right.createdAtMs &&
@@ -338,17 +320,7 @@ export function decodeCtfRangeOrderPreparationPageLimit(value: unknown): number 
 function decodeIdentityFields(
   candidate: Readonly<Record<string, unknown>>,
 ): CtfRangeOrderPreparationIdentity {
-  const sourceKind = requireClosed(
-    candidate.sourceKind,
-    ['wallet-prepared', 'residual-change'],
-    'source kind',
-  )
   const rangeOperationId = requireText(candidate.rangeOperationId, 'range operation id')
-  const predecessorRangeOperationId =
-    candidate.predecessorRangeOperationId === null
-      ? null
-      : requireText(candidate.predecessorRangeOperationId, 'predecessor range operation id')
-  assertSourceLineage(sourceKind, rangeOperationId, predecessorRangeOperationId)
   const divisibility = requireDivisibility(candidate.divisibility)
   const priceSubunits = requirePositiveSafeInteger(candidate.priceSubunits, 'price')
   if (priceSubunits >= divisibility) {
@@ -364,14 +336,6 @@ function decodeIdentityFields(
     candidate.minimumFillAmountSubunits,
     'minimum fill amount',
   )
-  if (typeof candidate.continueAfterPartialFill !== 'boolean') {
-    throw new Error('CTF range continuation policy is invalid')
-  }
-  const continuation =
-    candidate.continuation === null
-      ? null
-      : decodeSettlementOrderContinuationReference(candidate.continuation)
-  assertContinuationLineage(sourceKind, candidate.continueAfterPartialFill, continuation)
   if (
     amountSubunits % divisibility !== 0 ||
     minimumFillAmountSubunits % divisibility !== 0 ||
@@ -393,8 +357,6 @@ function decodeIdentityFields(
     scopeId,
     rangeOperationId,
     sourceOperationId: requireText(candidate.sourceOperationId, 'source operation id'),
-    sourceKind,
-    predecessorRangeOperationId,
     authorizationId: requireText(candidate.authorizationId, 'authorization id'),
     clientOrderId: requireText(candidate.clientOrderId, 'client order id', SHORT_ID_LENGTH_MAX),
     orderRouteId,
@@ -406,8 +368,6 @@ function decodeIdentityFields(
     priceSubunits,
     amountSubunits,
     minimumFillAmountSubunits,
-    continueAfterPartialFill: candidate.continueAfterPartialFill,
-    continuation,
     divisibility,
     authorizationExpiresAtUnixSeconds: requirePositiveSafeInteger(
       candidate.authorizationExpiresAtUnixSeconds,
@@ -415,63 +375,6 @@ function decodeIdentityFields(
     ),
     preparationBytes: requireCanonicalBytes(candidate.preparationBytes),
     createdAtMs: requireNonnegativeSafeInteger(candidate.createdAtMs, 'created time'),
-  }
-}
-
-function assertContinuationLineage(
-  sourceKind: CtfRangeOrderPreparationSourceKind,
-  continueAfterPartialFill: boolean,
-  continuation: SettlementOrderContinuationReference | null,
-): void {
-  switch (sourceKind) {
-    case 'wallet-prepared':
-      if (continuation !== null) {
-        throw new Error('CTF range initial order has continuation authority')
-      }
-      return
-    case 'residual-change':
-      if (!continueAfterPartialFill || continuation === null) {
-        throw new Error('CTF range residual continuation authority is incomplete')
-      }
-      return
-    default:
-      return assertNever(sourceKind)
-  }
-}
-
-function sameContinuation(
-  left: SettlementOrderContinuationReference | null,
-  right: SettlementOrderContinuationReference | null,
-): boolean {
-  return left === null || right === null
-    ? left === right
-    : left.predecessorOrderId === right.predecessorOrderId &&
-        left.settlementGroupId === right.settlementGroupId &&
-        left.settlementGroupRevision === right.settlementGroupRevision &&
-        left.continuationRevision === right.continuationRevision
-}
-
-function assertSourceLineage(
-  sourceKind: CtfRangeOrderPreparationSourceKind,
-  rangeOperationId: string,
-  predecessorRangeOperationId: string | null,
-): void {
-  switch (sourceKind) {
-    case 'wallet-prepared':
-      if (predecessorRangeOperationId !== null) {
-        throw new Error('CTF range preparation predecessor authority is invalid')
-      }
-      return
-    case 'residual-change':
-      if (
-        predecessorRangeOperationId === null ||
-        predecessorRangeOperationId === rangeOperationId
-      ) {
-        throw new Error('CTF range preparation predecessor authority is invalid')
-      }
-      return
-    default:
-      return assertNever(sourceKind)
   }
 }
 

@@ -576,7 +576,6 @@ components:
         - resting
         - matched
         - partially_filled
-        - awaiting_authorization
         - filled
         - cancelled
         - expired

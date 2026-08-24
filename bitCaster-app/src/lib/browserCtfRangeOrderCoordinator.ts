@@ -2398,9 +2398,6 @@ function requireImmediateOrder(preparation: PersistedCtfRangeOrderPreparation): 
     case "FAK":
     case "FOK":
       return;
-    case "GTC":
-    case "GTD":
-      throw rangeError("invalid-order-type");
     default:
       return assertNever(preparation.request.timeInForce);
   }
@@ -2417,7 +2414,6 @@ function requireImmediateSubmitResponse(
     response.divisibility !== preparation.divisibility ||
     response.remainingAmountSubunits !== 0 ||
     response.status === "resting" ||
-    response.status === "awaiting_authorization" ||
     (preparation.request.timeInForce === "FOK" && response.status === "partially_filled")
   ) {
     throw new Error("engine returned an invalid immediate order response");
