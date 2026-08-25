@@ -662,6 +662,134 @@ test('operation and artifacts round-trip exactly with deferred FK ordering', asy
   }
 })
 
+test('exact reservation locks a retained wallet-receive proof', async () => {
+  const fixture = await profile()
+  try {
+    const prepared = exactIntent(fixture.walletScopeId)
+    const fence = await claimCustodyScopeLease(fixture.directory, {
+      scopeId: fixture.walletScopeId,
+      incarnationId: 'incarnation-retained-input',
+      observedAtMs: 2,
+    })
+    await withDurableCustodyUnitOfWork(fixture.directory, fence, 3, (database) => {
+      const store = new DurableCustodySqliteStore(database)
+      const proofId = prepared.record.operation.reservation.inputs[0]!.proofId
+      store.putProofCas(
+        { ...proofRow(fixture.walletScopeId), proofId, selectability: 'retained' },
+        null,
+      )
+      insertLegacyTargetReservation(
+        database,
+        fixture.walletScopeId,
+        prepared.record.operation.reservation.reservationId,
+      )
+      const transaction = new DurableCustodyTransactionSqlite(database, fixture.walletScopeId, 3)
+      applyDurableCustodyTransaction(
+        transaction,
+        {
+          scope: prepared.record.scope,
+          owner: {
+            incarnationId: fence.incarnationId,
+            fencingEpoch: fence.fencingEpoch,
+            observedAtMs: 3,
+          },
+          operationRows: [
+            {
+              operationId: prepared.record.operation.operationId,
+              expectedRevision: null,
+            },
+          ],
+        },
+        (selected) =>
+          bindDurableCustodyProofOperation(selected, prepared.record, {
+            requestBody: prepared.artifacts[0][1],
+            output: prepared.artifacts[1][1],
+            privateMaterial: prepared.artifacts[2][1],
+          }),
+      )
+    })
+    const database = await openDaemonStateSqlite(fixture.directory)
+    try {
+      const proofId = prepared.record.operation.reservation.inputs[0]!.proofId
+      const proof = new DurableCustodySqliteStore(database).getProof(
+        fixture.walletScopeId,
+        proofId,
+      )
+      assert.equal(proof?.selectability, 'locked')
+      assert.equal(proof?.reservationOperationId, prepared.record.operation.operationId)
+      assert.equal(proof?.revision, 1)
+    } finally {
+      database.close()
+    }
+  } finally {
+    await rm(fixture.directory, { recursive: true, force: true })
+  }
+})
+
+test('exact reservation refuses a retained proof without its legacy reservation', async () => {
+  const fixture = await profile()
+  try {
+    const prepared = exactIntent(fixture.walletScopeId)
+    const proofId = prepared.record.operation.reservation.inputs[0]!.proofId
+    const fence = await claimCustodyScopeLease(fixture.directory, {
+      scopeId: fixture.walletScopeId,
+      incarnationId: 'incarnation-foreign-retained-input',
+      observedAtMs: 2,
+    })
+    await withDurableCustodyUnitOfWork(fixture.directory, fence, 3, (database) => {
+      new DurableCustodySqliteStore(database).putProofCas(
+        { ...proofRow(fixture.walletScopeId), proofId, selectability: 'retained' },
+        null,
+      )
+    })
+
+    await assert.rejects(
+      () =>
+        withDurableCustodyUnitOfWork(fixture.directory, fence, 4, (database) => {
+          applyDurableCustodyTransaction(
+            new DurableCustodyTransactionSqlite(database, fixture.walletScopeId, 4),
+            {
+              scope: prepared.record.scope,
+              owner: {
+                incarnationId: fence.incarnationId,
+                fencingEpoch: fence.fencingEpoch,
+                observedAtMs: 4,
+              },
+              operationRows: [
+                {
+                  operationId: prepared.record.operation.operationId,
+                  expectedRevision: null,
+                },
+              ],
+            },
+            (selected) =>
+              bindDurableCustodyProofOperation(selected, prepared.record, {
+                requestBody: prepared.artifacts[0][1],
+                output: prepared.artifacts[1][1],
+                privateMaterial: prepared.artifacts[2][1],
+              }),
+          )
+        }),
+      /retained proof lacks exact legacy reservation/,
+    )
+
+    const database = await openDaemonStateSqlite(fixture.directory)
+    try {
+      const store = new DurableCustodySqliteStore(database)
+      assert.equal(store.getProof(fixture.walletScopeId, proofId)?.selectability, 'retained')
+      assert.equal(store.getOperation(prepared.record.operation.operationId), null)
+      const reservations = database
+        .prepare('SELECT COUNT(*) AS count FROM custody_proof_reservations')
+        .get() as { count: number }
+      assert.equal(reservations.count, 0)
+    } finally {
+      database.close()
+    }
+  } finally {
+    await rm(fixture.directory, { recursive: true, force: true })
+  }
+})
+
 test('history paging uses exact multibyte UTF-8 page bytes at max and max plus one', () => {
   const prefix: CustodyHistoryRow[] = Array.from({ length: 255 }, (_, index) => ({
     operationId: `界-${index}`,
@@ -1585,7 +1713,10 @@ function exactIntent(
   }
 }
 
-function proofRow(scopeId: string): CustodyProofSqliteRow {
+function proofRow(
+  scopeId: string,
+  selectability: CustodyProofSqliteRow['selectability'] = 'selectable',
+): CustodyProofSqliteRow {
   return {
     proofId: 'a'.repeat(64),
     scopeId,
@@ -1603,13 +1734,38 @@ function proofRow(scopeId: string): CustodyProofSqliteRow {
     signatureVerified: true,
     dleqState: 'not-present',
     nut07State: 'UNSPENT',
-    selectability: 'selectable',
+    selectability,
     storageClass: 'pinned-operation-bound-deterministic',
     reservationOperationId: null,
     revision: 0,
     createdAtMs: 3,
     updatedAtMs: 3,
   }
+}
+
+function insertLegacyTargetReservation(
+  database: Awaited<ReturnType<typeof openDaemonStateSqlite>>,
+  scopeId: string,
+  reservationId: string,
+): void {
+  database
+    .prepare(
+      `INSERT INTO target_wallet_proofs (
+         proof_id, scope_id, normalized_mint, unit, keyset_id, amount, secret,
+         signature, proof_body, state, reserved_by, asset_kind, condition_id,
+         outcome_set_id, base_asset, created_at_ms, updated_at_ms
+       ) VALUES (?, ?, 'https://mint.example', 'sat', ?, 1, ?, ?, ?,
+         'reserved', ?, 'sats', NULL, NULL, 'sat', 3, 3)`,
+    )
+    .run(
+      'c'.repeat(64),
+      scopeId,
+      KEYSET_ID,
+      'predecessor-secret-1',
+      `02${'22'.repeat(32)}`,
+      new TextEncoder().encode('{"proof":1}'),
+      reservationId,
+    )
 }
 
 function insertMinimalOperation(
