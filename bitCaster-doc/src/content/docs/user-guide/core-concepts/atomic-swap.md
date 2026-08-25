@@ -15,8 +15,8 @@ FAK. The CLI exposes FAK and FOK. Each public attempt uses one one-shot
 capability. A partial FAK settles its committed fills and cancels the remainder.
 A zero-fill FAK cancels. FOK commits the full requested quantity or cancels the
 complete request from the admission snapshot. Public GTC, GTD, continuation,
-and residual reauthorization are not available. Internal LMSR bot GTC is not a
-public client feature.
+and residual reauthorization are not available. Internal custody-backed LMSR
+quotes use GTC. They are not public client orders.
 
 When you place a FAK or FOK order, your wallet authorizes it with a `PAY_TO_UNLOCK`
 capability. The matching engine checks this authorization when it admits the
@@ -41,7 +41,11 @@ release.
 
 When the mint confirms a group, it returns exact result entries. Your wallet
 stores the submitted operation and the confirmed result. If the wallet stops or
-loses its connection, it can recover the exact operation and result later.
+loses its connection, it can recover the exact operation and result later. An
+acknowledged FAK or FOK operation stores its operation facts and result. These
+records survive a server restart. An intentional reuse of the same client
+order ID with the same operation facts returns the stored result. Changed
+facts return a conflict.
 
 ## Cancellation
 

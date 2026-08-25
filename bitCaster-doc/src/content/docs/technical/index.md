@@ -11,7 +11,8 @@ FAK. The CLI exposes FAK and FOK. Each public attempt uses one one-shot
 capability. A partial FAK settles committed fills and cancels the remainder. A
 zero-fill FAK cancels. FOK commits the full requested quantity or cancels the
 complete request from the admission snapshot. Public GTC, GTD, continuation,
-and residual reauthorization are not available.
+and residual reauthorization are not available. Internal custody-backed LMSR
+quotes use GTC. They are not public client orders.
 
 ## Settlement groups
 
@@ -21,7 +22,10 @@ submits one multi-party mint conversion for that group.
 
 `fillId` identifies one real fill. `groupId` identifies one atomic settlement
 group. A confirmed group returns exact mint result entries. Clients persist and
-recover their submitted operations and confirmed results.
+recover their submitted operations and confirmed results. An acknowledged FAK
+or FOK operation stores its operation facts and result. These records survive a
+server restart. An intentional reuse of the same client order ID with the same
+operation facts returns the stored result. Changed facts return a conflict.
 
 The engine receives only the exact input proofs and public output manifest that
 the wallet authorizes for an order. It does not receive the wallet seed, output

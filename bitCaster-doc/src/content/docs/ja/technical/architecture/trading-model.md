@@ -13,7 +13,7 @@ bitCaster は中央指値注文板（CLOB）を使用します。指値注文は
 
 ## 初回リリースの公開範囲
 
-公開サーバーは FAK と FOK を受け付けます。GUI には FAK を表示します。CLI は FAK と FOK に対応します。各公開試行は 1 件の one-shot capability を使用します。一部約定では、確定した fill を決済し、残りを取り消します。約定がない FAK も取り消します。FOK は admission snapshot に基づき、要求数量全体を確定するか、注文全体を取り消します。公開 GTC、GTD、継続、および残余注文の再認可は利用できません。内部 LMSR bot の GTC は private operator 機能であり、公開クライアントの機能ではありません。
+公開サーバーは FAK と FOK を受け付けます。GUI には FAK を表示します。CLI は FAK と FOK に対応します。各公開試行は 1 件の one-shot capability を使用します。一部約定では、確定した fill を決済し、残りを取り消します。約定がない FAK も取り消します。FOK は admission snapshot に基づき、要求数量全体を確定するか、注文全体を取り消します。公開 GTC、GTD、継続、および残余注文の再認可は利用できません。内部の custody-backed LMSR quote は GTC を使用します。これは公開クライアントの注文ではありません。
 
 ## 注文の認可
 
@@ -27,11 +27,11 @@ capability はその 1 回の試行で認可された range を対象にしま�
 
 エンジンは 1 件以上の fill を 1 件のアトミック決済グループにまとめることができます。`groupId` は決済グループを識別します。ミントはグループに対して 1 件の複数当事者 conversion を受け取ります。現在のプロダクトは complementary conversion と mint conversion をサポートします。このリリースでは merge conversion を提供しません。
 
-ミントが確定すると、正確な result entry を返します。クライアントは送信した operation と確定した result を保持します。クラッシュ後もこの正確な記録を回復できます。結果が不確実な場合、クライアントは永続的なエンジンとミントの authority で照合します。
+ミントが確定すると、正確な result entry を返します。クライアントは送信した operation と確定した result を保持します。クラッシュ後もこの正確な記録を回復できます。認識済みの FAK または FOK operation は operation facts と result を保存します。これらの記録はサーバーの再起動後も残ります。同じ client order ID を意図的に同じ operation facts で再利用すると、保存済みの result を返します。facts が変わると conflict を返します。結果が不確実な場合、クライアントは永続的なエンジンとミントの authority で照合します。
 
 ## Participation Score
 
-Participation Score は公開注文の受付を保護します。versioned projector は、確定した source facts から durable acceptance 時の charge を導出します。fill ごとには課金せず、決済失敗のペナルティも適用しません。内部 engine bot の注文には Score を課金しません。
+Participation Score は公開注文の受付を保護します。成功した公開 one-shot capability binding は、`settlement-capability-v1` の下で 1 回だけ課金します。料金は `1 + InputCount + ceil(ManifestCount/16) + ceil(ArtifactByteCount/4096)` です。認証済みの invalid proof または DLEQ validation attempt は同じ料金を使用します。order、fill、settlement failure ごとの別料金はありません。source facts は検証済みの work facts と rule ID を持ちますが、計算済みの debit は持ちません。fill、取消、settlement failure、refund、recovery は Score を debit しません。内部の custody-backed LMSR quote はこの公開料金の対象外です。
 
 ## 信頼境界
 

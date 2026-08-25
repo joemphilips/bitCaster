@@ -15,8 +15,8 @@ FAK. The CLI exposes FAK and FOK. Each public attempt uses one one-shot
 capability. A partial FAK settles its committed fills and cancels the remainder.
 A zero-fill FAK cancels. FOK commits the full requested quantity or cancels the
 complete request from the admission snapshot. Public GTC, GTD, continuation,
-and residual reauthorization are not available. Internal LMSR bot GTC is not a
-public client feature.
+and residual reauthorization are not available. Internal custody-backed LMSR
+quotes use GTC. They are not public client orders.
 
 ## Order authorization
 
@@ -55,6 +55,11 @@ Submission can be absent or uncertain after a client or network failure. In
 that case, the client reconciles with the durable engine and mint authority.
 It must not infer success from a local request alone. A `PAY_TO_UNLOCK`
 capability remains refundable after expiry as defined by the NUT.
+
+An acknowledged FAK or FOK operation stores its operation facts and result.
+These records survive a server restart. An intentional reuse of the same
+client order ID with the same operation facts returns the stored result.
+Changed facts return a conflict.
 
 ## Trust boundary
 

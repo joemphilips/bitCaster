@@ -21,8 +21,8 @@ and FOK. Each public attempt uses one one-shot capability. A partial FAK
 settles the committed fills and cancels the remainder. A zero-fill FAK
 cancels. FOK commits the full requested quantity or cancels the complete
 request from the admission snapshot. Public GTC, GTD, continuation, and
-residual reauthorization are not available. Internal LMSR bot GTC is a private
-operator function, not a public client feature.
+residual reauthorization are not available. Internal custody-backed LMSR quotes
+use GTC. They are not public client orders.
 
 ## Order authorization
 
@@ -45,15 +45,23 @@ conversion. It does not expose merge conversion in this release.
 
 Mint confirmation returns exact result entries. Clients retain their submitted
 operations and confirmed results. They can recover those exact records after a
-crash. If the result is uncertain, clients reconcile with the durable engine
-and mint authority.
+crash. An acknowledged FAK or FOK operation stores its operation facts and
+result. These records survive a server restart. An intentional reuse of the
+same client order ID with the same operation facts returns the stored result.
+Changed facts return a conflict. If the result is uncertain, clients reconcile
+with the durable engine and mint authority.
 
 ## Participation Score
 
-Participation Score protects public order admission. A versioned projector
-derives any charge from verified source facts at durable acceptance. It does not
-charge per fill and it does not apply a settlement-failure penalty. Internal
-engine bot orders do not receive Score charges.
+Participation Score protects public order admission. A successful public
+one-shot capability binding charges once under `settlement-capability-v1`. The
+tariff is `1 + InputCount + ceil(ManifestCount/16) +
+ceil(ArtifactByteCount/4096)`. Each authenticated invalid proof or DLEQ
+validation attempt uses the same tariff. There is no separate order, fill, or
+settlement-failure tariff. Source facts carry verified work facts and the rule
+ID, not a derived debit. Fills, cancellation, settlement failure, refund, and
+recovery do not debit Score. Internal custody-backed LMSR quotes are exempt
+from this public charge.
 
 ## Trust boundary
 
