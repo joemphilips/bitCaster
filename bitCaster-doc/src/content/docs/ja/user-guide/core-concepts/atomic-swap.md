@@ -9,7 +9,7 @@ sidebar:
 
 bitCaster は、マッチした注文を Cashu ミントで決済します。2 者間のスワップは実行しません。
 
-初回リリースで公開サーバーが受け付ける注文は FAK と FOK です。GUI には FAK を表示します。CLI は FAK と FOK に対応します。各公開試行は 1 件の one-shot capability を使用します。一部約定では、確定した fill を決済し、残りを取り消します。約定がない FAK も取り消します。FOK は admission snapshot に基づき、要求数量全体を確定するか、注文全体を取り消します。公開 GTC、GTD、継続、および残余注文の再認可は利用できません。内部 LMSR bot の GTC は公開クライアントの機能ではありません。
+初回リリースで公開サーバーが受け付ける注文は FAK と FOK です。GUI には FAK を表示します。CLI は FAK と FOK に対応します。各公開試行は 1 件の one-shot capability を使用します。一部約定では、確定した fill を決済し、残りを取り消します。約定がない FAK も取り消します。FOK は admission snapshot に基づき、要求数量全体を確定するか、注文全体を取り消します。公開 GTC、GTD、継続、および残余注文の再認可は利用できません。内部の custody-backed LMSR quote は GTC を使用します。これは公開クライアントの注文ではありません。
 
 FAK または FOK 注文では、ウォレットは `PAY_TO_UNLOCK` capability で注文を認可します。マッチングエンジンは注文受付時にこの認可を確認します。この段階でミントへのネットワーク呼び出しは行いません。
 
@@ -22,7 +22,7 @@ FAK または FOK 注文では、ウォレットは `PAY_TO_UNLOCK` capability �
 
 NUT は merge conversion も定義します。bitCaster はこのリリースで提供しません。
 
-ミントがグループを確定すると、正確な result entry を返します。ウォレットは送信した operation と確定した result を保存します。ウォレットが停止または接続を失っても、後で正確な operation と result を回復できます。
+ミントがグループを確定すると、正確な result entry を返します。ウォレットは送信した operation と確定した result を保存します。ウォレットが停止または接続を失っても、後で正確な operation と result を回復できます。認識済みの FAK または FOK operation は operation facts と result を保存します。これらの記録はサーバーの再起動後も残ります。同じ client order ID を意図的に同じ operation facts で再利用すると、保存済みの result を返します。facts が変わると conflict を返します。
 
 ## 取消
 

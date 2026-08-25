@@ -6,13 +6,13 @@ sidebar:
 
 このセクションでは、bitCaster の公開技術動作を説明します。
 
-初回リリースで公開サーバーが受け付ける注文は FAK と FOK です。GUI には FAK を表示します。CLI は FAK と FOK に対応します。各公開試行は 1 件の one-shot capability を使用します。一部約定では、確定した fill を決済し、残りを取り消します。約定がない FAK も取り消します。FOK は admission snapshot に基づき、要求数量全体を約定できる場合だけ確定し、それ以外は注文全体を取り消します。公開 GTC、GTD、継続、および残余注文の再認可は利用できません。
+初回リリースで公開サーバーが受け付ける注文は FAK と FOK です。GUI には FAK を表示します。CLI は FAK と FOK に対応します。各公開試行は 1 件の one-shot capability を使用します。一部約定では、確定した fill を決済し、残りを取り消します。約定がない FAK も取り消します。FOK は admission snapshot に基づき、要求数量全体を約定できる場合だけ確定し、それ以外は注文全体を取り消します。公開 GTC、GTD、継続、および残余注文の再認可は利用できません。内部の custody-backed LMSR quote は GTC を使用します。これは公開クライアントの注文ではありません。
 
 ## 決済グループ
 
 注文は `PAY_TO_UNLOCK` capability を使用します。注文受付ではミントへのネットワーク呼び出しは行いません。エンジンは 1 件以上の fill をアトミック決済グループにまとめ、そのグループに対して 1 件の複数当事者ミント conversion を送信します。
 
-`fillId` は 1 件の実際の fill を識別します。`groupId` は 1 件のアトミック決済グループを識別します。確定したグループは正確なミント result entry を返します。クライアントは送信した operation と確定した result を保存して回復します。
+`fillId` は 1 件の実際の fill を識別します。`groupId` は 1 件のアトミック決済グループを識別します。確定したグループは正確なミント result entry を返します。クライアントは送信した operation と確定した result を保存して回復します。認識済みの FAK または FOK operation は operation facts と result を保存します。これらの記録はサーバーの再起動後も残ります。同じ client order ID を意図的に同じ operation facts で再利用すると、保存済みの result を返します。facts が変わると conflict を返します。
 
 エンジンは、注文に対してウォレットが認可した正確な input proof と公開 output manifest だけを受け取ります。ウォレット seed、output blinding factor、refund key、および通常の proof inventory は取得しません。プロトコル詳細は [NUT-CTF Range Settlement](/ja/technical/protocol/atomic-swap/) を参照してください。
 
