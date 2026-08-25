@@ -1011,8 +1011,8 @@ export class DaemonDurableOutgoingCashuCoordinator {
       deliveryIntent: input.deliveryIntent ?? bearerDeliveryIntent(),
       dueAtMs: observedAtMs,
     })
-    const binding = outgoingBinding(walletScope(fence), operation, input.wallet)
     const reservationId = `wallet-send:${input.transferId}`
+    const binding = outgoingBinding(walletScope(fence), operation, input.wallet, reservationId)
     await prepareProofOperationWithExactReservation(
       {
         operationId: input.transferId,
@@ -1309,6 +1309,7 @@ function outgoingBinding(
   scope: DurableCustodyScope,
   operation: DurableWalletSendOperation,
   wallet: CashuWalletLike,
+  reservationId: string,
 ) {
   const custody = toDurableCustodyProofOperationInput(operation)
   const authority = prepareDurableCustodyMintOperationAuthority({
@@ -1321,6 +1322,7 @@ function outgoingBinding(
       operation: custody,
       facts: authority.facts,
       inventoryAccountId: null,
+      reservationId,
       exactBoundary: {
         method: 'POST',
         path: '/v1/swap',

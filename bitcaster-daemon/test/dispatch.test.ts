@@ -912,6 +912,8 @@ test('daemon dispatch persists wallet and order state', async (t) => {
         let deliveryId: string | null = null
         let scoreReads = 0
         let recoveryWakes = 0
+        let pendingScoreDelivery: DurableRecipientDeliverySubmission | null = null
+        let deliveryRetryWaits = 0
         const command = {
           method: 'order.submit' as const,
           params: {
@@ -962,13 +964,15 @@ test('daemon dispatch persists wallet and order state', async (t) => {
                 ? scoreResponse({ balance: -1 })
                 : scoreResponse({ balance: 1, purchasedTotal: 2 })
             },
-            getDurableRecipientDeliveryStatus: async () => null,
+            getDurableRecipientDeliveryStatus: async () =>
+              pendingScoreDelivery === null ? null : creditedRecipientStatus(pendingScoreDelivery),
             submitDurableRecipientDelivery: async (submission) => {
               deliveries += 1
               deliveryId = submission.deliveryId
+              pendingScoreDelivery = submission
               assert.equal(submission.requestedAmount, '2')
               assert.match(submission.token, /^cashu/)
-              return creditedRecipientStatus(submission)
+              return receivedRecipientStatus(submission)
             },
             submitOrder: async () => ({
               orderId: 'score-paid-order',
@@ -981,6 +985,10 @@ test('daemon dispatch persists wallet and order state', async (t) => {
             }),
           }),
           prepareSettlementCapability: prepareSettlementCapability('score-paid-order'),
+          waitForParticipationScoreDeliveryRetry: async (attempt) => {
+            deliveryRetryWaits += 1
+            assert.equal(attempt, 1)
+          },
         }
 
         await assert.rejects(
@@ -992,6 +1000,7 @@ test('daemon dispatch persists wallet and order state', async (t) => {
         assert.equal(response.ok, true, JSON.stringify(response))
         assert.equal(completed, 1)
         assert.equal(deliveries, 1)
+        assert.equal(deliveryRetryWaits, 1)
         assert.equal(recoveryWakes, 2)
         assert.equal(
           (response.result as { participationScore: { kind: string } }).participationScore.kind,
@@ -2407,6 +2416,22 @@ function creditedRecipientStatus(submission: DurableRecipientDeliverySubmission)
       receivedAt: '2026-08-11T00:00:00.000Z',
       businessEventId: 'event-1',
       businessEventAt: '2026-08-11T00:00:00.000Z',
+    },
+  })
+}
+
+function receivedRecipientStatus(submission: DurableRecipientDeliverySubmission) {
+  const { token: _token, ...delivery } = submission
+  return decodeDurableRecipientDeliveryStatus({
+    delivery,
+    tupleFingerprint: deriveDurableRecipientTupleFingerprint(submission),
+    state: 'received',
+    result: {
+      creditedAmount: submission.requestedAmount,
+      receiveFee: '0',
+      creditVerification: submission.creditPolicy,
+      receiveOperationId: 'receive-1',
+      receivedAt: '2026-08-11T00:00:00.000Z',
     },
   })
 }

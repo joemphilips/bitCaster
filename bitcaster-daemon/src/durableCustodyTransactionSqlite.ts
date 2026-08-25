@@ -2,6 +2,7 @@ import type { DatabaseSync } from 'node:sqlite'
 import {
   decodeDurableCustodyScopeState,
   createDurableCustodyArtifactReference,
+  deriveDurableCustodyProofId,
   reduceDurableCustodyState,
   type DurableCustodyRecord,
   type DurableCustodyScopeState,
@@ -123,13 +124,59 @@ export class DurableCustodyTransactionSqlite implements DurableCustodyTransactio
        ) VALUES (?, ?, ?, ?, ?)
        ON CONFLICT(scope_id, proof_id) DO NOTHING`,
     )
-    const lockProof = this.#database.prepare(
+    const lockSelectableProof = this.#database.prepare(
       `UPDATE custody_proofs SET selectability = 'locked',
          reservation_operation_id = ?, revision = revision + 1,
          updated_at_ms = ?
        WHERE scope_id = ? AND proof_id = ?
          AND selectability = 'selectable'`,
     )
+    const lockRetainedProof = this.#database.prepare(
+      `UPDATE custody_proofs SET selectability = 'locked',
+         reservation_operation_id = ?, revision = revision + 1,
+         updated_at_ms = ?
+       WHERE scope_id = ? AND proof_id = ?
+         AND selectability = 'retained'`,
+    )
+    const reservedTargetProofIds = new Set(
+      (
+        this.#database
+          .prepare(
+            `SELECT normalized_mint AS normalizedMint, unit,
+               keyset_id AS keysetId, secret
+             FROM target_wallet_proofs
+             WHERE scope_id = ? AND state = 'reserved' AND reserved_by = ?`,
+          )
+          .all(this.#scopeId, input.reservationId) as Array<{
+          normalizedMint: string
+          unit: 'sat' | 'msat'
+          keysetId: string
+          secret: string
+        }>
+      ).map(({ normalizedMint, unit, keysetId, secret }) =>
+        deriveDurableCustodyProofId({
+          scopeId: this.#scopeId,
+          normalizedMint,
+          unit,
+          keysetId,
+          secret,
+        }),
+      ),
+    )
+    const retainedInputProofIds = new Set<string>()
+    for (const proofId of input.proofIds) {
+      const proof = readProofLock.get(this.#scopeId, proofId) as
+        | { selectability: string; reservationOperationId: string | null }
+        | undefined
+      if (proof?.selectability === 'retained') retainedInputProofIds.add(proofId)
+    }
+    if (
+      retainedInputProofIds.size > 0 &&
+      (reservedTargetProofIds.size !== input.proofIds.length ||
+        input.proofIds.some((proofId) => !reservedTargetProofIds.has(proofId)))
+    ) {
+      throw new Error('custody retained proof lacks exact legacy reservation')
+    }
     input.proofIds.forEach((proofId, position) => {
       const existing = readReservation.get(this.#scopeId, proofId) as
         | { operationId: string; reservationId: string; inputPosition: number }
@@ -157,7 +204,10 @@ export class DurableCustodyTransactionSqlite implements DurableCustodyTransactio
         position,
       )
       if (reserved.changes !== 1) throw new Error('custody proof reservation CAS lost')
-      const locked = lockProof.run(input.operationId, this.#nowMs, this.#scopeId, proofId)
+      const locked = (retainedInputProofIds.has(proofId)
+        ? lockRetainedProof
+        : lockSelectableProof
+      ).run(input.operationId, this.#nowMs, this.#scopeId, proofId)
       if (locked.changes !== 1) throw new Error('custody proof lock CAS lost')
     })
   }
