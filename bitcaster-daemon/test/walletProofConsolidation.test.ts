@@ -239,9 +239,6 @@ test('RPC fails closed without a fence and delegates with current custody author
       async getParticipationScore() {
         throw new Error('score unused')
       },
-      async payParticipationScoreEcash() {
-        throw new Error('score payment unused')
-      },
       async getMarket() {
         return { conditionId: 'condition-1', baseAsset: 'sat', divisibility: 1_000_000 }
       },

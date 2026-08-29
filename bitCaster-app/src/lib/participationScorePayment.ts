@@ -13,10 +13,17 @@ import { resolveCreatorPubkey } from "@/lib/identityOps";
 import {
   getParticipationScore,
   type ParticipationScoreResponse,
-  type PayParticipationScoreEcashResponse,
 } from "@/lib/markets";
 import { useSettingsStore } from "@/stores/settings";
 import { planParticipationScoreTopUp } from "@bitcaster/client-sdk/participationScore";
+
+export interface ParticipationScorePaymentResult {
+  paymentId: string;
+  status: "credited";
+  amountSats: number;
+  creditedScore: number;
+  creditedAt: string;
+}
 
 export type ParticipationScorePreflightResult =
   | {
@@ -33,7 +40,7 @@ export type ParticipationScorePreflightResult =
   | {
       kind: "paid";
       score: ParticipationScoreResponse;
-      payment: PayParticipationScoreEcashResponse;
+      payment: ParticipationScorePaymentResult;
       paymentId: string;
     };
 

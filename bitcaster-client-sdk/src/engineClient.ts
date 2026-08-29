@@ -428,14 +428,6 @@ export interface ParticipationScoreResponse {
   enabled: boolean
 }
 
-export interface PayParticipationScoreEcashResponse {
-  paymentId: string
-  status: 'credited'
-  amountSats: number
-  creditedScore: number
-  creditedAt: string
-}
-
 export class BitcasterEngineClient {
   private readonly baseUrl: string
   private readonly fetchImpl: EngineFetch
@@ -729,28 +721,6 @@ export class BitcasterEngineClient {
   async getParticipationScore(): Promise<ParticipationScoreResponse> {
     const response = await this.request('/api/v1/participation-score')
     return (await response.json()) as ParticipationScoreResponse
-  }
-
-  async payParticipationScoreEcash(
-    amountSats: number,
-    proofsToken: string,
-    paymentId?: string,
-  ): Promise<PayParticipationScoreEcashResponse> {
-    const bodyText = JSON.stringify({
-      amountSats,
-      proofsToken,
-      ...(paymentId ? { paymentId } : {}),
-    })
-    const response = await this.request(
-      '/api/v1/participation-score/ecash',
-      {
-        method: 'POST',
-        body: bodyText,
-        headers: { 'content-type': 'application/json' },
-      },
-      bodyText,
-    )
-    return (await response.json()) as PayParticipationScoreEcashResponse
   }
 
   async getDurableRecipientDeliveryStatus(

@@ -1134,8 +1134,6 @@ export function getMarketThumbnail(market: {
 export type RequestEcashDepositRequest = components["schemas"]["RequestEcashDepositRequest"];
 export type RequestEcashDepositResponse = components["schemas"]["RequestEcashDepositResponse"];
 export type ParticipationScoreResponse = components["schemas"]["ParticipationScoreResponse"];
-export type PayParticipationScoreEcashResponse =
-  components["schemas"]["PayParticipationScoreEcashResponse"];
 export type GetDepositResponseDto = components["schemas"]["GetDepositResponseDto"];
 export type DepositState = components["schemas"]["DepositState"];
 export type DepositMethod = components["schemas"]["DepositMethod"];

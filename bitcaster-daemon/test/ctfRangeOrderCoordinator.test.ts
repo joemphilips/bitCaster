@@ -1505,9 +1505,6 @@ function fakeEngineClient(
     getParticipationScore: async () => {
       throw new Error('not used')
     },
-    payParticipationScoreEcash: async () => {
-      throw new Error('not used')
-    },
   }
 }
 

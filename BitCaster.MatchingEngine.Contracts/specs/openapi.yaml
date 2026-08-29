@@ -598,39 +598,6 @@ paths:
         '401':
           description: Missing or invalid NIP-98 authentication
 
-  /api/v1/participation-score/ecash:
-    post:
-      operationId: payParticipationScoreEcash
-      summary: Pay ecash to top up participation Score
-      security:
-        - nip98: []
-      description: >
-        Pays a regular sat ecash token into the global Engine fee account.
-        The fee is non-refundable and credits participation Score for the
-        authenticated Nostr pubkey. The supplied token amount must exactly
-        match `amountSats`; this endpoint never credits a market account.
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/PayParticipationScoreEcashRequest'
-      responses:
-        '200':
-          description: Ecash accepted and Score credited
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/PayParticipationScoreEcashResponse'
-        '400':
-          description: Validation error (e.g. malformed token or non-positive amount)
-        '401':
-          description: Missing or invalid NIP-98 authentication
-        '429':
-          description: Per-pubkey payment-request rate limit exceeded
-        '502':
-          description: Wallet-service payment error
-
   /api/v1/cashu-deliveries/{deliveryId}:
     post:
       operationId: submitDurableCashuDelivery
@@ -3580,58 +3547,6 @@ components:
         enabled:
           type: boolean
           description: Whether Participation Score purchase and payment is enabled by the engine.
-
-    PayParticipationScoreEcashRequest:
-      type: object
-      required:
-        - amountSats
-        - proofsToken
-      properties:
-        amountSats:
-          allOf:
-            - $ref: '#/components/schemas/Sats'
-          minimum: 1
-          description: Exact sat amount carried by the supplied regular ecash token.
-        proofsToken:
-          type: string
-          description: Opaque Cashu token paid as a non-refundable Engine fee.
-        paymentId:
-          type: string
-          format: uuid
-          description: Optional caller-supplied idempotency id for retrying the same ecash payment.
-
-    PayParticipationScoreEcashResponse:
-      type: object
-      required:
-        - paymentId
-        - status
-        - amountSats
-        - creditedScore
-        - creditedAt
-      properties:
-        paymentId:
-          type: string
-          format: uuid
-          description: Idempotency id assigned to this Score payment.
-        status:
-          type: string
-          enum:
-            - credited
-          description: Terminal success state for the synchronous ecash payment flow.
-        amountSats:
-          allOf:
-            - $ref: '#/components/schemas/Sats'
-          minimum: 1
-          description: Ecash amount accepted as engine fee.
-        creditedScore:
-          type: integer
-          format: int64
-          minimum: 1
-          description: Score credited for this payment.
-        creditedAt:
-          type: string
-          format: date-time
-          description: Time wallet-service accepted and credited the engine-fee payment.
 
     GetDepositResponseDto:
       type: object
