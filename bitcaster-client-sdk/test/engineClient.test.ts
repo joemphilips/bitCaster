@@ -362,63 +362,6 @@ test('BitcasterEngineClient.getParticipationScore reads authenticated Score stat
   ])
 })
 
-test('BitcasterEngineClient.payParticipationScoreEcash posts exact ecash fee body', async () => {
-  const requests: Array<{ url: string; method?: string; body?: string; auth?: string }> = []
-  const client = new BitcasterEngineClient({
-    baseUrl: 'https://engine.example',
-    authorization: async ({ url, method, bodyText }) => {
-      assert.equal(url, 'https://engine.example/api/v1/participation-score/ecash')
-      assert.equal(method, 'POST')
-      assert.equal(
-        bodyText,
-        JSON.stringify({
-          amountSats: 2,
-          proofsToken: 'cashuB-token',
-          paymentId: 'client-payment-id',
-        }),
-      )
-      return 'Nostr auth'
-    },
-    fetchImpl: async (input, init) => {
-      requests.push({
-        url: String(input),
-        method: init?.method,
-        body: String(init?.body),
-        auth: new Headers(init?.headers).get('authorization') ?? undefined,
-      })
-      return new Response(
-        JSON.stringify({
-          paymentId: 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d',
-          status: 'credited',
-          amountSats: 2,
-          creditedScore: 2,
-          creditedAt: '2026-06-09T00:00:00Z',
-        }),
-        {
-          status: 200,
-          headers: { 'content-type': 'application/json' },
-        },
-      )
-    },
-  })
-
-  const result = await client.payParticipationScoreEcash(2, 'cashuB-token', 'client-payment-id')
-
-  assert.equal(result.status, 'credited')
-  assert.deepEqual(requests, [
-    {
-      url: 'https://engine.example/api/v1/participation-score/ecash',
-      method: 'POST',
-      body: JSON.stringify({
-        amountSats: 2,
-        proofsToken: 'cashuB-token',
-        paymentId: 'client-payment-id',
-      }),
-      auth: 'Nostr auth',
-    },
-  ])
-})
-
 test('BitcasterEngineClient reads one authenticated durable Cashu delivery status and maps 404 to null', async () => {
   const deliveryId = '11111111-1111-4111-8111-111111111111'
   const submission = durableRecipientSubmission(deliveryId)

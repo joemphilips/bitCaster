@@ -1654,7 +1654,6 @@ test('daemon dispatch persists wallet and order state', async (t) => {
           ),
         )
         await writeState(state)
-        let scorePayments = 0
         let preparations = 0
         try {
           const response = await dispatch(
@@ -1678,10 +1677,6 @@ test('daemon dispatch persists wallet and order state', async (t) => {
                   divisibility: 10_000,
                 }),
                 getParticipationScore: async () => scoreResponse({ balance: -1 }),
-                payParticipationScoreEcash: async () => {
-                  scorePayments += 1
-                  throw new Error('Score payment must not start')
-                },
               }),
               prepareSettlementCapability: prepareSettlementCapability('unused', () => {
                 preparations += 1
@@ -1691,7 +1686,6 @@ test('daemon dispatch persists wallet and order state', async (t) => {
 
           assert.equal(response.ok, false)
           assert.match(response.error, /insufficient Participation Score backing/)
-          assert.equal(scorePayments, 0)
           assert.equal(preparations, 1)
           assert.deepEqual(
             (await readState())?.wallet.proofs.map((record) => record.proof.secret).sort(),

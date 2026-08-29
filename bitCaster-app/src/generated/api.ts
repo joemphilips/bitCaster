@@ -343,26 +343,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/participation-score/ecash": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Pay ecash to top up participation Score
-         * @description Pays a regular sat ecash token into the global Engine fee account. The fee is non-refundable and credits participation Score for the authenticated Nostr pubkey. The supplied token amount must exactly match `amountSats`; this endpoint never credits a market account.
-         */
-        post: operations["payParticipationScoreEcash"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/v1/cashu-deliveries/{deliveryId}": {
         parameters: {
             query?: never;
@@ -1622,41 +1602,6 @@ export interface components {
             /** @description Whether Participation Score purchase and payment is enabled by the engine. */
             enabled: boolean;
         };
-        PayParticipationScoreEcashRequest: {
-            /** @description Exact sat amount carried by the supplied regular ecash token. */
-            amountSats: components["schemas"]["Sats"];
-            /** @description Opaque Cashu token paid as a non-refundable Engine fee. */
-            proofsToken: string;
-            /**
-             * Format: uuid
-             * @description Optional caller-supplied idempotency id for retrying the same ecash payment.
-             */
-            paymentId?: string;
-        };
-        PayParticipationScoreEcashResponse: {
-            /**
-             * Format: uuid
-             * @description Idempotency id assigned to this Score payment.
-             */
-            paymentId: string;
-            /**
-             * @description Terminal success state for the synchronous ecash payment flow.
-             * @enum {string}
-             */
-            status: "credited";
-            /** @description Ecash amount accepted as engine fee. */
-            amountSats: components["schemas"]["Sats"];
-            /**
-             * Format: int64
-             * @description Score credited for this payment.
-             */
-            creditedScore: number;
-            /**
-             * Format: date-time
-             * @description Time wallet-service accepted and credited the engine-fee payment.
-             */
-            creditedAt: string;
-        };
         GetDepositResponseDto: {
             /** Format: uuid */
             depositId: string;
@@ -2573,58 +2518,6 @@ export interface operations {
             };
             /** @description Missing or invalid NIP-98 authentication */
             401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    payParticipationScoreEcash: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["PayParticipationScoreEcashRequest"];
-            };
-        };
-        responses: {
-            /** @description Ecash accepted and Score credited */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["PayParticipationScoreEcashResponse"];
-                };
-            };
-            /** @description Validation error (e.g. malformed token or non-positive amount) */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Missing or invalid NIP-98 authentication */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Per-pubkey payment-request rate limit exceeded */
-            429: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Wallet-service payment error */
-            502: {
                 headers: {
                     [name: string]: unknown;
                 };

@@ -3323,101 +3323,6 @@ namespace BitCaster.MatchingEngine.Contracts
     }
 
     [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
-    public partial class PayParticipationScoreEcashRequest
-    {
-        [System.Text.Json.Serialization.JsonConstructor]
-        public PayParticipationScoreEcashRequest(long @amountSats, System.Guid? @paymentId, string @proofsToken)
-        {
-            this.AmountSats = @amountSats;
-            this.ProofsToken = @proofsToken;
-            this.PaymentId = @paymentId;
-        }
-
-        /// <summary>
-        /// Exact sat amount carried by the supplied regular ecash token.
-        /// </summary>
-        [System.Text.Json.Serialization.JsonPropertyName("amountSats")]
-        public long AmountSats { get; }
-
-        /// <summary>
-        /// Opaque Cashu token paid as a non-refundable Engine fee.
-        /// </summary>
-        [System.Text.Json.Serialization.JsonPropertyName("proofsToken")]
-        public string ProofsToken { get; }
-
-        /// <summary>
-        /// Optional caller-supplied idempotency id for retrying the same ecash payment.
-        /// </summary>
-        [System.Text.Json.Serialization.JsonPropertyName("paymentId")]
-        public System.Guid? PaymentId { get; }
-
-        private System.Collections.Generic.IDictionary<string, object>? _additionalProperties;
-
-        [System.Text.Json.Serialization.JsonExtensionData]
-        public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
-        {
-            get { return _additionalProperties ?? (_additionalProperties = new System.Collections.Generic.Dictionary<string, object>()); }
-            set { _additionalProperties = value; }
-        }
-
-    }
-
-    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
-    public partial class PayParticipationScoreEcashResponse
-    {
-        [System.Text.Json.Serialization.JsonConstructor]
-        public PayParticipationScoreEcashResponse(long @amountSats, System.DateTimeOffset @creditedAt, long @creditedScore, System.Guid @paymentId, PayParticipationScoreEcashResponseStatus @status)
-        {
-            this.PaymentId = @paymentId;
-            this.Status = @status;
-            this.AmountSats = @amountSats;
-            this.CreditedScore = @creditedScore;
-            this.CreditedAt = @creditedAt;
-        }
-
-        /// <summary>
-        /// Idempotency id assigned to this Score payment.
-        /// </summary>
-        [System.Text.Json.Serialization.JsonPropertyName("paymentId")]
-        public System.Guid PaymentId { get; }
-
-        /// <summary>
-        /// Terminal success state for the synchronous ecash payment flow.
-        /// </summary>
-        [System.Text.Json.Serialization.JsonPropertyName("status")]
-        [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<PayParticipationScoreEcashResponseStatus>))]
-        public PayParticipationScoreEcashResponseStatus Status { get; }
-
-        /// <summary>
-        /// Ecash amount accepted as engine fee.
-        /// </summary>
-        [System.Text.Json.Serialization.JsonPropertyName("amountSats")]
-        public long AmountSats { get; }
-
-        /// <summary>
-        /// Score credited for this payment.
-        /// </summary>
-        [System.Text.Json.Serialization.JsonPropertyName("creditedScore")]
-        public long CreditedScore { get; }
-
-        /// <summary>
-        /// Time wallet-service accepted and credited the engine-fee payment.
-        /// </summary>
-        [System.Text.Json.Serialization.JsonPropertyName("creditedAt")]
-        public System.DateTimeOffset CreditedAt { get; }
-
-        private System.Collections.Generic.IDictionary<string, object>? _additionalProperties;
-
-        [System.Text.Json.Serialization.JsonExtensionData]
-        public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
-        {
-            get { return _additionalProperties ?? (_additionalProperties = new System.Collections.Generic.Dictionary<string, object>()); }
-            set { _additionalProperties = value; }
-        }
-
-    }
-
-    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
     public partial class GetDepositResponseDto
     {
         [System.Text.Json.Serialization.JsonConstructor]
@@ -4202,15 +4107,6 @@ namespace BitCaster.MatchingEngine.Contracts
 
         [System.Runtime.Serialization.EnumMember(Value = @"msat")]
         Msat = 0,
-
-    }
-
-    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
-    public enum PayParticipationScoreEcashResponseStatus
-    {
-
-        [System.Runtime.Serialization.EnumMember(Value = @"credited")]
-        Credited = 0,
 
     }
 

@@ -34,9 +34,7 @@ depositor receives no probability-bearing position, withdrawal claim, residual
 claim, or creator profit-share claim.
 
 Markets are shown to users in sats. Internally and on public market-summary
-`*Subunits` wire fields, collateral is accounted in **msat**. Protocol fields
-that explicitly use `amountSats`, such as participation-score ecash payment
-fields, keep their contract-specific meaning.
+`*Subunits` wire fields, collateral is accounted in **msat**.
 
 ## Funding Flow
 
