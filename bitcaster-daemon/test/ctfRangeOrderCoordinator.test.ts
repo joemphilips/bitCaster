@@ -189,7 +189,7 @@ test('daemon retries the exact capability request after its acknowledgement is l
       )
       assert.equal(
         committed?.wallet.proofs.reduce((total, { proof }) => total + Number(proof.amount), 0),
-        3_190,
+        7_690,
       )
       assert.equal(committed?.proofOperations['range-operation-1:source']?.state, 'completed')
       assert.deepEqual(committed?.orders, {})
@@ -239,7 +239,7 @@ test('daemon retries the exact capability request after its acknowledgement is l
 })
 
 test('daemon does not consolidate fragmented order funds unless the caller opts in', async () => {
-  const sourceProofs = [4_096, 4_096, 2, 2, 2].map((amount) =>
+  const sourceProofs = [2, 2, 2, 2].map((amount) =>
     signedProof(OutputData.createRandomData(Amount.from(amount), mintKeys())[0]!),
   )
   await withDaemonProfile(
@@ -264,7 +264,15 @@ test('daemon does not consolidate fragmented order funds unless the caller opts 
       })
 
       await assert.rejects(
-        coordinator.prepare({ ...orderRequest(), price: 8_193 }, client),
+        coordinator.prepare(
+          {
+            ...orderRequest(),
+            price: 5,
+            amountSubunits: 1_000,
+            minimumFillAmountSubunits: 1_000,
+          },
+          client,
+        ),
         /proofs exceed the mint input limit; retry with proof consolidation enabled/,
       )
 
@@ -281,7 +289,7 @@ test('daemon does not consolidate fragmented order funds unless the caller opts 
 })
 
 test('daemon resumes exact bounded consolidation without recreating its range capability', async () => {
-  const sourceProofs = [4_096, 4_096, 2, 2, 2].map((amount) =>
+  const sourceProofs = [2, 2, 2, 2].map((amount) =>
     signedProof(OutputData.createRandomData(Amount.from(amount), mintKeys())[0]!),
   )
   await withDaemonProfile(
@@ -302,7 +310,13 @@ test('daemon resumes exact bounded consolidation without recreating its range ca
         now: () => 10_000,
         randomId: () => ids.shift()!,
       })
-      const request = { ...orderRequest(), price: 8_193, consolidateProofs: true }
+      const request = {
+        ...orderRequest(),
+        price: 5,
+        amountSubunits: 1_000,
+        minimumFillAmountSubunits: 1_000,
+        consolidateProofs: true,
+      }
 
       await assert.rejects(coordinator.prepare(request, client), /mint swap acknowledgement lost/)
       const interrupted = await readState()
@@ -1122,8 +1136,16 @@ test('daemon consolidates conditional CTF inventory with the same bounded source
         randomId: () => ids.shift()!,
       })
 
+      // Ten current-D shares keep this bounded-consolidation fixture fragmented.
       const prepared = await coordinator.prepare(
-        { ...orderRequest(), side: 'Sell', price: 5_000, consolidateProofs: true },
+        {
+          ...orderRequest(),
+          side: 'Sell',
+          price: 500,
+          amountSubunits: 10_000,
+          minimumFillAmountSubunits: 10_000,
+          consolidateProofs: true,
+        },
         fakeEngineClient(boundCapability),
       )
 
@@ -1528,7 +1550,7 @@ function boundCapability(
 }
 
 function submittedOrder(
-  remainingAmountSubunits = 10_000,
+  remainingAmountSubunits = 1_000,
 ): Awaited<ReturnType<EngineClientLike['submitOrder']>> {
   return {
     orderId: ORDER_ID,
@@ -1536,7 +1558,7 @@ function submittedOrder(
     remainingAmountSubunits,
     fills: [],
     baseAsset: 'sat',
-    divisibility: 10_000,
+    divisibility: 1_000,
     activeSettlementGroup: null,
   }
 }
@@ -1551,7 +1573,7 @@ function restingOrderStatus(): Awaited<ReturnType<EngineClientLike['getOrderStat
     fills: [],
     tokenSide: 'Outcome',
     baseAsset: 'sat',
-    divisibility: 10_000,
+    divisibility: 1_000,
     activeSettlementGroup: null,
   }
 }
@@ -1560,8 +1582,8 @@ function partiallyFilledFakOrderStatus(): Awaited<ReturnType<EngineClientLike['g
   return {
     ...restingOrderStatus(),
     status: 'partially_filled',
-    remainingAmountSubunits: 5_000,
-    filledAmountSubunits: 5_000,
+    remainingAmountSubunits: 500,
+    filledAmountSubunits: 500,
   }
 }
 
@@ -1575,7 +1597,7 @@ function filledOrderStatus(): Awaited<ReturnType<EngineClientLike['getOrderStatu
     fills: [],
     tokenSide: 'Outcome',
     baseAsset: 'sat',
-    divisibility: 10_000,
+    divisibility: 1_000,
     activeSettlementGroup: null,
   }
 }
@@ -1721,13 +1743,13 @@ function orderRequest(): PrepareSettlementCapabilityInput {
     outcomeId: 'yes-id',
     tokenSide: 'Outcome',
     side: 'Buy',
-    price: 5_000,
-    amountSubunits: 10_000,
-    minimumFillAmountSubunits: 10_000,
+    price: 500,
+    amountSubunits: 1_000,
+    minimumFillAmountSubunits: 1_000,
     consolidateProofs: false,
     baseAsset: 'sat',
     collateralUnit: 'msat',
-    divisibility: 10_000,
+    divisibility: 1_000,
     timeInForce: 'FAK',
     expiresAt: null,
     mintUrl: MINT_URL,

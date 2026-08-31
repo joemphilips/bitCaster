@@ -40,6 +40,7 @@ export function MarketCreationPage() {
       createdMarketConditionId={state.createdMarketConditionId}
       createdMarketOutcomeCount={state.createdMarketOutcomeCount}
       createdMarketBaseAsset={state.createdMarketBaseAsset}
+      createdMarketDivisibility={state.createdMarketDivisibility}
     />
   );
 }

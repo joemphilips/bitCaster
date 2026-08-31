@@ -35,7 +35,7 @@ function makeMarket(overrides: Partial<YesNoMarketDetail> = {}): YesNoMarketDeta
     activeSince: "2026-01-01T00:00:00Z",
     baseUnit: "sats",
     baseAsset: "sat",
-    divisibility: 10_000,
+    divisibility: 1_000,
     mint: {
       collateral: "sat",
       keysetCount: 2,

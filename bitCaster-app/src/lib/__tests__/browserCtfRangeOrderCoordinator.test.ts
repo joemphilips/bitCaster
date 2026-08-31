@@ -634,8 +634,8 @@ describe("browser CTF range order coordinator", () => {
     });
     expect(preparation.offerKeyset.id).toBe(COMPLEMENT_KEYSET_ID);
     const sourceProofs = [
-      sourceProof(preparation.offerKeyset.id, 5_001, "sell-source-a"),
-      sourceProof(preparation.offerKeyset.id, 5_001, "sell-source-b"),
+      sourceProof(preparation.offerKeyset.id, 501, "sell-source-a"),
+      sourceProof(preparation.offerKeyset.id, 501, "sell-source-b"),
     ];
     const database = createDatabase(
       sourceProofs.map((proof) =>
@@ -2072,7 +2072,7 @@ function engineMock(
         return { ...response, orderId: "55555555-5555-4555-8555-555555555555" };
       }
       return input.restingOrderResponse === true
-        ? { ...response, status: "resting", remainingAmountSubunits: 10_000 }
+        ? { ...response, status: "resting", remainingAmountSubunits: 1_000 }
         : response;
     },
     async getOrderStatus() {
@@ -2134,7 +2134,7 @@ function submitResponse(): SubmitOrderResponse {
     remainingAmountSubunits: 0,
     fills: [],
     baseAsset: "sat",
-    divisibility: 10_000,
+    divisibility: 1_000,
     activeSettlementGroup: null,
   };
 }
@@ -2144,10 +2144,10 @@ function discoveredOrderStatus(): OrderStatusResponse {
     orderId: "44444444-4444-4444-8444-444444444444",
     marketId: `${CONDITION_ID}-YES`,
     status: "resting",
-    remainingAmountSubunits: 10_000,
+    remainingAmountSubunits: 1_000,
     filledAmountSubunits: 0,
     fills: [],
-    amountSubunits: 10_000,
+    amountSubunits: 1_000,
     outcomeId: "YES",
     side: "Buy",
     price: 2,
@@ -2155,7 +2155,7 @@ function discoveredOrderStatus(): OrderStatusResponse {
     timeInForce: "FAK",
     tokenSide: "Outcome",
     baseAsset: "sat",
-    divisibility: 10_000,
+    divisibility: 1_000,
     activeSettlementGroup: null,
   };
 }
@@ -2190,11 +2190,11 @@ function rangeRequest(timeInForce: "FAK" | "FOK"): CtfRangeOrderRequest {
     tokenSide: "Outcome",
     side: "Buy",
     price: 2,
-    amountSubunits: 10_000,
-    minimumFillAmountSubunits: 10_000,
+    amountSubunits: 1_000,
+    minimumFillAmountSubunits: 1_000,
     baseAsset: "sat",
     collateralUnit: "msat",
-    divisibility: 10_000,
+    divisibility: 1_000,
     timeInForce,
     expiresAt: null,
     mintUrl: MINT_URL,

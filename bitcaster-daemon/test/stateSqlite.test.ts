@@ -115,7 +115,7 @@ test('target-v1 state round-trips through retained typed SQLite rows and artifac
         amountSubunits: 100,
       },
       baseAsset: 'sat',
-      divisibility: 10_000,
+      divisibility: 1_000,
       createdAt: '2026-01-01T00:00:00.000Z',
       updatedAt: '2026-01-01T00:00:01.000Z',
     }
@@ -1096,7 +1096,7 @@ test('state persistence clamps wall-clock regressions at creation time', async (
       orderId: 'order-1',
       marketId: 'condition-1-YES',
       baseAsset: 'sat',
-      divisibility: 10_000,
+      divisibility: 1_000,
       status: 'resting',
       createdAt: '2026-01-01T00:00:01.000Z',
       updatedAt: '2026-01-01T00:00:00.000Z',

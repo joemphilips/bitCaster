@@ -55,6 +55,7 @@ export function MarketCreationWizard(props: MarketCreationWizardProps) {
     createdMarketConditionId,
     createdMarketOutcomeCount,
     createdMarketBaseAsset,
+    createdMarketDivisibility,
   } = props;
 
   const { currentStep } = draft;
@@ -142,7 +143,7 @@ export function MarketCreationWizard(props: MarketCreationWizardProps) {
   // override would bounce the user back to the first wizard step even though
   // the market is already registered on the mint and engine. The matching test
   // is `MarketCreateWithDepositE2ETests.DepositStep_EcashHappyPath`.
-  if (createdMarketConditionId) {
+  if (createdMarketConditionId && createdMarketDivisibility !== null) {
     return (
       <div className="min-h-screen bg-slate-50 dark:bg-slate-950 flex flex-col">
         {header}
@@ -152,6 +153,7 @@ export function MarketCreationWizard(props: MarketCreationWizardProps) {
             defaultAmountSats={0}
             outcomeCount={createdMarketOutcomeCount ?? 2}
             baseAsset={createdMarketBaseAsset ?? "sat"}
+            divisibility={createdMarketDivisibility}
           />
         </div>
         {feeOverlays}

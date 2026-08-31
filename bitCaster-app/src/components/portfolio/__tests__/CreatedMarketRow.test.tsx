@@ -14,7 +14,7 @@ function fixture(overrides: Partial<CreatedMarket> = {}): CreatedMarket {
     creatorFeesEarned: 0,
     creatorFeePercent: 0,
     baseAsset: "sat",
-    divisibility: 10_000,
+    divisibility: 1_000,
     ...overrides,
   } as CreatedMarket;
 }

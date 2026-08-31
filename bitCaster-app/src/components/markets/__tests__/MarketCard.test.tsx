@@ -12,7 +12,7 @@ const yesNoMarket: YesNoMarket = {
   imageUrl: "",
   categoryTags: ["crypto"],
   metaTags: ["trending"],
-  currentOdds: { yes: 6_500, no: 3_500 },
+  currentOdds: { yes: 650, no: 350 },
   volume: 100000,
   liquidity: 50000,
   liquiditySubunits: 50_000,
@@ -24,7 +24,7 @@ const yesNoMarket: YesNoMarket = {
   creatorFeePercent: 2,
   baseMarket: "sats",
   baseAsset: "sat",
-  divisibility: 10_000,
+  divisibility: 1_000,
 };
 
 const categoricalMarket: CategoricalMarket = {
@@ -38,7 +38,7 @@ const categoricalMarket: CategoricalMarket = {
   outcomes: [
     { id: "a", label: "Team A", odds: 4_000 },
     { id: "b", label: "Team B", odds: 3_500 },
-    { id: "c", label: "Team C", odds: 2_500 },
+    { id: "c", label: "Team C", odds: 250 },
   ],
   volume: 50000,
   liquidity: 20000,
@@ -51,7 +51,7 @@ const categoricalMarket: CategoricalMarket = {
   creatorFeePercent: 1.5,
   baseMarket: "sats",
   baseAsset: "sat",
-  divisibility: 10_000,
+  divisibility: 1_000,
 };
 
 describe("MarketCard", () => {
@@ -63,7 +63,7 @@ describe("MarketCard", () => {
       "href",
       "/markets/mkt-1",
     );
-    expect(screen.getByText("65.00%")).toBeInTheDocument();
+    expect(screen.getByText("65.0%")).toBeInTheDocument();
     expect(screen.getByText("Buy YES")).toBeInTheDocument();
     expect(screen.getByText("Buy NO")).toBeInTheDocument();
   });
@@ -81,7 +81,7 @@ describe("MarketCard", () => {
     );
 
     expect(screen.getByText("—")).toHaveAttribute("aria-label", "No trades yet");
-    expect(screen.queryByText("0.00%")).not.toBeInTheDocument();
+    expect(screen.queryByText("0.0%")).not.toBeInTheDocument();
   });
 
   it("renders resolved YES for a closed binary market without Chance or trade buttons", () => {
@@ -90,7 +90,7 @@ describe("MarketCard", () => {
     expect(screen.getByText("Will BTC reach 100K?")).toBeInTheDocument();
     expect(screen.getByText("YES")).toBeInTheDocument();
     expect(screen.queryByText("Chance")).not.toBeInTheDocument();
-    expect(screen.queryByText("65.00%")).not.toBeInTheDocument();
+    expect(screen.queryByText("65.0%")).not.toBeInTheDocument();
     expect(screen.queryByText("Buy YES")).not.toBeInTheDocument();
     expect(screen.queryByText("Buy NO")).not.toBeInTheDocument();
   });

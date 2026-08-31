@@ -952,7 +952,7 @@ export interface components {
          * @description Product collateral subunits in msat (1/1000 sat). Wire amount = collateral subunits. Request fields enforce minimum 1 at validation; response fields (remainingAmountSubunits, filledAmountSubunits) may be 0 for filled/cancelled orders.
          */
         CollateralSubunits: number;
-        /** @description Market price numerator `k`. Valid range is `1 <= k <= D - 1`, where `D` is the market's immutable `divisibility`. Immutable price denominator D is per-market. Current yes/no and categorical markets use D=10000 (0.01% precision). Numeric market creation and trading are currently disabled; D=1000000 (0.0001% precision) is reserved for a future numeric trade representation. */
+        /** @description Market price numerator `k`. Valid range is `1 <= k <= D - 1`, where `D` is the market's immutable `divisibility`. Immutable price denominator D is per-market. Current yes/no and categorical markets use D=1000 (0.1% precision). Numeric market creation and trading are currently disabled; D=1000000 (0.0001% precision) is reserved for a future numeric trade representation. */
         Probability: number;
         /**
          * @description Product quote asset. The current product accepts only exact `sat`; product collateral is held in `msat`.
@@ -1116,7 +1116,7 @@ export interface components {
              * @description Immutable price denominator `D`, server-determined.
              * @enum {integer}
              */
-            divisibility: 10000 | 1000000;
+            divisibility: 1000 | 1000000;
             /**
              * Format: int64
              * @description Engine-computed quote payment in the market base-asset sub-unit. This field plus `baseAsset` and `divisibility` is the authoritative quote payment.
@@ -1195,7 +1195,7 @@ export interface components {
              * @description Immutable price denominator `D`, server-determined.
              * @enum {integer}
              */
-            divisibility: 10000 | 1000000;
+            divisibility: 1000 | 1000000;
         };
         RestingOrderResponse: {
             /**
@@ -1224,7 +1224,7 @@ export interface components {
              * @description Immutable price denominator `D`, server-determined.
              * @enum {integer}
              */
-            divisibility: 10000 | 1000000;
+            divisibility: 1000 | 1000000;
         };
         ListRestingOrdersResponse: {
             orders: components["schemas"]["RestingOrderResponse"][];
@@ -1239,7 +1239,7 @@ export interface components {
              * Format: int32
              * @enum {integer}
              */
-            divisibility: 10000 | 1000000;
+            divisibility: 1000 | 1000000;
             side: components["schemas"]["OrderSide"];
             price: components["schemas"]["Probability"];
             amountSubunits: components["schemas"]["CollateralSubunits"];
@@ -1274,7 +1274,7 @@ export interface components {
              * Format: int32
              * @enum {integer}
              */
-            divisibility: 10000 | 1000000;
+            divisibility: 1000 | 1000000;
             /** @description Current nonterminal settlement group for this order, or null. */
             activeSettlementGroup: components["schemas"]["SettlementGroupSummary"] | null;
         };
@@ -1309,7 +1309,7 @@ export interface components {
              * @description Immutable price denominator `D`, server-determined.
              * @enum {integer}
              */
-            divisibility: 10000 | 1000000;
+            divisibility: 1000 | 1000000;
             /** @description Current nonterminal settlement group for this order, or null. */
             activeSettlementGroup: components["schemas"]["SettlementGroupSummary"] | null;
         };
@@ -1415,15 +1415,15 @@ export interface components {
             thumbnailUrl?: string | null;
             /**
              * Format: int32
-             * @description Immutable price denominator `D`, server-determined. Current yes/no and categorical markets use `10000`; `1000000` is reserved for a future numeric trade representation.
+             * @description Immutable price denominator `D`, server-determined. Current yes/no and categorical markets use `1000`; `1000000` is reserved for a future numeric trade representation.
              * @enum {integer}
              */
-            divisibility: 10000 | 1000000;
+            divisibility: 1000 | 1000000;
         };
         MarketPriceHistoryPoint: {
             /** Format: date-time */
             timestamp: string;
-            /** @description Market price numerator `k`. Valid range is `1 <= k <= D - 1`, where `D` is the market's immutable `divisibility`. Current yes/no and categorical markets use D=10000 (0.01% price precision). Numeric market creation and trading are currently disabled. */
+            /** @description Market price numerator `k`. Valid range is `1 <= k <= D - 1`, where `D` is the market's immutable `divisibility`. Current yes/no and categorical markets use D=1000 (0.1% price precision). Numeric market creation and trading are currently disabled. */
             price: number;
             /**
              * Format: int64
@@ -1476,10 +1476,10 @@ export interface components {
             impliedProbability: number;
             baseAsset: components["schemas"]["BaseAsset"];
             /**
-             * @description Immutable price denominator `D`, server-determined. Current yes/no and categorical markets use `10000`; `1000000` is reserved for a future numeric trade representation.
+             * @description Immutable price denominator `D`, server-determined. Current yes/no and categorical markets use `1000`; `1000000` is reserved for a future numeric trade representation.
              * @enum {integer}
              */
-            divisibility: 10000 | 1000000;
+            divisibility: 1000 | 1000000;
             /**
              * Format: int64
              * @description Liquidity represented by currently resting bot orders, in market-base subunits.
@@ -1562,7 +1562,7 @@ export interface components {
              * @description Exact market divisibility associated with the supplied proofs.
              * @enum {integer}
              */
-            divisibility: 10000 | 1000000;
+            divisibility: 1000 | 1000000;
             /** @description Opaque ecash token (Cashu V4 token blob). Proofs and amount are verified before crediting. */
             proofsToken: string;
             /** @description Nostr public key (hex) of the market creator */
@@ -1638,7 +1638,7 @@ export interface components {
              * Format: int32
              * @enum {integer}
              */
-            divisibility: 10000 | 1000000;
+            divisibility: 1000 | 1000000;
             /** Format: int64 */
             faceAmountSubunits: number;
         };
@@ -1708,7 +1708,7 @@ export interface components {
              * @description Immutable price denominator `D`, server-determined.
              * @enum {integer}
              */
-            divisibility: 10000 | 1000000;
+            divisibility: 1000 | 1000000;
             /** @description Category tags supplied at market registration. Filterable via the `tag` query parameter. */
             categoryTags: string[];
             /**

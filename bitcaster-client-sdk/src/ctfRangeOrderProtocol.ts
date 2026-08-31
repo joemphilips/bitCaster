@@ -35,7 +35,7 @@ import {
   type SettlementCapabilityAdmissionPolicyResponse,
   type SettlementCapabilityResponse,
 } from './engineClient.ts'
-import type { MarketDivisibility } from './marketUnits.ts'
+import { parseMarketDivisibility, type MarketDivisibility } from './marketUnits.ts'
 import type { SettlementCapabilityScoreWorkFacts } from './participationScore.ts'
 
 const RANGE_REFUND_SAFETY_MARGIN_SECONDS = 300
@@ -1018,10 +1018,11 @@ function requireNonnegativeSafeInteger(value: unknown, label: string): number {
 }
 
 function requireDivisibility(value: unknown): MarketDivisibility {
-  if (value !== 10_000 && value !== 1_000_000) {
+  const divisibility = parseMarketDivisibility(value)
+  if (divisibility === null) {
     throw new Error('range preparation divisibility is invalid')
   }
-  return value
+  return divisibility
 }
 
 function requireClosed<const T extends string>(

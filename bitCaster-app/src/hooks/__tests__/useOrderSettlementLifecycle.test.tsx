@@ -69,7 +69,7 @@ describe("useOrderSettlementLifecycle", () => {
       clientOrderId: "client-order-1",
       marketId: "condition-YES",
       baseAsset: "sat",
-      divisibility: 10_000,
+      divisibility: 1_000,
       submittedAt: Date.now(),
     });
     renderHook(() => useOrderSettlementLifecycle(true, recoveryInput));
@@ -110,7 +110,7 @@ describe("useOrderSettlementLifecycle", () => {
       clientOrderId: "client-order-1",
       marketId: "condition-YES",
       baseAsset: "sat",
-      divisibility: 10_000,
+      divisibility: 1_000,
       submittedAt: Date.now(),
     });
     renderHook(() => useOrderSettlementLifecycle(true, recoveryInput));
@@ -132,7 +132,7 @@ describe("useOrderSettlementLifecycle", () => {
       clientOrderId: "client-order-1",
       marketId: "condition-YES",
       baseAsset: "sat",
-      divisibility: 10_000,
+      divisibility: 1_000,
       submittedAt: Date.now(),
     });
     renderHook(() => useOrderSettlementLifecycle(true, recoveryInput));
@@ -151,7 +151,7 @@ describe("useOrderSettlementLifecycle", () => {
       clientOrderId: "client-order-1",
       marketId: "condition-YES",
       baseAsset: "sat",
-      divisibility: 10_000,
+      divisibility: 1_000,
       amountSubunits: 10,
       submittedAt: Date.now(),
     });
@@ -166,7 +166,7 @@ describe("useOrderSettlementLifecycle", () => {
         remainingAmountSubunits: 10,
         baseAsset: "sat",
         collateralUnit: "msat",
-        divisibility: 10_000,
+        divisibility: 1_000,
         activeSettlementGroup: null,
       }),
     );
@@ -203,7 +203,7 @@ describe("useOrderSettlementLifecycle", () => {
       clientOrderId: "client-order-1",
       marketId: "condition-YES",
       baseAsset: "sat",
-      divisibility: 10_000,
+      divisibility: 1_000,
       submittedAt: Date.now(),
     });
     renderHook(() => useOrderSettlementLifecycle(true, recoveryInput));

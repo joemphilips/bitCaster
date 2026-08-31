@@ -17,10 +17,10 @@ test('order lifecycle callbacks require an owned order identity', () => {
   const lifecycle = {
     ...identity,
     status: 'resting',
-    remainingAmountSubunits: 10_000,
+    remainingAmountSubunits: 1_000,
     baseAsset: 'sat',
     collateralUnit: 'msat',
-    divisibility: 10_000,
+    divisibility: 1_000,
     activeSettlementGroup: null,
   }
   const settlement = {

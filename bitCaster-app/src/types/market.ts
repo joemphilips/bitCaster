@@ -40,7 +40,7 @@ export interface Outcome {
 }
 
 // Base market properties shared by all market types
-export type ProductMarketDivisibility = 10_000 | 1_000_000;
+export type ProductMarketDivisibility = 1_000 | 1_000_000;
 
 interface BaseMarket {
   id: string;

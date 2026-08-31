@@ -242,7 +242,7 @@ function yesNoMarket(overrides: Partial<MarketDetail> = {}): MarketDetail {
     activeSince: "2026-01-01T00:00:00Z",
     baseUnit: "sats",
     baseAsset: "sat",
-    divisibility: 10_000,
+        divisibility: 1_000,
     registeredPrimitiveOutcomeIds: ["YES", "NO"],
     creator: {
       id: "creator",
@@ -278,9 +278,9 @@ function fundedSatYesNoMarket(overrides: Partial<MarketDetail> = {}): MarketDeta
   return yesNoMarket({
     baseUnit: "sats",
     baseAsset: "sat",
-    divisibility: 10_000,
+        divisibility: 1_000,
     outcomeOrderBooks: {
-      Yes: askBook(4_000),
+      Yes: askBook(400),
       No: emptyBook,
     },
     ...overrides,
@@ -294,7 +294,7 @@ function mockAcceptedOrder() {
     remainingAmountSubunits: 0,
     fills: [],
     baseAsset: "sat",
-    divisibility: 10_000,
+          divisibility: 1_000,
     activeSettlementGroup: null,
   });
 }
@@ -316,7 +316,7 @@ function categoricalMarket(): MarketDetail {
     activeSince: "2026-01-01T00:00:00Z",
     baseUnit: "sats",
     baseAsset: "sat",
-    divisibility: 10_000,
+      divisibility: 1_000,
     creator: {
       id: "creator",
       name: "creator",
@@ -403,7 +403,7 @@ describe("MarketDetailPage live market status", () => {
 
   it("applies a MarketStatusChanged close push to the detail page and removes trading", async () => {
     vi.mocked(fetchMarketDetail).mockResolvedValue(yesNoMarket({ state: "open" }));
-    vi.mocked(fetchOrderBook).mockResolvedValue(askBook(4_000));
+    vi.mocked(fetchOrderBook).mockResolvedValue(askBook(400));
 
     render(<MarketDetailPage />);
 
@@ -569,7 +569,7 @@ describe("MarketDetailPage live market status", () => {
       outcomeProofsByOutcomeSetId: {},
     });
     vi.mocked(fetchMarketDetail).mockResolvedValue(yesNoMarket({ state: "open" }));
-    vi.mocked(fetchOrderBook).mockResolvedValue(askBook(4_000));
+    vi.mocked(fetchOrderBook).mockResolvedValue(askBook(400));
 
     render(<MarketDetailPage />);
 
@@ -606,7 +606,7 @@ describe("MarketDetailPage live market status", () => {
     const market = fundedSatYesNoMarket({ state: "open" });
     vi.mocked(fetchMarketDetail).mockResolvedValue(market);
     vi.mocked(fetchOrderBook).mockImplementation(async (marketId) =>
-      marketId === "condition-yesno-Yes" ? askBook(4_000) : emptyBook,
+      marketId === "condition-yesno-Yes" ? askBook(400) : emptyBook,
     );
     mockAcceptedOrder();
 
@@ -637,7 +637,7 @@ describe("MarketDetailPage live market status", () => {
       outcomeProofsByOutcomeSetId: {},
     });
     vi.mocked(fetchMarketDetail).mockResolvedValue(yesNoMarket({ state: "open" }));
-    vi.mocked(fetchOrderBook).mockResolvedValue(askBook(4_000));
+    vi.mocked(fetchOrderBook).mockResolvedValue(askBook(400));
 
     render(<MarketDetailPage />);
 
@@ -675,7 +675,7 @@ describe("MarketDetailPage live market status", () => {
     const market = fundedSatYesNoMarket({ state: "open" });
     vi.mocked(fetchMarketDetail).mockResolvedValue(market);
     vi.mocked(fetchOrderBook).mockImplementation(async (marketId) =>
-      marketId === "condition-yesno-Yes" ? askBook(4_000) : emptyBook,
+      marketId === "condition-yesno-Yes" ? askBook(400) : emptyBook,
     );
     mockAcceptedOrder();
 
@@ -702,7 +702,7 @@ describe("MarketDetailPage live market status", () => {
         ticket: expect.objectContaining({
           marketId: "condition-yesno-Yes",
           request: expect.objectContaining({
-            amountSubunits: 10_000,
+            amountSubunits: 1_000,
             outcomeId: "Yes",
             side: "Buy",
             timeInForce: "FAK",
@@ -724,7 +724,7 @@ describe("MarketDetailPage live market status", () => {
     const market = fundedSatYesNoMarket({ state: "open" });
     vi.mocked(fetchMarketDetail).mockResolvedValue(market);
     vi.mocked(fetchOrderBook).mockImplementation(async (marketId) =>
-      marketId === "condition-yesno-Yes" ? askBook(4_000) : emptyBook,
+      marketId === "condition-yesno-Yes" ? askBook(400) : emptyBook,
     );
     vi.mocked(submitBrowserCtfRangeOrder).mockImplementation(async (input) => {
       await input.onScoreTopUpRequired?.({ requiredSats: 5, balanceSats: 0 });
@@ -734,7 +734,7 @@ describe("MarketDetailPage live market status", () => {
         remainingAmountSubunits: 0,
         fills: [],
         baseAsset: "sat",
-        divisibility: 10_000,
+      divisibility: 1_000,
         activeSettlementGroup: null,
       };
     });
@@ -769,7 +769,7 @@ describe("MarketDetailPage live market status", () => {
     const market = fundedSatYesNoMarket({ state: "open" });
     vi.mocked(fetchMarketDetail).mockResolvedValue(market);
     vi.mocked(fetchOrderBook).mockImplementation(async (marketId) =>
-      marketId === "condition-yesno-Yes" ? askBook(4_000) : emptyBook,
+      marketId === "condition-yesno-Yes" ? askBook(400) : emptyBook,
     );
     vi.mocked(submitBrowserCtfRangeOrder).mockImplementation(async (input) => {
       await input.onScoreTopUpRequired?.({ requiredSats: 5, balanceSats: 0 });
@@ -779,7 +779,7 @@ describe("MarketDetailPage live market status", () => {
         remainingAmountSubunits: 0,
         fills: [],
         baseAsset: "sat",
-        divisibility: 10_000,
+      divisibility: 1_000,
         activeSettlementGroup: null,
       };
     });
@@ -813,7 +813,7 @@ describe("MarketDetailPage live market status", () => {
     const market = fundedSatYesNoMarket({ state: "open" });
     vi.mocked(fetchMarketDetail).mockResolvedValue(market);
     vi.mocked(fetchOrderBook).mockImplementation(async (marketId) =>
-      marketId === "condition-yesno-Yes" ? askBook(4_000) : emptyBook,
+      marketId === "condition-yesno-Yes" ? askBook(400) : emptyBook,
     );
     mockAcceptedOrder();
 
@@ -828,7 +828,7 @@ describe("MarketDetailPage live market status", () => {
 
     await screen.findByTestId("insufficient-balance-top-up");
     fireEvent.click(screen.getByTestId("insufficient-balance-top-up"));
-    mocks.getBalance.mockResolvedValue(3_900);
+    mocks.getBalance.mockResolvedValue(390);
     fireEvent.click(await screen.findByTestId("top-up-success"));
 
     await screen.findAllByText(
@@ -849,7 +849,7 @@ describe("MarketDetailPage live market status", () => {
     const market = fundedSatYesNoMarket({ state: "open" });
     vi.mocked(fetchMarketDetail).mockResolvedValue(market);
     vi.mocked(fetchOrderBook).mockImplementation(async (marketId) =>
-      marketId === "condition-yesno-Yes" ? askBook(4_000) : emptyBook,
+      marketId === "condition-yesno-Yes" ? askBook(400) : emptyBook,
     );
     mockAcceptedOrder();
 
@@ -1010,8 +1010,8 @@ describe("marketDetailDataReducer", () => {
           fillId: "00000000-0000-0000-0000-000000000011",
           executedAt: "2026-08-18T00:00:00Z",
           eventOrder: "0001",
-          priceTick: 7_500,
-          divisibility: 10_000,
+      priceTick: 750,
+      divisibility: 1_000,
           faceAmountSubunits: 100,
         },
       ],
@@ -1141,8 +1141,8 @@ describe("marketDetailDataReducer", () => {
       fillId: "00000000-0000-0000-0000-000000000001",
       executedAt: "2026-08-18T00:00:00Z",
       eventOrder: "0001",
-      priceTick: 6200,
-      divisibility: 10_000,
+      priceTick: 620,
+    divisibility: 1_000,
       faceAmountSubunits: 1000,
     };
     const stateWithLive = marketDetailDataReducer(initialState, {
@@ -1172,8 +1172,8 @@ describe("marketDetailDataReducer", () => {
     const composed = composeMarketDetail(repaired, "7d");
     expect(composed?.latestConfirmedTrades).toEqual([liveTrade]);
     expect(composed && composed.type === "yesno" ? composed.currentOdds : null).toEqual({
-      yes: 6200,
-      no: 3800,
+      yes: 620,
+      no: 380,
     });
   });
 
@@ -1184,8 +1184,8 @@ describe("marketDetailDataReducer", () => {
       fillId: "00000000-0000-0000-0000-000000000003",
       executedAt: "2026-08-18T00:00:00Z",
       eventOrder: "0001",
-      priceTick: 6200,
-      divisibility: 10_000,
+      priceTick: 620,
+    divisibility: 1_000,
       faceAmountSubunits: 1000,
     };
     const stateWithLive = marketDetailDataReducer(createMarketDetailDataState(initial), {
@@ -1203,7 +1203,7 @@ describe("marketDetailDataReducer", () => {
           {
             ...liveTrade,
             eventOrder: "0002",
-            priceTick: 1800,
+            priceTick: 180,
             faceAmountSubunits: 2000,
           },
         ],
@@ -1213,8 +1213,8 @@ describe("marketDetailDataReducer", () => {
     expect(conflictingRest.confirmedTradesByConditionId[initial.id]).toEqual([liveTrade]);
     const composed = composeMarketDetail(conflictingRest, "7d");
     expect(composed && composed.type === "yesno" ? composed.currentOdds : null).toEqual({
-      yes: 6200,
-      no: 3800,
+      yes: 620,
+      no: 380,
     });
   });
 
@@ -1224,8 +1224,8 @@ describe("marketDetailDataReducer", () => {
       fillId: "00000000-0000-0000-0000-000000000021",
       executedAt: "2026-08-18T00:00:00Z",
       eventOrder: "0001",
-      priceTick: 6100,
-      divisibility: 10_000,
+      priceTick: 610,
+    divisibility: 1_000,
       faceAmountSubunits: 1000,
     };
     const initial = yesNoMarket({
@@ -1240,7 +1240,7 @@ describe("marketDetailDataReducer", () => {
         ...confirmed,
         fillId: "malformed-fill-id",
         eventOrder: "0002",
-        priceTick: 9000,
+        priceTick: 900,
       },
     });
 
@@ -1248,15 +1248,15 @@ describe("marketDetailDataReducer", () => {
     const composed = composeMarketDetail(stateAfterMalformed, "7d");
     expect(composed?.latestConfirmedTrades).toEqual([confirmed]);
     expect(composed && composed.type === "yesno" ? composed.currentOdds : null).toEqual({
-      yes: 6100,
-      no: 3900,
+      yes: 610,
+      no: 390,
     });
   });
 });
 
 describe("defaultLimitPriceForDivisibility", () => {
   it("uses the midpoint for supported market denominators", () => {
-    expect(defaultLimitPriceForDivisibility(10_000, "sat")).toBe(5_000);
+    expect(defaultLimitPriceForDivisibility(1_000, "sat")).toBe(500);
     expect(defaultLimitPriceForDivisibility(1_000_000, "sat")).toBe(500_000);
   });
 });
@@ -1323,7 +1323,7 @@ describe("pending top-up order intent", () => {
       id: "condition-sat",
       baseAsset: "sat",
       baseUnit: "sats",
-      divisibility: 10_000,
+    divisibility: 1_000,
     });
 
     const intent = buildPendingTopUpOrderIntent({
@@ -1332,10 +1332,10 @@ describe("pending top-up order intent", () => {
       tradeAmount: 2,
       tradeSide: "Buy",
       orderType: "limit",
-      limitPrice: 4_500,
+      limitPrice: 450,
       comment: "  auto after top-up  ",
       baseAsset: "sat",
-      required: 9_000,
+      required: 900,
     });
 
     expect(intent).toMatchObject({
@@ -1344,10 +1344,10 @@ describe("pending top-up order intent", () => {
       tradeAmount: 2,
       tradeSide: "Buy",
       orderType: "limit",
-      limitPrice: 4_500,
+      limitPrice: 450,
       comment: "auto after top-up",
       baseAsset: "sat",
-      required: 9_000,
+      required: 900,
     });
     expect(
       intent &&
@@ -1357,7 +1357,7 @@ describe("pending top-up order intent", () => {
           tradeAmount: 2,
           tradeSide: "Buy",
           orderType: "limit",
-          limitPrice: 4_500,
+          limitPrice: 450,
         }),
     ).toBe(true);
   });

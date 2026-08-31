@@ -47,7 +47,7 @@ function isLatestConfirmedTrade(value: unknown): value is LatestConfirmedTrade {
     typeof raw.priceTick === "number" &&
     Number.isInteger(raw.priceTick) &&
     typeof divisibility === "number" &&
-    (divisibility === 10_000 || divisibility === 1_000_000) &&
+    (divisibility === 1_000 || divisibility === 1_000_000) &&
     raw.priceTick > 0 &&
     raw.priceTick < divisibility &&
     typeof raw.faceAmountSubunits === "number" &&

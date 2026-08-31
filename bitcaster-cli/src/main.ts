@@ -663,7 +663,7 @@ function registerOrderCommand(program: Command): void {
     .description('Submit, inspect, list, cancel orders, and read order books.')
     .addHelpText(
       'after',
-      '\nExamples:\n  bitcaster-cli order submit --market cond-YES --outcome YES --side Buy --price 4200 --amount 10000\n  bitcaster-cli order book <market-id>',
+      '\nExamples:\n  bitcaster-cli order submit --market cond-YES --outcome YES --side Buy --price 420 --amount 1000\n  bitcaster-cli order book <market-id>',
     )
 
   order
@@ -701,7 +701,7 @@ function registerOrderCommand(program: Command): void {
     )
     .addHelpText(
       'after',
-      '\nExample:\n  bitcaster-cli --dry-run order submit --market cond-YES --outcome YES --side Buy --price 4200 --amount 10000 --tif FAK',
+      '\nExample:\n  bitcaster-cli --dry-run order submit --market cond-YES --outcome YES --side Buy --price 420 --amount 1000 --tif FAK',
     )
     .action(async (options: OrderSubmitOptions, command: Command) => {
       const params = orderSubmitParams(options, command.args)

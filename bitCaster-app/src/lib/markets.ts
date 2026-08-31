@@ -208,7 +208,7 @@ export function validateLatestConfirmedTrades(
   ) {
     return [];
   }
-  if (divisibility !== 10_000 && divisibility !== 1_000_000) return [];
+  if (divisibility !== 1_000 && divisibility !== 1_000_000) return [];
   if (!Array.isArray(raw) || raw.length > registeredPrimitiveOutcomeIds.length) return [];
 
   const allowed = new Set(registeredPrimitiveOutcomeIds);

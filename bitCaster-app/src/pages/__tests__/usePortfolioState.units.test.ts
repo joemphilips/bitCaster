@@ -8,7 +8,7 @@ const basePosition: Position = {
   marketTitle: "Market",
   marketImageUrl: "",
   baseAsset: "sat",
-  divisibility: 10_000,
+  divisibility: 1_000,
   side: "yes",
   shares: 1,
   avgBuyPrice: 0,

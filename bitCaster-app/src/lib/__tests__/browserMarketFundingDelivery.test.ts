@@ -64,7 +64,7 @@ const input = {
   mintUrl: "https://mint.example",
   unit: "msat" as const,
   requestedAmount: "10000",
-  divisibility: 10_000,
+  divisibility: 1_000,
 };
 const TOKEN = "cashuBabc123";
 const TOKEN_SHA256 = bytesToHex(sha256(new TextEncoder().encode(TOKEN)));

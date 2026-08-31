@@ -7,7 +7,7 @@ const yesNoMarket: SdkMarketForTrading = {
   id: 'condition-yesno',
   type: 'yesno',
   baseAsset: 'sat',
-  divisibility: 10_000,
+  divisibility: 1_000,
   outcomes: [
     { id: 'yes', label: 'Yes' },
     { id: 'no', label: 'No' },
@@ -18,7 +18,7 @@ const categoricalMarket: SdkMarketForTrading = {
   id: 'condition-category',
   type: 'categorical',
   baseAsset: 'sat',
-  divisibility: 10_000,
+  divisibility: 1_000,
   outcomes: [
     { id: 'alice', label: 'Alice' },
     { id: 'bob', label: 'Bob' },
@@ -27,9 +27,9 @@ const categoricalMarket: SdkMarketForTrading = {
 }
 
 const liquidBook: SdkOrderBook = {
-  bids: [{ price: 4_700, amount: 1_000_000, total: 1_000_000 }],
-  asks: [{ price: 5_300, amount: 1_000_000, total: 1_000_000 }],
-  spread: 600,
+  bids: [{ price: 470, amount: 1_000_000, total: 1_000_000 }],
+  asks: [{ price: 530, amount: 1_000_000, total: 1_000_000 }],
+  spread: 60,
 }
 
 test('buildTradeTicket builds limit orders with oracle-verbatim YES outcome names as FAK', () => {
@@ -61,7 +61,7 @@ test('buildTradeTicket builds categorical NO tickets on primitive route with com
     amountSubunits: 1_000_000,
     side: 'Buy',
     orderType: 'limit',
-    limitPrice: 4_500,
+    limitPrice: 450,
     orderBook: liquidBook,
   })
 
@@ -83,7 +83,7 @@ test('buildTradeTicket builds two-outcome categorical NO tickets against a primi
     amountSubunits: 1_000_000,
     side: 'Buy',
     orderType: 'limit',
-    limitPrice: 4_500,
+    limitPrice: 450,
     orderBook: liquidBook,
   })
 
@@ -101,12 +101,12 @@ test('buildTradeTicket prices executable market buys as aggressive FAK orders', 
     orderType: 'market',
     limitPrice: 500,
     orderBook: liquidBook,
-    complementaryOrderBook: { bids: [{ price: 4_900, amount: 1_000_000 }], asks: [], spread: 0 },
+    complementaryOrderBook: { bids: [{ price: 490, amount: 1_000_000 }], asks: [], spread: 0 },
   })
   assert.equal(directTicket.marketId, 'condition-yesno-Yes')
   assert.equal(directTicket.request.outcomeId, 'Yes')
   assert.equal(directTicket.request.tokenSide, 'Complement')
-  assert.equal(directTicket.request.price, 9999)
+  assert.equal(directTicket.request.price, 999)
   assert.equal(directTicket.request.timeInForce, 'FAK')
 
   const complementaryTicket = buildTradeTicket({
@@ -117,12 +117,12 @@ test('buildTradeTicket prices executable market buys as aggressive FAK orders', 
     orderType: 'market',
     limitPrice: 500,
     orderBook: { bids: [], asks: [], spread: 0 },
-    complementaryOrderBook: { bids: [{ price: 4_900, amount: 1_000_000 }], asks: [], spread: 0 },
+    complementaryOrderBook: { bids: [{ price: 490, amount: 1_000_000 }], asks: [], spread: 0 },
   })
   assert.equal(complementaryTicket.marketId, 'condition-yesno-Yes')
   assert.equal(complementaryTicket.request.outcomeId, 'Yes')
   assert.equal(complementaryTicket.request.tokenSide, 'Complement')
-  assert.equal(complementaryTicket.request.price, 9999)
+  assert.equal(complementaryTicket.request.price, 999)
   assert.equal(complementaryTicket.request.timeInForce, 'FAK')
 })
 

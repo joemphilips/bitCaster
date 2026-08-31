@@ -1,5 +1,8 @@
 import { parseOutcomeSetId } from './outcomeSets.ts'
-import { defaultPriceStepSubunits } from './marketUnits.ts'
+import {
+  DEFAULT_SAT_MARKET_DIVISIBILITY,
+  defaultPriceStepSubunits,
+} from './marketUnits.ts'
 import type { AmmStrategyParams, PendingQRow } from './lmsrTypes.ts'
 
 /** Keep logit arguments strictly inside (0, 1). */
@@ -55,9 +58,12 @@ export interface DepthPreview {
 export function estimateDepthPreview(params: {
   budgetSubunits: number
   outcomeCount: number
+  /** Registered market price denominator. LMSR is ordinary-market only. */
+  divisibility: number | undefined
   /** Optional: projected fee reserve to subtract from budget. Default 0. */
   projectedFeeReserveSubunits?: number
 }): DepthPreview {
+  const priceDivisibility = normalizePriceDivisibility(params.divisibility)
   const effectiveBudget = Math.max(
     0,
     Math.floor(params.budgetSubunits) - Math.floor(params.projectedFeeReserveSubunits ?? 0),
@@ -68,8 +74,26 @@ export function estimateDepthPreview(params: {
 
   const midpoint = 1 / Math.max(2, outcomeCount)
   const levelsPerSide = Math.max(
-    buildLadder('ask', midpoint, 0, bSubunits, 10_000, 10, 5, 1).length,
-    buildLadder('bid', midpoint, 0, bSubunits, 10_000, 10, 5, 1).length,
+    buildLadder(
+      'ask',
+      midpoint,
+      0,
+      bSubunits,
+      priceDivisibility,
+      defaultPriceStepSubunits(priceDivisibility),
+      5,
+      1,
+    ).length,
+    buildLadder(
+      'bid',
+      midpoint,
+      0,
+      bSubunits,
+      priceDivisibility,
+      defaultPriceStepSubunits(priceDivisibility),
+      5,
+      1,
+    ).length,
   )
   const reservePerSide = Math.max(1, Math.floor(effectiveBudget / Math.max(2, outcomeCount)))
   return {
@@ -177,19 +201,18 @@ export function normalizeSizeTickSubunits(value: number | undefined, fallback: n
   return Math.max(value, fallback)
 }
 
-export function normalizePriceDivisibility(value: number | undefined): number {
-  if (value === undefined) return 10_000
-  if (!Number.isInteger(value) || value < 100) return 100
+export function normalizePriceDivisibility(value: unknown): typeof DEFAULT_SAT_MARKET_DIVISIBILITY {
+  if (value !== DEFAULT_SAT_MARKET_DIVISIBILITY) {
+    throw new Error('registered ordinary market divisibility is required for LMSR')
+  }
   return value
 }
 
 export function normalizePriceStepSubunits(
-  value: number | undefined,
-  divisibility: number,
-): number {
-  if (value !== undefined && Number.isInteger(value) && value >= 1) {
-    return Math.min(value, Math.max(1, divisibility - 1))
-  }
+  _value: number | undefined,
+  divisibility: unknown,
+): 10 {
+  normalizePriceDivisibility(divisibility)
   return defaultPriceStepSubunits(divisibility)
 }
 

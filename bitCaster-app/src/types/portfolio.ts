@@ -84,7 +84,8 @@ export interface Position {
   /** Complete canonical monitor identity when local custody can prove it. */
   monitoringAssetIdentity?: string;
   baseAsset: "sat";
-  divisibility: import("./market").ProductMarketDivisibility;
+  /** Registered market denominator, when the catalogue or monitor supplied it. */
+  divisibility?: import("./market").ProductMarketDivisibility;
   /** Exact share count when the client knows the market divisibility. */
   shares?: number;
   avgBuyPrice: number;

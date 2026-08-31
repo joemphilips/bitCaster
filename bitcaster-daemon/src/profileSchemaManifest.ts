@@ -7,10 +7,11 @@ import {
 } from './profileSchema.ts'
 
 export const FINAL_PROFILE_APPLICATION_ID = 0x4243444d
-export const FINAL_PROFILE_SCHEMA_VERSION = 1
+// The unit reset intentionally refuses every pre-release profile authority.
+export const FINAL_PROFILE_SCHEMA_VERSION = 2
 export const FINAL_PROFILE_SCHEMA_NAME = 'bitcaster-daemon-profile'
 export const FINAL_PROFILE_SCHEMA_MANIFEST_DIGEST =
-  '6097d71998c026d5f511bdd98683a932f4a271eb933aa79ae5957b813d86c75a'
+  'f35bbc42895a52e123e0e67a34c151f679f05ebbd91370528a6b86d9171a90e7'
 
 const artifactBytesMax = 16 * 1_024 * 1_024
 const recordBytesMax = 64 * 1_024
@@ -383,7 +384,7 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
       AND minimum_fill_amount_subunits % divisibility = 0
     ),
     consolidate_proofs INTEGER NOT NULL CHECK (consolidate_proofs IN (0, 1)),
-    divisibility INTEGER NOT NULL CHECK (divisibility IN (10000, 1000000)),
+    divisibility INTEGER NOT NULL CHECK (divisibility IN (1000, 1000000)),
     authorization_expires_at_unix_seconds INTEGER NOT NULL CHECK (
       authorization_expires_at_unix_seconds BETWEEN 1 AND 9007199254740991
     ),
@@ -970,7 +971,7 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
     preflight_lock_outcome_set_id TEXT,
     preflight_amount_subunits INTEGER CHECK (preflight_amount_subunits > 0),
     base_asset TEXT NOT NULL CHECK (base_asset = 'sat'),
-    divisibility INTEGER NOT NULL CHECK (divisibility IN (10000, 1000000)),
+    divisibility INTEGER NOT NULL CHECK (divisibility IN (1000, 1000000)),
     engine_status_present INTEGER NOT NULL CHECK (engine_status_present IN (0, 1)),
     engine_status_body BLOB CHECK (
       engine_status_body IS NULL OR length(engine_status_body) <= ${recordBytesMax}

@@ -28,7 +28,7 @@ const localPosition: Position = {
   marketImageUrl: "",
   side: "yes",
   baseAsset: "sat",
-  divisibility: 10_000,
+  divisibility: 1_000,
   shares: 1,
   avgBuyPrice: 0,
   currentPrice: 0,
@@ -361,6 +361,7 @@ describe("usePortfolioState monitoring facade", () => {
       isLoser: false,
     });
     expect(mapped.positions[0]?.shares).toBeUndefined();
+    expect(mapped.positions[0]?.divisibility).toBeUndefined();
     expect(mapped.monitoring).toMatchObject({
       stale: true,
       incomplete: true,
