@@ -144,7 +144,7 @@ beforeEach(() => {
     conditionId: "test-cond-id",
     marketsCreated: ["test-cond-id-Yes", "test-cond-id-No"],
     thumbnailUrl: null,
-    divisibility: 10_000,
+        divisibility: 1_000,
   });
   mockCreateEnumAnnouncement.mockResolvedValue("announcement-hex");
   mockEnsureKormirNsec.mockResolvedValue(undefined);
@@ -263,7 +263,7 @@ describe("useMarketCreationState – onCreateMarket", () => {
         conditionId: "test-cond-id",
         marketsCreated: [],
         thumbnailUrl: null,
-        divisibility: 10_000,
+    divisibility: 1_000,
       };
     });
 
@@ -528,6 +528,7 @@ describe("useMarketCreationState – onCreateMarket", () => {
     // the Lightning payment reaches Paid. The hook signals this via
     // `createdMarketConditionId`.
     expect(result.current.createdMarketConditionId).toBe("test-cond-id");
+    expect(result.current.createdMarketDivisibility).toBe(1_000);
     expect(mockNavigate).not.toHaveBeenCalled();
   });
 

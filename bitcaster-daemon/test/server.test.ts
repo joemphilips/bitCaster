@@ -586,9 +586,9 @@ test('buy order backing uses quote payment, not face amount', () => {
   assert.equal(
     orderBackingError({
       side: 'Buy',
-      price: 4_000,
-      amountSubunits: 30_000,
-      divisibility: 10_000,
+      price: 400,
+      amountSubunits: 3_000,
+      divisibility: 1_000,
       holdings: {
         baseUnitProofs: 12_000,
         primitiveProofsByAtom: {},
@@ -603,12 +603,12 @@ test('sell order backing still uses VCS face amount', () => {
   assert.match(
     orderBackingError({
       side: 'Sell',
-      price: 4_000,
-      amountSubunits: 30_000,
-      divisibility: 10_000,
+      price: 400,
+      amountSubunits: 3_000,
+      divisibility: 1_000,
       holdings: {
         baseUnitProofs: 50_000,
-        primitiveProofsByAtom: { Alpha: 20_000 },
+        primitiveProofsByAtom: { Alpha: 2_000 },
         complementProofsByAtom: {},
       },
     }) ?? '',

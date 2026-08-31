@@ -38,13 +38,14 @@ and sum proof amounts in msat.
 ## Price Denominator
 
 Every market has a **price denominator** (D). Current yes/no and categorical
-markets use `D=10000`, which gives `0.01%` price precision and lets the app
-display prices with two decimal places, such as **53.27%**. Numeric market
+markets use `D=1000`, which gives `0.1%` price precision and lets the app
+display prices with one decimal place, such as **53.3%**. One whole share has
+a `1000 msat` face and pays one sat when it wins. Numeric market
 creation and trading are currently unavailable. The `D=1000000` numeric
 denominator is reserved for a future numeric trade representation.
 
 - **Price granularity.** Prices are quoted as integers from 1 to D−1, so the smallest price move is 1/D.
-- **Share face value.** D controls price precision. One categorical-market share pays **10 sats** if it wins.
+- **Share face value.** One categorical-market share pays **1 sat** if it wins.
 - **Settlement precision.** All market collateral is accounted in **msat**.
 
 The denominator and share face value cannot be changed after a market is registered.

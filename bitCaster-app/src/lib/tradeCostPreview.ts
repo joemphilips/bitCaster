@@ -1,5 +1,8 @@
 import type { LimitOrderPreview, OrderBook, TradeSide } from "@/types/market-detail";
-import { normalizeMarketDivisibility } from "@bitcaster/client-sdk/marketUnits";
+import {
+  normalizeMarketDivisibility,
+  validatePriceNumerator,
+} from "@bitcaster/client-sdk/marketUnits";
 
 export function displaySharesToFaceSubunits(
   displayShares: number,
@@ -62,6 +65,9 @@ export function computeTradeCost(params: {
 }): TradeCostBreakdown {
   const { displayShares, price, feePercent, mintInputFeePpk, baseAsset = "sat" } = params;
   const divisibility = normalizeMarketDivisibility(params.divisibility, baseAsset);
+  if (!validatePriceNumerator(price, divisibility)) {
+    throw new Error("priceNumerator must be between 1 and divisibility - 1");
+  }
   const quoteSubunits =
     (displaySharesToFaceSubunits(displayShares, baseAsset, divisibility) * price) / divisibility;
   const creatorFee = Math.round((quoteSubunits * feePercent) / 100);

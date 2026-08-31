@@ -2726,7 +2726,7 @@ namespace BitCaster.MatchingEngine.Contracts
         public string? ThumbnailUrl { get; }
 
         /// <summary>
-        /// Immutable price denominator `D`, server-determined. Current yes/no and categorical markets use `10000`; `1000000` is reserved for a future numeric trade representation.
+        /// Immutable price denominator `D`, server-determined. Current yes/no and categorical markets use `1000`; `1000000` is reserved for a future numeric trade representation.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("divisibility")]
@@ -2759,7 +2759,7 @@ namespace BitCaster.MatchingEngine.Contracts
         public System.DateTimeOffset Timestamp { get; }
 
         /// <summary>
-        /// Market price numerator `k`. Valid range is `1 &lt;= k &lt;= D - 1`, where `D` is the market's immutable `divisibility`. Current yes/no and categorical markets use D=10000 (0.01% price precision). Numeric market creation and trading are currently disabled.
+        /// Market price numerator `k`. Valid range is `1 &lt;= k &lt;= D - 1`, where `D` is the market's immutable `divisibility`. Current yes/no and categorical markets use D=1000 (0.1% price precision). Numeric market creation and trading are currently disabled.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("price")]
@@ -2963,7 +2963,7 @@ namespace BitCaster.MatchingEngine.Contracts
         public BaseAsset BaseAsset { get; }
 
         /// <summary>
-        /// Immutable price denominator `D`, server-determined. Current yes/no and categorical markets use `10000`; `1000000` is reserved for a future numeric trade representation.
+        /// Immutable price denominator `D`, server-determined. Current yes/no and categorical markets use `1000`; `1000000` is reserved for a future numeric trade representation.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("divisibility")]
@@ -3938,7 +3938,7 @@ namespace BitCaster.MatchingEngine.Contracts
     public enum FillDivisibility
     {
 
-        _10000 = 10000,
+        _1000 = 1000,
 
         _1000000 = 1000000,
 
@@ -3956,7 +3956,7 @@ namespace BitCaster.MatchingEngine.Contracts
     public enum OrderStatusResponseDivisibility
     {
 
-        _10000 = 10000,
+        _1000 = 1000,
 
         _1000000 = 1000000,
 
@@ -3966,7 +3966,7 @@ namespace BitCaster.MatchingEngine.Contracts
     public enum RestingOrderResponseDivisibility
     {
 
-        _10000 = 10000,
+        _1000 = 1000,
 
         _1000000 = 1000000,
 
@@ -3976,7 +3976,7 @@ namespace BitCaster.MatchingEngine.Contracts
     public enum OrderEntryDivisibility
     {
 
-        _10000 = 10000,
+        _1000 = 1000,
 
         _1000000 = 1000000,
 
@@ -3986,7 +3986,7 @@ namespace BitCaster.MatchingEngine.Contracts
     public enum SubmitOrderResponseDivisibility
     {
 
-        _10000 = 10000,
+        _1000 = 1000,
 
         _1000000 = 1000000,
 
@@ -3996,7 +3996,7 @@ namespace BitCaster.MatchingEngine.Contracts
     public enum BatchSubmitOrderSuccessDivisibility
     {
 
-        _10000 = 10000,
+        _1000 = 1000,
 
         _1000000 = 1000000,
 
@@ -4033,7 +4033,7 @@ namespace BitCaster.MatchingEngine.Contracts
     public enum CreateMarketResponseDivisibility
     {
 
-        _10000 = 10000,
+        _1000 = 1000,
 
         _1000000 = 1000000,
 
@@ -4073,7 +4073,7 @@ namespace BitCaster.MatchingEngine.Contracts
     public enum LiquidityStateResponseDivisibility
     {
 
-        _10000 = 10000,
+        _1000 = 1000,
 
         _1000000 = 1000000,
 
@@ -4095,7 +4095,7 @@ namespace BitCaster.MatchingEngine.Contracts
     public enum RequestEcashDepositRequestDivisibility
     {
 
-        _10000 = 10000,
+        _1000 = 1000,
 
         _1000000 = 1000000,
 
@@ -4114,7 +4114,7 @@ namespace BitCaster.MatchingEngine.Contracts
     public enum LatestConfirmedTradeDivisibility
     {
 
-        _10000 = 10000,
+        _1000 = 1000,
 
         _1000000 = 1000000,
 
@@ -4124,7 +4124,7 @@ namespace BitCaster.MatchingEngine.Contracts
     public enum MarketCatalogueEntryDivisibility
     {
 
-        _10000 = 10000,
+        _1000 = 1000,
 
         _1000000 = 1000000,
 

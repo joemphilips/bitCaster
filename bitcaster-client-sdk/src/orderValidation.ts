@@ -36,7 +36,7 @@ export function validateOrderIntent(request: unknown): OrderIntentValidation {
   if (divisibility === null) {
     return {
       valid: false,
-      message: 'Order rejected: divisibility must be 10000 or 1000000.',
+      message: 'Order rejected: divisibility must be 1000 or 1000000.',
     }
   }
   const price = intent.price

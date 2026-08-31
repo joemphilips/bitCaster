@@ -33,6 +33,7 @@ import {
   normalizeMarketBaseAsset,
   normalizeMarketDivisibility,
   defaultCollateralUnit,
+  type MarketDivisibility,
 } from "@bitcaster/client-sdk/marketUnits";
 import { effectiveRelayUrls } from "@/lib/relayDefaults";
 
@@ -120,6 +121,9 @@ export function useMarketCreationState() {
   const [createdMarketConditionId, setCreatedMarketConditionId] = useState<string | null>(null);
   const [createdMarketOutcomeCount, setCreatedMarketOutcomeCount] = useState<number | null>(null);
   const [createdMarketBaseAsset, setCreatedMarketBaseAsset] = useState<MarketBaseAsset | null>(
+    null,
+  );
+  const [createdMarketDivisibility, setCreatedMarketDivisibility] = useState<MarketDivisibility | null>(
     null,
   );
   // Track the last blob URL created for the thumbnail preview so we can revoke
@@ -525,6 +529,7 @@ export function useMarketCreationState() {
         // has already been registered on the mint and the matching engine, so
         // a localStorage quota error must not surface as "Failed to create
         // market" and strand the user on the wizard.
+        const snapshotDivisibility = normalizeMarketDivisibility(createResponse.divisibility, baseAsset);
         try {
           useCreatorMarketsStore.getState().addCreatedMarket({
             conditionId: condition_id,
@@ -532,7 +537,7 @@ export function useMarketCreationState() {
             thumbnailUrl: createResponse.thumbnailUrl ?? null,
             createdAt: new Date().toISOString(),
             baseAsset,
-            divisibility: normalizeMarketDivisibility(createResponse.divisibility, baseAsset),
+            divisibility: snapshotDivisibility,
             creatorFeePercent: DEFAULT_CREATOR_FEE_PERCENT,
             oracle: creatorOracle,
           });
@@ -553,6 +558,7 @@ export function useMarketCreationState() {
         // AMM crediting and order posting continue asynchronously.
         setCreatedMarketOutcomeCount(snapshotOutcomeCount);
         setCreatedMarketBaseAsset(snapshotBaseAsset);
+        setCreatedMarketDivisibility(snapshotDivisibility);
         setCreatedMarketConditionId(condition_id);
       } catch (err) {
         setSubmitError(err instanceof Error ? err.message : "Failed to create market");
@@ -615,6 +621,7 @@ export function useMarketCreationState() {
     createdMarketConditionId,
     createdMarketOutcomeCount,
     createdMarketBaseAsset,
+    createdMarketDivisibility,
     onClose,
     clearDraft,
     onNext,

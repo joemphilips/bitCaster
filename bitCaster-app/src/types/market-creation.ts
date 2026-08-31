@@ -4,6 +4,7 @@
 
 export type OutcomeType = "yesno" | "categorical" | "numeric";
 export type MarketBaseAsset = "sat";
+export type MarketDivisibility = 1_000 | 1_000_000;
 
 export interface WizardStepGetStarted {
   outcomeType: OutcomeType | null;
@@ -107,6 +108,9 @@ export interface MarketCreationWizardProps {
 
   /** Base collateral unit of the created market, used by post-create funding. */
   createdMarketBaseAsset: MarketBaseAsset | null;
+
+  /** Registered market denominator returned by the successful create response. */
+  createdMarketDivisibility: MarketDivisibility | null;
 
   /** True when the wizard is being re-entered with a previously-saved draft. */
   hasSavedDraft: boolean;

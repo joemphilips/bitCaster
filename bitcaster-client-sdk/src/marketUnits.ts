@@ -3,7 +3,8 @@ export type CashuProofUnit = 'sat' | 'msat'
 export type CtfCollateralUnit = 'msat'
 
 export const DEFAULT_MARKET_BASE_ASSET: MarketBaseAsset = 'sat'
-export const DEFAULT_SAT_MARKET_DIVISIBILITY = 10_000
+/** Ordinary non-numeric sat markets settle one whole share as 1,000 msat. */
+export const DEFAULT_SAT_MARKET_DIVISIBILITY = 1_000
 export const NUMERIC_MARKET_DIVISIBILITY = 1_000_000
 export const CTF_COLLATERAL_UNIT: CtfCollateralUnit = 'msat'
 export type MarketDivisibility =
@@ -12,14 +13,13 @@ export type MarketDivisibility =
 
 /**
  * Default LMSR quote-grid step for a market price denominator D.
- * D > 100 targets approximately 0.1% spacing.
+ * Ordinary markets use one percentage-point spacing. Numeric LMSR remains disabled.
  */
-export function defaultPriceStepSubunits(divisibility: number): number {
-  if (!Number.isInteger(divisibility) || divisibility < 100) {
-    throw new Error(`divisibility must be an integer >= 100, got ${divisibility}`)
+export function defaultPriceStepSubunits(divisibility: unknown): 10 {
+  if (divisibility !== DEFAULT_SAT_MARKET_DIVISIBILITY) {
+    throw new Error('registered ordinary market divisibility is required for LMSR')
   }
-  if (divisibility <= 100) return 1
-  return Math.max(1, Math.floor(divisibility / 1_000))
+  return 10
 }
 
 export interface CollateralUnitInfo {
@@ -166,7 +166,8 @@ export function formatWholeShareFaceValue(spec: MarketUnitSpec): string {
 export function formatPricePercentage(priceNumerator: number, divisibility: number): string {
   const parsedDivisibility = requireMarketDivisibility(divisibility)
   const percent = Number.isFinite(priceNumerator) ? (priceNumerator / parsedDivisibility) * 100 : 0
-  return `${percent.toFixed(2)}%`
+  const fractionDigits = parsedDivisibility === DEFAULT_SAT_MARKET_DIVISIBILITY ? 1 : 4
+  return `${percent.toFixed(fractionDigits)}%`
 }
 
 export function formatShareFace(baseAsset: unknown, divisibility: number): string {

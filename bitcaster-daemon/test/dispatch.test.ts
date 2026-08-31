@@ -76,7 +76,7 @@ async function writeState(state: DaemonState): Promise<void> {
   }
   for (const order of Object.values(state.orders)) {
     order.baseAsset ??= 'sat'
-    order.divisibility ??= 10_000
+    order.divisibility ??= 1_000
   }
   await persistState(state)
 }
@@ -920,8 +920,8 @@ test('daemon dispatch persists wallet and order state', async (t) => {
             marketId: 'cond-YES',
             outcomeId: 'YES',
             side: 'Buy' as const,
-            price: 1_000,
-            amountSubunits: 10_000,
+            price: 100,
+            amountSubunits: 1_000,
             timeInForce: 'FAK' as const,
           },
         }
@@ -977,10 +977,10 @@ test('daemon dispatch persists wallet and order state', async (t) => {
             submitOrder: async () => ({
               orderId: 'score-paid-order',
               status: 'resting',
-              remainingAmountSubunits: 10_000,
+              remainingAmountSubunits: 1_000,
               fills: [],
               baseAsset: 'sat',
-              divisibility: 10_000,
+              divisibility: 1_000,
               activeSettlementGroup: null,
             }),
           }),
@@ -1123,7 +1123,7 @@ test('daemon dispatch persists wallet and order state', async (t) => {
               remainingAmountSubunits: 20_000,
               fills: [],
               baseAsset: 'sat',
-              divisibility: 10_000,
+              divisibility: 1_000,
               activeSettlementGroup: null,
             }
           },
@@ -1148,9 +1148,9 @@ test('daemon dispatch persists wallet and order state', async (t) => {
               marketId: 'cond-YES',
               outcomeId: 'YES',
               side: 'Buy',
-              price: 4_200,
-              amountSubunits: 20_000,
-              minimumFillAmountSubunits: 10_000,
+              price: 420,
+              amountSubunits: 2_000,
+              minimumFillAmountSubunits: 1_000,
               consolidateProofs: true,
               timeInForce: 'FAK',
             },
@@ -1190,13 +1190,13 @@ test('daemon dispatch persists wallet and order state', async (t) => {
           outcomeId: 'YES',
           tokenSide: 'Outcome',
           side: 'Buy',
-          price: 4_200,
-          amountSubunits: 20_000,
-          minimumFillAmountSubunits: 10_000,
+          price: 420,
+          amountSubunits: 2_000,
+          minimumFillAmountSubunits: 1_000,
           consolidateProofs: true,
           baseAsset: 'sat',
           collateralUnit: 'msat',
-          divisibility: 10_000,
+          divisibility: 1_000,
           timeInForce: 'FAK',
           expiresAt: null,
           mintUrl: 'https://mint-a.example',
@@ -1444,10 +1444,10 @@ test('daemon dispatch persists wallet and order state', async (t) => {
             return {
               orderId: 'order-complement',
               status: 'resting',
-              remainingAmountSubunits: 10_000,
+              remainingAmountSubunits: 1_000,
               fills: [],
               baseAsset: 'sat',
-              divisibility: 10_000,
+              divisibility: 1_000,
               activeSettlementGroup: null,
             }
           },
@@ -1474,8 +1474,8 @@ test('daemon dispatch persists wallet and order state', async (t) => {
               outcomeId: 'YES',
               tokenSide: 'Complement',
               side: 'Buy',
-              price: 9_900,
-              amountSubunits: 10_000,
+              price: 990,
+              amountSubunits: 1_000,
               timeInForce: 'FAK',
             },
           },
@@ -1535,8 +1535,8 @@ test('daemon dispatch persists wallet and order state', async (t) => {
             marketId: 'cond-Bob',
             outcomeId: 'Bob',
             side: 'Buy',
-            price: 4_200,
-            amountSubunits: 10_000,
+            price: 420,
+            amountSubunits: 1_000,
             timeInForce: 'FAK',
           },
         },
@@ -1603,8 +1603,8 @@ test('daemon dispatch persists wallet and order state', async (t) => {
               marketId: 'cond-Bob',
               outcomeId: 'Bob',
               side: 'Buy',
-              price: 4_200,
-              amountSubunits: 10_000,
+              price: 420,
+              amountSubunits: 1_000,
               timeInForce: 'FAK',
             },
           },
@@ -1663,8 +1663,8 @@ test('daemon dispatch persists wallet and order state', async (t) => {
                 marketId: 'cond-YES',
                 outcomeId: 'YES',
                 side: 'Buy',
-                price: 4_200,
-                amountSubunits: 10_000,
+                price: 420,
+                amountSubunits: 1_000,
                 timeInForce: 'FAK',
               },
             },
@@ -1674,7 +1674,7 @@ test('daemon dispatch persists wallet and order state', async (t) => {
                 getMarket: async (conditionId) => ({
                   conditionId,
                   baseAsset: 'sat',
-                  divisibility: 10_000,
+                  divisibility: 1_000,
                 }),
                 getParticipationScore: async () => scoreResponse({ balance: -1 }),
               }),
@@ -1710,41 +1710,41 @@ test('daemon dispatch persists wallet and order state', async (t) => {
               outcomeId: 'YES',
               side: 'Buy',
               price: 0,
-              amountSubunits: 10_000,
+              amountSubunits: 1_000,
               timeInForce: 'GTC',
             },
             {
               marketId: 'cond-YES',
               outcomeId: 'YES',
               side: 'Buy',
-              price: 4_200,
-              amountSubunits: 5_000,
+              price: 420,
+              amountSubunits: 500,
               timeInForce: 'GTC',
             },
             {
               marketId: 'cond-YES',
               outcomeId: 'YES',
               side: 'Buy',
-              price: 4_200,
-              amountSubunits: 20_000,
-              minimumFillAmountSubunits: 5_000,
+              price: 420,
+              amountSubunits: 2_000,
+              minimumFillAmountSubunits: 500,
               timeInForce: 'GTC',
             },
             {
               marketId: 'cond-YES',
               outcomeId: 'YES',
               side: 'Buy',
-              price: 4_200,
-              amountSubunits: 20_000,
-              minimumFillAmountSubunits: 30_000,
+              price: 420,
+              amountSubunits: 2_000,
+              minimumFillAmountSubunits: 3_000,
               timeInForce: 'GTC',
             },
             {
               marketId: 'cond-YES',
               outcomeId: 'YES',
               side: 'Buy',
-              price: 4_200,
-              amountSubunits: 20_000,
+              price: 420,
+              amountSubunits: 2_000,
               minimumFillAmountSubunits: null,
               timeInForce: 'GTC',
             },
@@ -1752,24 +1752,24 @@ test('daemon dispatch persists wallet and order state', async (t) => {
               marketId: 'cond-YES',
               outcomeId: 'YES',
               side: 'Buy',
-              price: 4_200,
-              amountSubunits: 10_000,
+              price: 420,
+              amountSubunits: 1_000,
               timeInForce: 'IOC',
             },
             {
               marketId: 'cond-YES',
               outcomeId: 'YES',
               side: 'Buy',
-              price: 4_200,
-              amountSubunits: 10_000,
+              price: 420,
+              amountSubunits: 1_000,
               timeInForce: 'GTC',
             },
             {
               marketId: 'cond-YES',
               outcomeId: 'YES',
               side: 'Buy',
-              price: 4_200,
-              amountSubunits: 10_000,
+              price: 420,
+              amountSubunits: 1_000,
               consolidateProofs: 'yes',
               timeInForce: 'GTC',
             },
@@ -1777,32 +1777,32 @@ test('daemon dispatch persists wallet and order state', async (t) => {
               marketId: 'cond-YES',
               outcomeId: 'YES',
               side: 'Buy',
-              price: 4_200,
-              amountSubunits: 10_000,
+              price: 420,
+              amountSubunits: 1_000,
               timeInForce: 'GTC',
             },
             {
               marketId: 'cond-Bob|Carol',
               outcomeId: 'Bob',
               side: 'Buy',
-              price: 4_200,
-              amountSubunits: 10_000,
+              price: 420,
+              amountSubunits: 1_000,
               timeInForce: 'GTC',
             },
             {
               marketId: 'cond-Bob',
               outcomeId: 'Bob|Carol',
               side: 'Buy',
-              price: 4_200,
-              amountSubunits: 10_000,
+              price: 420,
+              amountSubunits: 1_000,
               timeInForce: 'GTC',
             },
             {
               marketId: 'cond-Bob',
               outcomeId: 'Carol',
               side: 'Buy',
-              price: 4_200,
-              amountSubunits: 10_000,
+              price: 420,
+              amountSubunits: 1_000,
               timeInForce: 'GTC',
             },
           ]) {
@@ -1920,7 +1920,7 @@ test('daemon dispatch persists wallet and order state', async (t) => {
                 return true
               },
               async getMarket(conditionId) {
-                return { conditionId, baseAsset: 'sat', divisibility: 10_000 }
+                return { conditionId, baseAsset: 'sat', divisibility: 1_000 }
               },
               async getOrderBook() {
                 throw new Error('getOrderBook unused')
@@ -1945,7 +1945,7 @@ test('daemon dispatch persists wallet and order state', async (t) => {
           marketId: 'cond-YES',
           status: 'cancelled',
           baseAsset: 'sat',
-          divisibility: 10_000,
+          divisibility: 1_000,
           engineStatus: {
             orderId: 'order-cancel',
             marketId: 'cond-YES',
@@ -2013,10 +2013,10 @@ test('daemon dispatch persists wallet and order state', async (t) => {
           return {
             orderId: 'order-runtime-fail',
             status: 'resting',
-            remainingAmountSubunits: 10_000,
+            remainingAmountSubunits: 1_000,
             fills: [],
             baseAsset: 'sat',
-            divisibility: 10_000,
+            divisibility: 1_000,
             activeSettlementGroup: null,
           }
         },
@@ -2041,8 +2041,8 @@ test('daemon dispatch persists wallet and order state', async (t) => {
             marketId: 'cond-YES',
             outcomeId: 'YES',
             side: 'Buy',
-            price: 4_200,
-            amountSubunits: 10_000,
+            price: 420,
+            amountSubunits: 1_000,
             timeInForce: 'FAK',
           },
         },
@@ -2079,8 +2079,8 @@ test('daemon dispatch persists wallet and order state', async (t) => {
               marketId: 'cond-YES',
               outcomeId: 'YES',
               side: 'Sell',
-              price: 4_200,
-              amountSubunits: 10_000,
+              price: 420,
+              amountSubunits: 1_000,
               timeInForce: 'FAK',
             },
           },
@@ -2093,10 +2093,10 @@ test('daemon dispatch persists wallet and order state', async (t) => {
                   return {
                     orderId: 'order-direct-sell',
                     status: 'resting',
-                    remainingAmountSubunits: 10_000,
+                    remainingAmountSubunits: 1_000,
                     fills: [],
                     baseAsset: 'sat',
-                    divisibility: 10_000,
+                    divisibility: 1_000,
                     activeSettlementGroup: null,
                   }
                 },
@@ -2343,7 +2343,7 @@ function proofRecord(
   }
 }
 
-function backedDaemonState(conditionId = 'cond', amount = 10_000): DaemonState {
+function backedDaemonState(conditionId = 'cond', amount = 1_000): DaemonState {
   const state = emptyDaemonState()
   state.wallet.proofs.push(
     proofRecord(
@@ -2389,7 +2389,7 @@ function backedDaemonState(conditionId = 'cond', amount = 10_000): DaemonState {
 
 const scoreDisabledEngineMethods = {
   async getMarket(conditionId: string) {
-    return { conditionId, baseAsset: 'sat', divisibility: 10_000 }
+    return { conditionId, baseAsset: 'sat', divisibility: 1_000 }
   },
   async getParticipationScore() {
     return scoreResponse({ enabled: false })

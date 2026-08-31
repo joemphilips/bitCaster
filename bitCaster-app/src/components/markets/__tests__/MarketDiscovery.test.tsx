@@ -27,7 +27,7 @@ const testMarkets: Market[] = [
     creatorFeePercent: 2,
     baseMarket: "sats",
     baseAsset: "sat",
-    divisibility: 10_000,
+    divisibility: 1_000,
   },
   {
     id: "test-002",
@@ -52,7 +52,7 @@ const testMarkets: Market[] = [
     creatorFeePercent: 1.5,
     baseMarket: "sats",
     baseAsset: "sat",
-    divisibility: 10_000,
+    divisibility: 1_000,
   },
 ];
 

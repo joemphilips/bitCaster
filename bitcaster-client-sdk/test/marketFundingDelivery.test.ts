@@ -14,7 +14,7 @@ const input = {
   mintUrl: 'https://mint.example',
   unit: 'msat' as const,
   requestedAmount: '100000000',
-  divisibility: 10_000,
+  divisibility: 1_000,
 }
 
 test('builds one canonical AMM durable-recipient binding', () => {
@@ -60,7 +60,7 @@ test('rejects a noncanonical condition or nonexact token authority', () => {
     /requested amount/,
   )
   assert.throws(
-    () => createMarketFundingDeliveryMetadata({ ...input, requestedAmount: '10001' }),
+    () => createMarketFundingDeliveryMetadata({ ...input, requestedAmount: '1001' }),
     /requested amount/,
   )
   assert.throws(

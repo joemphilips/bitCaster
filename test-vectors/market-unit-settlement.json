@@ -4,11 +4,11 @@
     {
       "name": "sat-default-direct",
       "baseAsset": "sat",
-      "divisibility": 10000,
-      "faceAmountSubunits": 10000,
-      "priceSubunits": 4000,
-      "quotePaymentSubunits": 4000,
-      "complementQuotePaymentSubunits": 6000
+      "divisibility": 1000,
+      "faceAmountSubunits": 1000,
+      "priceSubunits": 400,
+      "quotePaymentSubunits": 400,
+      "complementQuotePaymentSubunits": 600
     },
     {
       "name": "sat-numeric-direct",
@@ -22,11 +22,11 @@
     {
       "name": "sat-high-divisibility-direct",
       "baseAsset": "sat",
-      "divisibility": 10000,
-      "faceAmountSubunits": 20000,
-      "priceSubunits": 1234,
-      "quotePaymentSubunits": 2468,
-      "complementQuotePaymentSubunits": 17532
+      "divisibility": 1000,
+      "faceAmountSubunits": 2000,
+      "priceSubunits": 123,
+      "quotePaymentSubunits": 246,
+      "complementQuotePaymentSubunits": 1754
     }
   ]
 }

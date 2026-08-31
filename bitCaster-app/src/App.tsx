@@ -31,6 +31,7 @@ import { effectiveRelayUrls } from "@/lib/relayDefaults";
 import { refreshMintInfoWithoutActivating, userAddAndSelectMint } from "@/lib/walletOps";
 import { rehydratePersistedNostrIdentity } from "@/lib/identityOps";
 import { reconcileAcceptedLocalWalletPayments } from "@/lib/pendingLocalWalletPayments";
+import { BrowserPreReleaseResetGate } from "@/lib/BrowserPreReleaseResetGate";
 import { recoverBrowserCtfRangeOrders } from "@/lib/browserCtfRangeOrderSubmission";
 import { useEncryptedWalletBackupDriver } from "@/hooks/useEncryptedWalletBackupDriver";
 import { useAssetMonitoringReporter } from "@/hooks/useAssetMonitoringReporter";
@@ -415,8 +416,10 @@ function AppRoutes() {
 export default function App() {
   return (
     <BrowserRouter>
-      <AppRoutes />
-      <ToastContainer />
+      <BrowserPreReleaseResetGate>
+        <AppRoutes />
+        <ToastContainer />
+      </BrowserPreReleaseResetGate>
     </BrowserRouter>
   );
 }

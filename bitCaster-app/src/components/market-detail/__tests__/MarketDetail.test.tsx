@@ -44,7 +44,7 @@ function makeMarket(overrides: Partial<MarketDetailType> = {}): MarketDetailType
     activeSince: "2026-01-01T00:00:00Z",
     state: "open",
     baseAsset: "sat",
-    divisibility: 10_000,
+          divisibility: 1_000,
     baseUnit: "sats",
     creator: {
       id: "creator",
@@ -193,7 +193,7 @@ describe("MarketDetail", () => {
         tradeSide="Buy"
         orderType="market"
         limitOrderPreview={null}
-        limitPrice={5000}
+        limitPrice={500}
       />,
     );
 
@@ -203,7 +203,7 @@ describe("MarketDetail", () => {
 
   it("keeps the disabled numeric current value unavailable", () => {
     const numericMarket = {
-      ...makeMarket(),
+      ...makeMarket({ divisibility: 1_000_000 }),
       type: "numeric" as const,
       currentPrice: 75,
       loBound: 0,
@@ -218,8 +218,8 @@ describe("MarketDetail", () => {
           fillId: "00000000-0000-0000-0000-000000000010",
           executedAt: "2030-01-01T00:00:00Z",
           eventOrder: "0001",
-          priceTick: 7_500,
-          divisibility: 10_000,
+          priceTick: 750_000,
+          divisibility: 1_000_000,
           faceAmountSubunits: 100,
         },
       ],
@@ -235,7 +235,7 @@ describe("MarketDetail", () => {
         tradeSide="Buy"
         orderType="market"
         limitOrderPreview={null}
-        limitPrice={5000}
+        limitPrice={500_000}
       />,
     );
 
@@ -277,7 +277,7 @@ describe("MarketDetail", () => {
     render(
       <MarketDetail
         market={makeMarket({
-          divisibility: 10_000,
+    divisibility: 1_000,
           outcomeOrderBooks: {
             Yes: {
               bids: [],
@@ -548,7 +548,7 @@ describe("MarketDetail", () => {
       orderBook: { bids: [], asks: [], spread: 0 },
       outcomeOrderBooks: {
         Alice: {
-          bids: [{ price: 3_000, amount: 100, total: 100 }],
+          bids: [{ price: 300, amount: 1_000, total: 1_000 }],
           asks: [],
           spread: 0,
         },

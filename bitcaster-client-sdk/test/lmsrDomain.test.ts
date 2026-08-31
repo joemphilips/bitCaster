@@ -7,6 +7,8 @@ import {
   deltaQShares,
   estimateDepthPreview,
   logit,
+  normalizePriceDivisibility,
+  normalizePriceStepSubunits,
 } from '../src/lmsrDomain.ts'
 import type { AmmStrategyParams, PendingQRow } from '../src/lmsrTypes.ts'
 
@@ -20,7 +22,7 @@ function params(overrides: Partial<AmmStrategyParams> = {}): AmmStrategyParams {
     perLevelSizeCapShares: 10_000,
     minFillSizeShares: 100,
     sizeTickSubunits: 100,
-    divisibility: 100,
+    divisibility: 1_000,
     priceStepSubunits: 1,
     ...overrides,
   }
@@ -157,10 +159,38 @@ describe('lmsrDomain properties', () => {
     const preview = estimateDepthPreview({
       budgetSubunits: 100_000,
       outcomeCount: 2,
+      divisibility: 1_000,
       projectedFeeReserveSubunits: 1_000,
     })
     assert.equal(preview.bSubunits, Math.floor(99_000 / Math.LN2))
     assert.equal(preview.levelsPerSide, 5)
     assert.ok(preview.sharesPerLevel > 0)
+  })
+
+  it('refuses LMSR price planning without the registered ordinary divisibility', () => {
+    for (const divisibility of [undefined, null, '1000', 10_000, 1_000_000]) {
+      assert.throws(
+        () => normalizePriceDivisibility(divisibility),
+        /registered ordinary market divisibility is required/,
+      )
+    }
+  })
+
+  it('refuses a depth preview without the registered ordinary divisibility', () => {
+    assert.throws(
+      () => estimateDepthPreview({ budgetSubunits: 100_000, outcomeCount: 2 } as never),
+      /registered ordinary market divisibility is required/,
+    )
+  })
+
+  it('uses the fixed ordinary LMSR step and refuses every other denominator', () => {
+    assert.equal(normalizePriceStepSubunits(undefined, 1_000), 10)
+    assert.equal(normalizePriceStepSubunits(1, 1_000), 10)
+    for (const divisibility of [undefined, null, '1000', 10_000, 1_000_000, 100]) {
+      assert.throws(
+        () => normalizePriceStepSubunits(10, divisibility),
+        /registered ordinary market divisibility is required for LMSR/,
+      )
+    }
   })
 })

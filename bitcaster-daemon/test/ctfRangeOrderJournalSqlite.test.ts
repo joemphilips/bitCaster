@@ -161,9 +161,9 @@ test('range preparation schema rejects partial capability and loose authority', 
     /constraint/,
   )
   for (const candidate of [
-    { ...input, amountSubunits: 15_000 },
-    { ...input, minimumFillAmountSubunits: 5_000 },
-    { ...input, minimumFillAmountSubunits: 20_000 },
+    { ...input, amountSubunits: 1_500 },
+    { ...input, minimumFillAmountSubunits: 500 },
+    { ...input, minimumFillAmountSubunits: 2_000 },
   ]) {
     assert.throws(() => insertPrepared(candidate), /constraint/)
   }
@@ -171,7 +171,7 @@ test('range preparation schema rejects partial capability and loose authority', 
     () =>
       insertRangePreparation(database, {
         ...preparationInput('range-full-price', 'source-full-price', 'client-full-price', 2),
-        priceSubunits: 10_000,
+        priceSubunits: 1_000,
       }),
     /price/,
   )
@@ -461,11 +461,11 @@ function preparationInput(
     unit: 'msat' as const,
     tokenSide: 'Outcome' as const,
     side: 'Buy' as const,
-    priceSubunits: 5_000,
-    amountSubunits: 10_000,
-    minimumFillAmountSubunits: 10_000,
+    priceSubunits: 500,
+    amountSubunits: 1_000,
+    minimumFillAmountSubunits: 1_000,
     consolidateProofs: false,
-    divisibility: 10_000,
+    divisibility: 1_000,
     authorizationExpiresAtUnixSeconds: 2_000_000_000,
     preparationBytes: encodeCanonicalRangePreparation({
       rangeOperationId,
@@ -561,7 +561,7 @@ function insertSubmittedOrder(database: DatabaseSync, clientOrderId: string): vo
       `INSERT INTO daemon_orders (
          order_id, scope_id, market_id, status, revision, client_order_id,
          base_asset, divisibility, engine_status_present, created_at_ms, updated_at_ms
-       ) VALUES (?, ?, 'condition-1-YES', 'resting', 0, ?, 'sat', 10000, 0, 0, 0)`,
+       ) VALUES (?, ?, 'condition-1-YES', 'resting', 0, ?, 'sat', 1000, 0, 0, 0)`,
     )
     .run(`engine-${clientOrderId}`, SCOPE_ID, clientOrderId)
 }

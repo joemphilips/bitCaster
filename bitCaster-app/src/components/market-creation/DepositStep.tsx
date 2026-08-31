@@ -43,8 +43,8 @@ interface DepositStepProps {
   baseAsset?: MarketBaseAsset;
   /** Controls whether this component is the creation handoff or an embedded detail view. */
   presentation?: "creation" | "detail";
-  /** Registered market divisibility. Defaults to the sat market denominator. */
-  divisibility?: MarketDivisibility;
+  /** Registered market divisibility. */
+  divisibility: MarketDivisibility;
 }
 
 export function DepositStep({
@@ -70,10 +70,7 @@ export function DepositStep({
   const cashuUnit = defaultCollateralUnit(baseAsset);
   const activeMintUrl = useWalletStore((state) => state.activeMintUrl);
   const balance = useBalance(activeMintUrl, { baseAsset });
-  const divisibility = normalizeMarketDivisibility(
-    divisibilityInput ?? DEFAULT_SAT_MARKET_DIVISIBILITY,
-    baseAsset,
-  );
+  const divisibility = normalizeMarketDivisibility(divisibilityInput, baseAsset);
   const customBudgetSubunits = customBudgetInputToSubunits(customBudgetInput);
 
   useEffect(() => {
@@ -96,9 +93,9 @@ export function DepositStep({
   const customBudgetPreview = formatFundingBudget(customBudgetSubunits, baseAsset);
   const showWarning = selectedTier === "minimal";
   const depthPreview =
-    selectedTier === "none"
+    selectedTier === "none" || divisibility !== DEFAULT_SAT_MARKET_DIVISIBILITY
       ? null
-      : estimateDepthPreview({ budgetSubunits: budgetSats, outcomeCount });
+      : estimateDepthPreview({ budgetSubunits: budgetSats, outcomeCount, divisibility });
 
   const continueToMarket = useCallback(() => {
     if (presentation === "detail") return;

@@ -77,15 +77,15 @@ const yesNoEntry: MarketCatalogueEntry = {
   ammBotBudgetSubunits: 88_000,
   volumeLifetimeSubunits: 980_000,
   baseAsset: "sat",
-  divisibility: 10_000,
+  divisibility: 1_000,
   latestConfirmedTrades: [
     {
       primitiveOutcomeId: "YES",
       fillId: "00000000-0000-0000-0000-000000000001",
       executedAt: "2026-05-02T09:58:00Z",
       eventOrder: "0001",
-      priceTick: 6200,
-      divisibility: 10_000,
+      priceTick: 620,
+      divisibility: 1_000,
       faceAmountSubunits: 1000,
     },
   ],
@@ -108,7 +108,7 @@ const categoricalEntry: MarketCatalogueEntry = {
   ammBotBudgetSubunits: 12_000,
   volumeLifetimeSubunits: 45_000,
   baseAsset: "sat",
-  divisibility: 10_000,
+  divisibility: 1_000,
   latestConfirmedTrades: [],
   categoryTags: ["politics"],
   lastSuccessfulRefreshAt: "2026-05-02T09:58:00Z",
@@ -124,10 +124,10 @@ describe("mapCatalogueEntryToMarket", () => {
     expect(market.title).toBe("Will BTC hit 100K?");
     expect(market.type).toBe("yesno");
     expect(market.baseAsset).toBe("sat");
-    expect(market.divisibility).toBe(10_000);
+    expect(market.divisibility).toBe(1_000);
     expect(market.baseMarket).toBe("sats");
     if (market.type === "yesno") {
-      expect(market.currentOdds).toEqual({ yes: 6200, no: 3800 });
+      expect(market.currentOdds).toEqual({ yes: 620, no: 380 });
       expect(market.latestConfirmedTrades).toEqual(yesNoEntry.latestConfirmedTrades);
       expect(market.latestConfirmedTradesValid).toBe(true);
     }
@@ -138,27 +138,27 @@ describe("mapCatalogueEntryToMarket", () => {
     // provide visible odds in this mapper yet.
     const marketWithTrades = mapCatalogueEntryToMarket({
       ...yesNoEntry,
-      divisibility: 10_000,
+      divisibility: 1_000,
       latestConfirmedTrades: [{
         primitiveOutcomeId: "YES",
         fillId: "00000000-0000-0000-0000-000000000002",
         executedAt: "2026-05-02T09:58:00Z",
         eventOrder: "0002",
-        priceTick: 6_200,
-        divisibility: 10_000,
+        priceTick: 620,
+        divisibility: 1_000,
         faceAmountSubunits: 1_000,
       }],
     });
 
     expect(marketWithTrades.type).toBe("yesno");
     if (marketWithTrades.type === "yesno") {
-      expect(marketWithTrades.currentOdds).toEqual({ yes: 6200, no: 3800 });
+      expect(marketWithTrades.currentOdds).toEqual({ yes: 620, no: 380 });
     }
 
     // Without confirmed trades, the adapter keeps the existing neutral display.
     const marketNoTrades = mapCatalogueEntryToMarket({
       ...yesNoEntry,
-      divisibility: 10_000,
+      divisibility: 1_000,
       latestConfirmedTrades: [],
     });
 
@@ -257,26 +257,26 @@ describe("latest confirmed trade authority validation", () => {
       fillId: "00000000-0000-0000-0000-000000000002",
       executedAt: "2026-05-02T10:00:00Z",
       eventOrder: "0002",
-      priceTick: 3_800,
+      priceTick: 380,
     };
 
-    expect(latestConfirmedTradesAuthorityValid([], ["YES", "NO"], 10_000)).toBe(true);
-    expect(validateLatestConfirmedTrades([yes, no], ["YES", "NO"], 10_000)).toEqual([]);
+    expect(latestConfirmedTradesAuthorityValid([], ["YES", "NO"], 1_000)).toBe(true);
+    expect(validateLatestConfirmedTrades([yes, no], ["YES", "NO"], 1_000)).toEqual([]);
     expect(
       validateLatestConfirmedTrades(
         [{ ...yes, fillId: "not-a-uuid" }],
         ["YES", "NO"],
-        10_000,
+        1_000,
       ),
     ).toEqual([]);
     expect(
       validateLatestConfirmedTrades(
         [{ ...yes, executedAt: "2026-05-02" }],
         ["YES", "NO"],
-        10_000,
+        1_000,
       ),
     ).toEqual([]);
-    expect(latestConfirmedTradesAuthorityValid([no, yes], ["YES", "NO"], 10_000)).toBe(true);
+    expect(latestConfirmedTradesAuthorityValid([no, yes], ["YES", "NO"], 1_000)).toBe(true);
   });
 });
 
@@ -524,7 +524,7 @@ describe("deposit API normalization", () => {
     await expect(
       requestEcashDeposit("deadbeef", 1000, "cashu-token", {
         unit: "msat",
-        divisibility: 10_000,
+        divisibility: 1_000,
       }),
     ).resolves.toMatchObject({ state: "requested" });
   });
@@ -545,7 +545,7 @@ describe("submitOrder", () => {
             remainingAmountSubunits: 10_000,
             fills: [],
             baseAsset: "sat",
-            divisibility: 10_000,
+            divisibility: 1_000,
             activeSettlementGroup: null,
           }),
           { status: 200 },
@@ -672,7 +672,7 @@ describe("fetchMarketDetail (engine merge — ADR-009 Amendment 2026-05-04)", ()
             ammBotBudgetSubunits: 75000,
             volumeLifetimeSubunits: 250000,
             baseAsset: "sat",
-            divisibility: 10_000,
+            divisibility: 1_000,
             latestConfirmedTrades: [],
             categoryTags: ["crypto"],
             lastSuccessfulRefreshAt: "2026-05-04T00:00:00Z",
@@ -726,8 +726,8 @@ describe("fetchMarketDetail (engine merge — ADR-009 Amendment 2026-05-04)", ()
       fillId: "00000000-0000-0000-0000-000000000010",
       executedAt: "2026-05-02T09:58:00Z",
       eventOrder: "0001",
-      priceTick: 6200,
-      divisibility: 10_000 as const,
+      priceTick: 620,
+      divisibility: 1_000 as const,
       faceAmountSubunits: 1000,
     };
 
@@ -758,13 +758,13 @@ describe("fetchMarketDetail (engine merge — ADR-009 Amendment 2026-05-04)", ()
       fillId: "00000000-0000-0000-0000-000000000020",
       executedAt: "2026-05-02T09:58:00Z",
       eventOrder: "0002",
-      priceTick: 6200,
-      divisibility: 10_000 as const,
+      priceTick: 620,
+      divisibility: 1_000 as const,
       faceAmountSubunits: 1000,
     };
     const duplicate = applyConfirmedTradeDelta("abc123", allowed, [current], {
       conditionId: "abc123",
-      latestConfirmedTrade: { ...current, eventOrder: "0003", priceTick: 7000 },
+      latestConfirmedTrade: { ...current, eventOrder: "0003", priceTick: 700 },
     });
     expect(duplicate).toEqual([current]);
 
@@ -774,7 +774,7 @@ describe("fetchMarketDetail (engine merge — ADR-009 Amendment 2026-05-04)", ()
         ...current,
         fillId: "00000000-0000-0000-0000-000000000021",
         eventOrder: "0001",
-        priceTick: 4000,
+        priceTick: 400,
       },
     });
     expect(older).toEqual([current]);
@@ -783,7 +783,7 @@ describe("fetchMarketDetail (engine merge — ADR-009 Amendment 2026-05-04)", ()
       ...current,
       fillId: "00000000-0000-0000-0000-000000000022",
       eventOrder: "0004",
-      priceTick: 7100,
+      priceTick: 710,
     };
     const newer = applyConfirmedTradeDelta("abc123", allowed, older, {
       conditionId: "abc123",
@@ -1189,14 +1189,14 @@ describe("windowPriceHistory (P22 Link D timeframe windowing)", () => {
 
 describe("price history normalization", () => {
   it("normalizes raw price numerators to percentages", () => {
-    expect(priceNumeratorToPercent(5_000, 10_000)).toBe(50);
+    expect(priceNumeratorToPercent(500, 1_000)).toBe(50);
     expect(priceNumeratorToPercent(500_000, 1_000_000)).toBe(50);
-    expect(priceNumeratorToPercent(20_000, 10_000)).toBe(100);
+    expect(priceNumeratorToPercent(2_000, 1_000)).toBe(100);
   });
 
   it("applies market divisibility when mapping fetched history", () => {
     const market = {
-      ...mapCatalogueEntryToMarket({ ...yesNoEntry, divisibility: 10_000 }),
+      ...mapCatalogueEntryToMarket({ ...yesNoEntry, divisibility: 1_000 }),
       priceHistory: { timeframe: "7d" as const, data: [] },
       orderBook: { bids: [], asks: [], spread: 0 },
       recentTrades: [],
@@ -1226,7 +1226,7 @@ describe("price history normalization", () => {
           data: [
             {
               timestamp: "2026-05-25T10:00:00Z",
-              price: 5_000,
+              price: 500,
               volumeSubunits: 10,
               source: "fill",
             },

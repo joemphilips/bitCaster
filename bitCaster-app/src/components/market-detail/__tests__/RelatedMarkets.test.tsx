@@ -48,9 +48,9 @@ describe("RelatedMarkets", () => {
       />,
     );
 
-    expect(screen.getByText(/25\.00%/)).toBeInTheDocument();
-    expect(screen.getByText(/75\.00%/)).toBeInTheDocument();
-    expect(screen.queryByText("2500.00%")).not.toBeInTheDocument();
+    expect(screen.getByText(/25\.0000%/)).toBeInTheDocument();
+    expect(screen.getByText(/75\.0000%/)).toBeInTheDocument();
+    expect(screen.queryByText("2500.0000%")).not.toBeInTheDocument();
 
     rerender(
       <RelatedMarkets

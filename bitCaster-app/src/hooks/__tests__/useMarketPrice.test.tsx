@@ -21,7 +21,7 @@ function makeMarket(overrides: Partial<MarketDetail> = {}): MarketDetail {
     createdDate: "2026-01-01T00:00:00Z",
     activeSince: "2026-01-01T00:00:00Z",
     baseAsset: "sat",
-    divisibility: 10_000,
+    divisibility: 1_000,
     baseUnit: "sats",
     registeredPrimitiveOutcomeIds: ["YES", "NO"],
     outcomes: [
@@ -63,7 +63,7 @@ describe("useMarketPrice", () => {
     );
 
     expect(result.current.currentPrice).toBeNull();
-    expect(result.current.defaultOrderPrice).toBe(5_000);
+    expect(result.current.defaultOrderPrice).toBe(500);
   });
 
   it("uses the spread midpoint as the order entry default when both sides exist", () => {
@@ -73,15 +73,15 @@ describe("useMarketPrice", () => {
         marketId: "condition-1-Yes",
         outcomeSetId: "Yes",
         orderBook: {
-          bids: [{ price: 4_000, amount: 1, total: 1 }],
-          asks: [{ price: 7_000, amount: 1, total: 1 }],
-          spread: 3_000,
+          bids: [{ price: 400, amount: 1, total: 1 }],
+          asks: [{ price: 700, amount: 1, total: 1 }],
+          spread: 300,
         },
       }),
     );
 
     expect(result.current.currentPrice).toBeNull();
-    expect(result.current.defaultOrderPrice).toBe(5_500);
+    expect(result.current.defaultOrderPrice).toBe(550);
   });
 
   it("derives yes/no from the latest source record and its same-fill complement", () => {
@@ -94,8 +94,8 @@ describe("useMarketPrice", () => {
             fillId: "fill-1",
             executedAt: "2026-01-01T00:00:00Z",
             eventOrder: "0001",
-            priceTick: 6_000,
-            divisibility: 10_000,
+            priceTick: 600,
+            divisibility: 1_000,
             faceAmountSubunits: 100,
           }],
         }),
@@ -105,8 +105,8 @@ describe("useMarketPrice", () => {
       }),
     );
 
-    expect(result.current.currentPrice).toBe(4_000);
-    expect(result.current.defaultOrderPrice).toBe(4_000);
+    expect(result.current.currentPrice).toBe(400);
+    expect(result.current.defaultOrderPrice).toBe(400);
   });
 
   it("chooses the latest yes/no source across both primitive outcomes", () => {
@@ -115,8 +115,8 @@ describe("useMarketPrice", () => {
       fillId: "fill-no",
       executedAt: "2026-01-02T00:00:00Z",
       eventOrder: "0002",
-      priceTick: 2_500,
-      divisibility: 10_000 as const,
+      priceTick: 250,
+      divisibility: 1_000 as const,
       faceAmountSubunits: 100,
     };
     const { result } = renderHook(() =>
@@ -128,8 +128,8 @@ describe("useMarketPrice", () => {
               fillId: "fill-yes",
               executedAt: "2026-01-01T00:00:00Z",
               eventOrder: "0001",
-              priceTick: 8_000,
-              divisibility: 10_000,
+              priceTick: 800,
+              divisibility: 1_000,
               faceAmountSubunits: 100,
             },
             latestNo,
@@ -141,7 +141,7 @@ describe("useMarketPrice", () => {
       }),
     );
 
-    expect(result.current.currentPrice).toBe(2_500);
+    expect(result.current.currentPrice).toBe(250);
   });
 
   it("rejects an unknown or wrong-case yes/no route", () => {
@@ -153,8 +153,8 @@ describe("useMarketPrice", () => {
             fillId: "fill-route",
             executedAt: "2026-01-01T00:00:00Z",
             eventOrder: "0001",
-            priceTick: 6_000,
-            divisibility: 10_000,
+            priceTick: 600,
+            divisibility: 1_000,
             faceAmountSubunits: 100,
           }],
         }),
@@ -193,7 +193,7 @@ describe("useMarketPrice", () => {
     );
 
     expect(result.current.currentPrice).toBeNull();
-    expect(result.current.defaultOrderPrice).toBe(5_000);
+    expect(result.current.defaultOrderPrice).toBe(500);
   });
 
   it("keeps categorical outcomes independent and does not normalize missing prices", () => {
@@ -208,8 +208,8 @@ describe("useMarketPrice", () => {
           ],
           registeredPrimitiveOutcomeIds: ["alice", "bob", "carol"],
           latestConfirmedTrades: [
-            { primitiveOutcomeId: "alice", fillId: "fill-a", executedAt: "2026-01-01T00:00:00Z", eventOrder: "0001", priceTick: 7_000, divisibility: 10_000, faceAmountSubunits: 100 },
-            { primitiveOutcomeId: "bob", fillId: "fill-b", executedAt: "2026-01-02T00:00:00Z", eventOrder: "0002", priceTick: 2_000, divisibility: 10_000, faceAmountSubunits: 100 },
+            { primitiveOutcomeId: "alice", fillId: "fill-a", executedAt: "2026-01-01T00:00:00Z", eventOrder: "0001", priceTick: 700, divisibility: 1_000, faceAmountSubunits: 100 },
+            { primitiveOutcomeId: "bob", fillId: "fill-b", executedAt: "2026-01-02T00:00:00Z", eventOrder: "0002", priceTick: 200, divisibility: 1_000, faceAmountSubunits: 100 },
           ],
         } as Partial<MarketDetail>),
         marketId: "condition-1-Bob",
@@ -218,7 +218,7 @@ describe("useMarketPrice", () => {
       }),
     );
 
-    expect(result.current.currentPrice).toBe(2_000);
+    expect(result.current.currentPrice).toBe(200);
   });
 
   it("rejects duplicate or unknown categorical complement routes", () => {
@@ -235,8 +235,8 @@ describe("useMarketPrice", () => {
         fillId: "fill-complement",
         executedAt: "2026-01-01T00:00:00Z",
         eventOrder: "0001",
-        priceTick: 7_000,
-        divisibility: 10_000,
+        priceTick: 700,
+        divisibility: 1_000,
         faceAmountSubunits: 100,
       }],
     });
@@ -257,7 +257,7 @@ describe("useMarketPrice", () => {
       useMarketPrice({
         market: makeMarket({
           type: "numeric",
-          divisibility: 10_000,
+          divisibility: 1_000_000,
           currentPrice: null,
           loBound: 0,
           hiBound: 100,
@@ -269,8 +269,8 @@ describe("useMarketPrice", () => {
             fillId: "numeric-fill",
             executedAt: "2026-01-01T00:00:00Z",
             eventOrder: "0001",
-            priceTick: 2_500,
-            divisibility: 10_000,
+            priceTick: 250_000,
+            divisibility: 1_000_000,
             faceAmountSubunits: 100,
           }],
         } as Partial<MarketDetail>),
@@ -280,7 +280,7 @@ describe("useMarketPrice", () => {
       }),
     );
 
-    expect(result.current.currentPrice).toBe(7_500);
+    expect(result.current.currentPrice).toBe(750_000);
   });
 
   it("fails closed for numeric identity variants and invalid authority", () => {
@@ -288,6 +288,7 @@ describe("useMarketPrice", () => {
       useMarketPrice({
         market: makeMarket({
           type: "numeric",
+          divisibility: 1_000_000,
           currentPrice: null,
           loBound: 0,
           hiBound: 100,
@@ -299,8 +300,8 @@ describe("useMarketPrice", () => {
             fillId: "numeric-unknown",
             executedAt: "2026-01-01T00:00:00Z",
             eventOrder: "0001",
-            priceTick: 2_500,
-            divisibility: 10_000,
+            priceTick: 250_000,
+            divisibility: 1_000_000,
             faceAmountSubunits: 100,
           }],
         } as Partial<MarketDetail>),
@@ -318,8 +319,8 @@ describe("useMarketPrice", () => {
             fillId: "invalid-authority",
             executedAt: "2026-01-01T00:00:00Z",
             eventOrder: "0001",
-            priceTick: 6_000,
-            divisibility: 10_000,
+            priceTick: 600,
+            divisibility: 1_000,
             faceAmountSubunits: 100,
           }],
         }),
@@ -343,34 +344,34 @@ describe("useMarketPrice", () => {
             fillId: "fill-2",
             executedAt: "2026-01-01T00:00:00Z",
             eventOrder: "0001",
-            priceTick: 6_500,
-            divisibility: 10_000,
+            priceTick: 650,
+            divisibility: 1_000,
             faceAmountSubunits: 100,
           }],
         }),
         marketId: "condition-1-Yes",
         outcomeSetId: "Yes",
         orderBook: {
-          bids: [{ price: 4_000, amount: 1, total: 1 }],
+          bids: [{ price: 400, amount: 1, total: 1 }],
           asks: [],
           spread: 0,
         },
       }),
     );
 
-    expect(result.current.defaultOrderPrice).toBe(6_500);
+    expect(result.current.defaultOrderPrice).toBe(650);
   });
 
   it("does not override the user's manual price edit in a page-style consumer", () => {
     const bookWithoutSpread: OrderBook = {
-      bids: [{ price: 4_000, amount: 1, total: 1 }],
+      bids: [{ price: 400, amount: 1, total: 1 }],
       asks: [],
       spread: 0,
     };
     const bookWithSpread: OrderBook = {
-      bids: [{ price: 4_000, amount: 1, total: 1 }],
-      asks: [{ price: 7_000, amount: 1, total: 1 }],
-      spread: 3_000,
+      bids: [{ price: 400, amount: 1, total: 1 }],
+      asks: [{ price: 700, amount: 1, total: 1 }],
+      spread: 300,
     };
     let manuallyEdited = false;
     let limitPrice = 0;
@@ -385,8 +386,8 @@ describe("useMarketPrice", () => {
               fillId: "fill-3",
               executedAt: "2026-01-01T00:00:00Z",
               eventOrder: "0001",
-              priceTick: 6_000,
-              divisibility: 10_000,
+              priceTick: 600,
+              divisibility: 1_000,
               faceAmountSubunits: 100,
             }],
           }),
@@ -400,13 +401,13 @@ describe("useMarketPrice", () => {
       { initialProps: { orderBook: bookWithoutSpread } },
     );
 
-    expect(limitPrice).toBe(6_000);
+    expect(limitPrice).toBe(600);
     manuallyEdited = true;
-    limitPrice = 4_200;
+    limitPrice = 420;
 
     rerender({ orderBook: bookWithSpread });
 
-    expect(result.current.defaultOrderPrice).toBe(5_500);
-    expect(limitPrice).toBe(4_200);
+    expect(result.current.defaultOrderPrice).toBe(550);
+    expect(limitPrice).toBe(420);
   });
 });

@@ -74,7 +74,7 @@ function closedPosition(overrides: Partial<Position>): Position {
     marketTitle: "Lost market",
     marketImageUrl: "",
     baseAsset: "sat",
-    divisibility: 10_000,
+    divisibility: 1_000,
     side: "Outcome",
     outcomeId: "A|B",
     outcomeLabel: "A|B",

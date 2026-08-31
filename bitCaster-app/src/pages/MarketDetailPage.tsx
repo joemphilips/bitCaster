@@ -1102,7 +1102,7 @@ export function MarketDetailPage() {
   const [tradeSide, setTradeSide] = useState<TradeSide>("Buy");
   const [orderType, setOrderType] = useState<OrderType>("market");
   const [limitPrice, setLimitPrice] = useState(() =>
-    defaultLimitPriceForDivisibility(10_000, "sat"),
+    defaultLimitPriceForDivisibility(1_000, "sat"),
   );
   const [priceManuallyEdited, setPriceManuallyEdited] = useState(false);
   const [tradeSubmitStatus, setTradeSubmitStatus] = useState<{
@@ -1488,7 +1488,7 @@ export function MarketDetailPage() {
 
   const marketDivisibility = market
     ? normalizeMarketDivisibility(market.divisibility, marketBaseAsset)
-    : 10_000;
+    : 1_000;
   const priceOutcomeSetId = useMemo(() => {
     if (!market) return null;
     if (tradeSelection) {

@@ -60,10 +60,10 @@ specification remain public.
 Every market outcome has a corresponding token. A public market price comes
 from the latest confirmed trade. Before the first confirmed trade, the market
 has no price, so the app shows **No trades yet** or an em dash. Prices from
-confirmed trades are shown as probabilities with two decimal places, such as
-**53.27%**. A bid/ask midpoint is an order-entry reference only.
+confirmed trades are shown as probabilities with one decimal place, such as
+**53.3%**. A bid/ask midpoint is an order-entry reference only.
 
-The trade ticket asks for whole shares and shows the cost before you submit. The breakdown separates **Quote payment**, **Est. settlement fee**, and **Total**, so you can see the order payment apart from the estimated mint fee. One categorical-market share pays **10 sats** if it wins. Internally, categorical markets use msat collateral subunits with `D=10000`, so the smallest price move is `0.01%`. For example, 50 shares at 30.00% quote 150 sats before any estimated settlement fee, and pay 500 sats if they win.
+The trade ticket asks for whole shares and shows the cost before you submit. The breakdown separates **Quote payment**, **Est. settlement fee**, and **Total**, so you can see the order payment apart from the estimated mint fee. One categorical-market share pays **1 sat** if it wins. Internally, categorical markets use msat collateral subunits with `D=1000`, so the smallest price move is `0.1%`. For example, 50 shares at 30.0% quote 15 sats before any estimated settlement fee, and pay 50 sats if they win.
 
 When the event resolves, winning tokens are redeemable for their full share value, and losing tokens become worthless. Throughout this process, nobody — not even the token issuer — can know who holds which tokens or how many. The mint cannot selectively freeze an identified user's ecash. It can stop service for everyone, so users must still assess the mint before they participate.
 

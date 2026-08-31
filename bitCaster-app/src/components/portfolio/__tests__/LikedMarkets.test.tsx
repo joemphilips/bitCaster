@@ -40,7 +40,7 @@ function makeMarket(id: string, title = `Market ${id}`): YesNoMarket {
     creatorFeePercent: 0,
     baseMarket: "sats",
     baseAsset: "sat",
-    divisibility: 10_000,
+    divisibility: 1_000,
   } as YesNoMarket;
 }
 

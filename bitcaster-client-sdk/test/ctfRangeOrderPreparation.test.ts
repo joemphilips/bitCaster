@@ -132,7 +132,7 @@ test('prepares exact PAY_TO_UNLOCK material and completes one durable buy author
     assert.equal(condition.coordinatorPublicKey, COORDINATOR_PUBLIC_KEY)
     assert.deepEqual(condition.mode, {
       kind: 'pool',
-      policy: { rateN: 10_000n, rateD: 3n, minReceive: 10_000n, maxDebit: 3n },
+      policy: { rateN: 1_000n, rateD: 3n, minReceive: 1_000n, maxDebit: 3n },
     })
   }
 
@@ -726,9 +726,9 @@ test('prepares one exact collateral conversion with locked offer and ordinary co
     COMPLEMENT_COLLECTION,
     OUTCOME_COLLECTION,
   ])
-  assert.equal(completed.authorization.reduce(sumProofAmount, 0), 10_000)
-  assert.equal(completed.complement.reduce(sumProofAmount, 0), 10_000)
-  assert.equal(completed.collateralChange.reduce(sumProofAmount, 0), 9_999)
+  assert.equal(completed.authorization.reduce(sumProofAmount, 0), 1_000)
+  assert.equal(completed.complement.reduce(sumProofAmount, 0), 1_000)
+  assert.equal(completed.collateralChange.reduce(sumProofAmount, 0), 18_999)
   assert.throws(
     () =>
       validateCtfRangeCollateralSourceOperation(
@@ -802,9 +802,9 @@ function preparationInput() {
     coordinatorPublicKey: COORDINATOR_PUBLIC_KEY,
     side: 'Buy' as const,
     priceNumerator: 2,
-    amountSubunits: 10_000,
-    minimumFillAmountSubunits: 10_000,
-    divisibility: 10_000,
+    amountSubunits: 1_000,
+    minimumFillAmountSubunits: 1_000,
+    divisibility: 1_000,
     offerKeyset: regularKeyset(),
     receiveKeyset: outcomeKeyset(),
     expiryObservation: expiryObservation(),
@@ -899,11 +899,11 @@ function rangeOrderRequest(): CtfRangeOrderRequest {
     tokenSide: 'Outcome',
     side: 'Buy',
     price: 2,
-    amountSubunits: 10_000,
-    minimumFillAmountSubunits: 10_000,
+    amountSubunits: 1_000,
+    minimumFillAmountSubunits: 1_000,
     baseAsset: 'sat',
     collateralUnit: 'msat',
-    divisibility: 10_000,
+    divisibility: 1_000,
     timeInForce: 'FAK',
     expiresAt: null,
     mintUrl: MINT_URL,

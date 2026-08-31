@@ -27,7 +27,7 @@ vi.mock("@/stores/wallet", () => ({
 
 function renderStep(options: {
   presentation?: "creation" | "detail";
-  divisibility?: 10_000 | 1_000_000;
+  divisibility?: 1_000 | 1_000_000;
 } = {}) {
   return render(
     <MemoryRouter initialEntries={["/creator/new"]}>
@@ -40,6 +40,7 @@ function renderStep(options: {
               defaultAmountSats={1000}
               outcomeCount={2}
               baseAsset="sat"
+              divisibility={1_000}
               {...options}
             />
           }
@@ -111,7 +112,7 @@ describe("DepositStep", () => {
           accountSubject: "subject-1",
           mintUrl: "https://mint.example",
           unit: "msat",
-          divisibility: 10_000,
+          divisibility: 1_000,
           requestedAmount: "100000000",
         }),
       );

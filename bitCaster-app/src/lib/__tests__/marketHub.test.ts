@@ -61,8 +61,8 @@ function confirmedTrade(overrides: Partial<LatestConfirmedTrade> = {}): LatestCo
     fillId: "00000000-0000-0000-0000-000000000001",
     executedAt: "2026-08-18T00:00:00Z",
     eventOrder: "0001",
-    priceTick: 6200,
-    divisibility: 10_000,
+    priceTick: 620,
+    divisibility: 1_000,
     faceAmountSubunits: 1000,
     ...overrides,
   };
@@ -161,7 +161,7 @@ describe("ConfirmedTradeRecorded live deltas", () => {
       ...first,
       fillId: "00000000-0000-0000-0000-000000000002",
       eventOrder: "0002",
-      priceTick: 7000,
+      priceTick: 700,
     };
     const newer = applyConfirmedTradeDelta(
       "cond",
@@ -173,7 +173,7 @@ describe("ConfirmedTradeRecorded live deltas", () => {
       "cond",
       ALLOWED_OUTCOME_IDS,
       newer,
-      tradeMessage({ ...newerTrade, eventOrder: "0003", priceTick: 8000 }),
+      tradeMessage({ ...newerTrade, eventOrder: "0003", priceTick: 800 }),
     );
 
     expect(current).toEqual([first]);
@@ -223,7 +223,7 @@ describe("ConfirmedTradeRecorded live deltas", () => {
           confirmedTrade({
             fillId: `yes-fill-${index}`,
             eventOrder: String(index).padStart(4, "0"),
-            priceTick: 1000 + index,
+            priceTick: 100 + index,
           }),
         ),
       );
@@ -302,7 +302,7 @@ describe("ConfirmedTradeRecorded live deltas", () => {
     expect(parseConfirmedTradeRecorded(null)).toBeNull();
     expect(parseConfirmedTradeRecorded(tradeMessage(confirmedTrade({ priceTick: 0 })))).toBeNull();
     expect(
-      parseConfirmedTradeRecorded(tradeMessage(confirmedTrade({ priceTick: 10_000 }))),
+      parseConfirmedTradeRecorded(tradeMessage(confirmedTrade({ priceTick: 1_000 }))),
     ).toBeNull();
     expect(
       parseConfirmedTradeRecorded(tradeMessage(confirmedTrade({ eventOrder: "" }))),

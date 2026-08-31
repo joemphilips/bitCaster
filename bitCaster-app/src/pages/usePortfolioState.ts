@@ -14,8 +14,8 @@ import { browserWalletIdFromMnemonic } from "@/lib/browserWalletProfile";
 import {
   cashuAmountToMarketSubunits,
   normalizeMarketBaseAsset,
-  normalizeMarketDivisibility,
   parseCashuProofUnit,
+  parseMarketDivisibility,
   type MarketBaseAsset,
 } from "@bitcaster/client-sdk/marketUnits";
 import { groupAmountsByUnit } from "@/lib/formatAmount";
@@ -290,6 +290,9 @@ function monitoringPosition(asset: AssetMonitoringAssetResponse): Position | nul
   const value = monitoringAssetValue(asset);
   const conditionId = asset.asset.conditionId;
   const identity = canonicalMonitoringAssetIdentity(asset.asset);
+  const divisibility = parseMarketDivisibility(
+    (asset as AssetMonitoringAssetResponse & { divisibility?: unknown }).divisibility,
+  );
   return {
     id: `monitoring:${identity}`,
     marketId: conditionId,
@@ -303,7 +306,7 @@ function monitoringPosition(asset: AssetMonitoringAssetResponse): Position | nul
     canDiscard: false,
     monitoringAssetIdentity: identity,
     baseAsset: "sat",
-    divisibility: 10_000,
+    divisibility: divisibility ?? undefined,
     avgBuyPrice: 0,
     currentPrice: 0,
     currentValueSats: value,
@@ -699,10 +702,7 @@ export function usePortfolioState(): PortfolioState & {
           : new Map<string, MarketCatalogueEntry>();
       return entries.map((entry): Position => {
         const market = catalogue.get(entry.conditionId);
-        const divisibility = normalizeMarketDivisibility(
-          market?.divisibility ?? 10_000,
-          entry.baseAsset,
-        );
+        const divisibility = parseMarketDivisibility(market?.divisibility);
         const finalOutcome = market?.finalOutcome?.trim();
         const isClosed = String(market?.state ?? "").toLowerCase() === "closed";
         // Single source-of-truth winner/value derivation (P22 Link F HIGH).
@@ -744,16 +744,16 @@ export function usePortfolioState(): PortfolioState & {
           canDiscard: isLoser,
           monitoringAssetIdentity: entry.monitoringAssetIdentity ?? undefined,
           baseAsset: entry.baseAsset,
-          divisibility,
-          shares: entry.amount / divisibility,
+          divisibility: divisibility ?? undefined,
+          shares: divisibility === null ? undefined : entry.amount / divisibility,
           avgBuyPrice: 0,
-          currentPrice: isClosed && isWinner ? divisibility : 0,
+          currentPrice: isClosed && isWinner && divisibility !== null ? divisibility : 0,
           currentValueSats,
           // Local proof rows have no current market valuation until an
           // authoritative attestation or the exact display-only asset monitor
           // supplies one. Face amount is not a current value and must not enter
           // totals or P/L.
-          valueKnown: isClosed && !isPending,
+          valueKnown: divisibility !== null && isClosed && !isPending,
           // Pending (undecided) shows no realised P&L; only attested winners/losers do.
           profitLossSats: isClosed && !isPending ? currentValueSats : 0,
           profitLossPercent: isClosed ? (isWinner ? 100 : isPending ? 0 : -100) : 0,

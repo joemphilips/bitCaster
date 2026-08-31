@@ -57,6 +57,7 @@ vi.mock("@/hooks/useMarketCreationState", () => ({
     createdMarketConditionId: null,
     createdMarketOutcomeCount: null,
     createdMarketBaseAsset: null,
+    createdMarketDivisibility: null,
   }),
 }));
 

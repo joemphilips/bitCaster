@@ -4,6 +4,7 @@ import {
   encodeBoundedDurableArtifact,
 } from './durableCustody.ts'
 import { assertOrderRouteBelongsToCondition } from './orderRoute.ts'
+import { parseMarketDivisibility, type MarketDivisibility } from './marketUnits.ts'
 
 export const CTF_RANGE_ORDER_PREPARATION_BYTES_MAX = 256 * 1_024
 export const CTF_RANGE_ORDER_PREPARATION_PAGE_LIMIT_MAX = 256
@@ -71,7 +72,7 @@ export interface CtfRangeOrderPreparationIdentity {
   readonly priceSubunits: number
   readonly amountSubunits: number
   readonly minimumFillAmountSubunits: number
-  readonly divisibility: 10_000 | 1_000_000
+  readonly divisibility: MarketDivisibility
   readonly authorizationExpiresAtUnixSeconds: number
   readonly preparationBytes: Uint8Array
   readonly createdAtMs: number
@@ -448,11 +449,12 @@ function requireNonnegativeSafeInteger(value: unknown, label: string): number {
   return value
 }
 
-function requireDivisibility(value: unknown): 10_000 | 1_000_000 {
-  if (value !== 10_000 && value !== 1_000_000) {
+function requireDivisibility(value: unknown): MarketDivisibility {
+  const divisibility = parseMarketDivisibility(value)
+  if (divisibility === null) {
     throw new Error('CTF range preparation divisibility is invalid')
   }
-  return value
+  return divisibility
 }
 
 function requireExact<const T extends string>(value: unknown, exact: T, label: string): T {

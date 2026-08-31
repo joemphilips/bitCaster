@@ -696,7 +696,7 @@ export class DaemonCtfRangeOrderCoordinator {
             amountSubunits: input.amountSubunits,
             minimumFillAmountSubunits: input.request.minimumFillAmountSubunits,
             consolidateProofs,
-            divisibility: input.divisibility as 10_000 | 1_000_000,
+            divisibility: input.divisibility,
             authorizationExpiresAtUnixSeconds: input.expiry,
             preparationBytes: encodeCanonicalRangePreparation(input),
             createdAtMs: mutation.observedAtMs,

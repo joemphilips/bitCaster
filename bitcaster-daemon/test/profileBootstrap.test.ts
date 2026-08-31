@@ -33,6 +33,7 @@ import {
 } from '../src/profileSchema.ts'
 import {
   FINAL_PROFILE_SCHEMA_MANIFEST_DIGEST,
+  FINAL_PROFILE_SCHEMA_VERSION,
   FINAL_PROFILE_SCHEMA_SQL,
   finalProfileSchemaManifestDigest,
   getFinalProfileSchemaManifest,
@@ -164,6 +165,7 @@ test('fresh bootstrap atomically creates the exact frozen owner-only profile', a
 test('production schema manifest is pinned and excludes source-only recovery authority', () => {
   assert.equal(finalProfileSchemaManifestDigest(), FINAL_PROFILE_SCHEMA_MANIFEST_DIGEST)
   const manifest = getFinalProfileSchemaManifest()
+  assert.equal(FINAL_PROFILE_SCHEMA_VERSION, 2)
   assert.equal(Object.isFrozen(manifest), true)
   assert.equal(Object.isFrozen(manifest.objects), true)
   const names = new Set(manifest.objects.map((object) => object.name))

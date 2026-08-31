@@ -8,7 +8,7 @@ function makeTrade(orderId: string, overrides: Partial<PendingTrade> = {}): Pend
     clientOrderId: `client-${orderId}`,
     submittedAt: 1_700_000_000_000,
     baseAsset: "sat",
-    divisibility: 10_000,
+    divisibility: 1_000,
     ...overrides,
   };
 }
