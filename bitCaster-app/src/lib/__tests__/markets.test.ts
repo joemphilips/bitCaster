@@ -20,6 +20,7 @@ import {
   validateLatestConfirmedTrades,
 } from "../markets";
 import { applyConfirmedTradeDelta } from "@/lib/marketHub";
+import { outcomeSetIdsForMarketBooks, resolveOutcomeSets } from "@/lib/outcomeSets";
 import type { MarketCatalogueEntry } from "../markets";
 import type { FilterState, Market } from "@/types/market";
 import type { MarketDetail } from "@/types/market-detail";
@@ -711,7 +712,7 @@ describe("fetchMarketDetail (engine merge — ADR-009 Amendment 2026-05-04)", ()
     expect(detail.state).toBe("open");
   });
 
-  it("preserves exact REST primitive IDs for bounded live trade deltas", async () => {
+  it("preserves exact REST primitive IDs for order-book routes and live trade deltas", async () => {
     fetchMock.mockImplementation(async (url: string) => {
       if (url.includes("/api/v1/markets/query")) {
         return engineQueryResponse("open", null, null, ["YES", "NO"]);
@@ -732,7 +733,14 @@ describe("fetchMarketDetail (engine merge — ADR-009 Amendment 2026-05-04)", ()
     };
 
     expect(allowed).toEqual(["YES", "NO"]);
-    expect(detail.outcomes?.map((outcome) => outcome.label)).toEqual(["Yes", "No"]);
+    expect(detail.outcomes?.map((outcome) => outcome.id)).toEqual(["YES", "NO"]);
+    expect(detail.outcomes?.map((outcome) => outcome.label)).toEqual(["YES", "NO"]);
+    expect(outcomeSetIdsForMarketBooks(detail)).toEqual(["YES", "NO"]);
+    expect(resolveOutcomeSets(detail, { side: "no" })).toMatchObject({
+      publicOutcomeSetId: "YES",
+      selectedOutcomeSetId: "NO",
+      complementOutcomeSetId: "YES",
+    });
     const applied = applyConfirmedTradeDelta("abc123", allowed, [], {
       conditionId: "abc123",
       latestConfirmedTrade: yesTrade,
@@ -1236,6 +1244,111 @@ describe("price history normalization", () => {
     });
 
     expect(updated.priceHistory.data[0].price).toBe(50);
+  });
+
+  it("uses the case-insensitive semantic Yes identity for a No-first binary history", () => {
+    const market = {
+      ...mapCatalogueEntryToMarket({ ...yesNoEntry, outcomes: ["YeS", "nO"] }),
+      outcomes: [
+        { id: "YeS", label: "YeS", odds: null },
+        { id: "nO", label: "nO", odds: null },
+      ],
+      priceHistory: { timeframe: "7d" as const, data: [] },
+      orderBook: { bids: [], asks: [], spread: 0 },
+      recentTrades: [],
+      comments: [],
+      relatedMarkets: [],
+      baseUnit: "sats",
+      creator: {
+        id: "creator",
+        name: "creator",
+        totalMarketsCreated: 0,
+        feePercent: 0,
+      },
+      resolution: {
+        criteria: "criteria",
+        source: "oracle" as const,
+        resolutionDate: "2026-01-01T00:00:00Z",
+        status: "open" as const,
+      },
+    } as unknown as MarketDetail;
+
+    const updated = applyMarketPriceHistory(market, {
+      conditionId: "abc123",
+      timeframe: "7d",
+      outcomes: [
+        {
+          outcomeId: "nO",
+          data: [
+            {
+              timestamp: "2026-05-25T10:00:00Z",
+              price: 250,
+              volumeSubunits: 10,
+              source: "fill",
+            },
+          ],
+        },
+        {
+          outcomeId: "YeS",
+          data: [
+            {
+              timestamp: "2026-05-25T10:00:00Z",
+              price: 750,
+              volumeSubunits: 20,
+              source: "fill",
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(updated.outcomes?.map((outcome) => outcome.id)).toEqual(["YeS", "nO"]);
+    expect(updated.outcomes?.map((outcome) => outcome.label)).toEqual(["YeS", "nO"]);
+    expect(updated.priceHistory.data[0].price).toBe(75);
+  });
+
+  it("does not replace the semantic Yes history when the response contains only No", () => {
+    const priorYesHistory = {
+      timeframe: "7d" as const,
+      data: [
+        {
+          timestamp: "2026-05-25T09:00:00Z",
+          price: 70,
+          volume: 15,
+          source: "fill" as const,
+        },
+      ],
+    };
+    const market = {
+      ...mapCatalogueEntryToMarket({ ...yesNoEntry, outcomes: ["YeS", "nO"] }),
+      outcomes: [
+        { id: "YeS", label: "YeS", odds: null },
+        { id: "nO", label: "nO", odds: null },
+      ],
+      priceHistory: priorYesHistory,
+    } as unknown as MarketDetail;
+
+    const updated = applyMarketPriceHistory(market, {
+      conditionId: "abc123",
+      timeframe: "7d",
+      outcomes: [
+        {
+          outcomeId: "nO",
+          data: [
+            {
+              timestamp: "2026-05-25T10:00:00Z",
+              price: 25,
+              volumeSubunits: 10,
+              source: "fill",
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(updated.outcomes?.map((outcome) => outcome.id)).toEqual(["YeS", "nO"]);
+    expect(updated.outcomes?.map((outcome) => outcome.label)).toEqual(["YeS", "nO"]);
+    expect(updated.priceHistory).toEqual(priorYesHistory);
   });
 });
 

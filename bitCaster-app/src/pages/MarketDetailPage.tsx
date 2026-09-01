@@ -147,6 +147,8 @@ type MarketOrderBooksLoad = {
 };
 
 const ORDER_BOOK_REFRESH_DEBOUNCE_MS = 500;
+const MARKET_DETAIL_RECONCILIATION_INTERVAL_MS = 2_000;
+const MARKET_DETAIL_RECOVERY_MAX_ATTEMPTS = 5;
 
 function isEngineMarketClosed(state: MarketDetailType["state"]): boolean {
   if (state == null) return false;
@@ -1169,6 +1171,7 @@ export function MarketDetailPage() {
         .then((detail) => {
           if (!isCurrentLoad() || detail.id !== routeId) return;
           succeeded = true;
+          setError(null);
           dispatchMarketData({
             type: "marketSnapshotLoaded",
             detail,
@@ -1247,6 +1250,33 @@ export function MarketDetailPage() {
     // accidentally loading a previous route.
     if (routeGenerationRef.current === generation) loadMarket();
   }, [cancelActiveScoreTopUp, currentRouteId, loadMarket]);
+
+  // Navigation after market creation can outrun the catalogue projection.
+  // Retry only after the error has rendered. First paint still blocks on one
+  // request.
+  useEffect(() => {
+    if (!id || !error || market || routeTransitioning) return;
+    const generation = routeGenerationRef.current;
+    if (!isCurrentRoute(id, generation)) return;
+
+    let cancelled = false;
+    let attempts = 0;
+    let timeoutId: number | null = null;
+
+    const retry = () => {
+      if (cancelled || !isCurrentRoute(id, generation)) return;
+      attempts += 1;
+      loadMarket({ showLoading: false });
+      if (attempts >= MARKET_DETAIL_RECOVERY_MAX_ATTEMPTS) return;
+      timeoutId = window.setTimeout(retry, MARKET_DETAIL_RECONCILIATION_INTERVAL_MS);
+    };
+
+    timeoutId = window.setTimeout(retry, MARKET_DETAIL_RECONCILIATION_INTERVAL_MS);
+    return () => {
+      cancelled = true;
+      if (timeoutId != null) window.clearTimeout(timeoutId);
+    };
+  }, [error, id, isCurrentRoute, loadMarket, market, routeTransitioning]);
 
   // Secondary live close-detection: subscribe to MarketStatusChanged pushes
   // while this detail page is mounted and joined to at least one per-outcome
@@ -1418,11 +1448,11 @@ export function MarketDetailPage() {
       }
 
       if (!cancelled && isCurrentRoute(id, generation)) {
-        timeoutId = window.setTimeout(refresh, 2_000);
+        timeoutId = window.setTimeout(refresh, MARKET_DETAIL_RECONCILIATION_INTERVAL_MS);
       }
     };
 
-    timeoutId = window.setTimeout(refresh, 2_000);
+    timeoutId = window.setTimeout(refresh, MARKET_DETAIL_RECONCILIATION_INTERVAL_MS);
     return () => {
       cancelled = true;
       if (timeoutId != null) window.clearTimeout(timeoutId);
