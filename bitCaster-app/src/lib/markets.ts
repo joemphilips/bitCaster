@@ -105,14 +105,9 @@ function isYesNoUniverse(outcomes: readonly string[]): boolean {
 }
 
 function orderAtomicOutcomes(outcomes: string[]): string[] {
-  if (
-    outcomes.length === 2 &&
-    outcomes.some((outcome) => outcome.toLowerCase() === "yes") &&
-    outcomes.some((outcome) => outcome.toLowerCase() === "no")
-  ) {
-    return ["Yes", "No"];
-  }
-  return outcomes;
+  const yes = outcomes.find((outcome) => outcome.toLowerCase() === "yes");
+  const no = outcomes.find((outcome) => outcome.toLowerCase() === "no");
+  return outcomes.length === 2 && yes && no ? [yes, no] : outcomes;
 }
 
 export function extractCategoryTagIds(tags: string[][]): string[] {
@@ -845,10 +840,14 @@ export function applyMarketPriceHistory(
       return [outcomeId, toPriceHistory(outcome.data)] as const;
     }),
   );
+  const semanticYesOutcomeId = market.outcomes?.find(
+    (outcome) => outcome.id.toLowerCase() === "yes",
+  )?.id;
   const primary =
     market.type === "yesno"
-      ? (histories[byOutcomeLabel.get("YES") ?? byOutcomeLabel.get("Yes") ?? "outcome-0"] ??
-        histories[Object.keys(histories)[0]])
+      ? (semanticYesOutcomeId
+          ? histories[semanticYesOutcomeId]
+          : histories[Object.keys(histories)[0]])
       : histories[Object.keys(histories)[0]];
 
   if (market.type === "categorical") {

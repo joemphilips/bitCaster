@@ -470,6 +470,81 @@ describe("MarketDetailPage live market status", () => {
     expect(screen.queryByRole("heading", { name: "Market A" })).not.toBeInTheDocument();
   });
 
+  it("recovers from an initial detail projection miss without manual retry", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.mocked(fetchMarketDetail)
+        .mockRejectedValueOnce(new Error("detail projection is still catching up"))
+        .mockResolvedValueOnce(yesNoMarket({ title: "Recovered market" }));
+      vi.mocked(fetchOrderBook).mockResolvedValue(emptyBook);
+
+      render(<MarketDetailPage />);
+
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(
+        screen.getByText("Failed to load market. Please check that the mint is running."),
+      ).toBeInTheDocument();
+      expect(fetchMarketDetail).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2_000);
+      });
+
+      expect(screen.getByRole("heading", { name: "Recovered market" })).toBeInTheDocument();
+      expect(screen.queryByText("Failed to load market. Please check that the mint is running."))
+        .not.toBeInTheDocument();
+      expect(fetchMarketDetail).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not retry a stale route after navigation", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.mocked(fetchMarketDetail).mockImplementation((conditionId) =>
+        conditionId === "condition-yesno"
+          ? Promise.reject(new Error("detail projection is still catching up"))
+          : Promise.resolve(yesNoMarket({ id: "condition-other", title: "Other market" })),
+      );
+      vi.mocked(fetchOrderBook).mockResolvedValue(emptyBook);
+
+      const view = render(<MarketDetailPage />);
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(
+        screen.getByText("Failed to load market. Please check that the mint is running."),
+      ).toBeInTheDocument();
+
+      mocks.routeParams.id = "condition-other";
+      view.rerender(<MarketDetailPage />);
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(screen.getByRole("heading", { name: "Other market" })).toBeInTheDocument();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2_000);
+      });
+      const detailCalls = vi.mocked(fetchMarketDetail).mock.calls;
+      expect(detailCalls.filter(([conditionId]) => conditionId === "condition-yesno")).toEqual([
+        ["condition-yesno"],
+      ]);
+      expect(detailCalls.slice(1).every(([conditionId]) => conditionId === "condition-other"))
+        .toBe(true);
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
   it("keeps the newest same-route refresh when an older refresh completes late", async () => {
     let resolveOld!: (market: MarketDetail) => void;
     let resolveNewest!: (market: MarketDetail) => void;
