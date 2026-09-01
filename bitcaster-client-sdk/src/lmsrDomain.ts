@@ -209,11 +209,13 @@ export function normalizePriceDivisibility(value: unknown): typeof DEFAULT_SAT_M
 }
 
 export function normalizePriceStepSubunits(
-  _value: number | undefined,
+  value: number | undefined,
   divisibility: unknown,
 ): 10 {
   normalizePriceDivisibility(divisibility)
-  return defaultPriceStepSubunits(divisibility)
+  const requiredPriceStep = defaultPriceStepSubunits(divisibility)
+  if (value === undefined || value === requiredPriceStep) return requiredPriceStep
+  throw new Error('ordinary LMSR price step must be one percentage point')
 }
 
 /** Member atoms of the quoted market's outcome set (ATOMS-ONLY world keys). */
