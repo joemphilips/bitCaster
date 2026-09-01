@@ -663,7 +663,7 @@ function registerOrderCommand(program: Command): void {
     .description('Submit, inspect, list, cancel orders, and read order books.')
     .addHelpText(
       'after',
-      '\nExamples:\n  bitcaster-cli order submit --market cond-YES --outcome YES --side Buy --price 420 --amount 1000\n  bitcaster-cli order book <market-id>',
+      '\nExamples:\n  bitcaster-cli order submit --market cond-YES --outcome YES --side Buy --price 420 --amount-msat 1000\n  bitcaster-cli order book <market-id>',
     )
 
   order
@@ -674,14 +674,14 @@ function registerOrderCommand(program: Command): void {
     .option('--side <side>', 'Order side: buy or sell', parseSide)
     .option('--price <n>', 'Limit price', parseIntegerOption('price'))
     .option(
-      '--amount <subunits>',
-      'Amount in market subunits',
-      parseIntegerOption('amount subunits'),
+      '--amount-msat <msat>',
+      'Order face amount in msat',
+      parseIntegerOption('amount msat'),
     )
     .option(
-      '--min-fill <subunits>',
-      'Minimum fill in market subunits (default: one whole tradable unit)',
-      parseIntegerOption('minimum fill subunits'),
+      '--min-fill-msat <msat>',
+      'Minimum fill in msat (default: one whole share, 1000 msat)',
+      parseIntegerOption('minimum fill msat'),
     )
     .option(
       '--consolidate-proofs',
@@ -701,7 +701,7 @@ function registerOrderCommand(program: Command): void {
     )
     .addHelpText(
       'after',
-      '\nExample:\n  bitcaster-cli --dry-run order submit --market cond-YES --outcome YES --side Buy --price 420 --amount 1000 --tif FAK',
+      '\nExample:\n  bitcaster-cli --dry-run order submit --market cond-YES --outcome YES --side Buy --price 420 --amount-msat 1000 --tif FAK',
     )
     .action(async (options: OrderSubmitOptions, command: Command) => {
       const params = orderSubmitParams(options, command.args)
@@ -761,8 +761,8 @@ interface OrderSubmitOptions {
   outcome?: string
   side?: 'Buy' | 'Sell'
   price?: number
-  amount?: number
-  minFill?: number
+  amountMsat?: number
+  minFillMsat?: number
   consolidateProofs?: boolean
   tif: 'FAK' | 'FOK'
   expiresAt?: string
@@ -790,7 +790,7 @@ function orderSubmitParams(options: OrderSubmitOptions, positionals: string[]): 
     throwUsage(`Unexpected order submit argument: ${positionals[0]}`)
   }
 
-  const minimumFillAmountSubunits = options.minFill
+  const minimumFillAmountSubunits = options.minFillMsat
   if (options.expiresAt !== undefined) {
     throwUsage('expires-at is not available for public FAK/FOK orders')
   }
@@ -800,7 +800,7 @@ function orderSubmitParams(options: OrderSubmitOptions, positionals: string[]): 
     tokenSide: options.tokenSide ?? 'Outcome',
     side: requiredParsedOption(options.side, 'side'),
     price: requiredParsedOption(options.price, 'price'),
-    amountSubunits: requiredParsedOption(options.amount, 'amount subunits'),
+    amountSubunits: requiredParsedOption(options.amountMsat, 'amount msat'),
     ...(minimumFillAmountSubunits === undefined ? {} : { minimumFillAmountSubunits }),
     consolidateProofs: options.consolidateProofs === true,
     timeInForce: options.tif,

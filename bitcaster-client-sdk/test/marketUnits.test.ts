@@ -95,6 +95,7 @@ test('formats sat-only product amounts', () => {
   assert.equal(marketUnitLabel('sat'), 'sats')
   assert.equal(marketSubunitLabel('sat'), 'sats')
   assert.equal(formatAmount(50_000, 'sat'), '50 sats')
+  assert.equal(formatMarketSubunits(100, 'sat'), '0.1 sats')
   assert.equal(formatMarketSubunits(-1_234, 'sat'), '-1.234 sats')
   assert.equal(formatShareFace('sat', 1_000), '1 sats')
   assert.equal(
