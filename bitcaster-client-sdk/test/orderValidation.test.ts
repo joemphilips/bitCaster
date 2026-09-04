@@ -11,13 +11,11 @@ const validOrder = {
   amountSubunits: 1_000,
   baseAsset: 'sat',
   divisibility: 1_000,
-  timeInForce: 'FAK',
+  timeInForce: 'FOK',
 }
 
-test('validateOrderIntent accepts supported order intent shapes', () => {
-  for (const timeInForce of ['FAK', 'FOK']) {
-    assert.deepEqual(validateOrderIntent({ ...validOrder, timeInForce }), { valid: true })
-  }
+test('validateOrderIntent accepts the public FOK order intent shape', () => {
+  assert.deepEqual(validateOrderIntent(validOrder), { valid: true })
 })
 
 test('validateOrderRoutingIdentity rejects malformed identity before market-unit lookup', () => {
@@ -81,8 +79,9 @@ test('validateOrderIntent rejects malformed or unsupported order intent', () => 
       { ...validOrder, amountSubunits: 1_001 },
       /amountSubunits must be a positive integer in 1000 sub-unit increments/,
     ],
-    [{ ...validOrder, timeInForce: 'GTC' }, /timeInForce must be FAK or FOK/],
-    [{ ...validOrder, timeInForce: 'GTD' }, /timeInForce must be FAK or FOK/],
+    [{ ...validOrder, timeInForce: 'FAK' }, /timeInForce must be FOK/],
+    [{ ...validOrder, timeInForce: 'GTC' }, /timeInForce must be FOK/],
+    [{ ...validOrder, timeInForce: 'GTD' }, /timeInForce must be FOK/],
   ] as const) {
     const result = validateOrderIntent(request)
     assert.equal(result.valid, false)

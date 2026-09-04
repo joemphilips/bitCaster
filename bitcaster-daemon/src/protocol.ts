@@ -35,7 +35,7 @@ export interface SubmitOrderParams {
   amountSubunits: number
   minimumFillAmountSubunits?: number
   consolidateProofs?: boolean
-  timeInForce: 'FAK' | 'FOK'
+  timeInForce: 'FOK'
   expiresAt?: string | null
   /**
    * Limit-buy maker collateral should be split into a complete set before the

@@ -10,15 +10,14 @@ sidebar:
 bitCaster settles matched orders with the Cashu mint. It does not run a
 bilateral swap between two peers.
 
-The first-release server accepts public FAK and FOK orders. The GUI exposes
-FAK. The CLI exposes FAK and FOK. Each public attempt uses one one-shot
-capability. A partial FAK settles its committed fills and cancels the remainder.
-A zero-fill FAK cancels. FOK commits the full requested quantity or cancels the
-complete request from the admission snapshot. Public GTC, GTD, continuation,
-and residual reauthorization are not available. Internal custody-backed LMSR
-quotes use GTC. They are not public client orders.
+The first-release server accepts only public FOK orders. The GUI and CLI submit
+FOK orders. Each public attempt uses one one-shot capability. FOK uses the book
+state at admission. It commits the full requested quantity or cancels the
+complete request. Public FAK, GTC, GTD, continuation, and residual
+reauthorization are not available. Internal custody-backed LMSR quotes use GTC.
+They are not public client orders.
 
-When you place a FAK or FOK order, your wallet authorizes it with a `PAY_TO_UNLOCK`
+When you place a FOK order, your wallet authorizes it with a `PAY_TO_UNLOCK`
 capability. The matching engine checks this authorization when it admits the
 order. It does not call the mint at this stage.
 
@@ -42,18 +41,16 @@ release.
 When the mint confirms a group, it returns exact result entries. Your wallet
 stores the submitted operation and the confirmed result. If the wallet stops or
 loses its connection, it can recover the exact operation and result later. An
-acknowledged FAK or FOK operation stores its operation facts and result. These
-records survive a server restart. An intentional reuse of the same client
-order ID with the same operation facts returns the stored result. Changed
-facts return a conflict.
+acknowledged FOK operation stores its operation facts and result. These records
+survive a server restart. An intentional reuse of the same client order ID with
+the same operation facts returns the stored result. Changed facts return a
+conflict.
 
 ## Cancellation
 
-Cancellation only retracts an order that still rests on the book. It does not
-spend a `PAY_TO_UNLOCK` capability. It does not refund a capability.
-
-After a partial public FAK, the remainder is cancelled. The public client does
-not reauthorize a residual order.
+Public FOK does not rest on the book or leave a residual order. If the complete
+quantity cannot fill, the engine cancels the complete request. This cancellation
+does not spend the `PAY_TO_UNLOCK` capability or trigger a refund.
 
 ## What the engine can see
 

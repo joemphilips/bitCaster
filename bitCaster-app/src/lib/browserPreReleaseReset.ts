@@ -4,7 +4,7 @@ import { resetKormir, setPendingKormirNsec } from "./kormir";
 
 export const PRE_RELEASE_BROWSER_RESET_EPOCH_KEY = "bitcaster.pre-release-reset-epoch";
 
-const PRE_RELEASE_BROWSER_RESET_EPOCH = "phase-9e-1";
+const PRE_RELEASE_BROWSER_RESET_EPOCH = "phase-9e-5a";
 
 /** This compile-time gate makes the destructive reset impossible in production builds. */
 export const PRE_RELEASE_BROWSER_RESET_ENABLED = import.meta.env.DEV;

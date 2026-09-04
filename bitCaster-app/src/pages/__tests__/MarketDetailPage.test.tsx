@@ -780,7 +780,7 @@ describe("MarketDetailPage live market status", () => {
             amountSubunits: 1_000,
             outcomeId: "Yes",
             side: "Buy",
-            timeInForce: "FAK",
+            timeInForce: "FOK",
           }),
         }),
       }),

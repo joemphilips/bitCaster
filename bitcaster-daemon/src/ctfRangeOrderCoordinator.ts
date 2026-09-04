@@ -272,6 +272,7 @@ export class DaemonCtfRangeOrderCoordinator {
     client: EngineClientLike,
     beforeCreateCapability?: BeforeCreateSettlementCapability,
   ): Promise<PreparedSettlementCapability> {
+    requireFokOrder(request.timeInForce)
     const authority = await this.#prepareMintAuthority(request, client)
     const source = await this.#prepareWalletSource(authority, request.walletSeedHex)
     const operation = completeCtfRangeOrderAuthorization({
@@ -371,6 +372,7 @@ export class DaemonCtfRangeOrderCoordinator {
     walletSeedHex: string,
     client: EngineClientLike,
   ): Promise<void> {
+    requireFokOrder(preparationInput.request.timeInForce)
     switch (preparationRecord.lifecycleState) {
       case 'order-submitted':
       case 'submission-rejected':
@@ -863,14 +865,8 @@ export class DaemonCtfRangeOrderCoordinator {
           custodyOperationId,
           resolveKeyset: preparationResolver,
         })
-        const status = await this.#loadPartialResultStatus(
-          input,
-          capability,
-          client,
-          loaded.operation,
-          recovered,
-        )
-        await this.#completeSubmittedLifecycle(input, status)
+        this.#requireExactFokSettlement(input, loaded.operation, recovered)
+        await this.#markTerminal(input.operationId)
         return
       }
       const response = await this.#getEngineResult(client, input.operationId)
@@ -900,6 +896,7 @@ export class DaemonCtfRangeOrderCoordinator {
         reference,
         client,
         preparationResolver,
+        input,
       )
       if (decision.kind !== 'confirmed') {
         throw new RangeRecoveryDeferredError(
@@ -907,14 +904,7 @@ export class DaemonCtfRangeOrderCoordinator {
           this.#nowMs() + 1_000,
         )
       }
-      const persistedStatus = await this.#loadPartialResultStatus(
-        input,
-        capability,
-        client,
-        loaded.operation,
-        decision.result,
-      )
-      await this.#completeSubmittedLifecycle(input, persistedStatus)
+      await this.#markTerminal(input.operationId)
       return
     }
     const response = await this.#getEngineResult(client, input.operationId)
@@ -934,7 +924,7 @@ export class DaemonCtfRangeOrderCoordinator {
     const existingRefund = engineResult === null ? await getProofOperation(refundOperationId) : null
     if (existingRefund !== null) {
       const status = await this.#loadOrderStatus(input, capability, client)
-      await this.#cancelRestingOrderBeforeRefund(input, capability, status, client)
+      this.#requireFokNotActiveBeforeRefund(status)
       await this.#resumeOrCreateRefund(
         coordinator,
         custodyOperationId,
@@ -958,6 +948,7 @@ export class DaemonCtfRangeOrderCoordinator {
             reference,
             client,
             preparationResolver,
+            input,
           )
     if (decision.kind === 'reconciling' && engineResult !== null) {
       engineResult = null
@@ -970,14 +961,8 @@ export class DaemonCtfRangeOrderCoordinator {
     }
     switch (decision.kind) {
       case 'confirmed': {
-        const status = await this.#loadPartialResultStatus(
-          input,
-          capability,
-          client,
-          loaded.operation,
-          decision.result,
-        )
-        await this.#completeSubmittedLifecycle(input, status)
+        this.#requireExactFokSettlement(input, loaded.operation, decision.result)
+        await this.#markTerminal(input.operationId)
         return
       }
       case 'waiting':
@@ -987,7 +972,7 @@ export class DaemonCtfRangeOrderCoordinator {
         )
       case 'refundable': {
         const refundableStatus = await this.#loadOrderStatus(input, capability, client)
-        await this.#cancelRestingOrderBeforeRefund(input, capability, refundableStatus, client)
+        this.#requireFokNotActiveBeforeRefund(refundableStatus)
         await this.#resumeOrCreateRefund(
           coordinator,
           custodyOperationId,
@@ -1070,19 +1055,15 @@ export class DaemonCtfRangeOrderCoordinator {
     return status
   }
 
-  async #loadPartialResultStatus(
+  #requireExactFokSettlement(
     input: PersistedPreparationInput,
-    capability: RangePreparationCapability,
-    client: EngineClientLike,
     operation: DurableCtfRangeOperation,
     result: Extract<DurableCtfRangeRecoveryDecision, { kind: 'confirmed' }>['result'],
-  ): Promise<OrderStatusResponse | null> {
+  ): void {
     const settledAmount = deriveDurableCtfRangeSettledFaceAmount(operation, result)
-    if (settledAmount > input.request.amountSubunits) {
-      throw new Error('settled range amount exceeds the submitted order')
+    if (settledAmount !== input.request.amountSubunits) {
+      throw new Error('settled range amount does not satisfy the submitted FOK order')
     }
-    if (settledAmount === input.request.amountSubunits) return null
-    return this.#loadOrderStatus(input, capability, client)
   }
 
   async #persistedResultSource(record: DurableCustodyRecord): Promise<'engine' | 'mint-recovery'> {
@@ -1243,6 +1224,7 @@ export class DaemonCtfRangeOrderCoordinator {
     reference: { readonly artifactId: string; readonly bindingDigest: string },
     client: EngineClientLike,
     resolveKeyset: DurableCtfRangeKeysetResolver,
+    input: PersistedPreparationInput,
   ): Promise<DurableCtfRangeRecoveryDecision> {
     const decision = await coordinator.stageVerified({
       custodyOperationId,
@@ -1257,53 +1239,18 @@ export class DaemonCtfRangeOrderCoordinator {
       resolveKeyset,
       observedAtMs: this.#nowMs(),
     })
+    this.#requireExactFokSettlement(input, operation, decision.result)
     await this.#acknowledgeResult(client, operation, reference, engineResult)
     return decision
   }
 
-  async #completeSubmittedLifecycle(
-    input: PersistedPreparationInput,
-    status: OrderStatusResponse | null,
-  ): Promise<void> {
-    if (status === null) {
-      await this.#markTerminal(input.operationId)
-      return
+  #requireFokNotActiveBeforeRefund(status: OrderStatusResponse | null): void {
+    switch (status?.status) {
+      case 'resting':
+      case 'matched':
+      case 'partially_filled':
+        throw new Error('public FOK order is unexpectedly active during refund recovery')
     }
-    if (input.request.timeInForce === 'FAK' && status.status === 'partially_filled') {
-      await this.#markTerminal(input.operationId)
-      return
-    }
-    if (
-      status.status === 'resting' ||
-      status.status === 'matched' ||
-      status.status === 'partially_filled'
-    ) {
-      throw new Error('range result and order lifecycle disagree')
-    }
-    await this.#markTerminal(input.operationId)
-  }
-
-  async #cancelRestingOrderBeforeRefund(
-    input: PersistedPreparationInput,
-    capability: RangePreparationCapability,
-    status: OrderStatusResponse | null,
-    client: EngineClientLike,
-  ): Promise<void> {
-    if (status?.status !== 'resting') return
-    if (!(await client.cancelOrder(input.request.marketId, capability.orderId))) {
-      throw new Error('expired resting range order cancellation was not acknowledged')
-    }
-    const cancelled = await client.getOrderStatus(input.request.marketId, capability.orderId)
-    if (cancelled === null || cancelled.status === 'resting') {
-      throw new Error('expired resting range order remains matchable')
-    }
-    await recordOrderStatus(
-      input.request.marketId,
-      capability.orderId,
-      cancelled,
-      input.request.baseAsset,
-      input.request.divisibility,
-    )
   }
 
   async #acknowledgeResult(
@@ -1443,6 +1390,12 @@ function persistedOrderRequest(
 ): PersistedPreparationInput['request'] {
   const { walletSeedHex: _, consolidateProofs: ___, ...request } = input
   return structuredClone(request) as PersistedPreparationInput['request']
+}
+
+function requireFokOrder(timeInForce: unknown): asserts timeInForce is 'FOK' {
+  if (timeInForce !== 'FOK') {
+    throw new Error('public range orders require FOK')
+  }
 }
 
 function withoutRequest(

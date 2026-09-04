@@ -81,6 +81,48 @@ async function writeState(state: DaemonState): Promise<void> {
   await persistState(state)
 }
 
+test('daemon dispatch rejects raw public FAK before custody or settlement work', async () => {
+  let custodyReadyCalls = 0
+  let engineCalls = 0
+  let preparationCalls = 0
+  const response = await dispatch(
+    {
+      method: 'order.submit',
+      params: {
+        marketId: 'cond-YES',
+        outcomeId: 'YES',
+        side: 'Buy',
+        price: 420,
+        amountSubunits: 1_000,
+        timeInForce: 'FAK',
+      },
+    } as never,
+    {
+      isCustodyReady() {
+        custodyReadyCalls += 1
+        return true
+      },
+      createEngineClient() {
+        engineCalls += 1
+        throw new Error('FAK must be rejected before engine access')
+      },
+      prepareSettlementCapability: async () => {
+        preparationCalls += 1
+        throw new Error('FAK must be rejected before capability preparation')
+      },
+    },
+  )
+
+  assert.deepEqual(response, {
+    ok: false,
+    code: 'invalid-order-type',
+    error: 'Order rejected: public orders require FOK',
+  })
+  assert.equal(custodyReadyCalls, 0)
+  assert.equal(engineCalls, 0)
+  assert.equal(preparationCalls, 0)
+})
+
 test('daemon dispatch persists wallet and order state', async (t) => {
   const home = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-test-'))
   const previousHome = process.env.BITCASTER_DAEMON_HOME
@@ -922,7 +964,7 @@ test('daemon dispatch persists wallet and order state', async (t) => {
             side: 'Buy' as const,
             price: 100,
             amountSubunits: 1_000,
-            timeInForce: 'FAK' as const,
+            timeInForce: 'FOK' as const,
           },
         }
         const dispatchDeps = {
@@ -1152,7 +1194,7 @@ test('daemon dispatch persists wallet and order state', async (t) => {
               amountSubunits: 2_000,
               minimumFillAmountSubunits: 1_000,
               consolidateProofs: true,
-              timeInForce: 'FAK',
+              timeInForce: 'FOK',
             },
           },
           {
@@ -1197,7 +1239,7 @@ test('daemon dispatch persists wallet and order state', async (t) => {
           baseAsset: 'sat',
           collateralUnit: 'msat',
           divisibility: 1_000,
-          timeInForce: 'FAK',
+          timeInForce: 'FOK',
           expiresAt: null,
           mintUrl: 'https://mint-a.example',
           walletSeedHex: secrets.walletSeedHex,
@@ -1335,7 +1377,7 @@ test('daemon dispatch persists wallet and order state', async (t) => {
               side: 'Buy',
               price: 500_000,
               amountSubunits: 2_000_000,
-              timeInForce: 'FAK',
+              timeInForce: 'FOK',
             },
           },
           { createEngineClient: () => engine },
@@ -1408,7 +1450,7 @@ test('daemon dispatch persists wallet and order state', async (t) => {
             side: 'Buy',
             price: 500_000,
             amountSubunits: 2_000_000,
-            timeInForce: 'FAK',
+            timeInForce: 'FOK',
           },
         },
         {
@@ -1476,7 +1518,7 @@ test('daemon dispatch persists wallet and order state', async (t) => {
               side: 'Buy',
               price: 990,
               amountSubunits: 1_000,
-              timeInForce: 'FAK',
+              timeInForce: 'FOK',
             },
           },
           {
@@ -1537,7 +1579,7 @@ test('daemon dispatch persists wallet and order state', async (t) => {
             side: 'Buy',
             price: 420,
             amountSubunits: 1_000,
-            timeInForce: 'FAK',
+            timeInForce: 'FOK',
           },
         },
         {
@@ -1605,7 +1647,7 @@ test('daemon dispatch persists wallet and order state', async (t) => {
               side: 'Buy',
               price: 420,
               amountSubunits: 1_000,
-              timeInForce: 'FAK',
+              timeInForce: 'FOK',
             },
           },
           {
@@ -1665,7 +1707,7 @@ test('daemon dispatch persists wallet and order state', async (t) => {
                 side: 'Buy',
                 price: 420,
                 amountSubunits: 1_000,
-                timeInForce: 'FAK',
+                timeInForce: 'FOK',
               },
             },
             {
@@ -2043,7 +2085,7 @@ test('daemon dispatch persists wallet and order state', async (t) => {
             side: 'Buy',
             price: 420,
             amountSubunits: 1_000,
-            timeInForce: 'FAK',
+            timeInForce: 'FOK',
           },
         },
         {
@@ -2081,7 +2123,7 @@ test('daemon dispatch persists wallet and order state', async (t) => {
               side: 'Sell',
               price: 420,
               amountSubunits: 1_000,
-              timeInForce: 'FAK',
+              timeInForce: 'FOK',
             },
           },
           {

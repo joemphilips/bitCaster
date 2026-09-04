@@ -873,11 +873,11 @@ export interface components {
             baseAsset: components["schemas"]["BaseAsset"];
             /** @description Required explicit collateral unit. No default is implied. */
             collateralUnit: components["schemas"]["CollateralUnit"];
-            /** @description Public settlement capabilities accept only FOK and FAK. Both values forbid expiresAt. */
+            /** @description Public settlement capability requests accept only FOK. FOK means Fill-Or-Kill and forbids expiresAt. */
             timeInForce: components["schemas"]["SettlementCapabilityTimeInForce"];
             /**
              * Format: date-time
-             * @description Exactly null for FOK and FAK. Requiring the field gives the authenticated intent one canonical wire representation.
+             * @description Exactly null for FOK. Requiring the field gives the authenticated intent one canonical wire representation.
              */
             expiresAt: string | null;
         };
@@ -986,12 +986,12 @@ export interface components {
          */
         TimeInForce: "GTC" | "FOK" | "FAK" | "GTD";
         /**
-         * @description Public settlement capability time-in-force. FOK means Fill-Or-Kill. FAK means Fill-And-Kill. Public capabilities cannot rest on the book and cannot carry an expiry.
+         * @description Public settlement capability time-in-force. FOK means Fill-Or-Kill. Public capability requests are FOK-only. They cannot rest on the book and cannot carry an expiry.
          * @enum {string}
          */
-        SettlementCapabilityTimeInForce: "FOK" | "FAK";
+        SettlementCapabilityTimeInForce: "FOK";
         /**
-         * @description Public order lifecycle. A partial FAK ends with a cancelled remainder. A FOK order is filled or cancelled.
+         * @description Order lifecycle for public FOK orders and internal GTC quotes. A public FOK order is filled or cancelled. An internal GTC quote can rest or partially fill.
          * @enum {string}
          */
         OrderLifecycleStatus: "resting" | "matched" | "partially_filled" | "filled" | "cancelled" | "expired" | "evicted_capacity" | "rejected_capacity" | "failed";

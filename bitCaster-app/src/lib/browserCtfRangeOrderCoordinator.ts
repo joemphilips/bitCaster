@@ -32,6 +32,7 @@ import {
 import {
   classifyDurableCtfRangeRecovery,
   createDeterministicDurableCtfRangeRefundOutputsWithLocators,
+  deriveDurableCtfRangeSettledFaceAmount,
   createDurableCtfRangeRefundOperation,
   deriveDurableCtfRangeFeeBounds,
   deriveDurableCtfRangeRefundOperationId,
@@ -276,6 +277,7 @@ export function buildBrowserCtfRangeOrderPreparation(input: {
   readonly nowUnixSeconds: number;
   readonly randomId: () => string;
 }): PersistedCtfRangeOrderPreparation {
+  requireFokRequest(input.request);
   return buildPersistedCtfRangeOrderPreparation({
     request: input.request,
     coordinatorPublicKey: decodeSettlementCoordinatorPublicKey(input.policy),
@@ -339,7 +341,7 @@ export class BrowserCtfRangeOrderCoordinator {
     readonly candidates: readonly Proof[];
     readonly comment?: NostrKind1Event | null;
   }): Promise<SubmitOrderResponse> {
-    requireImmediateOrder(input.preparation);
+    requireFokRequest(input.preparation.request);
     const scope = browserWalletScope(input.seed);
     const completed = await withWalletProfileLock(
       scope.scopeId,
@@ -510,6 +512,7 @@ export class BrowserCtfRangeOrderCoordinator {
     scope: DurableCustodyScope,
     owner: DurableCustodyOwnerAuthorization,
   ): Promise<boolean> {
+    requireFokRequest(decodeCtfRangeOrderPreparationFromRecord(record).request);
     switch (record.lifecycleState) {
       case "prepared": {
         const sourceReleased = await this.#resumePreparedSource(record, seed, scope, owner);
@@ -672,6 +675,7 @@ export class BrowserCtfRangeOrderCoordinator {
       prepared,
       resolveKeyset,
     );
+    this.#requireExactFokSettlement(journalRecord, operation, prepared.result);
     if (engineResult !== null) {
       await this.#acknowledgeEngineResult(operation, journalRecord, engineResult);
     }
@@ -698,6 +702,7 @@ export class BrowserCtfRangeOrderCoordinator {
     if (record.operation.result.state === "verified-staged") {
       await this.#applyRecoveredOuterResult(scope, owner, record, operation, result);
     }
+    this.#requireExactFokSettlement(journalRecord, operation, result);
     if (isMintRecoveredRangeResult(exactResult.artifact)) {
       await this.#terminalizeRecoveredJournal(journalRecord);
       return;
@@ -1958,6 +1963,7 @@ export class BrowserCtfRangeOrderCoordinator {
     record: DurableCustodyRecord,
     operation: DurableCtfRangeOperation,
   ): Promise<void> {
+    await this.#requireSubmittedFokRefundSafe(journalRecord);
     const preparation = decodeCtfRangeOrderPreparationFromRecord(journalRecord);
     const refundAmount =
       operation.inputs.reduce((total, proof) => total + BigInt(proof.amount), 0n) -
@@ -2002,7 +2008,16 @@ export class BrowserCtfRangeOrderCoordinator {
       if (existing !== undefined) throw new Error("browser range refund identity already exists");
       await this.#database.proofOperations.add(refund);
     });
-    await this.#resumeOuterRefund(journalRecord, seed, scope, owner, record, operation, refund);
+    await this.#resumeOuterRefund(
+      journalRecord,
+      seed,
+      scope,
+      owner,
+      record,
+      operation,
+      refund,
+      true,
+    );
   }
 
   async #resumeOuterRefund(
@@ -2013,7 +2028,9 @@ export class BrowserCtfRangeOrderCoordinator {
     record: DurableCustodyRecord,
     operation: DurableCtfRangeOperation,
     refund: ProofOperationRecord,
+    orderStatusChecked = false,
   ): Promise<void> {
+    if (!orderStatusChecked) await this.#requireSubmittedFokRefundSafe(journalRecord);
     assertExactRefundRecord(refund, operation);
     if (refund.state === "Failed") throw new Error("browser range refund failed");
     let proofs = refund.resultProofs?.refund;
@@ -2075,6 +2092,41 @@ export class BrowserCtfRangeOrderCoordinator {
       refund,
       proofs,
     );
+  }
+
+  async #requireSubmittedFokRefundSafe(
+    journalRecord: NonNullable<Awaited<ReturnType<typeof readCtfRangePreparation>>>,
+  ): Promise<void> {
+    if (journalRecord.lifecycleState !== "order-submitted") return;
+    const capability = journalRecord.capability;
+    if (capability === null) throw rangeError("recovery-pending");
+    let status: OrderStatusResponse | null;
+    try {
+      status = await this.#engine.getOrderStatus(journalRecord.orderRouteId, capability.orderId);
+    } catch (error) {
+      throw rangeError("recovery-pending", error);
+    }
+    if (status === null) return;
+    const request = decodeCtfRangeOrderPreparationFromRecord(journalRecord).request;
+    if (
+      status.orderId !== capability.orderId ||
+      status.marketId !== journalRecord.orderRouteId ||
+      status.timeInForce !== "FOK" ||
+      status.amountSubunits !== request.amountSubunits ||
+      status.side !== request.side ||
+      status.price !== request.price ||
+      status.tokenSide !== request.tokenSide ||
+      status.baseAsset !== request.baseAsset ||
+      status.divisibility !== request.divisibility
+    ) {
+      throw rangeError("recovery-pending");
+    }
+    switch (status.status) {
+      case "resting":
+      case "matched":
+      case "partially_filled":
+        throw rangeError("recovery-pending");
+    }
   }
 
   async #commitOuterRefund(
@@ -2296,6 +2348,18 @@ export class BrowserCtfRangeOrderCoordinator {
     );
   }
 
+  #requireExactFokSettlement(
+    journalRecord: NonNullable<Awaited<ReturnType<typeof readCtfRangePreparation>>>,
+    operation: DurableCtfRangeOperation,
+    result: DurableCtfRangeRecoveredResult,
+  ): void {
+    const request = decodeCtfRangeOrderPreparationFromRecord(journalRecord).request;
+    requireFokRequest(request);
+    if (deriveDurableCtfRangeSettledFaceAmount(operation, result) !== request.amountSubunits) {
+      throw rangeError("recovery-pending");
+    }
+  }
+
   async #reserveLegacySourceProofs(
     preparation: PersistedCtfRangeOrderPreparation,
     reservationOperationId: string,
@@ -2416,14 +2480,10 @@ export class BrowserCtfRangeOrderCoordinator {
   }
 }
 
-function requireImmediateOrder(preparation: PersistedCtfRangeOrderPreparation): void {
-  switch (preparation.request.timeInForce) {
-    case "FAK":
-    case "FOK":
-      return;
-    default:
-      return assertNever(preparation.request.timeInForce);
-  }
+function requireFokRequest(
+  request: CtfRangeOrderRequest,
+): asserts request is CtfRangeOrderRequest & { readonly timeInForce: "FOK" } {
+  if (request.timeInForce !== "FOK") throw rangeError("invalid-order-type");
 }
 
 function requireImmediateSubmitResponse(
@@ -2437,7 +2497,7 @@ function requireImmediateSubmitResponse(
     response.divisibility !== preparation.divisibility ||
     response.remainingAmountSubunits !== 0 ||
     response.status === "resting" ||
-    (preparation.request.timeInForce === "FOK" && response.status === "partially_filled")
+    response.status === "partially_filled"
   ) {
     throw new Error("engine returned an invalid immediate order response");
   }
@@ -2465,7 +2525,7 @@ function isMintRecoveredRangeResult(value: unknown): boolean {
 
 export function browserCtfRangeOrderErrorMessage(code: BrowserCtfRangeOrderErrorCode): string {
   const messages: Record<BrowserCtfRangeOrderErrorCode, string> = {
-    "invalid-order-type": "The browser supports only immediate FAK or FOK range orders.",
+    "invalid-order-type": "The browser supports only FOK range orders.",
     "insufficient-funds": "The wallet has insufficient selectable funds for this order.",
     "asset-recovery-failed": "The wallet could not recover the exact funds for this order.",
     "source-preparation-failed": "The wallet could not prepare the range authorization.",

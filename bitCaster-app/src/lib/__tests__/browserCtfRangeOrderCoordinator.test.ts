@@ -134,7 +134,7 @@ describe("browser CTF range order coordinator", () => {
   it("accepts a conditional keyset without final expiry", async () => {
     const preparation = persistedPreparation(
       "range-missing-final-expiry",
-      "FAK",
+      "FOK",
       {},
       reviewedMintFacts(null),
     );
@@ -628,7 +628,7 @@ describe("browser CTF range order coordinator", () => {
   });
 
   it("keeps complementary Sell change selectable with multi-input authorization", async () => {
-    const preparation = persistedPreparation("range-sell-complement", "FAK", {
+    const preparation = persistedPreparation("range-sell-complement", "FOK", {
       side: "Sell",
       tokenSide: "Complement",
     });
@@ -1274,7 +1274,7 @@ describe("browser CTF range order coordinator", () => {
 
   it.each([
     ["partial FOK", "FOK", { status: "partially_filled" }],
-    ["foreign divisibility", "FAK", { divisibility: 1_000_000 }],
+    ["foreign divisibility", "FOK", { divisibility: 1_000_000 }],
   ] as const)("keeps a %s response uncertain", async (_label, timeInForce, submitResponse) => {
     const database = createDatabase();
     const preparation = persistedPreparation(`range-${timeInForce}-invalid-submit`, timeInForce);
@@ -1502,6 +1502,107 @@ describe("browser CTF range order coordinator", () => {
     ).toBe("terminal");
   });
 
+  it.each(["resting", "matched", "partially_filled"] as const)(
+    "keeps a submitted %s FOK out of new and resumed refund recovery",
+    async (status) => {
+      const preparation = persistedPreparation(`range-active-new-refund-${status}`);
+      let now = 20_000;
+      let newRefundCalls = 0;
+      let newCheckCalls = 0;
+      const database = createDatabase();
+      const engine = engineMock({ resultFailure: true, orderStatus: activeFokOrderStatus(status) });
+      const coordinator = createCoordinator(database, sourceWallet({ onCheck: () => newCheckCalls += 1 }), engine, {
+        now: () => now,
+        createMintRecovery: refundableRecovery(preparation),
+        executeRefundSwap: async () => {
+          newRefundCalls += 1;
+          throw new Error("active FOK must not start a refund");
+        },
+      });
+      await coordinator.prepareAndSubmit({
+        seed: SEED,
+        preparation,
+        candidates: [sourceProof(preparation.offerKeyset.id)],
+      });
+      now = preparation.expiry * 1_000;
+
+      expect(await coordinator.recoverPage({ seed: SEED, limit: 8 })).toMatchObject({
+        recoveredOperationIds: [],
+        pending: [{ operationId: preparation.operationId, code: "recovery-pending" }],
+      });
+      expect(engine.statusCalls).toBe(1);
+      expect(newCheckCalls).toBe(0);
+      expect(newRefundCalls).toBe(0);
+      expect(
+        await database.proofOperations.get(deriveDurableCtfRangeRefundOperationId(preparation.operationId)),
+      ).toBeUndefined();
+      expect(
+        (await readCtfRangePreparation(walletScopeId(), preparation.operationId, database))
+          ?.lifecycleState,
+      ).toBe("order-submitted");
+
+      const existingPreparation = persistedPreparation(`range-active-resume-refund-${status}`);
+      let existingNow = 20_000;
+      const existingDatabase = createDatabase();
+      const initial = createCoordinator(
+        existingDatabase,
+        sourceWallet(),
+        engineMock({ resultFailure: true }),
+        {
+          now: () => existingNow,
+          createMintRecovery: refundableRecovery(existingPreparation),
+          executeRefundSwap: async () => {
+            throw new Error("initial refund response lost");
+          },
+        },
+      );
+      await initial.prepareAndSubmit({
+        seed: SEED,
+        preparation: existingPreparation,
+        candidates: [sourceProof(existingPreparation.offerKeyset.id)],
+      });
+      existingNow = existingPreparation.expiry * 1_000;
+      await expect(initial.recoverPage({ seed: SEED, limit: 8 })).resolves.toMatchObject({
+        recoveredOperationIds: [],
+        pending: [{ operationId: existingPreparation.operationId, code: "recovery-pending" }],
+      });
+      const refundId = deriveDurableCtfRangeRefundOperationId(existingPreparation.operationId);
+      expect(await existingDatabase.proofOperations.get(refundId)).toMatchObject({ state: "prepared" });
+
+      let resumedRefundCalls = 0;
+      let resumedCheckCalls = 0;
+      const resumedEngine = engineMock({
+        resultFailure: true,
+        orderStatus: activeFokOrderStatus(status),
+      });
+      const resumed = createCoordinator(
+        existingDatabase,
+        sourceWallet({ onCheck: () => resumedCheckCalls += 1 }),
+        resumedEngine,
+        {
+          now: () => existingNow,
+          createMintRecovery: refundableRecovery(existingPreparation),
+          executeRefundSwap: async () => {
+            resumedRefundCalls += 1;
+            throw new Error("active FOK must not resume a refund");
+          },
+        },
+      );
+      expect(await resumed.recoverPage({ seed: SEED, limit: 8 })).toMatchObject({
+        recoveredOperationIds: [],
+        pending: [{ operationId: existingPreparation.operationId, code: "recovery-pending" }],
+      });
+      expect(resumedEngine.statusCalls).toBe(1);
+      expect(resumedCheckCalls).toBe(0);
+      expect(resumedRefundCalls).toBe(0);
+      expect(await existingDatabase.proofOperations.get(refundId)).toMatchObject({ state: "prepared" });
+      expect(
+        (await readCtfRangePreparation(walletScopeId(), existingPreparation.operationId, existingDatabase))
+          ?.lifecycleState,
+      ).toBe("order-submitted");
+    },
+  );
+
   it("uses exact mint recovery after expiry when the engine result is malformed", async () => {
     const database = createDatabase();
     const preparation = persistedPreparation("range-malformed-engine-result");
@@ -1691,6 +1792,54 @@ describe("browser CTF range order coordinator", () => {
         ?.lifecycleState,
     ).toBe("terminal");
   });
+
+  it("applies a partial FOK result but keeps its journal pending and unacknowledged", async () => {
+    const database = createDatabase();
+    const preparation = persistedPreparation("range-partial-fok-result", "FOK", {
+      amountSubunits: 2_000,
+      minimumFillAmountSubunits: 2_000,
+    });
+    let partial: ReturnType<typeof partialRangeRecovery> | undefined;
+    const engine = engineMock({
+      result: () => {
+        if (partial === undefined) throw new Error("partial fixture was not initialized");
+        return confirmedEngineResult(partial.operation, partial.selection, partial.signatures);
+      },
+    });
+    const coordinator = createCoordinator(database, sourceWallet(), engine, {
+      createMintRecovery: (operation) => {
+        partial = partialRangeRecovery(operation, preparation);
+        return {
+          async loadUncertainRecoveryObservation() {
+            throw new Error("partial engine result must not use mint recovery");
+          },
+        };
+      },
+    });
+    await coordinator.prepareAndSubmit({
+      seed: SEED,
+      preparation,
+      candidates: [sourceProof(preparation.offerKeyset.id, 8)],
+    });
+
+    expect(await coordinator.recoverPage({ seed: SEED, limit: 8 })).toMatchObject({
+      recoveredOperationIds: [],
+      pending: [{ operationId: preparation.operationId, code: "recovery-pending" }],
+    });
+    expect(engine.acknowledgeCalls).toBe(0);
+    expect(
+      (
+        await new BrowserDurableCustodyAdapter(database).readOperation(
+          walletScope(),
+          custodyOperationId(preparation.operationId),
+        )
+      )?.operation.state,
+    ).toBe("reconciled");
+    expect(
+      (await readCtfRangePreparation(walletScopeId(), preparation.operationId, database))
+        ?.lifecycleState,
+    ).toBe("order-submitted");
+  });
 });
 
 function createCoordinator(
@@ -1811,6 +1960,7 @@ function inMemoryCounterSource(onReserve: () => void = () => {}): CounterSource 
 function sourceWallet(
   input: {
     onComplete?: () => Promise<void>;
+    onCheck?: () => void;
     inputState?: ProofState["state"];
   } = {},
 ) {
@@ -1893,6 +2043,7 @@ function sourceWallet(
       );
     },
     async checkProofsStates(proofs: Array<Pick<Proof, "id" | "secret">>) {
+      input.onCheck?.();
       return proofs.map(
         (_, index): ProofState => ({
           Y: `source-y-${index}`,
@@ -1963,6 +2114,28 @@ function confirmedRangeRecovery(
       signatures,
       queryCompleted: true,
     },
+    resolveKeyset: createCtfRangeOrderPreparationKeysetResolver(preparation),
+  };
+}
+
+function partialRangeRecovery(
+  operation: DurableCtfRangeOperation,
+  preparation: PersistedCtfRangeOrderPreparation,
+) {
+  const inputTotal = operation.inputs.reduce((total, proof) => total + BigInt(proof.amount), 0n);
+  const maximumDebit = BigInt(operation.policy.maxDebit);
+  const debit = maximumDebit > 2n ? maximumDebit / 2n - 1n : maximumDebit;
+  const rateN = BigInt(operation.policy.rateN);
+  const rateD = BigInt(operation.policy.rateD);
+  const minimumReceive = BigInt(operation.policy.minReceive);
+  const quotedReceive = (debit * rateN + rateD - 1n) / rateD;
+  const receive = quotedReceive > minimumReceive ? quotedReceive : minimumReceive;
+  const selected = selectCtfRangeAmounts(operation.manifest.entries, receive, inputTotal - debit);
+  const restoredOutputs = buildDurableCtfRangeRecoveryQuery(operation, selected.selection).outputs;
+  return {
+    operation,
+    selection: selected.selection,
+    signatures: restoredOutputs.map(signBlindedMessage),
     resolveKeyset: createCtfRangeOrderPreparationKeysetResolver(preparation),
   };
 }
@@ -2152,7 +2325,7 @@ function discoveredOrderStatus(): OrderStatusResponse {
     side: "Buy",
     price: 2,
     placedAt: "2026-07-31T09:00:00.000Z",
-    timeInForce: "FAK",
+    timeInForce: "FOK",
     tokenSide: "Outcome",
     baseAsset: "sat",
     divisibility: 1_000,
@@ -2160,10 +2333,32 @@ function discoveredOrderStatus(): OrderStatusResponse {
   };
 }
 
+function activeFokOrderStatus(
+  status: "resting" | "matched" | "partially_filled",
+): OrderStatusResponse {
+  switch (status) {
+    case "resting":
+    case "matched":
+      return { ...discoveredOrderStatus(), status };
+    case "partially_filled":
+      return {
+        ...discoveredOrderStatus(),
+        status,
+        remainingAmountSubunits: 500,
+        filledAmountSubunits: 500,
+      };
+  }
+}
+
 function persistedPreparation(
   operationId: string,
-  timeInForce: "FAK" | "FOK" = "FAK",
-  order: Partial<Pick<CtfRangeOrderRequest, "side" | "tokenSide">> = {},
+  timeInForce: "FOK" = "FOK",
+  order: Partial<
+    Pick<
+      CtfRangeOrderRequest,
+      "side" | "tokenSide" | "amountSubunits" | "minimumFillAmountSubunits"
+    >
+  > = {},
   mintFacts = reviewedMintFacts(),
 ) {
   return buildPersistedCtfRangeOrderPreparation({
@@ -2181,7 +2376,7 @@ function persistedPreparation(
   });
 }
 
-function rangeRequest(timeInForce: "FAK" | "FOK"): CtfRangeOrderRequest {
+function rangeRequest(timeInForce: "FOK"): CtfRangeOrderRequest {
   return {
     clientOrderId: `client-${timeInForce.toLowerCase()}`,
     marketId: `${CONDITION_ID}-YES`,

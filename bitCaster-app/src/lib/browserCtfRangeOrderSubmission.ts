@@ -22,6 +22,7 @@ import {
   BrowserCtfRangeOrderCoordinator,
   BrowserCtfRangeOrderError,
   buildBrowserCtfRangeOrderPreparation,
+  browserCtfRangeOrderErrorMessage,
   type BrowserCtfRangeOrderErrorCode,
 } from "./browserCtfRangeOrderCoordinator";
 import { createAuthenticatedBrowserEngineClient } from "./markets";
@@ -357,6 +358,12 @@ async function loadBrowserRangePreparation(input: {
   readonly clientOrderId: string;
   readonly mintUrl: string;
 }) {
+  if (input.ticket.request.timeInForce !== "FOK") {
+    throw new BrowserCtfRangeOrderError(
+      "invalid-order-type",
+      browserCtfRangeOrderErrorMessage("invalid-order-type"),
+    );
+  }
   const engine = createAuthenticatedBrowserEngineClient();
   const mint = new CashuMint(input.mintUrl) as unknown as CtfRangeMintMetadataClient;
   const [policy, mintFacts] = await Promise.all([
@@ -381,7 +388,7 @@ async function loadBrowserRangePreparation(input: {
         baseAsset: "sat",
         collateralUnit: "msat",
         divisibility: input.market.divisibility,
-        timeInForce: "FAK",
+        timeInForce: "FOK",
         expiresAt: null,
         mintUrl: input.mintUrl,
       },

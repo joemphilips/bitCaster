@@ -843,7 +843,7 @@ namespace BitCaster.MatchingEngine.Contracts
         public CollateralUnit CollateralUnit { get; }
 
         /// <summary>
-        /// Public settlement capabilities accept only FOK and FAK. Both values forbid expiresAt.
+        /// Public settlement capability requests accept only FOK. FOK means Fill-Or-Kill and forbids expiresAt.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("timeInForce")]
@@ -851,7 +851,7 @@ namespace BitCaster.MatchingEngine.Contracts
         public SettlementCapabilityTimeInForce TimeInForce { get; }
 
         /// <summary>
-        /// Exactly null for FOK and FAK. Requiring the field gives the authenticated intent one canonical wire representation.
+        /// Exactly null for FOK. Requiring the field gives the authenticated intent one canonical wire representation.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("expiresAt")]
@@ -1148,7 +1148,7 @@ namespace BitCaster.MatchingEngine.Contracts
     }
 
     /// <summary>
-    /// Public settlement capability time-in-force. FOK means Fill-Or-Kill. FAK means Fill-And-Kill. Public capabilities cannot rest on the book and cannot carry an expiry.
+    /// Public settlement capability time-in-force. FOK means Fill-Or-Kill. Public capability requests are FOK-only. They cannot rest on the book and cannot carry an expiry.
     /// <br/>
     /// </summary>
     [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
@@ -1158,13 +1158,10 @@ namespace BitCaster.MatchingEngine.Contracts
         [System.Runtime.Serialization.EnumMember(Value = @"FOK")]
         FOK = 0,
 
-        [System.Runtime.Serialization.EnumMember(Value = @"FAK")]
-        FAK = 1,
-
     }
 
     /// <summary>
-    /// Public order lifecycle. A partial FAK ends with a cancelled remainder. A FOK order is filled or cancelled.
+    /// Order lifecycle for public FOK orders and internal GTC quotes. A public FOK order is filled or cancelled. An internal GTC quote can rest or partially fill.
     /// <br/>
     /// </summary>
     [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]

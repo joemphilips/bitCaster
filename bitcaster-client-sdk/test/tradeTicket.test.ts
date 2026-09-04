@@ -32,7 +32,7 @@ const liquidBook: SdkOrderBook = {
   spread: 60,
 }
 
-test('buildTradeTicket builds limit orders with oracle-verbatim YES outcome names as FAK', () => {
+test('buildTradeTicket builds limit orders with oracle-verbatim YES outcome names as FOK', () => {
   const ticket = buildTradeTicket({
     market: yesNoMarket,
     selection: { side: 'yes' },
@@ -50,7 +50,7 @@ test('buildTradeTicket builds limit orders with oracle-verbatim YES outcome name
     side: 'Buy',
     price: 500,
     amountSubunits: 1_000_000,
-    timeInForce: 'FAK',
+    timeInForce: 'FOK',
   })
 })
 
@@ -92,7 +92,7 @@ test('buildTradeTicket builds two-outcome categorical NO tickets against a primi
   assert.equal(ticket.request.tokenSide, 'Complement')
 })
 
-test('buildTradeTicket prices executable market buys as aggressive FAK orders', () => {
+test('buildTradeTicket prices executable market buys as aggressive FOK orders', () => {
   const directTicket = buildTradeTicket({
     market: yesNoMarket,
     selection: { side: 'no' },
@@ -107,7 +107,7 @@ test('buildTradeTicket prices executable market buys as aggressive FAK orders', 
   assert.equal(directTicket.request.outcomeId, 'Yes')
   assert.equal(directTicket.request.tokenSide, 'Complement')
   assert.equal(directTicket.request.price, 999)
-  assert.equal(directTicket.request.timeInForce, 'FAK')
+  assert.equal(directTicket.request.timeInForce, 'FOK')
 
   const complementaryTicket = buildTradeTicket({
     market: yesNoMarket,
@@ -123,7 +123,7 @@ test('buildTradeTicket prices executable market buys as aggressive FAK orders', 
   assert.equal(complementaryTicket.request.outcomeId, 'Yes')
   assert.equal(complementaryTicket.request.tokenSide, 'Complement')
   assert.equal(complementaryTicket.request.price, 999)
-  assert.equal(complementaryTicket.request.timeInForce, 'FAK')
+  assert.equal(complementaryTicket.request.timeInForce, 'FOK')
 })
 
 test('buildTradeTicket applies market divisibility to price and amount validation', () => {
@@ -207,6 +207,6 @@ test('buildTradeTicket builds direct sell orders after same-outcome CTF swaps ar
     side: 'Sell',
     price: 500,
     amountSubunits: 1_000_000,
-    timeInForce: 'FAK',
+    timeInForce: 'FOK',
   })
 })

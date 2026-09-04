@@ -687,7 +687,7 @@
     "dismiss": "Dismiss this wallet alert",
     "morePending": "More wallet alerts are waiting. Close an alert to see the next one.",
     "errors": {
-      "invalid-order-type": "This browser supports only immediate FAK or FOK orders.",
+      "invalid-order-type": "This browser supports only FOK orders.",
       "insufficient-funds": "The wallet has insufficient selectable funds.",
       "asset-recovery-failed": "The wallet could not recover the exact funds for this order.",
       "source-preparation-failed": "The wallet could not prepare the authorization.",

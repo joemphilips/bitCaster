@@ -6,7 +6,7 @@ import {
 import { parseOrderRouteId } from './orderRoute.ts'
 
 export type SupportedOrderSide = 'Buy' | 'Sell'
-export type SupportedTimeInForce = 'FAK' | 'FOK'
+export type SupportedTimeInForce = 'FOK'
 
 export interface OrderIntentForValidation {
   marketId?: unknown
@@ -108,13 +108,10 @@ export function validateOrderRoutingIdentity(request: unknown): OrderIntentValid
       message: 'Order rejected: side must be Buy or Sell.',
     }
   }
-  if (
-    intent.timeInForce !== 'FAK' &&
-    intent.timeInForce !== 'FOK'
-  ) {
+  if (intent.timeInForce !== 'FOK') {
     return {
       valid: false,
-      message: 'Order rejected: timeInForce must be FAK or FOK.',
+      message: 'Order rejected: timeInForce must be FOK.',
     }
   }
 

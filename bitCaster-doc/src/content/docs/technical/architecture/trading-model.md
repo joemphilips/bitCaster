@@ -16,23 +16,23 @@ Public market books use primitive outcome routes. A categorical market exposes
 
 ## First-release public scope
 
-The public server accepts FAK and FOK. The GUI exposes FAK. The CLI exposes FAK
-and FOK. Each public attempt uses one one-shot capability. A partial FAK
-settles the committed fills and cancels the remainder. A zero-fill FAK
-cancels. FOK commits the full requested quantity or cancels the complete
-request from the admission snapshot. Public GTC, GTD, continuation, and
-residual reauthorization are not available. Internal custody-backed LMSR quotes
-use GTC. They are not public client orders.
+The public server accepts only public FOK orders. The GUI and CLI submit FOK
+orders. Each public attempt uses one one-shot capability. FOK uses the book
+state at admission. It commits the full requested quantity or cancels the
+complete request. Public FAK, GTC, GTD, continuation, and residual
+reauthorization are not available. Internal custody-backed LMSR quotes use GTC.
+They are not public client orders.
 
 ## Order authorization
 
-A wallet supplies one `PAY_TO_UNLOCK` capability when it submits a public FAK or
-FOK order. The engine validates the capability during order admission. It
-makes no mint network call during admission.
+A wallet supplies one `PAY_TO_UNLOCK` capability when it submits a public FOK
+order. The engine validates the capability during order admission. It makes no
+mint network call during admission.
 
-The capability covers an authorized range for that one attempt. Public
-continuation is not available. Cancellation retracts only a resting order. It
-does not spend a capability and it does not trigger a capability refund.
+The capability covers an authorized range for that one attempt. Public FOK does
+not rest on the book or leave a residual order. If the complete quantity cannot
+fill, the engine cancels the complete request. This cancellation does not spend
+the capability or trigger a refund.
 
 ## Fills and settlement groups
 
@@ -45,9 +45,9 @@ conversion. It does not expose merge conversion in this release.
 
 Mint confirmation returns exact result entries. Clients retain their submitted
 operations and confirmed results. They can recover those exact records after a
-crash. An acknowledged FAK or FOK operation stores its operation facts and
-result. These records survive a server restart. An intentional reuse of the
-same client order ID with the same operation facts returns the stored result.
+crash. An acknowledged FOK operation stores its operation facts and result.
+These records survive a server restart. An intentional reuse of the same client
+order ID with the same operation facts returns the stored result.
 Changed facts return a conflict. If the result is uncertain, clients reconcile
 with the durable engine and mint authority.
 

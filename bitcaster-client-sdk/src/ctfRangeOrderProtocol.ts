@@ -128,7 +128,7 @@ export interface CtfRangeOrderRequest {
   readonly baseAsset: 'sat'
   readonly collateralUnit: 'msat'
   readonly divisibility: MarketDivisibility
-  readonly timeInForce: 'FAK' | 'FOK'
+  readonly timeInForce: 'FOK'
   readonly expiresAt: string | null
   readonly mintUrl: string
 }
@@ -335,7 +335,7 @@ export function createCtfRangeSettlementCapabilityRequest(
       minimumFillAmountSubunits: request.minimumFillAmountSubunits,
       baseAsset: request.baseAsset,
       collateralUnit: request.collateralUnit,
-      timeInForce: request.timeInForce,
+      timeInForce: 'FOK',
       expiresAt: request.expiresAt,
     },
     artifact: bytesToBase64(encodeSettlementCapabilityArtifact(artifact)),
@@ -465,9 +465,9 @@ function decodeCtfRangeOrderRequest(value: unknown): CtfRangeOrderRequest {
   ) {
     throw new Error('range preparation request fill amount is invalid')
   }
-  const timeInForce = requireClosed(
+  const timeInForce = requireExact(
     request.timeInForce,
-    ['FAK', 'FOK'],
+    'FOK',
     'range preparation request time in force',
   )
   const expiresAt = decodeOrderExpiry(request.expiresAt)
