@@ -10,23 +10,22 @@ sidebar:
 bitCaster uses NUT-CTF range settlement. It does not use a bilateral HTLC,
 peer ECDH, or adaptor-signature protocol.
 
-The first-release server accepts public FAK and FOK orders. The GUI exposes
-FAK. The CLI exposes FAK and FOK. Each public attempt uses one one-shot
-capability. A partial FAK settles its committed fills and cancels the remainder.
-A zero-fill FAK cancels. FOK commits the full requested quantity or cancels the
-complete request from the admission snapshot. Public GTC, GTD, continuation,
-and residual reauthorization are not available. Internal custody-backed LMSR
-quotes use GTC. They are not public client orders.
+The first-release server accepts only public FOK orders. The GUI and CLI submit
+FOK orders. Each public attempt uses one one-shot capability. FOK uses the book
+state at admission. It commits the full requested quantity or cancels the
+complete request. Public FAK, GTC, GTD, continuation, and residual
+reauthorization are not available. Internal custody-backed LMSR quotes use GTC.
+They are not public client orders.
 
 ## Order authorization
 
-A wallet authorizes one public FAK or FOK attempt with one `PAY_TO_UNLOCK`
-capability. Order admission checks that capability. Admission makes no mint
-network call.
+A wallet authorizes one public FOK attempt with one `PAY_TO_UNLOCK` capability.
+Order admission checks that capability. Admission makes no mint network call.
 
-The authorization covers its permitted range for that attempt. Public
-continuation is not available. Cancelling a resting order only retracts that
-order. It does not spend or refund the capability.
+The authorization covers its permitted range for that attempt. Public FOK does
+not rest on the book or leave a residual order. If the complete quantity cannot
+fill, the engine cancels the complete request. This cancellation does not spend
+the capability or trigger a refund.
 
 ## Matching and grouping
 
@@ -56,9 +55,9 @@ that case, the client reconciles with the durable engine and mint authority.
 It must not infer success from a local request alone. A `PAY_TO_UNLOCK`
 capability remains refundable after expiry as defined by the NUT.
 
-An acknowledged FAK or FOK operation stores its operation facts and result.
-These records survive a server restart. An intentional reuse of the same
-client order ID with the same operation facts returns the stored result.
+An acknowledged FOK operation stores its operation facts and result. These
+records survive a server restart. An intentional reuse of the same client order
+ID with the same operation facts returns the stored result.
 Changed facts return a conflict.
 
 ## Trust boundary

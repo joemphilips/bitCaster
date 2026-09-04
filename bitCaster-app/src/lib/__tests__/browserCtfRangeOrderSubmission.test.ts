@@ -183,7 +183,7 @@ describe("submitBrowserCtfRangeOrder", () => {
             side: "Buy",
             price: 400,
             amountSubunits: 1_000,
-            timeInForce: "FAK",
+            timeInForce: "FOK",
           },
         },
         clientOrderId: "client-recover",
@@ -212,7 +212,7 @@ describe("submitBrowserCtfRangeOrder", () => {
             side: "Buy",
             price: 400,
             amountSubunits: 1_000,
-            timeInForce: "FAK",
+            timeInForce: "FOK",
           },
         },
         clientOrderId: "client-recovery-error",
@@ -258,10 +258,7 @@ describe("submitBrowserCtfRangeOrder", () => {
     expect(mocks.prepareAndSubmit).toHaveBeenCalledOnce();
   });
 
-  it.each([
-    ["FAK", "FAK"],
-    ["FOK", "FAK"],
-  ] as const)("submits a durable %s ticket as GUI FAK", async (ticketTif, expectedTif) => {
+  it("submits a durable FOK ticket as GUI FOK", async () => {
     const ticket: TradeTicket = {
       marketId: "condition-1-YES",
       request: {
@@ -270,7 +267,7 @@ describe("submitBrowserCtfRangeOrder", () => {
         side: "Buy",
         price: 400,
         amountSubunits: 1_000,
-        timeInForce: ticketTif,
+        timeInForce: "FOK",
       },
     };
 
@@ -293,7 +290,7 @@ describe("submitBrowserCtfRangeOrder", () => {
           minimumFillAmountSubunits: 1_000,
           baseAsset: "sat",
           collateralUnit: "msat",
-          timeInForce: expectedTif,
+          timeInForce: "FOK",
         }),
       }),
     );
@@ -342,7 +339,7 @@ describe("submitBrowserCtfRangeOrder", () => {
           side: "Buy",
           price: 400,
           amountSubunits: 1_000,
-          timeInForce: "FAK",
+          timeInForce: "FOK",
         },
       },
       clientOrderId: "client-score-top-up",
@@ -397,7 +394,7 @@ describe("submitBrowserCtfRangeOrder", () => {
           side: "Sell",
           price: 400,
           amountSubunits: 1_000,
-          timeInForce: "FAK",
+          timeInForce: "FOK",
         },
       };
 
@@ -441,7 +438,7 @@ describe("submitBrowserCtfRangeOrder", () => {
             side: "Buy",
             price: 400,
             amountSubunits: 1_000,
-            timeInForce: "FAK",
+            timeInForce: "FOK",
           },
         },
         mintUrl: "https://mint.example",
@@ -478,7 +475,7 @@ describe("submitBrowserCtfRangeOrder", () => {
           side: "Buy",
           price: 400,
           amountSubunits: 1_000,
-          timeInForce: "FAK",
+          timeInForce: "FOK",
         },
       },
       clientOrderId: "client-consolidated",
@@ -517,7 +514,7 @@ describe("submitBrowserCtfRangeOrder", () => {
             side: "Buy",
             price: 400,
             amountSubunits: 1_000,
-            timeInForce: "FAK",
+            timeInForce: "FOK",
           },
         },
         clientOrderId: "client-declined",
@@ -570,7 +567,7 @@ describe("submitBrowserCtfRangeOrder", () => {
         side: "Buy",
         price: 400,
         amountSubunits: 1_000,
-        timeInForce: "FAK",
+        timeInForce: "FOK",
       },
     };
     const input = {
@@ -601,7 +598,7 @@ describe("submitBrowserCtfRangeOrder", () => {
             side: "Buy",
             price: 400,
             amountSubunits: 1_000,
-            timeInForce: "FAK",
+            timeInForce: "FOK",
           },
         },
         clientOrderId: "client-1",
@@ -710,7 +707,7 @@ function submitRangeOrder(clientOrderId: string, expectedConsolidationFeeSubunit
         side: "Buy",
         price: 400,
         amountSubunits: 1_000,
-        timeInForce: "FAK",
+        timeInForce: "FOK",
       },
     },
     clientOrderId,

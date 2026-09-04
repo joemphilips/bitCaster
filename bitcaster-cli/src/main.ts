@@ -687,12 +687,6 @@ function registerOrderCommand(program: Command): void {
       '--consolidate-proofs',
       'Allow bounded proof consolidation before this order (default: off)',
     )
-    .option(
-      '--tif <tif>',
-      'Time in force: FAK (partial or zero fill cancels the remainder) or FOK (complete fill or cancel)',
-      parseTimeInForce,
-      'FAK',
-    )
     .option('--token-side <side>', 'Token side: Outcome or Complement', parseTokenSide)
     .option('--no-preflight-split', 'Disable preflight complete-set split')
     .option(
@@ -701,7 +695,7 @@ function registerOrderCommand(program: Command): void {
     )
     .addHelpText(
       'after',
-      '\nExample:\n  bitcaster-cli --dry-run order submit --market cond-YES --outcome YES --side Buy --price 420 --amount-msat 1000 --tif FAK',
+      '\nExample:\n  bitcaster-cli --dry-run order submit --market cond-YES --outcome YES --side Buy --price 420 --amount-msat 1000',
     )
     .action(async (options: OrderSubmitOptions, command: Command) => {
       const params = orderSubmitParams(options, command.args)
@@ -764,7 +758,6 @@ interface OrderSubmitOptions {
   amountMsat?: number
   minFillMsat?: number
   consolidateProofs?: boolean
-  tif: 'FAK' | 'FOK'
   expiresAt?: string
   tokenSide?: 'Outcome' | 'Complement'
   preflightSplit: boolean
@@ -780,7 +773,7 @@ interface OrderSubmitParams {
   amountSubunits: number
   minimumFillAmountSubunits?: number
   consolidateProofs: boolean
-  timeInForce: 'FAK' | 'FOK'
+  timeInForce: 'FOK'
   expiresAt: string | null
   preflightSplit: boolean
 }
@@ -792,7 +785,7 @@ function orderSubmitParams(options: OrderSubmitOptions, positionals: string[]): 
 
   const minimumFillAmountSubunits = options.minFillMsat
   if (options.expiresAt !== undefined) {
-    throwUsage('expires-at is not available for public FAK/FOK orders')
+    throwUsage('expires-at is not available for public FOK orders')
   }
   return {
     marketId: requiredArg(options.market, 'market'),
@@ -803,7 +796,7 @@ function orderSubmitParams(options: OrderSubmitOptions, positionals: string[]): 
     amountSubunits: requiredParsedOption(options.amountMsat, 'amount msat'),
     ...(minimumFillAmountSubunits === undefined ? {} : { minimumFillAmountSubunits }),
     consolidateProofs: options.consolidateProofs === true,
-    timeInForce: options.tif,
+    timeInForce: 'FOK',
     expiresAt: options.expiresAt ?? null,
     preflightSplit: options.preflightSplit,
   }
@@ -1297,12 +1290,6 @@ function parseTokenSide(value: string): 'Outcome' | 'Complement' {
   if (value === 'Outcome') return 'Outcome'
   if (value === 'Complement') return 'Complement'
   throwUsage(`Invalid token side: ${value}`)
-}
-
-function parseTimeInForce(value: string): 'FAK' | 'FOK' {
-  const upper = value.toUpperCase()
-  if (upper === 'FAK' || upper === 'FOK') return upper
-  throwUsage(`Invalid time in force: ${value}`)
 }
 
 function parseMarketState(value: string): 'Open' | 'Closed' | 'Resolved' | 'All' {

@@ -90,7 +90,7 @@ export type OrderLifecycleStatus =
   | 'failed'
 
 export type OrderTimeInForce = 'GTC' | 'FOK' | 'FAK' | 'GTD'
-export type SettlementCapabilityTimeInForce = 'FAK' | 'FOK'
+export type SettlementCapabilityTimeInForce = 'FOK'
 
 export interface SettlementOrderIntent {
   outcomeId: string

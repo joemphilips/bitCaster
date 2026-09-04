@@ -62,7 +62,7 @@ const categoricalMarket: MarketDetail = {
 };
 
 describe("buildTradeTicket", () => {
-  it("builds limit orders with oracle-verbatim Yes outcome names and FAK price", () => {
+  it("builds limit orders with oracle-verbatim Yes outcome names and FOK price", () => {
     const ticket = buildTradeTicket({
       market,
       selection: { side: "yes" },
@@ -80,11 +80,11 @@ describe("buildTradeTicket", () => {
       side: "Buy",
       price: 500,
       amountSubunits: 1_000_000,
-      timeInForce: "FAK",
+      timeInForce: "FOK",
     });
   });
 
-  it("uses aggressive FAK pricing for executable market buys", () => {
+  it("uses aggressive FOK pricing for executable market buys", () => {
     const ticket = buildTradeTicket({
       market,
       selection: { side: "yes" },
@@ -96,7 +96,7 @@ describe("buildTradeTicket", () => {
     });
 
     expect(ticket.request.price).toBe(999);
-    expect(ticket.request.timeInForce).toBe("FAK");
+    expect(ticket.request.timeInForce).toBe("FOK");
   });
 
   it("rejects amounts outside the sat whole-share face amount", () => {
@@ -153,10 +153,10 @@ describe("buildTradeTicket", () => {
     expect(ticket.request.outcomeId).toBe("Yes");
     expect(ticket.request.tokenSide).toBe("Complement");
     expect(ticket.request.price).toBe(999);
-    expect(ticket.request.timeInForce).toBe("FAK");
+    expect(ticket.request.timeInForce).toBe("FOK");
   });
 
-  it("uses aggressive FAK pricing for Buy NO complement market orders when YES bids are available", () => {
+  it("uses aggressive FOK pricing for Buy NO complement market orders when YES bids are available", () => {
     const ticket = buildTradeTicket({
       market,
       selection: { side: "no" },
@@ -180,7 +180,7 @@ describe("buildTradeTicket", () => {
     expect(ticket.request.outcomeId).toBe("Yes");
     expect(ticket.request.tokenSide).toBe("Complement");
     expect(ticket.request.price).toBe(999);
-    expect(ticket.request.timeInForce).toBe("FAK");
+    expect(ticket.request.timeInForce).toBe("FOK");
   });
 
   it("builds categorical YES tickets with the selected oracle label", () => {
@@ -322,10 +322,10 @@ describe("buildTradeTicket", () => {
       limitPrice: 500,
       orderBook: market.orderBook,
     });
-    // Market buy: face shares + worst-acceptable price (max 999) + FAK.
+    // Market buy: face shares + worst-acceptable price (max 999) + FOK.
     expect(ticket.request.amountSubunits).toBe(shares);
     expect(ticket.request.price).toBe(999);
-    expect(ticket.request.timeInForce).toBe("FAK");
+    expect(ticket.request.timeInForce).toBe("FOK");
   });
 
   it("rejects market orders with no visible liquidity instead of emitting price 0", () => {

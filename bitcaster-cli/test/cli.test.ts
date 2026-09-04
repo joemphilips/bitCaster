@@ -80,6 +80,17 @@ test('bitcaster-cli command help includes usage and subcommand summaries', async
   assert.match(result.stdout, /receive(?: \[options\])?\s+Import a Cashu token/)
 })
 
+test('bitcaster-cli order submit help is FOK-only and has no time-in-force choice', async () => {
+  const result = await execFileAsync(
+    join(import.meta.dirname, '..', 'src', 'main.ts'),
+    ['order', 'submit', '--help'],
+    { env: process.env },
+  )
+
+  assert.match(result.stdout, /order submit/)
+  assert.doesNotMatch(result.stdout, /--tif|time in force/i)
+})
+
 test('bitcaster-cli completion reports that shell completion is a stub', async () => {
   const result = await execFileAsync(
     join(import.meta.dirname, '..', 'src', 'main.ts'),
@@ -190,8 +201,6 @@ test('bitcaster-cli delegates commands to bitcaster-daemon RPC', async () => {
       '100',
       '--min-fill-msat',
       '50',
-      '--tif',
-      'FAK',
     ])
     await runCli(daemonUrl, [
       'order',
@@ -206,8 +215,6 @@ test('bitcaster-cli delegates commands to bitcaster-daemon RPC', async () => {
       '55',
       '--amount-msat',
       '200',
-      '--tif',
-      'FOK',
       '--no-preflight-split',
     ])
     await runCli(daemonUrl, [
@@ -223,8 +230,6 @@ test('bitcaster-cli delegates commands to bitcaster-daemon RPC', async () => {
       '60',
       '--amount-msat',
       '100',
-      '--tif',
-      'FAK',
       '--token-side',
       'Complement',
     ])
@@ -291,7 +296,7 @@ test('bitcaster-cli delegates commands to bitcaster-daemon RPC', async () => {
           amountSubunits: 100,
           minimumFillAmountSubunits: 50,
           consolidateProofs: false,
-          timeInForce: 'FAK',
+          timeInForce: 'FOK',
           expiresAt: null,
           preflightSplit: true,
         },
@@ -321,7 +326,7 @@ test('bitcaster-cli delegates commands to bitcaster-daemon RPC', async () => {
           price: 60,
           amountSubunits: 100,
           consolidateProofs: false,
-          timeInForce: 'FAK',
+          timeInForce: 'FOK',
           expiresAt: null,
           preflightSplit: true,
         },
@@ -1884,8 +1889,6 @@ test('P47-4: bitcaster-cli order submit accepts named flags', async () => {
       '42',
       '--amount-msat',
       '100',
-      '--tif',
-      'FAK',
     ])
     await runCli(`http://127.0.0.1:${address.port}`, [
       'order',
@@ -1901,8 +1904,6 @@ test('P47-4: bitcaster-cli order submit accepts named flags', async () => {
       '--amount-msat',
       '200',
       '--consolidate-proofs',
-      '--tif',
-      'FOK',
       '--no-preflight-split',
     ])
     await runCli(`http://127.0.0.1:${address.port}`, [
@@ -1918,8 +1919,6 @@ test('P47-4: bitcaster-cli order submit accepts named flags', async () => {
       '40',
       '--amount-msat',
       '100',
-      '--tif',
-      'FAK',
     ])
     assert.deepEqual(received, [
       {
@@ -1932,7 +1931,7 @@ test('P47-4: bitcaster-cli order submit accepts named flags', async () => {
           price: 42,
           amountSubunits: 100,
           consolidateProofs: false,
-          timeInForce: 'FAK',
+          timeInForce: 'FOK',
           expiresAt: null,
           preflightSplit: true,
         },
@@ -1962,7 +1961,7 @@ test('P47-4: bitcaster-cli order submit accepts named flags', async () => {
           price: 40,
           amountSubunits: 100,
           consolidateProofs: false,
-          timeInForce: 'FAK',
+          timeInForce: 'FOK',
           expiresAt: null,
           preflightSplit: true,
         },
@@ -2455,12 +2454,10 @@ test('P47-7: bitcaster-cli order submit --dry-run prints payload without calling
     'Buy',
     '--price',
     '42',
-      '--amount-msat',
+    '--amount-msat',
     '100',
-      '--min-fill-msat',
+    '--min-fill-msat',
     '50',
-    '--tif',
-    'FAK',
     '--token-side',
     'Complement',
     '--dry-run',
@@ -2474,14 +2471,14 @@ test('P47-7: bitcaster-cli order submit --dry-run prints payload without calling
     amountSubunits: 100,
     minimumFillAmountSubunits: 50,
     consolidateProofs: false,
-    timeInForce: 'FAK',
+    timeInForce: 'FOK',
     expiresAt: null,
     preflightSplit: true,
   })
   assert.doesNotMatch(result.stdout, /secret|witness|mnemonic|nwc|authorization|sig/i)
 })
 
-test('public order submit accepts only FAK and FOK time in force values', async () => {
+test('public order submit rejects the removed --tif option', async () => {
   await assertCliFailure(
     [
       'order',
@@ -2497,28 +2494,9 @@ test('public order submit accepts only FAK and FOK time in force values', async 
       '--amount-msat',
       '100',
       '--tif',
-      'GTC',
+      'FAK',
     ],
-    /Invalid time in force: GTC/,
-  )
-  await assertCliFailure(
-    [
-      'order',
-      'submit',
-      '--market',
-      'cond-YES',
-      '--outcome',
-      'YES',
-      '--side',
-      'Buy',
-      '--price',
-      '42',
-      '--amount-msat',
-      '100',
-      '--tif',
-      'GTD',
-    ],
-    /Invalid time in force: GTD/,
+    /unknown option '--tif'/,
   )
 })
 
@@ -2601,7 +2579,7 @@ test('P47-7: removed aliases exit with usage error code 2', async () => {
     ['wallet', 'split-complete-set', 'cond-1', '100'],
     ['consolidate', 'cond-A'],
     ['wallet', 'consolidate', 'cond-A', '--type', 't1'],
-    ['order', 'submit', 'cond-YES', 'YES', 'Buy', '42', '100', 'FAK'],
+    ['order', 'submit', 'cond-YES', 'YES', 'Buy', '42', '100'],
   ]
 
   for (const args of removedAliases) {

@@ -908,7 +908,7 @@ test('BitcasterEngineClient mirrors settlement-capability lifecycle routes', asy
       minimumFillAmountSubunits: 1_000,
       baseAsset: 'sat' as const,
       collateralUnit: 'msat' as const,
-      timeInForce: 'FAK' as const,
+      timeInForce: 'FOK' as const,
       expiresAt: null,
     },
     artifact: 'Y2Fub25pY2FsLWFydGlmYWN0',

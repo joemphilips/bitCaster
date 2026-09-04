@@ -155,7 +155,7 @@ export interface PrepareSettlementCapabilityInput {
   baseAsset: 'sat'
   collateralUnit: 'msat'
   divisibility: number
-  timeInForce: 'FAK' | 'FOK'
+  timeInForce: 'FOK'
   expiresAt: string | null
   mintUrl: string
   walletSeedHex: string
@@ -324,6 +324,8 @@ export async function dispatch(
   command: DaemonCommand,
   deps: DispatchDependencies = {},
 ): Promise<DaemonResponse> {
+  const unsupportedPublicOrder = rejectUnsupportedPublicOrder(command)
+  if (unsupportedPublicOrder !== null) return unsupportedPublicOrder
   if (deps.isCustodyReady?.() === false && requiresReadyCustody(command.method)) {
     return {
       ok: false,
@@ -823,11 +825,8 @@ export async function dispatch(
         return { ok: false, error: 'Order rejected: proof consolidation policy must be boolean' }
       }
       const expiresAt = orderParams.expiresAt ?? null
-      if (
-        expiresAt !== null ||
-        (orderParams.timeInForce !== 'FAK' && orderParams.timeInForce !== 'FOK')
-      ) {
-        return { ok: false, error: 'Order rejected: public capability orders require FAK or FOK' }
+      if (expiresAt !== null) {
+        return { ok: false, error: 'Order rejected: public FOK orders cannot expire' }
       }
       const settlementSupport = checkOrderSettlementSupport({
         request: { side: orderParams.side },
@@ -1088,6 +1087,20 @@ function requiresReadyCustody(method: DaemonCommand['method']): boolean {
     method === 'wallet.retireCondition' ||
     method === 'order.submit'
   )
+}
+
+function rejectUnsupportedPublicOrder(command: DaemonCommand): DaemonResponse | null {
+  if (command.method !== 'order.submit') return null
+  const timeInForce =
+    command.params !== null && typeof command.params === 'object'
+      ? (command.params as { timeInForce?: unknown }).timeInForce
+      : undefined
+  if (timeInForce === 'FOK') return null
+  return {
+    ok: false,
+    code: 'invalid-order-type',
+    error: 'Order rejected: public orders require FOK',
+  }
 }
 
 async function ensureDaemonParticipationScoreForNextMatch(input: {

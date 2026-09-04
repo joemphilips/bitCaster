@@ -9,9 +9,9 @@ sidebar:
 
 bitCaster は、マッチした注文を Cashu ミントで決済します。2 者間のスワップは実行しません。
 
-初回リリースで公開サーバーが受け付ける注文は FAK と FOK です。GUI には FAK を表示します。CLI は FAK と FOK に対応します。各公開試行は 1 件の one-shot capability を使用します。一部約定では、確定した fill を決済し、残りを取り消します。約定がない FAK も取り消します。FOK は admission snapshot に基づき、要求数量全体を確定するか、注文全体を取り消します。公開 GTC、GTD、継続、および残余注文の再認可は利用できません。内部の custody-backed LMSR quote は GTC を使用します。これは公開クライアントの注文ではありません。
+初回リリースで公開サーバーが受け付ける注文は公開 FOK だけです。GUI と CLI は FOK を送信します。各公開試行は 1 件の one-shot capability を使用します。FOK は注文受付時の板の状態に基づきます。要求数量全体を確定するか、注文全体を取り消します。公開 FAK、GTC、GTD、継続、および残余注文の再認可は利用できません。内部の custody-backed LMSR quote は GTC を使用します。これは公開クライアントの注文ではありません。
 
-FAK または FOK 注文では、ウォレットは `PAY_TO_UNLOCK` capability で注文を認可します。マッチングエンジンは注文受付時にこの認可を確認します。この段階でミントへのネットワーク呼び出しは行いません。
+FOK 注文では、ウォレットは `PAY_TO_UNLOCK` capability で注文を認可します。マッチングエンジンは注文受付時にこの認可を確認します。この段階でミントへのネットワーク呼び出しは行いません。
 
 注文がマッチすると、エンジンは 1 件以上の fill を作成します。各 `fillId` は 1 件の実際の fill を識別します。エンジンは 1 件以上の fill をアトミック決済グループに入れることができます。各 `groupId` はそのグループを識別します。`groupId` を fill の識別子として使わないでください。
 
@@ -22,13 +22,11 @@ FAK または FOK 注文では、ウォレットは `PAY_TO_UNLOCK` capability �
 
 NUT は merge conversion も定義します。bitCaster はこのリリースで提供しません。
 
-ミントがグループを確定すると、正確な result entry を返します。ウォレットは送信した operation と確定した result を保存します。ウォレットが停止または接続を失っても、後で正確な operation と result を回復できます。認識済みの FAK または FOK operation は operation facts と result を保存します。これらの記録はサーバーの再起動後も残ります。同じ client order ID を意図的に同じ operation facts で再利用すると、保存済みの result を返します。facts が変わると conflict を返します。
+ミントがグループを確定すると、正確な result entry を返します。ウォレットは送信した operation と確定した result を保存します。ウォレットが停止または接続を失っても、後で正確な operation と result を回復できます。認識済みの FOK operation は operation facts と result を保存します。これらの記録はサーバーの再起動後も残ります。同じ client order ID を意図的に同じ operation facts で再利用すると、保存済みの result を返します。facts が変わると conflict を返します。
 
 ## 取消
 
-取消は、まだ板に残る注文だけを取り消します。`PAY_TO_UNLOCK` capability を使用しません。capability を返金しません。
-
-公開 FAK が一部約定した後、残りの数量は取り消されます。公開クライアントは残余注文を再認可しません。
+公開 FOK は板に残らず、残余注文も残しません。要求数量全体を約定できない場合、エンジンは注文全体を取り消します。この取消では `PAY_TO_UNLOCK` capability を使用せず、返金も開始しません。
 
 ## エンジンが確認できる情報
 

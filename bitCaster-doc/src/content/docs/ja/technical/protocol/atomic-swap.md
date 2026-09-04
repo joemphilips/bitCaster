@@ -9,13 +9,13 @@ sidebar:
 
 bitCaster は NUT-CTF range settlement を使用します。2 者間の HTLC、peer ECDH、または adaptor signature プロトコルは使用しません。
 
-初回リリースで公開サーバーが受け付ける注文は FAK と FOK です。GUI には FAK を表示します。CLI は FAK と FOK に対応します。各公開試行は 1 件の one-shot capability を使用します。一部約定では、確定した fill を決済し、残りを取り消します。約定がない FAK も取り消します。FOK は admission snapshot に基づき、要求数量全体を確定するか、注文全体を取り消します。公開 GTC、GTD、継続、および残余注文の再認可は利用できません。内部の custody-backed LMSR quote は GTC を使用します。これは公開クライアントの注文ではありません。
+初回リリースで公開サーバーが受け付ける注文は公開 FOK だけです。GUI と CLI は FOK を送信します。各公開試行は 1 件の one-shot capability を使用します。FOK は注文受付時の板の状態に基づきます。要求数量全体を確定するか、注文全体を取り消します。公開 FAK、GTC、GTD、継続、および残余注文の再認可は利用できません。内部の custody-backed LMSR quote は GTC を使用します。これは公開クライアントの注文ではありません。
 
 ## 注文の認可
 
-ウォレットは公開 FAK または FOK の 1 回の試行を 1 件の `PAY_TO_UNLOCK` capability で認可します。注文受付では capability を確認します。受付時にミントへのネットワーク呼び出しは行いません。
+ウォレットは公開 FOK の 1 回の試行を 1 件の `PAY_TO_UNLOCK` capability で認可します。注文受付では capability を確認します。受付時にミントへのネットワーク呼び出しは行いません。
 
-認可はその試行で許可された range を対象とします。公開継続は利用できません。板に残る注文を取り消しても、その注文だけを取り消します。capability の使用や返金は行いません。
+認可はその試行で許可された range を対象とします。公開 FOK は板に残らず、残余注文も残しません。要求数量全体を約定できない場合、エンジンは注文全体を取り消します。この取消では capability を使用せず、返金も開始しません。
 
 ## マッチングとグループ化
 
@@ -33,7 +33,7 @@ bitCaster は NUT-CTF range settlement を使用します。2 者間の HTLC、p
 
 クライアントまたはネットワークの障害後は、送信がない、または不確実な場合があります。この場合、クライアントは永続的なエンジンとミントの authority で照合します。ローカルのリクエストだけから成功を判断してはいけません。`PAY_TO_UNLOCK` capability は NUT の定義に従い、期限後も返金可能です。
 
-認識済みの FAK または FOK operation は operation facts と result を保存します。これらの記録はサーバーの再起動後も残ります。同じ client order ID を意図的に同じ operation facts で再利用すると、保存済みの result を返します。facts が変わると conflict を返します。
+認識済みの FOK operation は operation facts と result を保存します。これらの記録はサーバーの再起動後も残ります。同じ client order ID を意図的に同じ operation facts で再利用すると、保存済みの result を返します。facts が変わると conflict を返します。
 
 ## 信頼境界
 

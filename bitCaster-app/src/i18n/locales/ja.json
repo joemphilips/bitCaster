@@ -687,7 +687,7 @@
     "dismiss": "このウォレットアラートを閉じる",
     "morePending": "ほかのウォレットアラートがあります。次を表示するにはアラートを閉じてください。",
     "errors": {
-      "invalid-order-type": "このブラウザーは即時 FAK または FOK 注文のみをサポートします。",
+      "invalid-order-type": "このブラウザーは FOK 注文のみをサポートします。",
       "insufficient-funds": "使用できるウォレット残高が不足しています。",
       "asset-recovery-failed": "ウォレットはこの注文に必要な正確な資金を復旧できませんでした。",
       "source-preparation-failed": "ウォレットは認可を準備できませんでした。",

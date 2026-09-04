@@ -1882,15 +1882,15 @@ components:
         timeInForce:
           $ref: '#/components/schemas/SettlementCapabilityTimeInForce'
           description: >
-            Public settlement capabilities accept only FOK and FAK. Both
-            values forbid expiresAt.
+            Public settlement capability requests accept only FOK. FOK means
+            Fill-Or-Kill and forbids expiresAt.
         expiresAt:
           type:
             - string
             - 'null'
           format: date-time
           description: >
-            Exactly null for FOK and FAK. Requiring the field gives the
+            Exactly null for FOK. Requiring the field gives the
             authenticated intent one canonical wire representation.
 
     CreateSettlementCapabilityRequest:
@@ -2152,10 +2152,9 @@ components:
       type: string
       enum:
         - FOK
-        - FAK
       description: >
         Public settlement capability time-in-force. FOK means Fill-Or-Kill.
-        FAK means Fill-And-Kill. Public capabilities cannot rest on the book
+        Public capability requests are FOK-only. They cannot rest on the book
         and cannot carry an expiry.
 
     OrderLifecycleStatus:
@@ -2171,8 +2170,9 @@ components:
         - rejected_capacity
         - failed
       description: >
-        Public order lifecycle. A partial FAK ends with a cancelled remainder.
-        A FOK order is filled or cancelled.
+        Order lifecycle for public FOK orders and internal GTC quotes. A public
+        FOK order is filled or cancelled. An internal GTC quote can rest or
+        partially fill.
 
     SettlementGroupStatus:
       type: string

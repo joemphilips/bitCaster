@@ -356,8 +356,8 @@ test('derives the exact authorization plan from persisted Buy and Sell preparati
   }
 })
 
-test('public capability preparation rejects resting and dated orders', () => {
-  for (const timeInForce of ['GTC', 'GTD'] as const) {
+test('public capability preparation rejects non-FOK orders', () => {
+  for (const timeInForce of ['FAK', 'GTC', 'GTD'] as const) {
     assert.throws(
       () =>
         buildPersistedCtfRangeOrderPreparation({
@@ -365,7 +365,7 @@ test('public capability preparation rejects resting and dated orders', () => {
             ...rangeOrderRequest(),
             timeInForce,
             expiresAt: timeInForce === 'GTD' ? '2030-01-01T00:05:00.000Z' : null,
-          },
+          } as unknown as CtfRangeOrderRequest,
           coordinatorPublicKey: COORDINATOR_PUBLIC_KEY,
           mintFacts: reviewedMintFacts(),
           market: {
@@ -399,6 +399,7 @@ test('builds one capability request and validates its exact engine projection', 
   const request = preparation.request
   const operation = completedOperation(preparation)
   const capabilityRequest = createCtfRangeSettlementCapabilityRequest(preparation, operation)
+  assert.equal(capabilityRequest.orderIntent.timeInForce, 'FOK')
   const artifact = createPoolSettlementCapabilityArtifact(operation)
   const artifactDigest = deriveSettlementCapabilityArtifactDigest(artifact)
   const workFacts = settlementCapabilityV1WorkFacts(operation)
@@ -904,7 +905,7 @@ function rangeOrderRequest(): CtfRangeOrderRequest {
     baseAsset: 'sat',
     collateralUnit: 'msat',
     divisibility: 1_000,
-    timeInForce: 'FAK',
+    timeInForce: 'FOK',
     expiresAt: null,
     mintUrl: MINT_URL,
   }

@@ -589,7 +589,7 @@ test('daemon refunds a definitively rejected order without requiring engine orde
   )
 })
 
-test('daemon cancels an expired resting order before refunding its authorization', async () => {
+test('daemon leaves an unexpectedly active FOK pending without cancellation or refund', async () => {
   const sourceProof = signedProof(OutputData.createRandomData(Amount.from(8_192), mintKeys())[0]!)
   await withDaemonProfile(
     {
@@ -601,25 +601,28 @@ test('daemon cancels an expired resting order before refunding its authorization
     async ({ directory, fence }) => {
       let activeFence = fence
       let nowMs = 10_000
-      let cancelled = false
       let cancellationCalls = 0
+      const activeStatuses = [
+        restingOrderStatus(),
+        { ...restingOrderStatus()!, status: 'matched' as const },
+        { ...restingOrderStatus()!, status: 'partially_filled' as const },
+      ]
+      let activeStatusIndex = 0
       const baseClient = fakeEngineClient(boundCapability)
       const client: EngineClientLike = {
         ...baseClient,
-        getOrderStatus: async () => (cancelled ? cancelledOrderStatus() : restingOrderStatus()),
+        getOrderStatus: async () => activeStatuses[activeStatusIndex]!,
         cancelOrder: async () => {
           cancellationCalls += 1
-          cancelled = true
-          return true
+          throw new Error('public FOK recovery must not cancel a resting order')
         },
       }
       const ids = ['range-operation-resting-expiry', 'range-authorization-resting-expiry']
       const coordinator = new DaemonCtfRangeOrderCoordinator(directory, () => activeFence, {
         createMint: () => fakeMint(64, 320),
         createWallet: () => new FakeWallet([sourceProof]),
-        executeRefundSwap: async (_mintUrl, request) => {
-          assert.equal(cancelled, true)
-          return { signatures: request.outputs.map(signBlindedOutput) }
+        executeRefundSwap: async () => {
+          throw new Error('public FOK recovery must not refund a resting order')
         },
         now: () => nowMs,
         randomId: () => ids.shift()!,
@@ -646,17 +649,32 @@ test('daemon cancels an expired resting order before refunding its authorization
         incarnationId: 'range-resting-expiry-recovery',
         observedAtMs: nowMs,
       })
-      assert.deepEqual(await coordinator.recover(WALLET_SEED_HEX, client), {
-        recovered: ['range-operation-resting-expiry:source'],
-        pending: [],
-      })
-      assert.equal(cancellationCalls, 1)
-      assert.equal((await readState())?.orders[ORDER_ID]?.status, 'cancelled')
+      for (activeStatusIndex = 0; activeStatusIndex < activeStatuses.length; activeStatusIndex += 1) {
+        const recovery = await coordinator.recover(WALLET_SEED_HEX, client)
+        assert.deepEqual(recovery.recovered, [])
+        assert.equal(recovery.pending.length, 1)
+        assert.match(recovery.pending[0]!.error, /unexpectedly active/)
+      }
+      assert.equal(cancellationCalls, 0)
+      const state = await readState()
+      assert.equal(state?.orders[ORDER_ID]?.status, 'partially_filled')
+      assert.equal(
+        Object.values(state?.proofOperations ?? {}).some(
+          ({ metadata }) => metadata.purpose === 'ctf-range-refund',
+        ),
+        false,
+      )
+      const database = await openDaemonStateSqlite(directory)
+      const journal = database
+        .prepare('SELECT lifecycle_state AS lifecycle FROM daemon_ctf_range_preparations')
+        .get() as { lifecycle: string }
+      database.close()
+      assert.equal(journal.lifecycle, 'order-submitted')
     },
   )
 })
 
-test('daemon terminates a partially filled FAK result after acknowledgement recovery', async () => {
+test('daemon completes a filled FOK result after acknowledgement recovery', async () => {
   const sourceProof = signedProof(OutputData.createRandomData(Amount.from(8_192), mintKeys())[0]!)
   await withDaemonProfile(
     {
@@ -688,7 +706,7 @@ test('daemon terminates a partially filled FAK result after acknowledgement reco
           acknowledgementCommitted = true
           throw new Error('settlement result acknowledgement response lost')
         },
-        getOrderStatus: async () => partiallyFilledFakOrderStatus(),
+        getOrderStatus: async () => filledOrderStatus(),
       }
       const ids = ['range-operation-result', 'range-authorization-result']
       const coordinator = new DaemonCtfRangeOrderCoordinator(directory, () => fence, {
@@ -697,7 +715,7 @@ test('daemon terminates a partially filled FAK result after acknowledgement reco
         now: () => 10_000,
         randomId: () => ids.shift()!,
       })
-      const request = { ...orderRequest(), timeInForce: 'FAK' as const }
+      const request = orderRequest()
       const prepared = await coordinator.prepare(request, client)
       await recordSubmittedOrder(
         request.marketId,
@@ -758,6 +776,84 @@ test('daemon terminates a partially filled FAK result after acknowledgement reco
         pending: [],
       })
       assert.deepEqual(mint.calls, mintCallsAfterPreparation)
+    },
+  )
+})
+
+test('daemon applies a partial FOK result but keeps it pending and unacknowledged', async () => {
+  const sourceProof = signedProof(OutputData.createRandomData(Amount.from(8_192), mintKeys())[0]!)
+  await withDaemonProfile(
+    {
+      prefix: 'bitcaster-range-partial-fok-',
+      incarnationId: 'range-partial-fok-test',
+      proofs: [sourceProof],
+      asset: regularAsset(),
+    },
+    async ({ directory, fence }) => {
+      let result: SettlementCapabilityResultResponse | null = null
+      let acknowledgementCalls = 0
+      const baseClient = fakeEngineClient(boundCapability)
+      const client: EngineClientLike = {
+        ...baseClient,
+        getSettlementCapabilityResultByOperation: async () => result,
+        acknowledgeSettlementCapabilityResult: async () => {
+          acknowledgementCalls += 1
+          throw new Error('partial FOK result must not be acknowledged')
+        },
+      }
+      const ids = ['range-operation-partial-fok', 'range-authorization-partial-fok']
+      const coordinator = new DaemonCtfRangeOrderCoordinator(directory, () => fence, {
+        createMint: () => fakeMint(64, 1_000),
+        createWallet: () => new FakeWallet([sourceProof]),
+        now: () => 10_000,
+        randomId: () => ids.shift()!,
+      })
+      const request = {
+        ...orderRequest(),
+        amountSubunits: 2_000,
+        minimumFillAmountSubunits: 2_000,
+      }
+      const prepared = await coordinator.prepare(request, client)
+      await recordSubmittedOrder(
+        request.marketId,
+        request.clientOrderId,
+        submittedOrder(),
+        null,
+        request.tokenSide,
+        request.side,
+        request.price,
+        request.amountSubunits,
+        request.baseAsset,
+        request.divisibility,
+      )
+      await prepared.markSubmitted()
+
+      const database = await openDaemonStateSqlite(directory)
+      const custody = database.prepare('SELECT operation_id FROM custody_operations').get() as {
+        operation_id: string
+      }
+      database.close()
+      const loaded = await new DaemonCtfRangeCoordinator(directory, fence).load(
+        custody.operation_id,
+      )
+      assert.ok(loaded)
+      const selection = validPartialSelection(loaded.operation)
+      result = engineResult(prepared, loaded.operation, selection.selection)
+
+      const recovery = await coordinator.recover(WALLET_SEED_HEX, client)
+      assert.deepEqual(recovery.recovered, [])
+      assert.equal(recovery.pending.length, 1)
+      assert.match(recovery.pending[0]!.error, /does not satisfy the submitted FOK order/)
+      assert.equal(acknowledgementCalls, 0)
+
+      const persisted = await new DaemonCtfRangeCoordinator(directory, fence).load(custody.operation_id)
+      assert.equal(persisted?.record.operation.result.state, 'applied')
+      const finalDatabase = await openDaemonStateSqlite(directory)
+      const journal = finalDatabase
+        .prepare('SELECT lifecycle_state AS lifecycle FROM daemon_ctf_range_preparations')
+        .get() as { lifecycle: string }
+      finalDatabase.close()
+      assert.equal(journal.lifecycle, 'order-submitted')
     },
   )
 })
@@ -1578,15 +1674,6 @@ function restingOrderStatus(): Awaited<ReturnType<EngineClientLike['getOrderStat
   }
 }
 
-function partiallyFilledFakOrderStatus(): Awaited<ReturnType<EngineClientLike['getOrderStatus']>> {
-  return {
-    ...restingOrderStatus(),
-    status: 'partially_filled',
-    remainingAmountSubunits: 500,
-    filledAmountSubunits: 500,
-  }
-}
-
 function filledOrderStatus(): Awaited<ReturnType<EngineClientLike['getOrderStatus']>> {
   return {
     orderId: ORDER_ID,
@@ -1750,7 +1837,7 @@ function orderRequest(): PrepareSettlementCapabilityInput {
     baseAsset: 'sat',
     collateralUnit: 'msat',
     divisibility: 1_000,
-    timeInForce: 'FAK',
+    timeInForce: 'FOK',
     expiresAt: null,
     mintUrl: MINT_URL,
     walletSeedHex: WALLET_SEED_HEX,
