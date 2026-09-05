@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -8,6 +9,11 @@ import {
   deriveDurableCustodyWalletId,
 } from '@bitcaster-market/client-sdk'
 import { createCtfProofOperationCompletion } from '@bitcaster-market/client-sdk/ctfSplit'
+import {
+  encodeCanonicalRangePreparation,
+  insertRangePreparation,
+  linkRangePreparationSource,
+} from '../src/ctfRangeOrderJournalSqlite.ts'
 import { bootstrapFreshDaemonProfile } from '../src/profileBootstrap.ts'
 import { claimCustodyScopeLease, renewCustodyScopeLease } from '../src/profileFencing.ts'
 import {
@@ -35,6 +41,9 @@ import {
   readAvailableWalletProofPage,
   readDaemonKeysetCounters,
   readState,
+  recordDiscoveredOrder,
+  recordOrderStatus,
+  recordSubmittedOrder,
   reserveDaemonKeysetCounter,
   updateState,
   writeState,
@@ -256,6 +265,206 @@ test('monitoring observers ignore lease commits and receive holdings commits', a
       assert.equal(notifications, 0)
       await writeState(walletStateWithProofs([proof('monitoring-proof', 1)]))
       assert.equal(notifications, 1)
+    } finally {
+      unsubscribe()
+    }
+  })
+})
+
+test('order writes preserve range custody rows and do not notify wallet holdings', async () => {
+  await withProfile(async (home) => {
+    let notifications = 0
+    const unsubscribe = subscribeToDaemonWalletHoldingsCommits(home, () => {
+      notifications += 1
+    })
+    try {
+      const fresh = await recordSubmittedOrder(
+        'condition-1-YES',
+        'fresh-client-order',
+        { orderId: 'fresh-engine-order', status: 'submitted', baseAsset: 'sat', divisibility: 1_000 },
+        null,
+        'Outcome',
+        'Buy',
+        500,
+        1_000,
+        'sat',
+        1_000,
+      )
+      assert.equal(fresh.orderId, 'fresh-engine-order')
+      assert.equal((await readState())?.orders['fresh-engine-order']?.status, 'submitted')
+      assert.equal(notifications, 0)
+
+      const sourceProof = proof('range-source-proof', 1)
+      const state = walletStateWithProofs([sourceProof])
+      state.orders[fresh.orderId] = fresh
+      state.proofOperations['range-source-operation'] = rangeSourceOperation(sourceProof)
+      await writeState(state)
+      const mutation = await claimMutation(home, 'order-write-preservation')
+      await reserveDaemonKeysetCounter(COUNTER_KEYSET_ID, 4, mutation, COUNTER_BINDING)
+
+      const database = await openDaemonStateSqlite(home)
+      try {
+        insertRangePreparation(database, {
+          scopeId: mutation.fence.scopeId,
+          rangeOperationId: 'range-operation-source',
+          sourceOperationId: 'range-source-operation',
+          authorizationId: 'range-authorization-source',
+          clientOrderId: 'range-client-source',
+          orderRouteId: 'condition-1-YES',
+          normalizedMint: 'http://localhost:8086',
+          conditionId: 'condition-1',
+          unit: 'msat',
+          tokenSide: 'Outcome',
+          side: 'Buy',
+          priceSubunits: 500,
+          amountSubunits: 1_000,
+          minimumFillAmountSubunits: 1_000,
+          consolidateProofs: false,
+          divisibility: 1_000,
+          authorizationExpiresAtUnixSeconds: 2_000_000_000,
+          preparationBytes: encodeCanonicalRangePreparation({
+            rangeOperationId: 'range-operation-source',
+            authorizationId: 'range-authorization-source',
+          }),
+          createdAtMs: 1,
+        })
+        linkRangePreparationSource(database, {
+          scopeId: mutation.fence.scopeId,
+          rangeOperationId: 'range-operation-source',
+          sourceOperationId: 'range-source-operation',
+          reservationId: 'range-source-reservation',
+        })
+        const removedMetadata = database
+          .prepare('DELETE FROM target_state_metadata WHERE scope_id = ?')
+          .run(mutation.fence.scopeId)
+        assert.equal(removedMetadata.changes, 1)
+        assert.equal(
+          database
+            .prepare('SELECT 1 FROM target_state_metadata WHERE scope_id = ?')
+            .get(mutation.fence.scopeId),
+          undefined,
+        )
+      } finally {
+        database.close()
+      }
+
+      const before = await readOrderWriteAuthoritySnapshot(home, mutation.fence.scopeId)
+      const notificationsBeforeOrders = notifications
+      const submitted = await recordSubmittedOrder(
+        'condition-1-YES',
+        'source-client-order',
+        {
+          orderId: 'source-engine-order',
+          status: 'submitted',
+          baseAsset: 'sat',
+          divisibility: 1_000,
+        },
+        null,
+        'Outcome',
+        'Buy',
+        500,
+        1_000,
+        'sat',
+        1_000,
+      )
+      assert.equal(submitted.orderId, 'source-engine-order')
+      const submittedRow = await readOrderRowMetadata(home, mutation.fence.scopeId, submitted.orderId)
+      assert.equal(submittedRow.scopeId, mutation.fence.scopeId)
+      assert.equal(submittedRow.revision, 0)
+      assert.equal(submittedRow.createdAtMs, Date.parse(submitted.createdAt))
+      assert.equal(submittedRow.updatedAtMs, Date.parse(submitted.updatedAt))
+      const metadataAfterSubmitted = await openDaemonStateSqlite(home)
+      try {
+        assert.equal(
+          (metadataAfterSubmitted
+            .prepare('SELECT schema_version FROM target_state_metadata WHERE scope_id = ?')
+            .get(mutation.fence.scopeId) as { schema_version: number }).schema_version,
+          1,
+        )
+      } finally {
+        metadataAfterSubmitted.close()
+      }
+      assert.deepEqual(await readOrderWriteAuthoritySnapshot(home, mutation.fence.scopeId), before)
+
+      const discovered = await recordDiscoveredOrder(
+        'condition-1-YES',
+        'source-client-order',
+        { orderId: 'source-engine-order', status: 'filled' },
+        'Outcome',
+        'Buy',
+        500,
+        1_000,
+        'sat',
+        1_000,
+      )
+      assert.equal(discovered.status, 'Filled')
+      const discoveredRow = await readOrderRowMetadata(home, mutation.fence.scopeId, discovered.orderId)
+      assert.equal(discoveredRow.scopeId, mutation.fence.scopeId)
+      assert.equal(discoveredRow.revision, submittedRow.revision + 1)
+      assert.equal(discoveredRow.createdAtMs, submittedRow.createdAtMs)
+      assert.ok(discoveredRow.updatedAtMs >= discoveredRow.createdAtMs)
+      assert.deepEqual(await readOrderWriteAuthoritySnapshot(home, mutation.fence.scopeId), before)
+
+      const cancelled = await recordOrderStatus('condition-1-YES', 'source-engine-order', {
+        orderId: 'source-engine-order',
+        status: 'cancelled',
+      })
+      assert.equal(cancelled.status, 'cancelled')
+      const cancelledRow = await readOrderRowMetadata(home, mutation.fence.scopeId, cancelled.orderId)
+      assert.equal(cancelledRow.scopeId, mutation.fence.scopeId)
+      assert.equal(cancelledRow.revision, discoveredRow.revision + 1)
+      assert.equal(cancelledRow.createdAtMs, submittedRow.createdAtMs)
+      assert.ok(cancelledRow.updatedAtMs >= discoveredRow.updatedAtMs)
+      assert.deepEqual(await readOrderWriteAuthoritySnapshot(home, mutation.fence.scopeId), before)
+
+      const concurrent = await Promise.all([
+        recordOrderStatus('condition-1-YES', 'concurrent-engine-a', {
+          orderId: 'concurrent-engine-a',
+          status: 'submitted',
+          baseAsset: 'sat',
+          divisibility: 1_000,
+        }),
+        recordOrderStatus('condition-1-YES', 'concurrent-engine-b', {
+          orderId: 'concurrent-engine-b',
+          status: 'submitted',
+          baseAsset: 'sat',
+          divisibility: 1_000,
+        }),
+      ])
+      assert.deepEqual(
+        concurrent.map(({ orderId }) => orderId).sort(),
+        ['concurrent-engine-a', 'concurrent-engine-b'],
+      )
+      assert.deepEqual(await readOrderWriteAuthoritySnapshot(home, mutation.fence.scopeId), before)
+
+      const rollbackBefore = await readOrderWriteAuthoritySnapshot(home, mutation.fence.scopeId)
+      await assert.rejects(
+        () =>
+          withDaemonStateSqliteTransaction(home, (rollbackDatabase) => {
+            rollbackDatabase
+              .prepare(
+                `UPDATE daemon_orders SET status = 'rollback-status'
+                 WHERE scope_id = ? AND order_id = ?`,
+              )
+              .run(mutation.fence.scopeId, 'source-engine-order')
+            throw new Error('order write rollback')
+          }),
+        /order write rollback/,
+      )
+      assert.deepEqual(
+        await readOrderWriteAuthoritySnapshot(home, mutation.fence.scopeId),
+        rollbackBefore,
+      )
+      assert.equal((await readState())?.orders['source-engine-order']?.status, 'cancelled')
+      assert.equal(notifications, notificationsBeforeOrders)
+
+      const finalDatabase = await openDaemonStateSqlite(home)
+      try {
+        const foreignKeys = finalDatabase.prepare('PRAGMA foreign_key_check').all() as unknown[]
+        assert.deepEqual(foreignKeys, [])
+      } finally {
+        finalDatabase.close()
+      }
     } finally {
       unsubscribe()
     }
@@ -1117,6 +1326,111 @@ test('state persistence clamps wall-clock regressions at creation time', async (
   })
 })
 
+type OrderWriteAuthoritySnapshot = Record<
+  'proofs' | 'counters' | 'operations' | 'sources' | 'artifacts',
+  { count: number; digest: string }
+>
+
+async function readOrderWriteAuthoritySnapshot(
+  home: string,
+  scopeId: string,
+): Promise<OrderWriteAuthoritySnapshot> {
+  const database = await openDaemonStateSqlite(home)
+  try {
+    return {
+      proofs: snapshotSqlRows(
+        database,
+        `SELECT proof_id, normalized_mint, unit, keyset_id, amount, secret, signature,
+                proof_body, state, reserved_by, asset_kind, condition_id, outcome_set_id,
+                base_asset, created_at_ms, updated_at_ms
+         FROM target_wallet_proofs WHERE scope_id = ? ORDER BY proof_id`,
+        scopeId,
+      ),
+      counters: snapshotSqlRows(
+        database,
+        `SELECT normalized_mint, unit, keyset_id, next_counter, updated_at_ms
+         FROM target_keyset_counters WHERE scope_id = ?
+         ORDER BY normalized_mint, unit, keyset_id`,
+        scopeId,
+      ),
+      operations: snapshotSqlRows(
+        database,
+        `SELECT operation_id, kind, purpose, state, normalized_mint,
+                request_artifact_id, output_artifact_id, result_artifact_id,
+                result_proofs_digest, input_count, input_amount, last_error,
+                reservation_id, created_at_ms, updated_at_ms
+         FROM target_proof_operations WHERE scope_id = ? ORDER BY operation_id`,
+        scopeId,
+      ),
+      sources: snapshotSqlRows(
+        database,
+        `SELECT range_operation_id, source_operation_id, reservation_id, operation_purpose
+         FROM daemon_ctf_range_sources WHERE scope_id = ? ORDER BY range_operation_id`,
+        scopeId,
+      ),
+      artifacts: snapshotSqlRows(
+        database,
+        `SELECT artifact_id, artifact_kind, encoding, body, fingerprint, revision,
+                private_material, created_at_ms
+         FROM custody_artifacts WHERE scope_id = ? ORDER BY artifact_id`,
+        scopeId,
+      ),
+    }
+  } finally {
+    database.close()
+  }
+}
+
+async function readOrderRowMetadata(
+  home: string,
+  scopeId: string,
+  orderId: string,
+): Promise<{ scopeId: string; revision: number; createdAtMs: number; updatedAtMs: number }> {
+  const database = await openDaemonStateSqlite(home)
+  try {
+    const row = database
+      .prepare(
+        `SELECT scope_id, revision, created_at_ms, updated_at_ms
+         FROM daemon_orders WHERE scope_id = ? AND order_id = ?`,
+      )
+      .get(scopeId, orderId) as
+      | { scope_id: string; revision: number; created_at_ms: number; updated_at_ms: number }
+      | undefined
+    assert.ok(row)
+    return {
+      scopeId: row.scope_id,
+      revision: row.revision,
+      createdAtMs: row.created_at_ms,
+      updatedAtMs: row.updated_at_ms,
+    }
+  } finally {
+    database.close()
+  }
+}
+
+function snapshotSqlRows(
+  database: Awaited<ReturnType<typeof openDaemonStateSqlite>>,
+  query: string,
+  ...bindings: string[]
+): { count: number; digest: string } {
+  const rows = database.prepare(query).all(...bindings) as Array<Record<string, unknown>>
+  const normalizedRows = rows.map((row) =>
+    Object.fromEntries(
+      Object.entries(row).map(([key, value]) => [key, normalizeSqlSnapshotValue(value)]),
+    ),
+  )
+  return {
+    count: rows.length,
+    digest: createHash('sha256').update(JSON.stringify(normalizedRows)).digest('hex'),
+  }
+}
+
+function normalizeSqlSnapshotValue(value: unknown): unknown {
+  if (typeof value === 'bigint') return `bigint:${value.toString()}`
+  if (value instanceof Uint8Array) return `blob:${Buffer.from(value).toString('hex')}`
+  return value
+}
+
 async function withProfile(run: (home: string) => Promise<void>): Promise<void> {
   const home = await mkdtemp(join(tmpdir(), 'bitcaster-state-sqlite-'))
   const previousHome = process.env.BITCASTER_DAEMON_HOME
@@ -1179,6 +1493,24 @@ function preservedProofOperation(): ProofOperationRecord {
     lastError: null,
     createdAt: 1_700_000_000_000,
     updatedAt: 1_700_000_000_000,
+  }
+}
+
+function rangeSourceOperation(sourceProof: { id: string; amount: number; secret: string; C: string }) {
+  return {
+    operationId: 'range-source-operation',
+    kind: 'wallet-send' as const,
+    state: 'prepared' as const,
+    mintUrl: 'http://localhost:8086',
+    inputs: [sourceProof],
+    outputs: { source: [] },
+    metadata: {
+      purpose: 'ctf-range-authorization-source',
+      reservationId: 'range-source-reservation',
+    },
+    lastError: null,
+    createdAt: 1,
+    updatedAt: 1,
   }
 }
 
