@@ -68,6 +68,8 @@ capability はその 1 回の試行で認可された range を対象にしま�
 
 Participation Score は公開注文の受付を保護します。成功した公開 one-shot capability binding は、`settlement-capability-v1` の下で 1 回だけ課金します。料金は `1 + InputCount + ceil(ManifestCount/16) + ceil(ArtifactByteCount/4096)` です。認証済みの invalid proof または DLEQ validation attempt は同じ料金を使用します。order、fill、settlement failure ごとの別料金はありません。source facts は検証済みの work facts と rule ID を持ちますが、計算済みの debit は持ちません。fill、取消、settlement failure、refund、recovery は Score を debit しません。内部の custody-backed LMSR quote はこの公開料金の対象外です。
 
+Score が不足すると、daemon は支払いを送信します。delivery state が `credited` になるまで待ってから、注文 capability を準備します。再試行には同じ delivery identity を使用します。ミントが支払いを受け取った後も、Score の反映が遅れることがあります。待機時間の上限に達しても、その支払いは回復できます。pending の delivery は、支払いの失敗を示すものではありません。
+
 ## 信頼境界
 
 エンジンは、注文を認可する正確な `PAY_TO_UNLOCK` proof を受け取ります。その secret と公開された blinded-output manifest を確認します。ウォレット seed、output blinding factor、refund key、および他の wallet proof は取得しません。
