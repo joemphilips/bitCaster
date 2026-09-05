@@ -2308,55 +2308,69 @@ function upsertOrderFromEngine(
   suppliedBaseAsset?: 'sat',
   suppliedDivisibility?: number,
 ): Promise<LocalOrderRecord> {
-  return updateState((state, now) => {
-    const existing = state.orders[orderId]
-    const status = readStringProperty(engineStatus, 'status') ?? existing?.status ?? 'unknown'
-    const engineBaseAsset = readStringProperty(engineStatus, 'baseAsset')
-    const baseAsset =
-      suppliedBaseAsset ??
-      (engineBaseAsset === undefined
-        ? existing?.baseAsset
-        : normalizeMarketBaseAsset(engineBaseAsset))
-    if (baseAsset === undefined) {
-      throw new Error('engine order status did not include required baseAsset')
-    }
-    const engineDivisibility = readNumberProperty(engineStatus, 'divisibility')
-    const divisibility =
-      suppliedDivisibility ??
-      (engineDivisibility === undefined
-        ? existing?.divisibility
-        : normalizeMarketDivisibility(engineDivisibility, baseAsset))
-    if (divisibility === undefined) {
-      throw new Error('engine order status did not include required divisibility')
-    }
-    const nextTokenSide = tokenSide ?? existing?.tokenSide
-    const nextSide = side ?? existing?.side
-    const nextPriceSubunits = priceSubunits ?? existing?.priceSubunits
-    const nextAmountSubunits = amountSubunits ?? existing?.amountSubunits
-    const record: LocalOrderRecord = {
-      orderId,
-      marketId,
-      ...(nextTokenSide ? { tokenSide: nextTokenSide } : {}),
-      ...(nextSide ? { side: nextSide } : {}),
-      ...(nextPriceSubunits != null ? { priceSubunits: nextPriceSubunits } : {}),
-      ...(nextAmountSubunits != null ? { amountSubunits: nextAmountSubunits } : {}),
-      status,
-      ...((clientOrderId ?? existing?.clientOrderId)
-        ? { clientOrderId: clientOrderId ?? existing?.clientOrderId }
-        : {}),
-      baseAsset,
-      divisibility,
-      ...(preflightSplit === null
-        ? {}
-        : preflightSplit || existing?.preflightSplit
-          ? { preflightSplit: preflightSplit ?? existing?.preflightSplit }
+  return withStateUpdateLock(async () => {
+    return withDaemonStateSqliteTransaction(profileDir(), (database) => {
+      const scopeId = readScopeId(database)
+      const existing = readOrderFromDatabase(database, scopeId, orderId)
+      const now = new Date().toISOString()
+      const status = readStringProperty(engineStatus, 'status') ?? existing?.status ?? 'unknown'
+      const engineBaseAsset = readStringProperty(engineStatus, 'baseAsset')
+      const baseAsset =
+        suppliedBaseAsset ??
+        (engineBaseAsset === null
+          ? existing?.baseAsset
+          : normalizeMarketBaseAsset(engineBaseAsset))
+      if (baseAsset === undefined) {
+        throw new Error('engine order status did not include required baseAsset')
+      }
+      const engineDivisibility = readNumberProperty(engineStatus, 'divisibility')
+      const divisibility =
+        suppliedDivisibility ??
+        (engineDivisibility === null
+          ? existing?.divisibility
+          : normalizeMarketDivisibility(engineDivisibility, baseAsset))
+      if (divisibility === undefined) {
+        throw new Error('engine order status did not include required divisibility')
+      }
+      const nextTokenSide = tokenSide ?? existing?.tokenSide
+      const nextSide = side ?? existing?.side
+      const nextPriceSubunits = priceSubunits ?? existing?.priceSubunits
+      const nextAmountSubunits = amountSubunits ?? existing?.amountSubunits
+      const record: LocalOrderRecord = {
+        orderId,
+        marketId,
+        ...(nextTokenSide ? { tokenSide: nextTokenSide } : {}),
+        ...(nextSide ? { side: nextSide } : {}),
+        ...(nextPriceSubunits != null ? { priceSubunits: nextPriceSubunits } : {}),
+        ...(nextAmountSubunits != null ? { amountSubunits: nextAmountSubunits } : {}),
+        status,
+        ...((clientOrderId ?? existing?.clientOrderId)
+          ? { clientOrderId: clientOrderId ?? existing?.clientOrderId }
           : {}),
-      engineStatus,
-      createdAt: existing?.createdAt ?? now,
-      updatedAt: now,
-    }
-    state.orders[orderId] = record
-    return record
+        baseAsset,
+        divisibility,
+        ...(preflightSplit === null
+          ? {}
+          : preflightSplit || existing?.preflightSplit
+            ? { preflightSplit: preflightSplit ?? existing?.preflightSplit }
+            : {}),
+        engineStatus,
+        createdAt: existing?.createdAt ?? now,
+        updatedAt: now,
+      }
+      const normalized = normalizeOrders({ [orderId]: record })[orderId]
+      if (normalized === undefined) throw new Error('normalized engine order is missing')
+      database
+        .prepare(
+          `INSERT INTO target_state_metadata (scope_id, schema_version) VALUES (?, 1)
+           ON CONFLICT(scope_id) DO NOTHING`,
+        )
+        .run(scopeId)
+      insertOrder(database, scopeId, normalized)
+      const persisted = readOrderFromDatabase(database, scopeId, orderId)
+      if (persisted === null) throw new Error('engine order was not persisted')
+      return persisted
+    })
   })
 }
 
@@ -2383,49 +2397,70 @@ export function readDaemonStateFromDatabase(database: DatabaseSync): DaemonState
   for (const raw of database
     .prepare('SELECT * FROM daemon_orders WHERE scope_id = ?')
     .all(scopeId) as Array<Record<string, unknown>>) {
-    const orderId = requireText(raw.order_id, 'order id')
-    const preflight =
-      raw.preflight_reservation_id === null
-        ? undefined
-        : {
-            reservationId: requireText(raw.preflight_reservation_id, 'preflight reservation'),
-            conditionId: requireText(raw.preflight_condition_id, 'preflight condition'),
-            keepOutcomeSetId: requireText(raw.preflight_keep_outcome_set_id, 'preflight keep set'),
-            lockOutcomeSetId: requireText(raw.preflight_lock_outcome_set_id, 'preflight lock set'),
-            amountSubunits: requireInteger(
-              raw.preflight_amount_subunits,
-              'preflight amountSubunits',
-            ),
-          }
-    state.orders[orderId] = {
-      orderId,
-      marketId: requireText(raw.market_id, 'order market'),
-      ...(raw.token_side === null ? {} : { tokenSide: requireTokenSide(raw.token_side) }),
-      ...(raw.side === null ? {} : { side: requireOrderSide(raw.side) }),
-      ...(raw.price_subunits === null
-        ? {}
-        : { priceSubunits: requireInteger(raw.price_subunits, 'order price') }),
-      ...(raw.amount_subunits === null
-        ? {}
-        : { amountSubunits: requireInteger(raw.amount_subunits, 'order amount') }),
-      status: requireText(raw.status, 'order status'),
-      ...(raw.client_order_id === null
-        ? {}
-        : { clientOrderId: requireText(raw.client_order_id, 'client order id') }),
-      ...(preflight === undefined ? {} : { preflightSplit: preflight }),
-      baseAsset: requireSatBaseAsset(raw.base_asset, 'order base asset'),
-      divisibility: normalizeMarketDivisibility(
-        requireInteger(raw.divisibility, 'order divisibility'),
-        'sat',
-      ),
-      ...(raw.engine_status_present === 1
-        ? { engineStatus: decodeArtifact(raw.engine_status_body, 'engine status') }
-        : {}),
-      createdAt: timestampToIso(raw.created_at_ms, 'order created time'),
-      updatedAt: timestampToIso(raw.updated_at_ms, 'order updated time'),
-    }
+    const order = decodeOrderRow(raw, scopeId)
+    state.orders[order.orderId] = order
   }
   return state
+}
+
+function readOrderFromDatabase(
+  database: DatabaseSync,
+  scopeId: string,
+  orderId: string,
+): LocalOrderRecord | null {
+  const raw = database
+    .prepare(
+      `SELECT * FROM daemon_orders
+       WHERE scope_id = ? AND order_id = ?`,
+    )
+    .get(scopeId, orderId) as Record<string, unknown> | undefined
+  return raw === undefined ? null : decodeOrderRow(raw, scopeId)
+}
+
+function decodeOrderRow(raw: Record<string, unknown>, expectedScopeId: string): LocalOrderRecord {
+  const scopeId = requireText(raw.scope_id, 'order scope')
+  if (scopeId !== expectedScopeId) throw new Error('order scope does not match the daemon profile')
+  const orderId = requireText(raw.order_id, 'order id')
+  const preflight =
+    raw.preflight_reservation_id === null
+      ? undefined
+      : {
+          reservationId: requireText(raw.preflight_reservation_id, 'preflight reservation'),
+          conditionId: requireText(raw.preflight_condition_id, 'preflight condition'),
+          keepOutcomeSetId: requireText(raw.preflight_keep_outcome_set_id, 'preflight keep set'),
+          lockOutcomeSetId: requireText(raw.preflight_lock_outcome_set_id, 'preflight lock set'),
+          amountSubunits: requireInteger(
+            raw.preflight_amount_subunits,
+            'preflight amountSubunits',
+          ),
+        }
+  return {
+    orderId,
+    marketId: requireText(raw.market_id, 'order market'),
+    ...(raw.token_side === null ? {} : { tokenSide: requireTokenSide(raw.token_side) }),
+    ...(raw.side === null ? {} : { side: requireOrderSide(raw.side) }),
+    ...(raw.price_subunits === null
+      ? {}
+      : { priceSubunits: requireInteger(raw.price_subunits, 'order price') }),
+    ...(raw.amount_subunits === null
+      ? {}
+      : { amountSubunits: requireInteger(raw.amount_subunits, 'order amount') }),
+    status: requireText(raw.status, 'order status'),
+    ...(raw.client_order_id === null
+      ? {}
+      : { clientOrderId: requireText(raw.client_order_id, 'client order id') }),
+    ...(preflight === undefined ? {} : { preflightSplit: preflight }),
+    baseAsset: requireSatBaseAsset(raw.base_asset, 'order base asset'),
+    divisibility: normalizeMarketDivisibility(
+      requireInteger(raw.divisibility, 'order divisibility'),
+      'sat',
+    ),
+    ...(raw.engine_status_present === 1
+      ? { engineStatus: decodeArtifact(raw.engine_status_body, 'engine status') }
+      : {}),
+    createdAt: timestampToIso(raw.created_at_ms, 'order created time'),
+    updatedAt: timestampToIso(raw.updated_at_ms, 'order updated time'),
+  }
 }
 
 export function readDaemonProofOperationFromDatabase(
