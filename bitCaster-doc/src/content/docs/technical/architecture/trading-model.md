@@ -99,6 +99,12 @@ ID, not a derived debit. Fills, cancellation, settlement failure, refund, and
 recovery do not debit Score. Internal custody-backed LMSR quotes are exempt
 from this public charge.
 
+If Score is insufficient, the daemon submits a payment and waits for its
+delivery state to become `credited` before it prepares the order capability.
+Retries use the same delivery identity. Credit can be delayed after the mint
+receives the payment. If the bounded wait ends, the payment remains available
+for recovery. A pending delivery does not prove that the payment failed.
+
 ## Trust boundary
 
 The engine receives the exact `PAY_TO_UNLOCK` proofs that authorize an order.

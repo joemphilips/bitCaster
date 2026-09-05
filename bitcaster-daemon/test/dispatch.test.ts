@@ -884,7 +884,7 @@ test('daemon dispatch persists wallet and order state', async (t) => {
     })
 
     await t.test(
-      'order.submit reuses one Score delivery across projection lag and retires it after the purchase epoch advances',
+      'order.submit bounds delayed Score credit, preserves one delivery identity, and retires it after the purchase epoch advances',
       async () => {
         const privateKey = Uint8Array.from([...new Uint8Array(31), 9])
         const publicKey = bytesToHex(secp256k1.getPublicKey(privateKey, true))
@@ -956,6 +956,14 @@ test('daemon dispatch persists wallet and order state', async (t) => {
         let recoveryWakes = 0
         let pendingScoreDelivery: DurableRecipientDeliverySubmission | null = null
         let deliveryRetryWaits = 0
+        const deliveryRetryAttempts: number[] = []
+        const deliveryRetryDelays: number[] = []
+        const submittedDeliveryIds: string[] = []
+        const submittedStates: string[] = []
+        const observedStates: string[] = []
+        const observedDeliveryIds: string[] = []
+        let creditAvailable = false
+        let deliveryStatusReads = 0
         const command = {
           method: 'order.submit' as const,
           params: {
@@ -1002,19 +1010,30 @@ test('daemon dispatch persists wallet and order state', async (t) => {
             ...scoreDisabledEngineMethods,
             getParticipationScore: async () => {
               scoreReads += 1
-              return scoreReads === 1 || scoreReads === 2 || scoreReads === 3
+              return scoreReads <= 4
                 ? scoreResponse({ balance: -1 })
                 : scoreResponse({ balance: 1, purchasedTotal: 2 })
             },
-            getDurableRecipientDeliveryStatus: async () =>
-              pendingScoreDelivery === null ? null : creditedRecipientStatus(pendingScoreDelivery),
+            getDurableRecipientDeliveryStatus: async (requestedDeliveryId) => {
+              if (pendingScoreDelivery === null) return null
+              assert.equal(requestedDeliveryId, pendingScoreDelivery.deliveryId)
+              const status = creditAvailable
+                ? creditedRecipientStatus(pendingScoreDelivery)
+                : receivedRecipientStatus(pendingScoreDelivery)
+              deliveryStatusReads += 1
+              observedStates.push(status.state)
+              observedDeliveryIds.push(status.delivery.deliveryId)
+              return status
+            },
             submitDurableRecipientDelivery: async (submission) => {
               deliveries += 1
               deliveryId = submission.deliveryId
               pendingScoreDelivery = submission
+              submittedDeliveryIds.push(submission.deliveryId)
+              submittedStates.push('pending')
               assert.equal(submission.requestedAmount, '2')
               assert.match(submission.token, /^cashu/)
-              return receivedRecipientStatus(submission)
+              return pendingRecipientStatus(submission)
             },
             submitOrder: async () => ({
               orderId: 'score-paid-order',
@@ -1027,12 +1046,23 @@ test('daemon dispatch persists wallet and order state', async (t) => {
             }),
           }),
           prepareSettlementCapability: prepareSettlementCapability('score-paid-order'),
-          waitForParticipationScoreDeliveryRetry: async (attempt) => {
+          waitForParticipationScoreDeliveryRetry: async (attempt, delayMs) => {
             deliveryRetryWaits += 1
-            assert.equal(attempt, 1)
+            deliveryRetryAttempts.push(attempt)
+            deliveryRetryDelays.push(delayMs)
           },
         }
 
+        await assert.rejects(
+          () => dispatch(command, dispatchDeps),
+          /Participation Score delivery remains received/,
+        )
+        assert.equal(deliveryStatusReads, 10)
+        assert.deepEqual(deliveryRetryAttempts, [1, 2, 3, 4, 5, 6, 7, 8, 9])
+        assert.deepEqual(deliveryRetryDelays, Array(9).fill(8_000))
+        assert.deepEqual(submittedStates, ['pending'])
+        assert.deepEqual(observedStates, Array(10).fill('received'))
+        creditAvailable = true
         await assert.rejects(
           () => dispatch(command, dispatchDeps),
           /Participation Score credit is not available for this capability/,
@@ -1042,13 +1072,16 @@ test('daemon dispatch persists wallet and order state', async (t) => {
         assert.equal(response.ok, true, JSON.stringify(response))
         assert.equal(completed, 1)
         assert.equal(deliveries, 1)
-        assert.equal(deliveryRetryWaits, 1)
-        assert.equal(recoveryWakes, 2)
+        assert.equal(deliveryRetryWaits, 9)
+        assert.equal(recoveryWakes, 3)
         assert.equal(
           (response.result as { participationScore: { kind: string } }).participationScore.kind,
           'paid',
         )
         assert.ok(deliveryId)
+        assert.deepEqual(submittedDeliveryIds, [deliveryId])
+        assert.deepEqual(observedDeliveryIds, [...Array(10).fill(deliveryId), deliveryId])
+        assert.equal(observedStates.at(-1), 'credited')
         const restarted = new DaemonDurableOutgoingCashuCoordinator(profileDir(), () => fence)
         await restarted.preflightParticipationScoreDelivery({
           transferId: 'f4444444-4444-4444-8444-444444444444',
@@ -2453,6 +2486,16 @@ function creditedRecipientStatus(submission: DurableRecipientDeliverySubmission)
       businessEventId: 'event-1',
       businessEventAt: '2026-08-11T00:00:00.000Z',
     },
+  })
+}
+
+function pendingRecipientStatus(submission: DurableRecipientDeliverySubmission) {
+  const { token: _token, ...delivery } = submission
+  return decodeDurableRecipientDeliveryStatus({
+    delivery,
+    tupleFingerprint: deriveDurableRecipientTupleFingerprint(submission),
+    state: 'pending',
+    result: null,
   })
 }
 

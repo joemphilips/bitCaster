@@ -208,11 +208,11 @@ export interface DispatchDependencies extends WalletOpsDependencies {
   markCustodyReady?: () => void
   onManualCustodyRecoveryStatus?: (status: ManualCustodyRecoveryStatus) => void
   onOutcomeProofsReceived?: (conditionId: string, outcomeSetId: string) => Promise<void>
-  waitForParticipationScoreDeliveryRetry?: (attempt: number) => Promise<void>
+  waitForParticipationScoreDeliveryRetry?: (attempt: number, delayMs: number) => Promise<void>
 }
 
-const PARTICIPATION_SCORE_DELIVERY_POLL_ATTEMPTS = 40
-const PARTICIPATION_SCORE_DELIVERY_POLL_INTERVAL_MS = 250
+const PARTICIPATION_SCORE_DELIVERY_POLL_ATTEMPTS = 10
+const PARTICIPATION_SCORE_DELIVERY_POLL_INTERVAL_MS = 8_000
 
 export async function startDaemonServer(options: DaemonServerOptions = {}): Promise<Server> {
   const socketPath =
@@ -1151,7 +1151,8 @@ async function ensureDaemonParticipationScoreForNextMatch(input: {
   ) => {
     let lastState: 'pending' | 'received' = 'pending'
     for (let attempt = 0; attempt < PARTICIPATION_SCORE_DELIVERY_POLL_ATTEMPTS; attempt += 1) {
-      if (attempt > 0) await waitForDeliveryRetry(attempt)
+      if (attempt > 0)
+        await waitForDeliveryRetry(attempt, PARTICIPATION_SCORE_DELIVERY_POLL_INTERVAL_MS)
       const delivery = await deliver(deliveryId, amountSats, purchasedTotalEpoch)
       if (delivery.state === 'credited') return delivery
       lastState = delivery.state
