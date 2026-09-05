@@ -4,26 +4,6 @@
 
 Market positions are **Cashu conditional tokens (CTF)** — ecash spendable only when a DLC oracle attests a specific outcome. No accounts, no KYC, no custodians — settlement is enforced cryptographically by the mint. **Nostr** provides identity, oracle announcements, and NWC.
 
-## Architecture
-
-```
-User Browser (PWA)
-  │  cashu-ts   ←→  CDK mintd (Azure Container Apps)
-  │  NDK        ←→  Nostr relays (oracle announcements)
-  │  NWC        ←→  Lightning wallet (top-up)
-  │  SignalR    ←→  Matching Engine API (price feed)
-  │  REST       ←→  Matching Engine API (order submission)
-  │
-  └─ Azure Static Web Apps (CDN)
-
-Matching Engine API
-  └─ Public REST / SignalR contract defined by this repo
-
-CDK mintd
-  ├─ PostgreSQL Flexible Server (state)
-  └─ Key Vault (mint keys)
-```
-
 ## Design Principle
 
 ### Shared Logic Lives in the SDK
@@ -82,7 +62,9 @@ release tradeoff.
 
 ```
 BitCaster.MatchingEngine.Contracts/ Shared API DTOs, enums, request/response records
-BitCaster.InMemoryMatchingEngine/   Dev/test stub server (no matching)
+bitcaster-client-sdk/ Shared client protocol and wallet logic
+bitcaster-cli/        CLI client
+bitcaster-daemon/     Native client service
 bitCaster-app/       React 19 + Vite PWA frontend
 bitCaster-doc/       Astro Starlight doc site (GitHub Pages)
 bitCaster-design/    Design specs and mockups
@@ -92,15 +74,16 @@ cdk/                 Cashu Development Kit (submodule: joemphilips/cdk, branch b
 kormir/              DLC oracle library — WASM + server (submodule: joemphilips/kormir)
 cashu.me/            Reference cashu wallet (no CTF)
 tools/               Dev tooling (seed scripts, worktree-services.sh, build-kormir-wasm.sh)
-tests/E2E/           Playwright E2E tests (xUnit)
 ```
 
 The matching engine is an external service from this public repo's perspective.
-This repo owns only the public contract, mock/dev server, frontend, and docs.
+Public code, contracts, docs, and standalone builds must not depend on a
+private parent repository. An embedding repository can supply test-only
+integration scenarios without creating a shipped dependency.
 
 ## Nostr Usage
 
-1. **Private storage** via [NIP-78](https://github.com/nostr-protocol/nips/blob/master/78.md) + NIP-44 self-encryption — private records in localStorage must also be mirrored to encrypted NIP-78 iff the user has configured a Nostr key.
+1. Use NIP-78 with NIP-44 self-encryption for approved private application records when the user has configured a Nostr key. Do not use this rule to mirror custody state or proof secrets. Follow the client-custody and encrypted-backup boundaries above.
 2. **Public app state** via NIP-78 or engine indexing — non-sensitive records like "markets this pubkey created" may be public when that improves UX.
 3. **Public broadcast/fetch** for DLC oracle announcements / attestations — these are public protocol artifacts.
 
@@ -109,43 +92,47 @@ When you need to understand a NIP, read the spec from the `nips-protocol/` submo
 ## Local Dev
 
 ```bash
-docker compose up -d                 # mint:8085, server:5000, cashu-me:3000, nostr-relay, lnbits:5102, seed
+docker compose up -d                 # mint, cashu-me, relay, LNBits, and seed; no matching engine
 cd bitCaster-app && npm run dev      # frontend:5273
 ```
 
-The frontend `.env` is pre-configured with the default ports.
+Check `bitCaster-app/.env.example`, `bitCaster-app/vite.config.ts`, and
+`docker-compose.yml` for the current configuration.
+The matching engine is a separate service.
+Run service commands only against authorized local fixtures.
 
-- **TDD first**: when planning a feature, start with a happy-path E2E test in `tests/E2E/`, then unit tests for edge cases, then implement until green.
+- Add regression coverage at the layer that owns the changed behavior. Use a
+  failing-first test when practical. Use full-stack coverage when integration
+  behavior requires it.
 - **Never embed test/seed data in frontend source.** The frontend must fetch from `GET /v1/conditions` and show an honest empty/error state when the mint has no data. Seed data lives in `tools/seed-conditions/seed.sh` and is injected via docker-compose.
-- **Parallel worktrees + port slots** — see `.claude/rules/e2e-tests.md`.
+- **Browser checks and local service ownership** — see `.claude/rules/e2e-tests.md`.
 - **kormir-wasm rebuild** — see `.claude/rules/frontend.md`.
-
-## Zustand + React Patterns
-
-- Never subscribe to state that a useEffect modifies (infinite retry loop) — use `useRef` one-shot guard + `useWalletStore.getState()` instead of selectors inside effects that trigger `addMint` or similar async mutations
-- Zustand `persist` rehydrates asynchronously — reading `getState()` inside a mount effect returns the initial state, not the persisted one. Gate boot-time reads on `persist.hasHydrated()` + `persist.onFinishHydration(fn)`.
-- E2E tests seed localStorage between `GotoAsync(/setup)` and `GotoAsync(/target)` — any boot effect that writes back through persist middleware will overwrite the seed. If the effect must skip certain routes (e.g. the setup wizard owns mint config), check `window.location.pathname` against a `WIZARD_PATHS` list.
-- `addMint(url)` in `stores/wallet.ts` sets `activeMintUrl` as a side-effect. Never call it from untrusted inputs (inbound NIP-17 DMs, query strings, etc.) without explicit user consent — doing so lets an attacker silently retarget the user's active mint.
 
 ## Branch Completion Workflow
 
-When work on a branch is complete, follow these steps in order before publishing a PR:
+Complete the requested change and its relevant verification. Correct in-scope
+failures before handing off the result. Preserve the approved plan's review
+and test gates. Do not run product builds for prose-only changes.
 
-1. **Run /simplify** — invoke the simplify skill to review changed code for reuse, quality, and efficiency. Commit any improvements.
-2. **Run frontend tests** — `cd bitCaster-app && npm run test`
-3. **Run .NET build** — `dotnet build BitCaster.MatchingEngine.Contracts/ && dotnet build BitCaster.InMemoryMatchingEngine/`
-4. **Run E2E tests** — `docker compose up -d`, wait for mint (`curl localhost:8085/v1/info`), server (`curl localhost:5000/health`), and frontend (`curl localhost:5273`) to be healthy, then `dotnet test tests/E2E/ -- RunConfiguration.MaxCpuCount=7`.
-5. **Create a draft PR** — `gh pr create --draft`. Monitor CI. If CI fails, fix issues, push, and iterate until green.
-6. **Publish the PR** — `gh pr ready`.
+- Frontend tests: `cd bitCaster-app && npm run test`.
+- Frontend build: `cd bitCaster-app && npm run build`.
+- Public contract build: `dotnet build BitCaster.MatchingEngine.Contracts/`.
+- Browser checks: follow `.claude/rules/e2e-tests.md` when the change needs them.
+- Review non-trivial changes for correctness, reuse, maintainability, and risk.
+  Do not require an unavailable named skill to perform that review.
+
+These checks do not authorize publication or deployment. When PR publication
+is authorized, create a draft PR. Monitor CI and correct in-scope failures.
+Mark the PR ready only after its required gates pass.
 
 ## Subproject Rules
 
 Details scoped per subproject live in `.claude/rules/`:
 
 - `frontend.md` — React PWA, env setup, kormir-wasm build
-- `server.md` — Contracts + InMemoryMatchingEngine, market-ID / order-book model
+- `server.md` — Public contract conventions
 - `nut-ctf.md` — NUT-CTF protocol and CDK submodule policy
-- `e2e-tests.md` — Playwright E2E, port overrides, parallel worktree slots
+- `e2e-tests.md` — Browser checks and local service ownership
 - `doc-site.md` — Astro Starlight
 - `design.md` — Design system
 - `cdk.md` — CDK (upstream) build / lint / style

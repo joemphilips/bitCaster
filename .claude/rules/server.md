@@ -1,26 +1,23 @@
 ---
 paths:
   - "BitCaster.MatchingEngine.Contracts/**/*"
-  - "BitCaster.InMemoryMatchingEngine/**/*"
 ---
 
-# Matching Engine — Contracts + InMemoryMatchingEngine
+# Matching Engine Public Contracts
 
-The matching engine is split into three parts:
-
-1. **BitCaster.MatchingEngine.Contracts** — shared class library (`Microsoft.NET.Sdk`, net10.0): DTOs, enums, request/response records. Used by the in-memory stub and the real server.
-2. **BitCaster.InMemoryMatchingEngine** — ASP.NET minimal API (`Microsoft.NET.Sdk.Web`, net10.0). Stores orders in-memory, **no matching** — every submitted order returns `"resting"` and never produces fills. Used for frontend dev / E2E. (Could change in the future.)
-3. **Real CLOB engine** — private repo one level above (`bitCaster-matching-engine`); references Contracts via submodule. Price-time priority, complementary + mint matching.
+This repository supplies the public contract library.
+The matching engine is an external service.
+Read the project file for its supported target frameworks.
+Do not add a dependency on a private implementation repository.
 
 ```bash
 dotnet build BitCaster.MatchingEngine.Contracts
-dotnet build BitCaster.InMemoryMatchingEngine
-dotnet run --project BitCaster.InMemoryMatchingEngine   # port 5000
 ```
 
-## Source-of-truth split (ADR-009 + Amendment 2026-05-04)
+## Data Authority
 
-A bitCaster market's data lives in two systems. The detail and list pages MUST honour the same split — drift between them was the root cause of the P7 §`/markets/{id}` regression.
+A bitCaster market's data lives in two systems.
+Use the same authority in detail and list pages.
 
 | Field | Authority | Reachable via |
 |---|---|---|
@@ -44,14 +41,14 @@ The order book is **per outcome**, not per condition — each outcome of an N-wa
 
 ## Key Files
 
-**Contracts**
-- `Domain/Order.cs` — `Order`, `OrderSide`, `OrderType`
-- `Domain/Fill.cs` — `Fill`, `MatchPath`, `MatchResult`
-- `Domain/Snapshots.cs` — `OrderBookSnapshot`, `LevelDto`
-- `Endpoints/OrderContracts.cs` — `SubmitOrderRequest`, `SubmitOrderResponse`
+Paths below are relative to `BitCaster.MatchingEngine.Contracts/`.
 
-**InMemoryMatchingEngine**
-- `InMemoryOrderBookManager.cs` — in-memory storage (no matching)
-- `Hubs/MarketHub.cs` — SignalR hub at `/hubs/market` (join/leave market groups)
-- `Endpoints/OrderEndpoints.cs` — `POST /api/v1/orders`, `DELETE /api/v1/orders/{id}`
-- `Endpoints/BookEndpoints.cs` — `GET /api/v1/markets/{marketId}/orderbook`
+- `specs/openapi.yaml` — public HTTP contract and DTO generation source
+- `specs/asyncapi.yaml` — public asynchronous contract
+- `Generated/ApiContracts.g.cs` — generated C# DTOs
+- `Domain/ValueTypes.cs` and `Domain/Order.cs` — shared value types
+- `Hubs/` — typed hub client interfaces
+
+After an OpenAPI change, build the contract project.
+Then run `npm run generate:api` from `bitCaster-app/` to regenerate the app
+and SDK types. Do not hand-edit generated DTOs.

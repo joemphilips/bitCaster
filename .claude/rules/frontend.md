@@ -5,18 +5,19 @@ paths:
 
 # bitCaster Frontend (React PWA)
 
-React 19 + Vite + Tailwind + react-router v7 + PWA (`vite-plugin-pwa`). TypeScript strict. No linter/formatter — rely on `tsc --strict` for correctness.
+The app uses React, Vite, Tailwind, and TypeScript strict mode.
+Read `package.json` for current versions and available checks.
 
 ## Commands
 
 ```bash
 cd bitCaster-app
-npm run dev          # Vite dev server (5173)
+npm run dev          # Vite dev server (5273 by default; PORT can override it)
 npm run build        # tsc -b && vite build
 npm run typecheck    # tsc --noEmit — use this to verify changes
 ```
 
-Manual UI checks: use `playwright-cli` or add an E2E test under `tests/E2E/`.
+For browser checks, read `e2e-tests.md` in this directory.
 
 ## Conventions
 
@@ -32,20 +33,36 @@ cp bitCaster-app/.env.example bitCaster-app/.env
 ```
 
 - `VITE_MINT_URL` — Cashu mint (default `http://localhost:8085`)
-- `VITE_SERVER_URL` — matching engine (default `http://localhost:5000`)
+- `BITCASTER_SERVER_URL` — Vite server proxy target for the matching engine
 - `VITE_ORACLE_PUBKEY` — (optional) hex pubkey for DLC oracle announcements
 
 ## Key Files & Libraries
 
-- `src/stores/wallet.ts` — Zustand wallet store + `useBalance(mintUrl?)` hook (live IndexedDB query for proof sum)
-- `src/lib/cashu.ts` — `CashuWallet` / `CashuMint` singletons (`@cashu/cashu-ts` ^2.3.0)
-- `src/lib/nostr.ts` — NDK singleton, `NDKNip07Signer`, `NDKPrivateKeySigner`, `NDKNWCWallet` (`@nostr-dev-kit/ndk` ^2.11.0, `ndk-wallet` ^0.3.8)
+- `src/stores/wallet.ts` — wallet state
+- `src/lib/walletOps.ts` — wallet mutation boundary
+- `src/lib/identityOps.ts` — identity mutation boundary
+- `src/lib/cashu.ts` — Cashu adapters
+- `src/lib/nostr.ts` — Nostr adapters
 - `src/lib/kormir.ts` — lazy dynamic import of the kormir-wasm bundle
 - `src/App.tsx` — root component + routing
 
 ## Frontend-Backend Validation Parity
 
-Every validation rule enforced by the backend (in endpoint handlers or Sekiban domain commands) must be duplicated on the frontend so users cannot submit invalid data in the first place. The backend's OpenAPI spec (`BitCaster.MatchingEngine.Contracts/specs/openapi.yaml`) and value types (`Contracts/Domain/ValueTypes.cs`) are the source of truth for constraints (e.g., `Probability` must be in `[1, 99]`, probabilities must sum to 100). Frontend checks are a UX convenience; backend checks remain the security boundary.
+Use the public OpenAPI contract for user-input constraints.
+Keep shared validation in `bitcaster-client-sdk/`.
+Reuse it across clients instead of copying backend implementation logic.
+Show invalid input before submission when the client has the required facts.
+The backend remains the security boundary.
+Handle authoritative refusals when state changes after a client check.
+
+## Persisted State And Effects
+
+- Gate boot-time reads on persisted-store hydration.
+- Avoid effects that repeatedly trigger themselves through a store mutation.
+- Preserve test fixtures during startup hydration.
+- Use the wallet and identity mutation boundaries.
+- Do not let an untrusted URL, query, or message change the active mint without
+  explicit user consent.
 
 ## Mobile/Desktop UI Parity
 
@@ -64,4 +81,8 @@ The become-oracle flow depends on a WASM build of kormir. The generated package 
 ./tools/build-kormir-wasm.sh --dev    # faster dev build
 ```
 
-Wraps `wasm-pack build --target web`. Auto-detects the clang resource directory for Nix's split `clang` / `clang-lib` (secp256k1-sys compiles C to wasm32 and needs `stddef.h`). Requires `rustup target add wasm32-unknown-unknown` and `wasm-pack`. The ~3MB bundle loads lazily via dynamic import in `src/lib/kormir.ts`; `vite.config.ts` excludes the package from dep optimization.
+The script wraps `wasm-pack build --target web`.
+It needs the `wasm32-unknown-unknown` target and `wasm-pack`.
+It locates the clang headers needed by the C dependency.
+The app loads the generated package by relative dynamic import.
+Normal frontend builds do not require a WASM rebuild.
