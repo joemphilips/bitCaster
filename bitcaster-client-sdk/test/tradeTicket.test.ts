@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { buildTradeTicket, TradeTicketError } from '../src/tradeTicket.ts'
+import { buildTradeTicket } from '../src/tradeTicket.ts'
 import type { SdkMarketForTrading, SdkOrderBook } from '../src/types.ts'
 
 const yesNoMarket: SdkMarketForTrading = {
@@ -92,38 +92,43 @@ test('buildTradeTicket builds two-outcome categorical NO tickets against a primi
   assert.equal(ticket.request.tokenSide, 'Complement')
 })
 
-test('buildTradeTicket prices executable market buys as aggressive FOK orders', () => {
-  const directTicket = buildTradeTicket({
-    market: yesNoMarket,
-    selection: { side: 'no' },
-    amountSubunits: 1_000_000,
-    side: 'Buy',
-    orderType: 'market',
-    limitPrice: 500,
-    orderBook: liquidBook,
-    complementaryOrderBook: { bids: [{ price: 490, amount: 1_000_000 }], asks: [], spread: 0 },
-  })
-  assert.equal(directTicket.marketId, 'condition-yesno-Yes')
-  assert.equal(directTicket.request.outcomeId, 'Yes')
-  assert.equal(directTicket.request.tokenSide, 'Complement')
-  assert.equal(directTicket.request.price, 999)
-  assert.equal(directTicket.request.timeInForce, 'FOK')
+test('buildTradeTicket prices market FOK orders without local book liquidity', () => {
+  const scenarios = [
+    { side: 'Buy', expectedPrice: 999 },
+    { side: 'Buy', expectedPrice: 999, orderBook: { bids: [], asks: [], spread: 0 } },
+    { side: 'Buy', expectedPrice: 999, orderBook: liquidBook },
+    {
+      side: 'Buy',
+      expectedPrice: 999,
+      orderBook: { bids: [], asks: [], spread: 0 },
+      complementaryOrderBook: { bids: [{ price: 490, amount: 1_000_000 }], asks: [], spread: 0 },
+    },
+    { side: 'Sell', expectedPrice: 1 },
+    { side: 'Sell', expectedPrice: 1, orderBook: { bids: [], asks: [], spread: 0 } },
+    { side: 'Sell', expectedPrice: 1, orderBook: liquidBook },
+    {
+      side: 'Sell',
+      expectedPrice: 1,
+      orderBook: { bids: [], asks: [], spread: 0 },
+      complementaryOrderBook: { bids: [{ price: 490, amount: 1_000_000 }], asks: [], spread: 0 },
+    },
+  ] as const
 
-  const complementaryTicket = buildTradeTicket({
-    market: yesNoMarket,
-    selection: { side: 'no' },
-    amountSubunits: 1_000_000,
-    side: 'Buy',
-    orderType: 'market',
-    limitPrice: 500,
-    orderBook: { bids: [], asks: [], spread: 0 },
-    complementaryOrderBook: { bids: [{ price: 490, amount: 1_000_000 }], asks: [], spread: 0 },
-  })
-  assert.equal(complementaryTicket.marketId, 'condition-yesno-Yes')
-  assert.equal(complementaryTicket.request.outcomeId, 'Yes')
-  assert.equal(complementaryTicket.request.tokenSide, 'Complement')
-  assert.equal(complementaryTicket.request.price, 999)
-  assert.equal(complementaryTicket.request.timeInForce, 'FOK')
+  for (const { expectedPrice, ...scenario } of scenarios) {
+    const ticket = buildTradeTicket({
+      market: yesNoMarket,
+      selection: { side: 'no' },
+      amountSubunits: 1_000_000,
+      orderType: 'market',
+      limitPrice: 500,
+      ...scenario,
+    })
+    assert.equal(ticket.marketId, 'condition-yesno-Yes')
+    assert.equal(ticket.request.outcomeId, 'Yes')
+    assert.equal(ticket.request.tokenSide, 'Complement')
+    assert.equal(ticket.request.price, expectedPrice)
+    assert.equal(ticket.request.timeInForce, 'FOK')
+  }
 })
 
 test('buildTradeTicket applies market divisibility to price and amount validation', () => {
@@ -173,19 +178,32 @@ test('buildTradeTicket rejects unsupported product units', () => {
   )
 })
 
-test('buildTradeTicket rejects market orders with no liquidity instead of price zero', () => {
+test('buildTradeTicket rejects invalid amount and missing selection independently of book state', () => {
+  assert.throws(
+    () =>
+      buildTradeTicket({
+        market: yesNoMarket,
+        selection: null,
+        amountSubunits: 1_000,
+        side: 'Buy',
+        orderType: 'limit',
+        limitPrice: 500,
+        orderBook: undefined,
+      }),
+    /Choose an outcome/,
+  )
   assert.throws(
     () =>
       buildTradeTicket({
         market: yesNoMarket,
         selection: { side: 'yes' },
-        amountSubunits: 1_000_000,
+        amountSubunits: 500,
         side: 'Buy',
         orderType: 'market',
         limitPrice: 500,
-        orderBook: { bids: [], asks: [], spread: 0 },
+        orderBook: undefined,
       }),
-    (error) => error instanceof TradeTicketError && error.code === 'no-market-liquidity',
+    /1000 sub-unit increments/,
   )
 })
 

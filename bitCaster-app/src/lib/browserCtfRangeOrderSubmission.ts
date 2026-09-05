@@ -12,6 +12,13 @@ import {
 import type { TradeTicket } from "@bitcaster/client-sdk/tradeTicket";
 import { planCtfRangeSourceConsolidation } from "@bitcaster/client-sdk/ctfRangeSourceOperation";
 import { planCtfRangeOrderAuthorization } from "@bitcaster/client-sdk/ctfRangeOrderAuthorization";
+import {
+  assertCtfRangeOrderFeeConsent,
+  composeCtfRangeOrderFeeFacts,
+  type CtfRangeOrderFeeFacts,
+} from "@bitcaster/client-sdk/ctfRangeOrderFeeComposition";
+import { planPersistedCtfRangeOrderAuthorization } from "@bitcaster/client-sdk/ctfRangeOrderProtocol";
+import type { DurableCtfRangeAsset } from "@bitcaster/client-sdk/durableCtfRangeOperation";
 import { createEncryptedWalletBackupV2AssetIdentity } from "@bitcaster/client-sdk/encryptedWalletBackupV2ProofSet";
 import { toSeed } from "@/lib/bip39";
 import { browserWalletScopeIdFromMnemonic } from "@/lib/browserWalletProfile";
@@ -59,17 +66,14 @@ export interface BrowserCtfRangeOrderSubmission {
   readonly mintUrl: string;
   readonly mnemonic: string;
   readonly comment?: NostrKind1Event | null;
-  readonly expectedConsolidationFeeSubunits: number;
+  readonly consentedFeeFacts: CtfRangeOrderFeeFacts;
   readonly onScoreTopUpRequired?: (input: {
     readonly requiredSats: number;
     readonly balanceSats: number;
   }) => Promise<void>;
 }
 
-export interface BrowserCtfRangeOrderFeePreview {
-  readonly consolidationFeeSubunits: number;
-  readonly sourceFeeSubunits: number;
-}
+export type BrowserCtfRangeOrderFeePreview = CtfRangeOrderFeeFacts;
 
 export async function previewBrowserCtfRangeOrderFees(input: {
   readonly market: MarketDetail;
@@ -89,10 +93,7 @@ export async function previewBrowserCtfRangeOrderFees(input: {
       consolidationPlanMessage(plan.kind),
     );
   }
-  return {
-    consolidationFeeSubunits: safeFeeSubunits(plan.consolidationFee),
-    sourceFeeSubunits: safeFeeSubunits(plan.sourceFee),
-  };
+  return browserFeeFacts(preparation, plan);
 }
 
 export async function submitBrowserCtfRangeOrder(
@@ -112,19 +113,22 @@ export async function submitBrowserCtfRangeOrder(
     input.onScoreTopUpRequired,
   );
   try {
-    const candidates = await consolidateBrowserRangeSource({
+    const consolidated = await consolidateBrowserRangeSource({
       coordinator,
       seed,
       preparation,
       mnemonic: input.mnemonic,
       scopeId,
-      expectedConsolidationFeeSubunits: input.expectedConsolidationFeeSubunits,
+      consentedFeeFacts: input.consentedFeeFacts,
     });
     return await coordinator.prepareAndSubmit({
       seed,
       preparation,
-      candidates,
+      candidates: consolidated.candidates,
       comment: input.comment ?? null,
+      consentedFeeFacts: input.consentedFeeFacts,
+      paidConsolidationFeeSubunits: consolidated.paidConsolidationFeeSubunits,
+      currentFeeFacts: consolidated.currentFeeFacts,
     });
   } catch (error) {
     if (error instanceof BrowserCtfRangeOrderError) {
@@ -149,11 +153,15 @@ async function consolidateBrowserRangeSource(input: {
   preparation: ReturnType<typeof buildBrowserCtfRangeOrderPreparation>;
   mnemonic: string;
   scopeId: string;
-  expectedConsolidationFeeSubunits: number;
+  consentedFeeFacts: CtfRangeOrderFeeFacts;
 }) {
   const plan = await recoverRangeSourcePlan(input);
   const finalPlan = await executeConsolidationRounds(input, plan);
-  return selectedRangeSourceProofs(input, finalPlan.selectedInputs);
+  return {
+    candidates: await selectedRangeSourceProofs(input, finalPlan.selectedInputs),
+    paidConsolidationFeeSubunits: finalPlan.paidConsolidationFeeSubunits,
+    currentFeeFacts: finalPlan.currentFeeFacts,
+  };
 }
 
 async function recoverRangeSourcePlan(input: {
@@ -232,13 +240,18 @@ async function executeConsolidationRounds(
     seed: Uint8Array;
     preparation: ReturnType<typeof buildBrowserCtfRangeOrderPreparation>;
     scopeId: string;
-    expectedConsolidationFeeSubunits: number;
+    consentedFeeFacts: CtfRangeOrderFeeFacts;
   },
   plan: ReadyRangeSourcePlan,
-): Promise<ReadyRangeSourcePlan> {
+): Promise<
+  ReadyRangeSourcePlan & {
+    readonly paidConsolidationFeeSubunits: string;
+    readonly currentFeeFacts: CtfRangeOrderFeeFacts;
+  }
+> {
   let current = plan;
   let round = 0;
-  let committedFeeSubunits = 0;
+  let committedFeeSubunits = "0";
   while (current.consolidationRounds.length > 0) {
     if (round >= BROWSER_CONSOLIDATION_ROUNDS_MAX) throw rangeSourcePlanError("round-limit");
     assertApprovedConsolidationFee(input, committedFeeSubunits, current);
@@ -251,32 +264,66 @@ async function executeConsolidationRounds(
       inputs: proofs,
       plannedRound,
     });
-    committedFeeSubunits = safeFeeSubunits(
-      (BigInt(committedFeeSubunits) + BigInt(safeFeeSubunits(plannedRound.fee))).toString(),
-    );
+    committedFeeSubunits = (BigInt(committedFeeSubunits) + BigInt(plannedRound.fee)).toString();
     current = readyRangeSourcePlan(
       await loadBrowserRangeConsolidationPlan(input.preparation, input.scopeId),
     );
     round += 1;
   }
   assertApprovedConsolidationFee(input, committedFeeSubunits, current);
-  return current;
+  return {
+    ...current,
+    paidConsolidationFeeSubunits: committedFeeSubunits,
+    currentFeeFacts: browserFeeFacts(input.preparation, current),
+  };
 }
 
 function assertApprovedConsolidationFee(
-  input: { expectedConsolidationFeeSubunits: number },
-  committedFeeSubunits: number,
+  input: {
+    readonly preparation: ReturnType<typeof buildBrowserCtfRangeOrderPreparation>;
+    readonly consentedFeeFacts: CtfRangeOrderFeeFacts;
+  },
+  committedFeeSubunits: string,
   plan: ReadyRangeSourcePlan,
 ): void {
-  const total = safeFeeSubunits(
-    (BigInt(committedFeeSubunits) + BigInt(safeFeeSubunits(plan.consolidationFee))).toString(),
-  );
-  if (total !== input.expectedConsolidationFeeSubunits) {
+  try {
+    assertCtfRangeOrderFeeConsent({
+      consented: input.consentedFeeFacts,
+      current: browserFeeFacts(input.preparation, plan),
+      paidConsolidationFeeSubunits: committedFeeSubunits,
+    });
+  } catch {
     throw new BrowserCtfRangeOrderError(
       "source-preparation-failed",
       "Wallet proof fees changed. Review the updated trade cost and try again.",
     );
   }
+}
+
+function browserFeeFacts(
+  preparation: ReturnType<typeof buildBrowserCtfRangeOrderPreparation>,
+  plan: ReadyRangeSourcePlan,
+): CtfRangeOrderFeeFacts {
+  return composeCtfRangeOrderFeeFacts({
+    authorizationPlan: planPersistedCtfRangeOrderAuthorization(preparation),
+    sourcePlan: plan,
+    settlementAsset: { kind: "regular", unit: "msat" },
+    preparationAsset: browserPreparationAsset(preparation),
+  });
+}
+
+function browserPreparationAsset(
+  preparation: ReturnType<typeof buildBrowserCtfRangeOrderPreparation>,
+): DurableCtfRangeAsset {
+  const asset = browserRangeSourceAsset(preparation);
+  return asset.kind === "regular"
+    ? { kind: "regular", unit: "msat" }
+    : {
+        kind: "conditional",
+        unit: "msat",
+        conditionId: asset.conditionId,
+        outcomeCollection: asset.outcomeCollection,
+      };
 }
 
 function selectedRangeSourceProofs(
@@ -480,17 +527,6 @@ function proofAmountInventory(proofs: readonly { amount: unknown }[]) {
   return [...counts]
     .sort(([left], [right]) => right - left)
     .map(([amount, count]) => ({ amount: String(amount), count }));
-}
-
-function safeFeeSubunits(value: string): number {
-  const fee = Number(value);
-  if (!Number.isSafeInteger(fee) || fee < 0) {
-    throw new BrowserCtfRangeOrderError(
-      "source-preparation-failed",
-      "The wallet proof fee is invalid.",
-    );
-  }
-  return fee;
 }
 
 function consolidationPlanMessage(kind: "insufficient" | "not-reducible" | "round-limit"): string {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildTradeTicket, TradeTicketError } from "@/lib/tradeTicket";
+import { buildTradeTicket } from "@/lib/tradeTicket";
 import { computeLimitOrderPreview, displaySharesToFaceSubunits } from "@/lib/tradeCostPreview";
 import type { MarketDetail } from "@/types/market-detail";
 
@@ -328,17 +328,36 @@ describe("buildTradeTicket", () => {
     expect(ticket.request.timeInForce).toBe("FOK");
   });
 
-  it("rejects market orders with no visible liquidity instead of emitting price 0", () => {
-    expect(() =>
-      buildTradeTicket({
-        market,
-        selection: { side: "yes" },
-        amountSubunits: 1_000_000,
-        side: "Buy",
-        orderType: "market",
-        limitPrice: 500,
-        orderBook: { bids: [], asks: [], spread: 0 },
-      }),
-    ).toThrow(TradeTicketError);
+  it("builds market FOK terms without requiring a displayed book", () => {
+    const missingBook = buildTradeTicket({
+      market,
+      selection: { side: "yes" },
+      amountSubunits: 1_000_000,
+      side: "Buy",
+      orderType: "market",
+      limitPrice: 500,
+    });
+    expect(missingBook.request.price).toBe(999);
+
+    const emptyBook = buildTradeTicket({
+      market,
+      selection: { side: "yes" },
+      amountSubunits: 1_000_000,
+      side: "Buy",
+      orderType: "market",
+      limitPrice: 500,
+      orderBook: { bids: [], asks: [], spread: 0 },
+    });
+    expect(emptyBook.request.price).toBe(999);
+
+    const sell = buildTradeTicket({
+      market,
+      selection: { side: "yes" },
+      amountSubunits: 1_000_000,
+      side: "Sell",
+      orderType: "market",
+      limitPrice: 500,
+    });
+    expect(sell.request.price).toBe(1);
   });
 });

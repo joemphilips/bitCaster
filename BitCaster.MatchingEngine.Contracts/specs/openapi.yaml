@@ -352,6 +352,58 @@ paths:
         '503':
           description: Settlement capability authority is unavailable.
 
+  /api/v1/orders/preview:
+    post:
+      operationId: PreviewFokOrder
+      summary: Preview one public FOK order
+      security:
+        - {}
+        - nip98: []
+      description: >
+        Plans one read-only Fill-Or-Kill order against one captured market
+        snapshot. The preview is not authorization, reservation, or order
+        submission. Final admission rechecks the current market state and
+        economic terms. NIP-98 authentication is optional; when present, the
+        authenticated subject is used for self-match exclusion.
+      requestBody:
+        required: true
+        description: >
+          One bounded preview request. The raw request body is limited to
+          16 KiB and oversized declared-length or chunked bodies are rejected
+          before JSON binding or planning.
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PreviewFokOrderRequest'
+      responses:
+        '200':
+          description: Read-only FOK preview result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PreviewFokOrderResponse'
+        '400':
+          description: Invalid market route, price, face amount, or request shape.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '413':
+          description: Raw request body exceeds the 16 KiB limit.
+        '429':
+          description: Preview rate limit or concurrency limit exceeded.
+          headers:
+            Retry-After:
+              description: Number of seconds before the client should retry.
+              schema:
+                type: integer
+                format: int32
+                minimum: 1
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+
   /api/v1/orders/mine:
     get:
       operationId: listMyOrders
@@ -2156,6 +2208,171 @@ components:
         Public settlement capability time-in-force. FOK means Fill-Or-Kill.
         Public capability requests are FOK-only. They cannot rest on the book
         and cannot carry an expiry.
+
+    FokPreviewReason:
+      type: string
+      enum:
+        - fillable
+        - insufficient_liquidity
+        - price_limit
+        - request_too_large
+        - market_unavailable
+        - temporarily_unavailable
+      description: >
+        Coarse reason for the read-only FOK preview result. `fillable` means
+        the requested face amount passes the current price and match limits.
+        `insufficient_liquidity` means more available market capacity may
+        help. Other values do not promise that more capacity will help.
+
+    PreviewFokOrderRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - marketId
+        - side
+        - tokenSide
+        - price
+        - faceAmountSubunits
+      description: >
+        Economic terms for one read-only public FOK preview. This request
+        contains no time-in-force choice, owner, capability, proof, order
+        identity, expiry, or caller match bound.
+      properties:
+        marketId:
+          type: string
+          minLength: 3
+          maxLength: 256
+          pattern: '^[a-zA-Z0-9][a-zA-Z0-9-]*-[a-zA-Z0-9]+$'
+          description: >
+            Primitive outcome market id in `{conditionId}-{outcomeName}` form.
+            The condition segment starts with an alphanumeric character and
+            can then contain alphanumeric characters or hyphens. The outcome
+            segment contains one or more alphanumeric characters and must not
+            contain a finite outcome-set separator such as `|`. Binary YES/NO
+            markets expose only the `{conditionId}-YES` route; trade NO with
+            `tokenSide=Complement`, and do not use `{conditionId}-NO`.
+        side:
+          $ref: '#/components/schemas/OrderSide'
+          description: Order direction relative to the selected token.
+        tokenSide:
+          $ref: '#/components/schemas/TokenSide'
+          description: >
+            Token represented by the selected-token price. `Complement` means
+            the one-vs-rest complement of the primitive outcome route.
+        price:
+          type: integer
+          format: int32
+          minimum: 1
+          maximum: 999999
+          description: >
+            Selected-token limit-price numerator `k`. The server also requires
+            `k < D` for the market's immutable price denominator and validates
+            the token-side mapping before planning.
+        faceAmountSubunits:
+          type: integer
+          format: int64
+          minimum: 1
+          maximum: 100000000000000
+          description: >
+            Positive conditional-token face amount in market collateral
+            subunits. The server requires a whole tradable unit for the
+            market's immutable divisibility `D`; the maximum is 1e14.
+
+    PreviewFokOrderResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - fullFillAvailable
+        - reason
+        - previewRevision
+        - quotePaymentSubunits
+        - averagePrice
+        - worstPrice
+        - currentLatestTradePrice
+        - projectedFinalPrice
+        - priceDenominator
+        - subsidyMayHelp
+      description: >
+        One read-only FOK result from one captured market snapshot. Execution
+        estimates are null unless the full requested face amount is currently
+        executable. Quote payment excludes client-composed wallet preparation,
+        settlement input, and consolidation fees. Final admission repeats the
+        authoritative plan.
+      properties:
+        fullFillAvailable:
+          type: boolean
+          description: >
+            True only when the complete requested face amount passes the
+            selected-token price and bounded match checks.
+        reason:
+          $ref: '#/components/schemas/FokPreviewReason'
+        previewRevision:
+          type: [string, 'null']
+          minLength: 1
+          maxLength: 256
+          description: >
+            Opaque revision for the captured preview snapshot. Null when no
+            authoritative market snapshot is available. This value is display
+            metadata and is not authorization for final admission.
+        quotePaymentSubunits:
+          type: [integer, 'null']
+          format: int64
+          minimum: 0
+          maximum: 100000000000000
+          description: >
+            Exact quote payment in market base-asset subunits. Null when the
+            request is not fully fillable. This excludes client-composed fees.
+        averagePrice:
+          type: [number, 'null']
+          minimum: 0
+          description: >
+            Selected-token average execution price, computed from the exact
+            `quotePaymentSubunits` as `quotePaymentSubunits * D /
+            faceAmountSubunits`. It may be fractional. Null when the request
+            is not fully fillable; quotePaymentSubunits remains authoritative
+            for exact payment.
+        worstPrice:
+          type: [integer, 'null']
+          format: int32
+          minimum: 1
+          maximum: 999999
+          description: >
+            Worst selected-token execution-price numerator across the
+            canonical fill order. Null when the request is not fully fillable.
+        currentLatestTradePrice:
+          type: [integer, 'null']
+          format: int32
+          minimum: 1
+          maximum: 999999
+          description: >
+            Latest confirmed primitive-route displayed trade-price numerator.
+            Null when the market has no confirmed trade or no authoritative
+            snapshot. This is a display price, not a selected-token execution
+            price.
+        projectedFinalPrice:
+          type: [integer, 'null']
+          format: int32
+          minimum: 1
+          maximum: 999999
+          description: >
+            Projected final primitive-route displayed trade-price numerator
+            after this preview's canonical fills. Complement routes use the
+            primitive-route display mapping. Null when the request is not fully
+            fillable.
+        priceDenominator:
+          type: [integer, 'null']
+          format: int32
+          minimum: 2
+          maximum: 1000000
+          description: >
+            Immutable market price denominator `D`. Null when no authoritative
+            market snapshot is available.
+        subsidyMayHelp:
+          type: boolean
+          description: >
+            A conservative hint that additional condition funding capacity may
+            help. True only for `insufficient_liquidity` when fresh capacity
+            might make the request executable; it never guarantees execution.
 
     OrderLifecycleStatus:
       type: string

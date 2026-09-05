@@ -6,6 +6,9 @@ sidebar:
 
 This section describes the public technical behavior of bitCaster.
 
+See [Public FOK preview](/technical/architecture/trading-model/#public-fok-preview)
+for read-only trade estimates and separate fee calculation.
+
 The first-release server accepts only public FOK orders. The GUI and CLI submit
 FOK orders. Each public attempt uses one one-shot capability. FOK uses the book
 state at admission. It commits the full requested quantity or cancels the

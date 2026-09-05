@@ -23,6 +23,42 @@ complete request. Public FAK, GTC, GTD, continuation, and residual
 reauthorization are not available. Internal custody-backed LMSR quotes use GTC.
 They are not public client orders.
 
+## Public FOK preview
+
+`POST /api/v1/orders/preview` previews one FOK order. Send `marketId`, `side`,
+`tokenSide`, `price`, and `faceAmountSubunits`. Use the selected token's limit
+price. The face amount must be a whole tradable unit for the market denominator.
+Do not send proofs, an owner, or a time-in-force field.
+
+NIP-98 authentication is optional. The authenticated subject determines the
+subject rate-limit partition and self-match exclusion. The preview is read-only.
+It does not reserve funds or liquidity. It does not authorize or submit an order.
+Final admission checks the current book again with the user's price limit.
+The opaque `previewRevision` is display metadata, not authorization.
+
+The response reports full-fill availability and one reason: `fillable`,
+`insufficient_liquidity`, `price_limit`, `request_too_large`,
+`market_unavailable`, or `temporarily_unavailable`. Recommend a separate subsidy
+only when `subsidyMayHelp` is true. Funding and trading require separate consent.
+
+`quotePaymentSubunits` is the exact quote payment in msat, without fees.
+`averagePrice` and `worstPrice` describe the selected token. The current
+`currentLatestTradePrice` and projected `projectedFinalPrice` describe the
+primitive outcome route. Prices use `priceDenominator`. The projected price is
+not a confirmed trade. Execution estimates are `null` when the full amount
+cannot fill. The current price is `null` when no confirmed trade exists.
+Funding does not create a market-price point.
+
+The UI displays amounts in sats: 100 msat is 0.1 sats. Buy totals add the quote,
+settlement-input fee, source-preparation fee, and consolidation fee. Sell totals
+show gross collateral proceeds and net proceeds after the settlement-input fee.
+Show conditional-token preparation and consolidation fees separately. Do not
+add fees in different assets. Unused fee headroom is not a paid fee. If fee
+amounts or assets change, obtain fresh consent before the next new wallet step.
+
+Invalid input returns HTTP `400`. The raw request limit is 16 KiB. Larger bodies
+return `413`. Rate or concurrency limits return `429` with `Retry-After`.
+
 ## Order authorization
 
 A wallet supplies one `PAY_TO_UNLOCK` capability when it submits a public FOK

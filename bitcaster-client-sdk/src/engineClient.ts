@@ -37,6 +37,13 @@ import {
   type DurableRecipientDeliveryStatus,
   type DurableRecipientDeliverySubmission,
 } from './durableRecipientDelivery.ts'
+import {
+  canonicalizePreviewFokOrderRequest,
+  decodePreviewFokOrderResponse,
+  FOK_PREVIEW_RESPONSE_BYTES_MAX,
+  type PreviewFokOrderRequest,
+  type PreviewFokOrderResponse,
+} from './fokOrderPreview.ts'
 
 export type EngineFetch = typeof fetch
 export const SETTLEMENT_CAPABILITY_RESULT_RESPONSE_BYTES_MAX = 384 * 1_024
@@ -629,6 +636,29 @@ export class BitcasterEngineClient {
     )
   }
 
+  async previewFokOrder(
+    request: PreviewFokOrderRequest,
+    signal?: AbortSignal,
+  ): Promise<PreviewFokOrderResponse> {
+    const bodyText = JSON.stringify(canonicalizePreviewFokOrderRequest(request))
+    const response = await this.request(
+      '/api/v1/orders/preview',
+      {
+        method: 'POST',
+        body: bodyText,
+        headers: { 'content-type': 'application/json' },
+        signal,
+      },
+      bodyText,
+      false,
+      FOK_PREVIEW_RESPONSE_BYTES_MAX,
+    )
+    return decodePreviewFokOrderResponse(
+      await readAllocationBoundedJsonResponse(response, FOK_PREVIEW_RESPONSE_BYTES_MAX),
+      request,
+    )
+  }
+
   async getOrderStatus(marketId: string, orderId: string): Promise<OrderStatusResponse | null> {
     const response = await this.request(
       `/api/v1/${encodePathSegment(marketId)}/orders/${encodePathSegment(orderId)}`,
@@ -821,7 +851,13 @@ export class BitcasterEngineClient {
           ? await response.text().catch(() => '')
           : await readAllocationBoundedTextResponse(response, errorResponseBytesMax).catch(() => '')
       const problem = parseEngineProblem(detail)
-      throw new EngineClientError(response.status, detail, problem?.code, problem?.detail)
+      throw new EngineClientError(
+        response.status,
+        detail,
+        problem?.code,
+        problem?.detail,
+        response.status === 429 ? parseRetryAfterHeader(response.headers.get('retry-after')) : undefined,
+      )
     }
     return response
   }
@@ -1471,14 +1507,22 @@ export class EngineClientError extends Error {
   public readonly detail: string
   public readonly code?: string
   public readonly problemDetail?: string
+  public readonly retryAfterSeconds?: number
 
-  constructor(status: number, detail: string, code?: string, problemDetail?: string) {
+  constructor(
+    status: number,
+    detail: string,
+    code?: string,
+    problemDetail?: string,
+    retryAfterSeconds?: number,
+  ) {
     super(formatEngineClientError(status, detail, code, problemDetail))
     this.name = 'EngineClientError'
     this.status = status
     this.detail = detail
     this.code = code
     this.problemDetail = problemDetail
+    this.retryAfterSeconds = retryAfterSeconds
   }
 }
 
@@ -1559,6 +1603,12 @@ function parseEngineProblem(text: string): EngineProblem | null {
   } catch {
     return null
   }
+}
+
+function parseRetryAfterHeader(value: string | null): number | undefined {
+  if (value === null || !/^[1-9][0-9]*$/.test(value)) return undefined
+  const seconds = Number(value)
+  return Number.isSafeInteger(seconds) ? seconds : undefined
 }
 
 function normalizeHeaders(headers: HeadersInit | undefined): Record<string, string> {

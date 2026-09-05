@@ -1,7 +1,11 @@
 import { act, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { MarketDetail } from "../MarketDetail";
-import type { MarketDetail as MarketDetailType, TradePreview } from "@/types/market-detail";
+import type {
+  FokOrderPreviewState,
+  MarketDetail as MarketDetailType,
+  TradeFeeFacts,
+} from "@/types/market-detail";
 
 vi.mock("../MarketHeader", () => ({ MarketHeader: () => <div /> }));
 const { tradingPanelMock } = vi.hoisted(() => ({
@@ -82,6 +86,56 @@ function makeMarket(overrides: Partial<MarketDetailType> = {}): MarketDetailType
     },
     ...overrides,
   } as MarketDetailType;
+}
+
+type PreviewResponse = NonNullable<FokOrderPreviewState["response"]>;
+
+function readyPreview(response: Partial<PreviewResponse> = {}): FokOrderPreviewState {
+  return {
+    status: "ready",
+    requestKey: "preview-request",
+    response: {
+      fullFillAvailable: true,
+      reason: "fillable",
+      previewRevision: "preview-revision",
+      quotePaymentSubunits: 15_000,
+      averagePrice: 300,
+      worstPrice: 320,
+      currentLatestTradePrice: 280,
+      projectedFinalPrice: 310,
+      priceDenominator: 1_000,
+      subsidyMayHelp: false,
+      ...response,
+    },
+    error: null,
+    retryAfterSeconds: null,
+    refresh: vi.fn(),
+  };
+}
+
+function nonfillablePreview(): FokOrderPreviewState {
+  return readyPreview({
+    fullFillAvailable: false,
+    reason: "insufficient_liquidity",
+    previewRevision: null,
+    quotePaymentSubunits: null,
+    averagePrice: null,
+    worstPrice: null,
+    currentLatestTradePrice: null,
+    projectedFinalPrice: null,
+    priceDenominator: null,
+    subsidyMayHelp: false,
+  });
+}
+
+function feeFacts(): TradeFeeFacts {
+  return {
+    settlementInputFeeSubunits: "1000",
+    sourcePreparationFeeSubunits: "2000",
+    consolidationFeeSubunits: "3000",
+    settlementAsset: { kind: "regular", unit: "msat" },
+    preparationAsset: { kind: "regular", unit: "msat" },
+  };
 }
 
 describe("MarketDetail", () => {
@@ -504,27 +558,15 @@ describe("MarketDetail", () => {
   });
 
   it("disables the mobile sticky confirm for market orders without executable liquidity", () => {
-    const noLiquidityPreview: TradePreview = {
-      amount: 1,
-      predictedOdds: 0,
-      priceImpact: 0,
-      executableShares: 0,
-      hasExecutableLiquidity: false,
-      quoteSubunits: 0,
-      mintFee: 0,
-      potentialPayout: 0,
-      creatorFee: 0,
-      engineScoreFeeSats: 0,
-      totalCost: 0,
-    };
-
     render(
       <MarketDetail
         market={makeMarket()}
         chartTimeframe="7d"
         tradeSelection={{ side: "yes" }}
         tradeAmount={1}
-        tradePreview={noLiquidityPreview}
+        tradePreview={nonfillablePreview()}
+        tradeFeeFacts={feeFacts()}
+        feeConsentCurrent
         tradeSide="Buy"
         orderType="market"
         limitOrderPreview={null}
@@ -532,7 +574,7 @@ describe("MarketDetail", () => {
       />,
     );
 
-    expect(screen.getByText("No liquidity")).toBeInTheDocument();
+    expect(screen.getByText("This order cannot be filled at the requested terms.")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Confirm" })).toBeDisabled();
   });
 
@@ -561,7 +603,9 @@ describe("MarketDetail", () => {
         chartTimeframe="7d"
         tradeSelection={{ side: "no", outcomeId: "outcome-0" }}
         tradeAmount={1}
-        tradePreview={null}
+        tradePreview={readyPreview()}
+        tradeFeeFacts={feeFacts()}
+        feeConsentCurrent
         tradeSide="Buy"
         orderType="market"
         limitOrderPreview={null}

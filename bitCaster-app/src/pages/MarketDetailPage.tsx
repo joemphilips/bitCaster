@@ -18,6 +18,7 @@ import {
   fetchMarketComments,
   fetchMarketPriceHistory,
   fetchOrderBook,
+  createAuthenticatedBrowserEngineClient,
   generateNip98Header,
   mapSnapshotToOrderBook,
   deriveCategoricalOdds,
@@ -29,11 +30,7 @@ import {
   type MarketCommentsResponse,
 } from "@/lib/markets";
 import { buildTradeTicket, TradeTicketError } from "@/lib/tradeTicket";
-import {
-  computeTradeCost,
-  computeMarketOrderQuotePreview,
-  displaySharesToFaceSubunits,
-} from "@/lib/tradeCostPreview";
+import { displaySharesToFaceSubunits } from "@/lib/tradeCostPreview";
 import { assertNever } from "@/lib/enumDiscipline";
 import { addOrderSubmitNotifications } from "@/lib/orderNotifications";
 import {
@@ -56,14 +53,10 @@ import {
   type MarketStatusChanged,
 } from "@/lib/marketHub";
 import { BitcasterEngineClient } from "@bitcaster/client-sdk/engineClient";
+import type { PreviewFokOrderRequest } from "@bitcaster/client-sdk/fokOrderPreview";
 import { debounce } from "@/lib/debounce";
 import { refreshOrderBook } from "@/lib/orderBookRefresh";
-import {
-  getBalance,
-  getExactUnitBalance,
-  useActiveMintInputFeePpk,
-  useWalletStore,
-} from "@/stores/wallet";
+import { getBalance, getExactUnitBalance, useWalletStore } from "@/stores/wallet";
 import { useSettingsStore } from "@/stores/settings";
 import { usePendingTradesStore } from "@/stores/pendingTrades";
 import { useNotificationsStore } from "@/stores/notifications";
@@ -81,14 +74,14 @@ import {
   previewBrowserCtfRangeOrderFees,
   submitBrowserCtfRangeOrder,
 } from "@/lib/browserCtfRangeOrderSubmission";
+import { BrowserCtfRangeOrderError } from "@/lib/browserCtfRangeOrderCoordinator";
+import type { BrowserCtfRangeOrderFeePreview } from "@/lib/browserCtfRangeOrderSubmission";
 import type {
   MarketDetail as MarketDetailType,
   ChartTimeframe,
   TradeSelection,
-  TradePreview,
   TradeSide,
   OrderType,
-  LimitOrderPreview,
   OrderBook,
   PriceHistory,
   PricePoint,
@@ -97,6 +90,7 @@ import type {
   Trade,
 } from "@/types/market-detail";
 import type { SecretBackupState } from "@/types/settings";
+import { useFokOrderPreview } from "@/hooks/useFokOrderPreview";
 
 export { defaultLimitPriceForDivisibility };
 
@@ -106,8 +100,7 @@ export function shouldPromptForFundedActionBackup(walletBackupState: SecretBacku
 
 type TopUpStage = "closed" | "modal" | "overlay";
 type TopUpReason =
-  | { kind: "collateral"; required: number; baseAsset: string }
-  | { kind: "score"; required: number };
+  { kind: "collateral"; required: number; baseAsset: string } | { kind: "score"; required: number };
 
 interface ActiveScoreTopUpContinuation {
   readonly intent: PendingTopUpOrderIntent;
@@ -1056,6 +1049,7 @@ export function MarketDetailPage() {
   const activeRouteIdRef = useRef<string | null>(currentRouteId);
   const routeGenerationRef = useRef(0);
   const marketLoadRequestTokenRef = useRef(0);
+  const previewMarketRevisionRef = useRef(0);
   // Update this during render so a promise that resolves between route render
   // and the route effect cannot write the previous condition into state.
   activeRouteIdRef.current = currentRouteId;
@@ -1064,18 +1058,16 @@ export function MarketDetailPage() {
       activeRouteIdRef.current === routeId && routeGenerationRef.current === generation,
     [],
   );
+  const invalidatePreviewForMarket = useCallback(() => {
+    previewMarketRevisionRef.current += 1;
+  }, []);
   const setupComplete = useWalletStore((s) => s.setupComplete);
   const walletBackupState = useWalletStore((s) => s.walletBackupState);
   const activeMintUrl = useWalletStore((s) => s.activeMintUrl);
   const addPendingTrade = usePendingTradesStore((s) => s.add);
   const nostrSignerMode = useSettingsStore((s) => s.nostrSignerMode);
+  const nostrProfilePubkey = useSettingsStore((s) => s.nostrProfile?.pubkey ?? null);
   const signerBackupState = useSettingsStore((s) => s.signerBackupState);
-  // Display-only mint fee for the trade cost preview. Read from the
-  // `input_fee_ppk` the active mint already advertises on its cached keysets
-  // (no extra mint round-trip). 0 for the first-release bitCaster mint config,
-  // so the panel shows a static "Mint fee: 0 sats".
-  const activeMintInputFeePpk = useActiveMintInputFeePpk(activeMintUrl);
-
   // Data state
   const [marketData, dispatchMarketData] = useReducer(
     marketDetailDataReducer,
@@ -1119,8 +1111,9 @@ export function MarketDetailPage() {
   const [isTradeSubmitting, setIsTradeSubmitting] = useState(false);
   const [rangeFeePreview, setRangeFeePreview] = useState<{
     key: string;
-    consolidationFeeSubunits: number;
+    feeFacts: BrowserCtfRangeOrderFeePreview;
   } | null>(null);
+  const [feeFactsRefreshGeneration, setFeeFactsRefreshGeneration] = useState(0);
   const tradeSubmitInFlightRef = useRef(false);
 
   // Top-up flow state — surfaced only when the user tries to confirm a trade
@@ -1184,6 +1177,7 @@ export function MarketDetailPage() {
               orderBook: books.orderBook,
               outcomeOrderBooks: books.outcomeOrderBooks,
             };
+            invalidatePreviewForMarket();
             dispatchMarketData({
               type: "booksLoaded",
               marketId: routeId,
@@ -1208,7 +1202,7 @@ export function MarketDetailPage() {
           if (isCurrentLoad() && (showLoading || succeeded)) setLoading(false);
         });
     },
-    [id, isCurrentRoute],
+    [id, invalidatePreviewForMarket, isCurrentRoute],
   );
 
   useEffect(() => {
@@ -1216,6 +1210,7 @@ export function MarketDetailPage() {
     dispatchMarketData({ type: "routeChanged", routeId: currentRouteId });
 
     cancelActiveScoreTopUp();
+    invalidatePreviewForMarket();
 
     // Route-owned order and interstitial state must not survive navigation.
     // In particular, a top-up completion for A must never prepare a ticket
@@ -1249,7 +1244,7 @@ export function MarketDetailPage() {
     // the intended route token explicit and prevent future refactors from
     // accidentally loading a previous route.
     if (routeGenerationRef.current === generation) loadMarket();
-  }, [cancelActiveScoreTopUp, currentRouteId, loadMarket]);
+  }, [cancelActiveScoreTopUp, currentRouteId, invalidatePreviewForMarket, loadMarket]);
 
   // Navigation after market creation can outrun the catalogue projection.
   // Retry only after the error has rendered. First paint still blocks on one
@@ -1349,6 +1344,7 @@ export function MarketDetailPage() {
         void refreshOrderBook(liveMarketId)
           .then((orderBook) => {
             if (cancelled || !isCurrentRoute(id, generation)) return;
+            invalidatePreviewForMarket();
             dispatchMarketData({
               type: "orderBookUpdated",
               marketId: id,
@@ -1367,6 +1363,7 @@ export function MarketDetailPage() {
           if (cancelled || !isCurrentRoute(id, generation)) return;
           refreshLiveOrderBook.cancel();
           const liveBook = mapSnapshotToOrderBook(snapshot);
+          invalidatePreviewForMarket();
           dispatchMarketData({
             type: "orderBookUpdated",
             marketId: id,
@@ -1403,7 +1400,7 @@ export function MarketDetailPage() {
         void leaveMarket(outcomeSetMarketId(id, outcomeSetId));
       }
     };
-  }, [id, isCurrentRoute, loadMarket, market?.id]);
+  }, [id, invalidatePreviewForMarket, isCurrentRoute, loadMarket, market?.id]);
 
   useEffect(() => {
     if (!id || !market || !needsEngineDetailRefresh(market)) return;
@@ -1432,6 +1429,7 @@ export function MarketDetailPage() {
           market.state === latest.state &&
           needsEngineDetailRefresh(latest);
         if (!unchangedPartialSnapshot) {
+          invalidatePreviewForMarket();
           dispatchMarketData({
             type: "marketSubmitRefreshLoaded",
             detail: latest,
@@ -1457,7 +1455,14 @@ export function MarketDetailPage() {
       cancelled = true;
       if (timeoutId != null) window.clearTimeout(timeoutId);
     };
-  }, [id, isCurrentRoute, market?.id, market?.closingDate, market?.state]);
+  }, [
+    id,
+    invalidatePreviewForMarket,
+    isCurrentRoute,
+    market?.id,
+    market?.closingDate,
+    market?.state,
+  ]);
 
   useEffect(() => {
     if (!market?.id) return;
@@ -1571,7 +1576,6 @@ export function MarketDetailPage() {
     if (!market || !tradeSelection || tradeAmount <= 0) return null;
     try {
       const tradeBooks = resolveTradeOrderBooks(market, tradeSelection);
-      if (!tradeBooks) return null;
       return buildTradeTicket({
         market,
         selection: tradeSelection,
@@ -1579,8 +1583,8 @@ export function MarketDetailPage() {
         side: tradeSide,
         orderType,
         limitPrice,
-        orderBook: tradeBooks.selectedBook,
-        complementaryOrderBook: tradeBooks.complementBook,
+        orderBook: tradeBooks?.selectedBook,
+        complementaryOrderBook: tradeBooks?.complementBook,
       });
     } catch {
       return null;
@@ -1605,122 +1609,55 @@ export function MarketDetailPage() {
         : null,
     [activeMintUrl, currentTradeTicket, market?.id],
   );
-  const displayedConsolidationFee =
+  const previewRequest = useMemo<PreviewFokOrderRequest | null>(() => {
+    if (currentTradeTicket === null) return null;
+    return {
+      marketId: currentTradeTicket.marketId,
+      side: currentTradeTicket.request.side,
+      tokenSide: currentTradeTicket.request.tokenSide,
+      price: currentTradeTicket.request.price,
+      faceAmountSubunits: currentTradeTicket.request.amountSubunits,
+    };
+  }, [currentTradeTicket]);
+  const previewMarketRevision = previewMarketRevisionRef.current;
+  const previewClient = useMemo(
+    () =>
+      nostrSignerMode === "none"
+        ? new BitcasterEngineClient({ baseUrl: window.location.origin })
+        : createAuthenticatedBrowserEngineClient(),
+    [nostrSignerMode],
+  );
+  const previewInvalidationKey = useMemo(() => {
+    const confirmedTradeFacts = JSON.stringify(market?.latestConfirmedTrades ?? []);
+    return [
+      currentRouteId ?? "",
+      nostrSignerMode,
+      nostrProfilePubkey ?? "anonymous",
+      previewMarketRevision,
+      market?.latestConfirmedTradesValid === true ? "valid" : "invalid",
+      confirmedTradeFacts,
+    ].join("\u0000");
+  }, [
+    currentRouteId,
+    market?.latestConfirmedTrades,
+    market?.latestConfirmedTradesValid,
+    nostrProfilePubkey,
+    nostrSignerMode,
+    previewMarketRevision,
+  ]);
+  const fokPreview = useFokOrderPreview({
+    client: previewClient,
+    request: isTradeSubmitting ? null : previewRequest,
+    invalidationKey: previewInvalidationKey,
+    debounceMs: 200,
+  });
+  const tradePreview = orderType === "market" ? fokPreview : null;
+  const limitOrderPreview = orderType === "limit" ? fokPreview : null;
+  const displayedTradeFeeFacts =
     rangeFeePreviewKey !== null && rangeFeePreview?.key === rangeFeePreviewKey
-      ? rangeFeePreview.consolidationFeeSubunits
-      : 0;
-
-  // Computed trade preview (market orders). `tradeAmount` is the user-entered
-  // whole-share count; the wire face amount is derived only at protocol
-  // boundaries.
-  const tradePreview = useMemo<TradePreview | null>(() => {
-    if (!tradeSelection || !tradeAmount || tradeAmount <= 0 || !market) return null;
-    if (orderType === "limit") return null;
-
-    const tradeBooks = resolveTradeOrderBooks(market, tradeSelection);
-    const selectedBook = tradeBooks?.selectedBook ?? null;
-    const quotePreview = computeMarketOrderQuotePreview({
-      displayShares: tradeAmount,
-      tradeSide,
-      orderBook: selectedBook,
-      complementaryOrderBook: tradeBooks?.complementBook ?? null,
-      baseAsset: marketBaseAsset,
-      divisibility: marketDivisibility,
-    });
-    if (!quotePreview) {
-      return {
-        amount: tradeAmount,
-        predictedOdds: 0,
-        priceImpact: 0,
-        averageExecutionPrice: undefined,
-        executableShares: 0,
-        hasExecutableLiquidity: false,
-        quoteSubunits: 0,
-        mintFee: 0,
-        potentialPayout: 0,
-        creatorFee: 0,
-        engineScoreFeeSats: null,
-        totalCost: 0,
-      };
-    }
-
-    const cost = computeTradeCost({
-      displayShares: quotePreview.executableDisplayShares,
-      price: quotePreview.averageExecutionPrice,
-      feePercent: market.creator.feePercent,
-      mintInputFeePpk: activeMintInputFeePpk,
-      baseAsset: marketBaseAsset,
-      divisibility: marketDivisibility,
-    });
-    const predictedOdds = Math.max(
-      0,
-      Math.min(100, (quotePreview.averageExecutionPrice / marketDivisibility) * 100),
-    );
-    return {
-      amount: tradeAmount,
-      predictedOdds,
-      priceImpact: 0,
-      averageExecutionPrice: quotePreview.averageExecutionPrice,
-      executableShares: quotePreview.executableDisplayShares,
-      hasExecutableLiquidity: true,
-      quoteSubunits: cost.quoteSubunits,
-      mintFee: cost.mintFee + displayedConsolidationFee,
-      potentialPayout: quotePreview.filledFaceSubunits,
-      creatorFee: cost.creatorFee,
-      engineScoreFeeSats: null,
-      totalCost: cost.totalCost + displayedConsolidationFee,
-    };
-  }, [
-    tradeSelection,
-    tradeAmount,
-    tradeSide,
-    market,
-    orderType,
-    activeMintInputFeePpk,
-    marketBaseAsset,
-    marketDivisibility,
-    tradeFaceAmountSubunits,
-    displayedConsolidationFee,
-  ]);
-
-  // Computed limit order preview.
-  //
-  // The displayed quote is whole shares × limit price.
-  const limitOrderPreview = useMemo<LimitOrderPreview | null>(() => {
-    if (!tradeSelection || !tradeAmount || tradeAmount <= 0 || !market) return null;
-    if (orderType !== "limit") return null;
-
-    const cost = computeTradeCost({
-      displayShares: tradeAmount,
-      price: limitPrice,
-      feePercent: market.creator.feePercent,
-      mintInputFeePpk: activeMintInputFeePpk,
-      baseAsset: marketBaseAsset,
-      divisibility: marketDivisibility,
-    });
-    return {
-      limitPrice,
-      amount: tradeAmount,
-      sharesIfFilled: tradeAmount,
-      quoteSubunits: cost.quoteSubunits,
-      creatorFee: cost.creatorFee,
-      mintFee: cost.mintFee + displayedConsolidationFee,
-      engineScoreFeeSats: null,
-      potentialPayout: tradeFaceAmountSubunits,
-      totalCost: cost.totalCost + displayedConsolidationFee,
-    };
-  }, [
-    tradeSelection,
-    tradeAmount,
-    market,
-    orderType,
-    limitPrice,
-    activeMintInputFeePpk,
-    marketBaseAsset,
-    marketDivisibility,
-    tradeFaceAmountSubunits,
-    displayedConsolidationFee,
-  ]);
+      ? rangeFeePreview.feeFacts
+      : null;
+  const feeConsentCurrent = displayedTradeFeeFacts !== null;
 
   useEffect(() => {
     if (
@@ -1770,7 +1707,7 @@ export function MarketDetailPage() {
           if (cancelled || !isCurrentRoute(routeId, generation)) return;
           setRangeFeePreview({
             key: rangeFeePreviewKey,
-            consolidationFeeSubunits: feePreview.consolidationFeeSubunits,
+            feeFacts: feePreview,
           });
           setTradeFeasibility({ canBack: true });
           return;
@@ -1796,6 +1733,7 @@ export function MarketDetailPage() {
     tradeAmount,
     marketDivisibility,
     currentTradeTicket,
+    feeFactsRefreshGeneration,
     isCurrentRoute,
     rangeFeePreviewKey,
   ]);
@@ -1837,6 +1775,7 @@ export function MarketDetailPage() {
           orderBook: books.orderBook,
           outcomeOrderBooks: books.outcomeOrderBooks,
         };
+        invalidatePreviewForMarket();
         dispatchMarketData({
           type: "marketSubmitRefreshLoaded",
           expectedRouteId: routeId,
@@ -1880,12 +1819,6 @@ export function MarketDetailPage() {
       let ticket: ReturnType<typeof buildTradeTicket>;
       try {
         const tradeBooks = resolveTradeOrderBooks(latestMarket, tradeSelection);
-        if (!tradeBooks) {
-          throw new TradeTicketError(
-            "missing-selection",
-            "Choose an outcome before placing an order.",
-          );
-        }
         ticket = buildTradeTicket({
           market: latestMarket,
           selection: tradeSelection,
@@ -1897,13 +1830,39 @@ export function MarketDetailPage() {
           side: tradeSide,
           orderType,
           limitPrice,
-          orderBook: tradeBooks.selectedBook,
-          complementaryOrderBook: tradeBooks.complementBook,
+          orderBook: tradeBooks?.selectedBook,
+          complementaryOrderBook: tradeBooks?.complementBook,
         });
       } catch (e) {
         const message =
           e instanceof TradeTicketError ? e.message : "This order cannot be submitted yet.";
         setTradeSubmitStatus({ kind: "info", message });
+        tradeSubmitInFlightRef.current = false;
+        setIsTradeSubmitting(false);
+        return;
+      }
+
+      try {
+        const finalPreview = await previewClient.previewFokOrder({
+          marketId: ticket.marketId,
+          side: ticket.request.side,
+          tokenSide: ticket.request.tokenSide,
+          price: ticket.request.price,
+          faceAmountSubunits: ticket.request.amountSubunits,
+        });
+        if (!finalPreview.fullFillAvailable) {
+          throw new Error("The order is no longer fillable at the requested terms.");
+        }
+      } catch (error) {
+        if (!routeStillActive()) return;
+        setTradeSubmitStatus({
+          kind: "error",
+          message:
+            error instanceof Error &&
+            error.message === "The order is no longer fillable at the requested terms."
+              ? error.message
+              : "The order preview is temporarily unavailable. Review the terms and try again.",
+        });
         tradeSubmitInFlightRef.current = false;
         setIsTradeSubmitting(false);
         return;
@@ -1923,25 +1882,21 @@ export function MarketDetailPage() {
           mintUrl: activeMintUrl,
           ticket,
         });
-        let expectedConsolidationFeeSubunits =
-          rangeFeePreview?.key === exactFeePreviewKey
-            ? rangeFeePreview.consolidationFeeSubunits
-            : null;
-        if (expectedConsolidationFeeSubunits === null) {
+        let consentedFeeFacts =
+          rangeFeePreview?.key === exactFeePreviewKey ? rangeFeePreview.feeFacts : null;
+        if (consentedFeeFacts === null) {
           const feePreview = await previewBrowserCtfRangeOrderFees({
             market: latestMarket,
             ticket,
             mintUrl: activeMintUrl,
           });
-          expectedConsolidationFeeSubunits = feePreview.consolidationFeeSubunits;
+          consentedFeeFacts = feePreview;
           if (!routeStillActive()) return;
           setRangeFeePreview({
             key: exactFeePreviewKey,
-            consolidationFeeSubunits: expectedConsolidationFeeSubunits,
+            feeFacts: consentedFeeFacts,
           });
-          if (expectedConsolidationFeeSubunits > 0) {
-            throw new Error("Wallet proof fees changed. Review the updated trade cost and retry.");
-          }
+          throw new Error("Wallet fee facts changed. Review the updated trade cost and retry.");
         }
         if (!routeStillActive()) return;
         const response = await submitBrowserCtfRangeOrder({
@@ -1951,7 +1906,7 @@ export function MarketDetailPage() {
           mintUrl: activeMintUrl,
           mnemonic: walletState.mnemonic,
           comment: signedComment ?? null,
-          expectedConsolidationFeeSubunits,
+          consentedFeeFacts,
           onScoreTopUpRequired: async ({ requiredSats, balanceSats }) => {
             if (!routeStillActive()) {
               throw new BrowserCtfRangeScoreTopUpCancelledError();
@@ -2034,6 +1989,12 @@ export function MarketDetailPage() {
           setTradeSubmitStatus({ kind: "error", message: e.message });
           return;
         }
+        if (e instanceof BrowserCtfRangeOrderError && e.code === "source-preparation-failed") {
+          setRangeFeePreview(null);
+          setFeeFactsRefreshGeneration((current) => current + 1);
+          setTradeSubmitStatus({ kind: "error", message: e.message });
+          return;
+        }
         if (e instanceof Error && e.message.includes("No Nostr signer configured")) {
           setShowNostrAuthModal(true);
           return;
@@ -2062,6 +2023,8 @@ export function MarketDetailPage() {
       cancelActiveScoreTopUp,
       isCurrentRoute,
       rangeFeePreview,
+      previewClient,
+      invalidatePreviewForMarket,
     ],
   );
 
@@ -2096,12 +2059,6 @@ export function MarketDetailPage() {
       setIsTradeSubmitting(true);
       try {
         const tradeBooks = resolveTradeOrderBooks(market, tradeSelection);
-        if (!tradeBooks) {
-          throw new TradeTicketError(
-            "missing-selection",
-            "Choose an outcome before placing an order.",
-          );
-        }
         const ticket = buildTradeTicket({
           market,
           selection: tradeSelection,
@@ -2109,8 +2066,8 @@ export function MarketDetailPage() {
           side: tradeSide,
           orderType,
           limitPrice,
-          orderBook: tradeBooks.selectedBook,
-          complementaryOrderBook: tradeBooks.complementBook,
+          orderBook: tradeBooks?.selectedBook,
+          complementaryOrderBook: tradeBooks?.complementBook,
         });
         const holdings = await buildIndexedDbTokenHoldings({
           mintUrl: activeMintUrl ?? undefined,
@@ -2492,6 +2449,8 @@ export function MarketDetailPage() {
         tradeSelection={tradeSelection}
         tradeAmount={tradeAmount}
         tradePreview={tradePreview}
+        tradeFeeFacts={displayedTradeFeeFacts}
+        feeConsentCurrent={feeConsentCurrent}
         tradeSide={tradeSide}
         orderType={orderType}
         limitOrderPreview={limitOrderPreview}

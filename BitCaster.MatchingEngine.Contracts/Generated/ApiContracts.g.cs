@@ -1161,6 +1161,180 @@ namespace BitCaster.MatchingEngine.Contracts
     }
 
     /// <summary>
+    /// Coarse reason for the read-only FOK preview result. `fillable` means the requested face amount passes the current price and match limits. `insufficient_liquidity` means more available market capacity may help. Other values do not promise that more capacity will help.
+    /// <br/>
+    /// </summary>
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public enum FokPreviewReason
+    {
+
+        [System.Runtime.Serialization.EnumMember(Value = @"fillable")]
+        Fillable = 0,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"insufficient_liquidity")]
+        Insufficient_liquidity = 1,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"price_limit")]
+        Price_limit = 2,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"request_too_large")]
+        Request_too_large = 3,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"market_unavailable")]
+        Market_unavailable = 4,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"temporarily_unavailable")]
+        Temporarily_unavailable = 5,
+
+    }
+
+    /// <summary>
+    /// Economic terms for one read-only public FOK preview. This request contains no time-in-force choice, owner, capability, proof, order identity, expiry, or caller match bound.
+    /// <br/>
+    /// </summary>
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class PreviewFokOrderRequest
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public PreviewFokOrderRequest(long @faceAmountSubunits, string @marketId, int @price, OrderSide @side, TokenSide @tokenSide)
+        {
+            this.MarketId = @marketId;
+            this.Side = @side;
+            this.TokenSide = @tokenSide;
+            this.Price = @price;
+            this.FaceAmountSubunits = @faceAmountSubunits;
+        }
+
+        /// <summary>
+        /// Primitive outcome market id in `{conditionId}-{outcomeName}` form. The condition segment starts with an alphanumeric character and can then contain alphanumeric characters or hyphens. The outcome segment contains one or more alphanumeric characters and must not contain a finite outcome-set separator such as `|`. Binary YES/NO markets expose only the `{conditionId}-YES` route; trade NO with `tokenSide=Complement`, and do not use `{conditionId}-NO`.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("marketId")]
+        public string MarketId { get; }
+
+        /// <summary>
+        /// Order direction relative to the selected token.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("side")]
+        [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<OrderSide>))]
+        public OrderSide Side { get; }
+
+        /// <summary>
+        /// Token represented by the selected-token price. `Complement` means the one-vs-rest complement of the primitive outcome route.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("tokenSide")]
+        [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<TokenSide>))]
+        public TokenSide TokenSide { get; }
+
+        /// <summary>
+        /// Selected-token limit-price numerator `k`. The server also requires `k &lt; D` for the market's immutable price denominator and validates the token-side mapping before planning.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("price")]
+        public int Price { get; }
+
+        /// <summary>
+        /// Positive conditional-token face amount in market collateral subunits. The server requires a whole tradable unit for the market's immutable divisibility `D`; the maximum is 1e14.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("faceAmountSubunits")]
+        public long FaceAmountSubunits { get; }
+
+    }
+
+    /// <summary>
+    /// One read-only FOK result from one captured market snapshot. Execution estimates are null unless the full requested face amount is currently executable. Quote payment excludes client-composed wallet preparation, settlement input, and consolidation fees. Final admission repeats the authoritative plan.
+    /// <br/>
+    /// </summary>
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class PreviewFokOrderResponse
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public PreviewFokOrderResponse(double? @averagePrice, int? @currentLatestTradePrice, bool @fullFillAvailable, string? @previewRevision, int? @priceDenominator, int? @projectedFinalPrice, long? @quotePaymentSubunits, FokPreviewReason @reason, bool @subsidyMayHelp, int? @worstPrice)
+        {
+            this.FullFillAvailable = @fullFillAvailable;
+            this.Reason = @reason;
+            this.PreviewRevision = @previewRevision;
+            this.QuotePaymentSubunits = @quotePaymentSubunits;
+            this.AveragePrice = @averagePrice;
+            this.WorstPrice = @worstPrice;
+            this.CurrentLatestTradePrice = @currentLatestTradePrice;
+            this.ProjectedFinalPrice = @projectedFinalPrice;
+            this.PriceDenominator = @priceDenominator;
+            this.SubsidyMayHelp = @subsidyMayHelp;
+        }
+
+        /// <summary>
+        /// True only when the complete requested face amount passes the selected-token price and bounded match checks.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("fullFillAvailable")]
+        public bool FullFillAvailable { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("reason")]
+        [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<FokPreviewReason>))]
+        public FokPreviewReason Reason { get; }
+
+        /// <summary>
+        /// Opaque revision for the captured preview snapshot. Null when no authoritative market snapshot is available. This value is display metadata and is not authorization for final admission.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("previewRevision")]
+        public string? PreviewRevision { get; }
+
+        /// <summary>
+        /// Exact quote payment in market base-asset subunits. Null when the request is not fully fillable. This excludes client-composed fees.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("quotePaymentSubunits")]
+        public long? QuotePaymentSubunits { get; }
+
+        /// <summary>
+        /// Selected-token average execution price, computed from the exact `quotePaymentSubunits` as `quotePaymentSubunits * D / faceAmountSubunits`. It may be fractional. Null when the request is not fully fillable; quotePaymentSubunits remains authoritative for exact payment.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("averagePrice")]
+        public double? AveragePrice { get; }
+
+        /// <summary>
+        /// Worst selected-token execution-price numerator across the canonical fill order. Null when the request is not fully fillable.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("worstPrice")]
+        public int? WorstPrice { get; }
+
+        /// <summary>
+        /// Latest confirmed primitive-route displayed trade-price numerator. Null when the market has no confirmed trade or no authoritative snapshot. This is a display price, not a selected-token execution price.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("currentLatestTradePrice")]
+        public int? CurrentLatestTradePrice { get; }
+
+        /// <summary>
+        /// Projected final primitive-route displayed trade-price numerator after this preview's canonical fills. Complement routes use the primitive-route display mapping. Null when the request is not fully fillable.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("projectedFinalPrice")]
+        public int? ProjectedFinalPrice { get; }
+
+        /// <summary>
+        /// Immutable market price denominator `D`. Null when no authoritative market snapshot is available.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("priceDenominator")]
+        public int? PriceDenominator { get; }
+
+        /// <summary>
+        /// A conservative hint that additional condition funding capacity may help. True only for `insufficient_liquidity` when fresh capacity might make the request executable; it never guarantees execution.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("subsidyMayHelp")]
+        public bool SubsidyMayHelp { get; }
+
+    }
+
+    /// <summary>
     /// Order lifecycle for public FOK orders and internal GTC quotes. A public FOK order is filled or cancelled. An internal GTC quote can rest or partially fill.
     /// <br/>
     /// </summary>

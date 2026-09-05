@@ -11,8 +11,7 @@ import { ResolutionInfo } from "./ResolutionInfo";
 import { RelatedMarkets } from "./RelatedMarkets";
 import { CommentSection } from "./CommentSection";
 import { canonicalizeOutcomeSet } from "@/lib/outcomeSets";
-import { deriveExecutableOrderBook, hasExecutableLiquidity } from "./orderBookViewModel";
-import { outcomeSetIdsForMarketBooks, resolveOutcomeSets } from "@/lib/outcomeSets";
+import { deriveExecutableOrderBook } from "./orderBookViewModel";
 import { formatPricePercentage } from "@bitcaster/client-sdk/marketUnits";
 
 function formatNumericPrice(value: number, unit: string, precision: number): string {
@@ -66,27 +65,7 @@ function yesNoOutcomes(market: MarketDetailProps["market"]) {
     : [
         { id: "Yes", label: "Yes", odds: market.currentOdds.yes },
         { id: "No", label: "No", odds: market.currentOdds.no },
-  ];
-}
-
-function hasSelectedTradeLiquidity(
-  market: MarketDetailProps["market"],
-  tradeSelection: MarketDetailProps["tradeSelection"],
-  tradeSide: MarketDetailProps["tradeSide"],
-): boolean {
-  if (!tradeSelection) return false;
-  const resolved = resolveOutcomeSets(market, tradeSelection);
-  if (!resolved) return false;
-  const primaryRouteId = outcomeSetIdsForMarketBooks(market)[0] ?? resolved.selectedOutcomeSetId;
-  const bookFor = (routeId: string) =>
-    market.outcomeOrderBooks?.[routeId] ??
-    (routeId === primaryRouteId ? market.orderBook : undefined);
-  return hasExecutableLiquidity({
-    book: bookFor(resolved.selectedOutcomeSetId),
-    complementBook: bookFor(resolved.complementOutcomeSetId),
-    divisibility: market.divisibility,
-    side: tradeSide,
-  });
+      ];
 }
 
 export function MarketDetail({
@@ -95,6 +74,8 @@ export function MarketDetail({
   tradeSelection,
   tradeAmount,
   tradePreview,
+  tradeFeeFacts,
+  feeConsentCurrent,
   tradeSide,
   orderType,
   limitOrderPreview,
@@ -144,11 +125,6 @@ export function MarketDetail({
       : market.type === "yesno"
         ? yesNoOutcomes(market)
         : undefined;
-  const marketOrderHasNoLiquidity =
-    orderType === "market" &&
-    !!tradeSelection &&
-    tradeAmount > 0 &&
-    tradePreview?.hasExecutableLiquidity === false;
   const backingBlocked = walletReady && tradeFeasibility?.canBack === false;
   const backingBlockReason =
     tradeFeasibility?.reason ?? (tradeSide === "Sell" ? "outcome-tokens" : "funds");
@@ -177,13 +153,15 @@ export function MarketDetail({
   const marketState = useMarketState(market.state);
   const isEffectivelyClosed = marketState === "Closed";
   const isTradingDisabled = isEffectivelyClosed;
-  const activeTradeSide = activeTradeTab === "Sell" ? "Sell" : "Buy";
-  const selectedTradeHasLiquidity = hasSelectedTradeLiquidity(
-    market,
-    tradeSelection,
-    activeTradeSide,
-  );
-
+  const activePreview = orderType === "limit" ? limitOrderPreview : tradePreview;
+  const previewNeedsAttention =
+    !!tradeSelection &&
+    tradeAmount > 0 &&
+    !(
+      activePreview?.status === "ready" &&
+      activePreview.response?.fullFillAvailable === true &&
+      feeConsentCurrent
+    );
   const handleTradeTabChange = (tab: TradeTab) => {
     setLocalTradeTab(tab);
     onTradeTabChange?.(tab);
@@ -195,6 +173,8 @@ export function MarketDetail({
       tradeSelection={tradeSelection}
       tradeAmount={tradeAmount}
       tradePreview={tradePreview}
+      tradeFeeFacts={tradeFeeFacts}
+      feeConsentCurrent={feeConsentCurrent}
       tradeSide={tradeSide}
       orderType={orderType}
       limitOrderPreview={limitOrderPreview}
@@ -267,9 +247,8 @@ export function MarketDetail({
               disabledNumeric={market.type === "numeric"}
             />
 
-            {/* Order Book. Live state is owned by MarketDetailPage so depth,
-                previews, and submit-time ticket building all read the same
-                book snapshots. Closed markets render the last known book. */}
+            {/* Order Book. Live state is display-only; the engine preview owns
+                FOK execution authority. Closed markets render the last book. */}
             {market.type === "yesno" && (
               <div className="relative" data-testid="order-book-section">
                 {isEffectivelyClosed && (
@@ -344,7 +323,7 @@ export function MarketDetail({
       {/* Mobile: Sticky Bottom Trade Bar (only for open markets) */}
       {!isTradingDisabled && activeTradeTab !== "Liquidity" && (
         <div className="fixed left-0 right-0 bottom-[calc(4rem+env(safe-area-inset-bottom))] z-40 border-t border-slate-200 bg-white p-4 dark:border-slate-700 dark:bg-slate-800 lg:hidden">
-          {tradeSelection && selectedTradeHasLiquidity ? (
+          {tradeSelection ? (
             <div className="flex items-center gap-3">
               <div className="flex-1">
                 <p className="text-xs text-slate-500 dark:text-slate-400">
@@ -352,13 +331,15 @@ export function MarketDetail({
                   {tradeSelection.outcomeId && ` - ${tradeSelection.outcomeId}`}
                 </p>
                 <p className="text-sm font-medium text-slate-900 dark:text-white">
-                  {marketOrderHasNoLiquidity
-                    ? t("trade.noExecutableLiquidity")
-                    : tradeAmount > 0
-                      ? t("trade.shareCount", {
-                          count: tradeAmount.toLocaleString(),
-                        })
-                      : t("trade.enterAmount")}
+                  {activePreview?.response?.fullFillAvailable === false
+                    ? t("trade.previewNotFillable")
+                    : previewNeedsAttention
+                      ? t("trade.previewLoading")
+                      : tradeAmount > 0
+                        ? t("trade.shareCount", {
+                            count: tradeAmount.toLocaleString(),
+                          })
+                        : t("trade.enterAmount")}
                 </p>
               </div>
               <button
@@ -382,7 +363,7 @@ export function MarketDetail({
                 disabled={
                   isTradeSubmitting ||
                   (buyNeedsTopUp ? !onTopUpRequired : backingBlocked) ||
-                  marketOrderHasNoLiquidity ||
+                  (walletReady && !buyNeedsTopUp && previewNeedsAttention) ||
                   (walletReady && (!tradeAmount || tradeAmount <= 0))
                 }
                 title={

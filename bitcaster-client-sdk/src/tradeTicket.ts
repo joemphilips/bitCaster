@@ -22,8 +22,6 @@ export interface TradeTicket {
 export type TradeTicketErrorCode =
   | 'missing-selection'
   | 'invalid-amount'
-  | 'no-market-liquidity'
-  | 'missing-order-book'
   | 'unsupported-settlement'
 
 export class TradeTicketError extends Error {
@@ -46,28 +44,8 @@ function resolveTradeOutcome(
 function marketPriceFor(
   side: SdkTradeSide,
   divisibility: number,
-  orderBook: SdkOrderBook | null | undefined,
-  complementaryOrderBook: SdkOrderBook | null | undefined,
 ): number {
-  const direct = side === 'Buy' ? orderBook?.asks[0] : orderBook?.bids[0]
-  if (direct) return side === 'Buy' ? divisibility - 1 : 1
-
-  if (side === 'Buy') {
-    const complementaryBid = complementaryOrderBook?.bids[0]
-    if (complementaryBid) return divisibility - 1
-  }
-
-  if (!orderBook && !complementaryOrderBook) {
-    throw new TradeTicketError(
-      'missing-order-book',
-      'No live order book is loaded for this outcome yet. Use Limit to post an order, or try again after the book loads.',
-    )
-  }
-
-  throw new TradeTicketError(
-    'no-market-liquidity',
-    'No matching liquidity is available right now. Switch to Limit to post an order to the book.',
-  )
+  return side === 'Buy' ? divisibility - 1 : 1
 }
 
 export function buildTradeTicket(params: {
@@ -81,8 +59,7 @@ export function buildTradeTicket(params: {
   orderBook?: SdkOrderBook | null
   complementaryOrderBook?: SdkOrderBook | null
 }): TradeTicket {
-  const { market, selection, side, orderType, limitPrice, orderBook, complementaryOrderBook } =
-    params
+  const { market, selection, side, orderType, limitPrice } = params
   const amountSubunits = params.amountSubunits ?? params.amountSats
 
   if (!selection) {
@@ -119,7 +96,7 @@ export function buildTradeTicket(params: {
   const price =
     orderType === 'limit'
       ? Math.min(Math.max(Math.round(limitPrice), 1), divisibility - 1)
-      : marketPriceFor(side, divisibility, orderBook, complementaryOrderBook)
+      : marketPriceFor(side, divisibility)
   if (!validatePriceNumerator(price, divisibility)) {
     throw new TradeTicketError('invalid-amount', `Enter a price from 1 to ${divisibility - 1}.`)
   }
