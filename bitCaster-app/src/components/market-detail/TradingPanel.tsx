@@ -3,8 +3,8 @@ import { X, ChevronUp, ChevronDown, Loader2 } from "lucide-react";
 import type {
   MarketDetail,
   TradeSelection,
-  TradePreview,
-  LimitOrderPreview,
+  FokOrderPreviewState,
+  TradeFeeFacts,
   TradeSide,
   TradeTab,
   OrderType,
@@ -13,22 +13,14 @@ import type {
 } from "@/types/market-detail";
 import { useTranslation } from "react-i18next";
 import {
-  formatMarketSubunits,
   formatPricePercentage,
   formatShareFace,
   marketUnitLabel,
-  estimatedSettlementFeeSubunits,
   type MarketBaseAsset,
   normalizeMarketBaseAsset,
   parseMarketDivisibility,
 } from "@bitcaster/client-sdk/marketUnits";
 import { DepositStep } from "@/components/market-creation/DepositStep";
-import {
-  complementOutcomeSetId,
-  outcomeSetIdsForMarketBooks,
-  resolveOutcomeSets,
-} from "@/lib/outcomeSets";
-import { hasExecutableLiquidity } from "./orderBookViewModel";
 
 function formatNullablePrice(
   price: number | null,
@@ -45,10 +37,12 @@ interface TradingPanelProps {
   market: MarketDetail;
   tradeSelection: TradeSelection | null;
   tradeAmount: number;
-  tradePreview: TradePreview | null;
+  tradePreview: FokOrderPreviewState | null;
+  tradeFeeFacts?: TradeFeeFacts | null;
+  feeConsentCurrent?: boolean;
   tradeSide: TradeSide;
   orderType: OrderType;
-  limitOrderPreview?: LimitOrderPreview | null;
+  limitOrderPreview?: FokOrderPreviewState | null;
   limitPrice?: number;
   userHoldings?: number;
   tradeSubmitStatus?: {
@@ -79,72 +73,6 @@ interface TradingPanelProps {
 }
 
 type TradingTab = TradeTab;
-
-function fallbackOutcomeLabels(market: MarketDetail): string[] {
-  if (market.type === "yesno") {
-    return market.outcomes?.map((outcome) => outcome.label) ?? ["Yes", "No"];
-  }
-  if (market.type === "categorical") return market.outcomes.map((outcome) => outcome.label);
-  return ["HI", "LO"];
-}
-
-function routeIdsForMarket(market: MarketDetail): string[] {
-  const configuredIds = outcomeSetIdsForMarketBooks(market);
-  const bookIds = Object.keys(market.outcomeOrderBooks ?? {});
-  const ids = [...new Set([...configuredIds, ...bookIds])];
-  if (ids.length > 0) return ids;
-  return fallbackOutcomeLabels(market).map((label) => label.trim()).filter(Boolean);
-}
-
-function routeBookForMarket(market: MarketDetail, routeId: string) {
-  const primaryRouteId = routeIdsForMarket(market)[0];
-  return market.outcomeOrderBooks?.[routeId] ??
-    (routeId === primaryRouteId ? market.orderBook : undefined);
-}
-
-function complementRouteIdForMarket(market: MarketDetail, routeId: string): string {
-  return complementOutcomeSetId(fallbackOutcomeLabels(market), routeId);
-}
-
-function selectedRouteIdsForMarket(
-  market: MarketDetail,
-  selection: TradeSelection,
-): { selectedOutcomeSetId: string; complementOutcomeSetId: string } | null {
-  const resolved = resolveOutcomeSets(market, selection);
-  if (resolved) {
-    return {
-      selectedOutcomeSetId: resolved.selectedOutcomeSetId,
-      complementOutcomeSetId: resolved.complementOutcomeSetId,
-    };
-  }
-
-  const routeIds = routeIdsForMarket(market);
-  if (routeIds.length === 0) return null;
-  const selectedIndex =
-    market.type === "categorical"
-      ? routeIds.findIndex((routeId) => routeId === selection.outcomeId)
-      : selection.side === "no" || selection.side === "lo"
-        ? 1
-        : 0;
-  const selectedOutcomeSetId = routeIds[selectedIndex >= 0 ? selectedIndex : 0];
-  return {
-    selectedOutcomeSetId,
-    complementOutcomeSetId: complementRouteIdForMarket(market, selectedOutcomeSetId),
-  };
-}
-
-function possibleTradeSelections(market: MarketDetail): TradeSelection[] {
-  if (market.type === "categorical") {
-    return market.outcomes.flatMap((outcome) => [
-      { side: "yes", outcomeId: outcome.id },
-      { side: "no", outcomeId: outcome.id },
-    ]);
-  }
-  if (market.type === "yesno") {
-    return [{ side: "yes" }, { side: "no" }];
-  }
-  return [{ side: "hi" }, { side: "lo" }];
-}
 
 // Buy quick-presets are user-facing display shares. Boundary code maps each
 // display share to a market-divisibility-sized conditional-token face lot
@@ -532,70 +460,265 @@ function formatPriceWithProbability(
   return `${formatLimitPriceAmount(price, baseAsset)} (${formatPricePercentage(price, divisibility)})`;
 }
 
-function LimitOrderPreviewSection({
+function formatMsatSubunits(value: string | number | bigint): string {
+  try {
+    const amount = BigInt(value);
+    const sign = amount < 0n ? "-" : "";
+    const absolute = amount < 0n ? -amount : amount;
+    const whole = absolute / 1_000n;
+    const remainder = (absolute % 1_000n).toString().padStart(3, "0");
+    return `${sign}${whole.toLocaleString()}.${remainder} sats`;
+  } catch {
+    return "—";
+  }
+}
+
+function feeAssetLabel(asset: TradeFeeFacts["settlementAsset"]): string {
+  return asset.kind === "regular" ? "sats" : "conditional tokens";
+}
+
+function previewReasonKey(reason: string): string {
+  return `trade.previewReason.${reason}`;
+}
+
+function FokOrderPreviewSection({
   preview,
   divisibility,
   baseAsset,
-  formatAmount,
+  feeFacts,
+  feeConsentCurrent,
+  isSell,
 }: {
-  preview: LimitOrderPreview;
+  preview: FokOrderPreviewState | null;
   divisibility: number;
   baseAsset: MarketBaseAsset;
-  formatAmount: (amount: number) => string;
+  feeFacts: TradeFeeFacts | null | undefined;
+  feeConsentCurrent: boolean;
+  isSell: boolean;
 }) {
   const { t } = useTranslation();
-  const estimatedSettlementFee = estimatedSettlementFeeSubunits(baseAsset);
-  const totalWithFee = preview.totalCost + estimatedSettlementFee;
+  if (preview == null || preview.status === "idle") return null;
+  if (preview.status === "loading") {
+    return (
+      <div
+        data-testid="fok-preview-loading"
+        className="rounded-xl bg-slate-50 p-4 text-sm text-slate-500 dark:bg-slate-900 dark:text-slate-400"
+      >
+        {t("trade.previewLoading")}
+      </div>
+    );
+  }
+  if (preview.status === "error") {
+    return (
+      <div
+        data-testid="fok-preview-error"
+        className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-700 dark:border-rose-800 dark:bg-rose-950/30 dark:text-rose-300"
+      >
+        <p>{preview.error ?? t("trade.previewUnavailable")}</p>
+        {preview.retryAfterSeconds != null && (
+          <p className="mt-1">
+            {t("trade.previewRetryAfter", { seconds: preview.retryAfterSeconds })}
+          </p>
+        )}
+        <button
+          type="button"
+          data-testid="fok-preview-retry"
+          className="mt-3 rounded-lg border border-rose-300 px-3 py-1.5 text-xs font-medium text-rose-700 hover:bg-rose-100 focus:outline-none focus:ring-2 focus:ring-rose-500 dark:border-rose-700 dark:text-rose-300 dark:hover:bg-rose-900/40"
+          onClick={preview.refresh}
+        >
+          {t("trade.previewRetry")}
+        </button>
+      </div>
+    );
+  }
+
+  const response = preview.response;
+  if (response == null) return null;
+  if (!response.fullFillAvailable) {
+    return (
+      <div
+        data-testid="fok-preview-nonfillable"
+        className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-300"
+      >
+        <p>
+          {t(previewReasonKey(response.reason), { defaultValue: t("trade.previewNotFillable") })}
+        </p>
+        {response.subsidyMayHelp === true && (
+          <p data-testid="fok-preview-subsidy" className="mt-2">
+            {t("trade.previewSubsidyMayHelp")}
+          </p>
+        )}
+      </div>
+    );
+  }
+
+  const previewDenominator = response.priceDenominator ?? divisibility;
+  const hasRegularSettlementAsset = feeFacts?.settlementAsset.kind === "regular";
+  const hasRegularPreparationAsset = feeFacts?.preparationAsset.kind === "regular";
+  const quotePayment = response.quotePaymentSubunits;
+  const settlementFee = feeFacts?.settlementInputFeeSubunits;
+  const buyTotal =
+    !isSell &&
+    quotePayment != null &&
+    feeFacts != null &&
+    hasRegularSettlementAsset &&
+    hasRegularPreparationAsset
+      ? BigInt(quotePayment) +
+        BigInt(feeFacts.settlementInputFeeSubunits) +
+        BigInt(feeFacts.sourcePreparationFeeSubunits) +
+        BigInt(feeFacts.consolidationFeeSubunits)
+      : null;
+  const sellNetProceeds =
+    isSell && quotePayment != null && settlementFee != null && hasRegularSettlementAsset
+      ? BigInt(quotePayment) - BigInt(settlementFee)
+      : null;
+
   return (
-    <div className="bg-slate-50 dark:bg-slate-900 rounded-xl p-4 space-y-2 mb-4">
-      <div className="flex justify-between text-sm">
-        <span className="text-slate-500 dark:text-slate-400">{t("trade.pricePerShareLabel")}</span>
-        <span className="font-medium text-slate-600 dark:text-slate-300">
-          {formatPriceWithProbability(preview.limitPrice, divisibility, baseAsset)}
-        </span>
-      </div>
-      <div className="pt-2 border-t border-slate-200 dark:border-slate-700 flex justify-between">
-        <span className="text-slate-700 dark:text-slate-300 font-medium">
-          {t("trade.quotePayment")}
-        </span>
-        <span className="font-bold text-blue-600 dark:text-blue-400" data-testid="limit-total-cost">
-          {formatAmount(preview.totalCost - preview.mintFee)}
-        </span>
-      </div>
-      {preview.mintFee > 0 && (
-        <div className="flex justify-between text-sm">
-          <span className="text-slate-500 dark:text-slate-400" title={t("trade.mintFeeTooltip")}>
-            {t("trade.mintFee")}
-          </span>
-          <span
-            className="font-medium text-slate-600 dark:text-slate-300"
-            data-testid="limit-mint-fee"
-          >
-            {formatAmount(preview.mintFee)}
-          </span>
-        </div>
-      )}
+    <div
+      data-testid="fok-preview-ready"
+      className="rounded-xl bg-slate-50 p-4 space-y-2 mb-4 dark:bg-slate-900"
+    >
       <div className="flex justify-between text-sm">
         <span className="text-slate-500 dark:text-slate-400">
-          {t("trade.estimatedSettlementFee")}
+          {t("trade.selectedAveragePrice")}
         </span>
         <span
+          data-testid="trade-average-execution-price"
           className="font-medium text-slate-600 dark:text-slate-300"
-          data-testid="limit-settlement-fee"
         >
-          {formatAmount(estimatedSettlementFee)}
+          {response.averagePrice == null
+            ? "—"
+            : formatPriceWithProbability(response.averagePrice, previewDenominator, baseAsset)}
         </span>
       </div>
-      <div className="flex justify-between">
-        <span className="text-slate-700 dark:text-slate-300 font-medium">
-          {t("trade.totalWithFee")}
+      <div className="flex justify-between text-sm">
+        <span className="text-slate-500 dark:text-slate-400">{t("trade.selectedWorstPrice")}</span>
+        <span
+          data-testid="trade-worst-price"
+          className="font-medium text-slate-600 dark:text-slate-300"
+        >
+          {response.worstPrice == null
+            ? "—"
+            : formatPriceWithProbability(response.worstPrice, previewDenominator, baseAsset)}
+        </span>
+      </div>
+      <div className="flex justify-between text-sm">
+        <span className="text-slate-500 dark:text-slate-400">
+          {t("trade.confirmedPrimitivePrice")}
         </span>
         <span
-          className="font-bold text-blue-600 dark:text-blue-400"
-          data-testid="limit-grand-total"
+          data-testid="trade-current-latest-price"
+          className="font-medium text-slate-600 dark:text-slate-300"
         >
-          {formatAmount(totalWithFee)}
+          {response.currentLatestTradePrice == null
+            ? t("trade.noTrades")
+            : formatPricePercentage(response.currentLatestTradePrice, previewDenominator)}
         </span>
+      </div>
+      <div className="flex justify-between text-sm">
+        <span className="text-slate-500 dark:text-slate-400">{t("trade.projectedFinalPrice")}</span>
+        <span
+          data-testid="trade-projected-final-price"
+          className="font-medium text-slate-600 dark:text-slate-300"
+        >
+          {response.projectedFinalPrice == null
+            ? "—"
+            : formatPricePercentage(response.projectedFinalPrice, previewDenominator)}
+        </span>
+      </div>
+      <div className="border-t border-slate-200 pt-2 dark:border-slate-700">
+        <div className="flex justify-between font-medium">
+          <span className="text-slate-700 dark:text-slate-300">
+            {isSell ? t("trade.quoteProceeds") : t("trade.quotePayment")}
+          </span>
+          <span
+            data-testid="trade-quote-payment"
+            className="font-bold text-blue-600 dark:text-blue-400"
+          >
+            {response.quotePaymentSubunits == null
+              ? "—"
+              : formatMsatSubunits(String(response.quotePaymentSubunits))}
+          </span>
+        </div>
+        {feeFacts != null ? (
+          <>
+            <div className="mt-2 flex justify-between text-sm">
+              <span className="text-slate-500 dark:text-slate-400">
+                {t("trade.settlementInputFee")}
+              </span>
+              <span
+                data-testid="trade-settlement-input-fee"
+                className="text-slate-600 dark:text-slate-300"
+              >
+                {formatMsatSubunits(feeFacts.settlementInputFeeSubunits)} (
+                {feeAssetLabel(feeFacts.settlementAsset)})
+              </span>
+            </div>
+            <div className="flex justify-between text-sm">
+              <span className="text-slate-500 dark:text-slate-400">
+                {t("trade.sourcePreparationFee")}
+              </span>
+              <span
+                data-testid="trade-source-preparation-fee"
+                className="text-slate-600 dark:text-slate-300"
+              >
+                {formatMsatSubunits(feeFacts.sourcePreparationFeeSubunits)} (
+                {feeAssetLabel(feeFacts.preparationAsset)})
+              </span>
+            </div>
+            <div className="flex justify-between text-sm">
+              <span className="text-slate-500 dark:text-slate-400">
+                {t("trade.consolidationFee")}
+              </span>
+              <span
+                data-testid="trade-consolidation-fee"
+                className="text-slate-600 dark:text-slate-300"
+              >
+                {formatMsatSubunits(feeFacts.consolidationFeeSubunits)} (
+                {feeAssetLabel(feeFacts.preparationAsset)})
+              </span>
+            </div>
+            {buyTotal != null && (
+              <div className="mt-2 flex justify-between font-medium">
+                <span className="text-slate-700 dark:text-slate-300">
+                  {t("trade.totalWithFee")}
+                </span>
+                <span
+                  data-testid="trade-grand-total"
+                  className="font-bold text-blue-600 dark:text-blue-400"
+                >
+                  {formatMsatSubunits(buyTotal)}
+                </span>
+              </div>
+            )}
+            {sellNetProceeds != null && (
+              <div className="mt-2 flex justify-between font-medium">
+                <span className="text-slate-700 dark:text-slate-300">{t("trade.netProceeds")}</span>
+                <span
+                  data-testid="trade-net-proceeds"
+                  className="font-bold text-blue-600 dark:text-blue-400"
+                >
+                  {formatMsatSubunits(sellNetProceeds)}
+                </span>
+              </div>
+            )}
+            {!feeConsentCurrent && (
+              <p
+                data-testid="trade-fee-consent-required"
+                className="pt-2 text-xs text-amber-700 dark:text-amber-300"
+              >
+                {t("trade.feeConsentRequired")}
+              </p>
+            )}
+          </>
+        ) : (
+          <p
+            data-testid="trade-fees-loading"
+            className="pt-2 text-xs text-slate-500 dark:text-slate-400"
+          >
+            {t("trade.feesLoading")}
+          </p>
+        )}
       </div>
     </div>
   );
@@ -606,6 +729,8 @@ export function TradingPanel({
   tradeSelection,
   tradeAmount,
   tradePreview,
+  tradeFeeFacts,
+  feeConsentCurrent = false,
   tradeSide,
   orderType,
   limitOrderPreview,
@@ -642,8 +767,6 @@ export function TradingPanel({
   const validDivisibility = parseMarketDivisibility(market.divisibility);
   const divisibility = validDivisibility ?? 0;
   const wholeShareLabel = divisibility > 0 ? formatShareFace(baseAsset, divisibility) : "";
-  const formatAmount = (amount: number) => formatMarketSubunits(amount, baseAsset);
-  const estimatedSettlementFee = estimatedSettlementFeeSubunits(baseAsset);
   const shareCountLabel = (shares: number) =>
     t("trade.shareCount", { count: shares.toLocaleString() });
   const [tradeAmountText, setTradeAmountText] = useState(
@@ -652,11 +775,12 @@ export function TradingPanel({
   const [isTradeAmountFocused, setIsTradeAmountFocused] = useState(false);
   const userHoldingShares = userHoldings == null ? null : Math.floor(userHoldings / divisibility);
   const tradingDisabled = disabled;
-  const marketOrderHasNoLiquidity =
-    !isLimit &&
-    !!tradeSelection &&
-    tradeAmount > 0 &&
-    tradePreview?.hasExecutableLiquidity === false;
+  const previewResponse = (isLimit ? limitOrderPreview : tradePreview)?.response ?? null;
+  const previewIsFillable =
+    (isLimit ? limitOrderPreview : tradePreview)?.status === "ready" &&
+    previewResponse?.fullFillAvailable === true &&
+    feeConsentCurrent;
+  const previewNeedsAttention = !!tradeSelection && tradeAmount > 0 && !previewIsFillable;
   const backingBlocked = walletReady && tradeFeasibility?.canBack === false;
   const backingBlockReason = tradeFeasibility?.reason ?? (isSell ? "outcome-tokens" : "funds");
   const backingBlockMessage =
@@ -682,46 +806,12 @@ export function TradingPanel({
     onTradeTabChange?.("Liquidity");
   };
 
-  const hasRouteLiquidity = (routeId: string, side: TradeSide): boolean => {
-    const complementRouteId = complementRouteIdForMarket(market, routeId);
-    return hasExecutableLiquidity({
-      book: routeBookForMarket(market, routeId),
-      complementBook: routeBookForMarket(market, complementRouteId),
-      divisibility,
-      side,
-    });
-  };
-
-  const hasTradeLiquidity = (() => {
-    if (activeTab === "Liquidity") return true;
-    if (tradeSelection) {
-      const resolved = selectedRouteIdsForMarket(market, tradeSelection);
-      return resolved ? hasRouteLiquidity(resolved.selectedOutcomeSetId, activeTradeSide) : false;
-    }
-
-    const possibleOutcomeSets = possibleTradeSelections(market)
-      .map((selection) => resolveOutcomeSets(market, selection))
-      .filter(
-        (outcomeSets): outcomeSets is NonNullable<ReturnType<typeof resolveOutcomeSets>> =>
-          outcomeSets != null,
-      );
-    if (possibleOutcomeSets.length > 0) {
-      return possibleOutcomeSets.some((outcomeSets) =>
-        hasRouteLiquidity(outcomeSets.selectedOutcomeSetId, activeTradeSide),
-      );
-    }
-
-    return routeIdsForMarket(market).some((routeId) =>
-      hasRouteLiquidity(routeId, activeTradeSide),
-    );
-  })();
-
   const outcomeCount =
     market.type === "categorical"
       ? market.outcomes.length
       : market.type === "yesno"
-        ? market.outcomes?.length ?? market.registeredPrimitiveOutcomeIds?.length ?? 2
-        : market.registeredPrimitiveOutcomeIds?.length ?? 2;
+        ? (market.outcomes?.length ?? market.registeredPrimitiveOutcomeIds?.length ?? 2)
+        : (market.registeredPrimitiveOutcomeIds?.length ?? 2);
 
   useEffect(() => {
     if (!isTradeAmountFocused) {
@@ -756,7 +846,10 @@ export function TradingPanel({
     if (!tradeAmount || tradeAmount <= 0) return t("trade.enterAmount");
     if (buyNeedsTopUp) return t("trade.topUpWalletUnit", { unit: unitLabel });
     if (backingBlocked) return backingBlockMessage;
-    if (marketOrderHasNoLiquidity) return t("trade.noExecutableLiquidity");
+    if (previewNeedsAttention && previewResponse?.fullFillAvailable === false) {
+      return t("trade.previewNotFillable");
+    }
+    if (previewNeedsAttention && !buyNeedsTopUp) return t("trade.previewLoading");
     const sideLabel = tradeSelection?.side.toUpperCase() ?? "";
     const amountLabel = shareCountLabel(tradeAmount);
 
@@ -853,20 +946,6 @@ export function TradingPanel({
             </p>
           </div>
         )
-      ) : !hasTradeLiquidity ? (
-        <div data-testid="empty-trade-liquidity" className="space-y-3 py-4">
-          <p className="text-sm text-slate-500 dark:text-slate-400">
-            {t("trade.emptyBookDescription")}
-          </p>
-          <button
-            type="button"
-            data-testid="open-liquidity-tab"
-            onClick={selectLiquidityTab}
-            className="rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-slate-300 dark:disabled:bg-slate-700"
-          >
-            {t("market.liquidity")}
-          </button>
-        </div>
       ) : (
         <>
           <MarketLimitToggle
@@ -898,7 +977,7 @@ export function TradingPanel({
       )}
 
       {/* Trade Form (shown when outcome selected) */}
-      {!tradingDisabled && activeTab !== "Liquidity" && hasTradeLiquidity && tradeSelection && (
+      {!tradingDisabled && activeTab !== "Liquidity" && tradeSelection && (
         <div className="mt-5 pt-5 border-t border-slate-200 dark:border-slate-700">
           <div className="flex items-center justify-between mb-1">
             <span className="text-sm font-medium text-slate-600 dark:text-slate-400">
@@ -1000,95 +1079,15 @@ export function TradingPanel({
             />
           )}
 
-          {/* Market Order Preview */}
-          {!isLimit && tradePreview && tradeAmount > 0 && (
-            <div className="bg-slate-50 dark:bg-slate-900 rounded-xl p-4 space-y-2 mb-4">
-              {tradePreview.hasExecutableLiquidity === false ? (
-                <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-300">
-                  {t("trade.noExecutableLiquidityDescription")}
-                </div>
-              ) : (
-                <>
-                  <div className="flex justify-between text-sm">
-                    <span className="text-slate-500 dark:text-slate-400">
-                      {t("trade.pricePerShareLabel")}
-                    </span>
-                    <span
-                      className="font-medium text-slate-600 dark:text-slate-300"
-                      data-testid="trade-average-execution-price"
-                    >
-                      {formatPriceWithProbability(
-                        tradePreview.averageExecutionPrice ?? 0,
-                        divisibility,
-                        baseAsset,
-                      )}
-                    </span>
-                  </div>
-                </>
-              )}
-              {tradePreview.hasExecutableLiquidity !== false && (
-                <>
-                  <div className="pt-2 border-t border-slate-200 dark:border-slate-700 flex justify-between">
-                    <span className="text-slate-700 dark:text-slate-300 font-medium">
-                      {t("trade.quotePayment")}
-                    </span>
-                    <span
-                      className="font-bold text-blue-600 dark:text-blue-400"
-                      data-testid="trade-total-cost"
-                    >
-                      {formatAmount(tradePreview.totalCost - tradePreview.mintFee)}
-                    </span>
-                  </div>
-                  {tradePreview.mintFee > 0 && (
-                    <div className="flex justify-between text-sm">
-                      <span
-                        className="text-slate-500 dark:text-slate-400"
-                        title={t("trade.mintFeeTooltip")}
-                      >
-                        {t("trade.mintFee")}
-                      </span>
-                      <span
-                        className="font-medium text-slate-600 dark:text-slate-300"
-                        data-testid="trade-mint-fee"
-                      >
-                        {formatAmount(tradePreview.mintFee)}
-                      </span>
-                    </div>
-                  )}
-                  <div className="flex justify-between text-sm">
-                    <span className="text-slate-500 dark:text-slate-400">
-                      {t("trade.estimatedSettlementFee")}
-                    </span>
-                    <span
-                      className="font-medium text-slate-600 dark:text-slate-300"
-                      data-testid="trade-settlement-fee"
-                    >
-                      {formatAmount(estimatedSettlementFee)}
-                    </span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-slate-700 dark:text-slate-300 font-medium">
-                      {t("trade.totalWithFee")}
-                    </span>
-                    <span
-                      className="font-bold text-blue-600 dark:text-blue-400"
-                      data-testid="trade-grand-total"
-                    >
-                      {formatAmount(tradePreview.totalCost + estimatedSettlementFee)}
-                    </span>
-                  </div>
-                </>
-              )}
-            </div>
-          )}
-
-          {/* Limit Order Preview */}
-          {isLimit && limitOrderPreview && tradeAmount > 0 && (
-            <LimitOrderPreviewSection
-              preview={limitOrderPreview}
+          {/* The engine preview is authoritative for both market and limit FOK. */}
+          {tradeAmount > 0 && (
+            <FokOrderPreviewSection
+              preview={isLimit ? (limitOrderPreview ?? null) : tradePreview}
               divisibility={divisibility}
               baseAsset={baseAsset}
-              formatAmount={formatAmount}
+              feeFacts={tradeFeeFacts}
+              feeConsentCurrent={feeConsentCurrent}
+              isSell={isSell}
             />
           )}
 
@@ -1175,7 +1174,7 @@ export function TradingPanel({
               isTradeSubmitting ||
               tradingDisabled ||
               (buyNeedsTopUp ? !onTopUpRequired : backingBlocked) ||
-              marketOrderHasNoLiquidity ||
+              (walletReady && !buyNeedsTopUp && previewNeedsAttention) ||
               (walletReady && (!tradeAmount || tradeAmount <= 0))
             }
             title={backingBlocked && !buyNeedsTopUp ? backingBlockMessage : undefined}

@@ -44,9 +44,11 @@ import {
 import {
   buildPersistedCtfRangeOrderPreparation,
   createCtfRangeOrderPreparationKeysetResolver,
+  planPersistedCtfRangeOrderAuthorization,
   type CtfRangeOrderRequest,
   type PersistedCtfRangeOrderPreparation,
 } from "@bitcaster/client-sdk/ctfRangeOrderProtocol";
+import { composeCtfRangeOrderFeeFacts } from "@bitcaster/client-sdk/ctfRangeOrderFeeComposition";
 import { calculateSettlementCapabilityV1Tariff } from "@bitcaster/client-sdk/participationScore";
 import {
   decodeSettlementCapabilityArtifactBytes,
@@ -506,6 +508,55 @@ describe("browser CTF range order coordinator", () => {
         ({ reservedBy }) => reservedBy === custodyOperationId(preparation.operationId),
       ),
     ).toBe(true);
+  });
+
+  it("rejects a changed source fee before persisting or attempting the mint source", async () => {
+    const database = createDatabase();
+    const preparation = persistedPreparation("range-source-fee-changed");
+    const consentedFeeFacts = {
+      ...coordinatorFeeFacts(preparation),
+      sourcePreparationFeeSubunits: "0",
+    };
+    const coordinator = createCoordinator(database, sourceWallet(), engineMock());
+
+    await expect(
+      coordinator.prepareAndSubmit({
+        seed: SEED,
+        preparation,
+        candidates: [sourceProof(preparation.offerKeyset.id)],
+        consentedFeeFacts,
+        paidConsolidationFeeSubunits: "0",
+        currentFeeFacts: coordinatorFeeFacts(preparation),
+      }),
+    ).rejects.toMatchObject({ code: "source-preparation-failed" });
+
+    expect(await database.custodyOperations.count()).toBe(0);
+    expect(await database.ctfRangePreparations.count()).toBe(0);
+  });
+
+  it("rejects authorization fee facts that differ from persisted preparation", async () => {
+    const database = createDatabase();
+    const preparation = persistedPreparation("range-authorization-fee-changed");
+    const persistedFeeFacts = coordinatorFeeFacts(preparation);
+    const invalidFeeFacts = {
+      ...persistedFeeFacts,
+      settlementInputFeeSubunits: "0",
+    };
+    const coordinator = createCoordinator(database, sourceWallet(), engineMock());
+
+    await expect(
+      coordinator.prepareAndSubmit({
+        seed: SEED,
+        preparation,
+        candidates: [sourceProof(preparation.offerKeyset.id)],
+        consentedFeeFacts: invalidFeeFacts,
+        paidConsolidationFeeSubunits: "0",
+        currentFeeFacts: invalidFeeFacts,
+      }),
+    ).rejects.toMatchObject({ code: "source-preparation-failed" });
+
+    expect(await database.custodyOperations.count()).toBe(0);
+    expect(await database.ctfRangePreparations.count()).toBe(0);
   });
 
   it("funds the exact capability tariff before the first capability request", async () => {
@@ -1842,6 +1893,23 @@ describe("browser CTF range order coordinator", () => {
   });
 });
 
+type CoordinatorSubmitInput = Parameters<BrowserCtfRangeOrderCoordinator["prepareAndSubmit"]>[0];
+type TestCoordinatorSubmitInput = Omit<
+  CoordinatorSubmitInput,
+  "consentedFeeFacts" | "paidConsolidationFeeSubunits" | "currentFeeFacts"
+> &
+  Partial<
+    Pick<
+      CoordinatorSubmitInput,
+      "consentedFeeFacts" | "paidConsolidationFeeSubunits" | "currentFeeFacts"
+    >
+  >;
+type TestCoordinator = Omit<BrowserCtfRangeOrderCoordinator, "prepareAndSubmit"> & {
+  prepareAndSubmit(
+    input: TestCoordinatorSubmitInput,
+  ): ReturnType<BrowserCtfRangeOrderCoordinator["prepareAndSubmit"]>;
+};
+
 function createCoordinator(
   database: BitcasterDB,
   wallet: ReturnType<typeof sourceWallet>,
@@ -1858,9 +1926,9 @@ function createCoordinator(
     counterSource?: CounterSource;
     createCounterSource?: (scopeId: string, mintUrl: string, unit: string) => CounterSource;
   } = {},
-) {
+): TestCoordinator {
   let now = 20_000;
-  return new BrowserCtfRangeOrderCoordinator({
+  const coordinator = new BrowserCtfRangeOrderCoordinator({
     database,
     wallet,
     engine,
@@ -1905,6 +1973,15 @@ function createCoordinator(
         },
       })),
   });
+  const prepareAndSubmit = coordinator.prepareAndSubmit.bind(coordinator);
+  const testPrepareAndSubmit = (input: TestCoordinatorSubmitInput) =>
+    prepareAndSubmit({
+      ...input,
+      consentedFeeFacts: input.consentedFeeFacts ?? coordinatorFeeFacts(input.preparation),
+      paidConsolidationFeeSubunits: input.paidConsolidationFeeSubunits ?? "0",
+      currentFeeFacts: input.currentFeeFacts ?? coordinatorFeeFacts(input.preparation),
+    });
+  return Object.assign(coordinator, { prepareAndSubmit: testPrepareAndSubmit }) as TestCoordinator;
 }
 
 async function bindJournalCapability(
@@ -2373,6 +2450,36 @@ function persistedPreparation(
     },
     nowUnixSeconds: 20,
     randomId: sequentialId(operationId, `${operationId}:authorization`),
+  });
+}
+
+function coordinatorFeeFacts(preparation: PersistedCtfRangeOrderPreparation) {
+  const sourceAsset =
+    preparation.side === "Buy"
+      ? ({ kind: "regular", unit: "msat" } as const)
+      : {
+          kind: "conditional" as const,
+          unit: "msat" as const,
+          conditionId: (
+            preparation.offerKeyset as typeof preparation.offerKeyset & { conditionId: string }
+          ).conditionId,
+          outcomeCollection: (
+            preparation.offerKeyset as typeof preparation.offerKeyset & {
+              outcomeCollection: string;
+            }
+          ).outcomeCollection,
+        };
+  return composeCtfRangeOrderFeeFacts({
+    authorizationPlan: planPersistedCtfRangeOrderAuthorization(preparation),
+    sourcePlan: {
+      kind: "ready",
+      consolidationRounds: [],
+      selectedInputs: [],
+      consolidationFee: "0",
+      sourceFee: "1",
+    },
+    settlementAsset: { kind: "regular", unit: "msat" },
+    preparationAsset: sourceAsset,
   });
 }
 

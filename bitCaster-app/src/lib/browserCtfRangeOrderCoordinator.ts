@@ -42,6 +42,7 @@ import {
   prepareDurableCtfRangeVerifiedResult,
   recoverDurableCtfRangeVerifiedResultArtifact,
   type DurableCtfRangeOperation,
+  type DurableCtfRangeAsset,
   type DurableCtfRangeKeysetResolver,
   type DurableCtfRangeRecoveredResult,
   type DurableCtfRangeVerifiedResultPreparation,
@@ -62,6 +63,11 @@ import {
   type CtfRangeSourceResult,
   type CtfRangeSourceWallet,
 } from "@bitcaster/client-sdk/ctfRangeSourceOperation";
+import {
+  assertCtfRangeOrderFeeConsent,
+  composeCtfRangeOrderFeeFacts,
+  type CtfRangeOrderFeeFacts,
+} from "@bitcaster/client-sdk/ctfRangeOrderFeeComposition";
 import {
   completeCtfRangeConsolidationOperation,
   prepareCtfRangeConsolidationOperation,
@@ -85,6 +91,7 @@ import {
   createCtfRangeOrderPreparationKeysetResolver,
   decodeSettlementCoordinatorPublicKey,
   decodeCtfRangeOrderPreparationFromRecord,
+  planPersistedCtfRangeOrderAuthorization,
   settlementCapabilityV1WorkFacts,
   validateAndProjectCtfRangeSettlementCapabilityResponse,
   type CtfRangeOrderRequest,
@@ -340,6 +347,9 @@ export class BrowserCtfRangeOrderCoordinator {
     readonly preparation: PersistedCtfRangeOrderPreparation;
     readonly candidates: readonly Proof[];
     readonly comment?: NostrKind1Event | null;
+    readonly consentedFeeFacts: CtfRangeOrderFeeFacts;
+    readonly paidConsolidationFeeSubunits: string;
+    readonly currentFeeFacts: CtfRangeOrderFeeFacts;
   }): Promise<SubmitOrderResponse> {
     requireFokRequest(input.preparation.request);
     const scope = browserWalletScope(input.seed);
@@ -347,7 +357,13 @@ export class BrowserCtfRangeOrderCoordinator {
       scope.scopeId,
       () =>
         this.#withScopeOwner(scope, async (owner) => {
-          const source = await this.#prepareAndPersistSource(input, scope, owner);
+          const source = await this.#prepareAndPersistSource(
+            {
+              ...input,
+            },
+            scope,
+            owner,
+          );
           const completed = await this.#completeAndBindSource(
             input.preparation,
             input.seed,
@@ -1063,6 +1079,9 @@ export class BrowserCtfRangeOrderCoordinator {
       readonly seed: Uint8Array;
       readonly preparation: PersistedCtfRangeOrderPreparation;
       readonly candidates: readonly Proof[];
+      readonly consentedFeeFacts: CtfRangeOrderFeeFacts;
+      readonly paidConsolidationFeeSubunits: string;
+      readonly currentFeeFacts: CtfRangeOrderFeeFacts;
     },
     scope: DurableCustodyScope,
     owner: DurableCustodyOwnerAuthorization,
@@ -1087,6 +1106,24 @@ export class BrowserCtfRangeOrderCoordinator {
       throw rangeError("source-preparation-failed", error);
     }
     if (operation === null) throw rangeError("insufficient-funds");
+    try {
+      const currentFeeFacts = normalizeCurrentFeeFacts(input.preparation, input.currentFeeFacts);
+      assertCtfRangeOrderFeeConsent({
+        consented: input.currentFeeFacts,
+        current: currentFeeFacts,
+        paidConsolidationFeeSubunits: "0",
+      });
+      assertCtfRangeOrderFeeConsent({
+        consented: input.consentedFeeFacts,
+        current: {
+          ...currentFeeFacts,
+          sourcePreparationFeeSubunits: sourcePreparationFeeSubunits(operation),
+        },
+        paidConsolidationFeeSubunits: input.paidConsolidationFeeSubunits,
+      });
+    } catch (error) {
+      throw rangeError("source-preparation-failed", error);
+    }
     const binding = await createBrowserRangeSourceBinding(
       scope,
       input.preparation,
@@ -2484,6 +2521,44 @@ function requireFokRequest(
   request: CtfRangeOrderRequest,
 ): asserts request is CtfRangeOrderRequest & { readonly timeInForce: "FOK" } {
   if (request.timeInForce !== "FOK") throw rangeError("invalid-order-type");
+}
+
+function sourcePreparationFeeSubunits(operation: DurableCustodyProofOperationInput): string {
+  const fees = operation.metadata?.fees;
+  if (typeof fees !== "number" || !Number.isSafeInteger(fees) || fees < 0) {
+    throw new Error("range source fee metadata is invalid");
+  }
+  return String(fees);
+}
+
+function normalizeCurrentFeeFacts(
+  preparation: PersistedCtfRangeOrderPreparation,
+  current: CtfRangeOrderFeeFacts,
+): CtfRangeOrderFeeFacts {
+  return composeCtfRangeOrderFeeFacts({
+    authorizationPlan: planPersistedCtfRangeOrderAuthorization(preparation),
+    sourcePlan: {
+      kind: "ready",
+      consolidationRounds: [],
+      selectedInputs: [],
+      sourceFee: current.sourcePreparationFeeSubunits,
+      consolidationFee: current.consolidationFeeSubunits,
+    },
+    settlementAsset: { kind: "regular", unit: "msat" },
+    preparationAsset: preparationAsset(preparation),
+  });
+}
+
+function preparationAsset(preparation: PersistedCtfRangeOrderPreparation): DurableCtfRangeAsset {
+  const asset = browserRangeSourceAsset(preparation);
+  return asset.kind === "regular"
+    ? { kind: "regular", unit: "msat" }
+    : {
+        kind: "conditional",
+        unit: "msat",
+        conditionId: asset.conditionId,
+        outcomeCollection: asset.outcomeCollection,
+      };
 }
 
 function requireImmediateSubmitResponse(

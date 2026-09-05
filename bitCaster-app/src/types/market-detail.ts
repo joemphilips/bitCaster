@@ -11,6 +11,8 @@ import type {
   LatestConfirmedTrade,
 } from "./market";
 import type { MarketState } from "@/hooks/useMarketState";
+import type { UseFokOrderPreviewResult } from "@/hooks/useFokOrderPreview";
+import type { CtfRangeOrderFeeFacts } from "@bitcaster/client-sdk/ctfRangeOrderFeeComposition";
 
 // =============================================================================
 // Resolution Types
@@ -209,20 +211,40 @@ export type TradeSide = "Buy" | "Sell";
 export type TradeTab = TradeSide | "Liquidity";
 export type OrderType = "market" | "limit";
 
+/** Read-only server preview state. The response remains generated SDK data. */
+export type FokOrderPreviewState = UseFokOrderPreviewResult;
+
+/** Legacy local quote shape kept for the isolated arithmetic helper tests. */
 export interface LimitOrderPreview {
-  limitPrice: number; // price numerator 1..divisibility-1
-  amount: number; // display shares
+  limitPrice: number;
+  amount: number;
   sharesIfFilled?: number;
-  quoteSubunits: number; // whole shares × price, the pre-fee quote
+  quoteSubunits: number;
   creatorFee: number;
-  mintFee: number; // read from the CTF keyset input_fee_ppk (0 in the first release)
-  engineScoreFeeSats: number | null; // sat-denominated Score fee; null means auth-gated until confirmation
-  potentialPayout: number; // display shares × market divisibility
-  // Display-only spend estimate used for the balance check. NEVER sent as the
-  // wire amountSubunits (which is `amount * divisibility`). Reactive:
-  //   limitPrice * amount + creatorFee + mintFee
+  mintFee: number;
+  engineScoreFeeSats: number | null;
+  potentialPayout: number;
   totalCost: number;
 }
+
+/** Legacy local quote shape. New UI props use FokOrderPreviewState. */
+export interface TradePreview {
+  amount: number;
+  predictedOdds: number;
+  priceImpact: number;
+  averageExecutionPrice?: number;
+  executableShares?: number;
+  hasExecutableLiquidity?: boolean;
+  quoteSubunits: number;
+  mintFee: number;
+  potentialPayout: number;
+  creatorFee: number;
+  engineScoreFeeSats: number | null;
+  totalCost: number;
+}
+
+/** Exact wallet preparation and settlement facts shown beside the quote. */
+export type TradeFeeFacts = CtfRangeOrderFeeFacts;
 
 // =============================================================================
 // Trade State Types
@@ -234,21 +256,6 @@ export interface TradeSelection {
   tradeSide?: TradeSide;
   orderType?: OrderType;
   limitPrice?: number;
-}
-
-export interface TradePreview {
-  amount: number;
-  predictedOdds: number; // Odds after trade
-  priceImpact: number; // Change in odds
-  averageExecutionPrice?: number;
-  executableShares?: number;
-  hasExecutableLiquidity?: boolean;
-  quoteSubunits: number;
-  mintFee: number;
-  potentialPayout: number;
-  creatorFee: number;
-  engineScoreFeeSats: number | null;
-  totalCost: number;
 }
 
 // =============================================================================
@@ -269,7 +276,13 @@ export interface MarketDetailProps {
   tradeAmount: number;
 
   /** Preview of trade outcome (null if no valid selection) */
-  tradePreview: TradePreview | null;
+  tradePreview: FokOrderPreviewState | null;
+
+  /** Exact wallet preparation and settlement facts for the current ticket. */
+  tradeFeeFacts?: TradeFeeFacts | null;
+
+  /** True when the displayed fee facts match the current trade ticket; the Confirm action supplies consent. */
+  feeConsentCurrent?: boolean;
 
   /** Called when user changes chart timeframe */
   onTimeframeChange?: (timeframe: ChartTimeframe) => void;
@@ -342,7 +355,7 @@ export interface MarketDetailProps {
   onOrderTypeChange?: (type: OrderType) => void;
 
   /** Preview for limit orders (null if not applicable) */
-  limitOrderPreview?: LimitOrderPreview | null;
+  limitOrderPreview?: FokOrderPreviewState | null;
 
   /** Current limit price (in market's base unit) */
   limitPrice?: number;

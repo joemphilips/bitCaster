@@ -6,6 +6,10 @@ sidebar:
 
 このセクションでは、bitCaster の公開技術動作を説明します。
 
+読み取り専用の取引見積もりと個別の手数料計算については、
+[公開 FOK プレビュー](/ja/technical/architecture/trading-model/#公開-fok-プレビュー)
+を参照してください。
+
 初回リリースで公開サーバーが受け付ける注文は公開 FOK だけです。GUI と CLI は FOK を送信します。各公開試行は 1 件の one-shot capability を使用します。FOK は注文受付時の板の状態に基づきます。要求数量全体を確定するか、注文全体を取り消します。公開 FAK、GTC、GTD、継続、および残余注文の再認可は利用できません。内部の custody-backed LMSR quote は GTC を使用します。これは公開クライアントの注文ではありません。
 
 ## 決済グループ

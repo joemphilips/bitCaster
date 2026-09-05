@@ -190,7 +190,7 @@ describe("submitBrowserCtfRangeOrder", () => {
         mintUrl: "https://mint.example",
         mnemonic:
           "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
-        expectedConsolidationFeeSubunits: 0,
+        consentedFeeFacts: feeFacts(),
       }),
     ).rejects.toMatchObject({ code: "insufficient-funds" });
 
@@ -219,7 +219,7 @@ describe("submitBrowserCtfRangeOrder", () => {
         mintUrl: "https://mint.example",
         mnemonic:
           "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
-        expectedConsolidationFeeSubunits: 0,
+        consentedFeeFacts: feeFacts(),
       }),
     ).rejects.toMatchObject({ code: "asset-recovery-failed" });
 
@@ -278,7 +278,7 @@ describe("submitBrowserCtfRangeOrder", () => {
       mintUrl: "https://mint.example",
       mnemonic:
         "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
-      expectedConsolidationFeeSubunits: 0,
+      consentedFeeFacts: feeFacts(),
     });
 
     expect(mocks.buildPreparation).toHaveBeenCalledWith(
@@ -346,7 +346,7 @@ describe("submitBrowserCtfRangeOrder", () => {
       mintUrl: "https://mint.example",
       mnemonic:
         "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
-      expectedConsolidationFeeSubunits: 0,
+      consentedFeeFacts: feeFacts(),
       onScoreTopUpRequired,
     });
 
@@ -405,7 +405,7 @@ describe("submitBrowserCtfRangeOrder", () => {
         mintUrl: "https://mint.example",
         mnemonic:
           "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
-        expectedConsolidationFeeSubunits: 0,
+        consentedFeeFacts: feeFacts("Sell"),
       });
 
       expect(mocks.getBoundedCanonicalRangeProofsForKeyset).toHaveBeenCalledWith(
@@ -443,17 +443,25 @@ describe("submitBrowserCtfRangeOrder", () => {
         },
         mintUrl: "https://mint.example",
       }),
-    ).resolves.toEqual({ consolidationFeeSubunits: 1, sourceFeeSubunits: 2 });
+    ).resolves.toEqual(feeFacts("Buy", { source: "2", consolidation: "1" }));
   });
 
   it("executes each planned consolidation round before source preparation", async () => {
-    mocks.planConsolidation.mockReturnValueOnce({
+    mocks.planConsolidation
+      .mockReturnValueOnce({
+        kind: "ready",
+        consolidationRounds: [{ inputs: ["4", "2"], outputs: ["4", "1"], fee: "1" }],
+        selectedInputs: ["4", "1"],
+        consolidationFee: "1",
+        sourceFee: "1",
+      })
+      .mockReturnValueOnce({
       kind: "ready",
-      consolidationRounds: [{ inputs: ["4", "2"], outputs: ["4", "1"], fee: "1" }],
-      selectedInputs: ["4", "1"],
-      consolidationFee: "1",
+      consolidationRounds: [],
+      selectedInputs: ["10000"],
+      consolidationFee: "0",
       sourceFee: "1",
-    });
+      });
     mocks.getBoundedCanonicalRangeProofsForKeyset
       .mockResolvedValueOnce([
         { id: "regular-keyset", amount: 4, secret: "four", C: "C-four" },
@@ -462,6 +470,10 @@ describe("submitBrowserCtfRangeOrder", () => {
       .mockResolvedValueOnce([
         { id: "regular-keyset", amount: 4, secret: "four", C: "C-four" },
         { id: "regular-keyset", amount: 2, secret: "two", C: "C-two" },
+      ])
+      .mockResolvedValueOnce([
+        { id: "regular-keyset", amount: 4, secret: "four", C: "C-four" },
+        { id: "regular-keyset", amount: 1, secret: "one", C: "C-one" },
       ])
       .mockResolvedValueOnce(mocks.candidates);
 
@@ -482,7 +494,7 @@ describe("submitBrowserCtfRangeOrder", () => {
       mintUrl: "https://mint.example",
       mnemonic:
         "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
-      expectedConsolidationFeeSubunits: 1,
+      consentedFeeFacts: feeFacts("Buy", { source: "1", consolidation: "1" }),
     });
 
     expect(mocks.consolidateRound).toHaveBeenCalledOnce();
@@ -521,9 +533,33 @@ describe("submitBrowserCtfRangeOrder", () => {
         mintUrl: "https://mint.example",
         mnemonic:
           "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
-        expectedConsolidationFeeSubunits: 0,
+        consentedFeeFacts: feeFacts("Buy", { source: "1" }),
       }),
     ).rejects.toThrow("Wallet proof fees changed");
+
+    expect(mocks.consolidateRound).not.toHaveBeenCalled();
+    expect(mocks.prepareAndSubmit).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["settlement input", { settlement: "2" }],
+    ["source preparation", { source: "2" }],
+    ["consolidation", { consolidation: "2" }],
+  ] as const)("rejects a changed %s fee before the first consolidation", async (_label, change) => {
+    mocks.planConsolidation.mockReturnValueOnce({
+      kind: "ready",
+      consolidationRounds: [{ inputs: ["4", "2"], outputs: ["4", "1"], fee: "1" }],
+      selectedInputs: ["4", "1"],
+      consolidationFee: "1",
+      sourceFee: "1",
+    });
+
+    await expect(
+      submitRangeOrderWithFacts(
+        "client-changed-fee",
+        feeFacts("Buy", { source: "1", consolidation: "1", ...change }),
+      ),
+    ).rejects.toMatchObject({ code: "source-preparation-failed" });
 
     expect(mocks.consolidateRound).not.toHaveBeenCalled();
     expect(mocks.prepareAndSubmit).not.toHaveBeenCalled();
@@ -550,7 +586,7 @@ describe("submitBrowserCtfRangeOrder", () => {
       { id: "regular-keyset", amount: 2, secret: "two", C: "C-two" },
     ]);
 
-    await expect(submitRangeOrder("client-replanned-fee", 1)).rejects.toThrow(
+    await expect(submitRangeOrder("client-replanned-fee", 1, "1")).rejects.toThrow(
       "Wallet proof fees changed",
     );
 
@@ -576,7 +612,7 @@ describe("submitBrowserCtfRangeOrder", () => {
       mintUrl: "https://mint.example",
       mnemonic:
         "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
-      expectedConsolidationFeeSubunits: 0,
+      consentedFeeFacts: feeFacts(),
     };
 
     await submitBrowserCtfRangeOrder({ ...input, clientOrderId: "client-cache-1" });
@@ -604,7 +640,7 @@ describe("submitBrowserCtfRangeOrder", () => {
         clientOrderId: "client-1",
         mintUrl: "https://mint.example",
         mnemonic: "",
-        expectedConsolidationFeeSubunits: 0,
+        consentedFeeFacts: feeFacts(),
       }),
     ).rejects.toThrow(/seed is unavailable/);
     expect(mocks.engine.getSettlementCapabilityAdmissionPolicy).not.toHaveBeenCalled();
@@ -696,7 +732,11 @@ function market(): MarketDetail {
   } as MarketDetail;
 }
 
-function submitRangeOrder(clientOrderId: string, expectedConsolidationFeeSubunits = 0) {
+function submitRangeOrder(
+  clientOrderId: string,
+  consolidationFeeSubunits = 0,
+  sourceFeeSubunits = "0",
+) {
   return submitBrowserCtfRangeOrder({
     market: market(),
     ticket: {
@@ -714,6 +754,59 @@ function submitRangeOrder(clientOrderId: string, expectedConsolidationFeeSubunit
     mintUrl: "https://mint.example",
     mnemonic:
       "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
-    expectedConsolidationFeeSubunits,
+    consentedFeeFacts: feeFacts("Buy", {
+      source: sourceFeeSubunits,
+      consolidation: String(consolidationFeeSubunits),
+    }),
   });
+}
+
+function submitRangeOrderWithFacts(
+  clientOrderId: string,
+  consentedFeeFacts: ReturnType<typeof feeFacts>,
+) {
+  return submitBrowserCtfRangeOrder({
+    market: market(),
+    ticket: {
+      marketId: "condition-1-YES",
+      request: {
+        outcomeId: "YES",
+        tokenSide: "Outcome",
+        side: "Buy",
+        price: 400,
+        amountSubunits: 1_000,
+        timeInForce: "FOK",
+      },
+    },
+    clientOrderId,
+    mintUrl: "https://mint.example",
+    mnemonic:
+      "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+    consentedFeeFacts,
+  });
+}
+
+function feeFacts(
+  side: "Buy" | "Sell" = "Buy",
+  overrides: {
+    settlement?: string;
+    source?: string;
+    consolidation?: string;
+  } = {},
+) {
+  return {
+    settlementInputFeeSubunits: overrides.settlement ?? "1",
+    sourcePreparationFeeSubunits: overrides.source ?? "0",
+    consolidationFeeSubunits: overrides.consolidation ?? "0",
+    settlementAsset: { kind: "regular", unit: "msat" } as const,
+    preparationAsset:
+      side === "Buy"
+        ? ({ kind: "regular", unit: "msat" } as const)
+        : ({
+            kind: "conditional",
+            unit: "msat",
+            conditionId: "11".repeat(32),
+            outcomeCollection: "YES",
+          } as const),
+  };
 }
