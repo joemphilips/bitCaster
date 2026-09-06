@@ -194,6 +194,7 @@ export function buildPersistedCtfRangeOrderPreparation(input: {
   readonly nowUnixSeconds: number
   readonly randomId: () => string
   readonly authorizationAmountSubunits?: number
+  readonly authorizationLifetimeSeconds?: number
 }): PersistedCtfRangeOrderPreparation {
   const request = decodeCtfRangeOrderRequest(input.request)
   const coordinatorPublicKey = decodeCoordinatorPublicKey(input.coordinatorPublicKey)
@@ -212,7 +213,11 @@ export function buildPersistedCtfRangeOrderPreparation(input: {
     input.nowUnixSeconds,
     'range preparation current time',
   )
-  const expiry = derivePreparationExpiry(input.mintFacts.observation, nowUnixSeconds)
+  const expiry = derivePreparationExpiry(
+    input.mintFacts.observation,
+    nowUnixSeconds,
+    input.authorizationLifetimeSeconds,
+  )
   const operationId = requireText(input.randomId(), 'range preparation operation id')
   return decodePersistedCtfRangeOrderPreparation({
     version: 2,
@@ -542,6 +547,7 @@ function compareKeysetPreference(
 function derivePreparationExpiry(
   observation: DurableCtfRangeExpiryObservation,
   nowUnixSeconds: number,
+  authorizationLifetimeSeconds?: number,
 ): number {
   const fallback = observation.observedAt + observation.maxExpirySeconds
   if (!Number.isSafeInteger(fallback)) {
@@ -554,7 +560,18 @@ function derivePreparationExpiry(
       : Math.min(current, requirePositiveSafeInteger(finalExpiry, 'condition keyset final expiry'))
   }, fallback)
   const mintExpiry = ceiling - RANGE_REFUND_SAFETY_MARGIN_SECONDS
-  const expiry = mintExpiry
+  let expiry = mintExpiry
+  if (authorizationLifetimeSeconds !== undefined) {
+    const lifetime = requirePositiveSafeInteger(
+      authorizationLifetimeSeconds,
+      'range authorization lifetime',
+    )
+    const cappedExpiry = nowUnixSeconds + lifetime
+    if (!Number.isSafeInteger(cappedExpiry)) {
+      throw new Error('range authorization lifetime exceeds the safe integer range')
+    }
+    expiry = Math.min(expiry, cappedExpiry)
+  }
   if (expiry <= nowUnixSeconds) {
     throw new Error('mint CTF range authorization horizon is exhausted')
   }

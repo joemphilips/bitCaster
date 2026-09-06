@@ -238,6 +238,42 @@ test('daemon retries the exact capability request after its acknowledgement is l
   )
 })
 
+test('daemon retains a capped authorization after restart with a different cap', async () => {
+  const sourceProof = signedProof(OutputData.createRandomData(Amount.from(8_192), mintKeys())[0]!)
+  await withDaemonProfile(
+    { prefix: 'bitcaster-range-lifetime-', incarnationId: 'range-lifetime-test',
+      proofs: [sourceProof], asset: regularAsset() },
+    async ({ directory, fence }) => {
+      const wallet = new FakeWallet([sourceProof])
+      const posted: CreateSettlementCapabilityRequest[] = []
+      const client = fakeEngineClient((request) => {
+        posted.push(structuredClone(request))
+        if (posted.length === 1) throw new Error('capability acknowledgement lost')
+        return boundCapability(request)
+      })
+      const ids = ['range-lifetime-operation', 'range-lifetime-authorization']
+      const dependencies = {
+        createMint: () => fakeMint(), createWallet: () => wallet,
+        now: () => 10_000, randomId: () => ids.shift()!,
+      }
+      const coordinator = new DaemonCtfRangeOrderCoordinator(directory, () => fence, {
+        ...dependencies, authorizationLifetimeSeconds: 60,
+      })
+      await assert.rejects(coordinator.prepare(orderRequest(), client), /acknowledgement lost/)
+      const first = decodeSettlementCapabilityArtifactBytes(Buffer.from(posted[0]!.artifact, 'base64'))
+      assert.equal(first.expiry, 70)
+      const restarted = new DaemonCtfRangeOrderCoordinator(directory, () => fence, {
+        ...dependencies, authorizationLifetimeSeconds: 600,
+      })
+      const recovery = await restarted.recover(WALLET_SEED_HEX, client)
+      assert.equal(recovery.pending.length, 0)
+      assert.equal(posted.length, 2)
+      assert.ok(posted[0]!.artifact === posted[1]!.artifact, 'replay changed the authorization artifact')
+      assert.equal(wallet.completeCalls, 1)
+    },
+  )
+})
+
 test('daemon does not consolidate fragmented order funds unless the caller opts in', async () => {
   const sourceProofs = [2, 2, 2, 2].map((amount) =>
     signedProof(OutputData.createRandomData(Amount.from(amount), mintKeys())[0]!),

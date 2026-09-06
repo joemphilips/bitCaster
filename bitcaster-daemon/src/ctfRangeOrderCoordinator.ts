@@ -185,6 +185,7 @@ interface CtfRangeWalletLike {
 
 export interface DaemonCtfRangeOrderCoordinatorDependencies {
   readonly allowInsecureLoopbackHttp?: boolean
+  readonly authorizationLifetimeSeconds?: number
   readonly createMint?: (mintUrl: string) => CtfRangeMintLike
   readonly createWallet?: (mintUrl: string, walletSeedHex: string) => CtfRangeWalletLike
   readonly now?: () => number
@@ -622,6 +623,7 @@ export class DaemonCtfRangeOrderCoordinator {
       market,
       nowUnixSeconds: this.#nowSeconds(),
       randomId: this.#randomId.bind(this),
+      authorizationLifetimeSeconds: this.#dependencies.authorizationLifetimeSeconds,
     })
     const durablePreparation = await this.#persistPreparation(
       preparationInput,
