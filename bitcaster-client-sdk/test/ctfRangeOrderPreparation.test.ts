@@ -970,7 +970,11 @@ function sequentialId(...ids: string[]): () => string {
   return () => ids[index++] ?? 'unexpected-id'
 }
 
-function persistedPreparation(operationId: string, side: 'Buy' | 'Sell' = 'Buy') {
+function persistedPreparation(
+  operationId: string,
+  side: 'Buy' | 'Sell' = 'Buy',
+  authorizationLifetimeSeconds?: number,
+) {
   return buildPersistedCtfRangeOrderPreparation({
     request: { ...rangeOrderRequest(), side },
     coordinatorPublicKey: COORDINATOR_PUBLIC_KEY,
@@ -983,8 +987,31 @@ function persistedPreparation(operationId: string, side: 'Buy' | 'Sell' = 'Buy')
     },
     nowUnixSeconds: 20,
     randomId: sequentialId(operationId, `${operationId}:authorization`),
+    authorizationLifetimeSeconds,
   })
 }
+
+test('authorization lifetime cap only shortens the mint-derived expiry', () => {
+  const baseline = persistedPreparation('lifetime-cap')
+  assert.equal(baseline.expiry, 700)
+  assert.equal(persistedPreparation('lifetime-cap', 'Buy', 60).expiry, 80)
+  assert.equal(persistedPreparation('lifetime-cap', 'Buy', 680).expiry, 700)
+  assert.ok(
+    Buffer.from(encodePersistedCtfRangeOrderPreparation(
+      persistedPreparation('lifetime-cap', 'Buy', 1_000),
+    )).equals(Buffer.from(encodePersistedCtfRangeOrderPreparation(baseline))),
+    'a larger lifetime cap changed the default preparation bytes',
+  )
+})
+
+test('authorization lifetime cap rejects invalid values and addition overflow', () => {
+  for (const lifetime of [0, -1, 0.5, NaN, Infinity, Number.MAX_SAFE_INTEGER]) {
+    assert.throws(
+      () => persistedPreparation('invalid-lifetime', 'Buy', lifetime),
+      /authorization lifetime/,
+    )
+  }
+})
 
 function withoutPersistedRequest(preparation: ReturnType<typeof persistedPreparation>) {
   const { version: _, request: _request, complementKeyset: _complement, ...input } = preparation
