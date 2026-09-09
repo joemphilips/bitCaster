@@ -5,7 +5,9 @@ sidebar:
   order: 2
 ---
 
-bitCaster is composed of independent services that communicate over open protocols.
+Your browser holds your wallet. Shared services match trades and issue tokens.
+Independent oracles report event results. Services relay and verify those reports.
+This page explains what you rely on when you use bitCaster.
 
 ![Architecture diagram showing Oracle, Nostr oracle network, Matching Engine, Cashu Mint, and bitCaster App](../../../../assets/architecture.svg)
 
@@ -14,13 +16,25 @@ Each user runs their own instance of the app in their browser. All users connect
 
 ## Cashu Mint
 
-The mint is the core of the system.
-It issues both regular ecash tokens and conditional ecash tokens locked to specific market outcomes.
-When an event resolves, the mint settles from the verified outcome supplied through the matching-engine flow: winning tokens become redeemable for sats, and losing tokens expire.
+The mint issues Cashu ecash tokens. It also issues market tokens whose payout
+depends on the event result. After a verified result, winning tokens can be
+redeemed for sats. Losing tokens have no payout.
+
+The first release uses one mint operated by bitCaster. You rely on it to honor
+redemptions. If it stops service, token operations can be delayed. Local wallet
+keys and encrypted backups do not remove this dependency.
 
 ## bitCaster App
 
-The user-facing progressive web app (PWA). It runs entirely in your browser and holds your tokens locally. The app communicates directly with the mint for all token operations (minting, swapping, redeeming) and with the matching engine for order book access.
+The app runs in your browser and stores your wallet locally. It communicates
+with the mint for wallet operations and with the matching engine for market
+data and trading. Some payments and trade settlements use the engine as part
+of the flow. Not every token operation goes directly from your browser to the
+mint.
+
+An encrypted backup can help restore the wallet. The backup service cannot
+read its contents, but it can observe limited account and activity metadata.
+See [Encrypted wallet backup](/user-guide/getting-started/wallet-backup/).
 
 ## Matching Engine
 
@@ -28,7 +42,9 @@ The matching engine maintains a central limit order book (CLOB) for each market.
 
 For everyday market pages, the app reads market state, deadlines, outcomes, and order-book data from the matching engine first. Treat that as a fast cache of the mint's condition data: it is what keeps list and detail pages responsive. When a user performs a critical action that can move funds, the app or protocol must still rely on mint-enforced checks or a fresh mint comparison before the action becomes final.
 
-This is the only centralized component — it exists because order matching is inherently a coordination problem that benefits from a single sequencer.
+The matching engine is a shared service. An outage can prevent new trades.
+The mint is also shared, so the system does not become independent of its
+operators merely because your wallet is local.
 
 ## Oracle Network
 
@@ -42,6 +58,12 @@ Importantly, oracles are completely independent of bitCaster — they don't need
 
 ## Open Source
 
-Of the components above, every piece other than the matching engine is open source. The source code lives [here](https://github.com/joemphilips/bitCaster). Because everything that touches your assets or personal information is open source, you are free — and encouraged — to verify and improve it at your own discretion.
+The browser app, client tools, and protocol specifications are public in the
+[bitCaster repository](https://github.com/joemphilips/bitCaster). The mint
+software is also public. You can inspect how the client handles your wallet
+and constructs requests.
 
-The matching engine is the only closed-source component. Keeping its internals private is sometimes desirable, for example to make spam mitigation harder to game. The [API specification](https://github.com/joemphilips/bitCaster/tree/main/BitCaster.MatchingEngine.Contracts/specs) is open, however, so you can build your own matching engine against it.
+The matching engine is closed source. Its
+[API specification](https://github.com/joemphilips/bitCaster/tree/main/BitCaster.MatchingEngine.Contracts/specs)
+is public. Public source code helps you inspect software. It does not
+guarantee correct operation, service availability, or repayment by the mint.

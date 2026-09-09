@@ -7,8 +7,9 @@ sidebar:
 
 # Trading Model
 
-bitCaster uses a central limit order book (CLOB). A limit order can rest on the
-book. A crossing order takes available liquidity. All product assets are sats.
+bitCaster uses a central limit order book (CLOB). Liquidity-provider quotes
+rest on the book. Public orders take available liquidity within their price
+limit. All product assets are sats.
 
 Public market books use primitive outcome routes. A categorical market exposes
 `A / Not A`, `B / Not B`, and similar books. Clients use the market identifier
@@ -20,8 +21,7 @@ The public server accepts only public FOK orders. The GUI and CLI submit FOK
 orders. Each public attempt uses one one-shot capability. FOK uses the book
 state at admission. It commits the full requested quantity or cancels the
 complete request. Public FAK, GTC, GTD, continuation, and residual
-reauthorization are not available. Internal custody-backed LMSR quotes use GTC.
-They are not public client orders.
+reauthorization are not available.
 
 ## Public FOK preview
 
@@ -49,12 +49,26 @@ not a confirmed trade. Execution estimates are `null` when the full amount
 cannot fill. The current price is `null` when no confirmed trade exists.
 Funding does not create a market-price point.
 
+The GUI uses one Buy/Sell form. The optional Price protection section sets a
+maximum buy price or a minimum sell price for the selected token. The default
+is the reviewed preview's `worstPrice`, not its average price. The GUI adds no
+automatic slippage allowance. You can set a different bound explicitly.
+
+The order keeps this bound through balance checks, top-up, preparation, and
+submission. It fills the complete quantity within the bound or fills none.
+The bound does not reserve liquidity or guarantee execution. If the order no
+longer fits, review a fresh preview and confirm a new attempt. The GUI does
+not retry the order automatically. Wallet or Nostr setup, or a change of
+trading identity, also requires a fresh preview and confirmation.
+
 The UI displays amounts in sats: 100 msat is 0.1 sats. Buy totals add the quote,
 settlement-input fee, source-preparation fee, and consolidation fee. Sell totals
 show gross collateral proceeds and net proceeds after the settlement-input fee.
 Show conditional-token preparation and consolidation fees separately. Do not
 add fees in different assets. Unused fee headroom is not a paid fee. If fee
 amounts or assets change, obtain fresh consent before the next new wallet step.
+Price protection does not replace fee consent. Fee consent applies to the
+order with the reviewed price bound.
 
 Invalid input returns HTTP `400`. The raw request limit is 16 KiB. Larger bodies
 return `413`. Rate or concurrency limits return `429` with `Retry-After`.
@@ -94,10 +108,9 @@ one-shot capability binding charges once under `settlement-capability-v1`. The
 tariff is `1 + InputCount + ceil(ManifestCount/16) +
 ceil(ArtifactByteCount/4096)`. Each authenticated invalid proof or DLEQ
 validation attempt uses the same tariff. There is no separate order, fill, or
-settlement-failure tariff. Source facts carry verified work facts and the rule
-ID, not a derived debit. Fills, cancellation, settlement failure, refund, and
-recovery do not debit Score. Internal custody-backed LMSR quotes are exempt
-from this public charge.
+settlement-failure tariff. Fills, cancellation, settlement failure, refund,
+and recovery do not debit Score. This tariff applies to public client
+capabilities.
 
 If Score is insufficient, the daemon submits a payment and waits for its
 delivery state to become `credited` before it prepares the order capability.

@@ -177,6 +177,13 @@ test('decodeSettlementGroupStateChangedDelta enforces the exact owner notificati
   }
 
   assert.deepEqual(decodeSettlementGroupStateChangedDelta(value), value)
+  for (const status of ['RejectedBeforeSubmission', 'ExpiredBeforeSubmission']) {
+    const terminal = {
+      ...value,
+      settlementGroup: { ...value.settlementGroup, status, frozenAt: null },
+    }
+    assert.deepEqual(decodeSettlementGroupStateChangedDelta(terminal), terminal)
+  }
   assert.throws(
     () => decodeSettlementGroupStateChangedDelta({ ...value, foreign: true }),
     /fields are invalid/,
@@ -511,6 +518,38 @@ test('BitcasterEngineClient durable delivery rejects redirects and redacts token
       return true
     },
   )
+})
+
+test('BitcasterEngineClient discards coded delivery problems without retrying', async () => {
+  const submission = durableRecipientSubmission('44444444-4444-4444-8444-444444444444')
+  for (const status of [400, 403, 404, 409, 500, 502]) {
+    let calls = 0
+    const client = new BitcasterEngineClient({
+      baseUrl: 'https://engine.example',
+      fetchImpl: async () => {
+        calls += 1
+        return new Response(JSON.stringify({
+          status, type: '/errors/cashu-delivery-conflict',
+          code: 'cashu-delivery-conflict', detail: submission.token,
+        }), { status, headers: { 'content-type': 'application/problem+json' } })
+      },
+    })
+    await assert.rejects(() => client.submitDurableRecipientDelivery(submission), (error: unknown) => {
+      assert.equal(String(error), `Error: durable recipient delivery request failed: HTTP ${status}`)
+      return true
+    })
+    assert.equal(calls, 1)
+    if (status === 404) {
+      assert.equal(await client.getDurableRecipientDeliveryStatus(submission.deliveryId), null)
+    } else {
+      await assert.rejects(() => client.getDurableRecipientDeliveryStatus(submission.deliveryId),
+        (error: unknown) => {
+          assert.equal(String(error), `Error: durable recipient delivery request failed: HTTP ${status}`)
+          return true
+        })
+    }
+    assert.equal(calls, 2)
+  }
 })
 
 test('BitcasterEngineClient durable delivery timeout covers response-body consumption', async () => {
@@ -981,6 +1020,86 @@ test('BitcasterEngineClient mirrors settlement-capability lifecycle routes', asy
   ])
 })
 
+test('order status reads cancel a streaming 404 body', async () => {
+  let cancelled = false
+  const client = new BitcasterEngineClient({
+    baseUrl: 'https://engine.example',
+    fetchImpl: async () => new Response(new ReadableStream({
+      cancel() { cancelled = true },
+    }), { status: 404 }),
+  })
+  assert.equal(await client.getOrderStatus('condition-Alpha', 'missing-order'), null)
+  assert.equal(cancelled, true)
+})
+
+test('order status reads bound oversized errors without response.text', async () => {
+  let cancelled = false
+  let textCalls = 0
+  const client = new BitcasterEngineClient({
+    baseUrl: 'https://engine.example',
+    fetchImpl: async () => {
+      const response = new Response(new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new Uint8Array(SUBMIT_ORDER_RESPONSE_BYTES_MAX))
+          controller.enqueue(Uint8Array.of(1))
+        },
+        cancel() { cancelled = true },
+      }), { status: 503 })
+      Object.defineProperty(response, 'text', { value: async () => { textCalls++; return '' } })
+      return response
+    },
+  })
+  await assert.rejects(client.getOrderStatus('condition-Alpha', 'order-1'), EngineClientError)
+  assert.equal(textCalls, 0)
+  assert.equal(cancelled, true)
+})
+
+test('cancelled order status reads do not start authentication or fetch', async () => {
+  const controller = new AbortController()
+  controller.abort()
+  let calls = 0
+  const client = new BitcasterEngineClient({
+    baseUrl: 'https://engine.example',
+    authorization: async () => { calls++; return 'test' },
+    fetchImpl: async () => { calls++; return new Response(null, { status: 404 }) },
+  })
+  await assert.rejects(client.getOrderStatus('condition-Alpha', 'order-1', controller.signal))
+  assert.equal(calls, 0)
+})
+
+test('cancelling during order status signing prevents a late network request', async () => {
+  const controller = new AbortController()
+  let finishSigning!: (value: string) => void
+  const signing = new Promise<string>((resolve) => { finishSigning = resolve })
+  let fetches = 0
+  const client = new BitcasterEngineClient({
+    baseUrl: 'https://engine.example',
+    authorization: () => signing,
+    fetchImpl: async () => { fetches++; return new Response(null, { status: 404 }) },
+  })
+  const reading = client.getOrderStatus('condition-Alpha', 'order-1', controller.signal)
+  controller.abort()
+  finishSigning('test')
+  await assert.rejects(reading)
+  assert.equal(fetches, 0)
+})
+
+test('order status reads pass cancellation to the transport', async () => {
+  const controller = new AbortController()
+  const client = new BitcasterEngineClient({
+    baseUrl: 'https://engine.example',
+    fetchImpl: async (_input, init) => {
+      assert.equal(init?.signal, controller.signal)
+      return new Promise<Response>((_resolve, reject) => {
+        controller.signal.addEventListener('abort', () => reject(controller.signal.reason), { once: true })
+        controller.abort()
+      })
+    },
+  })
+  await assert.rejects(client.getOrderStatus('condition-Alpha', 'order-1', controller.signal))
+  assert.equal(controller.signal.aborted, true)
+})
+
 test('BitcasterEngineClient reads an order status without continuation state', async () => {
   const orderId = '11111111-1111-4111-8111-111111111111'
   const client = new BitcasterEngineClient({
@@ -1242,6 +1361,51 @@ test('BitcasterEngineClient authenticates and strictly validates settlement poli
   ])
 })
 
+test('capability problems retain machine codes and retry classification through HTTP parsing', async () => {
+  for (const [status, suffix, definitive] of [
+    [400, 'invalid-request', true],
+    [400, 'invalid-artifact', true],
+    [400, 'policy-rejected', true],
+    [402, 'score-required', true],
+    [409, 'conflict', true],
+    [409, 'market-unavailable', true],
+    [413, 'request-too-large', true],
+    [429, 'admission-limited', false],
+    [429, 'capacity-exhausted', false],
+    [503, 'admission-unavailable', false],
+  ] as const) {
+    const code = `settlement-capability-${suffix}`
+    let calls = 0
+    const client = new BitcasterEngineClient({
+      baseUrl: 'https://engine.example',
+      fetchImpl: async (_input, init) => {
+        calls += 1
+        assert.equal(init?.method, 'POST')
+        return new Response(JSON.stringify({
+          type: `/errors/${code}`, status, code,
+          title: 'Capability request rejected', detail: 'Safe public detail.',
+        }), { status, headers: { 'content-type': 'application/problem+json' } })
+      },
+    })
+    await assert.rejects(() => client.createSettlementCapability({
+      stageIdempotencyKey: 'stage-problem', clientOrderId: 'order-problem',
+      marketId: `${'a'.repeat(64)}-Alpha`, artifact: 'Y2Fub25pY2FsLWFydGlmYWN0',
+      orderIntent: {
+        outcomeId: 'Alpha', tokenSide: 'Outcome', side: 'Buy', price: 400,
+        amountSubunits: 1_000, minimumFillAmountSubunits: 1_000,
+        baseAsset: 'sat', collateralUnit: 'msat', timeInForce: 'FOK', expiresAt: null,
+      },
+    }), (error) => {
+      assert.ok(error instanceof EngineClientError)
+      assert.equal(error.status, status)
+      assert.equal(error.code, code)
+      assert.equal(isDefinitiveOrderSubmissionError(error), definitive)
+      return true
+    })
+    assert.equal(calls, 1)
+  }
+})
+
 test('BitcasterEngineClient exposes plain submit-order validation errors', async () => {
   const client = new BitcasterEngineClient({
     baseUrl: 'https://engine.example',
@@ -1266,6 +1430,93 @@ test('BitcasterEngineClient exposes plain submit-order validation errors', async
       err.status === 400 &&
       err.detail === 'OutcomeId must match the primitive outcome segment of marketId.',
   )
+})
+
+test('submitOrder preserves error classification through coded Problem Details', async () => {
+  const cases = [
+    [400, 'order-invalid-request', true],
+    [400, 'order-invalid-comment', true],
+    [404, 'order-market-not-found', true],
+    [404, 'order-capability-not-found', true],
+    [409, 'order-capability-route-mismatch', true],
+    [409, 'order-capability-not-current', true],
+    [503, 'order-admission-unavailable', false],
+    [503, 'order-processing-unavailable', false],
+    [409, 'order-processing-conflict', true],
+    [409, 'order-book-conflict', false],
+    [409, 'order-market-closed', true],
+    [403, 'market-closed', false],
+  ] as const
+  for (const [status, code, definitive] of cases) {
+    const detail = code === 'order-book-conflict'
+      ? 'The order book changed. Retry the original request.'
+      : 'Order book changed while submitting order; retry the request.'
+    const client = new BitcasterEngineClient({
+      baseUrl: 'https://engine.example',
+      fetchImpl: async () => new Response(JSON.stringify({
+        type: `/errors/${code}`, title: 'Order request failed', status, code, detail,
+      }), { status, headers: { 'content-type': 'application/problem+json' } }),
+    })
+    await assert.rejects(() => client.submitOrder('condition-Alpha', {
+      settlementCapability: {
+        artifactId: '11111111-1111-4111-8111-111111111111',
+        bindingDigest: 'a'.repeat(64),
+      }, comment: null,
+    }), (error: unknown) => {
+      assert.ok(error instanceof EngineClientError)
+      assert.equal(error.status, status)
+      assert.equal(error.code, code)
+      assert.equal(error.problemDetail, detail)
+      assert.equal(isDefinitiveOrderSubmissionError(error), definitive, code)
+      return true
+    })
+  }
+})
+
+test('batch, cancellation, and read methods parse coded application errors without retrying', async () => {
+  const cases: Array<[number, string, (client: BitcasterEngineClient) => Promise<unknown>]> = [
+    [400, 'order-invalid-request', client => client.batchSubmitOrders('condition', { orders: [] })],
+    [429, 'order-batch-limited', client => client.batchSubmitOrders('condition', { orders: [] })],
+    [409, 'order-batch-conflict', client => client.batchSubmitOrders('condition', { orders: [] })],
+    [409, 'order-market-closed', client => client.batchSubmitOrders('condition', { orders: [] })],
+    [404, 'order-market-not-found', client => client.batchCancelOrders('condition', { orderIds: [] })],
+    [429, 'order-batch-limited', client => client.batchCancelOrders('condition', { orderIds: [] })],
+    [409, 'order-cancellation-conflict', client => client.cancelOrder('condition-Alpha', 'order')],
+    [400, 'order-invalid-request', client => client.getOrderBook('bad-route')],
+    [400, 'order-invalid-request', client => client.listMyOrders('bad-condition')],
+  ]
+  for (const [status, code, invoke] of cases) {
+    let calls = 0
+    const client = new BitcasterEngineClient({
+      baseUrl: 'https://engine.example',
+      fetchImpl: async () => {
+        calls++
+        return new Response(JSON.stringify({ status, code, type: `/errors/${code}`, detail: 'Fixed public message.' }), {
+          status, headers: { 'content-type': 'application/problem+json', 'retry-after': '7' },
+        })
+      },
+    })
+    await assert.rejects(() => invoke(client), (error: unknown) => {
+      assert.ok(error instanceof EngineClientError)
+      assert.equal(error.status, status)
+      assert.equal(error.code, code)
+      assert.equal(error.problemDetail, 'Fixed public message.')
+      if (status === 429) assert.equal(error.retryAfterSeconds, 7)
+      return true
+    })
+    assert.equal(calls, 1)
+  }
+})
+
+test('coded order-not-found preserves null status and false cancellation results', async () => {
+  const client = new BitcasterEngineClient({
+    baseUrl: 'https://engine.example',
+    fetchImpl: async () => new Response(JSON.stringify({
+      status: 404, type: '/errors/order-not-found', code: 'order-not-found', detail: 'Order unavailable.',
+    }), { status: 404, headers: { 'content-type': 'application/problem+json' } }),
+  })
+  assert.equal(await client.getOrderStatus('condition-Alpha', 'order'), null)
+  assert.equal(await client.cancelOrder('condition-Alpha', 'order'), false)
 })
 
 test('order submission error classification recognizes only the transient book conflict', () => {

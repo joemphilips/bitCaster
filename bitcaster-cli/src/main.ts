@@ -203,11 +203,6 @@ function registerMarketCommand(program: Command): void {
     .requiredOption('--title <title>', 'Market title')
     .requiredOption('--description <description>', 'Market description')
     .requiredOption('--outcomes <a,b,c>', 'Comma-separated outcome names', parseOutcomeList)
-    .option(
-      '--liquidity-sats <n>',
-      'Deprecated compatibility value; send 0. Market-maker funding is a separate post-creation flow and can be repeated.',
-      parseIntegerOption('liquidity sats'),
-    )
     .option('--tag <tag...>', 'Category tag (repeatable)')
     .option('--thumbnail <path>', 'Thumbnail file path on the daemon host')
     .option('--trust-engine-url', 'Trust the configured engine URL without prompting')
@@ -227,7 +222,6 @@ function registerMarketCommand(program: Command): void {
         description: options.description,
         outcomes: options.outcomes,
       }
-      if (options.liquiditySats !== undefined) params.liquiditySats = options.liquiditySats
       if (options.tag !== undefined && options.tag.length > 0) params.tags = options.tag
       if (options.thumbnail !== undefined) params.thumbnailPath = options.thumbnail
       if (isDryRun(options)) {
@@ -278,7 +272,6 @@ interface MarketCreateOptions {
   title: string
   description: string
   outcomes: string[]
-  liquiditySats?: number
   tag?: string[]
   thumbnail?: string
   trustEngineUrl?: boolean

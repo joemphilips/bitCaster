@@ -7,34 +7,38 @@ sidebar:
 
 # Ecash
 
-bitCaster のポジションは Cashu ecash を使用します。現在のプロダクト資産は sat です。
+bitCaster は、ウォレット残高とマーケットのポジションに Cashu ecash を使います。アプリは Bitcoin の金額を sats で表示します。1 sat は1億分の1 bitcoin です。
 
 ## Ecash とは
 
-ecash は Chaumian blind signature を使用します。ミントは署名済みの bearer token を発行します。token を制御する人が token を使用できます。ミントは token を検証しますが、blind signature により、発行と後の使用を結び付けにくくします。
+ecash は、ミントと呼ばれるサービスが発行する電子現金です。ウォレットは、proof と呼ばれる署名済みの記録を保持します。通常の ecash では、proof を持つ人がその価値を使えます。ウォレットデータと復旧情報を他人に渡さないでください。
 
-bitCaster では、ウォレットは通常の sat ecash とマーケットポジション用の条件付きトークンを使用します。ミントは決済中にこれらのポジションを conversion します。確定した conversion は、正確な result entry をウォレットに返します。
+ウォレットには、支払い用の通常の ecash と、マーケットのポジションを表す条件付きトークンがあります。取引では、ミントを通じてこれらを交換します。注文を送信しただけでは、取引は完了していません。結果を使用可能な資産として扱う前に、確定を待ってください。
 
-ウォレットは seed、output blinding factor、refund key、および通常の proof inventory を保持します。注文では、その注文を認可する正確な `PAY_TO_UNLOCK` proof だけをエンジンに送信します。エンジンはその proof secret を確認しますが、値を別の場所に移動したり、有効期限を延長したりできません。
+注文時に、ウォレットはその注文用に準備した proof だけをマッチングエンジンに送ります。この proof には、`PAY_TO_UNLOCK` という使用制限があります。エンジンはその proof の秘密情報を確認しますが、この制限により、価値の送り先を変更したり、有効期限を延長したりできません。復旧フレーズ、返金用の鍵、その他の proof はウォレット内で秘密に保ちます。
 
 ## 入金と出金
 
-初回リリースは、bitCaster が運営する1つのミントに対応します。sat ウォレットには、ミントの BOLT11 Lightning 支払い方式またはそのミントが発行した sat Cashu token のインポートで入金できます。取引フローが条件付きマーケット proof を管理します。ミントの BOLT11 Lightning フローで通常の sat ecash を出金できます。
+初回リリースは、bitCaster が運営する1つのミントに対応します。Lightning の請求書への支払い、またはそのミントが発行した Cashu トークンのインポートでウォレットに入金できます。通常の ecash は、ミントを通じて Lightning の請求書に支払うことで出金できます。確定前に金額と手数料の見積もりを確認してください。
+
+ウォレットへの入金と、マーケットのボットへの資金提供は別の操作です。[ボットへの資金提供](/ja/user-guide/core-concepts/funding-bot-liquidity/)は、返金されない補助金です。使用可能なウォレット残高は増えません。
 
 ## 信頼モデル
 
-ecash は bearer system です。ウォレットデータと回復材料を保護してください。ミントは発行した token の裏付けとなる Bitcoin 準備金を保持します。そのため、mint operator が ecash の義務を履行すると信頼する必要があります。
+ecash では、所有者が現金を管理します。ウォレットデータと復旧情報を保護してください。ミントは発行したトークンを裏付ける Bitcoin 準備金を保持します。そのため、ミント運営者が ecash に対する義務を履行すると信頼する必要があります。
 
-ミントは永続的なユーザー identity ではなく bearer token を検証します。ユーザーは償還前に token を swap して、以前の request との関連を切断できます。そのため、ミントはユーザー identity に基づいて ecash を選択的に凍結できません。ミントはサービス全体を停止できるため、ユーザーは参加前にミントと観測可能な運用データを自分で評価する必要があります。
+Cashu はブラインド署名を使い、ミントがトークンの発行と後の使用を結び付けにくくします。ただし、支払い、時刻、ネットワークに関する情報をすべて隠すものではありません。ミントが要求を処理する保証でもありません。ミントが停止すると、取引や出金ができなくなる場合があります。
 
-マッチングエンジンは、注文に対する限定された capability を一時的に保持します。他の wallet proof は使用できません。決済を保留した場合、認可された proof は refund が有効になるまで使用できません。
+マッチングエンジンは、認証済みの操作をエンジン上の利用者識別情報と関連付けることができます。ミントに対するプライバシーは、エンジンに対する匿名性を意味しません。
+
+マッチングエンジンは、ウォレット内の他の proof を使えません。注文が決済されない場合、返金条件を満たすまで資金を使えないことがあります。復旧に必要なローカルのウォレット記録を保持してください。ブラウザーのデータを消去したり、端末を変更したりする前に、[ウォレットのバックアップ](/ja/user-guide/getting-started/wallet-backup/)を確認してください。
 
 ## Cashu を使う理由
 
-Cashu は Bitcoin と Lightning をサポートするプライベートな bearer token を提供します。また、bitCaster が条件付きトークンと `PAY_TO_UNLOCK` authorization に使用する NUT framework も提供します。
+Cashu は、Bitcoin と Lightning に対応する、所有者が管理するプライベートなトークンを提供します。また、bitCaster が条件付きトークンと `PAY_TO_UNLOCK` による認可に使う NUT 仕様も提供します。
 
 ## 関連情報
 
-- [アトミック決済](/ja/user-guide/core-concepts/atomic-swap/)はミント conversion フローを説明します。
+- [アトミック決済](/ja/user-guide/core-concepts/atomic-swap/)はミントを通じた交換を説明します。
 - [Conditional Token Framework](/ja/user-guide/core-concepts/conditional-tokens/)は条件付きマーケットポジションを説明します。
 - [Bitcoin Design — Ecash Introduction](https://bitcoin.design/guide/how-it-works/ecash/introduction/)は ecash 信頼モデルの外部紹介です。

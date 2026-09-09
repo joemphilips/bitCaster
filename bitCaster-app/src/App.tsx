@@ -1,6 +1,7 @@
 import { BrowserRouter, Routes, Route, useNavigate, useLocation } from "react-router";
 import { useTranslation } from "react-i18next";
 import { AppShell, DurableWalletErrors } from "@/components/shell";
+import { SettlementProgress } from "@/components/shell/SettlementProgress";
 import { MarketsPage } from "@/pages/MarketsPage";
 import { MarketDetailPage } from "@/pages/MarketDetailPage";
 import { PortfolioPage } from "@/pages/PortfolioPage";
@@ -61,7 +62,7 @@ function WizardRoutes() {
   );
 }
 
-function ShellRoutes() {
+function ShellRoutes({ canReadOrderStatus }: { canReadOrderStatus: boolean }) {
   const navigate = useNavigate();
   const location = useLocation();
   const { t } = useTranslation();
@@ -100,6 +101,7 @@ function ShellRoutes() {
       onCreateClick={() => navigate("/creator")}
     >
       <DurableWalletErrors />
+      <SettlementProgress canReadStatus={canReadOrderStatus} />
       <Routes>
         <Route path="/" element={<MarketsPage />} />
         <Route path="/markets" element={<MarketsPage />} />
@@ -408,7 +410,7 @@ function AppRoutes() {
           reconcile.
         </div>
       )}
-      {isWizard ? <WizardRoutes /> : <ShellRoutes />}
+      {isWizard ? <WizardRoutes /> : <ShellRoutes canReadOrderStatus={nostrSignerReady && nostrSignerMode !== "none"} />}
     </>
   );
 }

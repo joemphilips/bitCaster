@@ -29,7 +29,6 @@ import {
 } from "@/lib/marketRegistrationFee";
 import {
   DEFAULT_MARKET_BASE_ASSET,
-  normalizeMarketCreationLiquiditySats,
   normalizeMarketBaseAsset,
   normalizeMarketDivisibility,
   defaultCollateralUnit,
@@ -501,12 +500,7 @@ export function useMarketCreationState() {
           },
         });
 
-        // 2. Create market on matching engine. Creator AMM funding is handled
-        // after creation, so the pre-create liquidity field is always zero.
-        const liquiditySats = normalizeMarketCreationLiquiditySats({
-          baseAsset,
-          liquiditySats: 0,
-        });
+        // Create the market. Bot funding is a separate action.
         const createResponse = await createMarket(
           condition_id,
           {
@@ -515,7 +509,6 @@ export function useMarketCreationState() {
             outcomes: outcomes.map((name) => ({ name })),
             outcomeType:
               draft.stepOutcomes?.outcomeType ?? draft.stepGetStarted?.outcomeType ?? "yesno",
-            liquiditySats,
             baseAsset,
             categoryTags,
             oracleAnnouncementHex: announcementHex,

@@ -1,3 +1,4 @@
+import type { components } from './generated/api.ts'
 import {
   parseMarketDivisibility,
   type CtfCollateralUnit,
@@ -194,14 +195,7 @@ export interface Fill {
   outcomeFaceAmountSubunits: number
 }
 
-export type SettlementGroupStatus =
-  | 'Prepared'
-  | 'SubmissionPending'
-  | 'Reconciling'
-  | 'Confirmed'
-  | 'DefinitivelyRejected'
-  | 'Refundable'
-  | 'ExpiredBeforeSubmission'
+export type SettlementGroupStatus = components['schemas']['SettlementGroupStatus']
 
 export interface SettlementGroupSummary {
   groupId: string
@@ -659,17 +653,21 @@ export class BitcasterEngineClient {
     )
   }
 
-  async getOrderStatus(marketId: string, orderId: string): Promise<OrderStatusResponse | null> {
+  async getOrderStatus(marketId: string, orderId: string, signal?: AbortSignal): Promise<OrderStatusResponse | null> {
     const response = await this.request(
       `/api/v1/${encodePathSegment(marketId)}/orders/${encodePathSegment(orderId)}`,
-      {},
+      { signal },
       undefined,
       true,
+      SUBMIT_ORDER_RESPONSE_BYTES_MAX,
     )
-    if (response.status === 404) return null
-    return decodeOrderStatusResponse(
-      await readAllocationBoundedJsonResponse(response, SUBMIT_ORDER_RESPONSE_BYTES_MAX),
-    )
+    if (response.status === 404) {
+      await response.body?.cancel().catch(() => {})
+      return null
+    }
+    const value = await readAllocationBoundedJsonResponse(response, SUBMIT_ORDER_RESPONSE_BYTES_MAX)
+    signal?.throwIfAborted()
+    return decodeOrderStatusResponse(value)
   }
 
   async listMyOrders(conditionId: string, cursor?: string): Promise<ListMyOrdersResponse> {
@@ -842,9 +840,15 @@ export class BitcasterEngineClient {
     allowNotFound = false,
     errorResponseBytesMax?: number,
   ): Promise<Response> {
+    init.signal?.throwIfAborted()
     const url = `${this.baseUrl}${path}`
     const headers = await this.authorizedHeaders(url, init, bodyText)
+    init.signal?.throwIfAborted()
     const response = await this.fetchImpl(url, { ...init, headers })
+    if (init.signal?.aborted) {
+      await response.body?.cancel().catch(() => {})
+      init.signal.throwIfAborted()
+    }
     if (!response.ok && !(allowNotFound && response.status === 404)) {
       const detail =
         errorResponseBytesMax === undefined
@@ -1207,7 +1211,8 @@ function decodeSettlementGroup(value: unknown): SettlementGroupSummary {
     group.status !== 'Confirmed' &&
     group.status !== 'DefinitivelyRejected' &&
     group.status !== 'Refundable' &&
-    group.status !== 'ExpiredBeforeSubmission'
+    group.status !== 'ExpiredBeforeSubmission' &&
+    group.status !== 'RejectedBeforeSubmission'
   ) {
     throw new Error('settlement group status is invalid')
   }
@@ -1542,6 +1547,7 @@ export function isDefinitiveOrderSubmissionError(error: EngineClientError): bool
     return false
   }
   if (error.status !== 409) return true
+  if (error.code !== undefined) return error.code !== 'order-book-conflict'
   return orderSubmissionErrorDetail(error) !== RETRYABLE_ORDER_BOOK_CONFLICT
 }
 

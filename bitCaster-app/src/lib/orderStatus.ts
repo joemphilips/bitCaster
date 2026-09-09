@@ -78,11 +78,12 @@ export function buildOrderLifecycleNotifications(
 export async function fetchOrderStatus(
   marketId: string,
   orderId: string,
+  signal?: AbortSignal,
 ): Promise<OrderStatusResponse | null> {
   return (await new BitcasterEngineClient({
     baseUrl: window.location.origin,
     authorization: ({ url, method }) => generateNip98Header(resolveApiSigningUrl(url), method),
-  }).getOrderStatus(marketId, orderId)) as OrderStatusResponse | null;
+  }).getOrderStatus(marketId, orderId, signal)) as OrderStatusResponse | null;
 }
 
 export function buildOrderStatusNotifications(

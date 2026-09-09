@@ -45,9 +45,10 @@ limit orders.
 
 The first accepted payment starts the bot from a uniform neutral activation
 state. That payment controls the initial capacity and the capital at risk.
-Additional accepted payments can add capacity without repricing the bot. Larger
-total capacity can quote deeper markets; smaller capacity creates thinner quotes
-that move more easily.
+Later funding can increase the liquidity parameter `b` after pending bot trades
+finish. The bot keeps its trade-derived position `q` unchanged. This change can
+move its bid and ask quotes. It does not change the latest confirmed trade price.
+More funding can support deeper quotes.
 
 LMSR is not intended to be the only possible AMM forever. bitCaster may add other
 market-making strategies later, especially if they serve different market types,

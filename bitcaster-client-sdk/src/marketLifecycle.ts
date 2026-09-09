@@ -23,11 +23,6 @@ export interface CreateMarketRequest {
    * compatibility, but numeric market creation and trading are unavailable.
    */
   outcomeType?: 'yesno' | 'categorical' | 'numeric'
-  /**
-   * Deprecated compatibility field. Keep it at zero. Market-maker funding is
-   * a separate post-creation deposit flow and can be repeated.
-   */
-  liquiditySats?: number
   baseAsset: MarketBaseAsset
   categoryTags?: string[]
   oracleAnnouncementHex?: string | null

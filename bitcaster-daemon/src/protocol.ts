@@ -61,7 +61,6 @@ export interface MarketCreateParams {
   title: string
   description: string
   outcomes: string[]
-  liquiditySats?: number
   tags?: string[]
   /** Local file path on the daemon host. */
   thumbnailPath?: string

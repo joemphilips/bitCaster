@@ -2186,8 +2186,6 @@ test('P47-6b: market create with named flags sends daemon RPC params', async () 
         'Weather market',
         '--outcomes',
         'YES,NO,MAYBE',
-        '--liquidity-sats',
-        '1000',
         '--tag',
         'weather',
         '--tag',
@@ -2212,7 +2210,6 @@ test('P47-6b: market create with named flags sends daemon RPC params', async () 
           title: 'Will it rain?',
           description: 'Weather market',
           outcomes: ['YES', 'NO', 'MAYBE'],
-          liquiditySats: 1000,
           tags: ['weather', 'test'],
           thumbnailPath: '/tmp/thumb.png',
         },
@@ -2500,6 +2497,20 @@ test('public order submit rejects the removed --tif option', async () => {
   )
 })
 
+test('market creation rejects the removed --liquidity-sats option', async () => {
+  await assertCliFailure(
+    [
+      'market', 'create',
+      '--condition-id', 'cond-1',
+      '--title', 'Winner',
+      '--description', 'Alpha or Beta',
+      '--outcomes', 'Alpha,Beta',
+      '--liquidity-sats', '0',
+    ],
+    /unknown option '--liquidity-sats'/,
+  )
+})
+
 test('P47-7: bitcaster-cli wallet and market --dry-run commands do not call daemon and redact sensitive fields', async () => {
   const attestation = kind89Event()
   const cases: Array<{ args: string[]; expected: unknown }> = [
@@ -2527,8 +2538,6 @@ test('P47-7: bitcaster-cli wallet and market --dry-run commands do not call daem
         'Description',
         '--outcomes',
         'YES,NO',
-        '--liquidity-sats',
-        '1000',
         '--trust-engine-url',
         '--dry-run',
       ],
@@ -2537,7 +2546,6 @@ test('P47-7: bitcaster-cli wallet and market --dry-run commands do not call daem
         title: 'Market',
         description: 'Description',
         outcomes: ['YES', 'NO'],
-        liquiditySats: 1000,
       },
     },
     {

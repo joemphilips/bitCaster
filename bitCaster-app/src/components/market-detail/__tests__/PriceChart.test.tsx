@@ -97,6 +97,24 @@ describe("PriceChart", () => {
     expect(plotInstances).toHaveLength(0);
   });
 
+  it.each([undefined, "No trades yet"])(
+    "uses the supplied empty state without inventing a price (%s)",
+    (emptyDisplay) => {
+      render(
+        <PriceChart
+          priceHistory={{ timeframe: "7d", data: [] }}
+          chartTimeframe="7d"
+          emptyDisplay={emptyDisplay}
+        />,
+      );
+
+      expect(screen.getByText(emptyDisplay ?? "No data available")).toBeInTheDocument();
+      expect(screen.queryByTestId("price-chart-uplot")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("latest-price-pill")).not.toBeInTheDocument();
+      expect(plotInstances).toHaveLength(0);
+    },
+  );
+
   it("updates the existing plot data when history changes", () => {
     const { rerender } = render(
       <PriceChart
@@ -109,6 +127,8 @@ describe("PriceChart", () => {
     );
 
     const instance = plotInstances[0];
+    const options = instance.options as { series: Array<{ points?: { show?: boolean } }> };
+    expect(options.series[1].points?.show).toBe(true);
     rerender(
       <PriceChart
         priceHistory={{

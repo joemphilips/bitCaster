@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { listenForPortfolioInvalidation } from "@/lib/portfolioInvalidation";
 import { useNotificationsStore } from "@/stores/notifications";
 import { usePendingTradesStore } from "@/stores/pendingTrades";
+import type { OrderStatusResponse } from "@/lib/orderStatus";
 
 const walletId = "a".repeat(64);
 const { mockUseOrderHub, mockJoinOrder, mockRecover, mockFetchOrderStatus } = vi.hoisted(() => ({
@@ -37,6 +38,7 @@ function settlementDelta(
     | "Confirmed"
     | "DefinitivelyRejected"
     | "Refundable"
+    | "RejectedBeforeSubmission"
     | "ExpiredBeforeSubmission",
 ) {
   return {
@@ -47,7 +49,7 @@ function settlementDelta(
       status,
       revision: 3,
       coalescingDeadline: "2026-08-08T00:00:00.000Z",
-      frozenAt: "2026-08-08T00:00:01.000Z",
+      frozenAt: status === "RejectedBeforeSubmission" ? null : "2026-08-08T00:00:01.000Z",
     },
   };
 }
@@ -63,6 +65,42 @@ beforeEach(() => {
 });
 
 describe("useOrderSettlementLifecycle", () => {
+  it.each(["missing", "failed", "terminal"])("reconciles pre-submission rejection without confirmed recovery (%s read)", async (readResult) => {
+    const orderId = "11111111-1111-4111-8111-111111111111";
+    if (readResult === "failed") mockFetchOrderStatus.mockRejectedValueOnce(new Error("read unavailable"));
+    if (readResult === "terminal") mockFetchOrderStatus.mockResolvedValueOnce({
+      orderId, marketId: "condition-YES", status: "cancelled",
+      remainingAmountSubunits: 0, filledAmountSubunits: 0, amountSubunits: 1_000,
+      outcomeId: "YES", side: "Buy", price: 500, placedAt: "2026-08-08T00:00:00Z",
+      timeInForce: "FOK", expiresAt: null, tokenSide: "Outcome", baseAsset: "sat",
+      divisibility: 1_000, fills: [], activeSettlementGroup: null,
+    } satisfies OrderStatusResponse);
+    usePendingTradesStore.getState().add({
+      orderId, clientOrderId: "rejected-order", marketId: "condition-YES",
+      baseAsset: "sat", divisibility: 1_000, submittedAt: Date.now(),
+    });
+    const invalidated = vi.fn();
+    const stop = listenForPortfolioInvalidation(invalidated);
+    try {
+      renderHook(() => useOrderSettlementLifecycle(true, recoveryInput));
+      const callbacks = mockUseOrderHub.mock.calls.at(-1)?.[1];
+      act(() => callbacks.onSettlementGroupStateChanged(settlementDelta(orderId, "RejectedBeforeSubmission")));
+      await waitFor(() => expect(mockFetchOrderStatus).toHaveBeenCalledExactlyOnceWith("condition-YES", orderId));
+      expect(mockRecover).not.toHaveBeenCalled();
+      expect(invalidated).not.toHaveBeenCalled();
+      if (readResult === "terminal") {
+        expect(usePendingTradesStore.getState().byOrderId[orderId]).toBeUndefined();
+        expect(useNotificationsStore.getState().items).toEqual(expect.arrayContaining([
+          expect.objectContaining({ id: `${orderId}-cancelled`, kind: "cancelled" }),
+        ]));
+      } else {
+        expect(usePendingTradesStore.getState().byOrderId[orderId]).toBeDefined();
+      }
+    } finally {
+      stop();
+    }
+  });
+
   it("joins an owned order and recovers only after confirmation", async () => {
     usePendingTradesStore.getState().add({
       orderId: "11111111-1111-4111-8111-111111111111",

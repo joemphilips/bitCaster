@@ -7,6 +7,11 @@ import type {
   SdkTradeSide,
 } from './types.ts'
 import {
+  canonicalizePreviewFokOrderRequest,
+  decodePreviewFokOrderResponse,
+  type PreviewFokOrderRequest,
+} from './fokOrderPreview.ts'
+import {
   normalizeMarketDivisibility,
   validatePriceNumerator,
   validateWholeShareFaceAmount,
@@ -22,6 +27,7 @@ export interface TradeTicket {
 export type TradeTicketErrorCode =
   | 'missing-selection'
   | 'invalid-amount'
+  | 'invalid-preview'
   | 'unsupported-settlement'
 
 export class TradeTicketError extends Error {
@@ -114,4 +120,131 @@ export function buildTradeTicket(params: {
     marketId: `${market.id}-${resolvedOutcome.publicOutcomeSetId}`,
     request,
   }
+}
+
+/**
+ * Derive a protected FOK ticket from one matching, caller-owned preview.
+ *
+ * The caller must obtain the preview for the current route, amount, selected
+ * token, side, price bound, and authentication identity. This operation does
+ * not refresh a preview or establish identity freshness. A null or omitted
+ * `priceOverride` uses the fillable preview's selected-token worst price. An
+ * explicit override must equal the preview request price and is copied
+ * without slippage or widening.
+ */
+export function buildProtectedTradeTicket(params: {
+  ticket: TradeTicket
+  previewRequest: PreviewFokOrderRequest
+  previewResponse: unknown
+  priceOverride?: number | null
+}): TradeTicket {
+  const { ticket, previewRequest, previewResponse } = params
+  const priceOverride = params.priceOverride ?? null
+
+  validateTradeTicketShape(ticket)
+
+  let request: PreviewFokOrderRequest
+  let response: ReturnType<typeof decodePreviewFokOrderResponse>
+  try {
+    request = canonicalizePreviewFokOrderRequest(previewRequest)
+    response = decodePreviewFokOrderResponse(previewResponse, request)
+  } catch (error) {
+    throw invalidPreviewError(error)
+  }
+
+  if (
+    ticket.marketId !== request.marketId ||
+    ticket.request.side !== request.side ||
+    ticket.request.tokenSide !== request.tokenSide ||
+    ticket.request.amountSubunits !== request.faceAmountSubunits ||
+    ticket.request.price !== request.price ||
+    ticket.request.outcomeId !== request.marketId.slice(request.marketId.lastIndexOf('-') + 1)
+  ) {
+    throw new TradeTicketError(
+      'invalid-preview',
+      'The order preview does not match the trade ticket.',
+    )
+  }
+
+  if (priceOverride !== null) {
+    if (!Number.isSafeInteger(priceOverride) || priceOverride !== request.price) {
+      throw new TradeTicketError(
+        'invalid-preview',
+        'The explicit price bound does not match the order preview.',
+      )
+    }
+  }
+
+  if (response.priceDenominator === null || response.worstPrice === null) {
+    throw new TradeTicketError(
+      'invalid-preview',
+      'The fillable order preview has incomplete price metadata.',
+    )
+  }
+
+  const protectedPrice = priceOverride ?? response.worstPrice
+  if (!validatePriceNumerator(protectedPrice, response.priceDenominator)) {
+    throw new TradeTicketError('invalid-preview', 'The protected price is invalid.')
+  }
+
+  return {
+    marketId: ticket.marketId,
+    request: {
+      ...ticket.request,
+      price: protectedPrice,
+    },
+  }
+}
+
+function validateTradeTicketShape(ticket: TradeTicket): void {
+  if (
+    typeof ticket !== 'object' ||
+    ticket === null ||
+    typeof ticket.marketId !== 'string' ||
+    typeof ticket.request !== 'object' ||
+    ticket.request === null
+  ) {
+    throw new TradeTicketError('invalid-preview', 'The trade ticket is invalid.')
+  }
+
+  const request = ticket.request
+  if (
+    typeof request.outcomeId !== 'string' ||
+    request.outcomeId.length < 1 ||
+    !isTokenSide(request.tokenSide) ||
+    !isTradeSide(request.side) ||
+    !Number.isSafeInteger(request.price) ||
+    !Number.isSafeInteger(request.amountSubunits) ||
+    request.amountSubunits <= 0 ||
+    request.timeInForce !== 'FOK'
+  ) {
+    throw new TradeTicketError('invalid-preview', 'The trade ticket is invalid.')
+  }
+}
+
+function isTokenSide(value: unknown): value is TradeTicket['request']['tokenSide'] {
+  switch (value) {
+    case 'Outcome':
+    case 'Complement':
+      return true
+    default:
+      return false
+  }
+}
+
+function isTradeSide(value: unknown): value is SdkTradeSide {
+  switch (value) {
+    case 'Buy':
+    case 'Sell':
+      return true
+    default:
+      return false
+  }
+}
+
+function invalidPreviewError(error: unknown): TradeTicketError {
+  return new TradeTicketError(
+    'invalid-preview',
+    error instanceof Error ? error.message : 'The order preview is invalid.',
+  )
 }

@@ -17,7 +17,12 @@ const { tradingPanelMock } = vi.hoisted(() => ({
 }));
 vi.mock("../TradingPanel", () => ({ TradingPanel: tradingPanelMock }));
 vi.mock("../PriceChart", () => ({
-  PriceChart: ({ currentDisplay }: { currentDisplay?: string }) => <div>{currentDisplay}</div>,
+  PriceChart: ({ currentDisplay, emptyDisplay }: { currentDisplay?: string; emptyDisplay?: string }) => (
+    <div>
+      <div>{currentDisplay}</div>
+      <div data-testid="chart-empty-display">{emptyDisplay}</div>
+    </div>
+  ),
 }));
 const { orderBookSectionMock } = vi.hoisted(() => ({
   orderBookSectionMock: vi.fn(({ title }: { title?: string }) => (
@@ -253,6 +258,54 @@ describe("MarketDetail", () => {
 
     expect(screen.getByText("No trades yet")).toBeInTheDocument();
     expect(screen.queryByText("0.00%")).not.toBeInTheDocument();
+  });
+
+  it.each([
+    ["valid empty authority", { latestConfirmedTradesValid: true, latestConfirmedTrades: [] }, true],
+    ["categorical empty authority", {
+      type: "categorical", latestConfirmedTradesValid: true, latestConfirmedTrades: [],
+    }, true],
+    ["disabled numeric empty authority", {
+      type: "numeric", unit: "USD", precision: 2, loBound: 0, hiBound: 100,
+      currentPrice: null, latestConfirmedTradesValid: true, latestConfirmedTrades: [],
+    }, false],
+    ["invalid authority", { latestConfirmedTradesValid: false, latestConfirmedTrades: [] }, false],
+    ["missing authority", {}, false],
+    ["missing records", { latestConfirmedTradesValid: true }, false],
+    ["traded with empty history", {
+      latestConfirmedTradesValid: true,
+      latestConfirmedTrades: [{
+        primitiveOutcomeId: "Yes",
+        fillId: "00000000-0000-0000-0000-000000000010",
+        executedAt: "2030-01-01T00:00:00Z",
+        eventOrder: "0001",
+        priceTick: 500,
+        divisibility: 1_000,
+        faceAmountSubunits: 100,
+      }],
+    }, false],
+  ] as const)("sets the chart empty message from %s", (_name, authority, noTrades) => {
+    render(
+      <MarketDetail
+        market={makeMarket({
+          ...authority,
+          latestConfirmedTrades: "latestConfirmedTrades" in authority
+            ? [...authority.latestConfirmedTrades]
+            : undefined,
+        })}
+        chartTimeframe="7d"
+        tradeSelection={null}
+        tradeAmount={0}
+        tradePreview={null}
+        tradeSide="Buy"
+        orderType="market"
+        limitOrderPreview={null}
+        limitPrice={500}
+      />,
+    );
+
+    expect(screen.getByTestId("chart-empty-display").textContent)
+      .toBe(noTrades ? "No trades yet" : "");
   });
 
   it("keeps the disabled numeric current value unavailable", () => {

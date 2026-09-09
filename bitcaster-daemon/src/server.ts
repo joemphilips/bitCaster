@@ -399,9 +399,6 @@ export async function dispatch(
           title: command.params.title,
           description: command.params.description,
           outcomes: createMarketOutcomes(command.params.outcomes),
-          ...(command.params.liquiditySats !== undefined
-            ? { liquiditySats: command.params.liquiditySats }
-            : {}),
           ...(command.params.tags !== undefined ? { categoryTags: command.params.tags } : {}),
         },
         thumbnailBytes,

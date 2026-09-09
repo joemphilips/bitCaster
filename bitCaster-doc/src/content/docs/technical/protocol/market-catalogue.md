@@ -26,11 +26,15 @@ price. Clients should show `No trades yet` or an em dash. Do not use a
 registration value, funding value, uniform default, or bid/ask midpoint as the
 market price. A midpoint is an order-entry reference only.
 
-Other public market summaries use the same naming rule: price-history points expose `volumeSubunits`, market metadata snapshots expose `totalVolumeSubunits` and `totalLiquiditySubunits`, and liquidity snapshots expose `restingOrderLiquiditySubunits`, `completeSetLiquiditySubunits`, and `totalLiquiditySubunits`. The deprecated `liquiditySats` create-market metadata field is still accepted for compatibility, but it is inert and create requests should send `0`. Market-maker funding is collected after creation through the deposit flow and can be repeated.
+Price-history points expose `volumeSubunits`. Market metadata snapshots expose
+`totalVolumeSubunits` and `totalLiquiditySubunits`.
+The metadata field `totalLiquiditySubunits` is always zero. It does not report
+bot funding, custody, or executable order-book depth.
 
-The liquidity endpoint's `impliedProbability` is an order-entry reference from
-the bot-liquidity view. It is not the public market price or a confirmed trade.
-Use `latestConfirmedTrades` for public price display.
+Market creation does not accept a funding amount. Fund the market maker after
+creation through the durable Cashu delivery API. Each funding payment requires
+separate approval. You can fund the same market more than once. Funding does
+not create a public market price. Use `latestConfirmedTrades` for that price.
 
 ## Real-time lifecycle updates
 

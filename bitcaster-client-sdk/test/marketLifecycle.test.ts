@@ -65,7 +65,6 @@ test('createMarketViaEngine signs a NIP-98 payload tag for the exact serialized 
         { name: 'No' },
       ],
       baseAsset: 'sat',
-      liquiditySats: 0,
     },
     {
       data: new Uint8Array([1, 2, 3]),
@@ -138,7 +137,6 @@ test('createMarketViaEngine can use the daemon NIP-98 signer for exact multipart
         { name: 'No' },
       ],
       baseAsset: 'sat',
-      liquiditySats: 0,
     },
     {
       data: new Uint8Array([9, 8, 7, 6]),

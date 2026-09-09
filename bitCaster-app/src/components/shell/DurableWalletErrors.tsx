@@ -1,4 +1,5 @@
 import { useLiveQuery } from "dexie-react-hooks";
+import { useState } from "react";
 import { AlertCircle, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { browserWalletScopeIdFromMnemonic } from "@/lib/browserWalletProfile";
@@ -6,22 +7,27 @@ import { useWalletStore } from "@/stores/wallet";
 import {
   acknowledgeBrowserCtfRangeMessage,
   pageActiveBrowserCtfRangeMessages,
+  type BrowserCtfRangeMessageCursor,
 } from "@/stores/ctf-range-order-messages";
 
 const VISIBLE_MESSAGE_LIMIT = 8;
 
 export function DurableWalletErrors() {
-  const { t } = useTranslation();
   const mnemonic = useWalletStore((state) => state.mnemonic);
   const scopeId = browserWalletScopeIdFromMnemonic(mnemonic);
+  return scopeId === null ? null : <WalletAlertPage key={scopeId} scopeId={scopeId} />;
+}
+
+function WalletAlertPage({ scopeId }: { scopeId: string }) {
+  const { t } = useTranslation();
+  const [after, setAfter] = useState<BrowserCtfRangeMessageCursor>();
   const page = useLiveQuery(
-    () =>
-      scopeId === null
-        ? Promise.resolve({ messages: [], nextCursor: null })
-        : pageActiveBrowserCtfRangeMessages({ scopeId, limit: VISIBLE_MESSAGE_LIMIT }),
-    [scopeId],
+    () => pageActiveBrowserCtfRangeMessages({
+      scopeId, limit: VISIBLE_MESSAGE_LIMIT, ...(after ? { after } : {}),
+    }),
+    [scopeId, after],
   );
-  if (scopeId === null || !page || page.messages.length === 0) return null;
+  if (!page || (page.messages.length === 0 && after === undefined)) return null;
 
   return (
     <section className="mb-4 space-y-2" aria-label={t("walletRecovery.title")}>
@@ -66,6 +72,18 @@ export function DurableWalletErrors() {
           {t("walletRecovery.morePending")}
         </p>
       )}
+      <div className="flex gap-3">
+        {after !== undefined && (
+          <button type="button" className="text-sm underline" onClick={() => setAfter(undefined)}>
+            {t("walletRecovery.firstAlerts")}
+          </button>
+        )}
+        {page.nextCursor !== null && (
+          <button type="button" className="text-sm underline" onClick={() => setAfter(page.nextCursor!)}>
+            {t("common.next")}
+          </button>
+        )}
+      </div>
     </section>
   );
 }

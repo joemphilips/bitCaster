@@ -191,6 +191,46 @@ describe("TradingPanel", () => {
     expect(screen.getByTestId("detail-deposit-step")).toHaveTextContent("sat-market:1000");
   });
 
+  it("shows the preview worst price by default and an exact optional bound", async () => {
+    const user = userEvent.setup();
+    function Harness() {
+      const [orderType, setOrderType] = useState<"market" | "limit">("market");
+      return (
+        <TradingPanel
+          market={makeMarket()}
+          tradeSelection={{ side: "yes" }}
+          tradeAmount={1}
+          tradePreview={readyPreview({ worstPrice: 320 })}
+          limitOrderPreview={readyPreview({ worstPrice: 320 })}
+          tradeSide="Buy"
+          orderType={orderType}
+          limitPrice={450}
+          onOrderTypeChange={setOrderType}
+        />
+      );
+    }
+
+    render(<Harness />);
+
+    expect(screen.queryByText("Market")).not.toBeInTheDocument();
+    expect(screen.queryByText("Limit")).not.toBeInTheDocument();
+    expect(screen.getByTestId("trade-price-protection-toggle")).toHaveAccessibleName(
+      "Customize price protection",
+    );
+    expect(screen.getByTestId("trade-protected-price")).toHaveAttribute(
+      "data-price-numerator",
+      "320",
+    );
+
+    await user.click(screen.getByTestId("trade-price-protection-toggle"));
+
+    expect(screen.getByTestId("trade-protected-price")).toHaveAttribute(
+      "data-price-numerator",
+      "450",
+    );
+    expect(screen.getByTestId("limit-price-input")).toHaveValue(0.45);
+  });
+
   it("does not block trading controls when the local book is empty", async () => {
     const user = userEvent.setup();
     const onTradeConfirm = vi.fn();

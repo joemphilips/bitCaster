@@ -67,6 +67,22 @@ describe("durable browser range messages", () => {
     );
     expect(second.messages).toMatchObject([{ revision: 2 }]);
   });
+
+  it("retains alerts beyond the visible page after reopening", async () => {
+    const database = createDatabase();
+    for (let revision = 1; revision <= 10; revision++) {
+      await recordBrowserCtfRangeMessage(message(revision, "recovery-pending", revision), database);
+    }
+    database.close();
+    await database.open();
+    const first = await page(database);
+    expect(first.messages).toHaveLength(8);
+    const next = await pageActiveBrowserCtfRangeMessages(
+      { scopeId: "scope-1", limit: 8, after: first.nextCursor! }, database,
+    );
+    expect(next.messages.map((item) => item.revision)).toEqual([9, 10]);
+    expect([...first.messages, ...next.messages].every((item) => item.status === "active")).toBe(true);
+  });
 });
 
 function createDatabase(): BitcasterDB {

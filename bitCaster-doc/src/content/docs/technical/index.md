@@ -13,8 +13,7 @@ The first-release server accepts only public FOK orders. The GUI and CLI submit
 FOK orders. Each public attempt uses one one-shot capability. FOK uses the book
 state at admission. It commits the full requested quantity or cancels the
 complete request. Public FAK, GTC, GTD, continuation, and residual
-reauthorization are not available. Internal custody-backed LMSR quotes use GTC.
-They are not public client orders.
+reauthorization are not available.
 
 ## Settlement groups
 

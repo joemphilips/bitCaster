@@ -1372,7 +1372,7 @@ namespace BitCaster.MatchingEngine.Contracts
     }
 
     /// <summary>
-    /// Public atomic settlement-group lifecycle. `Prepared` is the bounded coalescing state. `SubmissionPending` means the group is frozen and its exact request authority was durably committed before mint I/O.
+    /// Public atomic settlement-group lifecycle. `Prepared` is the bounded coalescing state. `SubmissionPending` means the group is frozen and its exact request authority was durably committed before mint I/O. `RejectedBeforeSubmission` means this group stopped before committing a mint request for a reason other than authorization expiry. `ExpiredBeforeSubmission` means authorization expired before submission. Neither status confirms wallet recovery or authorizes a refund.
     /// <br/>
     /// </summary>
     [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
@@ -1399,6 +1399,9 @@ namespace BitCaster.MatchingEngine.Contracts
 
         [System.Runtime.Serialization.EnumMember(Value = @"ExpiredBeforeSubmission")]
         ExpiredBeforeSubmission = 6,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"RejectedBeforeSubmission")]
+        RejectedBeforeSubmission = 7,
 
     }
 
@@ -1429,7 +1432,7 @@ namespace BitCaster.MatchingEngine.Contracts
         public System.DateTimeOffset CoalescingDeadline { get; }
 
         /// <summary>
-        /// Null for `Prepared` and for `ExpiredBeforeSubmission`, which transitions directly from `Prepared` without mint submission. Non-null for every lifecycle path that reached `SubmissionPending`, and preserved through later transitions.
+        /// Null for `Prepared`, `RejectedBeforeSubmission`, and `ExpiredBeforeSubmission`, which transitions directly from `Prepared` without mint submission. Non-null for every lifecycle path that reached `SubmissionPending`, and preserved through later transitions.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("frozenAt")]
@@ -2782,20 +2785,19 @@ namespace BitCaster.MatchingEngine.Contracts
     }
 
     /// <summary>
-    /// JSON payload embedded in the multipart `metadata` field of the createMarket endpoint. This request contains market metadata only. It accepts no opening probability and no initial funding payment or proof. Use the separate post-creation deposit flow for bot funding.
+    /// JSON payload embedded in the multipart `metadata` field of the createMarket endpoint. This request contains market metadata only. It accepts no opening probability and no initial funding payment or proof. Use the separate post-creation funding flow for bot funding.
     /// <br/>
     /// </summary>
     [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
     public partial class CreateMarketRequest
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public CreateMarketRequest(BaseAsset @baseAsset, System.Collections.Generic.List<string>? @categoryTags, string @description, long? @liquiditySats, string? @oracleAnnouncementHex, System.Collections.Generic.List<CreateMarketOutcome> @outcomes, CreateMarketRequestOutcomeType? @outcomeType, string @title)
+        public CreateMarketRequest(BaseAsset @baseAsset, System.Collections.Generic.List<string>? @categoryTags, string @description, string? @oracleAnnouncementHex, System.Collections.Generic.List<CreateMarketOutcome> @outcomes, CreateMarketRequestOutcomeType? @outcomeType, string @title)
         {
             this.Title = @title;
             this.Description = @description;
             this.Outcomes = @outcomes;
             this.OutcomeType = @outcomeType;
-            this.LiquiditySats = @liquiditySats;
             this.BaseAsset = @baseAsset;
             this.CategoryTags = @categoryTags;
             this.OracleAnnouncementHex = @oracleAnnouncementHex;
@@ -2826,13 +2828,6 @@ namespace BitCaster.MatchingEngine.Contracts
         [System.Text.Json.Serialization.JsonPropertyName("outcomeType")]
         [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<CreateMarketRequestOutcomeType>))]
         public CreateMarketRequestOutcomeType? OutcomeType { get; }
-
-        /// <summary>
-        /// Deprecated compatibility field. It is inert: it does not fund, activate, or price a market and does not create a depositor position. Market-maker funding is collected through the separate post-creation deposit flow. Keep this field at `0` when sending a create request.
-        /// <br/>
-        /// </summary>
-        [System.Text.Json.Serialization.JsonPropertyName("liquiditySats")]
-        public long? LiquiditySats { get; }
 
         /// <summary>
         /// Required immutable product base asset. Must be exact `sat`.
@@ -3096,86 +3091,6 @@ namespace BitCaster.MatchingEngine.Contracts
     }
 
     [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
-    public partial class LiquidityStateResponse
-    {
-        [System.Text.Json.Serialization.JsonConstructor]
-        public LiquidityStateResponse(int @activeOrders, BaseAsset @baseAsset, long @completeSetLiquiditySubunits, LiquidityStateResponseDivisibility @divisibility, int @impliedProbability, string @marketId, long @reserveA, long @reserveB, long @restingOrderLiquiditySubunits, long @totalLiquiditySubunits)
-        {
-            this.MarketId = @marketId;
-            this.ReserveA = @reserveA;
-            this.ReserveB = @reserveB;
-            this.ImpliedProbability = @impliedProbability;
-            this.BaseAsset = @baseAsset;
-            this.Divisibility = @divisibility;
-            this.RestingOrderLiquiditySubunits = @restingOrderLiquiditySubunits;
-            this.CompleteSetLiquiditySubunits = @completeSetLiquiditySubunits;
-            this.TotalLiquiditySubunits = @totalLiquiditySubunits;
-            this.ActiveOrders = @activeOrders;
-        }
-
-        [System.Text.Json.Serialization.JsonPropertyName("marketId")]
-        public string MarketId { get; }
-
-        [System.Text.Json.Serialization.JsonPropertyName("reserveA")]
-        public long ReserveA { get; }
-
-        [System.Text.Json.Serialization.JsonPropertyName("reserveB")]
-        public long ReserveB { get; }
-
-        /// <summary>
-        /// Bot-liquidity reference value for order entry. This is not the public market price, latest confirmed trade, or market value. Use `latestConfirmedTrades` from the market catalogue for the public confirmed-trade price. Before the first confirmed trade, the market has no public price.
-        /// <br/>
-        /// </summary>
-        [System.Text.Json.Serialization.JsonPropertyName("impliedProbability")]
-        public int ImpliedProbability { get; }
-
-        [System.Text.Json.Serialization.JsonPropertyName("baseAsset")]
-        [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<BaseAsset>))]
-        public BaseAsset BaseAsset { get; }
-
-        /// <summary>
-        /// Immutable price denominator `D`, server-determined. Current yes/no and categorical markets use `1000`; `1000000` is reserved for a future numeric trade representation.
-        /// <br/>
-        /// </summary>
-        [System.Text.Json.Serialization.JsonPropertyName("divisibility")]
-        public LiquidityStateResponseDivisibility Divisibility { get; }
-
-        /// <summary>
-        /// Liquidity represented by currently resting bot orders, in market-base subunits.
-        /// </summary>
-        [System.Text.Json.Serialization.JsonPropertyName("restingOrderLiquiditySubunits")]
-        public long RestingOrderLiquiditySubunits { get; }
-
-        /// <summary>
-        /// Conservative value of free complete-set inventory, in market-base subunits.
-        /// </summary>
-        [System.Text.Json.Serialization.JsonPropertyName("completeSetLiquiditySubunits")]
-        public long CompleteSetLiquiditySubunits { get; }
-
-        /// <summary>
-        /// Total public liquidity in market-base subunits.
-        /// </summary>
-        [System.Text.Json.Serialization.JsonPropertyName("totalLiquiditySubunits")]
-        public long TotalLiquiditySubunits { get; }
-
-        /// <summary>
-        /// Number of active liquidity orders.
-        /// </summary>
-        [System.Text.Json.Serialization.JsonPropertyName("activeOrders")]
-        public int ActiveOrders { get; }
-
-        private System.Collections.Generic.IDictionary<string, object>? _additionalProperties;
-
-        [System.Text.Json.Serialization.JsonExtensionData]
-        public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
-        {
-            get { return _additionalProperties ?? (_additionalProperties = new System.Collections.Generic.Dictionary<string, object>()); }
-            set { _additionalProperties = value; }
-        }
-
-    }
-
-    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
     public partial class MarketMetadataSnapshot
     {
         [System.Text.Json.Serialization.JsonConstructor]
@@ -3206,7 +3121,7 @@ namespace BitCaster.MatchingEngine.Contracts
         public int TotalTrades { get; }
 
         /// <summary>
-        /// Total liquidity deposited in market collateral subunits.
+        /// Always zero. Does not report bot funding, custody, or executable order-book depth.
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("totalLiquiditySubunits")]
         public long TotalLiquiditySubunits { get; }
@@ -3306,139 +3221,6 @@ namespace BitCaster.MatchingEngine.Contracts
 
     }
 
-    /// <summary>
-    /// Lifecycle state of a single deposit. `requested` → invoice issued or ecash submission accepted, awaiting payment proof. `paid` → payment confirmed and crediting is in progress. `credited` → the market account was credited (terminal-success). `failed` → invoice expired, ecash rejected, or crediting failed (terminal-failure).
-    /// <br/>
-    /// </summary>
-    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
-    public enum DepositState
-    {
-
-        [System.Runtime.Serialization.EnumMember(Value = @"requested")]
-        Requested = 0,
-
-        [System.Runtime.Serialization.EnumMember(Value = @"paid")]
-        Paid = 1,
-
-        [System.Runtime.Serialization.EnumMember(Value = @"credited")]
-        Credited = 2,
-
-        [System.Runtime.Serialization.EnumMember(Value = @"failed")]
-        Failed = 3,
-
-    }
-
-    /// <summary>
-    /// How the funder is paying the deposit.
-    /// </summary>
-    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
-    public enum DepositMethod
-    {
-
-        [System.Runtime.Serialization.EnumMember(Value = @"lightningInvoice")]
-        LightningInvoice = 0,
-
-        [System.Runtime.Serialization.EnumMember(Value = @"ecash")]
-        Ecash = 1,
-
-    }
-
-    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
-    public partial class RequestEcashDepositRequest
-    {
-        [System.Text.Json.Serialization.JsonConstructor]
-        public RequestEcashDepositRequest(long @amountSubunits, string? @creatorPubkey, RequestEcashDepositRequestDivisibility @divisibility, bool? @fundAmm, string @proofsToken, RequestEcashDepositRequestUnit @unit)
-        {
-            this.AmountSubunits = @amountSubunits;
-            this.Unit = @unit;
-            this.Divisibility = @divisibility;
-            this.ProofsToken = @proofsToken;
-            this.CreatorPubkey = @creatorPubkey;
-            this.FundAmm = @fundAmm;
-        }
-
-        /// <summary>
-        /// Asserted value of the supplied ecash proofs in market-collateral base subunits. The engine derives the unit from the registered market.
-        /// <br/>
-        /// </summary>
-        [System.Text.Json.Serialization.JsonPropertyName("amountSubunits")]
-        public long AmountSubunits { get; }
-
-        /// <summary>
-        /// Exact Cashu product-collateral unit for the supplied proofs.
-        /// </summary>
-        [System.Text.Json.Serialization.JsonPropertyName("unit")]
-        [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<RequestEcashDepositRequestUnit>))]
-        public RequestEcashDepositRequestUnit Unit { get; }
-
-        /// <summary>
-        /// Exact market divisibility associated with the supplied proofs.
-        /// </summary>
-        [System.Text.Json.Serialization.JsonPropertyName("divisibility")]
-        public RequestEcashDepositRequestDivisibility Divisibility { get; }
-
-        /// <summary>
-        /// Opaque ecash token (Cashu V4 token blob). Proofs and amount are verified before crediting.
-        /// <br/>
-        /// </summary>
-        [System.Text.Json.Serialization.JsonPropertyName("proofsToken")]
-        public string ProofsToken { get; }
-
-        /// <summary>
-        /// Nostr public key (hex) of the market creator
-        /// </summary>
-        [System.Text.Json.Serialization.JsonPropertyName("creatorPubkey")]
-        public string? CreatorPubkey { get; }
-
-        /// <summary>
-        /// Set `true` for a post-creation deposit to fund the automated market-maker. Each accepted payment is separate and the flow can be repeated. The first accepted payment activates the bot from a uniform neutral activation state; later payments add capacity without repricing. The deposit is not withdrawable and gives the depositor no probability-bearing position or special payout. It does not set the public market price; only confirmed trades do that. Any residual budget at resolution becomes operator income.
-        /// <br/>
-        /// </summary>
-        [System.Text.Json.Serialization.JsonPropertyName("fundAmm")]
-        public bool? FundAmm { get; }
-
-        private System.Collections.Generic.IDictionary<string, object>? _additionalProperties;
-
-        [System.Text.Json.Serialization.JsonExtensionData]
-        public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
-        {
-            get { return _additionalProperties ?? (_additionalProperties = new System.Collections.Generic.Dictionary<string, object>()); }
-            set { _additionalProperties = value; }
-        }
-
-    }
-
-    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
-    public partial class RequestEcashDepositResponse
-    {
-        [System.Text.Json.Serialization.JsonConstructor]
-        public RequestEcashDepositResponse(System.Guid @depositId, DepositState @state)
-        {
-            this.DepositId = @depositId;
-            this.State = @state;
-        }
-
-        /// <summary>
-        /// Identifier for polling the deposit's lifecycle state.
-        /// </summary>
-        [System.Text.Json.Serialization.JsonPropertyName("depositId")]
-        public System.Guid DepositId { get; }
-
-        [System.Text.Json.Serialization.JsonPropertyName("state")]
-        [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<DepositState>))]
-        public DepositState State { get; }
-
-        private System.Collections.Generic.IDictionary<string, object>? _additionalProperties;
-
-        [System.Text.Json.Serialization.JsonExtensionData]
-        public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
-        {
-            get { return _additionalProperties ?? (_additionalProperties = new System.Collections.Generic.Dictionary<string, object>()); }
-            set { _additionalProperties = value; }
-        }
-
-    }
-
     [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
     public partial class ParticipationScoreResponse
     {
@@ -3481,75 +3263,6 @@ namespace BitCaster.MatchingEngine.Contracts
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("enabled")]
         public bool Enabled { get; }
-
-        private System.Collections.Generic.IDictionary<string, object>? _additionalProperties;
-
-        [System.Text.Json.Serialization.JsonExtensionData]
-        public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
-        {
-            get { return _additionalProperties ?? (_additionalProperties = new System.Collections.Generic.Dictionary<string, object>()); }
-            set { _additionalProperties = value; }
-        }
-
-    }
-
-    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
-    public partial class GetDepositResponseDto
-    {
-        [System.Text.Json.Serialization.JsonConstructor]
-        public GetDepositResponseDto(long @amountSubunits, string @conditionId, System.Guid @depositId, System.DateTimeOffset? @expiresAt, string? @failureReason, DepositMethod @method, System.DateTimeOffset @requestedAt, DepositState @state, System.DateTimeOffset @updatedAt)
-        {
-            this.DepositId = @depositId;
-            this.ConditionId = @conditionId;
-            this.State = @state;
-            this.Method = @method;
-            this.AmountSubunits = @amountSubunits;
-            this.RequestedAt = @requestedAt;
-            this.UpdatedAt = @updatedAt;
-            this.ExpiresAt = @expiresAt;
-            this.FailureReason = @failureReason;
-        }
-
-        [System.Text.Json.Serialization.JsonPropertyName("depositId")]
-        public System.Guid DepositId { get; }
-
-        /// <summary>
-        /// Condition the deposit funds.
-        /// </summary>
-        [System.Text.Json.Serialization.JsonPropertyName("conditionId")]
-        public string ConditionId { get; }
-
-        [System.Text.Json.Serialization.JsonPropertyName("state")]
-        [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<DepositState>))]
-        public DepositState State { get; }
-
-        [System.Text.Json.Serialization.JsonPropertyName("method")]
-        [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<DepositMethod>))]
-        public DepositMethod Method { get; }
-
-        [System.Text.Json.Serialization.JsonPropertyName("amountSubunits")]
-        public long AmountSubunits { get; }
-
-        [System.Text.Json.Serialization.JsonPropertyName("requestedAt")]
-        public System.DateTimeOffset RequestedAt { get; }
-
-        /// <summary>
-        /// Most recent state-change timestamp.
-        /// </summary>
-        [System.Text.Json.Serialization.JsonPropertyName("updatedAt")]
-        public System.DateTimeOffset UpdatedAt { get; }
-
-        /// <summary>
-        /// For LN deposits, when the bolt11 stops being payable.
-        /// </summary>
-        [System.Text.Json.Serialization.JsonPropertyName("expiresAt")]
-        public System.DateTimeOffset? ExpiresAt { get; }
-
-        /// <summary>
-        /// Populated only when `state == Failed`.
-        /// </summary>
-        [System.Text.Json.Serialization.JsonPropertyName("failureReason")]
-        public string? FailureReason { get; }
 
         private System.Collections.Generic.IDictionary<string, object>? _additionalProperties;
 
@@ -3842,20 +3555,23 @@ namespace BitCaster.MatchingEngine.Contracts
     }
 
     /// <summary>
-    /// RFC 7807 problem details. The matching engine returns this shape on 4xx and 5xx responses where additional context helps the caller recover.
+    /// RFC 9457 problem details. The matching engine returns this shape on 4xx and 5xx responses where additional context helps the caller recover.
     /// <br/>
     /// </summary>
     [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
     public partial class ProblemDetails
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public ProblemDetails(string? @detail, string? @instance, int? @status, string? @title, string? @type)
+        public ProblemDetails(string? @code, string? @detail, string? @instance, string? @limitCode, int? @status, string? @title, string? @traceId, string? @type)
         {
             this.Type = @type;
             this.Title = @title;
             this.Status = @status;
             this.Detail = @detail;
             this.Instance = @instance;
+            this.Code = @code;
+            this.LimitCode = @limitCode;
+            this.TraceId = @traceId;
         }
 
         /// <summary>
@@ -3887,6 +3603,24 @@ namespace BitCaster.MatchingEngine.Contracts
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("instance")]
         public string? Instance { get; }
+
+        /// <summary>
+        /// Stable application error code, when provided by the endpoint.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("code")]
+        public string? Code { get; }
+
+        /// <summary>
+        /// The capacity limit that rejected admission, when applicable.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("limitCode")]
+        public string? LimitCode { get; }
+
+        /// <summary>
+        /// Diagnostic correlation identifier, when provided.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("traceId")]
+        public string? TraceId { get; }
 
         private System.Collections.Generic.IDictionary<string, object>? _additionalProperties;
 
@@ -4241,16 +3975,6 @@ namespace BitCaster.MatchingEngine.Contracts
     }
 
     [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
-    public enum LiquidityStateResponseDivisibility
-    {
-
-        _1000 = 1000,
-
-        _1000000 = 1000000,
-
-    }
-
-    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
     public enum CreatorMarketEntryState
     {
 
@@ -4259,25 +3983,6 @@ namespace BitCaster.MatchingEngine.Contracts
 
         [System.Runtime.Serialization.EnumMember(Value = @"closed")]
         Closed = 1,
-
-    }
-
-    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
-    public enum RequestEcashDepositRequestDivisibility
-    {
-
-        _1000 = 1000,
-
-        _1000000 = 1000000,
-
-    }
-
-    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
-    public enum RequestEcashDepositRequestUnit
-    {
-
-        [System.Runtime.Serialization.EnumMember(Value = @"msat")]
-        Msat = 0,
 
     }
 

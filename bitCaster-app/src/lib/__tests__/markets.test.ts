@@ -7,10 +7,8 @@ import {
   getTagValues,
   extractCategoryTagIds,
   getMarketThumbnail,
-  getDepositStatus,
   mapCatalogueEntryToMarket,
   latestConfirmedTradesAuthorityValid,
-  requestEcashDeposit,
   submitOrder,
   windowPriceHistory,
   applyMarketPriceHistory,
@@ -466,68 +464,6 @@ describe("legacy mintd-list path (markets list) is fully removed", () => {
   it("no longer exports a mapConditionToMarket() function", async () => {
     const mod = await import("../markets");
     expect(Object.prototype.hasOwnProperty.call(mod, "mapConditionToMarket")).toBe(false);
-  });
-});
-
-describe("deposit API normalization", () => {
-  let fetchMock: ReturnType<typeof vi.fn>;
-  let originalFetch: typeof globalThis.fetch;
-
-  beforeEach(() => {
-    originalFetch = globalThis.fetch;
-    fetchMock = vi.fn();
-    globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
-  });
-
-  afterEach(() => {
-    vi.useRealTimers();
-    globalThis.fetch = originalFetch;
-    vi.restoreAllMocks();
-  });
-
-  it("normalizes engine deposit status to the generated contract shape", async () => {
-    fetchMock.mockResolvedValueOnce(
-      new Response(
-        JSON.stringify({
-          depositId: "7db4b1b4-e9f6-40b4-84e3-d8b1fae15e3a",
-          conditionId: "deadbeef",
-          state: "Credited",
-          method: "LightningInvoice",
-          amountSats: 1000,
-          requestedAt: "2026-05-17T06:05:06.200Z",
-          updatedAt: "2026-05-17T06:05:10.660Z",
-          expiresAt: "2026-05-17T06:20:06.200Z",
-          failureReason: null,
-        }),
-        { status: 200 },
-      ),
-    );
-
-    await expect(
-      getDepositStatus("deadbeef", "7db4b1b4-e9f6-40b4-84e3-d8b1fae15e3a"),
-    ).resolves.toMatchObject({
-      state: "credited",
-      method: "lightningInvoice",
-    });
-  });
-
-  it("normalizes ecash deposit creation state", async () => {
-    fetchMock.mockResolvedValueOnce(
-      new Response(
-        JSON.stringify({
-          depositId: "7db4b1b4-e9f6-40b4-84e3-d8b1fae15e3a",
-          state: "requested",
-        }),
-        { status: 200 },
-      ),
-    );
-
-    await expect(
-      requestEcashDeposit("deadbeef", 1000, "cashu-token", {
-        unit: "msat",
-        divisibility: 1_000,
-      }),
-    ).resolves.toMatchObject({ state: "requested" });
   });
 });
 
@@ -994,6 +930,21 @@ describe("fetchMarketDetail (engine merge — ADR-009 Amendment 2026-05-04)", ()
     });
     await expect(fetchMarketDetail("abc123")).rejects.toThrow("Market not found: abc123");
     expect(fetchMock).not.toHaveBeenCalledWith("/v1/conditions");
+  });
+
+  it("preserves temporary detail unavailability instead of reporting a missing market", async () => {
+    fetchMock.mockResolvedValue(new Response("untrusted service response", { status: 503 }));
+    await expect(fetchMarketDetail("abc123")).rejects.toMatchObject({
+      name: "MarketDetailUnavailableError",
+      message: "Market details are temporarily unavailable.",
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a successful empty query distinct from temporary unavailability", async () => {
+    fetchMock.mockResolvedValue(new Response(JSON.stringify({ markets: [] }), { status: 200 }));
+    await expect(fetchMarketDetail("abc123")).rejects.toThrow("Market not found: abc123");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it("does not reconstruct categorical display labels from mintd keysets", async () => {

@@ -212,18 +212,6 @@ export function quotePaymentSubunits(params: {
   return (faceAmountSubunits / divisibility) * priceNumerator
 }
 
-export function normalizeMarketCreationLiquiditySats(params: {
-  baseAsset: MarketBaseAsset
-  liquiditySats?: number | null
-}): number {
-  requireMarketBaseAsset(params.baseAsset)
-  const liquiditySats = params.liquiditySats ?? 0
-  if (!Number.isSafeInteger(liquiditySats) || liquiditySats < 0) {
-    throw new Error('liquiditySats must be a non-negative safe integer')
-  }
-  return liquiditySats
-}
-
 function requireMarketDivisibility(value: unknown): number {
   const parsed = parseMarketDivisibility(value)
   if (parsed !== null) return parsed

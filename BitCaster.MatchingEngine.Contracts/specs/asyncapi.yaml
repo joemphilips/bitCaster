@@ -593,6 +593,7 @@ components:
         - DefinitivelyRejected
         - Refundable
         - ExpiredBeforeSubmission
+        - RejectedBeforeSubmission
 
     SettlementGroupSummary:
       type: object
@@ -622,7 +623,10 @@ components:
             - 'null'
           format: date-time
           description: >
-            Null for Prepared and ExpiredBeforeSubmission. Non-null for every
+            Null for Prepared, RejectedBeforeSubmission, and ExpiredBeforeSubmission.
+            RejectedBeforeSubmission means this group stopped before committing
+            a mint request for a reason other than authorization expiry. It does
+            not confirm wallet recovery or authorize a refund. Non-null for every
             lifecycle path that reached SubmissionPending.
 
     OrderLifecycleChangedDelta:

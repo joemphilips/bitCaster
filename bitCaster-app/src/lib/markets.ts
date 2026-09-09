@@ -4,7 +4,6 @@ import type {
   Market,
   FilterState,
 } from "@/types/market";
-import type { ProductMarketDivisibility } from "@/types/market";
 import type {
   MarketDetail,
   OrderBook,
@@ -618,8 +617,8 @@ function mapCatalogueEntryToMarketDetail(entry: MarketCatalogueEntry): MarketDet
  * `thumbnailUrl`, `volumeLifetimeSubunits`, `liquiditySubunits`).
  * Creator-defined outcome order comes from engine registration metadata, not
  * mintd's one-vs-rest keysets.
- * Returns `null` when the engine has no record of the market or the request
- * fails.
+ * Returns `null` when the engine has no record or for existing non-503 failures.
+ * Propagates temporary service unavailability to the detail page.
  *
  * Single-shot: no retry delay. Callers that need retry-on-not-found (e.g.
  * newly registered markets that haven't been indexed yet) must implement the
@@ -634,11 +633,20 @@ async function fetchEngineCatalogueEntry(
     const response = await fetch(url, {
       headers: { Accept: "application/json" },
     });
+    if (response.status === 503) throw new MarketDetailUnavailableError();
     if (!response.ok) return null;
     const body: MarketCatalogueResponse = await response.json();
     return body.markets.find((m) => m.conditionId === conditionId) ?? null;
-  } catch {
+  } catch (error) {
+    if (error instanceof MarketDetailUnavailableError) throw error;
     return null;
+  }
+}
+
+export class MarketDetailUnavailableError extends Error {
+  constructor() {
+    super("Market details are temporarily unavailable.");
+    this.name = "MarketDetailUnavailableError";
   }
 }
 
@@ -1126,119 +1134,7 @@ export function getMarketThumbnail(market: {
   return null;
 }
 
-// =============================================================================
-// AMM Bot Deposit API (matching engine MarketFunding aggregate)
-// =============================================================================
-
-export type RequestEcashDepositRequest = components["schemas"]["RequestEcashDepositRequest"];
-export type RequestEcashDepositResponse = components["schemas"]["RequestEcashDepositResponse"];
 export type ParticipationScoreResponse = components["schemas"]["ParticipationScoreResponse"];
-export type GetDepositResponseDto = components["schemas"]["GetDepositResponseDto"];
-export type DepositState = components["schemas"]["DepositState"];
-export type DepositMethod = components["schemas"]["DepositMethod"];
-
-export interface MarketFundingDepositOptions {
-  creatorPubkey?: string | null;
-  fundAmm?: boolean;
-  unit: "msat";
-  divisibility: ProductMarketDivisibility;
-}
-
-function normalizeDepositState(state: unknown): DepositState {
-  switch (state) {
-    case "Requested":
-    case "requested":
-      return "requested";
-    case "Paid":
-    case "paid":
-      return "paid";
-    case "Credited":
-    case "credited":
-      return "credited";
-    case "Failed":
-    case "failed":
-      return "failed";
-    default:
-      throw new Error(`Unknown deposit state: ${String(state)}`);
-  }
-}
-
-function normalizeDepositMethod(method: unknown): DepositMethod {
-  switch (method) {
-    case "LightningInvoice":
-    case "lightningInvoice":
-      return "lightningInvoice";
-    case "Ecash":
-    case "ecash":
-      return "ecash";
-    default:
-      throw new Error(`Unknown deposit method: ${String(method)}`);
-  }
-}
-
-/**
- * Submit ecash proofs as a market's AMM bot deposit. Phase 1 of the engine
- * records the request and defers proof verification to the wallet-service;
- * the deposit walks `Requested → Paid → Credited` as the wallet-service
- * confirms.
- */
-export async function requestEcashDeposit(
-  conditionId: string,
-  amountSubunits: number,
-  proofsToken: string,
-  options: MarketFundingDepositOptions,
-): Promise<RequestEcashDepositResponse> {
-  const url = `${window.location.origin}/api/v1/markets/${conditionId}/deposit/ecash`;
-  const body: RequestEcashDepositRequest = {
-    amountSubunits,
-    unit: options.unit,
-    divisibility: options.divisibility,
-    proofsToken,
-    fundAmm: false,
-  };
-  if (options.creatorPubkey) body.creatorPubkey = options.creatorPubkey;
-  if (options.fundAmm !== undefined) body.fundAmm = options.fundAmm;
-  const bodyText = JSON.stringify(body);
-  const bodyBytes = new TextEncoder().encode(bodyText);
-  const payloadHash = await sha256Hex(bodyBytes);
-  const authHeader = await generateNip98Header(url, "POST", payloadHash);
-  const response = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: authHeader },
-    body: bodyText,
-  });
-  if (!response.ok) {
-    throw new Error(
-      `[Matching Engine] Failed to submit ecash deposit: ${response.status} ${await response.text()}`,
-    );
-  }
-  const result = (await response.json()) as RequestEcashDepositResponse;
-  return { ...result, state: normalizeDepositState(result.state) };
-}
-
-/**
- * Polling read of a deposit's current lifecycle state. Public — no auth.
- * Returns `null` when the engine has no record of `depositId` for this
- * `conditionId` (404). Bearer payment instruments (bolt11) and proof
- * material are deliberately excluded from this shape by the engine.
- */
-export async function getDepositStatus(
-  conditionId: string,
-  depositId: string,
-): Promise<GetDepositResponseDto | null> {
-  const url = `${window.location.origin}/api/v1/markets/${conditionId}/deposit/${depositId}`;
-  const response = await fetch(url);
-  if (response.status === 404) return null;
-  if (!response.ok) {
-    throw new Error(`Failed to read deposit status: ${response.status}`);
-  }
-  const result = (await response.json()) as GetDepositResponseDto;
-  return {
-    ...result,
-    state: normalizeDepositState(result.state),
-    method: normalizeDepositMethod(result.method),
-  };
-}
 
 /** Submit one exact durable Cashu delivery. The response never exposes the token. */
 export async function submitDurableCashuDelivery(

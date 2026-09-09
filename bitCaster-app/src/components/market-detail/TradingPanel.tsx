@@ -296,54 +296,18 @@ function CategoricalOutcomes({
   );
 }
 
-function MarketLimitToggle({
-  orderType,
-  onOrderTypeChange,
-  disabled = false,
-}: {
-  orderType: OrderType;
-  onOrderTypeChange?: (type: OrderType) => void;
-  disabled?: boolean;
-}) {
-  const { t } = useTranslation();
-  return (
-    <div className="flex bg-slate-100 dark:bg-slate-700/50 rounded-lg p-1 mb-4">
-      <button
-        onClick={() => onOrderTypeChange?.("market")}
-        disabled={disabled}
-        className={`flex-1 py-1.5 text-xs font-medium rounded-md transition-colors ${
-          orderType === "market"
-            ? "bg-blue-600 text-white shadow-sm"
-            : "text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white"
-        }`}
-      >
-        {t("trade.market")}
-      </button>
-      <button
-        onClick={() => onOrderTypeChange?.("limit")}
-        disabled={disabled}
-        className={`flex-1 py-1.5 text-xs font-medium rounded-md transition-colors ${
-          orderType === "limit"
-            ? "bg-blue-600 text-white shadow-sm"
-            : "text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white"
-        }`}
-      >
-        {t("trade.limit")}
-      </button>
-    </div>
-  );
-}
-
 function LimitPriceInput({
   limitPrice,
   baseAsset,
   divisibility,
+  isSell,
   onLimitPriceChange,
   disabled = false,
 }: {
   limitPrice: number;
   baseAsset: MarketBaseAsset;
   divisibility: number;
+  isSell: boolean;
   onLimitPriceChange?: (price: number) => void;
   disabled?: boolean;
 }) {
@@ -383,7 +347,7 @@ function LimitPriceInput({
   return (
     <div className="mb-4">
       <label className="text-sm font-medium text-slate-600 dark:text-slate-400 mb-2 block">
-        {t("trade.limitPrice")}
+        {t(isSell ? "trade.minimumSellPrice" : "trade.maximumBuyPrice")}
       </label>
       <div className="relative">
         <input
@@ -411,6 +375,80 @@ function LimitPriceInput({
           price: formatPriceWithProbability(limitPrice, divisibility, baseAsset),
         })}
       </p>
+    </div>
+  );
+}
+
+function PriceProtectionSection({
+  enabled,
+  isSell,
+  limitPrice,
+  previewResponse,
+  baseAsset,
+  divisibility,
+  onEnabledChange,
+  onLimitPriceChange,
+  disabled = false,
+}: {
+  enabled: boolean;
+  isSell: boolean;
+  limitPrice: number;
+  previewResponse: NonNullable<FokOrderPreviewState["response"]> | null;
+  baseAsset: MarketBaseAsset;
+  divisibility: number;
+  onEnabledChange?: (enabled: boolean) => void;
+  onLimitPriceChange?: (price: number) => void;
+  disabled?: boolean;
+}) {
+  const { t } = useTranslation();
+  const protectedPrice = enabled ? limitPrice : previewResponse?.worstPrice ?? null;
+  const priceLabel = isSell ? t("trade.minimumSellPrice") : t("trade.maximumBuyPrice");
+
+  return (
+    <div
+      data-testid="trade-price-protection"
+      className="mb-4 rounded-xl border border-slate-200 p-3 dark:border-slate-700"
+    >
+      <label className="flex items-center gap-2 text-sm font-medium text-slate-700 dark:text-slate-300">
+        <input
+          type="checkbox"
+          data-testid="trade-price-protection-toggle"
+          checked={enabled}
+          disabled={disabled}
+          onChange={(event) => onEnabledChange?.(event.target.checked)}
+          className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+        />
+        {t("trade.priceProtection")}
+      </label>
+      <div className="mt-2 flex items-center justify-between text-sm">
+        <span className="text-slate-500 dark:text-slate-400">{priceLabel}</span>
+        <span
+          data-testid="trade-protected-price"
+          data-price-numerator={protectedPrice == null ? undefined : String(protectedPrice)}
+          className="font-semibold text-slate-700 dark:text-slate-200"
+        >
+          {protectedPrice == null
+            ? t("trade.priceProtectionPending")
+            : formatPriceWithProbability(protectedPrice, divisibility, baseAsset)}
+        </span>
+      </div>
+      {!enabled && (
+        <p className="mt-1 text-xs text-slate-400 dark:text-slate-500">
+          {t("trade.priceProtectionDefault")}
+        </p>
+      )}
+      {enabled && (
+        <div className="mt-3">
+          <LimitPriceInput
+            limitPrice={limitPrice}
+            baseAsset={baseAsset}
+            divisibility={divisibility}
+            isSell={isSell}
+            onLimitPriceChange={onLimitPriceChange}
+            disabled={disabled}
+          />
+        </div>
+      )}
     </div>
   );
 }
@@ -853,9 +891,7 @@ export function TradingPanel({
     const sideLabel = tradeSelection?.side.toUpperCase() ?? "";
     const amountLabel = shareCountLabel(tradeAmount);
 
-    if (isSell && isLimit) return t("trade.confirmLimitSell", { amount: amountLabel });
     if (isSell) return t("trade.confirmSell", { side: sideLabel, amount: amountLabel });
-    if (isLimit) return t("trade.confirmLimitBuy", { amount: amountLabel });
     return t("trade.confirmBuy", { side: sideLabel, amount: amountLabel });
   };
 
@@ -948,12 +984,6 @@ export function TradingPanel({
         )
       ) : (
         <>
-          <MarketLimitToggle
-            orderType={orderType}
-            onOrderTypeChange={onOrderTypeChange}
-            disabled={tradingDisabled}
-          />
-
           {/* Outcomes based on market type */}
           {market.type === "yesno" && (
             <YesNoOutcomes
@@ -1068,16 +1098,17 @@ export function TradingPanel({
                 ))}
           </div>
 
-          {/* Limit Price Input (shown for limit orders, below amount) */}
-          {isLimit && (
-            <LimitPriceInput
-              limitPrice={limitPrice}
-              baseAsset={baseAsset}
-              divisibility={divisibility}
-              onLimitPriceChange={onLimitPriceChange}
-              disabled={tradingDisabled}
-            />
-          )}
+          <PriceProtectionSection
+            enabled={isLimit}
+            isSell={isSell}
+            limitPrice={limitPrice}
+            previewResponse={previewResponse}
+            baseAsset={baseAsset}
+            divisibility={divisibility}
+            onEnabledChange={(enabled) => onOrderTypeChange?.(enabled ? "limit" : "market")}
+            onLimitPriceChange={onLimitPriceChange}
+            disabled={tradingDisabled}
+          />
 
           {/* The engine preview is authoritative for both market and limit FOK. */}
           {tradeAmount > 0 && (

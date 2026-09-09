@@ -1,72 +1,79 @@
 ---
 title: "Funding Bot Liquidity"
-description: "How to fund LMSR AMM liquidity after creating a market."
+description: "What bot funding pays for, its risks, and how to add it."
 sidebar:
   order: 5
 ---
 
 # Funding Bot Liquidity
 
-When a market is created, the order book starts empty. To give early traders a counterparty, bitCaster can run an automated market maker (AMM) that posts initial bid and ask orders to the book.
+The market-making bot posts buy and sell orders so that people can trade.
+Funding gives the bot money to support those orders. Creating a market does
+not fund the bot. Any user can add funding, including after market creation.
 
-Funding is optional. After the market is created, the wizard shows a funding screen where you can choose **No liquidity**, **Minimal**, **Standard**, **Deep**, or a custom budget. Binary-market presets use round amounts: **10,000 / 100,000 / 500,000 sats**. Categorical markets scale those paid tiers by `log2(outcome count)`.
+## Before you pay
 
-Any user can also open the `LIQUIDITY` tab on the market detail page and
-submit a later funding payment. Funding is not restricted to the market
-creator.
+Bot funding is **non-refundable**. It is a subsidy, not an investment that
+gives you shares, fees, profits, or a right to withdraw. You have no right to
+the money left when the market closes. Fund your own trading wallet instead
+if you want money available for your trades.
 
-The wizard previews the selected budget as estimated starting depth: roughly how many price levels the bot can post per side and roughly how many shares appear at each level. The preview is before mint fees, so actual quoted depth can be lower.
+Your payment stays allocated to the selected condition. The bot can use it
+across that condition's outcomes, but not for another condition. For example,
+Alpha, Beta, and Gamma can share one budget when they are outcomes of the
+same event.
 
-## What You Fund
+Review the amount and any fees before you confirm. The app shows amounts in
+sats. Mint fees can reduce the amount available to the bot. A completed
+payment does not guarantee immediate liquidity or a fill for your next order.
+The bot also depends on the supported mint being available.
 
-The deposit becomes AMM capacity for that market. The AMM currently uses an
-LMSR strategy. The first accepted payment starts the bot from a uniform neutral
-state. The deposit does not contain an opening probability and it does not set
-the public market price.
+## Add funding
 
-Market cards and detail pages show the accepted bot funding as **Bot Budget**.
-Additional accepted payments can increase this total. It is not live
-order-book liquidity or remaining inventory.
+After market creation, choose a suggested budget or enter a custom amount.
+Choose **No liquidity** to skip funding. Closing this screen does not undo
+the market.
 
-Each deposit is **non-refundable**. It is committed to market-making until the
-market resolves. Later payments add capacity without repricing the bot. A
-depositor receives no probability-bearing position, withdrawal claim, residual
-claim, or creator profit-share claim.
+For an existing market, open its `LIQUIDITY` tab. Follow the payment steps
+with funds from the supported mint. Wait for the app to confirm completion.
+You can make more funding payments later. You do not need to be the creator.
 
-Markets are shown to users in sats. Internally and on public market-summary
-`*Subunits` wire fields, collateral is accounted in **msat**.
+If a payment is still pending, check or resume that payment in the app.
+Do not make a second payment only because the first one is taking time.
+A second payment is a separate, non-refundable subsidy.
 
-## Funding Flow
+## What changes after funding
 
-1. Create the market. Registration does not include funding or an opening probability.
-2. Choose a funding tier or choose No liquidity.
-3. If funding, submit a Cashu payment issued by the configured mint.
-4. Check the deposit status until the payment is accepted. The first accepted payment activates the bot. You can repeat this flow to add capacity later.
+The bot uses an LMSR pricing strategy. Its first funding starts it from an
+equal starting position across outcomes. You do not select an opening
+probability when you fund it.
 
-## If You Close the Wizard
+Later funding can increase the size of the bot's orders and change its buy
+and sell prices, even without a trade. If an earlier bot trade is still
+settling, new funding waits before it changes the strategy. New bot trades
+pause during that wait.
 
-Closing the wizard does not undo the market. The market remains created and can
-still accept human orders. If you selected No liquidity, or if funding has not
-completed yet, the automated maker will not quote until an accepted funding
-payment activates it.
+Funding does not change the public market price. That price comes only from
+the latest confirmed trade. Before the first trade, the app shows
+**No trades yet** or an em dash. The prices of orders available now can differ
+from the last trade price.
 
-If the selected executable book has no bids or asks, the `BUY` and `SELL` tabs
-show only a no-liquidity message and an action that opens `LIQUIDITY`. Funding
-does not claim that liquidity exists. The normal order form appears only after
-the executable book becomes non-empty.
+**Bot Budget** shows accepted funding, not the money left in the bot or the
+amount you can trade now. Use the current trade preview to check whether your
+whole order can fill.
 
-## Trade-Offs
+## Choose a budget
 
-Smaller budgets create thinner quotes and can move more quickly when informed
-traders trade against the maker. Larger budgets create deeper quotes, but they
-also put more non-refundable capital at risk. The bot starts from a uniform
-neutral state; no creator probability sets its opening quotes.
+A larger budget can support more shares near the current prices. It also
+commits more of your money without a refund. A smaller budget supports less
+trading, and trades can move the bot's prices more quickly. Estimates of
+order-book depth are not a promise of available liquidity.
 
-AMM liquidity is mainly for bootstrapping. In the long run, active human and
-professional market makers should provide tighter, more informed liquidity
-than the automated quotes.
+If an order is too large to fill, try a smaller amount. Consider a subsidy
+only when the preview says that more funding may help. Funding does not fix
+every refusal, such as a price limit or an unavailable market.
+It does not buy your shares. Review a new trade preview after funding.
+Funding and trading are separate actions.
 
-Funding does not set a public market price. Only a confirmed trade sets that
-price. Before the first confirmed trade, the market has no price and clients
-should show **No trades yet** or an em dash. A bid/ask midpoint is an
-order-entry reference only.
+When no orders are available, the `BUY` and `SELL` tabs direct you to
+`LIQUIDITY`. The trade form returns when executable orders are available.

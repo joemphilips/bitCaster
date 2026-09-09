@@ -246,26 +246,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/{marketId}/liquidity": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Get liquidity state
-         * @description Returns the current public liquidity state for a market.
-         */
-        get: operations["getLiquidity"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/v1/{marketId}/metadata": {
         parameters: {
             query?: never;
@@ -303,46 +283,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/markets/{conditionId}/deposit/ecash": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Submit an ecash payment for market liquidity
-         * @description Submits an ecash deposit for asynchronous proof verification and crediting. Use the returned `depositId` to poll for state transitions via the GET endpoint.
-         */
-        post: operations["requestEcashDeposit"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/markets/{conditionId}/deposit/{depositId}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Read the current state of a deposit
-         * @description Polling-friendly read of a single deposit's lifecycle state. Bearer payment instruments (bolt11) and proof material are deliberately excluded from the response — they appear only in the original request response. Public; no authentication required.
-         */
-        get: operations["getDepositStatus"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/v1/participation-score": {
         parameters: {
             query?: never;
@@ -370,10 +310,16 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Read one authenticated durable Cashu delivery status */
+        /**
+         * Read one authenticated durable Cashu delivery status
+         * @description Stable Problem Details codes apply to the documented application branches. Route constraints, framework binding, authentication, rate limits, and Score-specific failures can use other bodies. A request failure does not prove that no value was received. Preserve the original delivery identity.
+         */
         get: operations["getDurableCashuDeliveryStatus"];
         put?: never;
-        /** Submit one authenticated durable Cashu delivery */
+        /**
+         * Submit one authenticated durable Cashu delivery
+         * @description Stable Problem Details codes apply to the documented application branches. Route constraints, framework binding, authentication, rate limits, and Score-specific failures can use other bodies. A request failure does not prove that no value was received. Preserve the original delivery identity.
+         */
         post: operations["submitDurableCashuDelivery"];
         delete?: never;
         options?: never;
@@ -1077,10 +1023,10 @@ export interface components {
          */
         OrderLifecycleStatus: "resting" | "matched" | "partially_filled" | "filled" | "cancelled" | "expired" | "evicted_capacity" | "rejected_capacity" | "failed";
         /**
-         * @description Public atomic settlement-group lifecycle. `Prepared` is the bounded coalescing state. `SubmissionPending` means the group is frozen and its exact request authority was durably committed before mint I/O.
+         * @description Public atomic settlement-group lifecycle. `Prepared` is the bounded coalescing state. `SubmissionPending` means the group is frozen and its exact request authority was durably committed before mint I/O. `RejectedBeforeSubmission` means this group stopped before committing a mint request for a reason other than authorization expiry. `ExpiredBeforeSubmission` means authorization expired before submission. Neither status confirms wallet recovery or authorizes a refund.
          * @enum {string}
          */
-        SettlementGroupStatus: "Prepared" | "SubmissionPending" | "Reconciling" | "Confirmed" | "DefinitivelyRejected" | "Refundable" | "ExpiredBeforeSubmission";
+        SettlementGroupStatus: "Prepared" | "SubmissionPending" | "Reconciling" | "Confirmed" | "DefinitivelyRejected" | "Refundable" | "ExpiredBeforeSubmission" | "RejectedBeforeSubmission";
         SettlementGroupSummary: {
             /** Format: uuid */
             groupId: string;
@@ -1091,7 +1037,7 @@ export interface components {
             coalescingDeadline: string;
             /**
              * Format: date-time
-             * @description Null for `Prepared` and for `ExpiredBeforeSubmission`, which transitions directly from `Prepared` without mint submission. Non-null for every lifecycle path that reached `SubmissionPending`, and preserved through later transitions.
+             * @description Null for `Prepared`, `RejectedBeforeSubmission`, and `ExpiredBeforeSubmission`, which transitions directly from `Prepared` without mint submission. Non-null for every lifecycle path that reached `SubmissionPending`, and preserved through later transitions.
              */
             frozenAt: string | null;
         };
@@ -1459,7 +1405,7 @@ export interface components {
             /** @description Outcome label (e.g. "Yes", "Alice"). */
             name: string;
         };
-        /** @description JSON payload embedded in the multipart `metadata` field of the createMarket endpoint. This request contains market metadata only. It accepts no opening probability and no initial funding payment or proof. Use the separate post-creation deposit flow for bot funding. */
+        /** @description JSON payload embedded in the multipart `metadata` field of the createMarket endpoint. This request contains market metadata only. It accepts no opening probability and no initial funding payment or proof. Use the separate post-creation funding flow for bot funding. */
         CreateMarketRequest: {
             /** @description Human-readable market title. */
             title: string;
@@ -1472,12 +1418,6 @@ export interface components {
              * @enum {string}
              */
             outcomeType?: "yesno" | "categorical" | "numeric";
-            /**
-             * Format: int64
-             * @description Deprecated compatibility field. It is inert: it does not fund, activate, or price a market and does not create a depositor position. Market-maker funding is collected through the separate post-creation deposit flow. Keep this field at `0` when sending a create request.
-             * @default 0
-             */
-            liquiditySats: number;
             /** @description Required immutable product base asset. Must be exact `sat`. */
             baseAsset: components["schemas"]["BaseAsset"];
             /** @description Optional category tags for the market. */
@@ -1547,38 +1487,6 @@ export interface components {
             conditionId: string;
             comments: components["schemas"]["MarketComment"][];
         };
-        LiquidityStateResponse: {
-            marketId: string;
-            /** Format: int64 */
-            reserveA: number;
-            /** Format: int64 */
-            reserveB: number;
-            /** @description Bot-liquidity reference value for order entry. This is not the public market price, latest confirmed trade, or market value. Use `latestConfirmedTrades` from the market catalogue for the public confirmed-trade price. Before the first confirmed trade, the market has no public price. */
-            impliedProbability: number;
-            baseAsset: components["schemas"]["BaseAsset"];
-            /**
-             * @description Immutable price denominator `D`, server-determined. Current yes/no and categorical markets use `1000`; `1000000` is reserved for a future numeric trade representation.
-             * @enum {integer}
-             */
-            divisibility: 1000 | 1000000;
-            /**
-             * Format: int64
-             * @description Liquidity represented by currently resting bot orders, in market-base subunits.
-             */
-            restingOrderLiquiditySubunits: number;
-            /**
-             * Format: int64
-             * @description Conservative value of free complete-set inventory, in market-base subunits.
-             */
-            completeSetLiquiditySubunits: number;
-            /**
-             * Format: int64
-             * @description Total public liquidity in market-base subunits.
-             */
-            totalLiquiditySubunits: number;
-            /** @description Number of active liquidity orders. */
-            activeOrders: number;
-        };
         MarketMetadataSnapshot: {
             /** @description The market ID. */
             marketId: string;
@@ -1591,7 +1499,7 @@ export interface components {
             totalTrades: number;
             /**
              * Format: int64
-             * @description Total liquidity deposited in market collateral subunits.
+             * @description Always zero. Does not report bot funding, custody, or executable order-book depth.
              */
             totalLiquiditySubunits: number;
         };
@@ -1620,48 +1528,6 @@ export interface components {
             /** @description Markets created by this pubkey. May be empty if the creator has not registered any markets yet. */
             markets: components["schemas"]["CreatorMarketEntry"][];
         };
-        /**
-         * @description Lifecycle state of a single deposit. `requested` → invoice issued or ecash submission accepted, awaiting payment proof. `paid` → payment confirmed and crediting is in progress. `credited` → the market account was credited (terminal-success). `failed` → invoice expired, ecash rejected, or crediting failed (terminal-failure).
-         * @enum {string}
-         */
-        DepositState: "requested" | "paid" | "credited" | "failed";
-        /**
-         * @description How the funder is paying the deposit.
-         * @enum {string}
-         */
-        DepositMethod: "lightningInvoice" | "ecash";
-        RequestEcashDepositRequest: {
-            /** @description Asserted value of the supplied ecash proofs in market-collateral base subunits. The engine derives the unit from the registered market. */
-            amountSubunits: components["schemas"]["CollateralSubunits"];
-            /**
-             * @description Exact Cashu product-collateral unit for the supplied proofs.
-             * @enum {string}
-             */
-            unit: "msat";
-            /**
-             * Format: int32
-             * @description Exact market divisibility associated with the supplied proofs.
-             * @enum {integer}
-             */
-            divisibility: 1000 | 1000000;
-            /** @description Opaque ecash token (Cashu V4 token blob). Proofs and amount are verified before crediting. */
-            proofsToken: string;
-            /** @description Nostr public key (hex) of the market creator */
-            creatorPubkey?: string;
-            /**
-             * @description Set `true` for a post-creation deposit to fund the automated market-maker. Each accepted payment is separate and the flow can be repeated. The first accepted payment activates the bot from a uniform neutral activation state; later payments add capacity without repricing. The deposit is not withdrawable and gives the depositor no probability-bearing position or special payout. It does not set the public market price; only confirmed trades do that. Any residual budget at resolution becomes operator income.
-             * @default false
-             */
-            fundAmm: boolean;
-        };
-        RequestEcashDepositResponse: {
-            /**
-             * Format: uuid
-             * @description Identifier for polling the deposit's lifecycle state.
-             */
-            depositId: string;
-            state: components["schemas"]["DepositState"];
-        };
         ParticipationScoreResponse: {
             /** @description Authenticated Nostr pubkey whose Score is returned. */
             pubkey: string;
@@ -1682,29 +1548,6 @@ export interface components {
             consumedTotal: number;
             /** @description Whether Participation Score purchase and payment is enabled by the engine. */
             enabled: boolean;
-        };
-        GetDepositResponseDto: {
-            /** Format: uuid */
-            depositId: string;
-            /** @description Condition the deposit funds. */
-            conditionId: string;
-            state: components["schemas"]["DepositState"];
-            method: components["schemas"]["DepositMethod"];
-            amountSubunits: components["schemas"]["CollateralSubunits"];
-            /** Format: date-time */
-            requestedAt: string;
-            /**
-             * Format: date-time
-             * @description Most recent state-change timestamp.
-             */
-            updatedAt: string;
-            /**
-             * Format: date-time
-             * @description For LN deposits, when the bolt11 stops being payable.
-             */
-            expiresAt?: string | null;
-            /** @description Populated only when `state == Failed`. */
-            failureReason?: string | null;
         };
         /** @description One settlement-confirmed execution used by the public market-price projection. It does not represent a quote, order insertion, funding payment, or registration-time value. */
         LatestConfirmedTrade: {
@@ -1811,7 +1654,7 @@ export interface components {
              */
             lastSuccessfulRefreshAt: string;
         };
-        /** @description RFC 7807 problem details. The matching engine returns this shape on 4xx and 5xx responses where additional context helps the caller recover. */
+        /** @description RFC 9457 problem details. The matching engine returns this shape on 4xx and 5xx responses where additional context helps the caller recover. */
         ProblemDetails: {
             /** @description A URI reference identifying the problem type. */
             type?: string;
@@ -1823,6 +1666,12 @@ export interface components {
             detail?: string;
             /** @description A URI reference identifying the specific occurrence. */
             instance?: string;
+            /** @description Stable application error code, when provided by the endpoint. */
+            code?: string;
+            /** @description The capacity limit that rejected admission, when applicable. */
+            limitCode?: string;
+            /** @description Diagnostic correlation identifier, when provided. */
+            traceId?: string;
         };
     };
     responses: never;
@@ -1858,7 +1707,7 @@ export interface operations {
         requestBody: {
             content: {
                 "multipart/form-data": {
-                    /** @description JSON-encoded CreateMarketRequest object containing market title, description, outcomes, liquidity, and category tags. */
+                    /** @description JSON-encoded CreateMarketRequest object containing market title, description, outcomes, and category tags. */
                     metadata: string;
                     /**
                      * Format: binary
@@ -2078,12 +1927,14 @@ export interface operations {
                     "application/json": components["schemas"]["BatchSubmitOrdersResponse"];
                 };
             };
-            /** @description Malformed batch envelope or malformed condition path. A resolved per-item condition mismatch returns a `routeMismatch` failure result instead of HTTP 400. */
+            /** @description order-invalid-request. Application request validation failed. Framework input validation can return a different body shape. */
             400: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
             };
             /** @description Missing or invalid NIP-98 authentication */
             401: {
@@ -2092,26 +1943,41 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Condition not registered */
+            /** @description market-closed. The market is closed before submission. Framework authorization failures can return a different body. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description order-market-not-found. The condition is not registered. */
             404: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
             };
-            /** @description Market is closed or batch conflicted with book state */
+            /** @description order-batch-conflict or order-market-closed. A failed whole-request response does not establish that no item was accepted. Reconcile the original item identities before retrying without changes. */
             409: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
             };
-            /** @description Item-weighted rate limit exceeded */
+            /** @description order-batch-limited. The application item-weighted rate limit was reached. Framework rate limiting can return a different body. */
             429: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
             };
         };
     };
@@ -2140,12 +2006,14 @@ export interface operations {
                     "application/json": components["schemas"]["BatchCancelOrdersResponse"];
                 };
             };
-            /** @description Invalid batch envelope */
+            /** @description order-invalid-request. Application request validation failed. Framework input validation can return a different body shape. */
             400: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
             };
             /** @description Missing or invalid NIP-98 authentication */
             401: {
@@ -2154,19 +2022,23 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Condition not registered */
+            /** @description order-market-not-found. The condition is not registered. */
             404: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
             };
-            /** @description Item-weighted rate limit exceeded */
+            /** @description order-batch-limited. The application item-weighted rate limit was reached. Framework rate limiting can return a different body. */
             429: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
             };
         };
     };
@@ -2189,6 +2061,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ListRestingOrdersResponse"];
+                };
+            };
+            /** @description order-invalid-request. Application request validation failed. Framework input validation can return a different body shape. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
                 };
             };
             /** @description Missing or invalid NIP-98 authentication */
@@ -2225,13 +2106,13 @@ export interface operations {
                     "application/json": components["schemas"]["SubmitOrderResponse"];
                 };
             };
-            /** @description Validation error */
+            /** @description Application validation failed with order-invalid-request or order-invalid-comment. Framework input validation can return a different body shape. */
             400: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": string;
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
                 };
             };
             /** @description Missing or invalid NIP-98 authentication */
@@ -2241,26 +2122,41 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Settlement capability is absent, belongs to another authenticated owner, or its binding digest does not match. */
+            /** @description The application closed-market gate returns market-closed. Framework authorization failures can return a different body. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description order-market-not-found means the market is not registered. order-capability-not-found means the capability is absent, belongs to another owner, or its binding digest does not match. */
             404: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
             };
-            /** @description Route market does not match the bound intent, or the capability is stale, expired, selected, or otherwise not current and no matching previously accepted admission exists. An exact accepted replay returns that prior result instead of this conflict. */
+            /** @description order-capability-route-mismatch means the route differs from the bound intent. order-capability-not-current means no current capability or matching accepted replay exists. An exact accepted replay returns its prior result. order-book-conflict permits an unchanged request retry. order-processing-conflict and order-market-closed are distinct, definitive submission failures. A submission failure alone does not authorize a refund. */
             409: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
             };
-            /** @description Settlement capability authority is unavailable. */
+            /** @description order-admission-unavailable or order-processing-unavailable. Retain the original operation for retry and recovery. */
             503: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
             };
         };
     };
@@ -2337,12 +2233,14 @@ export interface operations {
                     "application/json": components["schemas"]["ListMyOrdersResponse"];
                 };
             };
-            /** @description Missing or invalid conditionId */
+            /** @description order-invalid-request. Application request validation failed. Framework input validation can return a different body shape. */
             400: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
             };
             /** @description Missing or invalid NIP-98 authentication */
             401: {
@@ -2376,6 +2274,15 @@ export interface operations {
                     "application/json": components["schemas"]["OrderStatusResponse"];
                 };
             };
+            /** @description order-invalid-request. Application request validation failed. Framework input validation can return a different body shape. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
             /** @description Missing or invalid NIP-98 authentication */
             401: {
                 headers: {
@@ -2383,12 +2290,21 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Order not found */
-            404: {
+            /** @description The order belongs to another authenticated owner. */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description order-not-found. The order is unavailable for this request. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
             };
         };
     };
@@ -2413,6 +2329,15 @@ export interface operations {
                 };
                 content?: never;
             };
+            /** @description order-invalid-request. Application request validation failed. Framework input validation can return a different body shape. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
             /** @description Missing or invalid NIP-98 authentication */
             401: {
                 headers: {
@@ -2420,14 +2345,16 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Order not found */
+            /** @description order-not-found. Missing, foreign, and wrong-route cancellation targets return the same response. */
             404: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
             };
-            /** @description Order state changed before cancellation could be committed. The response uses the RFC 7807 ProblemDetails shape. */
+            /** @description order-cancellation-conflict. Order state changed before cancellation could be committed. Retry the original request. */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -2459,35 +2386,14 @@ export interface operations {
                     "application/json": components["schemas"]["OrderBookSnapshot"];
                 };
             };
-        };
-    };
-    getLiquidity: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description The primitive outcome book to trade on, in the format "{conditionId}-{outcomeName}" (e.g. "deadbeef…abc-Alice"). Public market IDs never contain finite outcome-set separators such as "|"; use SettlementOrderIntent.tokenSide during capability creation to choose the primitive outcome token or its one-vs-rest complement. Binary YES/NO markets expose only the YES route ("{conditionId}-YES"); NO is traded as tokenSide=Complement on that YES route, and "{conditionId}-NO" is not a valid market ID. */
-                marketId: components["parameters"]["MarketId"];
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Current liquidity state */
-            200: {
+            /** @description order-invalid-request. Application request validation failed. Framework input validation can return a different body shape. */
+            400: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["LiquidityStateResponse"];
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
                 };
-            };
-            /** @description No liquidity state for this market */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
             };
         };
     };
@@ -2536,93 +2442,6 @@ export interface operations {
                 };
             };
             /** @description No thumbnail for this condition */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    requestEcashDeposit: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description The condition identifier (hex string derived from the oracle announcement). */
-                conditionId: components["parameters"]["ConditionId"];
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["RequestEcashDepositRequest"];
-            };
-        };
-        responses: {
-            /** @description Deposit recorded; verification proceeds asynchronously */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["RequestEcashDepositResponse"];
-                };
-            };
-            /** @description Validation error (e.g. malformed proofs token, non-positive amount) */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Missing or invalid NIP-98 authentication */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Market not found */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Per-pubkey deposit-request rate limit exceeded */
-            429: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    getDepositStatus: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description The condition identifier (hex string derived from the oracle announcement). */
-                conditionId: components["parameters"]["ConditionId"];
-                /** @description Deposit identifier returned by the request endpoint. */
-                depositId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Deposit found */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["GetDepositResponseDto"];
-                };
-            };
-            /** @description No deposit with this id for this condition */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -2686,29 +2505,35 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The delivery belongs to a different subject. */
+            /** @description The delivery belongs to a different subject. Application code: cashu-delivery-forbidden. */
             403: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
             };
-            /** @description No delivery exists for deliveryId. */
+            /** @description No delivery exists, or the identifier is invalid. Handler code: cashu-delivery-not-found. Route constraints can return a different body. */
             404: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
             };
-            /** @description Delivery status rate limit exceeded. */
-            429: {
+            /** @description The saved delivery was rejected. Application code: cashu-delivery-conflict. */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
             };
-            /** @description The durable recipient is unavailable. */
-            502: {
+            /** @description Delivery status rate limit exceeded. */
+            429: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -2741,12 +2566,14 @@ export interface operations {
                     "application/json": components["schemas"]["DurableCashuDeliveryStatus"];
                 };
             };
-            /** @description The delivery request is invalid. */
+            /** @description Invalid delivery or funding request. Application codes: cashu-delivery-invalid-request, market-funding-invalid-request. */
             400: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
             };
             /** @description Missing or invalid authentication. */
             401: {
@@ -2755,19 +2582,32 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The authenticated subject differs from accountSubject. */
+            /** @description Subject mismatch or a closed funding market. Application codes: cashu-delivery-forbidden, market-closed. */
             403: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
             };
-            /** @description deliveryId is already bound to a different immutable tuple. */
+            /** @description Funding market not found. Application code: market-funding-market-not-found. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description The delivery conflicts with saved state. Shared application code: cashu-delivery-conflict. Score-specific refusals can use another body. */
             409: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
             };
             /** @description Delivery submission rate limit exceeded. */
             429: {
@@ -2776,12 +2616,32 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description The durable recipient is unavailable. */
+            /** @description Delivery state could not be read after admission. Application code: cashu-delivery-state-unavailable. Check the original delivery before retrying. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description The funding recipient is unavailable or its receipt could not be verified. Application codes: cashu-delivery-recipient-unavailable, cashu-delivery-invalid-receipt. Keep the original delivery for recovery. Score-specific failures can use another body. */
             502: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Participation Score mint pre-admission is unavailable. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
             };
         };
     };
@@ -2899,12 +2759,14 @@ export interface operations {
                     "application/json": components["schemas"]["SettlementCapabilityResponse"];
                 };
             };
-            /** @description Malformed, noncanonical, expired, or unsupported artifact. */
+            /** @description Application rejection of a malformed, noncanonical, expired, or unsupported artifact. Framework input binding can return a different error body. */
             400: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
             };
             /** @description Missing or invalid authentication. */
             401: {
@@ -2913,33 +2775,50 @@ export interface operations {
                 };
                 content?: never;
             };
+            /** @description Participation Score is insufficient for capability preparation. */
+            402: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
             /** @description Idempotency conflict, reused input proof, mismatched order binding, or capability lifecycle conflict. */
             409: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
             };
-            /** @description Artifact or request exceeds the advertised byte/count limits. */
+            /** @description Application rejection of an artifact or request above the advertised byte/count limits. Framework request-size rejection can return a different error body. */
             413: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
             };
-            /** @description Per-subject capability admission is saturated. */
+            /** @description Application capability admission or process capacity is saturated. Framework rate-limit rejection can return a different error body. */
             429: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
             };
             /** @description Mint validation or durable capability authority is unavailable. */
             503: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
             };
         };
     };
@@ -3280,7 +3159,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
             };
         };
     };
@@ -3306,6 +3187,15 @@ export interface operations {
                     "application/json": components["schemas"]["SettlementCapabilityResponse"];
                 };
             };
+            /** @description Invalid capability binding digest. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
             /** @description Missing or invalid authentication. */
             401: {
                 headers: {
@@ -3318,7 +3208,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
             };
         };
     };
@@ -3354,7 +3246,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
             };
         };
     };
@@ -3378,6 +3272,15 @@ export interface operations {
                     "application/json": components["schemas"]["SettlementCapabilityResultResponse"];
                 };
             };
+            /** @description Invalid operation identifier. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
             /** @description Missing or invalid authentication. */
             401: {
                 headers: {
@@ -3390,7 +3293,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
             };
         };
     };
@@ -3423,7 +3328,9 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
             };
             /** @description Missing or invalid authentication. */
             401: {
@@ -3437,14 +3344,18 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
             };
             /** @description Result lifecycle version conflict. */
             409: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
             };
         };
     };

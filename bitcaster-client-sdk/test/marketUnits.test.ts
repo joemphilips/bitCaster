@@ -21,7 +21,6 @@ import {
   marketSubunitLabel,
   marketUnitLabel,
   normalizeMarketBaseAsset,
-  normalizeMarketCreationLiquiditySats,
   normalizeMarketDivisibility,
   defaultPriceStepSubunits,
   parseCashuProofUnit,
@@ -109,22 +108,13 @@ test('formats sat-only product amounts', () => {
   assert.throws(() => formatShareFace('sat', 10_000), /unsupported market divisibility/)
 })
 
-test('computes sat-only buffer, fee estimate, and creation liquidity', () => {
+test('computes sat-only buffer and fee estimate', () => {
   assert.equal(bufferSubunits('sat', 0), 0)
   assert.equal(bufferSubunits('sat', 10_000), 10_000)
   assert.equal(bufferSubunits('sat', 100_000), 20_000)
   assert.equal(estimatedSettlementFeeSubunits('sat'), 10_000)
-  assert.equal(
-    normalizeMarketCreationLiquiditySats({ baseAsset: 'sat', liquiditySats: 10_000 }),
-    10_000,
-  )
-  assert.equal(normalizeMarketCreationLiquiditySats({ baseAsset: 'sat' }), 0)
   assert.throws(() => bufferSubunits('usd', 10_000), /unsupported base asset/)
   assert.throws(() => estimatedSettlementFeeSubunits(undefined), /unsupported base asset/)
-  assert.throws(
-    () => normalizeMarketCreationLiquiditySats({ baseAsset: 'sat', liquiditySats: -1 }),
-    /non-negative safe integer/,
-  )
 })
 
 test('validates product price and whole-share amounts', () => {

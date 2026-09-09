@@ -7,13 +7,14 @@ sidebar:
 
 # 取引モデル
 
-bitCaster は中央指値注文板（CLOB）を使用します。指値注文は板に残せます。クロスする注文は利用可能な流動性を取ります。すべてのプロダクト資産は sat です。
+bitCaster は中央指値注文板（CLOB）を使用します。流動性提供者の提示注文は板に残ります。
+公開注文は価格制限内で利用可能な流動性を取ります。すべてのプロダクト資産は sat です。
 
 公開マーケット板はプリミティブな outcome route を使用します。カテゴリカルマーケットでは `A / Not A`、`B / Not B` などの板を公開します。クライアントは `{conditionId}-{outcomeName}` のマーケット ID を使い、必要な token side を選択します。
 
 ## 初回リリースの公開範囲
 
-公開サーバーが受け付ける注文は公開 FOK だけです。GUI と CLI は FOK を送信します。各公開試行は 1 件の one-shot capability を使用します。FOK は注文受付時の板の状態に基づきます。要求数量全体を確定するか、注文全体を取り消します。公開 FAK、GTC、GTD、継続、および残余注文の再認可は利用できません。内部の custody-backed LMSR quote は GTC を使用します。これは公開クライアントの注文ではありません。
+公開サーバーが受け付ける注文は公開 FOK だけです。GUI と CLI は FOK を送信します。各公開試行は 1 件の one-shot capability を使用します。FOK は注文受付時の板の状態に基づきます。要求数量全体を確定するか、注文全体を取り消します。公開 FAK、GTC、GTD、継続、および残余注文の再認可は利用できません。
 
 ## 公開 FOK プレビュー
 
@@ -39,12 +40,26 @@ outcome route の価格です。価格の分母は `priceDenominator` です。�
 取引ではありません。全量を約定できない場合、執行見積もりは `null` です。
 確定済み取引がない場合、現在価格は `null` です。資金提供は市場価格の記録を作りません。
 
+GUI は 1 つの Buy/Sell フォームを使用します。任意で開く価格保護セクションでは、
+選択したトークンの買い価格の上限、または売り価格の下限を設定します。既定値は、
+確認したプレビューの `worstPrice` です。平均価格ではありません。GUI は自動で
+スリッページの許容幅を追加しません。ユーザーは価格の制限を明示的に変更できます。
+
+注文は、残高確認、残高追加、準備、送信を通じてこの価格制限を保持します。
+制限内で全量を約定するか、全く約定しないかのどちらかです。価格制限は流動性を
+予約せず、約定を保証しません。制限内で約定できなくなった場合は、新しい
+プレビューを確認し、新しい試行に同意します。GUI は注文を自動で再試行しません。
+ウォレットや Nostr の設定、または取引に使う identity の変更後も、新しい
+プレビューと確認が必要です。
+
 UI は金額を sats で表示します。100 msat は 0.1 sats です。Buy の合計は、支払額、
 決済入力手数料、送信元準備手数料、proof 集約手数料の合計です。Sell では担保の
 総受取額と、決済入力手数料を差し引いた純受取額を示します。条件付きトークンの
 準備手数料と集約手数料は別に示します。異なる資産の手数料を合算しません。
 未使用の fee headroom は支払い済み手数料ではありません。手数料額や資産が変わった
 場合、次の新規ウォレット処理を始める前に改めて同意を得ます。
+価格保護は手数料への同意を代替しません。手数料への同意は、確認した価格制限を
+持つ注文に適用します。
 
 無効な入力は HTTP `400` を返します。リクエスト本文の上限は 16 KiB です。
 超過すると `413` を返します。rate limit または同時実行数の上限に達すると、
@@ -66,7 +81,7 @@ capability はその 1 回の試行で認可された range を対象にしま�
 
 ## Participation Score
 
-Participation Score は公開注文の受付を保護します。成功した公開 one-shot capability binding は、`settlement-capability-v1` の下で 1 回だけ課金します。料金は `1 + InputCount + ceil(ManifestCount/16) + ceil(ArtifactByteCount/4096)` です。認証済みの invalid proof または DLEQ validation attempt は同じ料金を使用します。order、fill、settlement failure ごとの別料金はありません。source facts は検証済みの work facts と rule ID を持ちますが、計算済みの debit は持ちません。fill、取消、settlement failure、refund、recovery は Score を debit しません。内部の custody-backed LMSR quote はこの公開料金の対象外です。
+Participation Score は公開注文の受付を保護します。成功した公開 one-shot capability binding は、`settlement-capability-v1` の下で 1 回だけ課金します。料金は `1 + InputCount + ceil(ManifestCount/16) + ceil(ArtifactByteCount/4096)` です。認証済みの invalid proof または DLEQ validation attempt は同じ料金を使用します。order、fill、settlement failure ごとの別料金はありません。fill、取消、settlement failure、refund、recovery は Score を debit しません。この料金は公開クライアントの capability に適用します。
 
 Score が不足すると、daemon は支払いを送信します。delivery state が `credited` になるまで待ってから、注文 capability を準備します。再試行には同じ delivery identity を使用します。ミントが支払いを受け取った後も、Score の反映が遅れることがあります。待機時間の上限に達しても、その支払いは回復できます。pending の delivery は、支払いの失敗を示すものではありません。
 

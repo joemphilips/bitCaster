@@ -37,7 +37,7 @@ paths:
                   type: string
                   description: >
                     JSON-encoded CreateMarketRequest object containing market
-                    title, description, outcomes, liquidity, and category tags.
+                    title, description, outcomes, and category tags.
                 thumbnail:
                   type: string
                   format: binary
@@ -234,17 +234,46 @@ paths:
                 $ref: '#/components/schemas/BatchSubmitOrdersResponse'
         '400':
           description: >
-            Malformed batch envelope or malformed condition path. A resolved
-            per-item condition mismatch returns a `routeMismatch` failure
-            result instead of HTTP 400.
+            order-invalid-request. Application request validation failed.
+            Framework input validation can return a different body shape.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
         '401':
           description: Missing or invalid NIP-98 authentication
+        '403':
+          description: >
+            market-closed. The market is closed before submission.
+            Framework authorization failures can return a different body.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
         '404':
-          description: Condition not registered
+          description: >
+            order-market-not-found. The condition is not registered.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
         '409':
-          description: Market is closed or batch conflicted with book state
+          description: >
+            order-batch-conflict or order-market-closed. A failed whole-request
+            response does not establish that no item was accepted. Reconcile
+            the original item identities before retrying without changes.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
         '429':
-          description: Item-weighted rate limit exceeded
+          description: >
+            order-batch-limited. The application item-weighted rate limit
+            was reached. Framework rate limiting can return a different body.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
 
   /api/v1/conditions/{conditionId}/orders/cancel-batch:
     post:
@@ -272,13 +301,30 @@ paths:
               schema:
                 $ref: '#/components/schemas/BatchCancelOrdersResponse'
         '400':
-          description: Invalid batch envelope
+          description: >
+            order-invalid-request. Application request validation failed.
+            Framework input validation can return a different body shape.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
         '401':
           description: Missing or invalid NIP-98 authentication
         '404':
-          description: Condition not registered
+          description: >
+            order-market-not-found. The condition is not registered.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
         '429':
-          description: Item-weighted rate limit exceeded
+          description: >
+            order-batch-limited. The application item-weighted rate limit
+            was reached. Framework rate limiting can return a different body.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
 
   /api/v1/{marketId}/orders:
     get:
@@ -299,6 +345,14 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ListRestingOrdersResponse'
+        '400':
+          description: >
+            order-invalid-request. Application request validation failed.
+            Framework input validation can return a different body shape.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
         '401':
           description: Missing or invalid NIP-98 authentication
 
@@ -332,25 +386,54 @@ paths:
               schema:
                 $ref: '#/components/schemas/SubmitOrderResponse'
         '400':
-          description: Validation error
+          description: >
+            Application validation failed with order-invalid-request or
+            order-invalid-comment. Framework input validation can return a
+            different body shape.
           content:
-            application/json:
+            application/problem+json:
               schema:
-                type: string
+                $ref: '#/components/schemas/ProblemDetails'
         '401':
           description: Missing or invalid NIP-98 authentication
+        '403':
+          description: >
+            The application closed-market gate returns market-closed.
+            Framework authorization failures can return a different body.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
         '404':
           description: >
-            Settlement capability is absent, belongs to another authenticated
-            owner, or its binding digest does not match.
+            order-market-not-found means the market is not registered.
+            order-capability-not-found means the capability is absent,
+            belongs to another owner, or its binding digest does not match.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
         '409':
           description: >
-            Route market does not match the bound intent, or the capability is
-            stale, expired, selected, or otherwise not current and no matching
-            previously accepted admission exists. An exact accepted replay
-            returns that prior result instead of this conflict.
+            order-capability-route-mismatch means the route differs from the
+            bound intent. order-capability-not-current means no current
+            capability or matching accepted replay exists. An exact accepted
+            replay returns its prior result. order-book-conflict permits an
+            unchanged request retry. order-processing-conflict and
+            order-market-closed are distinct, definitive submission failures.
+            A submission failure alone does not authorize a refund.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
         '503':
-          description: Settlement capability authority is unavailable.
+          description: >
+            order-admission-unavailable or order-processing-unavailable.
+            Retain the original operation for retry and recovery.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
 
   /api/v1/orders/preview:
     post:
@@ -433,7 +516,13 @@ paths:
               schema:
                 $ref: '#/components/schemas/ListMyOrdersResponse'
         '400':
-          description: Missing or invalid conditionId
+          description: >
+            order-invalid-request. Application request validation failed.
+            Framework input validation can return a different body shape.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
         '401':
           description: Missing or invalid NIP-98 authentication
 
@@ -465,10 +554,25 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/OrderStatusResponse'
+        '400':
+          description: >
+            order-invalid-request. Application request validation failed.
+            Framework input validation can return a different body shape.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
         '401':
           description: Missing or invalid NIP-98 authentication
+        '403':
+          description: The order belongs to another authenticated owner.
         '404':
-          description: Order not found
+          description: >
+            order-not-found. The order is unavailable for this request.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
 
     delete:
       operationId: cancelOrder
@@ -487,14 +591,28 @@ paths:
       responses:
         '200':
           description: Order cancelled
+        '400':
+          description: >
+            order-invalid-request. Application request validation failed.
+            Framework input validation can return a different body shape.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
         '401':
           description: Missing or invalid NIP-98 authentication
         '404':
-          description: Order not found
+          description: >
+            order-not-found. Missing, foreign, and wrong-route cancellation
+            targets return the same response.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
         '409':
           description: >
-            Order state changed before cancellation could be committed. The
-            response uses the RFC 7807 ProblemDetails shape.
+            order-cancellation-conflict. Order state changed before
+            cancellation could be committed. Retry the original request.
           content:
             application/problem+json:
               schema:
@@ -513,23 +631,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/OrderBookSnapshot'
-
-  /api/v1/{marketId}/liquidity:
-    get:
-      operationId: getLiquidity
-      summary: Get liquidity state
-      description: Returns the current public liquidity state for a market.
-      parameters:
-        - $ref: '#/components/parameters/MarketId'
-      responses:
-        '200':
-          description: Current liquidity state
+        '400':
+          description: >
+            order-invalid-request. Application request validation failed.
+            Framework input validation can return a different body shape.
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: '#/components/schemas/LiquidityStateResponse'
-        '404':
-          description: No liquidity state for this market
+                $ref: '#/components/schemas/ProblemDetails'
+
 
   /api/v1/{marketId}/metadata:
     get:
@@ -565,67 +675,6 @@ paths:
         '404':
           description: No thumbnail for this condition
 
-  /api/v1/markets/{conditionId}/deposit/ecash:
-    post:
-      operationId: requestEcashDeposit
-      summary: Submit an ecash payment for market liquidity
-      security:
-        - nip98: []
-      description: >
-        Submits an ecash deposit for asynchronous proof verification and
-        crediting. Use the returned `depositId` to poll for state transitions
-        via the GET endpoint.
-      parameters:
-        - $ref: '#/components/parameters/ConditionId'
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/RequestEcashDepositRequest'
-      responses:
-        '200':
-          description: Deposit recorded; verification proceeds asynchronously
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/RequestEcashDepositResponse'
-        '400':
-          description: Validation error (e.g. malformed proofs token, non-positive amount)
-        '401':
-          description: Missing or invalid NIP-98 authentication
-        '404':
-          description: Market not found
-        '429':
-          description: Per-pubkey deposit-request rate limit exceeded
-
-  /api/v1/markets/{conditionId}/deposit/{depositId}:
-    get:
-      operationId: getDepositStatus
-      summary: Read the current state of a deposit
-      description: >
-        Polling-friendly read of a single deposit's lifecycle state. Bearer
-        payment instruments (bolt11) and proof material are deliberately
-        excluded from the response — they appear only in the original
-        request response. Public; no authentication required.
-      parameters:
-        - $ref: '#/components/parameters/ConditionId'
-        - name: depositId
-          in: path
-          required: true
-          schema:
-            type: string
-            format: uuid
-          description: Deposit identifier returned by the request endpoint.
-      responses:
-        '200':
-          description: Deposit found
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/GetDepositResponseDto'
-        '404':
-          description: No deposit with this id for this condition
 
   /api/v1/participation-score:
     get:
@@ -654,6 +703,11 @@ paths:
     post:
       operationId: submitDurableCashuDelivery
       summary: Submit one authenticated durable Cashu delivery
+      description: >
+        Stable Problem Details codes apply to the documented application branches.
+        Route constraints, framework binding, authentication, rate limits, and
+        Score-specific failures can use other bodies. A request failure does not
+        prove that no value was received. Preserve the original delivery identity.
       security:
         - nip98: []
       parameters:
@@ -672,20 +726,59 @@ paths:
               schema:
                 $ref: '#/components/schemas/DurableCashuDeliveryStatus'
         '400':
-          description: The delivery request is invalid.
+          description: "Invalid delivery or funding request. Application codes: cashu-delivery-invalid-request, market-funding-invalid-request."
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
         '401':
           description: Missing or invalid authentication.
         '403':
-          description: The authenticated subject differs from accountSubject.
+          description: "Subject mismatch or a closed funding market. Application codes: cashu-delivery-forbidden, market-closed."
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '404':
+          description: "Funding market not found. Application code: market-funding-market-not-found."
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
         '409':
-          description: deliveryId is already bound to a different immutable tuple.
+          description: "The delivery conflicts with saved state. Shared application code: cashu-delivery-conflict. Score-specific refusals can use another body."
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
         '429':
           description: Delivery submission rate limit exceeded.
+        '500':
+          description: "Delivery state could not be read after admission. Application code: cashu-delivery-state-unavailable. Check the original delivery before retrying."
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
         '502':
-          description: The durable recipient is unavailable.
+          description: "The funding recipient is unavailable or its receipt could not be verified. Application codes: cashu-delivery-recipient-unavailable, cashu-delivery-invalid-receipt. Keep the original delivery for recovery. Score-specific failures can use another body."
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '503':
+          description: "Participation Score mint pre-admission is unavailable."
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
     get:
       operationId: getDurableCashuDeliveryStatus
       summary: Read one authenticated durable Cashu delivery status
+      description: >
+        Stable Problem Details codes apply to the documented application branches.
+        Route constraints, framework binding, authentication, rate limits, and
+        Score-specific failures can use other bodies. A request failure does not
+        prove that no value was received. Preserve the original delivery identity.
       security:
         - nip98: []
       parameters:
@@ -700,13 +793,25 @@ paths:
         '401':
           description: Missing or invalid authentication.
         '403':
-          description: The delivery belongs to a different subject.
+          description: "The delivery belongs to a different subject. Application code: cashu-delivery-forbidden."
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
         '404':
-          description: No delivery exists for deliveryId.
+          description: "No delivery exists, or the identifier is invalid. Handler code: cashu-delivery-not-found. Route constraints can return a different body."
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '409':
+          description: "The saved delivery was rejected. Application code: cashu-delivery-conflict."
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
         '429':
           description: Delivery status rate limit exceeded.
-        '502':
-          description: The durable recipient is unavailable.
 
   /api/v1/creators/{pubkey}/markets:
     get:
@@ -919,19 +1024,53 @@ paths:
               schema:
                 $ref: '#/components/schemas/SettlementCapabilityResponse'
         '400':
-          description: Malformed, noncanonical, expired, or unsupported artifact.
+          description: >
+            Application rejection of a malformed, noncanonical, expired, or
+            unsupported artifact. Framework input binding can return a
+            different error body.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
         '401':
           description: Missing or invalid authentication.
+        '402':
+          description: Participation Score is insufficient for capability preparation.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
         '409':
           description: >
             Idempotency conflict, reused input proof, mismatched order binding,
             or capability lifecycle conflict.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
         '413':
-          description: Artifact or request exceeds the advertised byte/count limits.
+          description: >
+            Application rejection of an artifact or request above the advertised
+            byte/count limits. Framework request-size rejection can return a
+            different error body.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
         '429':
-          description: Per-subject capability admission is saturated.
+          description: >
+            Application capability admission or process capacity is saturated.
+            Framework rate-limit rejection can return a different error body.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
         '503':
           description: Mint validation or durable capability authority is unavailable.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
 
   /api/v1/asset-monitoring/reports:
     post:
@@ -1160,6 +1299,10 @@ paths:
           description: Missing or invalid authentication.
         '503':
           description: Settlement admission policy is unavailable.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
 
   /api/v1/settlement-capabilities/{artifactId}:
     get:
@@ -1190,10 +1333,20 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SettlementCapabilityResponse'
+        '400':
+          description: Invalid capability binding digest.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
         '401':
           description: Missing or invalid authentication.
         '404':
           description: Capability is absent, foreign, or has a different binding digest.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
 
   /api/v1/settlement-capability-results/{resultId}:
     get:
@@ -1219,6 +1372,10 @@ paths:
           description: Missing or invalid authentication.
         '404':
           description: Result is absent or belongs to another subject.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
 
   /api/v1/settlement-capability-results/by-operation:
     get:
@@ -1241,10 +1398,20 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SettlementCapabilityResultResponse'
+        '400':
+          description: Invalid operation identifier.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
         '401':
           description: Missing or invalid authentication.
         '404':
           description: Result is absent or belongs to another subject.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
 
   /api/v1/settlement-capability-results/{resultId}/acknowledgement:
     post:
@@ -1279,12 +1446,24 @@ paths:
                 $ref: '#/components/schemas/SettlementCapabilityResultResponse'
         '400':
           description: Invalid expected version.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
         '401':
           description: Missing or invalid authentication.
         '404':
           description: Result is absent or belongs to another subject.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
         '409':
           description: Result lifecycle version conflict.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
 
 components:
   securitySchemes:
@@ -2401,10 +2580,15 @@ components:
         - DefinitivelyRejected
         - Refundable
         - ExpiredBeforeSubmission
+        - RejectedBeforeSubmission
       description: >
         Public atomic settlement-group lifecycle. `Prepared` is the bounded
         coalescing state. `SubmissionPending` means the group is frozen and its
         exact request authority was durably committed before mint I/O.
+        `RejectedBeforeSubmission` means this group stopped before committing
+        a mint request for a reason other than authorization expiry.
+        `ExpiredBeforeSubmission` means authorization expired before submission.
+        Neither status confirms wallet recovery or authorizes a refund.
 
     SettlementGroupSummary:
       type: object
@@ -2434,7 +2618,7 @@ components:
             - 'null'
           format: date-time
           description: >
-            Null for `Prepared` and for `ExpiredBeforeSubmission`, which
+            Null for `Prepared`, `RejectedBeforeSubmission`, and `ExpiredBeforeSubmission`, which
             transitions directly from `Prepared` without mint submission.
             Non-null for every lifecycle path that reached
             `SubmissionPending`, and preserved through later transitions.
@@ -3328,7 +3512,7 @@ components:
         JSON payload embedded in the multipart `metadata` field of the
         createMarket endpoint. This request contains market metadata only.
         It accepts no opening probability and no initial funding payment or
-        proof. Use the separate post-creation deposit flow for bot funding.
+        proof. Use the separate post-creation funding flow for bot funding.
       required:
         - title
         - description
@@ -3356,17 +3540,6 @@ components:
             supported markets. The `numeric` value remains in the wire enum
             for compatibility, but numeric market creation and trading are
             currently disabled.
-        liquiditySats:
-          type: integer
-          format: int64
-          minimum: 0
-          default: 0
-          description: >
-            Deprecated compatibility field. It is inert: it does not fund,
-            activate, or price a market and does not create a depositor
-            position. Market-maker funding is collected through the separate
-            post-creation deposit flow. Keep this field at `0` when sending a
-            create request.
         baseAsset:
           $ref: '#/components/schemas/BaseAsset'
           description: >
@@ -3525,62 +3698,6 @@ components:
           items:
             $ref: '#/components/schemas/MarketComment'
 
-    LiquidityStateResponse:
-      type: object
-      required:
-        - marketId
-        - reserveA
-        - reserveB
-        - impliedProbability
-        - baseAsset
-        - divisibility
-        - restingOrderLiquiditySubunits
-        - completeSetLiquiditySubunits
-        - totalLiquiditySubunits
-        - activeOrders
-      properties:
-        marketId:
-          type: string
-        reserveA:
-          type: integer
-          format: int64
-        reserveB:
-          type: integer
-          format: int64
-        impliedProbability:
-          type: integer
-          minimum: 1
-          maximum: 99
-          description: >
-            Bot-liquidity reference value for order entry. This is not the
-            public market price, latest confirmed trade, or market value. Use
-            `latestConfirmedTrades` from the market catalogue for the public
-            confirmed-trade price. Before the first confirmed trade, the
-            market has no public price.
-        baseAsset:
-          $ref: '#/components/schemas/BaseAsset'
-        divisibility:
-          type: integer
-          enum: [1000, 1000000]
-          description: >
-            Immutable price denominator `D`, server-determined. Current
-            yes/no and categorical markets use `1000`; `1000000` is reserved
-            for a future numeric trade representation.
-        restingOrderLiquiditySubunits:
-          type: integer
-          format: int64
-          description: Liquidity represented by currently resting bot orders, in market-base subunits.
-        completeSetLiquiditySubunits:
-          type: integer
-          format: int64
-          description: Conservative value of free complete-set inventory, in market-base subunits.
-        totalLiquiditySubunits:
-          type: integer
-          format: int64
-          description: Total public liquidity in market-base subunits.
-        activeOrders:
-          type: integer
-          description: Number of active liquidity orders.
 
     MarketMetadataSnapshot:
       type: object
@@ -3603,7 +3720,7 @@ components:
         totalLiquiditySubunits:
           type: integer
           format: int64
-          description: Total liquidity deposited in market collateral subunits.
+          description: Always zero. Does not report bot funding, custody, or executable order-book depth.
 
     CreatorMarketEntry:
       type: object
@@ -3653,86 +3770,6 @@ components:
             Markets created by this pubkey. May be empty if the creator has
             not registered any markets yet.
 
-    DepositState:
-      type: string
-      enum:
-        - requested
-        - paid
-        - credited
-        - failed
-      description: >
-        Lifecycle state of a single deposit. `requested` → invoice issued or
-        ecash submission accepted, awaiting payment proof. `paid` → payment
-        confirmed and crediting is in progress. `credited` → the market account
-        was credited (terminal-success). `failed` → invoice expired, ecash
-        rejected, or crediting failed (terminal-failure).
-
-    DepositMethod:
-      type: string
-      enum:
-        - lightningInvoice
-        - ecash
-      description: How the funder is paying the deposit.
-
-    RequestEcashDepositRequest:
-      type: object
-      required:
-        - amountSubunits
-        - unit
-        - divisibility
-        - proofsToken
-      properties:
-        amountSubunits:
-          allOf:
-            - $ref: '#/components/schemas/CollateralSubunits'
-          description: >
-            Asserted value of the supplied ecash proofs in
-            market-collateral base subunits. The engine derives the unit from
-            the registered market.
-        unit:
-          type: string
-          enum: [msat]
-          description: Exact Cashu product-collateral unit for the supplied proofs.
-        divisibility:
-          type: integer
-          format: int32
-          enum: [1000, 1000000]
-          description: Exact market divisibility associated with the supplied proofs.
-        proofsToken:
-          type: string
-          description: >
-            Opaque ecash token (Cashu V4 token blob). Proofs and amount are
-            verified before crediting.
-        creatorPubkey:
-          type: string
-          pattern: '^[0-9a-f]{64}$'
-          description: Nostr public key (hex) of the market creator
-        fundAmm:
-          type: boolean
-          default: false
-          description: >
-            Set `true` for a post-creation deposit to fund the automated
-            market-maker. Each accepted payment is separate and the flow can
-            be repeated. The first accepted payment activates the bot from a
-            uniform neutral activation state; later payments add capacity
-            without repricing. The deposit is not withdrawable
-            and gives the depositor no probability-bearing position or special
-            payout. It does not set the public market price; only confirmed
-            trades do that. Any residual budget at resolution becomes operator
-            income.
-
-    RequestEcashDepositResponse:
-      type: object
-      required:
-        - depositId
-        - state
-      properties:
-        depositId:
-          type: string
-          format: uuid
-          description: Identifier for polling the deposit's lifecycle state.
-        state:
-          $ref: '#/components/schemas/DepositState'
 
     ParticipationScoreResponse:
       type: object
@@ -3765,45 +3802,6 @@ components:
           type: boolean
           description: Whether Participation Score purchase and payment is enabled by the engine.
 
-    GetDepositResponseDto:
-      type: object
-      required:
-        - depositId
-        - conditionId
-        - state
-        - method
-        - amountSubunits
-        - requestedAt
-        - updatedAt
-      properties:
-        depositId:
-          type: string
-          format: uuid
-        conditionId:
-          type: string
-          description: Condition the deposit funds.
-        state:
-          $ref: '#/components/schemas/DepositState'
-        method:
-          $ref: '#/components/schemas/DepositMethod'
-        amountSubunits:
-          $ref: '#/components/schemas/CollateralSubunits'
-        requestedAt:
-          type: string
-          format: date-time
-        updatedAt:
-          type: string
-          format: date-time
-          description: Most recent state-change timestamp.
-        expiresAt:
-          type: string
-          format: date-time
-          nullable: true
-          description: For LN deposits, when the bolt11 stops being payable.
-        failureReason:
-          type: string
-          nullable: true
-          description: Populated only when `state == Failed`.
 
     LatestConfirmedTrade:
       type: object
@@ -4045,7 +4043,7 @@ components:
     ProblemDetails:
       type: object
       description: >
-        RFC 7807 problem details. The matching engine returns this shape on
+        RFC 9457 problem details. The matching engine returns this shape on
         4xx and 5xx responses where additional context helps the caller
         recover.
       properties:
@@ -4064,3 +4062,12 @@ components:
         instance:
           type: string
           description: A URI reference identifying the specific occurrence.
+        code:
+          type: string
+          description: Stable application error code, when provided by the endpoint.
+        limitCode:
+          type: string
+          description: The capacity limit that rejected admission, when applicable.
+        traceId:
+          type: string
+          description: Diagnostic correlation identifier, when provided.

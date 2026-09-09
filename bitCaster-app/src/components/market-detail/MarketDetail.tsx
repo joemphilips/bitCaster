@@ -242,6 +242,13 @@ export function MarketDetail({
               outcomePriceHistories={outcomePriceHistories}
               outcomes={market.type === "categorical" ? outcomes : undefined}
               currentDisplay={currentDisplay}
+              emptyDisplay={
+                market.type !== "numeric"
+                && market.latestConfirmedTradesValid === true
+                && market.latestConfirmedTrades?.length === 0
+                  ? t("trade.noTrades")
+                  : undefined
+              }
               comments={market.comments}
               unit={market.type === "numeric" ? market.unit : undefined}
               disabledNumeric={market.type === "numeric"}

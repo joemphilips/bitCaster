@@ -20,9 +20,10 @@ sidebar:
 
 `latestConfirmedTrades` 配列が公開マーケット価格の正です。各プリミティブアウトカムの最新の承認済み約定を一定数まで含み、正規のプリミティブアウトカムID順に並びます。取引されていないアウトカムは含まれません。空の配列は承認済み取引がないことを示すため、マーケットに公開価格はありません。クライアントは `No trades yet` または em dash を表示します。登録値、資金提供額、均一な初期値、Bid/Askのミッドポイントをマーケット価格に使わないでください。ミッドポイントは注文入力の参考値にすぎません。
 
-他の公開マーケットサマリも同じ命名規則を使います。価格履歴ポイントは `volumeSubunits`、マーケットメタデータスナップショットは `totalVolumeSubunits` と `totalLiquiditySubunits`、流動性スナップショットは `restingOrderLiquiditySubunits`、`completeSetLiquiditySubunits`、`totalLiquiditySubunits` を公開します。非推奨の `liquiditySats` 作成メタデータフィールドは互換性のため引き続き受け付けますが、値は無効であり、作成リクエストでは `0` を送ってください。マーケットメイカー資金は作成後の入金フローで集め、複数回実行できます。
+価格履歴ポイントは `volumeSubunits` を公開します。マーケットメタデータスナップショットは `totalVolumeSubunits` と `totalLiquiditySubunits` を公開します。
+メタデータの `totalLiquiditySubunits` は常にゼロです。Botへの資金提供額、保管資金、約定可能な注文板の厚さを示すものではありません。
 
-流動性エンドポイントの `impliedProbability` は、Bot流動性ビューから得られる注文入力の参考値です。公開マーケット価格や承認済み取引ではありません。公開価格の表示には `latestConfirmedTrades` を使ってください。
+マーケット作成リクエストは資金提供額を受け付けません。作成後に、永続的なCashu送信APIでマーケットメイカーに資金を提供してください。各支払いには個別の承認が必要です。同じマーケットに複数回の資金提供ができます。資金提供は公開マーケット価格を作りません。公開価格には `latestConfirmedTrades` を使ってください。
 
 ## ライフサイクルのリアルタイム更新
 

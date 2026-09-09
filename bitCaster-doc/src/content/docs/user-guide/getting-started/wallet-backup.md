@@ -1,9 +1,28 @@
 ---
 title: 'Encrypted wallet backup'
-description: 'How encrypted proof backup, display-only asset monitoring, and recovery work'
+description: 'What to keep safe, what wallet backup can restore, and what remains private'
 sidebar:
   order: 3
 ---
+
+Keep your 12-word recovery phrase offline and safe. Keep the wallet's local
+data while a trade, payment, or refund is unresolved. Encrypted backup helps
+you recover wallet assets. It does not replace the phrase or every local record.
+
+## What you must keep
+
+The backup service can be unavailable, refuse an upload, or lose its data.
+A failed upload leaves the affected ecash records, called proofs, in local
+storage. The web app must not discard them as backed up.
+
+Recovery from your phrase can reconstruct deterministic regular proofs and
+selected conditional-token proofs. It does not reconstruct every pending
+operation or refund record. In particular, it does not restore transient
+operation records, range locators, or refund locators. Keep the local wallet
+database until every active operation has a confirmed final result.
+Do not clear browser storage to resolve an uncertain payment or trade.
+
+## What the web app stores
 
 The web app has two independent wallet features. It enables both by default.
 
@@ -11,9 +30,8 @@ The web app has two independent wallet features. It enables both by default.
 - Display-only asset monitoring helps the app identify an exact asset that may
   be missing from the local wallet.
 
-The live wallet database remains in your browser. These features help after
-browser storage cleanup, quota eviction, or a move to a previously used
-wallet. They do not replace your 12-word recovery phrase.
+The live wallet database remains in your browser. These features help if the
+browser removes stored data or you reopen a previously used wallet.
 
 ## Encrypted proof backup
 
@@ -96,15 +114,3 @@ backup service is unavailable or when you need seed recovery. It scans regular
 keysets. It uses counter-zero discovery to select non-expired CTF keysets, and
 then scans the selected keysets fully. Each keyset uses the standard
 300-counter gap limit.
-
-## Keep your recovery phrase
-
-Keep the 12 words offline and safe. Encrypted backup is a continuity feature,
-not a replacement for the phrase. The service can be unavailable, refuse an
-upload, or lose its data. A failed upload leaves the affected proofs in local
-storage. The web app must not discard them as backed up.
-
-Seed recovery reconstructs deterministic regular proofs and selected CTF
-proofs. It does not reconstruct transient operation records, range locators,
-or refund locators. Keep the local durable store until every active operation
-is terminal.

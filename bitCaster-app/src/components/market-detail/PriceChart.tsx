@@ -12,6 +12,7 @@ interface PriceChartProps {
   outcomePriceHistories?: Record<string, PriceHistory>;
   outcomes?: Array<{ id: string; label: string; odds: number | null }>;
   currentDisplay?: string;
+  emptyDisplay?: string;
   comments?: Comment[];
   unit?: string;
   /** Numeric markets remain disabled until a native numeric trade exists. */
@@ -162,6 +163,7 @@ export function PriceChart({
   outcomePriceHistories,
   outcomes,
   currentDisplay,
+  emptyDisplay,
   disabledNumeric = false,
 }: PriceChartProps) {
   const { t } = useTranslation();
@@ -236,7 +238,7 @@ export function PriceChart({
             label: s.label || t("market.priceChart"),
             stroke: s.color,
             width: 2,
-            points: { show: false },
+            points: { show: true },
             paths: steppedPaths,
             value: (_u: uPlot, value: number | null) => (value == null ? "" : formatPercent(value)),
           })),
@@ -288,8 +290,8 @@ export function PriceChart({
 
       <div className="relative h-56 mb-4 rounded-xl bg-slate-50 dark:bg-slate-900 overflow-hidden">
         {!hasChartData ? (
-          <div className="absolute inset-0 flex items-center justify-center text-slate-400 dark:text-slate-500 text-sm">
-            {t("market.noDataAvailable")}
+          <div data-testid="price-chart-empty-state" className="absolute inset-0 flex items-center justify-center text-slate-400 dark:text-slate-500 text-sm">
+            {emptyDisplay ?? t("market.noDataAvailable")}
           </div>
         ) : (
           <>
