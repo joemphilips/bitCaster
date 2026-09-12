@@ -1,4 +1,4 @@
-/** Pure LMSR strategy parameter shapes shared by wallet-service and clients. */
+/** Pure LMSR strategy parameter shapes for SDK calculations. */
 
 export interface AmmStrategyParams {
   /** Raw creator budget in sats. */
