@@ -6,6 +6,7 @@ set -euo pipefail
 # bitcaster_create_enum example so they match the mint's canonical DLC verifier.
 
 MINT_URL="${MINT_URL:-http://mintd:8085}"
+REGISTER_CONDITION="${REGISTER_CONDITION:-/opt/bitcaster/bitcaster-daemon/scripts/register-condition.ts}"
 MAX_RETRIES=30
 RETRY_INTERVAL=2
 
@@ -32,18 +33,16 @@ seed_market() {
 
   echo "Seeding: ${description}"
 
-  # Register condition
-  local cond_body
-  cond_body=$(jq -n \
-    --arg desc "$description" \
-    --arg tlv "$hex_tlv" \
-    --arg ticker "$ticker" \
-    '{threshold: 1, tags: [["description", $desc], ["n", $ticker]], announcements: [$tlv], condition_type: "enum", collateral: "sat"}')
+  local announcements_json
+  announcements_json=$(jq -cn --arg tlv "$hex_tlv" '[$tlv]')
+
+  local outcomes_json
+  outcomes_json=$(printf '%s\n' "${outcomes[@]}" | jq -Rsc 'split("\n")[:-1]')
 
   local cond_resp
-  cond_resp=$(curl -sf -X POST "${MINT_URL}/v1/conditions" \
-    -H "Content-Type: application/json" \
-    -d "$cond_body") || {
+  cond_resp=$(node --experimental-strip-types "$REGISTER_CONDITION" \
+    "$MINT_URL" "$description" "$description" "msat" \
+    "$announcements_json" "$outcomes_json" "$ticker") || {
     echo "  ERROR: Failed to register condition" >&2
     return 1
   }
