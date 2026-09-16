@@ -366,7 +366,7 @@
     "cborg": "5.1.7"
   },
   "devDependencies": {
-    "esbuild": "0.28.1",
+    "esbuild": "0.28.2",
     "playwright": "1.60.0",
     "typescript": "^5.7.2"
   }
