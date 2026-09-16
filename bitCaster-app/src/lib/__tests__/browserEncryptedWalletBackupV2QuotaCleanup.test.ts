@@ -19,7 +19,7 @@ const scopeId = browserWalletScope(new Uint8Array(64).fill(9)).scopeId;
 const SEED = new Uint8Array(64).fill(9);
 const KEYSET_ID = deriveKeysetId(
   { 1: "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798" },
-  { unit: "sat", versionByte: 1 },
+  { unit: "msat", versionByte: 1 },
 );
 const { eligible } = vi.hoisted(() => ({ eligible: vi.fn() }));
 
@@ -160,7 +160,7 @@ describe("browser encrypted wallet backup V2 quota cleanup", () => {
     const verified = await verifiedProof();
     const asset = createEncryptedWalletBackupV2AssetIdentity({
       mintUrl: "https://mint.example",
-      unit: "sat",
+      unit: "msat",
       asset: { kind: "ordinary" },
     });
     const input = {
@@ -237,14 +237,14 @@ async function verifiedProof() {
     seed: SEED,
     expectedAsset: createEncryptedWalletBackupV2AssetIdentity({
       mintUrl: "https://mint.example",
-      unit: "sat",
+      unit: "msat",
       asset: { kind: "ordinary" },
     }),
     unverified: {
       proofs: [
         {
           mintUrl: "https://mint.example",
-          unit: "sat",
+          unit: "msat",
           asset: { kind: "ordinary" },
           proof,
           locator,
@@ -252,7 +252,7 @@ async function verifiedProof() {
         },
       ],
       counterHighWaterMarks: [
-        { mintUrl: "https://mint.example", unit: "sat", keysetId: KEYSET_ID, nextCounter: 1 },
+        { mintUrl: "https://mint.example", unit: "msat", keysetId: KEYSET_ID, nextCounter: 1 },
       ],
     },
     port: {
@@ -267,7 +267,7 @@ async function verifiedProof() {
 }
 
 function restoreWallet(): CashuWallet {
-  const keyset = new Keyset(KEYSET_ID, "sat", true, 0);
+  const keyset = new Keyset(KEYSET_ID, "msat", true, 0);
   keyset.keys = { 1: "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798" };
   return {
     mint: { mintUrl: "https://mint.example" },
@@ -288,7 +288,7 @@ async function candidate(
       const proof = createBrowserCustodyProofRow({
         scopeId,
         normalizedMint: "https://mint.example",
-        unit: "sat",
+        unit: "msat",
         proof: {
           id: "01" + "22".repeat(32),
           amount: Amount.from(1),
@@ -330,7 +330,7 @@ async function candidate(
     scopeId,
     localAssetKey,
     mintUrl: "https://mint.example",
-    unit: "sat",
+    unit: "msat",
     assetIdentity: "ordinary",
     custodyRevision: "1",
     activeProofCount: proofs.length,

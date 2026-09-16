@@ -20,6 +20,7 @@ import {
   hydrateDurableWalletMintPreview,
   hydrateDurableWalletSendPreview,
   serializeDurableWalletMintOperation,
+  serializeDurableWalletProof,
   serializeDurableWalletReceiveOperation,
   serializeDurableWalletSendOperation,
   toDurableCustodyProofOperationInput,
@@ -30,9 +31,22 @@ import {
   type DurableWalletSendOperationSnapshot,
   type DurableWalletSendOperationStore,
 } from '../src/durableWalletOperation.ts'
+import { serializeDurableCustodyOutput } from '../src/durableCustodyProofOperation.ts'
 
 const KEYSET_ID = `01${'aa'.repeat(32)}`
 const V3_KEYSET_ID = `02${'aa'.repeat(32)}`
+
+test('wallet proof serialization treats an explicit null DLEQ as absent', () => {
+  const serialized = serializeDurableWalletProof({
+    id: KEYSET_ID,
+    amount: Amount.from('2'),
+    secret: 'input-secret',
+    C: 'input-C',
+    dleq: null,
+  } as unknown as Proof)
+
+  assert.equal(serialized.dleq, null)
+})
 
 test('wallet mint preview roundtrips exact request and private output authority', () => {
   const output = OutputData.createSingleData('2', KEYSET_ID, 'mint-output', 3n)
@@ -79,6 +93,112 @@ test('wallet mint preview roundtrips exact request and private output authority'
         },
       }),
     /conflicts/,
+  )
+})
+
+test('wallet melt accepts a realistic NUT-08 zero blank through custody serialization and decoding', () => {
+  const blank = OutputData.createSingleData(0, KEYSET_ID, 'melt-blank', 7n)
+  const serializedBlank = serializeDurableCustodyOutput(blank)
+  const operation = decodeDurableWalletOperation({
+    schemaVersion: 1,
+    operationId: 'wallet-melt-blank',
+    kind: 'wallet-melt',
+    mintUrl: 'https://mint.example',
+    unit: 'msat',
+    preview: {
+      method: 'bolt11',
+      inputs: [walletSend().preview.inputs[0]],
+      outputData: [{ ...serializedBlank, ephemeralE: serializedBlank.ephemeralE ?? null }],
+      keysetId: KEYSET_ID,
+      quote: { quote: 'melt-quote', amount: '10' },
+      requestOptions: { preferAsync: false, extraPayload: {} },
+    },
+  })
+
+  assert.equal(operation.kind, 'wallet-melt')
+  assert.equal(operation.preview.outputData[0]?.blindedMessage.amount, '0')
+  const custody = toDurableCustodyProofOperationInput(operation)
+  const recovered = requireDurableWalletOperationFromCustody(custody)
+  assert.equal(recovered.kind, 'wallet-melt')
+  assert.equal(recovered.preview.outputData[0]?.blindedMessage.amount, '0')
+})
+
+test('wallet mint, send, and receive output serializers still reject zero amounts', () => {
+  const blank = OutputData.createSingleData(0, KEYSET_ID, 'zero-output', 7n)
+  const positive = OutputData.createSingleData(1, KEYSET_ID, 'positive-output', 8n)
+  const input = {
+    id: KEYSET_ID,
+    amount: Amount.from(1),
+    secret: 'input-secret',
+    C: 'input-C',
+  } as Proof
+
+  assert.throws(
+    () =>
+      serializeDurableWalletMintOperation({
+        operationId: 'wallet-mint-zero-output',
+        mintUrl: 'https://mint.example',
+        unit: 'sat',
+        preview: {
+          method: 'bolt11',
+          payload: { quote: 'quote', outputs: [blank.blindedMessage] },
+          outputData: [blank],
+          keysetId: KEYSET_ID,
+          quote: { quote: 'quote' },
+        },
+      }),
+    /blinded amount is invalid/,
+  )
+  assert.throws(
+    () =>
+      serializeDurableWalletSendOperation({
+        operationId: 'wallet-send-zero-output',
+        mintUrl: 'https://mint.example',
+        unit: 'sat',
+        preview: {
+          amount: Amount.from(1),
+          fees: Amount.zero(),
+          keysetId: KEYSET_ID,
+          inputs: [input],
+          sendOutputs: [positive, blank],
+          keepOutputs: [],
+          unselectedProofs: [],
+        },
+      }),
+    /blinded amount is invalid/,
+  )
+  assert.throws(
+    () =>
+      serializeDurableWalletReceiveOperation({
+        operationId: 'wallet-receive-zero-output',
+        mintUrl: 'https://mint.example',
+        unit: 'sat',
+        preview: {
+          amount: Amount.from(1),
+          fees: Amount.zero(),
+          keysetId: KEYSET_ID,
+          inputs: [input],
+          keepOutputs: [blank],
+        },
+      }),
+    /blinded amount is invalid/,
+  )
+
+  const serializedPositive = serializeDurableCustodyOutput(positive)
+  const serializedBlank = serializeDurableCustodyOutput(blank)
+  assert.throws(
+    () =>
+      decodeDurableWalletOperation({
+        ...walletSend(),
+        preview: {
+          ...walletSend().preview,
+          sendOutputs: [
+            { ...serializedPositive, ephemeralE: serializedPositive.ephemeralE ?? null },
+            { ...serializedBlank, ephemeralE: serializedBlank.ephemeralE ?? null },
+          ],
+        },
+      }),
+    /blinded amount is invalid/,
   )
 })
 

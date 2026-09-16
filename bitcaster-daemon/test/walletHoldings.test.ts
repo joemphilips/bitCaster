@@ -7,7 +7,7 @@ import type { DatabaseSync } from 'node:sqlite'
 import { bootstrapFreshDaemonProfile } from '../src/profileBootstrap.ts'
 import { openDaemonStateSqlite } from '../src/stateSqlite.ts'
 import {
-  readDaemonAvailableRegularSatBalance,
+  readDaemonAvailableRegularMsatBalance,
   readDaemonTokenHoldings,
 } from '../src/walletHoldings.ts'
 import { canonicalTestKeysetId } from './support/canonicalKeysetId.ts'
@@ -108,7 +108,7 @@ test('indexed wallet holdings aggregate more than ten thousand proofs without lo
         baseUnitProofs: 2_003,
       },
     )
-    assert.equal(await readDaemonAvailableRegularSatBalance(directory, { mintUrl: MINT_URL }), 2)
+    assert.equal(await readDaemonAvailableRegularMsatBalance(directory, { mintUrl: MINT_URL }), 3)
   } finally {
     await rm(directory, { recursive: true, force: true })
   }

@@ -539,11 +539,6 @@ test('closed contexts enforce exact token, keyset, and source agreement', async 
 test('product-wallet helper decodes once and derives one closed context from unit and source', async () => {
   const cases = [
     {
-      decoded: token('https://mint.example', 'sat', [V0_ID]),
-      resolver: matchingResolver('regular', V0_ID, 'sat'),
-      context: 'ordinary-sat',
-    },
-    {
       decoded: token('https://mint.example', 'msat', [CONDITIONAL_SHORT_ID]),
       resolver: matchingResolver('conditional', CONDITIONAL_FULL_ID, 'msat'),
       context: 'ctf-position-msat',
@@ -570,6 +565,21 @@ test('product-wallet helper decodes once and derives one closed context from uni
   }
 })
 
+test('product-wallet helper rejects sat before keyset resolution', async () => {
+  let resolverCalls = 0
+  await expectCode(
+    validateProductWalletTokenImport({
+      encodedToken: getEncodedToken(token('https://mint.example', 'sat', [V0_ID])),
+      resolveKeysets: async () => {
+        resolverCalls += 1
+        return lookup()
+      },
+    }),
+    'unsupported_unit',
+  )
+  assert.equal(resolverCalls, 0)
+})
+
 test('product-wallet helper rejects conditional sat and mixed-source msat imports', async () => {
   await expectCode(
     validateProductWalletTokenImport({
@@ -577,7 +587,7 @@ test('product-wallet helper rejects conditional sat and mixed-source msat import
       decode: () => token('https://mint.example', 'sat', [CONDITIONAL_SHORT_ID]),
       resolveKeysets: matchingResolver('conditional', CONDITIONAL_FULL_ID, 'sat'),
     }),
-    'source_mismatch',
+    'unsupported_unit',
   )
 
   await expectCode(

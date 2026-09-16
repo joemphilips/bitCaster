@@ -84,6 +84,10 @@ function admitBrowserReceivedProofsInternal(
   profileLockHeld: boolean,
   authority?: BrowserCustodyProofImportAtomicAuthority,
 ): Promise<void> {
+  requireProductMsatUnit(input.unit);
+  if (input.proofs.some(({ unit }) => unit !== "msat")) {
+    throw new Error("browser custody proof receive proof unit requires msat");
+  }
   if (
     input.proofs.length === 0 ||
     input.proofs.length > DURABLE_CUSTODY_PROOF_IMPORT_BATCH_PROOF_LIMIT_MAX
@@ -153,6 +157,10 @@ function admitBrowserReceivedProofsInternal(
   return profileLockHeld
     ? commit()
     : withWalletProfileLock(scope.scopeId, commit, input.lockManager);
+}
+
+function requireProductMsatUnit(unit: unknown): asserts unit is "msat" {
+  if (unit !== "msat") throw new Error("browser custody proof receive requires msat");
 }
 
 interface CommitImportPageInput {

@@ -56,6 +56,34 @@ it("restores one current bundle with fresh sequential object proofs", async () =
   expect(new Set(proofs).size).toBe(proofs.length);
 });
 
+it("rejects sat before backup network or local admission I/O", async () => {
+  const fixture = await backupFixture();
+  const satAsset = createEncryptedWalletBackupV2AssetIdentity({
+    mintUrl: fixture.input.asset.mintUrl,
+    unit: "sat",
+    asset: { kind: "ordinary" },
+  });
+
+  await expect(
+    restoreBrowserEncryptedWalletBackupV2TargetedAsset({
+      ...fixture.input,
+      asset: satAsset,
+    }),
+  ).rejects.toThrow(/requires msat/);
+  await expect(
+    restoreAndAdmitBrowserEncryptedWalletBackupV2TargetedAsset({
+      ...fixture.input,
+      asset: satAsset,
+      wallet: { mint: { mintUrl: fixture.input.asset.mintUrl } } as CashuWallet,
+      lockManager: immediateLockManager(),
+    }),
+  ).rejects.toThrow(/requires msat/);
+  expect(fixture.remote.readDescriptorPage).not.toHaveBeenCalled();
+  expect(fixture.remote.readObject).not.toHaveBeenCalled();
+  expect(await fixture.input.database.custodyProofs.count()).toBe(0);
+  expect(await fixture.input.database.encryptedWalletBackupV2DesiredAssets.count()).toBe(0);
+});
+
 it("uses complete current local custody without backup network I/O", async () => {
   const fixture = await backupFixture();
   const locator = {
@@ -67,7 +95,7 @@ it("uses complete current local custody without backup network I/O", async () =>
   const selectableProof = createBrowserCustodyProofRow({
     scopeId: fixture.input.scopeId,
     normalizedMint: fixture.input.asset.mintUrl,
-    unit: "sat",
+    unit: "msat",
     proof: {
       id: KEYSET,
       amount: Amount.from(1),
@@ -94,7 +122,7 @@ it("uses complete current local custody without backup network I/O", async () =>
   await fixture.input.database.walletCounterAssociations.put({
     scopeId: fixture.input.scopeId,
     normalizedMint: fixture.input.asset.mintUrl,
-    unit: "sat",
+    unit: "msat",
     keysetId: KEYSET,
     recoveryComplete: true,
   });
@@ -194,7 +222,7 @@ it("reports fixed object and verification stages without error detail", async ()
   const objectStages: string[] = [];
   const absent = createEncryptedWalletBackupV2AssetIdentity({
     mintUrl: "https://absent.example",
-    unit: "sat",
+    unit: "msat",
     asset: { kind: "ordinary" },
   });
   await expect(
@@ -268,7 +296,7 @@ it("does not let another asset at the same mint and unit block a CTF request", a
     createBrowserCustodyProofRow({
       scopeId: fixture.input.scopeId,
       normalizedMint: fixture.input.asset.mintUrl,
-      unit: "sat",
+      unit: "msat",
       proof: {
         id: KEYSET,
         amount: Amount.from(1),
@@ -281,7 +309,7 @@ it("does not let another asset at the same mint and unit block a CTF request", a
   );
   const ctf = createEncryptedWalletBackupV2AssetIdentity({
     mintUrl: fixture.input.asset.mintUrl,
-    unit: "sat",
+    unit: "msat",
     asset: {
       kind: "ctf",
       conditionId: "aa".repeat(32),
@@ -315,7 +343,7 @@ it("fails closed for an absent asset without broad mint recovery", async () => {
   const fixture = await backupFixture();
   const absent = createEncryptedWalletBackupV2AssetIdentity({
     mintUrl: "https://absent.example",
-    unit: "sat",
+    unit: "msat",
     asset: { kind: "ordinary" },
   });
   await expect(
@@ -331,7 +359,7 @@ it("does not admit a decrypted bundle before mint proof verification", async () 
     mint: { mintUrl: fixture.input.asset.mintUrl },
     getKeyset: () => ({
       id: KEYSET,
-      unit: "sat",
+      unit: "msat",
       keys: { 1: `02${"44".repeat(32)}` },
       verify: () => true,
     }),
@@ -365,7 +393,7 @@ async function backupFixture() {
   });
   const asset = createEncryptedWalletBackupV2AssetIdentity({
     mintUrl: "https://mint.example",
-    unit: "sat",
+    unit: "msat",
     asset: { kind: "ordinary" },
   });
   const locator = {
@@ -380,12 +408,12 @@ async function backupFixture() {
     asset,
     custodyRevision: 1n,
     counterHighWaterMarks: [
-      { mintUrl: asset.mintUrl, unit: "sat", keysetId: KEYSET, nextCounter: 1 },
+      { mintUrl: asset.mintUrl, unit: "msat", keysetId: KEYSET, nextCounter: 1 },
     ],
     proofs: [
       {
         mintUrl: asset.mintUrl,
-        unit: "sat",
+        unit: "msat",
         asset: { kind: "ordinary" },
         locator,
         proof: {

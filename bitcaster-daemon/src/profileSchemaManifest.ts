@@ -11,7 +11,7 @@ export const FINAL_PROFILE_APPLICATION_ID = 0x4243444d
 export const FINAL_PROFILE_SCHEMA_VERSION = 3
 export const FINAL_PROFILE_SCHEMA_NAME = 'bitcaster-daemon-profile'
 export const FINAL_PROFILE_SCHEMA_MANIFEST_DIGEST =
-  'f8fd0d83d53a11ae54e3f54a34469573f856c5593c730f080c8445872c0cbe5e'
+  '632bac09ee685df67bc558d27b83564d33f17e939911fb793b3fbcab335d1483'
 
 const artifactBytesMax = 16 * 1_024 * 1_024
 const recordBytesMax = 64 * 1_024
@@ -280,7 +280,7 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
     root_operation_id TEXT NOT NULL CHECK (length(root_operation_id) BETWEEN 1 AND 16358),
     normalized_mint TEXT NOT NULL CHECK (length(normalized_mint) BETWEEN 1 AND 2048),
     condition_id TEXT NOT NULL CHECK (length(condition_id) BETWEEN 1 AND 1024),
-    amount_sats INTEGER NOT NULL CHECK (amount_sats BETWEEN 1 AND 9007199254740991),
+    amount_msat INTEGER NOT NULL CHECK (amount_msat BETWEEN 1 AND 9007199254740991),
     regular_operation_id TEXT CHECK (length(regular_operation_id) BETWEEN 1 AND 16384),
     regular_reservation_id TEXT CHECK (length(regular_reservation_id) BETWEEN 1 AND 16384),
     regular_purpose TEXT CHECK (
@@ -624,6 +624,7 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
     retained_operation_key TEXT NOT NULL CHECK (length(retained_operation_key) BETWEEN 1 AND 1024),
     semantic_kind TEXT NOT NULL CHECK (semantic_kind IN ('swap-refund', 'conditional-keyset-swap',
       'generic-receive', 'generic-send', 'wallet-send',
+      'ctf-range-regular-source', 'ctf-range-conditional-source',
       'ctf-split', 'ctf-merge', 'proof-consolidation', 'ctf-redeem'
     )),
     operation_state TEXT NOT NULL CHECK (
@@ -633,7 +634,7 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
     wallet_stage TEXT NOT NULL CHECK (
       wallet_stage IN (
         'lock', 'claim', 'refund', 'receive', 'send', 'ctf-split', 'ctf-merge',
-        'proof-consolidation', 'ctf-redeem'
+        'proof-consolidation', 'ctf-redeem', 'capability-preparation'
       )
     ),
     normalized_mint TEXT NOT NULL CHECK (length(normalized_mint) BETWEEN 1 AND 2048),
@@ -1127,7 +1128,10 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
   `CREATE TABLE daemon_participation_score_delivery_pointers (
     scope_id TEXT PRIMARY KEY REFERENCES custody_scopes(scope_id) ON DELETE RESTRICT,
     transfer_id TEXT NOT NULL CHECK (length(transfer_id) BETWEEN 1 AND 16384),
-    amount_sats INTEGER NOT NULL CHECK (amount_sats BETWEEN 1 AND 9007199254740991),
+    amount_msat INTEGER NOT NULL CHECK (
+      amount_msat BETWEEN 1 AND 9007199254740991
+      AND amount_msat % 1000 = 0
+    ),
     purchased_total_epoch INTEGER NOT NULL CHECK (
       purchased_total_epoch BETWEEN 0 AND 9007199254740991
     ),

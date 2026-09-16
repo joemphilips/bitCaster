@@ -218,6 +218,9 @@ export function decodeTargetedAssetRecoveryInput(value: unknown): TargetedAssetR
     throw new Error('targeted asset recovery input is invalid')
   }
   const asset = decodeEncryptedWalletBackupV2AssetIdentity(value.asset)
+  if (asset.unit !== 'msat') {
+    throw new Error('targeted asset recovery requires msat')
+  }
   return Object.freeze({
     scopeId: decodeDurableCustodyScopeId(value.scopeId),
     assetLocator: requireAssetLocator(value.assetLocator),

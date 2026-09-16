@@ -19,7 +19,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock("@/lib/markets", () => ({ getParticipationScore: mocks.getParticipationScore }));
 vi.mock("@/lib/browserParticipationScoreDelivery", () => ({
   BrowserParticipationScoreInsufficientBalanceError: class extends Error {
-    constructor(readonly balanceSats: number) {
+    constructor(readonly balanceMsat: number) {
       super("browser Participation Score balance is insufficient");
     }
   },
@@ -48,6 +48,9 @@ vi.mock("@/stores/settings", () => ({
 }));
 
 const { ensureParticipationScoreForNextMatch } = await import("../participationScorePayment");
+const { BrowserParticipationScoreInsufficientBalanceError } = await import(
+  "../browserParticipationScoreDelivery"
+);
 
 const baseScore = {
   pubkey: "a".repeat(64),
@@ -107,7 +110,7 @@ describe("ensureParticipationScoreForNextMatch", () => {
     expect(mocks.executeBrowserParticipationScoreDelivery).not.toHaveBeenCalled();
   });
 
-  it("uses the durable coordinator for the exact sat deficit and caller-selected id", async () => {
+  it("pays the exact msat deficit and reports sats and Score separately", async () => {
     mocks.getParticipationScore.mockResolvedValue({
       ...baseScore,
       balance: -1,
@@ -122,12 +125,31 @@ describe("ensureParticipationScoreForNextMatch", () => {
     expect(result).toMatchObject({
       kind: "paid",
       paymentId: "3ab0f6ef-00f6-4ca3-bd69-1140528a0e83",
+      payment: { amountSats: 5, creditedScore: 5 },
     });
     expect(mocks.executeBrowserParticipationScoreDelivery).toHaveBeenCalledWith({
       deliveryId: "3ab0f6ef-00f6-4ca3-bd69-1140528a0e83",
       accountSubject: "subject-1",
       mintUrl: "https://mint.example",
-      requestedAmount: "5",
+      requestedAmount: "5000",
+    });
+  });
+
+  it("converts an insufficient msat balance to exact UI sats", async () => {
+    mocks.executeBrowserParticipationScoreDelivery.mockRejectedValue(
+      new BrowserParticipationScoreInsufficientBalanceError(1_500),
+    );
+
+    const result = await ensureParticipationScoreForNextMatch({
+      mintUrl: "https://mint.example",
+      requiredScore: 4,
+    });
+
+    expect(result).toMatchObject({
+      kind: "needs-regular-top-up",
+      requiredSats: 4,
+      balanceSats: 1.5,
+      deficitSats: 2.5,
     });
   });
 

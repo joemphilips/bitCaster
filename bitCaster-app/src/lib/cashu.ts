@@ -22,6 +22,8 @@ import {
   type OperationCounters,
   verifyProofsForReceive,
 } from "@cashu/cashu-ts";
+import { sha256 } from "@noble/hashes/sha2.js";
+import { bytesToHex } from "@noble/hashes/utils.js";
 import { getWalletForMnemonicUnit, useWalletStore } from "@/stores/wallet";
 import {
   activeBrowserWalletScopeId,
@@ -69,7 +71,11 @@ import {
   type CashuProofUnit,
   type MarketBaseAsset,
 } from "@bitcaster/client-sdk/marketUnits";
-import { admitBrowserReceivedProofs } from "@/lib/browserCustodyProofReceive";
+import {
+  admitBrowserReceivedProofs,
+  admitBrowserReceivedProofsWithHeldProfileLock,
+} from "@/lib/browserCustodyProofReceive";
+import { withWalletProfileLock } from "@/lib/walletProfileLock";
 import { toSeed } from "@/lib/bip39";
 import {
   hydrateDurableWalletMintPreview,
@@ -84,7 +90,19 @@ import {
   receiveBrowserDurableWalletToken,
   recoverBrowserDurableWalletReceives,
 } from "@/lib/browserDurableWalletReceive";
-import { deriveDurableCustodyArtifactFingerprint } from "@bitcaster/client-sdk/durableCustody";
+import {
+  DURABLE_CUSTODY_RECOVERY_PAGE_LIMIT_MAX,
+  deriveDurableCustodyArtifactFingerprint,
+  deriveDurableCustodyProofId,
+} from "@bitcaster/client-sdk/durableCustody";
+import { DURABLE_CUSTODY_PROOF_IMPORT_PAGE_PROOF_LIMIT_MAX } from "@bitcaster/client-sdk/durableCustodyProofImport";
+import {
+  decodeDurableWalletProofDerivationLocator,
+  deriveDurableWalletProofSecret,
+  durableWalletProofDerivationLocatorsEqual,
+  type DurableWalletProofDerivationLocator,
+} from "@bitcaster/client-sdk/durableWalletProofDerivationLocator";
+import { locateSeedDerivedProofLineage } from "@bitcaster/client-sdk/durableSeedDerivedProofLineage";
 import { assertCanonicalNut02V2KeysetId } from "@bitcaster/client-sdk/durableSeedDerivedOutputs";
 import { serializeDurableCustodyProofArtifact } from "@bitcaster/client-sdk/durableCustodyProofMaterial";
 import type { TokenImportContext } from "@bitcaster/client-sdk/tokenImportValidation";
@@ -92,6 +110,13 @@ import {
   listBrowserDurableOutgoingCashuDueMints,
   recoverBrowserDurableOutgoingCashuDuePage,
 } from "@/lib/browserDurableOutgoingCashuTransfer";
+import { meltBrowserDurableWallet } from "@/lib/browserDurableWalletMelt";
+import { createBrowserCustodyProofRow } from "@/stores/durable-custody-db";
+import {
+  decodeBrowserCustodyProofRow,
+  type BrowserCustodyProofRow,
+} from "@/stores/durable-custody-types";
+import type { BrowserProofBackupAuthorityRow } from "@/stores/browser-proof-backup-authority";
 
 // ---------------------------------------------------------------------------
 // Default mint (can be overridden at runtime)
@@ -371,6 +396,7 @@ export async function mintProofsForUnit(
   unit: CashuProofUnit | string,
 ): Promise<Proof[]> {
   const proofUnit = requireCashuProofUnit(unit);
+  if (proofUnit !== "msat") throw new Error("Product wallet mint requires msat proofs");
   return mintAndStoreProofs({
     amount,
     quote,
@@ -720,9 +746,19 @@ type RecoverableMintKeyset = {
 };
 
 const COUNTER_RECOVERY_FALLBACK_SKIP = 100;
+const COUNTER_RECOVERY_DERIVATION_PAGE_SIZE = DURABLE_CUSTODY_RECOVERY_PAGE_LIMIT_MAX;
 
 function keysetCashuUnit(keyset: RecoverableMintKeyset): CashuProofUnit {
   return parseCashuProofUnit(keyset.unit) ?? defaultCollateralUnit(DEFAULT_MARKET_BASE_ASSET);
+}
+
+function requireValidCounterRecoveryResult(lastCounterWithSignature: number | undefined): void {
+  if (
+    lastCounterWithSignature !== undefined &&
+    (!Number.isSafeInteger(lastCounterWithSignature) || lastCounterWithSignature < 0)
+  ) {
+    throw new Error("counter recovery high-water mark is invalid");
+  }
 }
 
 async function bumpActiveKeysetCounter(
@@ -744,6 +780,268 @@ async function bumpActiveKeysetCounter(
     `[cashu] counter recovery could not scan ${normalizeMarketBaseAsset(baseAsset)} keyset ${keyset.id}; advanced by ${COUNTER_RECOVERY_FALLBACK_SKIP}`,
   );
   return true;
+}
+
+/**
+ * Locate recovered proofs without materializing an unbounded counter range.
+ *
+ * `locateSeedDerivedProofLineage` accepts a complete contiguous range. A
+ * broad mint scan can report a much larger high-water mark than the number of
+ * spendable proofs. Build one exact, single-counter lineage at a time. Walk
+ * the counter space in bounded derivation pages, but do not cap the wallet's
+ * lifetime counter history.
+ */
+function locateRecoveredProofs(
+  seed: Uint8Array,
+  keysetId: string,
+  proofs: readonly StoredProof[],
+  lastCounterWithSignature: number,
+): ReadonlyMap<string, DurableWalletProofDerivationLocator> {
+  if (!Number.isSafeInteger(lastCounterWithSignature) || lastCounterWithSignature < 0) {
+    throw new Error("counter recovery high-water mark is invalid");
+  }
+  const remaining = new Set(proofs.map((proof) => proof.secret));
+  const locators = new Map<string, DurableWalletProofDerivationLocator>();
+  for (
+    let pageStart = 0;
+    pageStart <= lastCounterWithSignature && remaining.size > 0;
+    pageStart += COUNTER_RECOVERY_DERIVATION_PAGE_SIZE
+  ) {
+    const pageEnd = Math.min(
+      lastCounterWithSignature,
+      pageStart + COUNTER_RECOVERY_DERIVATION_PAGE_SIZE - 1,
+    );
+    for (let counter = pageStart; counter <= pageEnd && remaining.size > 0; counter += 1) {
+      const secret = deriveDurableWalletProofSecret({
+        seed,
+        locator: { schemaVersion: 1, kind: "nut13", keysetId, counter },
+        proofKeysetId: keysetId,
+        proofAmount: 1,
+      });
+      if (!remaining.has(secret)) continue;
+      const lineage = locateSeedDerivedProofLineage({
+        seed,
+        keysetId,
+        counterStart: counter,
+        counterCount: 1,
+        proofs: [{ id: keysetId, secret }],
+      });
+      const locator = lineage[0];
+      if (locator === undefined) throw new Error("counter recovery lineage is incomplete");
+      const { secret: _secret, ...exactLocator } = locator;
+      locators.set(secret, exactLocator);
+      remaining.delete(secret);
+    }
+  }
+  if (remaining.size !== 0) {
+    throw new Error("counter recovery proof is outside the deterministic lineage");
+  }
+  return locators;
+}
+
+function recoveryProofId(
+  scopeId: string,
+  mintUrl: string,
+  unit: CashuProofUnit,
+  proof: Proof,
+): string {
+  return deriveDurableCustodyProofId({
+    scopeId,
+    normalizedMint: mintUrl,
+    unit,
+    keysetId: proof.id,
+    secret: proof.secret,
+  });
+}
+
+function counterRecoverySourceOperationId(
+  scopeId: string,
+  mintUrl: string,
+  unit: CashuProofUnit,
+  keysetId: string,
+  proofs: readonly Proof[],
+): string {
+  const proofFingerprint = deriveDurableCustodyArtifactFingerprint(
+    proofs
+      .map(serializeDurableCustodyProofArtifact)
+      .sort((left, right) => left.secret.localeCompare(right.secret)),
+  );
+  const identity = new TextEncoder().encode(
+    JSON.stringify([scopeId, mintUrl, unit, keysetId, proofFingerprint]),
+  );
+  return `counter-recovery:${bytesToHex(sha256(identity))}`;
+}
+
+function validateRecoveredProofs(
+  wallet: CashuWallet,
+  mintUrl: string,
+  unit: CashuProofUnit,
+  keysetId: string,
+  proofs: readonly Proof[],
+): void {
+  if (normalizeUrl(wallet.mint.mintUrl) !== mintUrl) {
+    throw new Error("counter recovery mint is foreign");
+  }
+  assertCanonicalNut02V2KeysetId(keysetId, "counter recovery keyset id");
+  if (proofs.some((proof) => proof.id !== keysetId)) {
+    throw new Error("counter recovery proof keyset is foreign");
+  }
+  const keyset = wallet.getKeyset(keysetId);
+  if (keyset.id !== keysetId || keyset.unit !== unit || !keyset.verify()) {
+    throw new Error("counter recovery keyset is invalid");
+  }
+  verifyProofsForReceive([...proofs], (proofKeysetId) => wallet.getKeyset(proofKeysetId), {
+    requireDleq: true,
+  });
+}
+
+type CounterRecoveryProofAsset =
+  | { readonly kind: "regular" }
+  | {
+      readonly kind: "conditional";
+      readonly conditionId: string;
+      readonly outcomeCollection: string;
+    };
+
+function counterRecoveryProofAsset(
+  wallet: CashuWallet,
+  keysetId: string,
+  proof: StoredProof,
+): CounterRecoveryProofAsset {
+  const keyset = wallet.getKeyset(keysetId);
+  const suppliedCondition = proof.conditionId ?? (proof as { condition_id?: unknown }).condition_id;
+  const suppliedOutcome =
+    proof.outcomeCollection ?? (proof as { outcome_collection?: unknown }).outcome_collection;
+  if ((suppliedCondition === undefined) !== (suppliedOutcome === undefined)) {
+    throw new Error("counter recovery proof metadata is incomplete");
+  }
+  if (!keyset.conditional) {
+    if (suppliedCondition !== undefined) {
+      throw new Error("counter recovery proof metadata conflicts with keyset");
+    }
+    return { kind: "regular" };
+  }
+  const conditionId = keyset.conditional.conditionId;
+  if (typeof conditionId !== "string" || !/^[0-9a-fA-F]{64}$/.test(conditionId)) {
+    throw new Error("counter recovery keyset condition id is invalid");
+  }
+  const outcomeCollection = keyset.conditional.outcomeCollection;
+  if (
+    typeof outcomeCollection !== "string" ||
+    outcomeCollection.length === 0 ||
+    outcomeCollection.length > 512
+  ) {
+    throw new Error("counter recovery keyset outcome collection is invalid");
+  }
+  if (
+    suppliedCondition !== undefined &&
+    (typeof suppliedCondition !== "string" ||
+      suppliedCondition.toLowerCase() !== conditionId.toLowerCase() ||
+      suppliedOutcome !== outcomeCollection)
+  ) {
+    throw new Error("counter recovery proof metadata conflicts with keyset");
+  }
+  return {
+    kind: "conditional",
+    conditionId: conditionId.toLowerCase(),
+    outcomeCollection,
+  };
+}
+
+function expectedCounterRecoveryProofRow(
+  scopeId: string,
+  mintUrl: string,
+  unit: CashuProofUnit,
+  wallet: CashuWallet,
+  proof: StoredProof,
+): BrowserCustodyProofRow {
+  return createBrowserCustodyProofRow({
+    scopeId,
+    normalizedMint: mintUrl,
+    unit,
+    proof,
+    asset: counterRecoveryProofAsset(wallet, proof.id, proof),
+    receivedAtMs: 0,
+  });
+}
+
+function sameBytes(left: unknown, right: Uint8Array): boolean {
+  return (
+    left instanceof Uint8Array &&
+    left.length === right.length &&
+    left.every((byte, index) => byte === right[index])
+  );
+}
+
+function requireMatchingCounterRecoveryProof(
+  existing: BrowserCustodyProofRow,
+  expected: BrowserCustodyProofRow,
+): void {
+  if (
+    existing.scopeId !== expected.scopeId ||
+    existing.normalizedMint !== expected.normalizedMint ||
+    existing.unit !== expected.unit ||
+    existing.assetKind !== expected.assetKind ||
+    existing.conditionId !== expected.conditionId ||
+    existing.outcomeCollection !== expected.outcomeCollection ||
+    existing.baseAsset !== expected.baseAsset ||
+    existing.proofId !== expected.proofId ||
+    existing.keysetId !== expected.keysetId ||
+    existing.amount !== expected.amount ||
+    existing.proofFingerprint !== expected.proofFingerprint ||
+    existing.curve !== expected.curve ||
+    existing.dleqPresence !== expected.dleqPresence ||
+    !sameBytes(existing.proofBody, expected.proofBody)
+  ) {
+    throw new Error("counter recovery canonical proof material conflicts");
+  }
+}
+
+function requireMatchingCounterRecoveryBackupAuthority(
+  existing: BrowserCustodyProofRow,
+  authority: BrowserProofBackupAuthorityRow | undefined,
+  locator: DurableWalletProofDerivationLocator,
+): void {
+  if (
+    authority === undefined ||
+    authority.scopeId !== existing.scopeId ||
+    authority.proofId !== existing.proofId ||
+    authority.proofFingerprint !== existing.proofFingerprint ||
+    authority.proofRevision !== existing.revision ||
+    authority.proofState !== existing.selectability ||
+    authority.derivationLocator === null
+  ) {
+    throw new Error("counter recovery canonical proof backup authority conflicts");
+  }
+  let authorityLocator: DurableWalletProofDerivationLocator;
+  try {
+    authorityLocator = decodeDurableWalletProofDerivationLocator(authority.derivationLocator);
+  } catch {
+    throw new Error("counter recovery canonical proof backup locator is invalid");
+  }
+  if (!durableWalletProofDerivationLocatorsEqual(authorityLocator, locator)) {
+    throw new Error("counter recovery canonical proof backup locator conflicts");
+  }
+}
+
+function requireExactCounterRecoveryProofStates(
+  expected: readonly Proof[],
+  groups: { readonly unspent: Proof[]; readonly pending: Proof[]; readonly spent: Proof[] },
+): ReadonlySet<string> {
+  const expectedSecrets = new Set(expected.map(({ secret }) => secret));
+  if (expectedSecrets.size !== expected.length) {
+    throw new Error("counter recovery result is duplicated");
+  }
+  const classified = [...groups.unspent, ...groups.pending, ...groups.spent];
+  const classifiedSecrets = new Set(classified.map(({ secret }) => secret));
+  if (
+    classified.length !== expected.length ||
+    classifiedSecrets.size !== expectedSecrets.size ||
+    [...classifiedSecrets].some((secret) => !expectedSecrets.has(secret))
+  ) {
+    throw new Error("counter recovery proof states are invalid");
+  }
+  return new Set(groups.unspent.map(({ secret }) => secret));
 }
 
 /**
@@ -785,6 +1083,7 @@ export async function recoverKeysetCountersForMint(
   }
   const discoveryUnit = defaultCollateralUnit(requestedBaseAsset ?? DEFAULT_MARKET_BASE_ASSET);
   const discoveryWallet = (await store.getWalletForUnit(url, discoveryUnit)) as CashuWallet;
+  const seed = toSeed(store.mnemonic.trim().split(/\s+/));
   // Use the wallet's freshly-loaded keysets via the underlying mint, not the
   // possibly-stale `store.mints[].keysets`. After mint key rotation the
   // store can be days behind; the duplicate-error path needs to scan
@@ -799,6 +1098,7 @@ export async function recoverKeysetCountersForMint(
         .map(keysetCashuUnit)
         .filter(
           (unit) =>
+            unit === "msat" &&
             (requestedBaseAsset === null ||
               COLLATERAL_UNIT_REGISTRY[unit].baseAsset === requestedBaseAsset) &&
             (opts.unit === undefined || unit === opts.unit),
@@ -837,6 +1137,7 @@ export async function recoverKeysetCountersForMint(
           keyset.id,
         );
         requireCapturedProfile();
+        requireValidCounterRecoveryResult(lastCounterWithSignature);
         const next = lastCounterWithSignature !== undefined ? lastCounterWithSignature + 1 : 0;
         // CRITICAL: batchRestore returns ALL deterministic proofs the mint
         // ever signed for this seed, including SPENT ones. Persisting spent
@@ -844,7 +1145,15 @@ export async function recoverKeysetCountersForMint(
         // errors on the next spend. Filter via `groupProofsByState` and keep
         // only UNSPENT. PENDING is also excluded — those are mid-flight on
         // another device and will resolve to SPENT or UNSPENT shortly.
-        const safe = proofs.length === 0 ? [] : (await wallet.groupProofsByState(proofs)).unspent;
+        validateRecoveredProofs(wallet, url, unit, keyset.id, proofs);
+        const unspentSecrets =
+          proofs.length === 0
+            ? new Set<string>()
+            : requireExactCounterRecoveryProofStates(
+                proofs,
+                await wallet.groupProofsByState(proofs),
+              );
+        const safe = proofs.filter((proof) => unspentSecrets.has(proof.secret));
         requireCapturedProfile();
         const stored: StoredProof[] = safe.map((proof) => ({
           ...proof,
@@ -852,14 +1161,94 @@ export async function recoverKeysetCountersForMint(
           baseAsset: COLLATERAL_UNIT_REGISTRY[unit].baseAsset,
           unit,
         }));
-        await restoreProofsAndAdvanceCounter({
-          proofs: stored,
-          scopeId,
-          mintUrl: url,
-          unit,
-          keysetId: keyset.id,
-          restoredNext: next,
-          isCurrentProfile: () => activeBrowserWalletScopeId() === scopeId,
+        const locators =
+          stored.length === 0
+            ? new Map<string, DurableWalletProofDerivationLocator>()
+            : locateRecoveredProofs(seed, keyset.id, stored, lastCounterWithSignature ?? -1);
+        await withWalletProfileLock(scopeId, async () => {
+          requireCapturedProfile();
+          await db.transaction("rw", db.tables, async () => {
+            requireCapturedProfile();
+            const cacheSafe: StoredProof[] = [];
+            for (
+              let pageStart = 0;
+              pageStart < stored.length;
+              pageStart += DURABLE_CUSTODY_PROOF_IMPORT_PAGE_PROOF_LIMIT_MAX
+            ) {
+              const page = stored.slice(
+                pageStart,
+                pageStart + DURABLE_CUSTODY_PROOF_IMPORT_PAGE_PROOF_LIMIT_MAX,
+              );
+              const existingRows = await db.custodyProofs.bulkGet(
+                page.map((proof) => [scopeId, recoveryProofId(scopeId, url, unit, proof)]),
+              );
+              const backupAuthorities = await db.custodyProofBackupAuthorities.bulkGet(
+                page.map((proof) => [scopeId, recoveryProofId(scopeId, url, unit, proof)]),
+              );
+              const freshPage: StoredProof[] = [];
+              const freshLocators = new Map<string, DurableWalletProofDerivationLocator>();
+              for (const [index, proof] of page.entries()) {
+                const locator = locators.get(proof.secret);
+                if (locator === undefined) {
+                  throw new Error("counter recovery proof locator is missing");
+                }
+                const existingRow = existingRows[index];
+                if (existingRow === undefined) {
+                  if (backupAuthorities[index] !== undefined) {
+                    throw new Error("counter recovery canonical backup authority is orphaned");
+                  }
+                  freshPage.push(proof);
+                  freshLocators.set(proof.secret, locator);
+                  cacheSafe.push(proof);
+                  continue;
+                }
+                let canonicalRow: BrowserCustodyProofRow;
+                try {
+                  canonicalRow = decodeBrowserCustodyProofRow(existingRow);
+                } catch {
+                  throw new Error("counter recovery canonical proof row is invalid");
+                }
+                requireMatchingCounterRecoveryProof(
+                  canonicalRow,
+                  expectedCounterRecoveryProofRow(scopeId, url, unit, wallet, proof),
+                );
+                requireMatchingCounterRecoveryBackupAuthority(
+                  canonicalRow,
+                  backupAuthorities[index],
+                  locator,
+                );
+              }
+              if (freshPage.length > 0) {
+                await admitBrowserReceivedProofsWithHeldProfileLock({
+                  seed,
+                  sourceOperationId: counterRecoverySourceOperationId(
+                    scopeId,
+                    url,
+                    unit,
+                    keyset.id,
+                    freshPage,
+                  ),
+                  mintUrl: url,
+                  unit,
+                  wallet,
+                  proofs: freshPage,
+                  derivationAuthority: null,
+                  proofLocators: freshLocators,
+                  database: db,
+                });
+              }
+            }
+            await restoreProofsAndAdvanceCounter({
+              proofs: cacheSafe,
+              scopeId,
+              mintUrl: url,
+              unit,
+              keysetId: keyset.id,
+              restoredNext: next,
+              isCurrentProfile: () => activeBrowserWalletScopeId() === scopeId,
+            });
+            requireCapturedProfile();
+          });
         });
         scanned.push(keyset.id);
       } catch {
@@ -1001,15 +1390,15 @@ export async function receiveAndStoreTokenRecoverably(
   importContext: TokenImportContext,
 ): Promise<StoredProof[]> {
   const unit = requireCashuProofUnit(unitValue);
+  if (unit !== "msat") {
+    throw new Error("Product wallet receive requires msat tokens");
+  }
   const normalizedMintUrl = normalizeUrl(mintUrl);
   normalizeMarketBaseAsset(baseAsset);
   if (importContext === "ctf-position-msat") {
     return importConditionalTokenDirectly(tokenStr, normalizedMintUrl, unit);
   }
-  if (
-    (importContext === "ordinary-sat" && unit !== "sat") ||
-    (importContext === "ctf-collateral-msat" && unit !== "msat")
-  ) {
+  if (importContext !== "ctf-collateral-msat") {
     throw new Error("Cashu token import context does not match its unit");
   }
   const context = captureBrowserMintPersistenceContext();
@@ -1202,7 +1591,7 @@ export async function createMeltQuote(
   invoice: string,
   mintUrl?: string,
 ): Promise<MeltQuoteResponse> {
-  const wallet = await getWalletForUnit(mintUrl, "sat");
+  const wallet = await getWalletForUnit(mintUrl, "msat");
   return wallet.createMeltQuote(invoice);
 }
 
@@ -1212,11 +1601,20 @@ export async function meltProofs(
   proofs: Proof[],
   mintUrl?: string,
 ): Promise<{ paid: boolean; change: Proof[] }> {
-  const wallet = await getWalletForUnit(mintUrl, "sat");
-  const response = await wallet.meltProofs(quote, proofs);
+  const context = captureBrowserMintPersistenceContext();
+  const normalizedMintUrl = normalizeUrl(mintUrl ?? context.activeMintUrl);
+  const wallet = await getWalletForMnemonicUnit(normalizedMintUrl, "msat", context.mnemonic);
+  const response = await meltBrowserDurableWallet({
+    quote,
+    mintUrl: normalizedMintUrl,
+    proofs,
+    wallet: wallet as import("@/lib/browserDurableWalletMelt").BrowserDurableWalletMeltWallet,
+    context,
+  });
+  context.requireCapturedProfile();
   return {
-    paid: response.quote.state === "PAID",
-    change: response.change ?? [],
+    paid: response.paid,
+    change: [...response.change],
   };
 }
 

@@ -2,9 +2,11 @@ import {
   Amount,
   Mint as CashuMint,
   Wallet as CashuWallet,
+  MintOperationError,
   CheckStateEnum,
   OutputData,
   getDecodedToken,
+  verifyProofsForReceive,
   type CounterRange,
   type CounterSource,
   type CtfConvertRequest,
@@ -20,8 +22,9 @@ import {
   type SwapPreview,
 } from '@cashu/cashu-ts'
 import { createHash, randomUUID } from 'node:crypto'
+import { isDeepStrictEqual } from 'node:util'
 import {
-  computeGrossCtfInputAmountSats,
+  computeGrossCtfInputAmountSubunits,
   selectCollateralForCtfSplit,
   splitRegularProofsWithOperation,
   type CtfGrossInputPlanningKeyset,
@@ -36,8 +39,38 @@ import {
 } from '@bitcaster-market/client-sdk/ctfConsolidation'
 import {
   amountToNumber,
-  computeInputFeeSatsForProofs,
+  computeInputFeeSubunitsForProofs,
 } from '@bitcaster-market/client-sdk/proofSelection'
+import { classifyExactProofConsolidationReplayFailure } from '@bitcaster-market/client-sdk/proofConsolidationOperation'
+import { classifyCtfRangeSourceRecovery } from '@bitcaster-market/client-sdk/ctfRangeSourceRecovery'
+import {
+  createDurableCustodyProofOperation,
+  bindDurableCustodyProofOperation,
+} from '@bitcaster-market/client-sdk/durableCustodyProofOperationRecord'
+import {
+  prepareDurableCustodyMintOperationAuthority,
+  prepareDurableCustodyVerifiedMintResult,
+  readDurableCustodyVerifiedMintResult,
+  stageDurableCustodyPreparedMintResult,
+  assertDurableCustodyMintOperationAuthority,
+  type DurableCustodyMintKeysetAuthority,
+  type DurableCustodyMintOperationAuthority,
+} from '@bitcaster-market/client-sdk/durableCustodyMintResult'
+import {
+  applyDurableCustodyTransaction,
+  deriveDurableCustodyOperationId,
+  prepareDurableCustodyExactArtifact,
+  type DurableCustodyExactArtifact,
+  type DurableCustodyOwnerAuthorization,
+  type DurableCustodyRecord,
+  type DurableCustodyScope,
+} from '@bitcaster-market/client-sdk/durableCustody'
+import {
+  deserializeDurableCustodyOutput,
+  serializeDurableCustodyOutput,
+  serializeDurableCustodyProofInput,
+  type DurableCustodyProofOperationInput,
+} from '@bitcaster-market/client-sdk/durableCustodyProofOperation'
 import {
   defaultCollateralUnit,
   normalizeMarketBaseAsset,
@@ -71,15 +104,31 @@ import {
   prepareProofOperation,
   readDaemonKeysetCounters,
   readAvailableWalletProofAmountSamplesForReceive,
+  readDaemonStateFromDatabase,
+  writeDaemonStateToDatabase,
+  emptyDaemonState,
   reserveDaemonKeysetCounter,
-  updateState,
   type FencedStateMutation,
   type ProofOperationRecord,
   type StoredOutputData,
   type StoredProofAsset,
+  completeCtfConsolidationTargetFromDatabase,
+  prepareCtfConsolidationProofOperationWithExactReservation,
+  releaseCtfConsolidationProofReservationFromDatabase,
 } from './state.ts'
 import { profileDir, type DaemonProfile } from './profile.ts'
 import type { CustodyScopeFence } from './profileFencing.ts'
+import {
+  withDurableCustodyFencedRead,
+  withDurableCustodyUnitOfWork,
+} from './durableCustodyUnitOfWork.ts'
+import { createDaemonStateSqliteSession, type StateSqliteFaultPhase } from './stateSqlite.ts'
+import { DurableCustodySqliteStore } from './durableCustodySqliteStore.ts'
+import {
+  createCustodyProofSqliteRow,
+  createCustodyProofSqliteRowFromMaterial,
+} from './custodyProofSqliteRow.ts'
+import { DurableCustodyTransactionSqlite } from './durableCustodyTransactionSqlite.ts'
 import type { WalletConsolidationProofSummary, WalletConsolidationResult } from './protocol.ts'
 import { createDaemonTokenImportKeysetResolver } from './tokenImportKeysetResolver.ts'
 import { DaemonDurableWalletReceiveCoordinator } from './durableWalletReceiveCoordinator.ts'
@@ -146,28 +195,18 @@ export interface WalletOpsDependencies {
     mintUrl: string,
     keysetIds: string[],
   ) => Promise<Record<string, MintKeys>>
+  resolveDurableCustodyKeysets?: (
+    mintUrl: string,
+    keysetIds: string[],
+    conditionId: string,
+  ) => Promise<readonly DurableCustodyMintKeysetAuthority[]>
   restoreOutputGroups?: (
     mintUrl: string,
     outputs: Record<string, StoredOutputData[]>,
   ) => Promise<Record<string, Proof[]>>
   resolveMintKeysetIds?: (mintUrl: string) => Promise<string[]>
   resolveConditionKeysetIds?: (mintUrl: string, conditionId: string) => Promise<string[]>
-  resolveRootPreflightOutputAmountSats?: (params: {
-    mintUrl: string
-    baseAsset?: string | null
-    conditionId: string
-    amountSats: number
-    lockOutcomeSetId: string
-    keepOutcomeSetId: string
-  }) => Promise<number>
-  resolveRootDirectLockOutputAmountSats?: (params: {
-    mintUrl: string
-    baseAsset?: string | null
-    conditionId: string
-    amountSats: number
-    lockOutcomeSetId: string
-    keepOutcomeSetId: string
-  }) => Promise<number>
+  injectCustodyFault?: (phase: StateSqliteFaultPhase) => void
 }
 
 export interface WalletOpsSecrets {
@@ -176,7 +215,7 @@ export interface WalletOpsSecrets {
 
 export interface WalletReceiveResult {
   mintUrl: string
-  amountSats: number
+  amountMsat: number
   proofCount: number
   asset: StoredProofAsset
   unit: TokenImportUnit
@@ -186,7 +225,7 @@ export interface WalletReceiveResult {
 export interface WalletSendResult {
   operationId: string
   mintUrl: string
-  amountSats: number
+  amountMsat: number
   proofCount: number
   token: string
 }
@@ -363,7 +402,7 @@ export async function receiveWalletToken(
   ).execute({ prepared: { operation }, wallet })
   return {
     mintUrl,
-    amountSats: sumProofs([...received.proofs]),
+    amountMsat: sumProofs([...received.proofs]),
     proofCount: received.proofs.length,
     asset,
     unit: validated.unit,
@@ -408,15 +447,15 @@ export interface WalletReceiveMetadata {
 }
 
 export async function sendWalletToken(
-  amountSats: number,
+  amountMsat: number,
   profile: DaemonProfile,
   secrets: WalletOpsSecrets,
   deps: WalletOpsDependencies = {},
   mintUrl = profile.mintUrl,
   operationId?: string,
 ): Promise<WalletSendResult> {
-  if (!Number.isSafeInteger(amountSats) || amountSats <= 0) {
-    throw new Error('amountSats must be a positive safe integer')
+  if (!Number.isSafeInteger(amountMsat) || amountMsat <= 0) {
+    throw new Error('amountMsat must be a positive safe integer')
   }
   if (!mintUrl) throw new Error('mint URL is required')
   if (!deps.getCustodyFence) throw new Error('daemon wallet send requires custody authority')
@@ -428,17 +467,20 @@ export async function sendWalletToken(
     deps,
   )
   const existing = await coordinator.loadTransfer(transferId)
-  const wallet = createWallet(mintUrl, secrets, deps, 'sat', 'sat')
+  if (existing !== null && existing.unit !== 'msat') {
+    throw new Error('durable outgoing Cashu transfers require msat')
+  }
+  const wallet = createWallet(mintUrl, secrets, deps, 'sat', 'msat')
   await wallet.loadMint()
   const transfer =
     existing === null
-      ? await coordinator.execute({ transferId, amountSats, mintUrl, wallet })
-      : await coordinator.recover({ transfer: existing, amountSats, mintUrl, wallet })
+      ? await coordinator.execute({ transferId, amountMsat, mintUrl, wallet })
+      : await coordinator.recover({ transfer: existing, amountMsat, mintUrl, wallet })
   if (transfer.token === null) throw new Error('durable outgoing Cashu token admission is absent')
   return {
     operationId: transfer.walletSendOperation.operationId,
     mintUrl: transfer.mintUrl,
-    amountSats,
+    amountMsat,
     proofCount: transfer.token.proofs.length,
     token: transfer.token.encodedToken,
   }
@@ -448,14 +490,14 @@ export async function sendWalletToken(
 export async function deliverParticipationScoreCashu(input: {
   readonly deliveryId: string
   readonly accountSubject: string
-  readonly amountSats: number
+  readonly amountMsat: number
   readonly purchasedTotalEpoch: number
   readonly profile: DaemonProfile
   readonly secrets: WalletOpsSecrets
   readonly client: DurableRecipientDeliveryClient
   readonly deps?: WalletOpsDependencies
 }): Promise<DurableParticipationScoreDeliveryResult> {
-  if (!Number.isSafeInteger(input.amountSats) || input.amountSats <= 0) {
+  if (!Number.isSafeInteger(input.amountMsat) || input.amountMsat <= 0) {
     throw new Error('Participation Score amount must be a positive safe integer')
   }
   const deps = input.deps ?? {}
@@ -471,12 +513,12 @@ export async function deliverParticipationScoreCashu(input: {
   )
   const pointer = await coordinator.preflightParticipationScoreDelivery({
     transferId: input.deliveryId,
-    amountSats: input.amountSats,
+    amountMsat: input.amountMsat,
     purchasedTotal: input.purchasedTotalEpoch,
     accountSubject: input.accountSubject,
     mintUrl: input.profile.mintUrl,
   })
-  const requestedAmount = String(pointer.amountSats)
+  const requestedAmount = String(pointer.amountMsat)
   const initialMetadata = createParticipationScoreDeliveryMetadata({
     deliveryId: pointer.transferId,
     accountSubject: input.accountSubject,
@@ -533,11 +575,11 @@ export async function deliverParticipationScoreCashu(input: {
   }
 
   async function executeScoreTransfer() {
-    const wallet = createWallet(metadata.mintUrl, input.secrets, deps, 'sat', 'sat')
+    const wallet = createWallet(metadata.mintUrl, input.secrets, deps, 'sat', 'msat')
     await wallet.loadMint()
     return coordinator.execute({
       transferId: metadata.deliveryId,
-      amountSats: Number(metadata.requestedAmount),
+      amountMsat: Number(metadata.requestedAmount),
       mintUrl: metadata.mintUrl,
       wallet,
       deliveryIntent: intent,
@@ -545,11 +587,11 @@ export async function deliverParticipationScoreCashu(input: {
   }
 
   async function recoverScoreTransfer(existingTransfer: DurableOutgoingCashuTransfer) {
-    const wallet = createWallet(metadata.mintUrl, input.secrets, deps, 'sat', 'sat')
+    const wallet = createWallet(metadata.mintUrl, input.secrets, deps, 'sat', 'msat')
     await wallet.loadMint()
     return coordinator.recover({
       transfer: existingTransfer,
-      amountSats: Number(metadata.requestedAmount),
+      amountMsat: Number(metadata.requestedAmount),
       mintUrl: metadata.mintUrl,
       wallet,
       deliveryIntent: intent,
@@ -580,7 +622,10 @@ export async function recoverDurableOutgoingCashuTransfers(
     deps.getCustodyFence,
     deps,
   ).recoverDue({
-    walletFor: async (mintUrl, unit) => createWallet(mintUrl, secrets, deps, 'sat', unit),
+    walletFor: async (mintUrl, unit) => {
+      if (unit !== 'msat') throw new Error('durable outgoing Cashu transfers require msat')
+      return createWallet(mintUrl, secrets, deps, 'sat', 'msat')
+    },
     ...(recipientDelivery === undefined
       ? {}
       : {
@@ -625,19 +670,16 @@ export async function reclaimDurableOutgoingCashuTransfer(
   )
   const transfer = await coordinator.loadTransfer(transferId)
   if (transfer === null) throw new Error('durable outgoing Cashu transfer is missing')
-  const wallet = createWallet(
-    transfer.mintUrl,
-    secrets,
-    deps,
-    'sat',
-    transfer.unit as TokenImportUnit,
-  )
+  if (transfer.unit !== 'msat') {
+    throw new Error('durable outgoing Cashu transfers require msat')
+  }
+  const wallet = createWallet(transfer.mintUrl, secrets, deps, 'sat', 'msat')
   await wallet.loadMint()
   return redactedTransferMetadata(await coordinator.reclaim({ transferId, wallet }))
 }
 
-export async function splitAvailableSatProofsForCtfCollateral(
-  amountSats: number,
+export async function splitAvailableMsatProofsForCtfCollateral(
+  amountMsat: number,
   mintUrl: string,
   operationId: string,
   secrets: WalletOpsSecrets,
@@ -645,6 +687,9 @@ export async function splitAvailableSatProofsForCtfCollateral(
   baseAssetInput?: string | null,
   operationAuthority?: CtfCollateralOperationAuthority,
 ): Promise<PreparedCtfCollateralResult> {
+  if (!Number.isSafeInteger(amountMsat) || amountMsat <= 0) {
+    throw new Error('amountMsat must be a positive safe integer')
+  }
   const baseAsset = normalizeMarketBaseAsset(baseAssetInput)
   const proofOperationStore =
     operationAuthority?.proofOperationStore ?? DAEMON_CTF_PROOF_OPERATION_STORE
@@ -658,11 +703,11 @@ export async function splitAvailableSatProofsForCtfCollateral(
       operationId,
       wallet,
       proofs: [],
-      amountSats: requirePersistedCtfCollateralAmount(existing),
+      amountSubunits: requirePersistedCtfCollateralAmount(existing),
       proofOperationStore,
       beforeMintMutation: operationAuthority?.beforeMintMutation,
     })
-    const exact = await validateExactCtfCollateralFromProofs(mintUrl, split.send, amountSats, deps)
+    const exact = await validateExactCtfCollateralFromProofs(mintUrl, split.send, amountMsat, deps)
     return { inputs: exact.inputs, spent: split.spent, keep: split.keep }
   }
   await wallet.loadMint()
@@ -670,14 +715,14 @@ export async function splitAvailableSatProofsForCtfCollateral(
   const available = await readAvailableCollateralProofs(mintUrl, baseAsset, operationAuthority)
 
   try {
-    const exact = await validateExactCtfCollateralFromProofs(mintUrl, available, amountSats, deps)
+    const exact = await validateExactCtfCollateralFromProofs(mintUrl, available, amountMsat, deps)
     return { inputs: exact.inputs, spent: [], keep: [] }
   } catch {
     // Fall through to wallet-backed selection, then to a regular split if needed.
   }
 
   try {
-    const exact = await selectCollateralForCtfSplit(mintUrl, available, amountSats, baseAsset)
+    const exact = await selectCollateralForCtfSplit(mintUrl, available, amountMsat, baseAsset)
     return { inputs: exact.inputs, spent: [], keep: [] }
   } catch {
     // Fall through to a regular split that creates a gross CTF input.
@@ -687,13 +732,13 @@ export async function splitAvailableSatProofsForCtfCollateral(
     throw new Error('cashu wallet does not support fee-aware proof selection')
   }
   const grossPlanningKeyset = await resolveGrossCtfInputPlanningKeyset(mintUrl, wallet, deps)
-  const grossCtfInputSats = computeGrossCtfInputAmountSats({
-    faceAmountSats: amountSats,
+  const grossCtfInputSubunits = computeGrossCtfInputAmountSubunits({
+    faceAmountSubunits: amountMsat,
     keyset: grossPlanningKeyset,
   })
-  const selected = wallet.selectProofsToSend(available, grossCtfInputSats, true, false)
+  const selected = wallet.selectProofsToSend(available, grossCtfInputSubunits, true, false)
   if (selected.send.length === 0) {
-    throw new Error(`insufficient available sats in mint ${mintUrl}`)
+    throw new Error(`insufficient available msat in mint ${mintUrl}`)
   }
   const split = await splitRegularProofsWithOperation({
     mintUrl,
@@ -701,11 +746,11 @@ export async function splitAvailableSatProofsForCtfCollateral(
     operationId,
     wallet,
     proofs: selected.send,
-    amountSats: grossCtfInputSats,
+    amountSubunits: grossCtfInputSubunits,
     proofOperationStore,
     beforeMintMutation: operationAuthority?.beforeMintMutation,
   })
-  const exact = await validateExactCtfCollateralFromProofs(mintUrl, split.send, amountSats, deps)
+  const exact = await validateExactCtfCollateralFromProofs(mintUrl, split.send, amountMsat, deps)
   return { inputs: exact.inputs, spent: split.spent, keep: split.keep }
 }
 
@@ -759,13 +804,13 @@ async function resolveGrossCtfInputPlanningKeyset(
 async function validateExactCtfCollateralFromProofs(
   mintUrl: string,
   proofs: Proof[],
-  faceAmountSats: number,
+  faceAmountSubunits: number,
   deps: WalletOpsDependencies,
 ): Promise<{
   inputs: Proof[]
   keep: Proof[]
-  inputFeeSats: number
-  grossInputSats: number
+  inputFeeSubunits: number
+  grossInputSubunits: number
 }> {
   const inputs = proofs.map(normalizeProof)
   const inputFeePpkByKeyset = await resolveCtfConsolidationInputFees(
@@ -773,15 +818,389 @@ async function validateExactCtfCollateralFromProofs(
     inputs.map((proof) => proof.id),
     deps,
   )
-  const inputFeeSats = computeInputFeeSatsForProofs(inputs, inputFeePpkByKeyset)
-  const grossInputSats = inputs.reduce((acc, proof) => acc + amountToNumber(proof.amount), 0)
-  const netInputSats = grossInputSats - inputFeeSats
-  if (netInputSats !== faceAmountSats) {
+  const inputFeeSubunits = computeInputFeeSubunitsForProofs(inputs, inputFeePpkByKeyset)
+  const grossInputSubunits = inputs.reduce((acc, proof) => acc + amountToNumber(proof.amount), 0)
+  const netInputSubunits = grossInputSubunits - inputFeeSubunits
+  if (netInputSubunits !== faceAmountSubunits) {
     throw new Error(
-      `CTF split inputs net ${netInputSats} sats after ${inputFeeSats} sats input fee, expected ${faceAmountSats}`,
+      `CTF split inputs net ${netInputSubunits} msat after ${inputFeeSubunits} msat input fee, expected ${faceAmountSubunits}`,
     )
   }
-  return { inputs, keep: [], inputFeeSats, grossInputSats }
+  return { inputs, keep: [], inputFeeSubunits, grossInputSubunits }
+}
+
+type CtfCustodyBinding = {
+  readonly record: DurableCustodyRecord
+  readonly authority: DurableCustodyMintOperationAuthority
+  readonly inputs: readonly Proof[]
+  readonly artifacts: {
+    readonly requestBody: DurableCustodyExactArtifact
+    readonly output: DurableCustodyExactArtifact
+    readonly privateMaterial: DurableCustodyExactArtifact
+  }
+  readonly inputAssets: readonly StoredProofAsset[]
+  readonly successorAssets: Readonly<Record<string, StoredProofAsset>>
+}
+
+async function createCtfCustodyBinding(
+  input: ExecuteCtfConsolidationPlanInput,
+  deps: WalletOpsDependencies,
+  fence: CustodyScopeFence,
+  operationId: string,
+): Promise<CtfCustodyBinding> {
+  const inputEntries = Object.entries(input.plan.request.inputs)
+  const inputAssets = inputEntries.flatMap(([collection, proofs]) =>
+    proofs.map(() => consolidatedAsset(input.conditionId, collection)),
+  )
+  const successorAssets = Object.fromEntries(
+    Object.keys(input.outputsByCollection).map((collection) => [
+      collection,
+      consolidatedAsset(input.conditionId, collection),
+    ]),
+  )
+  const operationInputs = inputEntries.flatMap(([collection, proofs]) =>
+    proofs.map((proof) => ({
+      ...serializeDurableCustodyProofInput(proof),
+      ...(collection === COLLATERAL_COLLECTION
+        ? {}
+        : { conditionId: input.conditionId, outcomeCollection: collection }),
+    })),
+  )
+  const operationOutputs = Object.fromEntries(
+    Object.entries(input.outputsByCollection).map(([collection, outputs]) => [
+      collection,
+      outputs.map((output) => serializeDurableCustodyOutput(output)),
+    ]),
+  )
+  const operation: DurableCustodyProofOperationInput = {
+    operationId,
+    kind: 'ctf-consolidation',
+    mintUrl: input.mintUrl,
+    inputs: operationInputs,
+    outputs: operationOutputs,
+    metadata: {
+      unit: 'msat',
+      conditionId: input.conditionId,
+      marketId: input.marketId,
+      type: input.type,
+      parentCollectionId: input.plan.request.parent_collection_id ?? null,
+    },
+  }
+  const requestBody = {
+    condition_id: input.conditionId,
+    inputs: Object.fromEntries(
+      inputEntries.map(([collection, proofs]) => [
+        collection,
+        proofs.map((proof) => serializeDurableCustodyProofInput(proof)),
+      ]),
+    ),
+    outputs: Object.fromEntries(
+      Object.entries(input.outputsByCollection).map(([collection, outputs]) => [
+        collection,
+        outputs.map((output) => ({
+          amount: amountToNumber(output.blindedMessage.amount),
+          id: output.blindedMessage.id,
+          B_: output.blindedMessage.B_,
+        })),
+      ]),
+    ),
+  }
+  const keysetIds = [
+    ...new Set([
+      ...operation.inputs.map((proof) => proof.id).filter((id): id is string => id !== undefined),
+      ...Object.values(operation.outputs).flatMap((outputs) =>
+        outputs.map((output) => output.blindedMessage.id),
+      ),
+    ]),
+  ]
+  const keysets = await resolveDurableCustodyKeysetAuthorities(
+    input.mintUrl,
+    keysetIds,
+    input.conditionId,
+    deps,
+    inputEntries,
+    Object.keys(input.outputsByCollection),
+  )
+  const authority = prepareDurableCustodyMintOperationAuthority({
+    operation,
+    keysets,
+    exactTransportRequest: prepareCanonicalArtifact(requestBody),
+  })
+  const reservationId = `ctf-consolidation:${operationId}`
+  const record = createDurableCustodyProofOperation({
+    scope: walletScope(fence),
+    operation,
+    facts: authority.facts,
+    inventoryAccountId: null,
+    reservationId,
+    exactBoundary: {
+      method: 'POST',
+      path: '/v1/ctf/convert',
+      idempotencyKey: operationId,
+      requestBody: authority.exactRequest,
+      output: authority.exactOutput,
+      privateMaterial: authority.exactAuthority,
+    },
+  })
+  return {
+    record,
+    authority: authority.authority,
+    inputs: flattenProofGroups(input.plan.request.inputs),
+    artifacts: {
+      requestBody: authority.exactRequest,
+      output: authority.exactOutput,
+      privateMaterial: authority.exactAuthority,
+    },
+    inputAssets,
+    successorAssets,
+  }
+}
+
+async function resolveDurableCustodyKeysetAuthorities(
+  mintUrl: string,
+  keysetIds: readonly string[],
+  conditionId: string,
+  deps: WalletOpsDependencies,
+  inputEntries: readonly (readonly [string, Proof[]])[],
+  outputCollections: readonly string[],
+): Promise<readonly DurableCustodyMintKeysetAuthority[]> {
+  if (deps.resolveDurableCustodyKeysets) {
+    const resolved = await deps.resolveDurableCustodyKeysets(mintUrl, [...keysetIds], conditionId)
+    if (
+      resolved.length !== keysetIds.length ||
+      new Set(resolved.map((keyset) => keyset.id)).size !== keysetIds.length
+    ) {
+      throw new Error('mint custody keyset authority is incomplete')
+    }
+    return resolved
+  }
+  const mintKeys = await resolveMintKeysByKeyset(mintUrl, [...keysetIds], deps)
+  const metadata = await listMintAndConditionalKeysets(mintUrl)
+  const collectionByKeyset = new Map<string, string>()
+  inputEntries.forEach(([collection, proofs]) =>
+    proofs.forEach((proof) => {
+      if (proof.id !== undefined && collection !== COLLATERAL_COLLECTION) {
+        collectionByKeyset.set(proof.id, collection)
+      }
+    }),
+  )
+  outputCollections.forEach((collection) => {
+    const ids = [...metadata]
+      .filter(
+        (row) =>
+          row.condition_id === conditionId &&
+          (row.outcome_collection === collection || row.outcome_collection_id === collection),
+      )
+      .map((row) => row.id)
+    if (ids.length === 1) collectionByKeyset.set(ids[0]!, collection)
+  })
+  return keysetIds.map((id) => {
+    const keyset = mintKeys[id]
+    if (keyset === undefined) throw new Error(`mint did not return keys for keyset ${id}`)
+    const row = metadata.find((candidate) => candidate.id === id)
+    const collection = collectionByKeyset.get(id)
+    if (row?.condition_id === conditionId && collection !== undefined) {
+      const outcomeCollectionId = row.outcome_collection_id
+      if (!row.outcome_collection || !outcomeCollectionId) {
+        throw new Error('mint conditional keyset metadata is incomplete')
+      }
+      return {
+        canonicalMintUrl: mintUrl,
+        id,
+        unit: keyset.unit,
+        keys: Object.fromEntries(Object.entries(keyset.keys)),
+        inputFeePpk: keyset.input_fee_ppk ?? 0,
+        finalExpiry: keyset.final_expiry ?? null,
+        identity: {
+          kind: 'conditional' as const,
+          conditionId,
+          outcomeCollection: row.outcome_collection,
+          outcomeCollectionId,
+        },
+      }
+    }
+    return {
+      canonicalMintUrl: mintUrl,
+      id,
+      unit: keyset.unit,
+      keys: Object.fromEntries(Object.entries(keyset.keys)),
+      inputFeePpk: keyset.input_fee_ppk ?? 0,
+      finalExpiry: keyset.final_expiry ?? null,
+      identity: { kind: 'regular' as const },
+    }
+  })
+}
+
+function prepareCanonicalArtifact(value: unknown): DurableCustodyExactArtifact {
+  return prepareDurableCustodyExactArtifact(value)
+}
+
+function walletScope(fence: CustodyScopeFence): DurableCustodyScope {
+  if (!fence.scopeId.startsWith('custody:wallet:')) {
+    throw new Error('CTF consolidation custody scope is foreign')
+  }
+  return {
+    scopeKind: 'wallet',
+    scopeId: fence.scopeId,
+    walletId: fence.scopeId.slice('custody:wallet:'.length),
+  }
+}
+
+function custodyOwner(
+  fence: CustodyScopeFence,
+  observedAtMs: number,
+): DurableCustodyOwnerAuthorization {
+  return {
+    incarnationId: fence.incarnationId,
+    fencingEpoch: fence.fencingEpoch,
+    observedAtMs,
+  }
+}
+
+function custodySelection(
+  record: DurableCustodyRecord,
+  owner: DurableCustodyOwnerAuthorization,
+  expectedRevision: number | null,
+) {
+  return {
+    scope: record.scope,
+    owner,
+    operationRows: [{ operationId: record.operation.operationId, expectedRevision }],
+  }
+}
+
+function assertCtfCanonicalInputMaterials(
+  custody: DurableCustodySqliteStore,
+  binding: CtfCustodyBinding,
+  inputs: readonly Proof[],
+  inputAssets: readonly StoredProofAsset[],
+  scopeId: string,
+  nowMs: number,
+  allowedReservationOperationId: string | null = null,
+): void {
+  if (inputs.length !== inputAssets.length) {
+    throw new Error('CTF consolidation canonical input authority is incomplete')
+  }
+  inputs.forEach((proof, index) => {
+    const asset = inputAssets[index]!
+    const expected = createCustodyProofSqliteRow({
+      scopeId,
+      normalizedMint: binding.record.operation.custodyContext.normalizedMint,
+      unit: 'msat',
+      proof: {
+        id: proof.id,
+        amount: proof.amount,
+        secret: proof.secret,
+        C: proof.C,
+        dleq: proof.dleq ?? null,
+        p2pkE: proof.p2pk_e ?? null,
+        witness: proof.witness ?? null,
+      },
+      baseAsset: 'sat',
+      conditionId: asset.kind === 'Outcome' ? asset.conditionId : null,
+      outcomeSetId: asset.kind === 'Outcome' ? asset.outcomeSetId : null,
+      productBinding: null,
+      signatureVerified: true,
+      dleqState: proof.dleq === undefined ? 'not-present' : 'verified',
+      nut07State: 'UNSPENT',
+      selectability: 'retained',
+      storageClass: 'terminal-replay-retained',
+      reservationOperationId: null,
+      revision: 0,
+      nowMs,
+    })
+    const actual = custody.getProof(scopeId, expected.proofId)
+    if (
+      actual === null ||
+      actual.proofId !== expected.proofId ||
+      actual.normalizedMint !== expected.normalizedMint ||
+      actual.unit !== expected.unit ||
+      actual.keysetId !== expected.keysetId ||
+      actual.amount !== expected.amount ||
+      actual.baseAsset !== expected.baseAsset ||
+      actual.conditionId !== expected.conditionId ||
+      actual.outcomeSetId !== expected.outcomeSetId ||
+      actual.productBinding !== expected.productBinding ||
+      actual.proofFingerprint !== expected.proofFingerprint ||
+      actual.curve !== expected.curve ||
+      actual.signatureVerified !== expected.signatureVerified ||
+      actual.dleqState !== expected.dleqState ||
+      !Buffer.from(actual.proofBody).equals(Buffer.from(expected.proofBody))
+    ) {
+      throw new Error('CTF consolidation canonical input material differs from custody')
+    }
+    if (
+      actual.nut07State !== 'UNSPENT' ||
+      (actual.selectability !== 'retained' &&
+        actual.selectability !== 'selectable' &&
+        !(
+          actual.selectability === 'locked' &&
+          actual.reservationOperationId === allowedReservationOperationId
+        )) ||
+      (actual.reservationOperationId !== null &&
+        actual.reservationOperationId !== allowedReservationOperationId)
+    ) {
+      throw new Error('CTF consolidation canonical input is not spendable')
+    }
+  })
+}
+
+async function readCtfConsolidationInputStates(
+  mintUrl: string,
+  secrets: WalletOpsSecrets,
+  inputs: readonly Proof[],
+  deps: WalletOpsDependencies,
+): Promise<readonly ProofState[]> {
+  const wallet = createWallet(mintUrl, secrets, deps, 'sat', 'msat')
+  if (!wallet.checkProofsStates) {
+    throw new Error('cashu wallet does not support CTF consolidation proof-state checks')
+  }
+  const states = await wallet.checkProofsStates(
+    inputs.map((proof) => ({ id: proof.id, secret: proof.secret })),
+  )
+  if (states.length !== inputs.length) {
+    throw new Error('CTF consolidation proof-state response is incomplete')
+  }
+  return states
+}
+
+async function releaseCtfConsolidationReservations(
+  operationId: string,
+  binding: CtfCustodyBinding,
+  fence: CustodyScopeFence,
+  reason: string,
+): Promise<void> {
+  const observedAtMs = Date.now()
+  await withDurableCustodyUnitOfWork(profileDir(), fence, observedAtMs, (database) => {
+    const custody = new DurableCustodySqliteStore(database)
+    const canonical = custody.getOperation(binding.record.operation.operationId)
+    if (canonical === null) throw new Error('CTF consolidation custody operation is missing')
+    releaseCtfConsolidationProofReservationFromDatabase(database, {
+      operationId,
+      reservationId: `ctf-consolidation:${operationId}`,
+      inputAssets: binding.inputAssets,
+      reason,
+      observedAtMs,
+    })
+    const authorization = custodyOwner(fence, observedAtMs)
+    const transaction = new DurableCustodyTransactionSqlite(database, fence.scopeId, observedAtMs, [
+      canonical,
+    ])
+    applyDurableCustodyTransaction(
+      transaction,
+      custodySelection(canonical, authorization, canonical.revision),
+      (selected) =>
+        selected.transitionOperation({
+          operationId: binding.record.operation.operationId,
+          expectedRevision: canonical.revision,
+          transition: {
+            kind: 'release-unspent-reservation',
+            expectedRevision: canonical.revision,
+            authorization,
+          },
+        }),
+    )
+  })
 }
 
 export async function executeCtfConsolidationPlan(
@@ -794,52 +1213,365 @@ export async function executeCtfConsolidationPlan(
   }
 
   const operationId = ctfConsolidationOperationId(input.conditionId, input.type, selectedInputs)
-  await prepareProofOperation({
-    operationId,
-    kind: 'ctf-consolidation',
-    mintUrl: input.mintUrl,
-    inputs: selectedInputs,
-    outputs: Object.fromEntries(
-      Object.entries(input.outputsByCollection).map(([collection, outputs]) => [
-        collection,
-        serializeOutputDataArray(outputs),
-      ]),
-    ),
-    metadata: {
-      marketId: input.marketId,
-      conditionId: input.conditionId,
-      type: input.type,
-      parentCollectionId: input.plan.request.parent_collection_id ?? null,
-      inputCollections: Object.entries(input.plan.request.inputs).flatMap(([collection, proofs]) =>
-        proofs.map(() => collection),
+  const fence = deps.getCustodyFence?.()
+  if (fence === undefined) {
+    throw new Error('wallet CTF consolidation requires custody authority')
+  }
+  const binding = await createCtfCustodyBinding(input, deps, fence, operationId)
+  await prepareCtfConsolidationProofOperationWithExactReservation(
+    {
+      operationId,
+      kind: 'ctf-consolidation',
+      mintUrl: input.mintUrl,
+      inputs: selectedInputs,
+      outputs: Object.fromEntries(
+        Object.entries(input.outputsByCollection).map(([collection, outputs]) => [
+          collection,
+          serializeOutputDataArray(outputs),
+        ]),
       ),
-      feeSats: input.plan.feeSats,
-      collateralOutputSats: input.plan.collateralOutputSats,
+      metadata: {
+        marketId: input.marketId,
+        conditionId: input.conditionId,
+        type: input.type,
+        parentCollectionId: input.plan.request.parent_collection_id ?? null,
+        inputCollections: Object.entries(input.plan.request.inputs).flatMap(
+          ([collection, proofs]) => proofs.map(() => collection),
+        ),
+        feeSubunits: input.plan.feeSubunits,
+        collateralOutputSubunits: input.plan.collateralOutputSubunits,
+        reservationId: `ctf-consolidation:${operationId}`,
+        inputAssets: binding.inputAssets,
+        successorAssets: binding.successorAssets,
+      },
+      reservationId: `ctf-consolidation:${operationId}`,
+      inputAssets: binding.inputAssets,
     },
-  })
+    { fence, observedAtMs: Date.now() },
+    (database) => {
+      const observedAtMs = Date.now()
+      const custody = new DurableCustodySqliteStore(database)
+      const existing = custody.getOperation(binding.record.operation.operationId)
+      assertCtfCanonicalInputMaterials(
+        custody,
+        binding,
+        selectedInputs,
+        binding.inputAssets,
+        fence.scopeId,
+        observedAtMs,
+        existing === null ? null : binding.record.operation.operationId,
+      )
+      if (existing === null) {
+        applyDurableCustodyTransaction(
+          new DurableCustodyTransactionSqlite(database, fence.scopeId, observedAtMs),
+          custodySelection(binding.record, custodyOwner(fence, observedAtMs), null),
+          (transaction) =>
+            bindDurableCustodyProofOperation(transaction, binding.record, binding.artifacts),
+        )
+      } else {
+        assertDurableCustodyMintOperationAuthority(existing, binding.artifacts.privateMaterial)
+      }
+    },
+    deps.injectCustodyFault,
+  )
 
-  const resultProofs = deps.ctfConvert
-    ? await deps.ctfConvert(input.mintUrl, input.plan.request, input.outputsByCollection)
-    : await executeMintCtfConvert(input.mintUrl, input.plan.request, input.outputsByCollection)
+  let resultProofs: Record<string, Proof[]>
+  try {
+    resultProofs = deps.ctfConvert
+      ? await deps.ctfConvert(input.mintUrl, input.plan.request, input.outputsByCollection)
+      : await executeMintCtfConvert(input.mintUrl, input.plan.request, input.outputsByCollection)
+  } catch (error) {
+    if (error instanceof MintOperationError) {
+      let inputStates: readonly ProofState[] | null = null
+      try {
+        inputStates = await readCtfConsolidationInputStates(
+          input.mintUrl,
+          input.secrets,
+          selectedInputs,
+          deps,
+        )
+      } catch {
+        inputStates = null
+      }
+      const disposition =
+        inputStates === null
+          ? 'remain-pending'
+          : classifyExactProofConsolidationReplayFailure({
+              definiteMintRejection: true,
+              inputStates: inputStates.map(({ state }) => state),
+            })
+      if (disposition === 'release-exact-unspent-inputs') {
+        const reason = 'CTF consolidation mint rejected before mutation'
+        await releaseCtfConsolidationReservations(operationId, binding, fence, reason)
+        throw new Error('CTF consolidation mint rejected before mutation')
+      }
+    }
+    throw new Error(
+      error instanceof MintOperationError
+        ? 'CTF consolidation mint rejection remains held for exact recovery'
+        : 'CTF consolidation mint result is uncertain',
+    )
+  }
 
-  await markProofOperationCompleted(operationId, resultProofs)
-  await replaceConsolidatedProofs({
-    mintUrl: input.mintUrl,
-    conditionId: input.conditionId,
-    inputsByCollection: input.plan.request.inputs,
-    resultProofs,
-  })
+  await finalizeCtfConsolidationResult(
+    {
+      operationId,
+      custodyOperationId: binding.record.operation.operationId,
+      mintUrl: input.mintUrl,
+      conditionId: input.conditionId,
+      inputsByCollection: input.plan.request.inputs,
+      inputAssets: binding.inputAssets,
+      resultProofs,
+      outputsByCollection: input.outputsByCollection,
+      successorAssets: binding.successorAssets,
+      keysets: binding.authority.keysets,
+    },
+    deps,
+  )
 
   return {
     marketId: input.marketId,
     conditionId: input.conditionId,
     type: input.type,
     status: 'consolidated',
-    convertFeeSats: input.plan.feeSats,
-    collateralReturnedSats: input.plan.collateralOutputSats,
+    convertFeeMsat: input.plan.feeSubunits,
+    collateralReturnedMsat: input.plan.collateralOutputSubunits,
     spentInputs: summarizeProofGroups(input.plan.request.inputs),
     outputs: summarizeProofGroups(resultProofs),
   }
+}
+
+async function finalizeCtfConsolidationResult(
+  input: {
+    readonly operationId: string
+    readonly custodyOperationId: string
+    readonly mintUrl: string
+    readonly conditionId: string
+    readonly inputsByCollection: Record<string, Proof[]>
+    readonly inputAssets: readonly StoredProofAsset[]
+    readonly resultProofs: Record<string, Proof[]>
+    readonly outputsByCollection: Record<string, OutputData[]>
+    readonly successorAssets: Readonly<Record<string, StoredProofAsset>>
+    readonly keysets: readonly DurableCustodyMintKeysetAuthority[]
+    readonly persistedResult?: boolean
+  },
+  deps: WalletOpsDependencies,
+): Promise<void> {
+  const fence = deps.getCustodyFence?.()
+  if (fence === undefined) throw new Error('wallet CTF consolidation requires custody authority')
+  if (!input.persistedResult) {
+    verifyConsolidatedResultProofs(input.resultProofs, input.outputsByCollection, input.keysets)
+  }
+  const observedAtMs = Date.now()
+  await withDurableCustodyUnitOfWork(
+    profileDir(),
+    fence,
+    observedAtMs,
+    (database) => {
+      const custody = new DurableCustodySqliteStore(database)
+      const record = custody.getOperation(input.custodyOperationId)
+      if (record === null) throw new Error('CTF consolidation custody operation is missing')
+      const exactAuthority = requiredCustodyAuthorityArtifact(record, custody)
+      const transaction = new DurableCustodyTransactionSqlite(
+        database,
+        fence.scopeId,
+        observedAtMs,
+        [record],
+      )
+      const authorization = custodyOwner(fence, observedAtMs)
+      let prepared =
+        record.operation.result.state === 'verified-staged'
+          ? readDurableCustodyVerifiedMintResult({
+              record,
+              exactAuthority,
+              exactResult: requiredCustodyResultArtifact(record, custody),
+            })
+          : prepareDurableCustodyVerifiedMintResult({
+              record,
+              exactAuthority,
+              result: input.resultProofs,
+            })
+      if (
+        record.operation.result.state !== 'verified-staged' &&
+        record.operation.result.state !== 'applied'
+      ) {
+        stageDurableCustodyPreparedMintResult({
+          transaction,
+          record,
+          prepared,
+          authorization,
+        })
+      }
+      const staged = transaction.getOperation(input.custodyOperationId)
+      if (staged === null) throw new Error('CTF consolidation custody result staging failed')
+      if (staged.operation.result.state === 'applied') {
+        completeCtfConsolidationTargetFromDatabase(database, {
+          operationId: input.operationId,
+          resultProofs: normalizeProofGroups(input.resultProofs),
+          inputAssets: input.inputAssets,
+          successorAssets: input.successorAssets,
+          nowMs: observedAtMs,
+        })
+        const state = readDaemonStateFromDatabase(database) ?? emptyDaemonState()
+        replaceConsolidatedWalletProofs(
+          state,
+          {
+            mintUrl: input.mintUrl,
+            conditionId: input.conditionId,
+            inputsByCollection: input.inputsByCollection,
+            resultProofs: input.resultProofs,
+            outputsByCollection: input.outputsByCollection,
+          },
+          observedAtMs,
+        )
+        writeDaemonStateToDatabase(database, state)
+        return
+      }
+      prepared =
+        staged.operation.result.state === 'verified-staged'
+          ? readDurableCustodyVerifiedMintResult({
+              record: staged,
+              exactAuthority,
+              exactResult: requiredCustodyResultArtifact(staged, custody),
+            })
+          : prepared
+      const successors = prepared.proofs.map(({ group, material, dleqState }) => {
+        const asset = input.successorAssets[group]
+        if (asset === undefined) throw new Error('CTF consolidation successor asset is missing')
+        return {
+          proof: createCustodyProofSqliteRowFromMaterial({
+            scopeId: staged.scope.scopeId,
+            normalizedMint: staged.operation.custodyContext.normalizedMint,
+            unit: 'msat',
+            material,
+            baseAsset: 'sat',
+            conditionId: asset.kind === 'Outcome' ? asset.conditionId : null,
+            outcomeSetId: asset.kind === 'Outcome' ? asset.outcomeSetId : null,
+            productBinding: null,
+            signatureVerified: true,
+            dleqState,
+            nut07State: 'UNSPENT',
+            selectability: 'retained',
+            storageClass: staged.operation.proofStorage.storageClass,
+            reservationOperationId: null,
+            revision: 0,
+            nowMs: observedAtMs,
+          }),
+          expectedRevision: null,
+        }
+      })
+      const current = transaction.getOperation(input.custodyOperationId)
+      if (current === null) throw new Error('CTF consolidation custody operation disappeared')
+      transaction.stageSuccessorProofCas(input.custodyOperationId, successors)
+      transaction.applyVerifiedResult({
+        operationId: input.custodyOperationId,
+        expectedRevision: current.revision,
+        authorization,
+        outputPlanFingerprint: current.operation.outputPlan.outputPlanFingerprint,
+        resultHandle: requiredText(current.operation.result.resultHandle),
+        resultFingerprint: requiredText(current.operation.result.resultFingerprint),
+        successorAdmission: {
+          scopeId: current.scope.scopeId,
+          operationId: current.operation.operationId,
+          admissionId: `ctf-consolidation:${requiredText(current.operation.result.resultFingerprint)}`,
+          proofRows: successors.map(({ proof, expectedRevision }) => ({
+            proofId: proof.proofId,
+            expectedRevision,
+            admittedRevision: proof.revision,
+          })),
+        },
+      })
+      transaction.rebuildActiveWorkIndex({
+        scopeId: fence.scopeId,
+        operationRows: [
+          { operationId: input.custodyOperationId, expectedRevision: current.revision + 1 },
+        ],
+      })
+      completeCtfConsolidationTargetFromDatabase(database, {
+        operationId: input.operationId,
+        resultProofs: normalizeProofGroups(input.resultProofs),
+        inputAssets: input.inputAssets,
+        successorAssets: input.successorAssets,
+        nowMs: observedAtMs,
+      })
+      persistConsolidatedWalletProjection(database, input, observedAtMs)
+    },
+    deps.injectCustodyFault === undefined ? {} : { injectFault: deps.injectCustodyFault },
+  )
+}
+
+function persistConsolidatedWalletProjection(
+  database: Parameters<typeof readDaemonStateFromDatabase>[0],
+  input: {
+    readonly mintUrl: string
+    readonly conditionId: string
+    readonly inputsByCollection: Record<string, Proof[]>
+    readonly resultProofs: Record<string, Proof[]>
+    readonly outputsByCollection: Record<string, OutputData[]>
+  },
+  nowMs: number,
+): void {
+  const state = readDaemonStateFromDatabase(database) ?? emptyDaemonState()
+  replaceConsolidatedWalletProofs(state, input, nowMs)
+  writeDaemonStateToDatabase(database, state)
+}
+
+function requiredCustodyAuthorityArtifact(
+  record: DurableCustodyRecord,
+  custody: DurableCustodySqliteStore,
+): DurableCustodyExactArtifact {
+  const artifact = custody.getArtifact({
+    scopeId: record.scope.scopeId,
+    operationId: record.operation.operationId,
+    expectedOperationRevision: record.revision,
+    reference: record.operation.privateMaterial.exactPrivateMaterial,
+  })
+  if (artifact === null) throw new Error('CTF consolidation custody authority is missing')
+  return artifact.artifact
+}
+
+function requiredCustodyRequestArtifact(
+  record: DurableCustodyRecord,
+  custody: DurableCustodySqliteStore,
+): DurableCustodyExactArtifact {
+  const artifact = custody.getArtifact({
+    scopeId: record.scope.scopeId,
+    operationId: record.operation.operationId,
+    expectedOperationRevision: record.revision,
+    reference: record.operation.exactRequest.body,
+  })
+  if (artifact === null) throw new Error('CTF consolidation request authority is missing')
+  return artifact.artifact
+}
+
+function requiredCustodyOutputArtifact(
+  record: DurableCustodyRecord,
+  custody: DurableCustodySqliteStore,
+): DurableCustodyExactArtifact {
+  const artifact = custody.getArtifact({
+    scopeId: record.scope.scopeId,
+    operationId: record.operation.operationId,
+    expectedOperationRevision: record.revision,
+    reference: record.operation.outputPlan.exactOutput,
+  })
+  if (artifact === null) throw new Error('CTF consolidation output authority is missing')
+  return artifact.artifact
+}
+
+function requiredCustodyResultArtifact(
+  record: DurableCustodyRecord,
+  custody: DurableCustodySqliteStore,
+): DurableCustodyExactArtifact {
+  const reference = record.operation.result.exactResult
+  if (reference === null) throw new Error('CTF consolidation custody result authority is missing')
+  const artifact = custody.getArtifact({
+    scopeId: record.scope.scopeId,
+    operationId: record.operation.operationId,
+    expectedOperationRevision: record.revision,
+    reference,
+  })
+  if (artifact === null) throw new Error('CTF consolidation custody result authority is missing')
+  return artifact.artifact
 }
 
 export async function resolveCtfConsolidationInputFees(
@@ -950,49 +1682,121 @@ async function executeMintCtfConvert(
   return result
 }
 
-async function replaceConsolidatedProofs(input: {
-  mintUrl: string
-  conditionId: string
-  inputsByCollection: Record<string, Proof[]>
-  resultProofs: Record<string, Proof[]>
-}): Promise<void> {
+function verifyConsolidatedResultProofs(
+  resultProofs: Record<string, Proof[]>,
+  outputsByCollection: Record<string, OutputData[]>,
+  keysetAuthorities: readonly DurableCustodyMintKeysetAuthority[],
+): void {
+  assertConsolidatedResultMatchesOutputPlan(resultProofs, outputsByCollection)
+  const proofs = flattenProofGroups(resultProofs)
+  if (proofs.length === 0) throw new Error('CTF consolidation mint returned no proofs')
+  if (proofs.some((proof) => !isV2KeysetId(proof.id))) {
+    throw new Error('CTF consolidation mint returned a non-V2 keyset')
+  }
+  const keysets = new Map(
+    keysetAuthorities.map((keyset) => [
+      keyset.id,
+      {
+        id: keyset.id,
+        unit: keyset.unit,
+        keys: keyset.keys,
+        input_fee_ppk: keyset.inputFeePpk,
+        ...(keyset.finalExpiry === null ? {} : { final_expiry: keyset.finalExpiry }),
+      } as MintKeys,
+    ]),
+  )
+  verifyProofsForReceive(
+    proofs,
+    (keysetId) => {
+      const keyset = keysets.get(keysetId)
+      if (keyset === undefined) throw new Error('CTF consolidation output keyset is missing')
+      return keyset
+    },
+    { requireDleq: true },
+  )
+}
+
+function assertConsolidatedResultMatchesOutputPlan(
+  resultProofs: Record<string, Proof[]>,
+  outputsByCollection: Record<string, OutputData[]>,
+): void {
+  const resultCollections = Object.keys(resultProofs).sort()
+  const outputCollections = Object.keys(outputsByCollection).sort()
+  if (
+    resultCollections.length !== outputCollections.length ||
+    resultCollections.some((collection, index) => collection !== outputCollections[index])
+  ) {
+    throw new Error('CTF consolidation result groups differ from the output plan')
+  }
+  for (const collection of outputCollections) {
+    const proofs = resultProofs[collection] ?? []
+    const outputs = outputsByCollection[collection] ?? []
+    if (proofs.length !== outputs.length) {
+      throw new Error('CTF consolidation result count differs from the output plan')
+    }
+    proofs.forEach((proof, index) => {
+      const output = outputs[index]!
+      if (
+        proof.id !== output.blindedMessage.id ||
+        amountToNumber(proof.amount) !== amountToNumber(output.blindedMessage.amount) ||
+        proof.secret !== new TextDecoder().decode(output.secret) ||
+        (proof.p2pk_e ?? null) !== (output.ephemeralE ?? null)
+      ) {
+        throw new Error('CTF consolidation result proof differs from the output plan')
+      }
+    })
+  }
+}
+
+function replaceConsolidatedWalletProofs(
+  state: ReturnType<typeof emptyDaemonState>,
+  input: {
+    mintUrl: string
+    conditionId: string
+    inputsByCollection: Record<string, Proof[]>
+    resultProofs: Record<string, Proof[]>
+    outputsByCollection: Record<string, OutputData[]>
+  },
+  nowMs: number,
+): void {
   const spentSecrets = new Set(
     flattenProofGroups(input.inputsByCollection).map((proof) => proof.secret),
   )
-  await updateState((state, now) => {
-    state.wallet.proofs = state.wallet.proofs.filter(
-      (record) => record.mintUrl !== input.mintUrl || !spentSecrets.has(record.proof.secret),
-    )
-    const existingSecrets = new Set(
-      state.wallet.proofs
-        .filter((record) => record.mintUrl === input.mintUrl)
-        .map((record) => record.proof.secret),
-    )
-    for (const [collection, proofs] of Object.entries(input.resultProofs)) {
-      const asset: StoredProofAsset =
-        collection === COLLATERAL_COLLECTION
-          ? { kind: 'sats', baseAsset: 'sat', unit: 'msat' }
-          : {
-              kind: 'Outcome',
-              conditionId: input.conditionId,
-              outcomeSetId: collection,
-              baseAsset: 'sat',
-              unit: 'msat',
-            }
-      for (const proof of proofs) {
-        if (existingSecrets.has(proof.secret)) continue
-        existingSecrets.add(proof.secret)
-        state.wallet.proofs.push({
-          proof: normalizeProof(proof),
-          mintUrl: input.mintUrl,
-          state: 'available',
-          asset,
-          createdAt: now,
-          updatedAt: now,
-        })
-      }
+  state.wallet.proofs = state.wallet.proofs.filter(
+    (record) => record.mintUrl !== input.mintUrl || !spentSecrets.has(record.proof.secret),
+  )
+  const existingSecrets = new Set(
+    state.wallet.proofs
+      .filter((record) => record.mintUrl === input.mintUrl)
+      .map((record) => record.proof.secret),
+  )
+  for (const [collection, proofs] of Object.entries(input.resultProofs)) {
+    const asset = consolidatedAsset(input.conditionId, collection)
+    for (const proof of proofs) {
+      if (existingSecrets.has(proof.secret)) continue
+      existingSecrets.add(proof.secret)
+      state.wallet.proofs.push({
+        proof: normalizeProof(proof),
+        mintUrl: input.mintUrl,
+        state: 'available',
+        asset,
+        createdAt: new Date(nowMs).toISOString(),
+        updatedAt: new Date(nowMs).toISOString(),
+      })
     }
-  })
+  }
+}
+
+function consolidatedAsset(conditionId: string, collection: string): StoredProofAsset {
+  return collection === COLLATERAL_COLLECTION
+    ? { kind: 'sats', baseAsset: 'sat', unit: 'msat' }
+    : {
+        kind: 'Outcome',
+        conditionId,
+        outcomeSetId: collection,
+        baseAsset: 'sat',
+        unit: 'msat',
+      }
 }
 
 function summarizeProofGroups(groups: Record<string, Proof[]>): WalletConsolidationProofSummary[] {
@@ -1049,7 +1853,7 @@ async function listMintAndConditionalKeysets(mintUrl: string): Promise<
 }
 
 export async function recoverPreparedWalletSends(
-  _secrets: WalletOpsSecrets,
+  secrets: WalletOpsSecrets,
   deps: WalletOpsDependencies = {},
 ): Promise<WalletSendRecoveryResult> {
   const state = await ensureState()
@@ -1062,7 +1866,7 @@ export async function recoverPreparedWalletSends(
   const result: WalletSendRecoveryResult = { recovered: [], pending: [] }
   for (const entry of recoverable) {
     try {
-      await resumeCtfConsolidationOperation(entry, deps)
+      await resumeCtfConsolidationOperation(entry, secrets, deps)
       result.recovered.push(entry.operationId)
     } catch (err) {
       result.pending.push({
@@ -1074,35 +1878,304 @@ export async function recoverPreparedWalletSends(
   return result
 }
 
+async function loadPersistedCtfCustodyBinding(
+  entry: ProofOperationRecord,
+  deps: WalletOpsDependencies,
+): Promise<CtfCustodyBinding> {
+  const fence = deps.getCustodyFence?.()
+  if (fence === undefined) throw new Error('wallet CTF consolidation requires custody authority')
+  const custodyOperationId = deriveDurableCustodyOperationId(fence.scopeId, {
+    retainedOperationKey: entry.operationId,
+    binding: { kind: 'wallet', activityId: entry.operationId, stage: 'ctf-merge' },
+  })
+  return withDurableCustodyFencedRead(
+    createDaemonStateSqliteSession(profileDir()),
+    fence,
+    Date.now(),
+    (database) => {
+      const custody = new DurableCustodySqliteStore(database)
+      const record = custody.getOperation(custodyOperationId)
+      if (record === null) {
+        throw new Error('CTF consolidation recovery lacks canonical custody authority')
+      }
+      if (
+        record.operation.retainedOperationKey !== entry.operationId ||
+        record.operation.semanticKind !== 'ctf-merge' ||
+        record.operation.custodyContext.normalizedMint !== entry.mintUrl ||
+        record.operation.custodyContext.unit !== 'msat'
+      ) {
+        throw new Error('CTF consolidation persisted custody authority is foreign')
+      }
+      const exactAuthority = requiredCustodyAuthorityArtifact(record, custody)
+      const authority = assertDurableCustodyMintOperationAuthority(record, exactAuthority)
+      if (authority.operation.kind !== 'ctf-consolidation') {
+        throw new Error('CTF consolidation persisted custody operation is foreign')
+      }
+      const inputs = authority.operation.inputs.map((input) => durableInputToProof(input))
+      const conditionId = readStringMetadata(entry, 'conditionId')
+      const inputAssets = authority.operation.inputs.map((input) =>
+        consolidatedAsset(conditionId, input.outcomeCollection ?? COLLATERAL_COLLECTION),
+      )
+      const successorAssets = Object.fromEntries(
+        Object.keys(authority.operation.outputs).map((collection) => [
+          collection,
+          consolidatedAsset(conditionId, collection),
+        ]),
+      )
+      assertPersistedCtfTargetMatchesAuthority(entry, authority, inputAssets, successorAssets)
+      return {
+        record,
+        authority,
+        inputs,
+        artifacts: {
+          requestBody: requiredCustodyRequestArtifact(record, custody),
+          output: requiredCustodyOutputArtifact(record, custody),
+          privateMaterial: exactAuthority,
+        },
+        inputAssets,
+        successorAssets,
+      }
+    },
+  )
+}
+
+function durableInputToProof(input: DurableCustodyProofOperationInput['inputs'][number]): Proof {
+  return {
+    id:
+      input.id ??
+      (() => {
+        throw new Error('CTF consolidation persisted input keyset is missing')
+      })(),
+    amount: Amount.from(amountToNumber(input.amount)),
+    secret: input.secret,
+    C: input.C,
+    ...(input.dleq === undefined ? {} : { dleq: input.dleq }),
+    ...(input.p2pk_e === undefined ? {} : { p2pk_e: input.p2pk_e }),
+    ...(input.witness === undefined ? {} : { witness: input.witness }),
+  } as Proof
+}
+
+function assertPersistedCtfTargetMatchesAuthority(
+  entry: ProofOperationRecord,
+  authority: DurableCustodyMintOperationAuthority,
+  inputAssets: readonly StoredProofAsset[],
+  successorAssets: Readonly<Record<string, StoredProofAsset>>,
+): void {
+  const targetOutputs = Object.fromEntries(
+    Object.entries(deserializeOutputGroups(entry.outputs)).map(([collection, outputs]) => [
+      collection,
+      outputs.map((output) => serializeDurableCustodyOutput(output)),
+    ]),
+  )
+  const canonicalOutputs = (
+    outputs: Record<
+      string,
+      readonly {
+        blindedMessage: { amount: unknown; id: string; B_: string }
+        blindingFactor: string
+        secret: string
+        ephemeralE?: string
+      }[]
+    >,
+  ) =>
+    Object.fromEntries(
+      Object.entries(outputs).map(([group, groupOutputs]) => [
+        group,
+        groupOutputs.map((output) => ({
+          ...output,
+          blindedMessage: {
+            ...output.blindedMessage,
+            amount: amountToNumber(output.blindedMessage.amount),
+          },
+        })),
+      ]),
+    )
+  if (
+    !isDeepStrictEqual(
+      canonicalOutputs(targetOutputs),
+      canonicalOutputs(authority.operation.outputs),
+    )
+  ) {
+    throw new Error('CTF consolidation persisted output authority differs from target')
+  }
+  if (entry.inputs.length !== authority.operation.inputs.length) {
+    throw new Error('CTF consolidation persisted input authority differs from target')
+  }
+  entry.inputs.forEach((proof, index) => {
+    const asset = inputAssets[index]
+    if (asset === undefined) throw new Error('CTF consolidation persisted input asset is missing')
+    if (proof.id === undefined) {
+      throw new Error('CTF consolidation persisted input keyset is missing')
+    }
+    const expected = {
+      ...serializeDurableCustodyProofInput({
+        ...proof,
+        id: proof.id,
+        amount: Amount.from(amountToNumber(proof.amount)),
+      } as Proof),
+      ...(asset.kind === 'Outcome'
+        ? { conditionId: asset.conditionId, outcomeCollection: asset.outcomeSetId }
+        : {}),
+    }
+    if (!isDeepStrictEqual(expected, authority.operation.inputs[index])) {
+      throw new Error('CTF consolidation persisted input authority differs from target')
+    }
+  })
+  if (!isDeepStrictEqual(entry.metadata.inputAssets, inputAssets)) {
+    throw new Error('CTF consolidation persisted input asset authority differs from target')
+  }
+  if (!isDeepStrictEqual(entry.metadata.successorAssets, successorAssets)) {
+    throw new Error('CTF consolidation persisted successor asset authority differs from target')
+  }
+}
+
+function ctfInputGroupsFromBinding(binding: CtfCustodyBinding): Record<string, Proof[]> {
+  const groups: Record<string, Proof[]> = {}
+  binding.authority.operation.inputs.forEach((input, index) => {
+    const collection = input.outcomeCollection ?? COLLATERAL_COLLECTION
+    const proof = binding.inputs[index]
+    if (proof === undefined) throw new Error('CTF consolidation persisted input is missing')
+    groups[collection] = [...(groups[collection] ?? []), proof]
+  })
+  return groups
+}
+
+function ctfOutputGroupsFromBinding(binding: CtfCustodyBinding): Record<string, OutputData[]> {
+  return Object.fromEntries(
+    Object.entries(binding.authority.operation.outputs).map(([collection, outputs]) => [
+      collection,
+      outputs.map((output) => deserializeDurableCustodyOutput(output)),
+    ]),
+  )
+}
+
+async function readPersistedCtfResult(
+  binding: CtfCustodyBinding,
+  deps: WalletOpsDependencies,
+): Promise<Record<string, Proof[]> | null> {
+  const fence = deps.getCustodyFence?.()
+  if (fence === undefined) throw new Error('wallet CTF consolidation requires custody authority')
+  return withDurableCustodyFencedRead(
+    createDaemonStateSqliteSession(profileDir()),
+    fence,
+    Date.now(),
+    (database) => {
+      const custody = new DurableCustodySqliteStore(database)
+      const record = custody.getOperation(binding.record.operation.operationId)
+      if (record === null) throw new Error('CTF consolidation custody operation is missing')
+      if (record.operation.result.state === 'none') return null
+      if (
+        record.operation.result.state !== 'verified-staged' &&
+        record.operation.result.state !== 'applied'
+      ) {
+        throw new Error('CTF consolidation persisted result authority is invalid')
+      }
+      const exactAuthority = requiredCustodyAuthorityArtifact(record, custody)
+      const exactResult = requiredCustodyResultArtifact(record, custody)
+      const prepared = readDurableCustodyVerifiedMintResult({
+        record,
+        exactAuthority,
+        exactResult,
+      })
+      const result: Record<string, Proof[]> = {}
+      for (const { group, proof } of prepared.proofs) {
+        result[group] = [...(result[group] ?? []), proof]
+      }
+      return result
+    },
+  )
+}
+
+function requireTextMetadata(entry: ProofOperationRecord, key: string): string {
+  const value = entry.metadata[key]
+  if (typeof value !== 'string' || value.length === 0) {
+    throw new Error(`CTF consolidation metadata ${key} is missing`)
+  }
+  return value
+}
+
 async function resumeCtfConsolidationOperation(
   entry: ProofOperationRecord,
+  secrets: WalletOpsSecrets,
   deps: WalletOpsDependencies,
 ): Promise<Record<string, Proof[]>> {
   assertCtfConsolidationOperation(entry)
   const conditionId = readStringMetadata(entry, 'conditionId')
-  if (entry.state === 'completed') {
-    const resultProofs = normalizeProofGroups(entry.resultProofs ?? {})
-    await replaceConsolidatedProofs({
-      mintUrl: entry.mintUrl,
-      conditionId,
-      inputsByCollection: { [COLLATERAL_COLLECTION]: entry.inputs as Proof[] },
-      resultProofs,
-    })
-    return resultProofs
-  }
   if (entry.state === 'Failed') {
     throw new Error(
       `Proof operation ${entry.operationId} previously failed: ${entry.lastError ?? 'unknown error'}`,
     )
   }
-
-  const inputsByCollection = await ctfConsolidationInputGroups(entry)
-  const outputsByCollection = deserializeOutputGroups(entry.outputs)
+  const binding = await loadPersistedCtfCustodyBinding(entry, deps)
+  const inputsByCollection = ctfInputGroupsFromBinding(binding)
+  const outputsByCollection = ctfOutputGroupsFromBinding(binding)
+  const persistedResult = await readPersistedCtfResult(binding, deps)
+  if (persistedResult !== null) {
+    await finalizeCtfConsolidationResult(
+      {
+        operationId: entry.operationId,
+        custodyOperationId: binding.record.operation.operationId,
+        mintUrl: entry.mintUrl,
+        conditionId,
+        inputsByCollection,
+        inputAssets: binding.inputAssets,
+        resultProofs: persistedResult,
+        outputsByCollection,
+        successorAssets: binding.successorAssets,
+        keysets: binding.authority.keysets,
+        persistedResult: true,
+      },
+      deps,
+    )
+    return persistedResult
+  }
+  if (entry.state === 'completed') {
+    throw new Error('CTF consolidation completed target lacks persisted canonical result')
+  }
+  const fence = deps.getCustodyFence?.()
+  if (fence === undefined) throw new Error('wallet CTF consolidation requires custody authority')
+  const preflightStates = await readCtfConsolidationInputStates(
+    entry.mintUrl,
+    secrets,
+    binding.inputs,
+    deps,
+  ).catch(() => null)
+  if (preflightStates !== null) {
+    const decision = classifyCtfRangeSourceRecovery({
+      journalKind: 'consolidation',
+      journalState: 'prepared',
+      inputStates: preflightStates.map(({ state }) => state),
+      now: Math.floor(Date.now() / 1_000),
+    })
+    if (decision.kind === 'restore-exact-persisted-outputs') {
+      const restored = await restorePersistedCtfOutputs(entry, deps)
+      await finalizeCtfConsolidationResult(
+        {
+          operationId: entry.operationId,
+          custodyOperationId: binding.record.operation.operationId,
+          mintUrl: entry.mintUrl,
+          conditionId,
+          inputsByCollection,
+          inputAssets: binding.inputAssets,
+          resultProofs: restored,
+          outputsByCollection,
+          successorAssets: binding.successorAssets,
+          keysets: binding.authority.keysets,
+        },
+        deps,
+      )
+      return restored
+    }
+    if (decision.kind === 'remain-pending') {
+      throw new Error(`CTF consolidation recovery remains pending at the mint (${decision.reason})`)
+    }
+    if (decision.kind === 'fail') throw new Error(decision.reason)
+  }
   const request: CtfConvertRequest = {
     condition_id: conditionId,
     inputs: inputsByCollection,
     outputs: Object.fromEntries(
-      Object.entries(entry.outputs).map(([collection, outputs]) => [
+      Object.entries(outputsByCollection).map(([collection, outputs]) => [
         collection,
         outputs.map((output) => ({
           ...output.blindedMessage,
@@ -1111,19 +2184,132 @@ async function resumeCtfConsolidationOperation(
       ]),
     ),
   }
-
-  const resultProofs = deps.ctfConvert
-    ? await deps.ctfConvert(entry.mintUrl, request, outputsByCollection)
-    : await executeMintCtfConvert(entry.mintUrl, request, outputsByCollection)
-
-  await markProofOperationCompleted(entry.operationId, resultProofs)
-  await replaceConsolidatedProofs({
-    mintUrl: entry.mintUrl,
-    conditionId,
-    inputsByCollection,
-    resultProofs,
-  })
+  await prepareCtfConsolidationProofOperationWithExactReservation(
+    {
+      operationId: entry.operationId,
+      kind: 'ctf-consolidation',
+      mintUrl: entry.mintUrl,
+      inputs: [...binding.inputs],
+      outputs: entry.outputs,
+      metadata: entry.metadata,
+      reservationId: requireTextMetadata(entry, 'reservationId'),
+      inputAssets: binding.inputAssets,
+    },
+    { fence, observedAtMs: Date.now() },
+    (database) => {
+      const custody = new DurableCustodySqliteStore(database)
+      const current = custody.getOperation(binding.record.operation.operationId)
+      if (current === null) throw new Error('CTF consolidation custody operation is missing')
+      assertCtfCanonicalInputMaterials(
+        custody,
+        binding,
+        binding.inputs,
+        binding.inputAssets,
+        fence.scopeId,
+        Date.now(),
+        binding.record.operation.operationId,
+      )
+      assertDurableCustodyMintOperationAuthority(current, binding.artifacts.privateMaterial)
+    },
+    deps.injectCustodyFault,
+  )
+  let resultProofs: Record<string, Proof[]>
+  try {
+    resultProofs = deps.ctfConvert
+      ? await deps.ctfConvert(entry.mintUrl, request, outputsByCollection)
+      : await executeMintCtfConvert(entry.mintUrl, request, outputsByCollection)
+  } catch (error) {
+    if (error instanceof MintOperationError) {
+      const inputStates = await readCtfConsolidationInputStates(
+        entry.mintUrl,
+        secrets,
+        binding.inputs,
+        deps,
+      ).catch(() => null)
+      if (inputStates !== null) {
+        const postRejectionDecision = classifyCtfRangeSourceRecovery({
+          journalKind: 'consolidation',
+          journalState: 'prepared',
+          inputStates: inputStates.map(({ state }) => state),
+          now: Math.floor(Date.now() / 1_000),
+        })
+        if (postRejectionDecision.kind === 'restore-exact-persisted-outputs') {
+          const restored = await restorePersistedCtfOutputs(entry, deps)
+          await finalizeCtfConsolidationResult(
+            {
+              operationId: entry.operationId,
+              custodyOperationId: binding.record.operation.operationId,
+              mintUrl: entry.mintUrl,
+              conditionId,
+              inputsByCollection,
+              inputAssets: binding.inputAssets,
+              resultProofs: restored,
+              outputsByCollection,
+              successorAssets: binding.successorAssets,
+              keysets: binding.authority.keysets,
+            },
+            deps,
+          )
+          return restored
+        }
+      }
+      const disposition =
+        inputStates === null
+          ? 'remain-pending'
+          : classifyExactProofConsolidationReplayFailure({
+              definiteMintRejection: true,
+              inputStates: inputStates.map(({ state }) => state),
+            })
+      if (disposition === 'release-exact-unspent-inputs') {
+        await releaseCtfConsolidationReservations(
+          entry.operationId,
+          binding,
+          fence,
+          'CTF consolidation mint rejected before mutation',
+        )
+        return {}
+      }
+      throw new Error('CTF consolidation mint rejection remains held for exact recovery')
+    }
+    throw new Error('CTF consolidation mint result is uncertain')
+  }
+  await finalizeCtfConsolidationResult(
+    {
+      operationId: entry.operationId,
+      custodyOperationId: binding.record.operation.operationId,
+      mintUrl: entry.mintUrl,
+      conditionId,
+      inputsByCollection,
+      inputAssets: binding.inputAssets,
+      resultProofs,
+      outputsByCollection,
+      successorAssets: binding.successorAssets,
+      keysets: binding.authority.keysets,
+    },
+    deps,
+  )
   return resultProofs
+}
+
+async function restorePersistedCtfOutputs(
+  entry: ProofOperationRecord,
+  deps: WalletOpsDependencies,
+): Promise<Record<string, Proof[]>> {
+  const restored = deps.restoreOutputGroups
+    ? await deps.restoreOutputGroups(entry.mintUrl, entry.outputs)
+    : await restoreOutputGroups(entry.mintUrl, entry.outputs)
+  const expectedGroups = Object.keys(entry.outputs).sort()
+  const restoredGroups = Object.keys(restored).sort()
+  if (
+    expectedGroups.length !== restoredGroups.length ||
+    expectedGroups.some((group, index) => group !== restoredGroups[index]) ||
+    expectedGroups.some(
+      (group) => (restored[group]?.length ?? -1) !== (entry.outputs[group]?.length ?? -2),
+    )
+  ) {
+    throw new Error('CTF consolidation persisted output restore is incomplete')
+  }
+  return restored
 }
 
 export function createWallet(
@@ -1241,42 +2427,6 @@ function ctfConsolidationOperationId(
   return `ctf-consolidation:${conditionId}:${type}:${digest}`
 }
 
-async function ctfConsolidationInputGroups(
-  entry: ProofOperationRecord,
-): Promise<Record<string, Proof[]>> {
-  const inputCollections = entry.metadata.inputCollections
-  if (
-    Array.isArray(inputCollections) &&
-    inputCollections.length === entry.inputs.length &&
-    inputCollections.every((collection) => typeof collection === 'string')
-  ) {
-    return groupInputsByCollection(entry.inputs as Proof[], inputCollections as string[])
-  }
-
-  const state = await ensureState()
-  const collectionBySecret = new Map<string, string>()
-  for (const record of state.wallet.proofs) {
-    if (record.mintUrl !== entry.mintUrl) continue
-    collectionBySecret.set(record.proof.secret, proofCollection(record.asset))
-  }
-  const recoveredCollections = entry.inputs.map((proof) => collectionBySecret.get(proof.secret))
-  if (recoveredCollections.some((collection) => !collection)) {
-    throw new Error(
-      `Proof operation ${entry.operationId} is missing CTF consolidation input collection metadata`,
-    )
-  }
-  return groupInputsByCollection(entry.inputs as Proof[], recoveredCollections as string[])
-}
-
-function groupInputsByCollection(inputs: Proof[], collections: string[]): Record<string, Proof[]> {
-  const grouped: Record<string, Proof[]> = {}
-  inputs.forEach((proof, index) => {
-    const collection = collections[index]
-    grouped[collection] = [...(grouped[collection] ?? []), normalizeProof(proof)]
-  })
-  return grouped
-}
-
 function normalizeProofGroups(
   groups: ProofOperationRecord['resultProofs'] | undefined,
 ): Record<string, Proof[]> {
@@ -1286,10 +2436,6 @@ function normalizeProofGroups(
       proofs.map((proof) => normalizeProof(proof as Proof)),
     ]),
   )
-}
-
-function proofCollection(asset: StoredProofAsset): string {
-  return asset.kind === 'sats' ? COLLATERAL_COLLECTION : asset.outcomeSetId
 }
 
 export function serializeOutputDataArray(
@@ -1432,7 +2578,7 @@ async function receiveOutcomeToken(
   await addAvailableProofs(mintUrl, proofs, asset)
   return {
     mintUrl,
-    amountSats: sumProofs(proofs),
+    amountMsat: sumProofs(proofs),
     proofCount: proofs.length,
     asset,
     unit: asset.unit,
@@ -1449,6 +2595,12 @@ function resolveReceiveAsset(
   unit: TokenImportUnit,
   context: 'ordinary-sat' | 'ctf-position-msat' | 'ctf-collateral-msat',
 ): StoredProofAsset {
+  if (unit !== 'msat') {
+    throw new Error('daemon wallet receive supports only msat tokens')
+  }
+  if (context === 'ordinary-sat') {
+    throw new Error('daemon wallet receive supports only msat tokens')
+  }
   const conditionId = requireCanonicalOptionalText(metadata.conditionId, 'conditionId')
   const outcomeSetId = requireCanonicalOptionalText(metadata.outcomeSetId, 'outcomeSetId')
   const baseAsset = normalizeMarketBaseAsset('sat')
@@ -1461,7 +2613,7 @@ function resolveReceiveAsset(
   if (!conditionId || !outcomeSetId) {
     throw new Error('conditionId and outcomeSetId must be supplied together')
   }
-  if (context !== 'ctf-position-msat' || unit !== 'msat') {
+  if (context === 'ctf-collateral-msat') {
     throw new Error('outcome-token imports require exact conditional msat proofs')
   }
   return { kind: 'Outcome', conditionId, outcomeSetId, baseAsset, unit }
@@ -1524,4 +2676,9 @@ async function getMintKeysetIds(mintUrl: string, deps: WalletOpsDependencies): P
 
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
+}
+
+function requiredText(value: string | null): string {
+  if (!value) throw new Error('CTF consolidation custody result authority is missing')
+  return value
 }

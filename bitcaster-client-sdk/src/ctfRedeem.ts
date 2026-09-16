@@ -24,7 +24,7 @@ import {
   DURABLE_CUSTODY_COMPOSITE_ID_LIMIT_MAX,
   DURABLE_CUSTODY_INPUT_PROOF_LIMIT_MAX,
 } from './durableCustody.ts'
-import { amountToNumber, computeInputFeeSatsForProofs, sumProofs } from './proofSelection.ts'
+import { amountToNumber, computeInputFeeSubunitsForProofs, sumProofs } from './proofSelection.ts'
 import {
   canonicalProofOperationMintIdentity,
   proofAuthority,
@@ -249,7 +249,7 @@ async function prepareAndExecuteCtfRedeem(
   ) {
     throw new Error('CTF redeem outcome keyset authority is foreign')
   }
-  const inputFeeSubunits = computeInputFeeSatsForProofs(inputs, {
+  const inputFeeSubunits = computeInputFeeSubunitsForProofs(inputs, {
     [outcomeKeyset.id]: outcomeInputFeePpk,
   })
   const netOutputSubunits = grossInputSubunits - inputFeeSubunits
@@ -396,7 +396,7 @@ function requireMatchingCtfRedeemOperation(
   )
   if (
     storedFee !==
-    computeInputFeeSatsForProofs(entry.inputs, { [storedOutcomeKeysetId]: storedFeePpk })
+    computeInputFeeSubunitsForProofs(entry.inputs, { [storedOutcomeKeysetId]: storedFeePpk })
   ) {
     throw new Error(`proof operation ${entry.operationId} has invalid persisted CTF redeem fee`)
   }

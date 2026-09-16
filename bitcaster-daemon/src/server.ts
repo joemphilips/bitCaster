@@ -86,7 +86,7 @@ import {
   resolveMintKeysByKeyset,
   type WalletOpsDependencies,
 } from './walletOps.ts'
-import { readDaemonAvailableRegularSatBalance, readDaemonTokenHoldings } from './walletHoldings.ts'
+import { readDaemonAvailableRegularMsatBalance, readDaemonTokenHoldings } from './walletHoldings.ts'
 import { readDaemonWalletBalance } from './walletBalance.ts'
 import type { CustodyScopeFence } from './profileFencing.ts'
 import {
@@ -475,7 +475,7 @@ export async function dispatch(
         return {
           ok: true,
           result: await sendWalletToken(
-            command.params.amountSats,
+            command.params.amountMsat,
             profile,
             secrets,
             deps,
@@ -519,7 +519,7 @@ export async function dispatch(
         result: await splitWalletCompleteSet({
           mintUrl: command.params.mintUrl ?? profile.mintUrl,
           conditionId: command.params.conditionId,
-          amountSats: command.params.amountSats,
+          amountMsat: command.params.amountMsat,
           operationId:
             command.params.operationId ??
             `wallet-split-complete-set:${command.params.conditionId}:${Date.now()}`,
@@ -880,11 +880,11 @@ export async function dispatch(
               participationScoreSnapshot,
               requiredScore,
             )
-            const availableScoreSats = await readDaemonAvailableRegularSatBalance(profileDir(), {
+            const availableScoreMsat = await readDaemonAvailableRegularMsatBalance(profileDir(), {
               mintUrl: context.profile.mintUrl,
             })
             const participationScoreError = participationScoreBackingError({
-              availableScoreSats,
+              availableScoreMsat,
               plan: participationScorePlan,
             })
             if (participationScoreError) {
@@ -1119,11 +1119,11 @@ async function ensureDaemonParticipationScoreForNextMatch(input: {
   ) {
     throw new Error('daemon engine client does not support durable Cashu deliveries')
   }
-  const deliver = (deliveryId: string, amountSats: number, purchasedTotalEpoch: number) =>
+  const deliver = (deliveryId: string, amountMsat: number, purchasedTotalEpoch: number) =>
     deliverParticipationScoreCashu({
       deliveryId,
       accountSubject: input.secrets.nostrPublicKeyHex,
-      amountSats,
+      amountMsat,
       purchasedTotalEpoch,
       profile: input.profile,
       secrets: input.secrets,
@@ -1143,14 +1143,14 @@ async function ensureDaemonParticipationScoreForNextMatch(input: {
       ))
   const deliverUntilCredited = async (
     deliveryId: string,
-    amountSats: number,
+    amountMsat: number,
     purchasedTotalEpoch: number,
   ) => {
     let lastState: 'pending' | 'received' = 'pending'
     for (let attempt = 0; attempt < PARTICIPATION_SCORE_DELIVERY_POLL_ATTEMPTS; attempt += 1) {
       if (attempt > 0)
         await waitForDeliveryRetry(attempt, PARTICIPATION_SCORE_DELIVERY_POLL_INTERVAL_MS)
-      const delivery = await deliver(deliveryId, amountSats, purchasedTotalEpoch)
+      const delivery = await deliver(deliveryId, amountMsat, purchasedTotalEpoch)
       if (delivery.state === 'credited') return delivery
       lastState = delivery.state
     }
@@ -1158,7 +1158,11 @@ async function ensureDaemonParticipationScoreForNextMatch(input: {
   }
   const deliveryId = randomUUID()
   try {
-    let delivery = await deliverUntilCredited(deliveryId, plan.deficitScore, score.purchasedTotal)
+    let delivery = await deliverUntilCredited(
+      deliveryId,
+      participationScoreToMsat(plan.deficitScore),
+      score.purchasedTotal,
+    )
     let refreshedScore = await input.client.getParticipationScore()
     if (refreshedScore.purchasedTotal <= score.purchasedTotal) {
       throw new Error('Participation Score credit is not available for this capability')
@@ -1168,7 +1172,7 @@ async function ensureDaemonParticipationScoreForNextMatch(input: {
       const purchasedBeforeSecondDelivery = refreshedScore.purchasedTotal
       delivery = await deliverUntilCredited(
         randomUUID(),
-        refreshedPlan.deficitScore,
+        participationScoreToMsat(refreshedPlan.deficitScore),
         purchasedBeforeSecondDelivery,
       )
       refreshedScore = await input.client.getParticipationScore()
@@ -1283,8 +1287,8 @@ async function consolidateMarket(input: {
         type: input.type,
         status: 'skipped',
         reason: plan.reason,
-        convertFeeSats: plan.feeSats ?? 0,
-        collateralReturnedSats: 0,
+        convertFeeMsat: plan.feeSubunits ?? 0,
+        collateralReturnedMsat: 0,
         spentInputs: [],
         outputs: [],
       },
@@ -1451,15 +1455,27 @@ export function orderBackingError(input: {
 }
 
 function participationScoreBackingError(input: {
-  availableScoreSats: number
+  availableScoreMsat: number
   plan: ParticipationScoreTopUpPlan
 }): string | null {
   if (input.plan.kind !== 'needs-top-up') return null
-  if (!Number.isSafeInteger(input.availableScoreSats) || input.availableScoreSats < 0) {
+  if (!Number.isSafeInteger(input.availableScoreMsat) || input.availableScoreMsat < 0) {
     throw new Error('Participation Score backing exceeds safe range')
   }
-  if (input.availableScoreSats >= input.plan.deficitScore) return null
-  return `insufficient Participation Score backing: have ${input.availableScoreSats} sat, need ${input.plan.deficitScore} sat`
+  const requiredMsat = participationScoreToMsat(input.plan.deficitScore)
+  if (input.availableScoreMsat >= requiredMsat) return null
+  return `insufficient Participation Score backing: have ${input.availableScoreMsat} msat, need ${requiredMsat} msat`
+}
+
+function participationScoreToMsat(score: number): number {
+  if (!Number.isSafeInteger(score) || score <= 0) {
+    throw new Error('Participation Score amount is invalid')
+  }
+  const amountMsat = score * 1_000
+  if (!Number.isSafeInteger(amountMsat)) {
+    throw new Error('Participation Score amount exceeds safe range')
+  }
+  return amountMsat
 }
 
 function requiredBuyCollateral(input: {

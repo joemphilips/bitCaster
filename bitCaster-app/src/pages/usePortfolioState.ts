@@ -257,8 +257,8 @@ function localMonitoringAssetIdentity(
     internalOutcomeSetId: metadata.internalOutcomeSetId ?? outcomeCollection,
   };
   if (
-    (asset.cashuUnit !== "sat" && asset.cashuUnit !== "msat") ||
-    (asset.displayBaseAsset !== "sat" && asset.displayBaseAsset !== "msat") ||
+    asset.cashuUnit !== "msat" ||
+    asset.displayBaseAsset !== "sat" ||
     typeof asset.parentConditionId !== "string" ||
     typeof asset.outcomeUniverseDigest !== "string" ||
     asset.internalOutcomeSetId !== outcomeCollection

@@ -1,5 +1,5 @@
 import { PaymentRequest, PaymentRequestTransportType, type Proof } from "@cashu/cashu-ts";
-import { decodeToken, receiveAndStoreTokenRecoverably } from "@/lib/cashu";
+import { receiveAndStoreTokenRecoverably } from "@/lib/cashu";
 import { deriveNostrKeyPair, getNostrNprofile } from "@/lib/nip17";
 import { normalizeUrl } from "@/lib/url";
 import { useSettingsStore } from "@/stores/settings";
@@ -16,7 +16,10 @@ import {
   isAllowedNostrRelayUrl,
   isKnownPublicNostrRelayUrl,
 } from "@/lib/relayDefaults";
-import { validateProductWalletTokenImport } from "@bitcaster/client-sdk/tokenImportValidation";
+import {
+  decodeTokenImportLocally,
+  validateProductWalletTokenImport,
+} from "@bitcaster/client-sdk/tokenImportValidation";
 import { resolveTokenImportKeysets } from "@/lib/tokenImportKeysetResolver";
 import { usePaymentRequestInbox } from "@/stores/paymentRequestInbox";
 
@@ -137,7 +140,6 @@ export async function ingressReceiveCashuToken(
 ): Promise<IngressReceiveCashuTokenResult> {
   const validated = await validateProductWalletTokenImport({
     encodedToken: token,
-    decode: decodeToken,
     resolveKeysets: resolveTokenImportKeysets,
     bounds: { maxProofs: BROWSER_TOKEN_IMPORT_MAX_PROOFS },
     allowInsecureLoopbackHttp: isLocalDevelopmentOrigin(),
@@ -177,7 +179,7 @@ function isLocalDevelopmentOrigin(): boolean {
 }
 
 export async function decodeWalletIngressToken(token: string) {
-  return decodeToken(token);
+  return decodeTokenImportLocally(token);
 }
 
 function sumProofSubunits(proofs: Proof[], unit: CashuProofUnit): number {
@@ -228,7 +230,7 @@ export function userCreatePaymentRequest(mintUrl: string): CreatedWalletPaymentR
     ],
     id,
     undefined,
-    "sat",
+    "msat",
     [canonicalMintUrl],
     undefined,
   );

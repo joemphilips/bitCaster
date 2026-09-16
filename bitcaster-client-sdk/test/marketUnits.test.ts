@@ -26,10 +26,22 @@ import {
   parseCashuProofUnit,
   parseMarketBaseAsset,
   parseMarketDivisibility,
+  parseSatsToMsat,
   quotePaymentSubunits,
   validatePriceNumerator,
   validateWholeShareFaceAmount,
 } from '../src/marketUnits.ts'
+
+test('parses sats into exact safe msat without floating-point multiplication', () => {
+  for (const [input, expected] of [
+    ['0', 0], ['0.001', 1], ['0.1', 100], ['0.999', 999],
+    ['1', 1_000], ['1.001', 1_001], ['1.010', 1_010],
+    ['9007199254740.991', Number.MAX_SAFE_INTEGER],
+  ] as const) assert.equal(parseSatsToMsat(input), expected)
+  for (const input of ['', '-1', '1.0001', '1e3', '1,000', 'NaN', 'Infinity', '9007199254740.992']) {
+    assert.throws(() => parseSatsToMsat(input))
+  }
+})
 
 test('accepts only the exact sat product base asset', () => {
   assert.equal(parseMarketBaseAsset('sat'), 'sat')

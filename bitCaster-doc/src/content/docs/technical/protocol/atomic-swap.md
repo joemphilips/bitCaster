@@ -16,6 +16,16 @@ state at admission. It commits the full requested quantity or cancels the
 complete request. Public FAK, GTC, GTD, continuation, and residual
 reauthorization are not available.
 
+## Payment units
+
+bitCaster accepts monetary Cashu tokens with unit `msat` only. API payment and
+receipt amounts use msats. The GUI shows sats: 1,000 msats equals 1 sat.
+`baseAsset: "sat"` names the asset. It is not the token unit.
+
+A Participation Score purchase must be a positive multiple of 1,000 msats.
+Each 1,000 msats buys one Score point. Receive fees do not reduce the purchased
+Score. Score points and receipt amounts are separate values.
+
 ## Order authorization
 
 A wallet authorizes one public FOK attempt with one `PAY_TO_UNLOCK` capability.

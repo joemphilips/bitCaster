@@ -110,7 +110,7 @@ function portfolioResponse(
             kind: "collateral",
             canonicalMintUrl: "https://mint.example",
             cashuUnit: "msat",
-            displayBaseAsset: "msat",
+            displayBaseAsset: "sat",
           },
           availableSubunits: 7_000,
           pendingOutgoingSubunits: 0,
@@ -125,7 +125,7 @@ function portfolioResponse(
             kind: "conditional",
             canonicalMintUrl: "https://mint.example",
             cashuUnit: "msat",
-            displayBaseAsset: "msat",
+            displayBaseAsset: "sat",
             conditionId: monitoredConditionId,
             parentConditionId: rootParentConditionId,
             outcomeUniverseDigest: "a".repeat(64),
@@ -187,7 +187,7 @@ function conditionalAsset(outcome: string): AssetMonitoringAssetsResponse["asset
       kind: "conditional",
       canonicalMintUrl: "https://mint.example",
       cashuUnit: "msat",
-      displayBaseAsset: "msat",
+      displayBaseAsset: "sat",
       conditionId: `${outcome[0] ?? "x"}`.repeat(64),
       parentConditionId: rootParentConditionId,
       outcomeUniverseDigest: "a".repeat(64),
@@ -569,8 +569,7 @@ describe("usePortfolioState monitoring facade", () => {
       ...response.assets.assets[0]!,
       asset: {
         ...response.assets.assets[0]!.asset,
-        cashuUnit: "sat" as const,
-        displayBaseAsset: "sat" as const,
+        canonicalMintUrl: "https://other-mint.example",
       },
     };
     response.assets.assets = [

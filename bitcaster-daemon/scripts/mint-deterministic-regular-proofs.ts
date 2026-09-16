@@ -13,10 +13,14 @@ const MAX_WALLET_SEED_FILE_BYTES = 256
 const [, , mintUrl, rawAmount, ...options] = process.argv
 const walletSeedHexFile = parseWalletSeedHexFile(options)
 const amountSats = parseAmount(rawAmount)
+const amountMsat = amountSats * 1_000
+if (!Number.isSafeInteger(amountMsat)) {
+  throw new Error(`amount is too large to scale from sats to msat: ${amountSats}`)
+}
 
 const walletSeed = await readOwnerPrivateWalletSeedHexFile(walletSeedHexFile)
 try {
-  await mintDeterministicRegularProofs(mintUrl, amountSats, walletSeed)
+  await mintDeterministicRegularProofs(mintUrl, amountMsat, walletSeed)
   process.stdout.write('minted deterministic regular proofs\n')
 } finally {
   walletSeed.fill(0)
@@ -41,29 +45,29 @@ function parseAmount(value: string | undefined): number {
 
 async function mintDeterministicRegularProofs(
   mintUrl: string,
-  amountSats: number,
+  amountMsat: number,
   walletSeed: Uint8Array,
 ): Promise<void> {
   const mint = new CashuMint(mintUrl)
   const keysets = await mint.getKeySets()
   const keyset = keysets.keysets.find(
     (candidate) =>
-      candidate.active && candidate.unit === 'sat' && /^01[0-9a-f]{64}$/.test(candidate.id),
+      candidate.active && candidate.unit === 'msat' && /^01[0-9a-f]{64}$/.test(candidate.id),
   )
   if (!keyset) {
-    throw new Error('mint did not return an active NUT-02 V2 secp256k1 sat keyset')
+    throw new Error('mint did not return an active NUT-02 V2 secp256k1 msat keyset')
   }
 
   const wallet = new CashuWallet(mint, {
-    unit: 'sat',
+    unit: 'msat',
     keysetId: keyset.id,
     bip39seed: walletSeed,
     secretsPolicy: 'deterministic',
   })
   await wallet.loadMint()
-  const quote = await wallet.createMintQuote(amountSats)
+  const quote = await wallet.createMintQuote(amountMsat)
   await waitForPaidQuote(wallet, quote)
-  const proofs = await wallet.mintProofs(amountSats, quote.quote)
+  const proofs = await wallet.mintProofs(amountMsat, quote.quote)
   if (proofs.length === 0 || proofs.some((proof) => proof.id !== keyset.id)) {
     throw new Error('mint did not return deterministic proofs for the selected V2 keyset')
   }

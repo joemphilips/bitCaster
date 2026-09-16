@@ -145,6 +145,17 @@ export function defaultCollateralUnit(value: unknown): CtfCollateralUnit {
   return CTF_COLLATERAL_UNIT
 }
 
+export function parseSatsToMsat(value: string): number {
+  const match = /^(\d+)(?:\.(\d{1,3}))?$/.exec(value)
+  if (match === null) throw new Error('Amount must be sats with at most three decimal places')
+  // Floating-point multiplication can reject an exact input such as 1.001 sats.
+  const amountMsat = BigInt(match[1]!) * 1_000n + BigInt((match[2] ?? '').padEnd(3, '0'))
+  if (amountMsat > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new Error('Amount exceeds the safe msat range')
+  }
+  return Number(amountMsat)
+}
+
 export function formatMarketSubunits(amountSubunits: number, baseAsset: unknown): string {
   requireMarketBaseAsset(baseAsset)
   if (!Number.isFinite(amountSubunits)) return '0 sats'

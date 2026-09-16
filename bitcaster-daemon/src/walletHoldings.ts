@@ -87,7 +87,7 @@ export async function readDaemonTokenHoldings(
   })
 }
 
-export async function readDaemonAvailableRegularSatBalance(
+export async function readDaemonAvailableRegularMsatBalance(
   directory: string,
   input: { mintUrl: string },
 ): Promise<number> {
@@ -109,7 +109,7 @@ export async function readDaemonAvailableRegularSatBalance(
          FROM target_wallet_proofs INDEXED BY target_wallet_proofs_selection_idx
          WHERE scope_id = ?
            AND normalized_mint = ?
-           AND unit = 'sat'
+           AND unit = 'msat'
            AND asset_kind = 'sats'
            AND condition_id IS NULL
            AND outcome_set_id IS NULL

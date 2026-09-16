@@ -36,7 +36,7 @@ export function createParticipationScoreDeliveryMetadata(
     destinationId: input.deliveryId,
     productBindingSha256: deriveParticipationScoreProductBinding(),
     mintUrl: decodeCanonicalMintOrigin(input.mintUrl),
-    unit: 'sat',
+    unit: 'msat',
     requestedAmount,
     creditPolicy: 'exact-amount',
   }
@@ -86,7 +86,7 @@ function requireRequestedAmount(value: unknown): string {
     throw new Error('Participation Score requested amount is invalid')
   }
   const amount = Number(value)
-  if (!Number.isSafeInteger(amount) || amount < 1) {
+  if (!Number.isSafeInteger(amount) || amount < 1 || amount % 1_000 !== 0) {
     throw new Error('Participation Score requested amount is invalid')
   }
   return value

@@ -264,7 +264,7 @@ test('bitcaster-cli delegates commands to bitcaster-daemon RPC', async () => {
       },
       {
         method: 'wallet.send',
-        params: { amountSats: 25, mintUrl: 'mint-a', operationId: 'wallet-send-1' },
+        params: { amountMsat: 25_000, mintUrl: 'mint-a', operationId: 'wallet-send-1' },
       },
       {
         method: 'wallet.operations',
@@ -579,8 +579,8 @@ test('bitcaster-cli consolidate --all sweeps wallet markets and warns on non-pen
       result: {
         marketId: command.params?.marketId,
         status: 'consolidated',
-        convertFeeSats: 1,
-        collateralReturnedSats: 2,
+        convertFeeMsat: 1,
+        collateralReturnedMsat: 2,
         spentInputs: [],
         outputs: [],
       },
@@ -1989,8 +1989,8 @@ test('P47-5: bitcaster-cli wallet consolidate merge maps to t1', async () => {
       result: {
         marketId: 'cond-A',
         status: 'consolidated',
-        convertFeeSats: 1,
-        collateralReturnedSats: 2,
+        convertFeeMsat: 1,
+        collateralReturnedMsat: 2,
         spentInputs: [],
         outputs: [],
       },
@@ -2035,8 +2035,8 @@ test('P47-5: bitcaster-cli wallet consolidate sweep maps to t2', async () => {
       result: {
         marketId: 'cond-A',
         status: 'consolidated',
-        convertFeeSats: 1,
-        collateralReturnedSats: 2,
+        convertFeeMsat: 1,
+        collateralReturnedMsat: 2,
         spentInputs: [],
         outputs: [],
       },
@@ -2081,8 +2081,8 @@ test('P47-5: bitcaster-cli wallet consolidate reclaim maps to t3 (default)', asy
       result: {
         marketId: 'cond-A',
         status: 'consolidated',
-        convertFeeSats: 1,
-        collateralReturnedSats: 2,
+        convertFeeMsat: 1,
+        collateralReturnedMsat: 2,
         spentInputs: [],
         outputs: [],
       },
@@ -2147,13 +2147,26 @@ test('P47-4: bitcaster-cli wallet split (renamed from split-complete-set)', asyn
   try {
     await runCli(`http://127.0.0.1:${address.port}`, ['wallet', 'split', 'cond-1', '100'])
     assert.deepEqual(received, [
-      { method: 'wallet.splitCompleteSet', params: { conditionId: 'cond-1', amountSats: 100 } },
+      {
+        method: 'wallet.splitCompleteSet',
+        params: { conditionId: 'cond-1', amountMsat: 100_000 },
+      },
     ])
   } finally {
     server.close()
     if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
     else process.env.BITCASTER_DAEMON_HOME = previousHome
     await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('bitcaster-cli wallet split rejects invalid sats text before daemon RPC', async () => {
+  for (const amount of ['0', '-1', '1.0001', '9007199254740992']) {
+    const amountArgs = amount === '-1' ? ['--', amount] : [amount]
+    await assertCliFailure(
+      ['wallet', 'split', 'cond-1', ...amountArgs],
+      /Invalid amount sats:/,
+    )
   }
 })
 
@@ -2516,11 +2529,11 @@ test('P47-7: bitcaster-cli wallet and market --dry-run commands do not call daem
   const cases: Array<{ args: string[]; expected: unknown }> = [
     {
       args: ['wallet', 'send', '25', '--mint', 'mint-a', '--operation-id', 'op-1', '--dry-run'],
-      expected: { amountSats: 25, mintUrl: 'mint-a', operationId: 'op-1' },
+      expected: { amountMsat: 25_000, mintUrl: 'mint-a', operationId: 'op-1' },
     },
     {
-      args: ['wallet', 'split', 'cond-1', '100', '--mint', 'mint-a', '--dry-run'],
-      expected: { conditionId: 'cond-1', amountSats: 100, mintUrl: 'mint-a' },
+      args: ['wallet', 'split', 'cond-1', '1.001', '--mint', 'mint-a', '--dry-run'],
+      expected: { conditionId: 'cond-1', amountMsat: 1_001, mintUrl: 'mint-a' },
     },
     {
       args: ['wallet', 'consolidate', 'cond-A', '--strategy', 'merge', '--dry-run'],

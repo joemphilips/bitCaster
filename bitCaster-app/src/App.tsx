@@ -17,16 +17,23 @@ import { useActivityLogSync } from "@/stores/useActivityLogSync";
 import { useOrderSettlementLifecycle } from "@/hooks/useOrderSettlementLifecycle";
 import { useLikedMarketCloseReconcile } from "@/hooks/useLikedMarketCloseReconcile";
 import { useSettingsStore } from "@/stores/settings";
-import { useBalance, useWalletStore, DEFAULT_MINT_URL } from "@/stores/wallet";
+import {
+  getWalletForMnemonicUnit,
+  useBalance,
+  useWalletStore,
+  DEFAULT_MINT_URL,
+} from "@/stores/wallet";
 import { ToastContainer } from "@/components/ui/Toast";
 import { normalizeStoredMintUrls } from "@/stores/proof-db";
 import {
   recoverKeysetCountersForMint,
   recoverBrowserDurableOutgoingCashuTransfersInPass,
+  captureBrowserMintPersistenceContext,
   recoverPendingTokenReceives,
   recoverPendingWalletMints,
 } from "@/lib/cashu";
 import { recoverBrowserDurableBolt11MintQuotesInPass } from "@/lib/browserDurableBolt11MintQuote";
+import { recoverBrowserDurableWalletMeltsInPass } from "@/lib/browserDurableWalletMelt";
 import { startNip17Listener } from "@/lib/nip17-listener";
 import { effectiveRelayUrls } from "@/lib/relayDefaults";
 import { refreshMintInfoWithoutActivating, userAddAndSelectMint } from "@/lib/walletOps";
@@ -321,6 +328,72 @@ function AppRoutes() {
     };
   }, [nostrSignerReady, walletMnemonic]);
 
+  // Wallet melts are persisted before mint I/O. Recover their bounded active
+  // work after startup and when connectivity returns.
+  useEffect(() => {
+    if (!walletMnemonic || !nostrSignerReady) return;
+    let cancelled = false;
+    let running = false;
+    let rerunRequested = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const schedule = () => {
+      if (cancelled || timer !== undefined) return;
+      timer = setTimeout(() => {
+        timer = undefined;
+        void runPass();
+      }, RANGE_RECOVERY_RETRY_MS);
+    };
+    const runPass = async () => {
+      if (running) {
+        rerunRequested = true;
+        return;
+      }
+      running = true;
+      let retryRequired = false;
+      try {
+        do {
+          rerunRequested = false;
+          let cursor: string | null = null;
+          let hasMore = true;
+          do {
+            if (cancelled) return;
+            const context = captureBrowserMintPersistenceContext();
+            const result = await recoverBrowserDurableWalletMeltsInPass({
+              context,
+              cursor,
+              walletForMint: async (mintUrl, unit) =>
+                (await getWalletForMnemonicUnit(
+                  mintUrl,
+                  unit,
+                  walletMnemonic,
+                )) as import("@/lib/browserDurableWalletMelt").BrowserDurableWalletMeltWallet,
+            });
+            retryRequired ||= result.pending > 0;
+            cursor = result.nextCursor;
+            hasMore = result.hasMore;
+          } while (!cancelled && hasMore);
+        } while (!cancelled && rerunRequested);
+      } catch {
+        retryRequired = true;
+      } finally {
+        running = false;
+        if (retryRequired) schedule();
+        if (rerunRequested && !cancelled) {
+          rerunRequested = false;
+          void runPass();
+        }
+      }
+    };
+    const onOnline = () => void runPass();
+    window.addEventListener("online", onOnline);
+    void runPass();
+    return () => {
+      cancelled = true;
+      if (timer !== undefined) clearTimeout(timer);
+      window.removeEventListener("online", onOnline);
+    };
+  }, [nostrSignerReady, walletMnemonic]);
+
   const pendingWalletPaymentReconcileAttempted = useRef(false);
   useEffect(() => {
     if (!walletMnemonic || pendingWalletPaymentReconcileAttempted.current) return;
@@ -410,7 +483,11 @@ function AppRoutes() {
           reconcile.
         </div>
       )}
-      {isWizard ? <WizardRoutes /> : <ShellRoutes canReadOrderStatus={nostrSignerReady && nostrSignerMode !== "none"} />}
+      {isWizard ? (
+        <WizardRoutes />
+      ) : (
+        <ShellRoutes canReadOrderStatus={nostrSignerReady && nostrSignerMode !== "none"} />
+      )}
     </>
   );
 }

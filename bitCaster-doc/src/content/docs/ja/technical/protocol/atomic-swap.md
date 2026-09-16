@@ -11,6 +11,18 @@ bitCaster は NUT-CTF range settlement を使用します。2 者間の HTLC、p
 
 初回リリースで公開サーバーが受け付ける注文は公開 FOK だけです。GUI と CLI は FOK を送信します。各公開試行は 1 件の one-shot capability を使用します。FOK は注文受付時の板の状態に基づきます。要求数量全体を確定するか、注文全体を取り消します。公開 FAK、GTC、GTD、継続、および残余注文の再認可は利用できません。
 
+## 支払いの単位
+
+bitCaster が受け付ける金銭用 Cashu トークンの単位は `msat` だけです。
+API の支払額と受領額は msats で表します。GUI は sats で表示します。
+1,000 msats は 1 sat です。`baseAsset: "sat"` は資産名です。
+トークンの単位ではありません。
+
+Participation Score の購入額は、正の 1,000 msats の倍数にしてください。
+1,000 msats ごとに 1 Score ポイントを購入できます。
+受領手数料によって購入した Score は減りません。
+Score ポイントと受領額は別の値です。
+
 ## 注文の認可
 
 ウォレットは公開 FOK の 1 回の試行を 1 件の `PAY_TO_UNLOCK` capability で認可します。注文受付では capability を確認します。受付時にミントへのネットワーク呼び出しは行いません。

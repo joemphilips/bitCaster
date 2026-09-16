@@ -36,6 +36,20 @@ test('native asset monitoring reads metadata only and counts available and pendi
   )
 })
 
+test('native asset monitoring refuses a complete report containing a sat holding', async () => {
+  const holdings = await buildDaemonAssetMonitoringHoldings(
+    async (action) => action({
+      prepare: () => ({ all: () => [row({ proofId }), row({ proofId: 'b'.repeat(64), unit: 'sat' })] }),
+    } as never),
+    {
+      scopeId,
+      engineBaseUrl: 'https://engine.example',
+      fetchImpl: async () => new Response(JSON.stringify({ markets: [] })),
+    },
+  )
+  assert.equal(holdings, null)
+})
+
 test('native asset monitoring skips a complete report on duplicate metadata conflict', async () => {
   const holdings = await buildDaemonAssetMonitoringHoldings(
     async (action) =>

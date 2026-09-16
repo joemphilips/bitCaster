@@ -78,6 +78,10 @@ web app shows a persistent error. Unavailability does not prove that an asset
 is absent and does not authorize automatic mint recovery. Broad recovery
 remains available through the CLI.
 
+Wallet recovery supports monetary tokens with unit `msat` only. The web app
+shows their value in sats: 1,000 msat equals 1 sat. Recovery does not convert
+tokens with unit `sat`.
+
 Counter-zero discovery is only a selection step. It selects non-expired CTF
 keysets before a full recovery. It is not full recovery by itself.
 

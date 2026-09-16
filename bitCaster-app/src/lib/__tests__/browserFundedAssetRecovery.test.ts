@@ -57,6 +57,18 @@ describe("recoverBrowserFundedAsset", () => {
     expect(mocks.driver.recoverTargetedAsset).not.toHaveBeenCalled();
   });
 
+  it("rejects a sat product asset before loading the local plan", async () => {
+    const loadPlan = vi.fn().mockResolvedValue({ kind: "ready" as const });
+    const satInput = { ...input(loadPlan), asset: { ...asset, unit: "sat" as const } };
+
+    await expect(recoverBrowserFundedAsset(satInput)).resolves.toEqual({
+      kind: "persistent-error",
+    });
+
+    expect(loadPlan).not.toHaveBeenCalled();
+    expect(mocks.wallet).not.toHaveBeenCalled();
+  });
+
   it("invokes backup recovery before one bounded exact monitoring read", async () => {
     const order: string[] = [];
     const loadPlan = vi.fn().mockResolvedValue({ kind: "insufficient" as const });
@@ -72,7 +84,7 @@ describe("recoverBrowserFundedAsset", () => {
               canonicalMintUrl: "https://mint.example",
               kind: "collateral",
               cashuUnit: "msat",
-              displayBaseAsset: "msat",
+              displayBaseAsset: "sat",
             },
             availableSubunits: 10,
           },
@@ -255,7 +267,7 @@ function monitoringFact(availableSubunits: number) {
       canonicalMintUrl: "https://mint.example",
       kind: "collateral" as const,
       cashuUnit: "msat" as const,
-      displayBaseAsset: "msat" as const,
+      displayBaseAsset: "sat" as const,
     },
     availableSubunits,
   };

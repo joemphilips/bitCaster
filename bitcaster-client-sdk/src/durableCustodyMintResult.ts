@@ -31,6 +31,10 @@ import {
   type DurableCustodyProofOperationInput,
 } from './durableCustodyProofOperation.ts'
 import { amountToNumber } from './proofSelection.ts'
+import {
+  assertDurableWalletProofResultMatchesPlan,
+  requireDurableWalletProofTransition,
+} from './durableWalletProofTransition.ts'
 
 export interface DurableCustodyMintKeysetAuthority {
   readonly canonicalMintUrl: string
@@ -356,12 +360,32 @@ function verifyAndMapMintProofs(
   result: Readonly<Record<string, readonly Proof[]>>,
 ): DurableCustodyVerifiedMintProof[] {
   assertExactGroups(authority.operation.outputs, result)
+  const walletMeltTransition =
+    authority.operation.kind === 'wallet-melt'
+      ? requireDurableWalletProofTransition(
+          authority.operation.metadata ?? {},
+          Object.keys(authority.operation.outputs),
+        )
+      : null
+  if (walletMeltTransition !== null) {
+    assertDurableWalletProofResultMatchesPlan(
+      walletMeltTransition,
+      authority.operation.outputs,
+      result,
+      { allowDynamicAmounts: true },
+    )
+  }
   const keysets = new Map(authority.keysets.map((keyset) => [keyset.id, keyset]))
   const mapped = Object.entries(authority.operation.outputs).flatMap(([group, outputs]) => {
     const proofs = result[group]!
-    if (proofs.length !== outputs.length) throw new Error('custody mint proof count is invalid')
-    return outputs.map((output, index) =>
-      mapMintProof(record, authority, group, output, proofs[index]!, keysets),
+    if (walletMeltTransition === null && proofs.length !== outputs.length) {
+      throw new Error('custody mint proof count is invalid')
+    }
+    if (walletMeltTransition !== null && proofs.length > outputs.length) {
+      throw new Error('custody wallet melt proof count exceeds its output plan')
+    }
+    return proofs.map((proof, index) =>
+      mapMintProof(record, authority, group, outputs[index]!, proof, keysets),
     )
   })
   verifyProofsForReceive(
@@ -371,11 +395,15 @@ function verifyAndMapMintProofs(
   )
   const byId = new Map(mapped.map((proof) => [proof.material.proofId, proof]))
   if (byId.size !== mapped.length) throw new Error('custody mint result proof set is duplicated')
-  return record.operation.proofStorage.lineage.successorProofIds.map((proofId) => {
-    const proof = byId.get(proofId)
-    if (proof === undefined) throw new Error('custody mint result proof set is incomplete')
-    return proof
-  })
+  const selectedProofs =
+    authority.operation.kind === 'wallet-melt'
+      ? mapped
+      : record.operation.proofStorage.lineage.successorProofIds.map((proofId) => {
+          const proof = byId.get(proofId)
+          if (proof === undefined) throw new Error('custody mint result proof set is incomplete')
+          return proof
+        })
+  return selectedProofs
 }
 
 function mapMintProof(
@@ -393,7 +421,8 @@ function mapMintProof(
   const expectedR = scalarHex(output.blindingFactor)
   if (
     proof.id !== output.blindedMessage.id ||
-    amountToNumber(proof.amount) !== expectedAmount ||
+    ((authority.operation.kind !== 'wallet-melt' || expectedAmount !== 0) &&
+      amountToNumber(proof.amount) !== expectedAmount) ||
     proof.secret !== output.secret ||
     (proof.p2pk_e ?? null) !== (output.ephemeralE ?? null) ||
     proof.witness !== undefined ||
@@ -681,6 +710,7 @@ function assertExactGroups(
 function assertSupportedOperation(operation: DurableCustodyProofOperationInput): void {
   if (
     (operation.kind !== 'wallet-send' &&
+      operation.kind !== 'wallet-melt' &&
       operation.kind !== 'wallet-receive' &&
       operation.kind !== 'conditional-keyset-swap' &&
       operation.kind !== 'ctf-split' &&
@@ -692,7 +722,8 @@ function assertSupportedOperation(operation: DurableCustodyProofOperationInput):
       operation.kind !== 'ctf-redeem' &&
       operation.kind !== 'ctf-range-refund') ||
     operation.inputs.length === 0 ||
-    Object.values(operation.outputs).every((outputs) => outputs.length === 0)
+    (operation.kind !== 'wallet-melt' &&
+      Object.values(operation.outputs).every((outputs) => outputs.length === 0))
   ) {
     throw new Error('custody mint result operation kind is unsupported')
   }

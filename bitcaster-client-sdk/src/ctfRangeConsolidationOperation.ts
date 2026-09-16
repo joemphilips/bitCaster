@@ -20,7 +20,7 @@ import {
   type DurableSeedDerivedOutputKeyset,
   type DurableSeedDerivedOutputPlan,
 } from './durableSeedDerivedOutputs.ts'
-import { amountToNumber, computeInputFeeSatsForProofs } from './proofSelection.ts'
+import { amountToNumber, computeInputFeeSubunitsForProofs } from './proofSelection.ts'
 
 const CONSOLIDATION_PURPOSE = 'ctf-range-authorization-consolidation'
 const REGULAR_CONSOLIDATION_TRANSPORT = 'wallet-send'
@@ -196,7 +196,7 @@ function validateConsolidationPreparation(input: ExactProofConsolidationPreparat
   }
   assertPlannedInputs(input.inputs, input.plannedRound.inputs)
   assertInputKeyset(input.inputs, input.inputKeysetId)
-  const fees = computeInputFeeSatsForProofs(input.inputs, {
+  const fees = computeInputFeeSubunitsForProofs(input.inputs, {
     [input.inputKeysetId]: input.inputFeePpk,
   })
   if (String(fees) !== input.plannedRound.fee) {

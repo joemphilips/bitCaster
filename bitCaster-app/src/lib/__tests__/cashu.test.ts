@@ -42,6 +42,13 @@ describe("extractMintUrlFromV4Token", () => {
   });
 });
 
+it("rejects product sat minting before mint I/O", async () => {
+  const { mintProofsForUnit } = await import("@/lib/cashu");
+  await expect(
+    mintProofsForUnit(1, {} as never, "https://mint.example", "sat"),
+  ).rejects.toThrow(/requires msat/);
+});
+
 describe("decodeToken real v4 fixture", () => {
   let originalFetch: typeof globalThis.fetch;
   let fetchMock: ReturnType<typeof vi.fn>;
@@ -92,5 +99,24 @@ describe("decodeToken real v4 fixture", () => {
     expect(fetchMock.mock.calls.map((call) => String(call[0]))).toContain(
       "https://testnut.cashu.space/v1/keysets",
     );
+  });
+
+  it("refuses a sat receive before mint or wallet work", async () => {
+    const { receiveAndStoreTokenRecoverably } = await import("@/lib/cashu");
+    const walletModule = await import("@/stores/wallet");
+    const wallet = vi.spyOn(walletModule, "getWalletForMnemonicUnit");
+
+    await expect(
+      receiveAndStoreTokenRecoverably(
+        TESTNUT_V4_TOKEN,
+        "https://testnut.cashu.space",
+        "sat",
+        "sat",
+        "ordinary-sat",
+      ),
+    ).rejects.toThrow("Product wallet receive requires msat tokens");
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(wallet).not.toHaveBeenCalled();
   });
 });

@@ -345,22 +345,6 @@ namespace BitCaster.MatchingEngine.Contracts
     }
 
     /// <summary>
-    /// Canonical Cashu unit for a monitored asset or its display base asset.
-    /// <br/>
-    /// </summary>
-    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
-    public enum AssetMonitoringUnit
-    {
-
-        [System.Runtime.Serialization.EnumMember(Value = @"sat")]
-        Sat = 0,
-
-        [System.Runtime.Serialization.EnumMember(Value = @"msat")]
-        Msat = 1,
-
-    }
-
-    /// <summary>
     /// Canonical monitored-asset identity kind.
     /// </summary>
     [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
@@ -3724,11 +3708,8 @@ namespace BitCaster.MatchingEngine.Contracts
     public enum DurableCashuDeliverySubmissionUnit
     {
 
-        [System.Runtime.Serialization.EnumMember(Value = @"sat")]
-        Sat = 0,
-
         [System.Runtime.Serialization.EnumMember(Value = @"msat")]
-        Msat = 1,
+        Msat = 0,
 
     }
 
@@ -3736,11 +3717,8 @@ namespace BitCaster.MatchingEngine.Contracts
     public enum DurableCashuDeliveryImmutableTupleUnit
     {
 
-        [System.Runtime.Serialization.EnumMember(Value = @"sat")]
-        Sat = 0,
-
         [System.Runtime.Serialization.EnumMember(Value = @"msat")]
-        Msat = 1,
+        Msat = 0,
 
     }
 

@@ -24,6 +24,11 @@ sidebar:
 
 認証済みの `GET /api/v1/portfolio` endpoint は、最初のポートフォリオ表示用の表示専用データを返します。レスポンスには、アクティブなウォレットの概要、最初の asset page、選択された value history が含まれます。これはカストディの証明や支出の承認には使用しません。
 
+各監視資産は `cashuUnit: "msat"` と `displayBaseAsset: "sat"` を使います。
+通信上の金額は msat です。表示するときだけ sats に変換します。
+未対応の単位がある場合、ウォレットのレポート全体が無効になります。
+その保有資産だけを除外して、一部の資産による置換レポートを送信しないでください。
+
 後続の page を読むには、返された asset cursor を `GET /api/v1/asset-monitoring/assets` と一緒に使用します。後続 page に portfolio endpoint を呼び出さないでください。private response は `Cache-Control: no-store` を使用します。API は無効な query には `400`、非アクティブな wallet には `409`、history read limit が上限の場合は `429`、有効な provider に bounded monitoring reader がない場合は `503` を返します。
 
 決済が確定した後、owner-filtered の `SettlementGroupStateChanged` update はアクティブな portfolio を更新できます。このベストエフォートの表示 update は、カストディの証明や支出の承認には使用しません。

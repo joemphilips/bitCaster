@@ -35,9 +35,12 @@ import { decodeDurableOutgoingCashuTransfer } from "@bitcaster/client-sdk/durabl
 import { verifyDurableWalletConditionalKeyset } from "@bitcaster/client-sdk/recoverableWalletStorage";
 import {
   db,
+  normalizeAndValidateStoredProof,
+  storedProofRow,
   type BitcasterDB,
   type BrowserOutgoingCashuTransferAdmissionRow,
   type BrowserOutgoingCashuTransferRow,
+  type StoredProof,
 } from "./proof-db";
 import {
   advanceBrowserProofBackupAuthorityRow,
@@ -146,6 +149,11 @@ export interface BrowserCustodyTransactionOptions {
   readonly walletCounterAuthority?: {
     readonly beforePersist?: () => void | Promise<void>;
     readonly afterPersist: () => void | Promise<void>;
+  };
+  /** Atomically update the legacy proof cache with the canonical custody commit. */
+  readonly legacyProofCache?: {
+    readonly spentSecrets: readonly string[];
+    readonly freshProofs: readonly StoredProof[];
   };
 }
 
@@ -359,7 +367,7 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
       ? (applyDurableCustodyTransaction(transaction, selection, () => undefined),
         apply(transaction))
       : applyDurableCustodyTransaction(transaction, selection, apply);
-    await this.#persistTransaction(selection, transaction);
+    await this.#persistTransaction(selection, transaction, options.legacyProofCache);
     if (atomic && options.outgoingTransfer !== undefined) {
       await this.#persistOutgoingTransfer(selection.scope.scopeId, options.outgoingTransfer);
       await this.#persistOutgoingAdmission(
@@ -674,6 +682,7 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
       ...(options.walletCounterAuthority === undefined
         ? []
         : [this.#database.walletCounterAssociations, this.#database.walletCounterCursors]),
+      ...(options.legacyProofCache === undefined ? [] : [this.#database.proofs]),
     ];
   }
 
@@ -795,6 +804,7 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
   async #persistTransaction(
     selection: DurableCustodyTransactionSelection,
     transaction: StagedBrowserCustodyTransaction,
+    legacyProofCache: BrowserCustodyTransactionOptions["legacyProofCache"],
   ): Promise<void> {
     await this.#persistChangedOperations(transaction);
     await this.#persistChangedArtifacts(transaction);
@@ -810,9 +820,32 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
         conditionalKeysetLookup(proofPersistence.conditionalKeysets),
       );
     }
+    await this.#persistLegacyProofCache(selection, legacyProofCache);
     await this.#persistReservations(selection.scope.scopeId, transaction);
     await this.#rebuildActiveWork(selection, transaction);
     await this.#persistEffectiveClock(selection, transaction.scopeState);
+  }
+
+  async #persistLegacyProofCache(
+    selection: DurableCustodyTransactionSelection,
+    mutation: BrowserCustodyTransactionOptions["legacyProofCache"],
+  ): Promise<void> {
+    if (mutation === undefined) return;
+    const spentSecrets = [...new Set(mutation.spentSecrets)];
+    if (spentSecrets.some((secret) => typeof secret !== "string" || secret.length === 0)) {
+      throw new Error("browser legacy proof cache spent secret is invalid");
+    }
+    const receivedAt = selection.owner.observedAtMs;
+    const rows = mutation.freshProofs.map((proof) =>
+      storedProofRow(
+        normalizeAndValidateStoredProof({
+          ...proof,
+          receivedAt: proof.receivedAt ?? receivedAt,
+        }),
+      ),
+    );
+    if (spentSecrets.length > 0) await this.#database.proofs.bulkDelete(spentSecrets);
+    if (rows.length > 0) await this.#database.proofs.bulkPut(rows);
   }
 
   async #persistOutgoingTransfer(

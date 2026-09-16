@@ -1,7 +1,7 @@
 import { splitAmount, type Proof } from '@cashu/cashu-ts'
 import {
   amountToNumber,
-  computeInputFeeSatsForProofs,
+  computeInputFeeSubunitsForProofs,
   sumProofs,
   takeProofsForLock,
 } from './proofSelection.ts'
@@ -165,7 +165,7 @@ function consolidationRequired(
 }
 
 function sourceFee(proofs: readonly Proof[], keyset: CtfRangeCapabilitySourceKeyset): number {
-  return computeInputFeeSatsForProofs(proofs, { [keyset.id]: keyset.inputFeePpk })
+  return computeInputFeeSubunitsForProofs(proofs, { [keyset.id]: keyset.inputFeePpk })
 }
 
 function decodeAmounts(values: readonly string[], label: string): number[] {

@@ -42,7 +42,6 @@ import {
   BitcasterDB,
   BOUNDED_CANONICAL_RANGE_PROOF_LIMIT_MAX,
   getBoundedCanonicalRangeProofsForKeyset,
-  getBoundedCanonicalSatProofs,
   getBoundedCanonicalRegularProofs,
   MARKET_FUNDING_INPUT_PROOF_LIMIT_MAX,
   type BrowserOutgoingCashuTransferRow,
@@ -372,21 +371,21 @@ describe("browser durable outgoing Cashu store", () => {
   it("selects bounded Participation Score proofs across canonical V2 keysets", async () => {
     const database = createDatabase();
     await database.custodyProofs.bulkPut([
-      custodyProof(SELECTOR_SCOPE_ID, "sat", {
+      custodyProof(SELECTOR_SCOPE_ID, "msat", {
         secret: "active",
         amount: 1,
         id: KEYSET_ID,
       }),
-      custodyProof(SELECTOR_SCOPE_ID, "sat", {
+      custodyProof(SELECTOR_SCOPE_ID, "msat", {
         secret: "old",
         amount: 8,
         id: OLD_V2_KEYSET_ID,
       }),
     ]);
 
-    const selected = await getBoundedCanonicalSatProofs(
+    const selected = await getBoundedCanonicalRegularProofs(
       MINT,
-      { scopeId: SELECTOR_SCOPE_ID },
+      { scopeId: SELECTOR_SCOPE_ID, unit: "msat" },
       database,
     );
 
@@ -407,7 +406,7 @@ describe("browser durable outgoing Cashu store", () => {
     const database = createDatabase();
     await database.custodyProofs.bulkPut(
       Array.from({ length: 130 }, (_, index) =>
-        custodyProof(SELECTOR_SCOPE_ID, "sat", {
+        custodyProof(SELECTOR_SCOPE_ID, "msat", {
           secret: `historical-${index}`,
           amount: index + 1,
           id: `01${index.toString(16).padStart(64, "0")}`,
@@ -416,7 +415,11 @@ describe("browser durable outgoing Cashu store", () => {
     );
 
     await expect(
-      getBoundedCanonicalSatProofs(MINT, { scopeId: SELECTOR_SCOPE_ID }, database),
+      getBoundedCanonicalRegularProofs(
+        MINT,
+        { scopeId: SELECTOR_SCOPE_ID, unit: "msat" },
+        database,
+      ),
     ).resolves.toHaveLength(130);
   });
 

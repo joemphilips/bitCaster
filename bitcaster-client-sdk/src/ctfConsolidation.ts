@@ -1,5 +1,5 @@
 import type { CtfConvertRequest, Proof, SerializedBlindedMessage } from '@cashu/cashu-ts'
-import { amountToNumber, computeInputFeeSatsForProofs } from './proofSelection.ts'
+import { amountToNumber, computeInputFeeSubunitsForProofs } from './proofSelection.ts'
 import { canonicalizeOutcomeSet, parseOutcomeSetId } from './outcomeSets.ts'
 
 export const COLLATERAL_COLLECTION = '*'
@@ -39,8 +39,8 @@ export interface CtfConsolidationParams {
 export interface CtfConsolidationPlan {
   kind: 'plan'
   strategy: CtfConsolidationStrategy
-  feeSats: number
-  collateralOutputSats: number
+  feeSubunits: number
+  collateralOutputSubunits: number
   inputPayoff: Record<string, number>
   outputPayoff: Record<string, number>
   request: CtfConvertRequest
@@ -50,7 +50,7 @@ export interface CtfConsolidationNoop {
   kind: 'noop'
   strategy: CtfConsolidationStrategy
   reason: CtfConsolidationNoopReason
-  feeSats?: number
+  feeSubunits?: number
   inputPayoff?: Record<string, number>
 }
 
@@ -95,11 +95,11 @@ export function planCtfConsolidation(params: CtfConsolidationParams): CtfConsoli
   }
 }
 
-export function computeConvertFeeSats(
+export function computeConvertFeeSubunits(
   proofs: readonly Proof[],
   inputFeePpkByKeyset: Record<string, number>,
 ): number {
-  return computeInputFeeSatsForProofs(proofs, inputFeePpkByKeyset)
+  return computeInputFeeSubunitsForProofs(proofs, inputFeePpkByKeyset)
 }
 
 export function payoffVector(
@@ -158,13 +158,13 @@ function planT1(params: CtfConsolidationParams, market: NormalizedMarket): CtfCo
   inputProofsByCollection[COLLATERAL_COLLECTION] = collateralProofs
 
   const selectedProofs = flattenProofs(inputProofsByCollection)
-  const feeSats = computeConvertFeeSats(selectedProofs, params.inputFeePpkByKeyset)
-  if (feeSats === 0) return noop(params.strategy, 'input-fee-floor-zero')
+  const feeSubunits = computeConvertFeeSubunits(selectedProofs, params.inputFeePpkByKeyset)
+  if (feeSubunits === 0) return noop(params.strategy, 'input-fee-floor-zero')
 
   const inputPayoff = payoffVector(market.outcomes, inputProofsByCollection)
-  if (!hasOutcomeFloor(inputPayoff, feeSats)) {
+  if (!hasOutcomeFloor(inputPayoff, feeSubunits)) {
     return noop(params.strategy, 'insufficient-outcome-floor', {
-      feeSats,
+      feeSubunits,
       inputPayoff,
     })
   }
@@ -175,7 +175,7 @@ function planT1(params: CtfConsolidationParams, market: NormalizedMarket): CtfCo
   const complementCollection = canonicalizeOutcomeSet(
     market.outcomes.filter((outcome) => outcome !== missingOutcome),
   )
-  return buildPlan(params, market, inputProofsByCollection, feeSats, [
+  return buildPlan(params, market, inputProofsByCollection, feeSubunits, [
     { collection: complementCollection, amountSubunits: singletonAmount },
   ])
 }
@@ -213,24 +213,24 @@ function planCollateralExtraction(
   inputProofsByCollection: Record<string, Proof[]>,
 ): CtfConsolidationResult {
   const selectedProofs = flattenProofs(inputProofsByCollection)
-  const feeSats = computeConvertFeeSats(selectedProofs, params.inputFeePpkByKeyset)
-  if (feeSats === 0) return noop(params.strategy, 'input-fee-floor-zero')
+  const feeSubunits = computeConvertFeeSubunits(selectedProofs, params.inputFeePpkByKeyset)
+  if (feeSubunits === 0) return noop(params.strategy, 'input-fee-floor-zero')
 
   const inputPayoff = payoffVector(market.outcomes, inputProofsByCollection)
-  if (!hasOutcomeFloor(inputPayoff, feeSats)) {
+  if (!hasOutcomeFloor(inputPayoff, feeSubunits)) {
     return noop(params.strategy, 'insufficient-outcome-floor', {
-      feeSats,
+      feeSubunits,
       inputPayoff,
     })
   }
 
-  const outputVector = subtractFee(inputPayoff, feeSats)
-  const collateralOutputSats = Math.min(
+  const outputVector = subtractFee(inputPayoff, feeSubunits)
+  const collateralOutputSubunits = Math.min(
     ...market.outcomes.map((outcome) => outputVector[outcome] ?? 0),
   )
-  if (collateralOutputSats <= 0) {
+  if (collateralOutputSubunits <= 0) {
     return noop(params.strategy, 'net-collateral-nonpositive', {
-      feeSats,
+      feeSubunits,
       inputPayoff,
     })
   }
@@ -238,21 +238,21 @@ function planCollateralExtraction(
   const residual = Object.fromEntries(
     market.outcomes.map((outcome) => [
       outcome,
-      (outputVector[outcome] ?? 0) - collateralOutputSats,
+      (outputVector[outcome] ?? 0) - collateralOutputSubunits,
     ]),
   )
   const residualOutputs = decomposeResidual(market.outcomes, residual)
   if (!residualOutputs) {
     return noop(params.strategy, 'unsupported-residual', {
-      feeSats,
+      feeSubunits,
       inputPayoff,
     })
   }
 
-  return buildPlan(params, market, inputProofsByCollection, feeSats, [
+  return buildPlan(params, market, inputProofsByCollection, feeSubunits, [
     {
       collection: COLLATERAL_COLLECTION,
-      amountSubunits: collateralOutputSats,
+      amountSubunits: collateralOutputSubunits,
     },
     ...residualOutputs,
   ])
@@ -262,7 +262,7 @@ function buildPlan(
   params: CtfConsolidationParams,
   market: NormalizedMarket,
   inputProofsByCollection: Record<string, Proof[]>,
-  feeSats: number,
+  feeSubunits: number,
   outputs: OutputAmount[],
 ): CtfConsolidationResult {
   const requestOutputs: Record<string, SerializedBlindedMessage[]> = {}
@@ -271,7 +271,7 @@ function buildPlan(
     const keysetId = params.outputKeysetByCollection[output.collection]
     if (!keysetId) {
       return noop(params.strategy, 'missing-output-keyset', {
-        feeSats,
+        feeSubunits,
         inputPayoff: payoffVector(market.outcomes, inputProofsByCollection),
       })
     }
@@ -286,14 +286,14 @@ function buildPlan(
 
   const inputPayoff = payoffVector(market.outcomes, inputProofsByCollection)
   const outputPayoff = payoffVectorFromOutputAmounts(market.outcomes, outputs)
-  const expectedOutputPayoff = subtractFee(inputPayoff, feeSats)
+  const expectedOutputPayoff = subtractFee(inputPayoff, feeSubunits)
   assertPayoffConservation(market.outcomes, outputPayoff, expectedOutputPayoff)
 
   return {
     kind: 'plan',
     strategy: params.strategy,
-    feeSats,
-    collateralOutputSats: sumOutputAmount(outputs, COLLATERAL_COLLECTION),
+    feeSubunits,
+    collateralOutputSubunits: sumOutputAmount(outputs, COLLATERAL_COLLECTION),
     inputPayoff,
     outputPayoff,
     request: {
@@ -331,15 +331,15 @@ function selectCollateralTopUp(
   collateralProofs: readonly Proof[],
   inputFeePpkByKeyset: Record<string, number>,
 ): Proof[] | null {
-  const maxFeeSats = computeConvertFeeSats(
+  const maxFeeSubunits = computeConvertFeeSubunits(
     [...fixedProofs, ...collateralProofs],
     inputFeePpkByKeyset,
   )
-  for (let target = 1; target <= maxFeeSats; target += 1) {
+  for (let target = 1; target <= maxFeeSubunits; target += 1) {
     const subset = findProofSubsetByAmount(collateralProofs, target)
     if (!subset) continue
-    const feeSats = computeConvertFeeSats([...fixedProofs, ...subset], inputFeePpkByKeyset)
-    if (feeSats === target) return subset
+    const feeSubunits = computeConvertFeeSubunits([...fixedProofs, ...subset], inputFeePpkByKeyset)
+    if (feeSubunits === target) return subset
   }
   return null
 }
@@ -490,13 +490,13 @@ function normalizeMarket(
   return { outcomes, outcomeSet, proofsByCollection }
 }
 
-function hasOutcomeFloor(vector: Record<string, number>, feeSats: number): boolean {
-  return Object.values(vector).every((amount) => amount >= feeSats)
+function hasOutcomeFloor(vector: Record<string, number>, feeSubunits: number): boolean {
+  return Object.values(vector).every((amount) => amount >= feeSubunits)
 }
 
-function subtractFee(vector: Record<string, number>, feeSats: number): Record<string, number> {
+function subtractFee(vector: Record<string, number>, feeSubunits: number): Record<string, number> {
   return Object.fromEntries(
-    Object.entries(vector).map(([outcome, amount]) => [outcome, amount - feeSats]),
+    Object.entries(vector).map(([outcome, amount]) => [outcome, amount - feeSubunits]),
   )
 }
 
@@ -570,7 +570,7 @@ function sumOutputAmount(outputs: readonly OutputAmount[], collection: string): 
 function noop(
   strategy: CtfConsolidationStrategy,
   reason: CtfConsolidationNoopReason,
-  extra?: Pick<CtfConsolidationNoop, 'feeSats' | 'inputPayoff'>,
+  extra?: Pick<CtfConsolidationNoop, 'feeSubunits' | 'inputPayoff'>,
 ): CtfConsolidationNoop {
   return { kind: 'noop', strategy, reason, ...extra }
 }

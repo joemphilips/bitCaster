@@ -35,7 +35,7 @@ import {
   prepareBrowserDurableWalletReceiveOperation,
   receiveBrowserDurableWalletToken,
 } from "@/lib/browserDurableWalletReceive";
-import { getBoundedCanonicalSatProofs, type StoredProof } from "@/stores/proof-db";
+import { getBoundedCanonicalRegularProofs, type StoredProof } from "@/stores/proof-db";
 import { recoverBrowserFundedAsset } from "@/lib/browserFundedAssetRecovery";
 
 export const BEARER_TOKEN_BYTES_LIMIT = 61_440;
@@ -43,14 +43,14 @@ export const BEARER_TOKEN_PROOF_LIMIT = 512;
 
 /** Create and durably admit one bearer token only after the explicit Send action. */
 export async function executeBrowserBearerWithdrawal(input: {
-  readonly amount: number;
+  readonly amountMsat: number;
   readonly mintUrl: string;
 }): Promise<DurableOutgoingCashuTransfer> {
-  if (!Number.isSafeInteger(input.amount) || input.amount < 1) {
+  if (!Number.isSafeInteger(input.amountMsat) || input.amountMsat < 1) {
     throw new Error("Withdrawal amount is invalid");
   }
   const context = captureBrowserMintPersistenceContext();
-  const wallet = await getWalletForUnit(input.mintUrl, "sat");
+  const wallet = await getWalletForUnit(input.mintUrl, "msat");
   context.requireCapturedProfile();
   const transferId = `bearer-withdrawal:${crypto.randomUUID()}`;
   const keepLocators: Array<DurableWalletProofDerivationLocator | null> = [];
@@ -59,8 +59,8 @@ export async function executeBrowserBearerWithdrawal(input: {
     transfer: {
       transferId,
       mintUrl: input.mintUrl,
-      unit: "sat",
-      requestedAmount: String(input.amount),
+      unit: "msat",
+      requestedAmount: String(input.amountMsat),
       deliveryIntent: {
         policy: "bearer-spend-classification",
         tokenBytesLimit: BEARER_TOKEN_BYTES_LIMIT,
@@ -71,23 +71,23 @@ export async function executeBrowserBearerWithdrawal(input: {
       preflightBearerAsset({
         context,
         mintUrl: input.mintUrl,
-        requiredAmount: input.amount,
+        requiredAmountMsat: input.amountMsat,
       }),
     prepareWalletSendOperation: async () => {
       context.requireCapturedProfile();
       const proofs = await readBearerCandidates(input.mintUrl, context.scopeId);
       context.requireCapturedProfile();
-      if (sumProofs(proofs) < input.amount) {
-        throw new Error("Withdrawal balance is insufficient in the active V2 sat keyset");
+      if (sumProofs(proofs) < input.amountMsat) {
+        throw new Error("Withdrawal balance is insufficient in the active V2 msat keyset");
       }
       return prepareBrowserDeterministicOutgoingCashuSend({
         operationId: `bearer-withdrawal:${transferId}`,
         wallet,
         proofs,
-        amount: input.amount,
+        amount: input.amountMsat,
         mintUrl: input.mintUrl,
         seed: context.seed,
-        unit: "sat",
+        unit: "msat",
         keepProofDerivationLocators: keepLocators,
         diagnosticLabel: "Withdrawal",
       });
@@ -107,11 +107,11 @@ export async function executeBrowserBearerWithdrawal(input: {
 async function preflightBearerAsset(input: {
   readonly context: ReturnType<typeof captureBrowserMintPersistenceContext>;
   readonly mintUrl: string;
-  readonly requiredAmount: number;
+  readonly requiredAmountMsat: number;
 }): Promise<void> {
   const asset: EncryptedWalletBackupV2AssetIdentity = createEncryptedWalletBackupV2AssetIdentity({
     mintUrl: input.mintUrl,
-    unit: "sat",
+    unit: "msat",
     asset: { kind: "ordinary" },
   });
   const recovery = await recoverBrowserFundedAsset({
@@ -120,10 +120,10 @@ async function preflightBearerAsset(input: {
     seed: input.context.seed,
     mnemonic: input.context.mnemonic,
     asset,
-    requiredAmount: BigInt(input.requiredAmount),
+    requiredAmount: BigInt(input.requiredAmountMsat),
     loadPlan: async () =>
       sumProofs(await readBearerCandidates(input.mintUrl, input.context.scopeId)) >=
-      input.requiredAmount
+      input.requiredAmountMsat
         ? { kind: "ready" as const }
         : { kind: "insufficient" as const },
     isCurrentProfile: () => {
@@ -136,7 +136,7 @@ async function preflightBearerAsset(input: {
     case "recovered":
       return;
     case "unavailable":
-      throw new Error("Withdrawal balance is insufficient in the active V2 sat keyset");
+      throw new Error("Withdrawal balance is insufficient in the active V2 msat keyset");
     case "persistent-error":
       throw new Error("Withdrawal asset recovery is unavailable");
     case "not-recoverable":
@@ -147,7 +147,7 @@ async function preflightBearerAsset(input: {
 }
 
 async function readBearerCandidates(mintUrl: string, scopeId: string): Promise<StoredProof[]> {
-  return getBoundedCanonicalSatProofs(mintUrl, { scopeId });
+  return getBoundedCanonicalRegularProofs(mintUrl, { scopeId, unit: "msat" });
 }
 
 function sumProofs(proofs: readonly StoredProof[]): number {
@@ -158,19 +158,26 @@ function sumProofs(proofs: readonly StoredProof[]): number {
 export async function resumeBrowserBearerWithdrawal(
   mintUrl: string,
 ): Promise<DurableOutgoingCashuTransfer | null> {
-  return findBrowserDurableOutgoingBearerTransfer({
+  const transfer = await findBrowserDurableOutgoingBearerTransfer({
     mintUrl,
     context: captureBrowserMintPersistenceContext(),
   });
+  if (transfer !== null && transfer.unit !== "msat") {
+    throw new Error("Bearer withdrawal requires an msat transfer");
+  }
+  return transfer;
 }
 
 /** Classify the complete exact token vector before a user may reclaim it. */
 export async function classifyBrowserBearerWithdrawal(input: {
   readonly transfer: DurableOutgoingCashuTransfer;
 }): Promise<DurableOutgoingCashuTransfer> {
+  if (input.transfer.unit !== "msat") {
+    throw new Error("Bearer withdrawal requires an msat transfer");
+  }
   if (input.transfer.token === null) throw new Error("Bearer token authority is unavailable");
   const context = captureBrowserMintPersistenceContext();
-  const wallet = await getWalletForUnit(input.transfer.mintUrl, "sat");
+  const wallet = await getWalletForUnit(input.transfer.mintUrl, "msat");
   context.requireCapturedProfile();
   const states = await wallet.checkProofsStates(
     input.transfer.token.proofs.map(({ id, secret }) => ({ id, secret })),
@@ -187,9 +194,12 @@ export async function classifyBrowserBearerWithdrawal(input: {
 export async function reclaimBrowserBearerWithdrawal(input: {
   readonly transfer: DurableOutgoingCashuTransfer;
 }): Promise<DurableOutgoingCashuTransfer> {
+  if (input.transfer.unit !== "msat") {
+    throw new Error("Bearer withdrawal requires an msat transfer");
+  }
   if (input.transfer.token === null) throw new Error("Bearer token authority is unavailable");
   const context = captureBrowserMintPersistenceContext();
-  const wallet = await getWalletForUnit(input.transfer.mintUrl, "sat");
+  const wallet = await getWalletForUnit(input.transfer.mintUrl, "msat");
   if (input.transfer.deliveryState === "reclaim-prepared") {
     return recoverPreparedBrowserBearerReclaim(input.transfer, wallet, context);
   }
@@ -224,7 +234,7 @@ export async function reclaimBrowserBearerWithdrawal(input: {
       operationId: reclaimId,
       token,
       mintUrl: classified.mintUrl,
-      unit: "sat",
+      unit: "msat",
       wallet,
       context,
     },
@@ -266,7 +276,7 @@ async function executePreparedBrowserBearerReclaim(
     recoveryMode: "recover",
     token,
     mintUrl: transfer.mintUrl,
-    unit: "sat",
+    unit: "msat",
     wallet,
     context,
     completeOutgoingTransfer: (received) =>

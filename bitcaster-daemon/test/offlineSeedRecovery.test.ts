@@ -12,6 +12,20 @@ import { canonicalTestKeysetId } from './support/canonicalKeysetId.ts'
 
 const KEYSET_ID = canonicalTestKeysetId('offline-seed-recovery')
 
+test('offline seed recovery rejects the sat product unit before acquiring the run lock', async () => {
+  await assert.rejects(
+    () =>
+      runOfflineDaemonSeedRecovery({
+        recoveryId: 'sat-recovery',
+        mintUrl: 'https://mint.example',
+        unit: 'sat' as never,
+        walletSeedHexFile: '/tmp/forbidden-wallet-seed.hex',
+        disclosureAcknowledged: true,
+      }),
+    /only the msat product unit/,
+  )
+})
+
 test('offline seed recovery refuses an active daemon run lock before mint setup', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'bitcaster-offline-recovery-lock-'))
   try {
@@ -27,7 +41,7 @@ test('offline seed recovery refuses an active daemon run lock before mint setup'
             runOfflineDaemonSeedRecovery({
               recoveryId: 'locked-recovery',
               mintUrl: 'https://mint.example',
-              unit: 'sat',
+              unit: 'msat',
               walletSeedHexFile: seedPath,
               disclosureAcknowledged: true,
               transport: guardedTransport(() => {
@@ -63,7 +77,7 @@ test('offline seed recovery refuses prepared proof operations before mint setup'
           runOfflineDaemonSeedRecovery({
             recoveryId: 'prepared-recovery',
             mintUrl: 'https://mint.example',
-            unit: 'sat',
+            unit: 'msat',
             walletSeedHexFile: seedPath,
             disclosureAcknowledged: true,
             transport: guardedTransport(() => {
@@ -97,7 +111,7 @@ test('offline seed recovery refuses target-first reserved and locked proofs befo
             runOfflineDaemonSeedRecovery({
               recoveryId: `${state}-recovery`,
               mintUrl: 'https://mint.example',
-              unit: 'sat',
+              unit: 'msat',
               walletSeedHexFile: seedPath,
               disclosureAcknowledged: true,
               transport: guardedTransport(() => {
@@ -131,7 +145,7 @@ test('offline seed recovery scans and commits a clean profile', async () => {
       const result = await runOfflineDaemonSeedRecovery({
         recoveryId: 'clean-recovery',
         mintUrl: 'https://mint.example',
-        unit: 'sat',
+        unit: 'msat',
         walletSeedHexFile: seedPath,
         disclosureAcknowledged: true,
         transport: emptyTransport(`01${'a'.repeat(64)}`),
@@ -226,7 +240,7 @@ function insertTargetProofReservation(
          proof_id, scope_id, normalized_mint, unit, keyset_id, amount, secret,
          signature, proof_body, state, reserved_by, asset_kind, condition_id,
          outcome_set_id, base_asset, created_at_ms, updated_at_ms
-       ) VALUES (?, ?, 'https://mint.example', 'sat', '${KEYSET_ID}', 1, ?,
+       ) VALUES (?, ?, 'https://mint.example', 'msat', '${KEYSET_ID}', 1, ?,
          'signature', X'7b7d', ?, 'reservation-1', 'sats', NULL, NULL, 'sat', 0, 0)`,
     )
     .run(state === 'reserved' ? 'a'.repeat(64) : 'b'.repeat(64), scopeId, `secret-${state}`, state)
@@ -250,18 +264,18 @@ function emptyTransport(keysetId: string) {
       async loadMint() {},
       keyChain: {
         getKeysets: () => [{ id: keysetId }],
-        getKeyset: () => ({ id: keysetId, unit: 'sat', keys: {} }),
+        getKeyset: () => ({ id: keysetId, unit: 'msat', keys: {} }),
         async ensureKeysetKeys() {
-          return { id: keysetId, unit: 'sat', keys: {} }
+          return { id: keysetId, unit: 'msat', keys: {} }
         },
       },
-      getKeyset: () => ({ id: keysetId, unit: 'sat', keys: {} }),
+      getKeyset: () => ({ id: keysetId, unit: 'msat', keys: {} }),
       async checkProofsStates() {
         throw new Error('empty recovery batch must not call NUT-07')
       },
     },
     async listRegularKeysets() {
-      return { keysets: [{ id: keysetId, unit: 'sat' }] }
+      return { keysets: [{ id: keysetId, unit: 'msat' }] }
     },
     async listConditionalKeysets() {
       return { keysets: [] }

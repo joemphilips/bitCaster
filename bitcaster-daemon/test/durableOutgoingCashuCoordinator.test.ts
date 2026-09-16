@@ -3,6 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
+import { isDeepStrictEqual } from 'node:util'
 import test from 'node:test'
 import { bytesToHex } from '@noble/curves/utils.js'
 import { secp256k1 } from '@noble/curves/secp256k1.js'
@@ -39,16 +40,28 @@ import { DurableCustodySqliteStore } from '../src/durableCustodySqliteStore.ts'
 import { DurableOutgoingCashuSqliteStore } from '../src/durableOutgoingCashuSqlite.ts'
 import { bootstrapFreshDaemonProfile } from '../src/profileBootstrap.ts'
 import { claimCustodyScopeLease } from '../src/profileFencing.ts'
-import { addAvailableProofs, advanceDaemonKeysetCounter } from '../src/state.ts'
+import {
+  addAvailableProofs,
+  advanceDaemonKeysetCounter,
+  getProofOperation,
+  readState,
+} from '../src/state.ts'
 import { withDurableCustodyUnitOfWork } from '../src/durableCustodyUnitOfWork.ts'
 
 const MINT_URL = 'https://mint.example'
 const PRIVATE_KEY = Uint8Array.from([...new Uint8Array(31), 7])
 const KEY = bytesToHex(secp256k1.getPublicKey(PRIVATE_KEY, true))
-const KEYS = { '1': KEY, '2': KEY, '4': KEY, '8': KEY }
-const KEYSET_ID = deriveKeysetId(KEYS, { unit: 'sat', versionByte: 1 })
+const KEYS = { '1': KEY, '2': KEY, '4': KEY, '8': KEY, '128': KEY }
+const MSAT_KEYS = Object.fromEntries(
+  [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1_024, 2_048, 4_096, 8_192].map((amount) => [
+    String(amount),
+    KEY,
+  ]),
+)
+const KEYSET_ID = deriveKeysetId(KEYS, { unit: 'msat', versionByte: 1 })
+const MSAT_KEYSET_ID = deriveKeysetId(MSAT_KEYS, { unit: 'msat', versionByte: 1 })
 const FEE_KEYSET_ID = deriveKeysetId(KEYS, {
-  unit: 'sat',
+  unit: 'msat',
   versionByte: 1,
   input_fee_ppk: 500,
 })
@@ -96,14 +109,14 @@ test('outgoing transfer persists exact authority before mint I/O and returns an 
     })
     const first = await fixture.coordinator.execute({
       transferId: 'outgoing-retry',
-      amountSats: 5,
+      amountMsat: 5,
       mintUrl: MINT_URL,
       wallet,
     })
     assert.ok(first.token)
     const second = await fixture.coordinator.recover({
       transfer: first,
-      amountSats: 5,
+      amountMsat: 5,
       mintUrl: MINT_URL,
       wallet: fixture.wallet(async () => {
         throw new Error('terminal retry must not mint')
@@ -123,26 +136,60 @@ test('outgoing transfer persists exact authority before mint I/O and returns an 
   }
 })
 
-test('recipient delivery reads credited status before POST and atomically persists its receipt', async () => {
+test('outgoing recovery rejects a legacy sat transfer before wallet work', async () => {
   const fixture = await createFixture()
+  try {
+    const transfer = await fixture.coordinator.execute({
+      transferId: 'outgoing-legacy-sat',
+      amountMsat: 5,
+      mintUrl: MINT_URL,
+      wallet: fixture.wallet(async () => ({ keep: fixture.keepProofs, send: fixture.sendProofs })),
+    })
+    let walletWork = 0
+    await assert.rejects(
+      () =>
+        fixture.coordinator.recover({
+          transfer: { ...transfer, unit: 'sat' },
+          amountMsat: 5,
+          mintUrl: MINT_URL,
+          wallet: fixture.wallet(async () => {
+            walletWork += 1
+            throw new Error('legacy sat recovery must not reach the wallet')
+          }),
+        }),
+      /transfer conflicts with the caller request/,
+    )
+    assert.equal(walletWork, 0)
+  } finally {
+    await fixture.close()
+  }
+})
+
+test('recipient delivery reads credited status before POST and atomically persists its receipt', async () => {
+  const fixture = await createFixture({ scoreFunds: true })
   try {
     const metadata = createParticipationScoreDeliveryMetadata({
       deliveryId: '11111111-1111-4111-8111-111111111111',
       accountSubject: 'subject-1',
       mintUrl: MINT_URL,
-      requestedAmount: '5',
+      requestedAmount: '8000',
     })
     const transfer = await fixture.coordinator.execute({
       transferId: metadata.deliveryId,
-      amountSats: 5,
+      amountMsat: 8_000,
       mintUrl: MINT_URL,
-      wallet: fixture.wallet(async () => ({ keep: fixture.keepProofs, send: fixture.sendProofs })),
+      wallet: fixture.scoreWallet(async () => ({
+        keep: fixture.scoreKeepProofs,
+        send: fixture.scoreSendProofs,
+      })),
       deliveryIntent: participationScoreDeliveryIntent({
         accountSubject: metadata.accountSubject,
         productBindingSha256: metadata.productBindingSha256,
         tokenBytesLimit: deriveDurableRecipientTokenAllowance(metadata),
       }),
     })
+    assert.equal(transfer.unit, 'msat')
+    assert.equal(transfer.requestedAmount, '8000')
     assert.ok(transfer.token)
     const unavailableEngineRecovery = await fixture.coordinator.recoverDue({
       walletFor: async () => {
@@ -186,29 +233,29 @@ test('recipient delivery reads credited status before POST and atomically persis
 })
 
 test('Score delivery pointer blocks repeated preflight and retires only after the purchase epoch advances', async () => {
-  const fixture = await createFixture()
+  const fixture = await createFixture({ scoreFunds: true })
   try {
     const firstId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
     const first = await fixture.coordinator.preflightParticipationScoreDelivery({
       transferId: firstId,
-      amountSats: 5,
+      amountMsat: 8_000,
       purchasedTotal: 3,
       accountSubject: 'subject-1',
       mintUrl: MINT_URL,
     })
-    assert.deepEqual(first, { transferId: firstId, amountSats: 5, purchasedTotalEpoch: 3 })
+    assert.deepEqual(first, { transferId: firstId, amountMsat: 8_000, purchasedTotalEpoch: 3 })
     const restarted = fixture.coordinatorFor(fixture.fence, Date.now())
     const reused = await Promise.all([
       fixture.coordinator.preflightParticipationScoreDelivery({
         transferId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
-        amountSats: 7,
+        amountMsat: 7_000,
         purchasedTotal: 3,
         accountSubject: 'subject-1',
         mintUrl: MINT_URL,
       }),
       restarted.preflightParticipationScoreDelivery({
         transferId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
-        amountSats: 9,
+        amountMsat: 9_000,
         purchasedTotal: 3,
         accountSubject: 'subject-1',
         mintUrl: MINT_URL,
@@ -216,20 +263,23 @@ test('Score delivery pointer blocks repeated preflight and retires only after th
     ])
     for (const pointer of reused) {
       assert.equal(pointer.transferId, first.transferId)
-      assert.equal(pointer.amountSats, first.amountSats)
+      assert.equal(pointer.amountMsat, first.amountMsat)
       assert.equal(pointer.purchasedTotalEpoch, first.purchasedTotalEpoch)
     }
     const metadata = createParticipationScoreDeliveryMetadata({
       deliveryId: first.transferId,
       accountSubject: 'subject-1',
       mintUrl: MINT_URL,
-      requestedAmount: '5',
+      requestedAmount: '8000',
     })
     const transfer = await restarted.execute({
       transferId: first.transferId,
-      amountSats: 5,
+      amountMsat: 8_000,
       mintUrl: MINT_URL,
-      wallet: fixture.wallet(async () => ({ keep: fixture.keepProofs, send: fixture.sendProofs })),
+      wallet: fixture.scoreWallet(async () => ({
+        keep: fixture.scoreKeepProofs,
+        send: fixture.scoreSendProofs,
+      })),
       deliveryIntent: participationScoreDeliveryIntent({
         accountSubject: metadata.accountSubject,
         productBindingSha256: metadata.productBindingSha256,
@@ -239,13 +289,13 @@ test('Score delivery pointer blocks repeated preflight and retires only after th
     assert.ok(transfer.token)
     const nonterminal = await restarted.preflightParticipationScoreDelivery({
       transferId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
-      amountSats: 6,
+      amountMsat: 6_000,
       purchasedTotal: 4,
       accountSubject: 'subject-1',
       mintUrl: MINT_URL,
     })
     assert.equal(nonterminal.transferId, first.transferId)
-    assert.equal(nonterminal.amountSats, first.amountSats)
+    assert.equal(nonterminal.amountMsat, first.amountMsat)
     assert.equal(nonterminal.purchasedTotalEpoch, first.purchasedTotalEpoch)
     const submission = createParticipationScoreDeliverySubmission({
       metadata,
@@ -266,13 +316,13 @@ test('Score delivery pointer blocks repeated preflight and retires only after th
     const secondId = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd'
     const next = await restarted.preflightParticipationScoreDelivery({
       transferId: secondId,
-      amountSats: 6,
+      amountMsat: 6_000,
       purchasedTotal: 4,
       accountSubject: 'subject-1',
       mintUrl: MINT_URL,
     })
 
-    assert.deepEqual(next, { transferId: secondId, amountSats: 6, purchasedTotalEpoch: 4 })
+    assert.deepEqual(next, { transferId: secondId, amountMsat: 6_000, purchasedTotalEpoch: 4 })
     assert.equal(await restarted.loadTransfer(firstId), null)
     assert.equal(await fixture.count('daemon_outgoing_cashu_transfers'), 0)
     assert.equal(
@@ -285,12 +335,12 @@ test('Score delivery pointer blocks repeated preflight and retires only after th
 })
 
 test('Score delivery pointer retires an advanced orphan before reserving the next delivery', async () => {
-  const fixture = await createFixture()
+  const fixture = await createFixture({ scoreFunds: true })
   try {
     const orphanId = 'f1111111-1111-4111-8111-111111111111'
     await fixture.coordinator.preflightParticipationScoreDelivery({
       transferId: orphanId,
-      amountSats: 5,
+      amountMsat: 8_000,
       purchasedTotal: 3,
       accountSubject: 'subject-1',
       mintUrl: MINT_URL,
@@ -299,7 +349,7 @@ test('Score delivery pointer retires an advanced orphan before reserving the nex
       .coordinatorFor(fixture.fence, Date.now())
       .preflightParticipationScoreDelivery({
         transferId: 'f2222222-2222-4222-8222-222222222222',
-        amountSats: 7,
+        amountMsat: 7_000,
         purchasedTotal: 4,
         accountSubject: 'subject-1',
         mintUrl: MINT_URL,
@@ -307,7 +357,7 @@ test('Score delivery pointer retires an advanced orphan before reserving the nex
 
     assert.deepEqual(next, {
       transferId: 'f2222222-2222-4222-8222-222222222222',
-      amountSats: 7,
+      amountMsat: 7_000,
       purchasedTotalEpoch: 4,
     })
     assert.equal(await fixture.coordinator.loadTransfer(orphanId), null)
@@ -317,21 +367,21 @@ test('Score delivery pointer retires an advanced orphan before reserving the nex
 })
 
 test('recipient recovery schedules the minted current revision after a status failure', async () => {
-  const fixture = await createFixture()
+  const fixture = await createFixture({ scoreFunds: true })
   try {
     const metadata = createParticipationScoreDeliveryMetadata({
       deliveryId: 'f3333333-3333-4333-8333-333333333333',
       accountSubject: 'subject-1',
       mintUrl: MINT_URL,
-      requestedAmount: '5',
+      requestedAmount: '8000',
     })
     await assert.rejects(
       () =>
         fixture.coordinator.execute({
           transferId: metadata.deliveryId,
-          amountSats: 5,
+          amountMsat: 8_000,
           mintUrl: MINT_URL,
-          wallet: fixture.wallet(async () => {
+          wallet: fixture.scoreWallet(async () => {
             throw new Error('mint response was interrupted')
           }),
           deliveryIntent: participationScoreDeliveryIntent({
@@ -347,7 +397,10 @@ test('recipient recovery schedules the minted current revision after a status fa
 
     const recovery = await fixture.coordinator.recoverDue({
       walletFor: async () =>
-        fixture.wallet(async () => ({ keep: fixture.keepProofs, send: fixture.sendProofs })),
+        fixture.scoreWallet(async () => ({
+          keep: fixture.scoreKeepProofs,
+          send: fixture.scoreSendProofs,
+        })),
       recipientClient: {
         getDurableRecipientDeliveryStatus: async () => {
           throw new Error('engine status is unavailable')
@@ -381,19 +434,22 @@ test('recipient recovery schedules the minted current revision after a status fa
 })
 
 test('recipient delivery posts an absent exact token once and recovers an ambiguous POST from status', async () => {
-  const fixture = await createFixture()
+  const fixture = await createFixture({ scoreFunds: true })
   try {
     const metadata = createParticipationScoreDeliveryMetadata({
       deliveryId: '22222222-2222-4222-8222-222222222222',
       accountSubject: 'subject-1',
       mintUrl: MINT_URL,
-      requestedAmount: '5',
+      requestedAmount: '8000',
     })
     const transfer = await fixture.coordinator.execute({
       transferId: metadata.deliveryId,
-      amountSats: 5,
+      amountMsat: 8_000,
       mintUrl: MINT_URL,
-      wallet: fixture.wallet(async () => ({ keep: fixture.keepProofs, send: fixture.sendProofs })),
+      wallet: fixture.scoreWallet(async () => ({
+        keep: fixture.scoreKeepProofs,
+        send: fixture.scoreSendProofs,
+      })),
       deliveryIntent: participationScoreDeliveryIntent({
         accountSubject: metadata.accountSubject,
         productBindingSha256: metadata.productBindingSha256,
@@ -432,19 +488,22 @@ test('recipient delivery posts an absent exact token once and recovers an ambigu
 })
 
 test('received recipient delivery remains nonterminal and retries from its admitted revision', async () => {
-  const fixture = await createFixture()
+  const fixture = await createFixture({ scoreFunds: true })
   try {
     const metadata = createParticipationScoreDeliveryMetadata({
       deliveryId: 'abababab-abab-4bab-8bab-abababababab',
       accountSubject: 'subject-1',
       mintUrl: MINT_URL,
-      requestedAmount: '5',
+      requestedAmount: '8000',
     })
     const admitted = await fixture.coordinator.execute({
       transferId: metadata.deliveryId,
-      amountSats: 5,
+      amountMsat: 8_000,
       mintUrl: MINT_URL,
-      wallet: fixture.wallet(async () => ({ keep: fixture.keepProofs, send: fixture.sendProofs })),
+      wallet: fixture.scoreWallet(async () => ({
+        keep: fixture.scoreKeepProofs,
+        send: fixture.scoreSendProofs,
+      })),
       deliveryIntent: participationScoreDeliveryIntent({
         accountSubject: metadata.accountSubject,
         productBindingSha256: metadata.productBindingSha256,
@@ -478,13 +537,13 @@ test('received recipient delivery remains nonterminal and retries from its admit
 })
 
 test('recipient delivery rejects a persisted transfer with a conflicting exact tuple', async () => {
-  const fixture = await createFixture()
+  const fixture = await createFixture({ scoreFunds: true })
   try {
     const metadata = createParticipationScoreDeliveryMetadata({
       deliveryId: '33333333-3333-4333-8333-333333333333',
       accountSubject: 'subject-1',
       mintUrl: MINT_URL,
-      requestedAmount: '5',
+      requestedAmount: '8000',
     })
     const intent = participationScoreDeliveryIntent({
       accountSubject: metadata.accountSubject,
@@ -493,9 +552,12 @@ test('recipient delivery rejects a persisted transfer with a conflicting exact t
     })
     const transfer = await fixture.coordinator.execute({
       transferId: metadata.deliveryId,
-      amountSats: 5,
+      amountMsat: 8_000,
       mintUrl: MINT_URL,
-      wallet: fixture.wallet(async () => ({ keep: fixture.keepProofs, send: fixture.sendProofs })),
+      wallet: fixture.scoreWallet(async () => ({
+        keep: fixture.scoreKeepProofs,
+        send: fixture.scoreSendProofs,
+      })),
       deliveryIntent: intent,
     })
     assert.ok(transfer.token)
@@ -529,7 +591,7 @@ test('post-mint failure remains recoverable from its exact persisted operation w
       () =>
         fixture.coordinator.execute({
           transferId: 'outgoing-recover',
-          amountSats: 5,
+          amountMsat: 5,
           mintUrl: MINT_URL,
           wallet: fixture.wallet(async () => {
             selected += 1
@@ -542,7 +604,7 @@ test('post-mint failure remains recoverable from its exact persisted operation w
     assert.ok(prepared)
     const recovered = await fixture.coordinator.recover({
       transfer: prepared!,
-      amountSats: 5,
+      amountMsat: 5,
       mintUrl: MINT_URL,
       wallet: fixture.wallet(async () => {
         throw new Error('recovery must not select or mint a new plan')
@@ -561,7 +623,7 @@ test('automatic recovery classifies a persisted bearer token without minting or 
   try {
     const transfer = await fixture.coordinator.execute({
       transferId: 'outgoing-auto',
-      amountSats: 5,
+      amountMsat: 5,
       mintUrl: MINT_URL,
       wallet: fixture.wallet(async () => ({ keep: fixture.keepProofs, send: fixture.sendProofs })),
     })
@@ -615,7 +677,7 @@ test('automatic recovery retries every transfer in a malformed proof-state respo
   try {
     const transfer = await fixture.coordinator.execute({
       transferId: 'outgoing-malformed-state-response',
-      amountSats: 5,
+      amountMsat: 5,
       mintUrl: MINT_URL,
       wallet: fixture.wallet(async () => ({ keep: fixture.keepProofs, send: fixture.sendProofs })),
     })
@@ -659,7 +721,7 @@ test('fresh explicit reclaim reactivates only its classified bearer proofs and a
   try {
     const transfer = await fixture.coordinator.execute({
       transferId: 'outgoing-reclaim',
-      amountSats: 5,
+      amountMsat: 5,
       mintUrl: MINT_URL,
       wallet: fixture.wallet(async () => ({ keep: fixture.keepProofs, send: fixture.sendProofs })),
     })
@@ -667,7 +729,7 @@ test('fresh explicit reclaim reactivates only its classified bearer proofs and a
       OutputData.createSingleData(4, KEYSET_ID, 'reclaim-successor-four', 20n),
       OutputData.createSingleData(1, KEYSET_ID, 'reclaim-successor-one', 21n),
     ]
-    const successors = successorOutputs.map(signedProof)
+    const successors = successorOutputs.map((output) => signedProof(output))
     await fixture.advanceCounter(22)
     let checks = 0
     const reclaimed = await fixture.coordinator.reclaim({
@@ -709,7 +771,7 @@ test('fresh all-spent reclaim returns terminal success and repeats without mint 
   try {
     const transfer = await fixture.coordinator.execute({
       transferId: 'outgoing-already-spent',
-      amountSats: 5,
+      amountMsat: 5,
       mintUrl: MINT_URL,
       wallet: fixture.wallet(async () => ({ keep: fixture.keepProofs, send: fixture.sendProofs })),
     })
@@ -758,7 +820,7 @@ test('recipient-spent reclaim terminalizes its linked receive operation in the s
   try {
     const transfer = await fixture.coordinator.execute({
       transferId: 'outgoing-recipient-spent',
-      amountSats: 5,
+      amountMsat: 5,
       mintUrl: MINT_URL,
       wallet: fixture.wallet(async () => ({ keep: fixture.keepProofs, send: fixture.sendProofs })),
     })
@@ -771,7 +833,7 @@ test('recipient-spent reclaim terminalizes its linked receive operation in the s
     const terminal = await fixture.coordinator.reclaim({
       transferId: transfer.transferId,
       wallet: fixture.reclaimWallet({
-        successors: successorOutputs.map(signedProof),
+        successors: successorOutputs.map((output) => signedProof(output)),
         successorOutputs,
         proofState: () => {
           checks += 1
@@ -802,7 +864,7 @@ test('preparation failure leaves the exact custody proof selectable and creates 
       () =>
         fixture.coordinator.execute({
           transferId: 'outgoing-preparation-failure',
-          amountSats: 5,
+          amountMsat: 5,
           mintUrl: MINT_URL,
           wallet,
         }),
@@ -825,7 +887,7 @@ test('outgoing insert failure rolls back the custody bind and target reservation
       () =>
         fixture.coordinator.execute({
           transferId: 'outgoing-insert-rollback',
-          amountSats: 5,
+          amountMsat: 5,
           mintUrl: MINT_URL,
           wallet: fixture.wallet(async () => ({
             keep: fixture.keepProofs,
@@ -864,7 +926,7 @@ test('outgoing post-mint update failure admits no successors and exact recovery 
       () =>
         fixture.coordinator.execute({
           transferId: 'outgoing-update-rollback',
-          amountSats: 5,
+          amountMsat: 5,
           mintUrl: MINT_URL,
           wallet,
         }),
@@ -881,7 +943,7 @@ test('outgoing post-mint update failure admits no successors and exact recovery 
     assert.ok(prepared)
     const recovered = await fixture.coordinator.recover({
       transfer: prepared!,
-      amountSats: 5,
+      amountMsat: 5,
       mintUrl: MINT_URL,
       wallet,
     })
@@ -897,7 +959,7 @@ test('reclaim-prepared work resumes after restart without preparing a second rec
   try {
     const transfer = await fixture.coordinator.execute({
       transferId: 'outgoing-reclaim-restart',
-      amountSats: 5,
+      amountMsat: 5,
       mintUrl: MINT_URL,
       wallet: fixture.wallet(async () => ({ keep: fixture.keepProofs, send: fixture.sendProofs })),
     })
@@ -905,7 +967,7 @@ test('reclaim-prepared work resumes after restart without preparing a second rec
       OutputData.createSingleData(4, KEYSET_ID, 'reclaim-restart-four', 30n),
       OutputData.createSingleData(1, KEYSET_ID, 'reclaim-restart-one', 31n),
     ]
-    const successors = successorOutputs.map(signedProof)
+    const successors = successorOutputs.map((output) => signedProof(output))
     await fixture.advanceCounter(32)
     const interrupted = fixture.reclaimWallet({
       successors,
@@ -953,7 +1015,7 @@ test('automatic reclaim recovery backs off a nonterminal exact reclaim without a
   try {
     const transfer = await fixture.coordinator.execute({
       transferId: 'outgoing-reclaim-nonterminal',
-      amountSats: 5,
+      amountMsat: 5,
       mintUrl: MINT_URL,
       wallet: fixture.wallet(async () => ({ keep: fixture.keepProofs, send: fixture.sendProofs })),
     })
@@ -961,7 +1023,7 @@ test('automatic reclaim recovery backs off a nonterminal exact reclaim without a
       OutputData.createSingleData(4, KEYSET_ID, 'reclaim-pending-four', 34n),
       OutputData.createSingleData(1, KEYSET_ID, 'reclaim-pending-one', 35n),
     ]
-    const successors = successorOutputs.map(signedProof)
+    const successors = successorOutputs.map((output) => signedProof(output))
     await fixture.advanceCounter(36)
     const interrupted = fixture.reclaimWallet({
       successors,
@@ -1032,8 +1094,8 @@ test('durable send gives cashu-ts all eligible proofs for nonzero input fees and
     ]
     const wallet = fixture.wallet(
       async () => ({
-        keep: [...keepOutputs.map(signedProof), fixture.inputProof],
-        send: sendOutputs.map(signedProof),
+        keep: [...keepOutputs.map((output) => signedProof(output)), fixture.inputProof],
+        send: sendOutputs.map((output) => signedProof(output)),
       }),
       CheckStateEnum.UNSPENT,
       { sendOutputs, keepOutputs },
@@ -1055,7 +1117,7 @@ test('durable send gives cashu-ts all eligible proofs for nonzero input fees and
     }
     wallet.getKeyset = (id) => ({
       id,
-      unit: 'sat',
+      unit: 'msat',
       keys: KEYS,
       fee: id === FEE_KEYSET_ID ? 500 : 0,
       verify: () => true,
@@ -1063,7 +1125,7 @@ test('durable send gives cashu-ts all eligible proofs for nonzero input fees and
 
     await fixture.coordinator.execute({
       transferId: 'outgoing-fee-aware-selection',
-      amountSats: 5,
+      amountMsat: 5,
       mintUrl: MINT_URL,
       wallet,
     })
@@ -1073,6 +1135,145 @@ test('durable send gives cashu-ts all eligible proofs for nonzero input fees and
     assert.equal(await fixture.custodySelectability(previewInputs[1]!), 'spent')
     assert.equal(await fixture.custodySelectability(fixture.inputProof), 'selectable')
     assert.equal(await fixture.custodyRevision(fixture.inputProof), 0)
+  } finally {
+    await fixture.close()
+  }
+})
+
+test('durable send hydrates passthrough proofs before canonical custody completion', async () => {
+  const fixture = await createFixture()
+  try {
+    const selectedProofs = [fixture.inputProof]
+    for (let index = 0; index < 16; index += 1) {
+      selectedProofs.push(
+        await fixture.addAvailableInput(MINT_URL, `passthrough-selected-${index}`),
+      )
+    }
+    const passthroughProofs: Proof[] = []
+    for (let index = 0; index < 47; index += 1) {
+      const proof = signedProof(
+        OutputData.createSingleData(8, KEYSET_ID, `passthrough-unselected-${index}`, BigInt(200 + index)),
+      )
+      const { p2pkE: _p2pkE, ...canonicalProof } = proof
+      passthroughProofs.push(await fixture.addAvailableProof(MINT_URL, canonicalProof))
+    }
+    const sendAmounts = [128, 2, 1, 1, 1, 1, 1, 1]
+    const sendOutputs = sendAmounts.map((amount, index) =>
+      OutputData.createSingleData(
+        amount,
+        KEYSET_ID,
+        `passthrough-send-${index}`,
+        BigInt(300 + index),
+      ),
+    )
+    let preparedPassthrough: Proof[] = []
+    const wallet = fixture.wallet(
+      async () => ({
+        keep: preparedPassthrough,
+        send: sendOutputs.map((output) => signedProof(output)),
+      }),
+      CheckStateEnum.UNSPENT,
+      { sendOutputs, keepOutputs: [] },
+    )
+    wallet.prepareSwapToSend = async (_amount, proofs) => {
+      const selected = proofs.filter((proof) => selectedProofs.some(({ secret }) => secret === proof.secret))
+      preparedPassthrough = proofs.filter((proof) => !selected.some(({ secret }) => secret === proof.secret))
+      assert.equal(selected.length, 17)
+      assert.equal(preparedPassthrough.length, 47)
+      return {
+        amount: Amount.from(136),
+        fees: Amount.zero(),
+        keysetId: KEYSET_ID,
+        inputs: selected,
+        sendOutputs,
+        keepOutputs: [],
+        unselectedProofs: preparedPassthrough,
+      }
+    }
+
+    const beforeState = await readState()
+    const passthroughTargetBefore = passthroughProofs.map((proof) =>
+      walletProofSnapshot(beforeState, proof),
+    )
+    const passthroughCustodyBefore = await Promise.all(
+      passthroughProofs.map((proof) => fixture.custodyProofSnapshot(proof)),
+    )
+
+    const transfer = await fixture.coordinator.execute({
+      transferId: 'outgoing-passthrough-hydration',
+      amountMsat: 136,
+      mintUrl: MINT_URL,
+      wallet,
+    })
+
+    assert.equal(transfer.deliveryState, 'delivery-pending')
+    const token = transfer.token
+    assert.ok(token)
+    assert.equal(token.proofs.length, sendOutputs.length)
+    assert.equal(token.custodyRevisions.length, 17 + 47 + sendOutputs.length)
+    assert.equal(await fixture.count('target_wallet_proofs'), passthroughProofs.length)
+    const operation = await getProofOperation('outgoing-passthrough-hydration')
+    assert.equal(operation?.state, 'completed')
+    assert.equal(operation?.resultProofs?.keep?.length ?? 0, 0)
+    assert.equal(operation?.resultProofs?.send?.length, sendOutputs.length)
+    assert.equal(
+      isDeepStrictEqual(
+        (operation?.resultProofs?.send ?? [])
+          .map(canonicalProofMaterial)
+          .sort((left, right) => left.secret.localeCompare(right.secret)),
+        token.proofs
+          .map(canonicalProofMaterial)
+          .sort((left, right) => left.secret.localeCompare(right.secret)),
+      ),
+      true,
+    )
+    const afterState = await readState()
+    assert.equal(
+      isDeepStrictEqual(
+        passthroughProofs.map((proof) => walletProofSnapshot(afterState, proof)),
+        passthroughTargetBefore,
+      ),
+      true,
+    )
+    assert.equal(
+      isDeepStrictEqual(
+        await Promise.all(passthroughProofs.map((proof) => fixture.custodyProofSnapshot(proof))),
+        passthroughCustodyBefore,
+      ),
+      true,
+    )
+    for (const proof of passthroughProofs) {
+      assert.equal(await fixture.targetWalletHasProof(proof), true)
+      assert.equal(await fixture.custodySelectability(proof), 'selectable')
+      assert.equal(await fixture.custodyRevision(proof), 0)
+      const identity = deriveDurableCustodyArtifactFingerprint({
+        id: proof.id,
+        secret: proof.secret,
+        C: proof.C,
+      })
+      assert.deepEqual(
+        transfer.token.custodyRevisions.find((revision) => revision.proofIdentity === identity),
+        { proofIdentity: identity, revision: 0 },
+      )
+    }
+    for (const proof of selectedProofs) {
+      assert.equal(await fixture.targetWalletHasProof(proof), false)
+      assert.equal(await fixture.custodySelectability(proof), 'spent')
+    }
+    for (const proof of transfer.token.proofs) {
+      assert.equal(await fixture.targetWalletHasProof(proof), false)
+      assert.equal(await fixture.custodySelectability(proof), 'spent')
+    }
+    const replayed = await fixture.coordinator.recover({
+      transfer,
+      amountMsat: 136,
+      mintUrl: MINT_URL,
+      wallet: fixture.wallet(async () => {
+        throw new Error('completed outgoing replay must not mint')
+      }),
+    })
+    assert.equal(replayed.deliveryState, 'delivery-pending')
+    assert.equal(replayed.token?.encodedToken, token.encodedToken)
   } finally {
     await fixture.close()
   }
@@ -1139,12 +1340,12 @@ test('one bounded automatic page batches bearer classification, reuses its mint 
         transfers.push(
           await fixture.coordinator.execute({
             transferId: `outgoing-page-${mintIndex}-${transferIndex}`,
-            amountSats: 5,
+            amountMsat: 5,
             mintUrl,
             wallet: fixture.wallet(
               async () => ({
-                keep: keepOutputs.map(signedProof),
-                send: sendOutputs.map(signedProof),
+                keep: keepOutputs.map((output) => signedProof(output)),
+                send: sendOutputs.map((output) => signedProof(output)),
               }),
               CheckStateEnum.UNSPENT,
               { sendOutputs, keepOutputs },
@@ -1231,7 +1432,7 @@ test('a stale fence loses before mint I/O and the current fence completes the ex
       () =>
         fixture.coordinator.execute({
           transferId: 'outgoing-stale-fence',
-          amountSats: 5,
+          amountMsat: 5,
           mintUrl: MINT_URL,
           wallet,
         }),
@@ -1241,7 +1442,7 @@ test('a stale fence loses before mint I/O and the current fence completes the ex
     const current = fixture.coordinatorFor(currentFence, future + 1)
     const transfer = await current.execute({
       transferId: 'outgoing-stale-fence',
-      amountSats: 5,
+      amountMsat: 5,
       mintUrl: MINT_URL,
       wallet,
     })
@@ -1258,6 +1459,7 @@ async function createFixture(
       mintUrl: string,
       outputs: Record<string, unknown[]>,
     ) => Promise<Record<string, Proof[]>>
+    readonly scoreFunds?: boolean
   } = {},
 ) {
   const directory = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-outgoing-'))
@@ -1289,19 +1491,59 @@ async function createFixture(
     OutputData.createSingleData(2, KEYSET_ID, 'keep-two', 4n),
     OutputData.createSingleData(1, KEYSET_ID, 'keep-one', 5n),
   ]
+  const scoreInputOutputs = [
+    OutputData.createSingleData(8_192, MSAT_KEYSET_ID, 'score-input-8192', 6n),
+    OutputData.createSingleData(4_096, MSAT_KEYSET_ID, 'score-input-4096', 19n),
+    OutputData.createSingleData(2_048, MSAT_KEYSET_ID, 'score-input-2048', 20n),
+    OutputData.createSingleData(1_024, MSAT_KEYSET_ID, 'score-input-1024', 21n),
+    OutputData.createSingleData(512, MSAT_KEYSET_ID, 'score-input-512', 22n),
+    OutputData.createSingleData(128, MSAT_KEYSET_ID, 'score-input-128', 23n),
+  ]
+  const scoreSendOutputs = [
+    OutputData.createSingleData(4_096, MSAT_KEYSET_ID, 'score-send-4096', 7n),
+    OutputData.createSingleData(2_048, MSAT_KEYSET_ID, 'score-send-2048', 8n),
+    OutputData.createSingleData(1_024, MSAT_KEYSET_ID, 'score-send-1024', 11n),
+    OutputData.createSingleData(512, MSAT_KEYSET_ID, 'score-send-512', 12n),
+    OutputData.createSingleData(256, MSAT_KEYSET_ID, 'score-send-256', 13n),
+    OutputData.createSingleData(64, MSAT_KEYSET_ID, 'score-send-64', 14n),
+  ]
+  const scoreKeepOutputs = [
+    OutputData.createSingleData(4_096, MSAT_KEYSET_ID, 'score-keep-4096', 9n),
+    OutputData.createSingleData(2_048, MSAT_KEYSET_ID, 'score-keep-2048', 10n),
+    OutputData.createSingleData(1_024, MSAT_KEYSET_ID, 'score-keep-1024', 15n),
+    OutputData.createSingleData(512, MSAT_KEYSET_ID, 'score-keep-512', 16n),
+    OutputData.createSingleData(256, MSAT_KEYSET_ID, 'score-keep-256', 17n),
+    OutputData.createSingleData(64, MSAT_KEYSET_ID, 'score-keep-64', 18n),
+  ]
   const inputProof = signedProof(inputOutput)
-  const sendProofs = sendOutputs.map(signedProof)
-  const keepProofs = keepOutputs.map(signedProof)
+  const sendProofs = sendOutputs.map((output) => signedProof(output))
+  const keepProofs = keepOutputs.map((output) => signedProof(output))
+  const scoreInputProofs = scoreInputOutputs.map((output) => signedProof(output, MSAT_KEYS))
+  const scoreSendProofs = scoreSendOutputs.map((output) => signedProof(output, MSAT_KEYS))
+  const scoreKeepProofs = scoreKeepOutputs.map((output) => signedProof(output, MSAT_KEYS))
   const outputProofs = new Map<string, Proof>([
     ...sendOutputs.map((output, index) => [output.blindedMessage.B_, sendProofs[index]!] as const),
     ...keepOutputs.map((output, index) => [output.blindedMessage.B_, keepProofs[index]!] as const),
+    ...scoreSendOutputs.map(
+      (output, index) => [output.blindedMessage.B_, scoreSendProofs[index]!] as const,
+    ),
+    ...scoreKeepOutputs.map(
+      (output, index) => [output.blindedMessage.B_, scoreKeepProofs[index]!] as const,
+    ),
   ])
-  await addAvailableProofs(MINT_URL, [inputProof], { kind: 'sats', baseAsset: 'sat', unit: 'sat' })
+  await addAvailableProofs(MINT_URL, [inputProof], { kind: 'sats', baseAsset: 'sat', unit: 'msat' })
+  if (options.scoreFunds) {
+    await addAvailableProofs(MINT_URL, scoreInputProofs, {
+      kind: 'sats',
+      baseAsset: 'sat',
+      unit: 'msat',
+    })
+  }
   await withDurableCustodyUnitOfWork(directory, fence, Date.now(), (database) => {
     const row = createCustodyProofSqliteRow({
       scopeId,
       normalizedMint: MINT_URL,
-      unit: 'sat',
+      unit: 'msat',
       proof: inputProof,
       baseAsset: 'sat',
       conditionId: null,
@@ -1320,6 +1562,33 @@ async function createFixture(
       { proof: row, expectedRevision: null },
     ])
   })
+  if (options.scoreFunds) {
+    await withDurableCustodyUnitOfWork(directory, fence, Date.now(), (database) => {
+      new DurableCustodySqliteStore(database).putProofBatchCas(
+        scoreInputProofs.map((proof) => ({
+          proof: createCustodyProofSqliteRow({
+            scopeId,
+            normalizedMint: MINT_URL,
+            unit: 'msat',
+            proof,
+            baseAsset: 'sat',
+            conditionId: null,
+            outcomeSetId: null,
+            productBinding: null,
+            signatureVerified: true,
+            dleqState: 'verified',
+            nut07State: 'UNSPENT',
+            selectability: 'selectable',
+            storageClass: 'pinned-operation-bound-deterministic',
+            reservationOperationId: null,
+            revision: 0,
+            nowMs: Date.now(),
+          }),
+          expectedRevision: null,
+        })),
+      )
+    })
+  }
   const coordinator = new DaemonDurableOutgoingCashuCoordinator(directory, () => fence, {
     restoreOutputGroups:
       options.restoreOutputGroups ??
@@ -1336,50 +1605,106 @@ async function createFixture(
       }),
   })
   const outgoingTransferAbortRestore = new Map<'insert' | 'update', () => void>()
+  const wallet = (
+    complete: () => Promise<{ keep: Proof[]; send: Proof[] }>,
+    state: CheckStateEnum = CheckStateEnum.UNSPENT,
+    outputPlan: {
+      readonly sendOutputs: readonly OutputData[]
+      readonly keepOutputs: readonly OutputData[]
+    } = {
+      sendOutputs,
+      keepOutputs,
+    },
+    unit: 'msat' = 'msat',
+  ) => {
+    const score = unit === 'msat' && outputPlan.sendOutputs === scoreSendOutputs
+    const selectedKeysetId = score ? MSAT_KEYSET_ID : KEYSET_ID
+    const selectedAmount = score ? 8_000 : 5
+    for (const output of outputPlan.sendOutputs)
+      outputProofs.set(output.blindedMessage.B_, signedProof(output, score ? MSAT_KEYS : KEYS))
+    for (const output of outputPlan.keepOutputs)
+      outputProofs.set(output.blindedMessage.B_, signedProof(output, score ? MSAT_KEYS : KEYS))
+    return {
+      loadMint: async () => {},
+      receive: async () => [],
+      send: async () => ({ keep: [], send: [] }),
+      prepareSwapToSend: async (_amount: number, proofs: Proof[]) => ({
+        amount: Amount.from(selectedAmount),
+        fees: Amount.zero(),
+        keysetId: selectedKeysetId,
+        inputs: score ? proofs.filter((proof) => proof.id === MSAT_KEYSET_ID) : proofs,
+        sendOutputs: outputPlan.sendOutputs,
+        keepOutputs: outputPlan.keepOutputs,
+        unselectedProofs: [],
+      }),
+      completeSwap: complete,
+      checkProofsStates: async (proofs: Array<Pick<Proof, 'secret'>>) =>
+        proofs.map((proof) => ({
+          Y: hashToCurve(new TextEncoder().encode(proof.secret)).toHex(true),
+          state,
+          witness: null,
+        })),
+      getKeyset: () => ({
+        id: selectedKeysetId,
+        unit,
+        keys: score ? MSAT_KEYS : KEYS,
+        fee: 0,
+        verify: () => true,
+      }),
+    }
+  }
+  const addAvailableProof = async (mintUrl: string, proof: Proof) => {
+    await addAvailableProofs(mintUrl, [proof], { kind: 'sats', baseAsset: 'sat', unit: 'msat' })
+    await withDurableCustodyUnitOfWork(directory, fence, Date.now(), (database) => {
+      const row = createCustodyProofSqliteRow({
+        scopeId,
+        normalizedMint: mintUrl,
+        unit: 'msat',
+        proof: {
+          ...proof,
+          dleq: proof.dleq ?? null,
+          p2pkE: proof.p2pk_e ?? null,
+          witness: proof.witness ?? null,
+        },
+        baseAsset: 'sat',
+        conditionId: null,
+        outcomeSetId: null,
+        productBinding: null,
+        signatureVerified: true,
+        dleqState: 'verified',
+        nut07State: 'UNSPENT',
+        selectability: 'selectable',
+        storageClass: 'pinned-operation-bound-deterministic',
+        reservationOperationId: null,
+        revision: 0,
+        nowMs: Date.now(),
+      })
+      new DurableCustodySqliteStore(database).putProofBatchCas([
+        { proof: row, expectedRevision: null },
+      ])
+    })
+    return proof
+  }
   return {
+    directory,
+    scopeId,
     coordinator,
     fence,
     inputProof,
     sendProofs,
     keepProofs,
-    wallet: (
+    scoreInputProofs,
+    scoreSendProofs,
+    scoreKeepProofs,
+    scoreWallet: (
       complete: () => Promise<{ keep: Proof[]; send: Proof[] }>,
       state: CheckStateEnum = CheckStateEnum.UNSPENT,
       outputPlan: {
         readonly sendOutputs: readonly OutputData[]
         readonly keepOutputs: readonly OutputData[]
-      } = {
-        sendOutputs,
-        keepOutputs,
-      },
-    ) => {
-      for (const output of outputPlan.sendOutputs)
-        outputProofs.set(output.blindedMessage.B_, signedProof(output))
-      for (const output of outputPlan.keepOutputs)
-        outputProofs.set(output.blindedMessage.B_, signedProof(output))
-      return {
-        loadMint: async () => {},
-        receive: async () => [],
-        send: async () => ({ keep: [], send: [] }),
-        prepareSwapToSend: async (_amount: number, proofs: Proof[]) => ({
-          amount: Amount.from(5),
-          fees: Amount.zero(),
-          keysetId: KEYSET_ID,
-          inputs: proofs,
-          sendOutputs: outputPlan.sendOutputs,
-          keepOutputs: outputPlan.keepOutputs,
-          unselectedProofs: [],
-        }),
-        completeSwap: complete,
-        checkProofsStates: async (proofs: Array<Pick<Proof, 'secret'>>) =>
-          proofs.map((proof) => ({
-            Y: hashToCurve(new TextEncoder().encode(proof.secret)).toHex(true),
-            state,
-            witness: null,
-          })),
-        getKeyset: () => ({ id: KEYSET_ID, unit: 'sat', keys: KEYS, fee: 0, verify: () => true }),
-      }
-    },
+      } = { sendOutputs: scoreSendOutputs, keepOutputs: scoreKeepOutputs },
+    ) => wallet(complete, state, outputPlan, 'msat'),
+    wallet,
     reclaimWallet: ({
       successors,
       successorOutputs,
@@ -1417,7 +1742,7 @@ async function createFixture(
           witness: null,
         }))
       },
-      getKeyset: () => ({ id: KEYSET_ID, unit: 'sat', keys: KEYS, fee: 0, verify: () => true }),
+      getKeyset: () => ({ id: KEYSET_ID, unit: 'msat', keys: KEYS, fee: 0, verify: () => true }),
     }),
     preMintPersisted: async () => {
       const transfer = await coordinator.loadTransfer('outgoing-retry')
@@ -1505,7 +1830,7 @@ async function createFixture(
         const proofId = deriveDurableCustodyProofId({
           scopeId,
           normalizedMint: MINT_URL,
-          unit: 'sat',
+          unit: 'msat',
           keysetId: proof.id,
           secret: proof.secret,
         })
@@ -1524,7 +1849,7 @@ async function createFixture(
         const proofId = deriveDurableCustodyProofId({
           scopeId,
           normalizedMint: MINT_URL,
-          unit: 'sat',
+          unit: 'msat',
           keysetId: proof.id,
           secret: proof.secret,
         })
@@ -1535,6 +1860,33 @@ async function createFixture(
               .get(scopeId, proofId) as { revision: number } | undefined
           )?.revision ?? null
         )
+      }),
+    custodyProofSnapshot: async (proof: Pick<Proof, 'id' | 'secret'>) =>
+      withDurableCustodyUnitOfWork(directory, fence, Date.now(), (database) => {
+        const proofId = deriveDurableCustodyProofId({
+          scopeId,
+          normalizedMint: MINT_URL,
+          unit: 'msat',
+          keysetId: proof.id,
+          secret: proof.secret,
+        })
+        return (
+          database
+            .prepare(
+              `SELECT proof_fingerprint AS proofFingerprint, proof_body AS proofBody,
+                      revision, selectability, nut07_state AS nut07State
+               FROM custody_proofs WHERE scope_id = ? AND proof_id = ?`,
+            )
+            .get(scopeId, proofId) as
+            | {
+                proofFingerprint: string
+                proofBody: Uint8Array
+                revision: number
+                selectability: string
+                nut07State: string
+              }
+            | undefined
+        ) ?? null
       }),
     targetWalletHasProof: async (proof: Proof) =>
       withDurableCustodyUnitOfWork(directory, fence, Date.now(), (database) => {
@@ -1561,6 +1913,7 @@ async function createFixture(
               .get(scopeId) as { count: number }
           ).count,
       ),
+    addAvailableProof,
     addAvailableInput: async (
       mintUrl: string,
       secret: string,
@@ -1568,31 +1921,7 @@ async function createFixture(
       counter = 999n,
     ) => {
       const proof = signedProof(OutputData.createSingleData(8, keysetId, secret, counter))
-      await addAvailableProofs(mintUrl, [proof], { kind: 'sats', baseAsset: 'sat', unit: 'sat' })
-      await withDurableCustodyUnitOfWork(directory, fence, Date.now(), (database) => {
-        const row = createCustodyProofSqliteRow({
-          scopeId,
-          normalizedMint: mintUrl,
-          unit: 'sat',
-          proof,
-          baseAsset: 'sat',
-          conditionId: null,
-          outcomeSetId: null,
-          productBinding: null,
-          signatureVerified: true,
-          dleqState: 'verified',
-          nut07State: 'UNSPENT',
-          selectability: 'selectable',
-          storageClass: 'pinned-operation-bound-deterministic',
-          reservationOperationId: null,
-          revision: 0,
-          nowMs: Date.now(),
-        })
-        new DurableCustodySqliteStore(database).putProofBatchCas([
-          { proof: row, expectedRevision: null },
-        ])
-      })
-      return proof
+      return addAvailableProof(mintUrl, proof)
     },
     takeoverFence: (observedAtMs: number) =>
       claimCustodyScopeLease(directory, {
@@ -1626,7 +1955,7 @@ async function createFixture(
         KEYSET_ID,
         minimum,
         { fence, observedAtMs: Date.now() },
-        { normalizedMint: MINT_URL, unit: 'sat' },
+        { normalizedMint: MINT_URL, unit: 'msat' },
       ),
     close: async () => {
       if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
@@ -1636,7 +1965,43 @@ async function createFixture(
   }
 }
 
-function signedProof(output: OutputData): Proof {
+function canonicalProofMaterial(proof: {
+  readonly id: string
+  readonly amount: unknown
+  readonly secret: string
+  readonly C: string
+  readonly dleq?: unknown
+  readonly p2pkE?: string | null
+  readonly p2pk_e?: string
+  readonly witness?: unknown
+}) {
+  return {
+    id: proof.id,
+    amount: String(proof.amount),
+    secret: proof.secret,
+    C: proof.C,
+    dleq: proof.dleq ?? null,
+    p2pkE: proof.p2pkE ?? proof.p2pk_e ?? null,
+    witness: proof.witness ?? null,
+  }
+}
+
+function walletProofSnapshot(
+  state: Awaited<ReturnType<typeof readState>>,
+  proof: Proof,
+) {
+  const record = state?.wallet.proofs.find(({ proof: value }) => value.secret === proof.secret)
+  return record === undefined
+    ? null
+    : {
+        proof: canonicalProofMaterial(record.proof),
+        state: record.state,
+        asset: record.asset,
+        reservedBy: record.reservedBy ?? null,
+      }
+}
+
+function signedProof(output: OutputData, keys: Record<string, string> = KEYS): Proof {
   const signature = createBlindSignature(
     pointFromHex(output.blindedMessage.B_),
     PRIVATE_KEY,
@@ -1650,7 +2015,7 @@ function signedProof(output: OutputData): Proof {
       C_: signature.C_.toHex(true),
       dleq: { e: bytesToHex(dleq.e), s: bytesToHex(dleq.s) },
     },
-    { id: output.blindedMessage.id, keys: KEYS },
+    { id: output.blindedMessage.id, keys },
   )
   return {
     id: proof.id,

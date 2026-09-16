@@ -133,6 +133,7 @@ export function assertDurableWalletProofResultMatchesPlan(
   policy: DurableWalletProofTransition,
   outputs: Readonly<Record<string, readonly DurableWalletPlannedOutput[]>>,
   results: Readonly<Record<string, readonly DurableWalletResultProof[]>>,
+  options: { readonly allowDynamicAmounts?: boolean } = {},
 ): void {
   const resultCount = Object.values(results).reduce((total, proofs) => total + proofs.length, 0)
   if (resultCount > DURABLE_CUSTODY_RESULT_PROOF_LIMIT_MAX) {
@@ -149,7 +150,9 @@ export function assertDurableWalletProofResultMatchesPlan(
       if (passthrough.length > 0 || actual.length > planned.length) {
         throw new Error('wallet proof result exceeds its planned prefix')
       }
-      actual.forEach((proof, index) => assertPlannedProof(planned[index]!, proof, seen))
+      actual.forEach((proof, index) =>
+        assertPlannedProof(planned[index]!, proof, seen, options.allowDynamicAmounts ?? false),
+      )
       continue
     }
     if (cardinality === 'subset') {
@@ -202,11 +205,14 @@ function assertPlannedProof(
   output: DurableWalletPlannedOutput,
   proof: DurableWalletResultProof,
   seen: Set<string>,
+  allowDynamicAmount = false,
 ): void {
   if (
     proof.secret !== output.secret ||
     proof.id !== output.blindedMessage.id ||
-    amountToNumber(proof.amount) !== amountToNumber(output.blindedMessage.amount)
+    (!allowDynamicAmount &&
+      amountToNumber(proof.amount) !== amountToNumber(output.blindedMessage.amount)) ||
+    (allowDynamicAmount && amountToNumber(proof.amount) <= 0)
   ) {
     throw new Error('wallet proof result does not match a planned output')
   }

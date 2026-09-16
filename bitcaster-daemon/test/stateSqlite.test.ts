@@ -826,7 +826,7 @@ test('regular split hands off its exact send successor without an available wind
           schemaDatabase
             .prepare(
               `INSERT INTO daemon_complete_set_recovery_roots (
-                 scope_id, root_operation_id, normalized_mint, condition_id, amount_sats,
+                 scope_id, root_operation_id, normalized_mint, condition_id, amount_msat,
                  regular_operation_id, ctf_operation_id, state, created_at_ms, updated_at_ms
                ) VALUES (?, ?, ?, ?, ?, NULL, ?, 'ctf-handoff', ?, ?)`,
             )
@@ -847,7 +847,7 @@ test('regular split hands off its exact send successor without an available wind
           schemaDatabase
             .prepare(
               `INSERT INTO daemon_complete_set_recovery_roots (
-                 scope_id, root_operation_id, normalized_mint, condition_id, amount_sats,
+                 scope_id, root_operation_id, normalized_mint, condition_id, amount_msat,
                  regular_operation_id, regular_reservation_id, regular_purpose,
                  ctf_operation_id, ctf_reservation_id, ctf_purpose,
                  state, created_at_ms, updated_at_ms
@@ -1552,7 +1552,7 @@ function completeSetRoot(
   rootOperationId: string
   mintUrl: string
   conditionId: string
-  amountSats: number
+  amountMsat: number
   regularOperationId: string
   ctfOperationId: string | null
 } {
@@ -1560,7 +1560,7 @@ function completeSetRoot(
     rootOperationId: 'complete-set-root',
     mintUrl: 'http://localhost:8086',
     conditionId: 'condition-1',
-    amountSats: 30,
+    amountMsat: 30,
     regularOperationId,
     ctfOperationId,
   }
@@ -1577,7 +1577,7 @@ function completeSetMetadata(
     successorAssets: authority.successorAssets,
     rootOperationId: root.rootOperationId,
     conditionId: root.conditionId,
-    amountSats: root.amountSats,
+    amountMsat: root.amountMsat,
   }
 }
 
@@ -1665,7 +1665,7 @@ function completeSetOperationRecord(
       purpose,
       rootOperationId,
       conditionId: 'condition-1',
-      amountSats: 30,
+      amountMsat: 30,
       amountSubunits: 30,
       reservationId: `${operationId}:reservation`,
       inputAsset,

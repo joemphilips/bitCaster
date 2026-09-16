@@ -39,6 +39,7 @@ export async function recoverBrowserFundedAsset<TPlan extends FundedPlan>(
   input: BrowserFundedAssetRecoveryInput<TPlan>,
 ): Promise<BrowserFundedAssetRecoveryOutcome<TPlan>> {
   try {
+    requireMsatAsset(input.asset);
     requireCurrent(input);
     const initial = await input.loadPlan();
     requireCurrent(input);
@@ -63,6 +64,7 @@ export async function repairSelectableCanonicalRows(
     "database" | "scopeId" | "asset" | "requiredAmount" | "isCurrentProfile" | "lockManager"
   >,
 ): Promise<boolean> {
+  requireMsatAsset(input.asset);
   requireCurrent(input);
   const rows = await readBrowserEncryptedWalletBackupV2ExactLocalProofRows(input);
   requireCurrent(input);
@@ -129,6 +131,10 @@ async function loadWallet<TPlan extends FundedPlan>(input: BrowserFundedAssetRec
   );
   requireCurrent(input);
   return wallet;
+}
+
+function requireMsatAsset(asset: EncryptedWalletBackupV2AssetIdentity): void {
+  if (asset.unit !== "msat") throw new Error("funded asset recovery requires msat");
 }
 
 function recoveryOutcome<TPlan extends FundedPlan>(

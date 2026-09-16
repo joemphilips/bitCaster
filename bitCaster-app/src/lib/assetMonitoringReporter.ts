@@ -177,6 +177,7 @@ function assetForEvictedAsset(
   asset: AssetMonitoringEvictedAsset,
   catalogue: ReadonlyMap<string, AssetMonitoringCatalogueEntry>,
 ): AssetMonitoringAssetReference | null {
+  if (asset.unit !== "msat") return null;
   const displayBaseAsset = COLLATERAL_UNIT_REGISTRY[asset.unit].baseAsset;
   if (asset.kind === "ordinary") {
     return {
@@ -305,7 +306,7 @@ function assetForProof(
   catalogue: ReadonlyMap<string, AssetMonitoringCatalogueEntry>,
 ): AssetMonitoringProofFact["asset"] | null {
   const unit = parseCashuProofUnit(proof.unit);
-  if (unit === null) return null;
+  if (unit !== "msat") return null;
   const canonicalMintUrl = normalizeUrl(proof.mintUrl);
   const displayBaseAsset = COLLATERAL_UNIT_REGISTRY[unit].baseAsset;
   if (normalizeMarketBaseAsset(proof.baseAsset) !== displayBaseAsset) return null;

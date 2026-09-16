@@ -24,7 +24,7 @@ import {
 import type { PersistedCtfRangeOrderPreparation } from './ctfRangeOrderProtocol.ts'
 import {
   amountToNumber,
-  computeInputFeeSatsForProofs,
+  computeInputFeeSubunitsForProofs,
   sumProofs,
   takeProofsForLock,
 } from './proofSelection.ts'
@@ -120,7 +120,7 @@ export async function prepareCtfRangeSourceOperation(input: {
     [input.preparation.offerKeyset.id]: input.preparation.offerKeyset.inputFeePpk,
   })
   if (selected === null) return null
-  const fees = computeInputFeeSatsForProofs(selected, {
+  const fees = computeInputFeeSubunitsForProofs(selected, {
     [input.preparation.offerKeyset.id]: input.preparation.offerKeyset.inputFeePpk,
   })
   const change = sumProofs(selected) - fees - target

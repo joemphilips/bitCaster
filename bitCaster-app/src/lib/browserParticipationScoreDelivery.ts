@@ -33,7 +33,7 @@ import {
 import { captureBrowserMintPersistenceContext, getWalletForUnit } from "@/lib/cashu";
 import { recoverBrowserFundedAsset } from "@/lib/browserFundedAssetRecovery";
 import { getDurableCashuDeliveryStatus, submitDurableCashuDelivery } from "@/lib/markets";
-import { getBoundedCanonicalSatProofs, type StoredProof } from "@/stores/proof-db";
+import { getBoundedCanonicalRegularProofs, type StoredProof } from "@/stores/proof-db";
 
 export type ParticipationScoreDeliveryProgress = "pending" | "received" | "credited";
 
@@ -44,7 +44,7 @@ export interface BrowserParticipationScoreDeliveryResult {
 }
 
 export class BrowserParticipationScoreInsufficientBalanceError extends Error {
-  constructor(readonly balanceSats: number) {
+  constructor(readonly balanceMsat: number) {
     super("browser Participation Score balance is insufficient");
     this.name = "BrowserParticipationScoreInsufficientBalanceError";
   }
@@ -57,7 +57,7 @@ export class BrowserParticipationScoreConsolidationRequiredError extends Error {
   }
 }
 
-/** Persist one exact sat transfer before its durable-recipient POST. */
+/** Persist one exact msat transfer before its durable-recipient POST. */
 export async function executeBrowserParticipationScoreDelivery(
   input: ParticipationScoreDeliveryInput,
 ): Promise<BrowserParticipationScoreDeliveryResult> {
@@ -76,7 +76,7 @@ export async function executeBrowserParticipationScoreDelivery(
       context,
     });
   }
-  const wallet = await getWalletForUnit(metadata.mintUrl, "sat");
+  const wallet = await getWalletForUnit(metadata.mintUrl, "msat");
   context.requireCapturedProfile();
   if (existing !== null) {
     const recovered = await recoverBrowserDurableOutgoingCashuTransfer({
@@ -126,9 +126,9 @@ export async function executeBrowserParticipationScoreDelivery(
       context.requireCapturedProfile();
       const proofs = await readParticipationScoreCandidates(metadata.mintUrl, context.scopeId);
       context.requireCapturedProfile();
-      const balanceSats = sumProofs(proofs);
-      if (balanceSats < Number(metadata.requestedAmount)) {
-        throw new BrowserParticipationScoreInsufficientBalanceError(balanceSats);
+      const balanceMsat = sumProofs(proofs);
+      if (balanceMsat < Number(metadata.requestedAmount)) {
+        throw new BrowserParticipationScoreInsufficientBalanceError(balanceMsat);
       }
       return prepareBrowserDeterministicOutgoingCashuSend({
         operationId: `participation-score:${metadata.deliveryId}`,
@@ -136,7 +136,7 @@ export async function executeBrowserParticipationScoreDelivery(
         proofs,
         amount: Number(metadata.requestedAmount),
         mintUrl: metadata.mintUrl,
-        unit: "sat",
+        unit: "msat",
         seed: context.seed,
         keepProofDerivationLocators: keepLocators,
         diagnosticLabel: "Participation Score",
@@ -164,7 +164,7 @@ export async function executeBrowserParticipationScoreDelivery(
 function ordinaryScoreAsset(mintUrl: string): EncryptedWalletBackupV2AssetIdentity {
   return createEncryptedWalletBackupV2AssetIdentity({
     mintUrl,
-    unit: "sat",
+    unit: "msat",
     asset: { kind: "ordinary" },
   });
 }
@@ -211,7 +211,7 @@ async function readParticipationScoreCandidates(
   mintUrl: string,
   scopeId: string,
 ): Promise<StoredProof[]> {
-  return getBoundedCanonicalSatProofs(mintUrl, { scopeId });
+  return getBoundedCanonicalRegularProofs(mintUrl, { scopeId, unit: "msat" });
 }
 
 /** Reconcile one exact existing delivery. This function never selects fresh proofs. */
@@ -240,7 +240,7 @@ export async function reconcileBrowserParticipationScoreDeliveryIfPresent(input:
       context,
     });
   }
-  const wallet = await getWalletForUnit(existing.mintUrl, "sat");
+  const wallet = await getWalletForUnit(existing.mintUrl, "msat");
   const recovered = await recoverBrowserDurableOutgoingCashuTransfer({
     transferId: existing.transferId,
     wallet,
@@ -348,7 +348,7 @@ function participationScoreMetadata(
     metadata.deliveryId !== transfer.transferId ||
     metadata.accountSubject !== transfer.deliveryIntent.expectedSubject ||
     metadata.mintUrl !== transfer.mintUrl ||
-    transfer.unit !== "sat" ||
+    transfer.unit !== "msat" ||
     metadata.requestedAmount !== transfer.requestedAmount
   ) {
     throw new Error("Participation Score delivery metadata conflicts with the stored transfer");

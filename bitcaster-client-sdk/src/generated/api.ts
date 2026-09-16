@@ -607,7 +607,7 @@ export interface components {
              */
             mintUrl: string;
             /** @enum {string} */
-            unit: "sat" | "msat";
+            unit: "msat";
             /** @description Positive decimal amount. The value must not exceed signed 64-bit maximum 9223372036854775807. */
             requestedAmount: string;
             creditPolicy: components["schemas"]["DurableCashuCreditPolicy"];
@@ -637,7 +637,7 @@ export interface components {
              */
             mintUrl: string;
             /** @enum {string} */
-            unit: "sat" | "msat";
+            unit: "msat";
             /** @description Positive decimal amount. The value must not exceed signed 64-bit maximum 9223372036854775807. */
             requestedAmount: string;
             creditPolicy: components["schemas"]["DurableCashuCreditPolicy"];
@@ -671,11 +671,6 @@ export interface components {
             result: components["schemas"]["DurableCashuDeliveryResult"] | null;
         } & (unknown & unknown);
         /**
-         * @description Canonical Cashu unit for a monitored asset or its display base asset.
-         * @enum {string}
-         */
-        AssetMonitoringUnit: "sat" | "msat";
-        /**
          * @description Canonical monitored-asset identity kind.
          * @enum {string}
          */
@@ -689,8 +684,8 @@ export interface components {
             canonicalMintUrl: string;
             /** @enum {string} */
             kind: "collateral";
-            cashuUnit: components["schemas"]["AssetMonitoringUnit"];
-            displayBaseAsset: components["schemas"]["AssetMonitoringUnit"];
+            cashuUnit: components["schemas"]["CollateralUnit"];
+            displayBaseAsset: components["schemas"]["BaseAsset"];
         };
         AssetMonitoringConditionalAssetReference: {
             /**
@@ -700,8 +695,8 @@ export interface components {
             canonicalMintUrl: string;
             /** @enum {string} */
             kind: "conditional";
-            cashuUnit: components["schemas"]["AssetMonitoringUnit"];
-            displayBaseAsset: components["schemas"]["AssetMonitoringUnit"];
+            cashuUnit: components["schemas"]["CollateralUnit"];
+            displayBaseAsset: components["schemas"]["BaseAsset"];
             conditionId: string;
             parentConditionId: string;
             outcomeUniverseDigest: components["schemas"]["Sha256Digest"];

@@ -427,9 +427,9 @@ export async function validateTokenImport(
 }
 
 /**
- * Admits ordinary sat, conditional CTF msat, or regular collateral msat for a
- * general product wallet without making the caller decode first. The decoded
- * unit selects the bounded policy; resolved keyset source selects one closed
+ * Admits conditional CTF msat or regular collateral msat for a general
+ * product wallet without making the caller decode first. The decoded unit
+ * selects the bounded policy; resolved keyset source selects one closed
  * context. Mixed regular/conditional msat imports fail closed.
  */
 export async function validateProductWalletTokenImport(
@@ -565,12 +565,15 @@ function productWalletPolicy(decoded: Token | readonly Token[]): ImportContextPo
       fail('invalid_token', `decoded token ${tokenIndex} has an invalid shape`)
     }
     const tokenUnit = requireSupportedUnit(token.unit, `token ${tokenIndex}`)
+    if (tokenUnit === 'sat') {
+      fail('unsupported_unit', 'product-wallet token imports require msat')
+    }
     if (unit !== undefined && tokenUnit !== unit) {
       fail('unit_mismatch', 'decoded token set contains mixed units')
     }
     unit = tokenUnit
   }
-  return unit === 'sat' ? { unit, source: 'regular' } : { unit: 'msat', source: 'either' }
+  return { unit: 'msat', source: 'either' }
 }
 
 function deriveProductWalletContext(

@@ -40,7 +40,7 @@ import {
   writeState as persistState,
   type DaemonState,
 } from '../src/state.ts'
-import { splitAvailableSatProofsForCtfCollateral } from '../src/walletOps.ts'
+import { splitAvailableMsatProofsForCtfCollateral } from '../src/walletOps.ts'
 import { withDaemonStateSqliteTransaction } from '../src/stateSqlite.ts'
 import { withDurableCustodyUnitOfWork } from '../src/durableCustodyUnitOfWork.ts'
 import { canonicalTestKeysetId } from './support/canonicalKeysetId.ts'
@@ -236,7 +236,7 @@ test('daemon dispatch persists wallet and order state', async (t) => {
         try {
           await assert.rejects(
             () =>
-              splitAvailableSatProofsForCtfCollateral(
+              splitAvailableMsatProofsForCtfCollateral(
                 1_000,
                 'https://mint-a.example',
                 'preflight-msat-unit',
@@ -376,11 +376,11 @@ test('daemon dispatch persists wallet and order state', async (t) => {
       await writeState(emptyDaemonState())
       const keysetId = deriveKeysetId(
         { '1': `02${'11'.repeat(32)}` },
-        { unit: 'sat', versionByte: 1 },
+        { unit: 'msat', versionByte: 1 },
       )
       const token = getEncodedToken({
         mint: 'https://mint-a.example',
-        unit: 'sat',
+        unit: 'msat',
         proofs: [{ ...cashuProof(7, 'token-secret'), id: keysetId }],
       })
       const fence = await claimCustodyScopeLease(profileDir(), {
@@ -395,7 +395,7 @@ test('daemon dispatch persists wallet and order state', async (t) => {
         keysetId,
         1,
         { fence, observedAtMs: Date.now() },
-        { normalizedMint: 'https://mint-a.example', unit: 'sat' },
+        { normalizedMint: 'https://mint-a.example', unit: 'msat' },
       )
       let completeCalled = false
       await assert.rejects(
@@ -407,7 +407,7 @@ test('daemon dispatch persists wallet and order state', async (t) => {
               resolveMintKeysetIds: async () => [keysetId],
               resolveTokenImportKeysets: async () => ({
                 freshness: 'fresh' as const,
-                regularKeysets: [{ keysetId, unit: 'sat', active: true }],
+                regularKeysets: [{ keysetId, unit: 'msat', active: true }],
                 conditionalKeysets: [],
               }),
               createCashuWallet(mintUrl) {
@@ -451,7 +451,7 @@ test('daemon dispatch persists wallet and order state', async (t) => {
                   getKeyset() {
                     return {
                       id: keysetId,
-                      unit: 'sat',
+                      unit: 'msat',
                       keys: { '1': `02${'11'.repeat(32)}` },
                       fee: 0,
                       verify: () => true,
@@ -470,7 +470,7 @@ test('daemon dispatch persists wallet and order state', async (t) => {
     })
 
     await t.test(
-      'wallet.receive rejects resolved V1 ordinary proofs before wallet or counter work',
+      'wallet.receive rejects sat tokens before keyset resolution or wallet work',
       async () => {
         await writeState(emptyDaemonState())
         const legacyKeysetId = `00${'b'.repeat(14)}`
@@ -479,25 +479,31 @@ test('daemon dispatch persists wallet and order state', async (t) => {
           unit: 'sat',
           proofs: [{ ...cashuProof(7, 'legacy-ordinary-secret'), id: legacyKeysetId }],
         })
+        let resolverCalls = 0
         let walletCreated = false
         await assert.rejects(
           () =>
             dispatch(
               { method: 'wallet.receive', params: { token } },
               {
-                resolveTokenImportKeysets: async () => ({
-                  freshness: 'fresh' as const,
-                  regularKeysets: [{ keysetId: legacyKeysetId, unit: 'sat', active: true }],
-                  conditionalKeysets: [],
-                }),
+                resolveTokenImportKeysets: async () => {
+                  // Sat tokens must fail before this resolver is reached.
+                  resolverCalls += 1
+                  return {
+                    freshness: 'fresh' as const,
+                    regularKeysets: [{ keysetId: legacyKeysetId, unit: 'sat', active: true }],
+                    conditionalKeysets: [],
+                  }
+                },
                 createCashuWallet() {
                   walletCreated = true
                   throw new Error('wallet must not be created')
                 },
               },
             ),
-          /daemon wallet receive supports only V2 keysets/,
+          /product-wallet token imports require msat/,
         )
+        assert.equal(resolverCalls, 0)
         assert.equal(walletCreated, false)
         const counterRows = await withDaemonStateSqliteTransaction(
           profileDir(),
@@ -508,6 +514,55 @@ test('daemon dispatch persists wallet and order state', async (t) => {
                  WHERE normalized_mint = ? AND unit = ? AND keyset_id = ?`,
               )
               .get('https://mint-a.example', 'sat', legacyKeysetId) as { count: number },
+        )
+        assert.equal(counterRows.count, 0)
+      },
+    )
+
+    await t.test(
+      'wallet.receive rejects resolved V1 proofs before wallet or counter work',
+      async () => {
+        await writeState(emptyDaemonState())
+        const legacyKeysetId = `00${'b'.repeat(14)}`
+        const token = getEncodedToken({
+          mint: 'https://mint-a.example',
+          unit: 'msat',
+          proofs: [{ ...cashuProof(7, 'legacy-msat-secret'), id: legacyKeysetId }],
+        })
+        let resolverCalls = 0
+        let walletCreated = false
+        await assert.rejects(
+          () =>
+            dispatch(
+              { method: 'wallet.receive', params: { token } },
+              {
+                resolveTokenImportKeysets: async () => {
+                  resolverCalls += 1
+                  return {
+                    freshness: 'fresh' as const,
+                    regularKeysets: [{ keysetId: legacyKeysetId, unit: 'msat', active: true }],
+                    conditionalKeysets: [],
+                  }
+                },
+                createCashuWallet() {
+                  walletCreated = true
+                  throw new Error('wallet must not be created')
+                },
+              },
+            ),
+          /daemon wallet receive supports only V2 keysets/,
+        )
+        assert.equal(resolverCalls, 1)
+        assert.equal(walletCreated, false)
+        const counterRows = await withDaemonStateSqliteTransaction(
+          profileDir(),
+          (database) =>
+            database
+              .prepare(
+                `SELECT COUNT(*) AS count FROM target_keyset_counters
+                 WHERE normalized_mint = ? AND unit = ? AND keyset_id = ?`,
+              )
+              .get('https://mint-a.example', 'msat', legacyKeysetId) as { count: number },
         )
         assert.equal(counterRows.count, 0)
       },
@@ -564,7 +619,7 @@ test('daemon dispatch persists wallet and order state', async (t) => {
       assert.equal(response.ok, true)
       assert.deepEqual(response.result, {
         mintUrl: 'https://mint-a.example',
-        amountSats: 11,
+        amountMsat: 11,
         proofCount: 1,
         asset: {
           kind: 'Outcome',
@@ -702,7 +757,7 @@ test('daemon dispatch persists wallet and order state', async (t) => {
       let resolverCalls = 0
       const token = getEncodedToken({
         mint: 'https://unexpected-mint.example',
-        unit: 'sat',
+        unit: 'msat',
         proofs: [cashuProof(7, 'unexpected-mint-secret')],
       })
 
@@ -713,7 +768,7 @@ test('daemon dispatch persists wallet and order state', async (t) => {
             {
               resolveTokenImportKeysets: async (request) => {
                 resolverCalls += 1
-                return tokenImportKeysetResolver('regular', 'sat')(request)
+                return tokenImportKeysetResolver('regular', 'msat')(request)
               },
             },
           ),
@@ -754,7 +809,7 @@ test('daemon dispatch persists wallet and order state', async (t) => {
         () =>
           dispatch({
             method: 'wallet.send',
-            params: { amountSats: 5, mintUrl: 'https://mint-a.example' },
+            params: { amountMsat: 5, mintUrl: 'https://mint-a.example' },
           }),
         /requires custody authority/,
       )
@@ -765,7 +820,7 @@ test('daemon dispatch persists wallet and order state', async (t) => {
         () =>
           dispatch({
             method: 'wallet.send',
-            params: { amountSats: Number.MAX_SAFE_INTEGER + 1, mintUrl: 'https://mint-a.example' },
+            params: { amountMsat: Number.MAX_SAFE_INTEGER + 1, mintUrl: 'https://mint-a.example' },
           }),
         /positive safe integer/,
       )
@@ -775,7 +830,7 @@ test('daemon dispatch persists wallet and order state', async (t) => {
       const privateKey = Uint8Array.from([...new Uint8Array(31), 9])
       const publicKey = bytesToHex(secp256k1.getPublicKey(privateKey, true))
       const keys = { '1': publicKey, '2': publicKey, '4': publicKey, '8': publicKey }
-      const keysetId = deriveKeysetId(keys, { unit: 'sat', versionByte: 1 })
+      const keysetId = deriveKeysetId(keys, { unit: 'msat', versionByte: 1 })
       const input = signedDleqProof(
         OutputData.createSingleData(8, keysetId, 'strict-send-input', 1n),
         privateKey,
@@ -806,7 +861,7 @@ test('daemon dispatch persists wallet and order state', async (t) => {
           'https://mint-a.example',
           8,
           'available',
-          { kind: 'sats', baseAsset: 'sat', unit: 'sat' },
+          { kind: 'sats', baseAsset: 'sat', unit: 'msat' },
           input.secret,
         ),
       )
@@ -816,7 +871,7 @@ test('daemon dispatch persists wallet and order state', async (t) => {
         const row = createCustodyProofSqliteRow({
           scopeId,
           normalizedMint: 'https://mint-a.example',
-          unit: 'sat',
+          unit: 'msat',
           proof: input,
           baseAsset: 'sat',
           conditionId: null,
@@ -840,7 +895,7 @@ test('daemon dispatch persists wallet and order state', async (t) => {
         {
           method: 'wallet.send',
           params: {
-            amountSats: 5,
+            amountMsat: 5,
             mintUrl: 'https://mint-a.example',
             operationId: 'strict-wallet-send',
           },
@@ -869,7 +924,7 @@ test('daemon dispatch persists wallet and order state', async (t) => {
               return { keep: kept, send: sent }
             },
             checkProofsStates: async () => [],
-            getKeyset: () => ({ id: keysetId, unit: 'sat', keys, fee: 0, verify: () => true }),
+            getKeyset: () => ({ id: keysetId, unit: 'msat', keys, fee: 0, verify: () => true }),
           }),
           restoreOutputGroups: async (_mintUrl, outputs) => {
             assert.deepEqual(Object.keys(outputs).sort(), ['keep', 'send'])
@@ -888,8 +943,17 @@ test('daemon dispatch persists wallet and order state', async (t) => {
       async () => {
         const privateKey = Uint8Array.from([...new Uint8Array(31), 9])
         const publicKey = bytesToHex(secp256k1.getPublicKey(privateKey, true))
-        const keys = { '1': publicKey, '2': publicKey, '4': publicKey, '8': publicKey }
-        const keysetId = deriveKeysetId(keys, { unit: 'sat', versionByte: 1 })
+        const keys = {
+          '1': publicKey,
+          '2': publicKey,
+          '4': publicKey,
+          '8': publicKey,
+          '1000': publicKey,
+          '2000': publicKey,
+          '4000': publicKey,
+          '8000': publicKey,
+        }
+        const keysetId = deriveKeysetId(keys, { unit: 'msat', versionByte: 1 })
         const scopeId = deriveDurableCustodyScopeId({
           scopeKind: 'wallet',
           walletId: deriveDurableCustodyWalletId(Buffer.from(secrets.walletSeedHex, 'hex')),
@@ -900,7 +964,7 @@ test('daemon dispatch persists wallet and order state', async (t) => {
           observedAtMs: Date.now(),
         })
         const input = signedDleqProof(
-          OutputData.createSingleData(8, keysetId, 'score-input', 19n),
+          OutputData.createSingleData(8_000, keysetId, 'score-input', 19n),
           privateKey,
           keys,
         )
@@ -908,9 +972,9 @@ test('daemon dispatch persists wallet and order state', async (t) => {
         state.wallet.proofs.push(
           proofRecord(
             'https://mint-a.example',
-            8,
+            8_000,
             'available',
-            { kind: 'sats', baseAsset: 'sat', unit: 'sat' },
+            { kind: 'sats', baseAsset: 'sat', unit: 'msat' },
             input.secret,
           ),
         )
@@ -920,7 +984,7 @@ test('daemon dispatch persists wallet and order state', async (t) => {
           const row = createCustodyProofSqliteRow({
             scopeId,
             normalizedMint: 'https://mint-a.example',
-            unit: 'sat',
+            unit: 'msat',
             proof: input,
             baseAsset: 'sat',
             conditionId: null,
@@ -940,12 +1004,14 @@ test('daemon dispatch persists wallet and order state', async (t) => {
           ])
         })
         const scoreOutputs = [
-          OutputData.createSingleData(1, keysetId, 'score-send-one-a', 20n),
-          OutputData.createSingleData(1, keysetId, 'score-send-one-b', 21n),
+          OutputData.createSingleData(1_000, keysetId, 'score-send-one-a', 20n),
+          OutputData.createSingleData(1_000, keysetId, 'score-send-one-b', 21n),
         ]
         const scoreProofs = scoreOutputs.map((output) => signedDleqProof(output, privateKey, keys))
-        const scoreKeepOutputs = [OutputData.createSingleData(2, keysetId, 'score-keep-two', 22n)]
-        scoreKeepOutputs.push(OutputData.createSingleData(4, keysetId, 'score-keep-four', 23n))
+        const scoreKeepOutputs = [
+          OutputData.createSingleData(2_000, keysetId, 'score-keep-two', 22n),
+        ]
+        scoreKeepOutputs.push(OutputData.createSingleData(4_000, keysetId, 'score-keep-four', 23n))
         const scoreKeepProofs = scoreKeepOutputs.map((output) =>
           signedDleqProof(output, privateKey, keys),
         )
@@ -982,11 +1048,11 @@ test('daemon dispatch persists wallet and order state', async (t) => {
             receive: async () => [],
             send: async () => ({ keep: [], send: [] }),
             prepareSwapToSend: async (amount, proofs) => {
-              assert.equal(amount, 2)
+              assert.equal(amount, 2_000)
               assert.equal(proofs.length, 1)
-              assert.equal(Number(proofs[0]?.amount), 8)
+              assert.equal(Number(proofs[0]?.amount), 8_000)
               return {
-                amount: Amount.from(2),
+                amount: Amount.from(2_000),
                 fees: Amount.zero(),
                 keysetId,
                 inputs: proofs,
@@ -1000,7 +1066,7 @@ test('daemon dispatch persists wallet and order state', async (t) => {
               return { keep: scoreKeepProofs, send: scoreProofs }
             },
             checkProofsStates: async () => [],
-            getKeyset: () => ({ id: keysetId, unit: 'sat', keys, fee: 0, verify: () => true }),
+            getKeyset: () => ({ id: keysetId, unit: 'msat', keys, fee: 0, verify: () => true }),
           }),
           restoreOutputGroups: async () => ({ keep: scoreKeepProofs, send: scoreProofs }),
           triggerCustodyRecovery: () => {
@@ -1031,7 +1097,7 @@ test('daemon dispatch persists wallet and order state', async (t) => {
               pendingScoreDelivery = submission
               submittedDeliveryIds.push(submission.deliveryId)
               submittedStates.push('pending')
-              assert.equal(submission.requestedAmount, '2')
+              assert.equal(submission.requestedAmount, '2000')
               assert.match(submission.token, /^cashu/)
               return pendingRecipientStatus(submission)
             },
@@ -1085,7 +1151,7 @@ test('daemon dispatch persists wallet and order state', async (t) => {
         const restarted = new DaemonDurableOutgoingCashuCoordinator(profileDir(), () => fence)
         await restarted.preflightParticipationScoreDelivery({
           transferId: 'f4444444-4444-4444-8444-444444444444',
-          amountSats: 1,
+          amountMsat: 1_000,
           purchasedTotal: 2,
           accountSubject: secrets.nostrPublicKeyHex,
           mintUrl: 'https://mint-a.example',
@@ -1708,23 +1774,23 @@ test('daemon dispatch persists wallet and order state', async (t) => {
     )
 
     await t.test(
-      'order.submit checks regular sat Score backing before Score payment or capability admission',
+      'order.submit checks regular msat Score backing before Score payment or capability admission',
       async () => {
         const priorState = await readState()
         const state = emptyDaemonState()
         state.wallet.proofs.push(
           proofRecord(
             'https://mint-a.example',
-            4_200,
+            1_000,
             'available',
             { kind: 'sats', baseAsset: 'sat', unit: 'msat' },
             'order-backing-proof',
           ),
           proofRecord(
             'https://mint-a.example',
-            1,
+            1_000,
             'available',
-            { kind: 'sats', baseAsset: 'sat', unit: 'sat' },
+            { kind: 'sats', baseAsset: 'sat', unit: 'msat' },
             'score-backing-proof',
           ),
         )
@@ -1751,7 +1817,7 @@ test('daemon dispatch persists wallet and order state', async (t) => {
                   baseAsset: 'sat',
                   divisibility: 1_000,
                 }),
-                getParticipationScore: async () => scoreResponse({ balance: -1 }),
+                getParticipationScore: async () => scoreResponse({ balance: -100 }),
               }),
               prepareSettlementCapability: prepareSettlementCapability('unused', () => {
                 preparations += 1

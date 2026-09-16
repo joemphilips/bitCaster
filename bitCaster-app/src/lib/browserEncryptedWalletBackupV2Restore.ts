@@ -106,6 +106,7 @@ export type BrowserEncryptedWalletBackupV2RestoreAndAdmitResult =
 export async function restoreBrowserEncryptedWalletBackupV2TargetedAsset(
   input: BrowserEncryptedWalletBackupV2TargetedRestoreInput,
 ): Promise<BrowserEncryptedWalletBackupV2TargetedRestoreResult> {
+  requireProductMsatUnit(input.asset.unit);
   requireCurrent(input);
   if (input.minimumAvailableAmount !== undefined && input.minimumAvailableAmount < 0n) {
     throw new Error("browser V2 targeted restore minimum amount is invalid");
@@ -194,6 +195,7 @@ export async function restoreBrowserEncryptedWalletBackupV2TargetedAsset(
 export async function restoreAndAdmitBrowserEncryptedWalletBackupV2TargetedAsset(
   input: BrowserEncryptedWalletBackupV2RestoreAndAdmitInput,
 ): Promise<BrowserEncryptedWalletBackupV2RestoreAndAdmitResult> {
+  requireProductMsatUnit(input.asset.unit);
   if (normalizeUrl(input.wallet.mint.mintUrl) !== normalizeUrl(input.asset.mintUrl)) {
     reportStage(input, "backup-verify");
     throw new Error("browser V2 restore mint is foreign");
@@ -257,6 +259,10 @@ export async function restoreAndAdmitBrowserEncryptedWalletBackupV2TargetedAsset
     throw error;
   }
   return { kind: "restored", bundleId: restored.bundleId, headVersion: restored.headVersion };
+}
+
+function requireProductMsatUnit(unit: unknown): asserts unit is "msat" {
+  if (unit !== "msat") throw new Error("browser V2 product restore requires msat");
 }
 
 function reportStage(

@@ -13,6 +13,7 @@ import {
   BitcasterEngineClient,
   EngineClientError,
   isKind89NostrEvent,
+  parseSatsToMsat,
   validateMarketCreateEngineUrl,
 } from '@bitcaster-market/client-sdk'
 import { Command, CommanderError, Option } from 'commander'
@@ -376,7 +377,7 @@ function registerWalletCommand(program: Command): void {
       'Stable recovery job id. Reuse it for later invocations until recovery completes',
     )
     .requiredOption('--mint <url>', 'Canonical mint origin')
-    .requiredOption('--unit <unit>', 'Mint unit: sat or msat')
+    .requiredOption('--unit <unit>', 'Product mint unit: msat')
     .option(
       '--acknowledge-seed-disclosure',
       'Acknowledge that recovery discloses deterministic proof candidates to the mint',
@@ -395,8 +396,8 @@ function registerWalletCommand(program: Command): void {
         if (options.acknowledgeSeedDisclosure !== true) {
           throwUsage('wallet recover-seed requires --acknowledge-seed-disclosure')
         }
-        if (options.unit !== 'sat' && options.unit !== 'msat') {
-          throwUsage('wallet recover-seed unit must be sat or msat')
+        if (options.unit !== 'msat') {
+          throwUsage('wallet recover-seed unit must be msat')
         }
         if (isDryRun(options)) {
           printDryRun({
@@ -441,8 +442,8 @@ function registerWalletCommand(program: Command): void {
         amountSats: string,
         options: { mint?: string; operationId?: string; dryRun?: boolean },
       ) => {
-        const params: { amountSats: number; mintUrl?: string; operationId?: string } = {
-          amountSats: parseIntegerArg(amountSats, 'amount sats'),
+        const params: { amountMsat: number; mintUrl?: string; operationId?: string } = {
+          amountMsat: parseSatsToMsat(amountSats),
         }
         if (options.mint !== undefined) params.mintUrl = options.mint
         if (options.operationId !== undefined) params.operationId = options.operationId
@@ -550,12 +551,13 @@ function registerWalletSplitCommand(wallet: Command, name: string, hidden = fals
         amountSats: string,
         options: { mint?: string; operationId?: string; dryRun?: boolean },
       ) => {
+        const amountMsat = parsePositiveSatsToMsat(amountSats)
         const params: {
           conditionId: string
-          amountSats: number
+          amountMsat: number
           mintUrl?: string
           operationId?: string
-        } = { conditionId, amountSats: parseIntegerArg(amountSats, 'amount sats') }
+        } = { conditionId, amountMsat }
         if (options.mint !== undefined) params.mintUrl = options.mint
         if (options.operationId !== undefined) params.operationId = options.operationId
         if (isDryRun(options)) {
@@ -1259,6 +1261,17 @@ function parseIntegerArg(value: string | undefined, name: string): number {
   const parsed = Number(raw)
   if (Number.isInteger(parsed) && parsed > 0) return parsed
   throwUsage(`Invalid ${name}: ${raw}`)
+}
+
+function parsePositiveSatsToMsat(value: string | undefined): number {
+  const raw = requiredArg(value, 'amount sats')
+  try {
+    const parsed = parseSatsToMsat(raw)
+    if (parsed > 0) return parsed
+  } catch {
+    // Convert parser failures into the CLI's standard usage error below.
+  }
+  throwUsage(`Invalid amount sats: ${raw}`)
 }
 
 function parseNonNegativeIntegerArg(value: string | undefined, name: string): number {

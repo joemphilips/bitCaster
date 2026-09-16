@@ -11,7 +11,7 @@ export type DaemonCommand =
   | { method: 'wallet.receive'; params: WalletReceiveParams }
   | {
       method: 'wallet.send'
-      params: { amountSats: number; mintUrl?: string; operationId?: string }
+      params: { amountMsat: number; mintUrl?: string; operationId?: string }
     }
   | { method: 'wallet.reclaim'; params: { transferId: string } }
   | { method: 'wallet.splitCompleteSet'; params: WalletSplitCompleteSetParams }
@@ -80,7 +80,7 @@ export interface WalletReceiveParams {
 
 export interface WalletSplitCompleteSetParams {
   conditionId: string
-  amountSats: number
+  amountMsat: number
   mintUrl?: string
   operationId?: string
 }
@@ -122,8 +122,8 @@ export interface WalletConsolidationResult {
   type: 't1' | 't2' | 't3'
   status: 'consolidated' | 'skipped'
   reason?: string
-  convertFeeSats: number
-  collateralReturnedSats: number
+  convertFeeMsat: number
+  collateralReturnedMsat: number
   spentInputs: WalletConsolidationProofSummary[]
   outputs: WalletConsolidationProofSummary[]
 }

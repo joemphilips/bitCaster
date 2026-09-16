@@ -31,21 +31,14 @@ import {
   type IngressReceiveCashuTokenResult,
 } from "@/lib/walletOps";
 import { useToastStore } from "@/stores/toast";
-import {
-  getUnitProofs,
-  getProofs,
-  addProofs,
-  removeProofs,
-  isCtfProof,
-  type StoredProof,
-} from "@/stores/proof-db";
+import { getUnitProofs, getProofs, isCtfProof } from "@/stores/proof-db";
 import { usePaymentRequestInbox } from "@/stores/paymentRequestInbox";
 import { safeHostname } from "@/lib/url";
 import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
 import {
   cashuAmountToMarketSubunits,
-  collateralScaleForUnit,
   defaultCollateralUnit,
+  parseSatsToMsat,
   parseCashuProofUnit,
   type CashuProofUnit,
   type MarketBaseAsset,
@@ -62,15 +55,6 @@ export type ExtendedView =
   | "success";
 
 export type InvoiceStatus = "pending" | "paid" | "expired" | "error";
-
-function depositInputAmountToActivitySubunits(amount: number, baseAsset: MarketBaseAsset): number {
-  const unit = defaultCollateralUnit(baseAsset);
-  const amountSubunits = amount * collateralScaleForUnit(unit);
-  if (!Number.isSafeInteger(amountSubunits)) {
-    throw new Error(`Amount exceeds safe integer range for ${unit}: ${amount}`);
-  }
-  return amountSubunits;
-}
 
 export interface DepositWithdrawState {
   mode: DepositWithdrawMode;
@@ -101,9 +85,10 @@ export interface DepositWithdrawState {
   paymentRequestStatus: "waiting" | "received";
 
   // Success state
-  successAmount: number;
+  /** Successful product amount in native msat subunits. */
+  successAmountMsat: number;
   /** Product base asset of the displayed success amount. */
-  successUnit: MarketBaseAsset;
+  successBaseAsset: MarketBaseAsset;
 
   // Handlers
   onSelectMethod: (method: MethodType) => void;
@@ -200,8 +185,8 @@ export function useDepositWithdrawState(
   );
 
   // Success state
-  const [successAmount, setSuccessAmount] = useState(0);
-  const [successUnit, setSuccessUnit] = useState<MarketBaseAsset>("sat");
+  const [successAmountMsat, setSuccessAmountMsat] = useState(0);
+  const [successBaseAsset, setSuccessBaseAsset] = useState<MarketBaseAsset>("sat");
 
   // Track which view opened the scanner so we can process results correctly
   const scanReturnViewRef = useRef<ExtendedView>("deposit-ecash");
@@ -258,8 +243,8 @@ export function useDepositWithdrawState(
   useEffect(() => {
     if (!pendingRequestId || !inboxEntry) return;
     setPaymentRequestStatus("received");
-    setSuccessAmount(inboxEntry.amountSubunits);
-    setSuccessUnit(inboxEntry.baseAsset);
+    setSuccessAmountMsat(inboxEntry.amountSubunits);
+    setSuccessBaseAsset(inboxEntry.baseAsset);
     const handle = setTimeout(() => {
       usePaymentRequestInbox.getState().clear(pendingRequestId);
       setPendingRequestId(null);
@@ -268,7 +253,7 @@ export function useDepositWithdrawState(
     return () => clearTimeout(handle);
   }, [pendingRequestId, inboxEntry, onDismiss]);
 
-  const amountSats = parseInt(amountString || "0", 10);
+  const amountSats = parseDisplayAmountSats(amountString);
   const amountLabel = formatBtc(amountSats);
 
   const onSelectMethod = useCallback(
@@ -316,7 +301,7 @@ export function useDepositWithdrawState(
                     return;
                   }
                   setEcashToken(token.encodedToken);
-                  setAmountString(classified.requestedAmount);
+                  setAmountString(String(Number(classified.requestedAmount) / 1_000));
                   setCurrentView("token-display");
                   return;
                 case "bearer-partial":
@@ -343,6 +328,16 @@ export function useDepositWithdrawState(
       if (key === "backspace") {
         return prev.length <= 1 ? "" : prev.slice(0, -1);
       }
+
+      if (key === ".") {
+        if (prev === "") return "0.";
+        return prev.includes(".") ? prev : `${prev}.`;
+      }
+
+      if (!/^\d$/.test(key)) return prev;
+      const decimalIndex = prev.indexOf(".");
+      if (decimalIndex >= 0 && prev.length - decimalIndex - 1 >= 3) return prev;
+
       // Prevent leading zeros
       if (prev === "" && key === "0") return "";
       return prev + key;
@@ -369,18 +364,17 @@ export function useDepositWithdrawState(
   }, []);
 
   const handlePaidInvoice = useCallback(
-    (quote: DurableBolt11MintQuote, requested: number, baseAsset: MarketBaseAsset) => {
+    (quote: DurableBolt11MintQuote, requestedMsat: number, baseAsset: MarketBaseAsset) => {
       setInvoiceStatus("paid");
-      const requestedSubunits = depositInputAmountToActivitySubunits(requested, baseAsset);
       useActivityLogStore.getState().addActivity({
         type: "deposit",
         baseAsset,
-        amountSats: requestedSubunits,
+        amountSats: requestedMsat,
         status: "completed",
         lightningInvoice: quote.invoiceRequest,
       });
-      setSuccessAmount(requestedSubunits);
-      setSuccessUnit(baseAsset);
+      setSuccessAmountMsat(requestedMsat);
+      setSuccessBaseAsset(baseAsset);
       setCurrentView("success");
     },
     [],
@@ -390,13 +384,13 @@ export function useDepositWithdrawState(
     (
       r: { status: string; error?: Error },
       quote: DurableBolt11MintQuote,
-      requested: number,
+      requestedMsat: number,
       baseAsset: MarketBaseAsset,
     ) => {
       if (mintQuoteRef.current?.quoteRecordId !== quote.quoteRecordId) return;
       switch (r.status) {
         case "PAID":
-          handlePaidInvoice(quote, requested, baseAsset);
+          handlePaidInvoice(quote, requestedMsat, baseAsset);
           return;
         case "EXPIRED":
           setInvoiceStatus("expired");
@@ -421,12 +415,11 @@ export function useDepositWithdrawState(
     setIsLoading(true);
     setError(null);
     setInvoiceStatus("pending");
-    const requested = amountSats;
     const mintUrl = selectedMintId;
     const baseAsset = "sat" as const;
-    const quoteAmount = depositInputAmountToActivitySubunits(requested, baseAsset);
     const presentationGeneration = mintQuotePresentationGenerationRef.current;
     try {
+      const quoteAmount = parseSatsToMsat(amountString);
       await useWalletStore.getState().ensureImplicitWallet();
       if (
         mintQuoteDisposedRef.current ||
@@ -452,7 +445,8 @@ export function useDepositWithdrawState(
       setCurrentView("invoice-display");
       const unsub = await subscribeActiveBrowserDurableBolt11MintQuote({
         quote: created.quote,
-        onResult: (result) => handleInvoiceWaitResult(result, created.quote, requested, baseAsset),
+        onResult: (result) =>
+          handleInvoiceWaitResult(result, created.quote, quoteAmount, baseAsset),
         options: {
           onTransientError: (error) => {
             if (
@@ -490,7 +484,7 @@ export function useDepositWithdrawState(
         setIsLoading(false);
       }
     }
-  }, [amountSats, selectedMintId, handleInvoiceWaitResult]);
+  }, [amountSats, amountString, selectedMintId, handleInvoiceWaitResult]);
 
   const onRegenerateInvoice = useCallback(() => {
     void stopActiveMintQuote().finally(() => {
@@ -522,8 +516,8 @@ export function useDepositWithdrawState(
           status: "completed",
         });
         setIsLoading(false);
-        setSuccessAmount(received.amountSubunits);
-        setSuccessUnit(receivedBaseAsset);
+        setSuccessAmountMsat(received.amountSubunits);
+        setSuccessBaseAsset(receivedBaseAsset);
         setCurrentView("success");
       } else if (currentView === "pay-lightning") {
         setLightningInput(text);
@@ -548,7 +542,7 @@ export function useDepositWithdrawState(
     setError(null);
     try {
       const transfer = await executeBrowserBearerWithdrawal({
-        amount: amountSats,
+        amountMsat: parseSatsToMsat(amountString),
         mintUrl: selectedMintId,
       });
       if (transfer.token === null) throw new Error("Withdrawal token was not durably admitted");
@@ -560,7 +554,7 @@ export function useDepositWithdrawState(
     } finally {
       setIsLoading(false);
     }
-  }, [amountSats, selectedMintId]);
+  }, [amountSats, amountString, selectedMintId]);
 
   const onReclaimEcash = useCallback(async () => {
     if (bearerWithdrawal === null) return;
@@ -641,35 +635,24 @@ export function useDepositWithdrawState(
     setMeltIsPaying(true);
     setError(null);
     try {
-      const proofs = await getUnitProofs(selectedMintId, { unit: "sat" });
-      const { paid, change } = await meltProofs(meltQuote, proofs, selectedMintId);
+      const proofs = await getUnitProofs(selectedMintId, { unit: "msat" });
+      const { paid } = await meltProofs(meltQuote, proofs, selectedMintId);
 
       if (!paid) {
         setError("Payment failed");
         return;
       }
 
-      // Remove spent proofs, add change
-      await removeProofs(proofs.map((p) => p.secret));
-      if (change.length > 0) {
-        const changeStored: StoredProof[] = change.map((p) => ({
-          ...p,
-          mintUrl: selectedMintId,
-          baseAsset: "sat",
-          unit: "sat",
-        }));
-        await addProofs(changeStored);
-      }
-
+      const amountMsat = amountToNumber(meltQuote.amount);
       useActivityLogStore.getState().addActivity({
         type: "withdrawal",
         baseAsset: "sat",
-        amountSats: amountToNumber(meltQuote.amount),
+        amountSats: amountMsat,
         status: "completed",
         lightningInvoice: lightningInput,
       });
-      setSuccessAmount(amountToNumber(meltQuote.amount));
-      setSuccessUnit("sat");
+      setSuccessAmountMsat(amountMsat);
+      setSuccessBaseAsset("sat");
       setCurrentView("success");
     } catch (e) {
       setError((e as Error).message);
@@ -701,8 +684,8 @@ export function useDepositWithdrawState(
             amountSats: received.amountSubunits,
             status: "completed",
           });
-          setSuccessAmount(received.amountSubunits);
-          setSuccessUnit(receivedBaseAsset);
+          setSuccessAmountMsat(received.amountSubunits);
+          setSuccessBaseAsset(receivedBaseAsset);
           setCurrentView("success");
         } catch (e) {
           setError((e as Error).message);
@@ -802,8 +785,8 @@ export function useDepositWithdrawState(
     meltIsPaying,
     paymentRequestEncoded,
     paymentRequestStatus,
-    successAmount,
-    successUnit,
+    successAmountMsat,
+    successBaseAsset,
     onSelectMethod,
     onNumpadPress,
     onMintChange,
@@ -828,4 +811,15 @@ function requireCashuProofUnit(value: string | null | undefined): CashuProofUnit
   const unit = parseCashuProofUnit(value);
   if (!unit) throw new Error(`Unsupported Cashu proof unit '${value ?? ""}'`);
   return unit;
+}
+
+function parseDisplayAmountSats(value: string): number {
+  if (value === "") return 0;
+  try {
+    return parseSatsToMsat(value) / 1_000;
+  } catch {
+    // Keep action buttons disabled while the user has entered an incomplete
+    // decimal such as "1.". The shared parser remains authoritative at send.
+    return 0;
+  }
 }

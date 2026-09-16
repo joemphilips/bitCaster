@@ -93,7 +93,7 @@ test('asset-monitoring outcome-universe digest rejects noncanonical outcomes', (
 
 test('asset-monitoring proof facts group available and pending amounts by complete asset', () => {
   const first = collateralAsset('https://a-mint.example')
-  const second = { ...first, cashuUnit: 'sat' as const }
+  const second = collateralAsset('https://b-mint.example')
   const holdings = buildAssetMonitoringHoldingsFromProofFacts([
     proofFact({ asset: first, amount: 3 }),
     proofFact({ proofIdentity: 'proof-2', asset: first, amount: 5, state: 'pending' }),
@@ -108,10 +108,24 @@ test('asset-monitoring proof facts group available and pending amounts by comple
       holding.pendingOutgoingSubunits,
     ]),
     [
-      ['https://a-mint.example', 'sat', 7, 0],
       ['https://a-mint.example', 'msat', 3, 5],
+      ['https://b-mint.example', 'msat', 7, 0],
     ],
   )
+})
+
+test('asset-monitoring rejects sat money and msat display assets', () => {
+  for (const units of [
+    { cashuUnit: 'sat', displayBaseAsset: 'sat' },
+    { cashuUnit: 'msat', displayBaseAsset: 'msat' },
+  ]) {
+    const report = validReport()
+    const holding = report.holdings[0]!
+    assert.throws(() => decodeAssetMonitoringReportRequest({
+      ...report,
+      holdings: [{ ...holding, asset: { ...holding.asset, ...units } }],
+    }))
+  }
 })
 
 test('asset-monitoring proof facts reject duplicate identities and overflow', () => {
@@ -381,7 +395,7 @@ test('asset-monitoring codecs reject duplicate identities, unknown fields, and n
           { ...validReport().holdings[0], asset: { ...CONDITIONAL_ASSET, cashuUnit: 'usd' } },
         ],
       }),
-    /unit is invalid/,
+    /cashu unit must be msat/,
   )
   for (const internalOutcomeSetId of ['YES|NO', 'YES|YES', 'YES|NO!', 'A|B|C|D|E|F|G|H']) {
     assert.throws(

@@ -107,7 +107,7 @@ export async function ensureParticipationScoreForNextMatch(input: {
       deliveryId: claimed.deliveryId,
       accountSubject,
       mintUrl: input.mintUrl,
-      requestedAmount: String(plan.deficitScore),
+      requestedAmount: (BigInt(plan.deficitScore) * 1_000n).toString(),
     });
     if (delivery.progress !== "credited") {
       throw new Error("Participation Score delivery is pending authoritative credit.");
@@ -123,8 +123,8 @@ export async function ensureParticipationScoreForNextMatch(input: {
       payment: {
         paymentId: delivery.transfer.transferId,
         status: "credited",
-        amountSats: Number(delivery.transfer.requestedAmount),
-        creditedScore: Number(result.creditedAmount),
+        amountSats: Number(delivery.transfer.requestedAmount) / 1_000,
+        creditedScore: Number(result.creditedAmount) / 1_000,
         creditedAt: result.businessEventAt,
       },
     };
@@ -134,8 +134,8 @@ export async function ensureParticipationScoreForNextMatch(input: {
         kind: "needs-regular-top-up",
         score,
         requiredSats: plan.deficitScore,
-        balanceSats: error.balanceSats,
-        deficitSats: plan.deficitScore - error.balanceSats,
+        balanceSats: error.balanceMsat / 1_000,
+        deficitSats: plan.deficitScore - error.balanceMsat / 1_000,
       };
     }
     throw error;

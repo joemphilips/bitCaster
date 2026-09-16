@@ -202,7 +202,7 @@ async function factsFromRows(
 interface DecodedMonitoringRow {
   readonly proofId: string
   readonly normalizedMint: string
-  readonly unit: 'sat' | 'msat'
+  readonly unit: AssetMonitoringAssetReference['cashuUnit']
   readonly keysetId: string
   readonly amount: number
   readonly conditionId: string | null
@@ -224,7 +224,7 @@ function decodeMonitoringRow(row: MonitoringRow): DecodedMonitoringRow | null {
   )
     throw new Error('asset-monitoring proof metadata is invalid')
   const unit = parseCashuProofUnit(row.unit)
-  if (unit === null) throw new Error('asset-monitoring proof unit is invalid')
+  if (unit !== 'msat') throw new Error('asset-monitoring proof unit must be msat')
   const normalizedMint = decodeCanonicalMintOrigin(row.normalizedMint)
   const conditionId = row.conditionId === null ? null : requireConditionId(row.conditionId)
   const outcomeSetId = row.outcomeSetId === null ? null : requireOutcomeSet(row.outcomeSetId)

@@ -41,6 +41,11 @@ for the first portfolio render. The response includes the active wallet summary,
 the first asset page, and the selected value history. It does not prove custody
 or authorize spending.
 
+Each monitored asset uses `cashuUnit: "msat"` and `displayBaseAsset: "sat"`.
+Amounts stay in msat on the wire. Convert them to sats only for display.
+An unsupported unit makes the complete wallet report invalid. Do not omit that
+holding and submit a partial replacement report.
+
 Use the returned asset cursor with `GET /api/v1/asset-monitoring/assets` to
 read later pages. Do not call the portfolio endpoint for continuation pages.
 Private responses use `Cache-Control: no-store`. The API returns `400` for an

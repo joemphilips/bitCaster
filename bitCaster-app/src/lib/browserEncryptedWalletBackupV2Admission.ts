@@ -51,8 +51,15 @@ export interface BrowserEncryptedWalletBackupV2AdmissionInput {
 export async function admitBrowserEncryptedWalletBackupV2Asset(
   input: BrowserEncryptedWalletBackupV2AdmissionInput,
 ): Promise<void> {
+  requireProductMsatUnit(input.asset.unit);
   requireCurrent(input);
   const verified = requireEncryptedWalletBackupV2VerifiedProofSet(input.verified);
+  if (
+    verified.proofs.some(({ unit }) => unit !== "msat") ||
+    verified.counterHighWaterMarks.some(({ unit }) => unit !== "msat")
+  ) {
+    throw new Error("browser V2 product admission proof unit requires msat");
+  }
   requireAdmissionAuthority(input, verified);
   if (browserWalletScope(input.seed).scopeId !== input.scopeId)
     throw new Error("browser V2 restore scope is foreign");
@@ -72,6 +79,10 @@ export async function admitBrowserEncryptedWalletBackupV2Asset(
     },
     input.lockManager,
   );
+}
+
+function requireProductMsatUnit(unit: unknown): asserts unit is "msat" {
+  if (unit !== "msat") throw new Error("browser V2 product admission requires msat");
 }
 
 function requireAdmissionAuthority(

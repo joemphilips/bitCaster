@@ -30,7 +30,7 @@ import { browserWalletDatabaseName } from "../browserWalletProfile";
 const SEED = Uint8Array.from({ length: 64 }, (_, index) => index + 1);
 const MINT = "https://mint.example";
 const PUBLIC_KEY = "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798";
-const KEYSET_ID = deriveKeysetId({ 1: PUBLIC_KEY }, { unit: "sat", versionByte: 1 });
+const KEYSET_ID = deriveKeysetId({ 1: PUBLIC_KEY }, { unit: "msat", versionByte: 1 });
 const CONDITION_ID = "55".repeat(32);
 const COLLECTION_ID = deriveRootCtfOutcomeCollectionId({
   conditionId: CONDITION_ID,
@@ -73,7 +73,7 @@ describe("browser encrypted wallet backup V2 admission", () => {
     expect(await database.custodyOperations.count()).toBe(3);
     expect(await database.proofs.count()).toBe(65);
     expect(
-      await database.walletCounterAssociations.get([fixture.scopeId, MINT, "sat", KEYSET_ID]),
+      await database.walletCounterAssociations.get([fixture.scopeId, MINT, "msat", KEYSET_ID]),
     ).toMatchObject({ recoveryComplete: true });
     expect(await database.walletCounterCursors.get([fixture.scopeId, KEYSET_ID])).toEqual({
       scopeId: fixture.scopeId,
@@ -81,6 +81,28 @@ describe("browser encrypted wallet backup V2 admission", () => {
       next: 65,
     });
     await expectDesired(database, fixture, 65);
+  });
+
+  it("rejects sat before backup, custody, counter, or cache writes", async () => {
+    const fixture = await createFixture(1);
+    database = fixture.database;
+    const satAsset = createEncryptedWalletBackupV2AssetIdentity({
+      mintUrl: MINT,
+      unit: "sat",
+      asset: { kind: "ordinary" },
+    });
+
+    await expect(
+      admitBrowserEncryptedWalletBackupV2Asset({ ...fixture.input, asset: satAsset }),
+    ).rejects.toThrow(/requires msat/);
+    expect(await database.custodyScopes.count()).toBe(0);
+    expect(await database.custodyOperations.count()).toBe(0);
+    expect(await database.custodyProofs.count()).toBe(0);
+    expect(await database.custodyProofBackupAuthorities.count()).toBe(0);
+    expect(await database.walletCounterAssociations.count()).toBe(0);
+    expect(await database.walletCounterCursors.count()).toBe(0);
+    expect(await database.encryptedWalletBackupV2DesiredAssets.count()).toBe(0);
+    expect(await database.proofs.count()).toBe(0);
   });
 
   it("reports only fixed admission stage transitions", async () => {
@@ -221,7 +243,7 @@ describe("browser encrypted wallet backup V2 admission", () => {
       createBrowserCustodyProofRow({
         scopeId: fixture.scopeId,
         normalizedMint: MINT,
-        unit: "sat",
+        unit: "msat",
         proof: replacement.proof,
         asset: { kind: "regular" },
         receivedAtMs: 1,
@@ -353,7 +375,7 @@ async function createFixture(
 ) {
   const scopeId = browserWalletScope(SEED).scopeId;
   const database = new BitcasterDB(browserWalletDatabaseName(scopeId));
-  const unit: "sat" | "msat" = asset.kind === "ctf" ? "msat" : "sat";
+  const unit: "msat" = "msat";
   const verified = await createVerified(count, { asset });
   const identity = createEncryptedWalletBackupV2AssetIdentity({
     mintUrl: MINT,
@@ -387,7 +409,7 @@ async function createVerified(
   } = {},
 ): Promise<EncryptedWalletBackupV2VerifiedProofSet> {
   const asset = options.asset ?? { kind: "ordinary" };
-  const unit: "sat" | "msat" = asset.kind === "ctf" ? "msat" : "sat";
+  const unit: "msat" = "msat";
   const keysetId = asset.kind === "ctf" ? CONDITIONAL_KEYSET_ID : KEYSET_ID;
   const counterOffset = options.counterOffset ?? 0;
   const proofs = Array.from({ length: count }, (_, index) => {
@@ -473,7 +495,7 @@ function locatorFor(
       };
 }
 
-function wallet(asset: EncryptedWalletBackupV2ProofSetAsset, unit: "sat" | "msat"): CashuWallet {
+function wallet(asset: EncryptedWalletBackupV2ProofSetAsset, unit: "msat"): CashuWallet {
   const conditional =
     asset.kind === "ctf"
       ? {

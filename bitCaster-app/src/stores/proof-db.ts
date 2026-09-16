@@ -767,19 +767,6 @@ export async function getBoundedCanonicalRegularProofs(
   );
 }
 
-/** Read one bounded largest-first regular sat candidate set across canonical V2 keysets. */
-export async function getBoundedCanonicalSatProofs(
-  mintUrl: string,
-  options: { scopeId: string },
-  database: BitcasterDB = db,
-): Promise<StoredProof[]> {
-  return getBoundedCanonicalRegularProofs(
-    mintUrl,
-    { unit: "sat", scopeId: options.scopeId },
-    database,
-  );
-}
-
 async function getBoundedCanonicalV2Proofs(
   mintUrl: string,
   requestedUnit: CashuProofUnit | string,

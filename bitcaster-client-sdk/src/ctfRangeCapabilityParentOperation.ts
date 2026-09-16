@@ -42,7 +42,7 @@ import type {
 } from './ctfRangeCapabilityBatchPlan.ts'
 import { CTF_RANGE_BATCH_INPUT_LIMIT_MAX } from './ctfRangeCapabilityBatchPlan.ts'
 import { prepareMintInputProofs } from './mintInputProof.ts'
-import { amountToNumber, computeInputFeeSatsForProofs, sumProofs } from './proofSelection.ts'
+import { amountToNumber, computeInputFeeSubunitsForProofs, sumProofs } from './proofSelection.ts'
 import {
   assertDurableSeedDerivedOutputPlanMatchesOutputs,
   matchDurableSeedDerivedProofsToPlan,
@@ -551,7 +551,7 @@ function assertParentAllocations(
   }
   assertChangeAllocations(parent)
   const source = sourceKeyset(parent, context)
-  const fee = computeInputFeeSatsForProofs(parent.inputs, { [source.id]: source.inputFeePpk })
+  const fee = computeInputFeeSubunitsForProofs(parent.inputs, { [source.id]: source.inputFeePpk })
   const authorization = parent.outputs
     .filter(({ role }) => role === 'authorization')
     .reduce((sum, { amount }) => checkedAdd(sum, amount), 0)

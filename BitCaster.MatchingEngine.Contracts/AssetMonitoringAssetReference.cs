@@ -13,8 +13,8 @@ public sealed record Asset
     public Asset(
         Uri canonicalMintUrl,
         AssetMonitoringAssetKind kind,
-        AssetMonitoringUnit cashuUnit,
-        AssetMonitoringUnit displayBaseAsset,
+        CollateralUnit cashuUnit,
+        BaseAsset displayBaseAsset,
         string? conditionId = null,
         string? parentConditionId = null,
         string? outcomeUniverseDigest = null,
@@ -49,13 +49,13 @@ public sealed record Asset
 
     [JsonRequired]
     [JsonPropertyName("cashuUnit")]
-    [JsonConverter(typeof(OpenApiJsonStringEnumConverter<AssetMonitoringUnit>))]
-    public AssetMonitoringUnit CashuUnit { get; init; }
+    [JsonConverter(typeof(OpenApiJsonStringEnumConverter<CollateralUnit>))]
+    public CollateralUnit CashuUnit { get; init; }
 
     [JsonRequired]
     [JsonPropertyName("displayBaseAsset")]
-    [JsonConverter(typeof(OpenApiJsonStringEnumConverter<AssetMonitoringUnit>))]
-    public AssetMonitoringUnit DisplayBaseAsset { get; init; }
+    [JsonConverter(typeof(OpenApiJsonStringEnumConverter<BaseAsset>))]
+    public BaseAsset DisplayBaseAsset { get; init; }
 
     [JsonPropertyName("conditionId")]
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]

@@ -118,6 +118,7 @@ export function browserTargetedAssetRecoveryFactVersion(
   fact: Pick<AssetMonitoringAssetResponse, "asset" | "availableSubunits" | "recoveryHint">,
 ): string {
   const asset = decodeAssetMonitoringAssetReference(fact.asset);
+  requiredUnit(asset.cashuUnit);
   const availableSubunits = requireAmount(fact.availableSubunits);
   const recoveryHint =
     fact.recoveryHint === null
@@ -132,6 +133,7 @@ export function browserTargetedAssetRecoveryFactVersion(
 async function recoveryInput(
   input: BrowserTargetedAssetRecoveryInput,
 ): Promise<TargetedAssetRecoveryInput> {
+  requiredUnit(input.asset.unit);
   return {
     scopeId: input.scopeId,
     assetLocator: await deriveEncryptedWalletBackupV2AssetLocator({
@@ -635,9 +637,8 @@ function canonicalRecoveryHint(value: ReturnType<typeof decodeAssetMonitoringRec
   };
 }
 
-function requiredUnit(value: string): "sat" | "msat" {
-  if (value !== "sat" && value !== "msat")
-    throw new Error("targeted asset recovery unit is invalid");
+function requiredUnit(value: string): "msat" {
+  if (value !== "msat") throw new Error("targeted asset recovery requires msat");
   return value;
 }
 

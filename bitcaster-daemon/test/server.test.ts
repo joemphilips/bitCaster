@@ -312,7 +312,7 @@ test('wallet send and reclaim wake bounded custody recovery after a durable atte
         dispatch(
           {
             method: 'wallet.send',
-            params: { amountSats: 1, mintUrl: 'https://mint.example' },
+            params: { amountMsat: 1, mintUrl: 'https://mint.example' },
           },
           dependencies,
         ),
@@ -533,7 +533,7 @@ function completedCompleteSetOperation() {
       purpose: 'daemon-complete-set-ctf-split',
       rootOperationId: 'root',
       conditionId,
-      amountSats: 1,
+      amountMsat: 1,
       amountSubunits: 1,
       reservationId: 'root:ctf-split:reservation',
       inputAsset: { kind: 'sats', baseAsset: 'sat', unit: 'msat' },

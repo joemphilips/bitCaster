@@ -12,7 +12,7 @@ export interface EmergencySeedRecoveryCursor {
   recoveryId: string
   walletScopeId: string
   mintUrl: string
-  unit: string
+  unit: 'msat'
   keysetId: string
   nextCounter: number
   trailingEmptyCounters: number
@@ -72,6 +72,9 @@ export function createEmergencySeedRecoveryCursor(input: {
   unit: string
   keysetId: string
 }): EmergencySeedRecoveryCursor {
+  if (input.unit !== 'msat') {
+    throw new Error('emergency seed recovery unit must be msat')
+  }
   return validateEmergencySeedRecoveryCursor({
     schemaVersion: EMERGENCY_SEED_RECOVERY_SCHEMA_VERSION,
     ...input,
@@ -300,6 +303,9 @@ export function validateEmergencySeedRecoveryCursor(value: unknown): EmergencySe
     ) {
       throw new Error(`emergency seed recovery ${label} is invalid`)
     }
+  }
+  if (value.unit !== 'msat') {
+    throw new Error('emergency seed recovery unit must be msat')
   }
   decodeDurableCustodyScopeId(value.walletScopeId)
   decodeCanonicalMintOrigin(value.mintUrl)

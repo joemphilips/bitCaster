@@ -68,8 +68,7 @@ describe("TokenDisplay NUT-16 QR presentation", () => {
     const token = "cashuB-complete-original-token";
 
     render(<TokenDisplay token={token} amountSats={500} proofCount={3} />);
-    const buttons = screen.getAllByRole("button");
-    await userEvent.click(buttons.at(-1)!);
+    await userEvent.click(screen.getByRole("button", { name: "Copy to Clipboard" }));
 
     expect(writeText).toHaveBeenCalledWith(token);
   });

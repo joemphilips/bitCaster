@@ -77,6 +77,18 @@ it("short-circuits exact local custody without backup or mint I/O", async () => 
   expect(input.wallet.restore).not.toHaveBeenCalled();
 });
 
+it("rejects a sat product asset before local custody I/O", async () => {
+  const input = await fixture();
+  (input as any).asset = { ...input.asset, unit: "sat" };
+
+  await expect(recoverBrowserTargetedAsset(input)).resolves.toEqual({
+    kind: "persistent-error",
+  });
+
+  expect(mocks.localAmount).not.toHaveBeenCalled();
+  expect(input.remote.readCurrentInventory).not.toHaveBeenCalled();
+});
+
 it.each([1n, 2n])(
   "restores an equal or higher exact backup amount without mint recovery (%s)",
   async (backupAmount) => {
@@ -237,7 +249,7 @@ it("rejects a foreign restored asset before admission", async () => {
   input.wallet.restore.mockResolvedValueOnce({ proofs: [exactProof()] });
   input.wallet.getKeyset.mockReturnValueOnce({
     id: KEYSET,
-    unit: "sat",
+    unit: "msat",
     verify: () => true,
     conditional: { conditionId: "11".repeat(32), outcomeCollectionId: "22".repeat(32) },
   });
@@ -444,7 +456,7 @@ async function fixture(
     groupProofsByState: vi.fn(),
     getKeyset: vi.fn(() => ({
       id: KEYSET,
-      unit: "sat",
+      unit: "msat",
       hasKeys: true,
       verify: () => true,
       conditional,
@@ -471,7 +483,7 @@ async function fixture(
   } as any;
   const asset = {
     mintUrl: "https://mint.example",
-    unit: "sat",
+    unit: "msat",
     assetIdentity: options.conditional
       ? `ctf:${CONDITION_ID}:${OUTCOME_COLLECTION_ID}`
       : "cashu:ordinary",
@@ -511,7 +523,7 @@ function monitoringFact(conditional = false) {
       ? {
           canonicalMintUrl: "https://mint.example",
           kind: "conditional" as const,
-          cashuUnit: "sat" as const,
+          cashuUnit: "msat" as const,
           displayBaseAsset: "sat" as const,
           conditionId: CONDITION_ID,
           parentConditionId: "00".repeat(32),
@@ -521,7 +533,7 @@ function monitoringFact(conditional = false) {
       : {
           canonicalMintUrl: "https://mint.example",
           kind: "collateral" as const,
-          cashuUnit: "sat" as const,
+          cashuUnit: "msat" as const,
           displayBaseAsset: "sat" as const,
         },
     availableSubunits: 1,

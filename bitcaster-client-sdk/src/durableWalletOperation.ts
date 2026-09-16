@@ -1273,7 +1273,8 @@ function decodeMeltPreview(value: Record<string, unknown>): void {
   decodeArray(value.inputs, decodeProof, 'melt inputs', DURABLE_CUSTODY_INPUT_PROOF_LIMIT_MAX)
   decodeArray(
     value.outputData,
-    decodeOutput,
+    // NUT-08 represents melt change with zero-valued blank outputs.
+    (output) => decodeOutput(output, true),
     'melt output data',
     DURABLE_CUSTODY_BLINDED_OUTPUT_LIMIT_MAX,
   )
@@ -1342,19 +1343,19 @@ function decodeProofWitness(value: unknown): asserts value is DurableWalletProof
   encodeBoundedDurableArtifact(value, DURABLE_CUSTODY_ARTIFACT_BYTES_MAX)
 }
 
-function decodeOutput(value: unknown): void {
+function decodeOutput(value: unknown, allowZeroBlindedAmount = false): void {
   if (!isRecord(value)) throw new Error('durable wallet output is invalid')
   exactKeys(value, ['blindedMessage', 'blindingFactor', 'secret', 'ephemeralE'])
-  decodeBlindedMessage(value.blindedMessage)
+  decodeBlindedMessage(value.blindedMessage, allowZeroBlindedAmount)
   requireText(value.blindingFactor, 'blinding factor')
   requireText(value.secret, 'output secret')
   if (value.ephemeralE !== null) requireText(value.ephemeralE, 'output ephemeral value')
 }
 
-function decodeBlindedMessage(value: unknown): void {
+function decodeBlindedMessage(value: unknown, allowZeroAmount = false): void {
   if (!isRecord(value)) throw new Error('durable wallet blinded message is invalid')
   exactKeys(value, ['amount', 'id', 'B_'])
-  requireAmount(value.amount, 'blinded amount', false)
+  requireAmount(value.amount, 'blinded amount', allowZeroAmount)
   assertCanonicalNut02V2KeysetId(value.id, 'durable wallet blinded keyset id')
   requireText(value.B_, 'blinded message')
 }
@@ -1365,10 +1366,7 @@ export function serializeDurableWalletProof(proof: Proof): DurableWalletProof {
     amount: Amount.from(proof.amount).toString(),
     secret: proof.secret,
     C: proof.C,
-    dleq:
-      proof.dleq === undefined
-        ? null
-        : { e: proof.dleq.e, s: proof.dleq.s, r: proof.dleq.r ?? null },
+    dleq: proof.dleq == null ? null : { e: proof.dleq.e, s: proof.dleq.s, r: proof.dleq.r ?? null },
     p2pkE: proof.p2pk_e ?? null,
     witness:
       proof.witness === undefined
@@ -1509,7 +1507,7 @@ function decodeArray(
   if (!Array.isArray(value) || value.length > maximumLength) {
     throw new Error(`durable wallet ${label} are invalid`)
   }
-  value.forEach(decode)
+  value.forEach((item) => decode(item))
 }
 
 function assertDistinctProofs(proofs: readonly Record<string, unknown>[]): void {
