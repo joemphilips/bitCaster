@@ -4,6 +4,10 @@
   "scripts": {
     "format": "prettier --write \"{bitCaster-app,bitCaster-doc,bitcaster-cli,bitcaster-client-sdk,bitcaster-daemon,scripts,test-vectors,tools}/**/*.{js,mjs,cjs,ts,tsx,css,json}\" \"*.{js,mjs,cjs,ts,tsx,json}\"",
     "format:check": "prettier --check \"{bitCaster-app,bitCaster-doc,bitcaster-cli,bitcaster-client-sdk,bitcaster-daemon,scripts,test-vectors,tools}/**/*.{js,mjs,cjs,ts,tsx,css,json}\" \"*.{js,mjs,cjs,ts,tsx,json}\"",
+    "test:mutation:sdk:baseline": "node --experimental-strip-types --test bitcaster-client-sdk/test/marketUnits.test.ts",
+    "test:mutation:sdk": "stryker run stryker.sdk.config.mjs",
+    "test:mutation:app:baseline": "npm --workspace bitCaster-app run test -- --run src/lib/__tests__/formatAmount.test.ts",
+    "test:mutation:app": "stryker run stryker.app.config.mjs",
     "vectors:nut-ctf-range:generate": "node scripts/generate-nut-ctf-range-v1.mjs --write",
     "vectors:nut-ctf-range:check": "node scripts/generate-nut-ctf-range-v1.mjs --check",
     "postinstall": "node scripts/postinstall-build-cli.mjs"
@@ -16,6 +20,8 @@
     "cashu-ts"
   ],
   "devDependencies": {
+    "@stryker-mutator/core": "10.0.0",
+    "@stryker-mutator/vitest-runner": "10.0.0",
     "jsdom": "^29.1.1",
     "prettier": "^3.8.3"
   }
