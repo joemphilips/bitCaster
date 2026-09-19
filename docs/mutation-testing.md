@@ -1,6 +1,6 @@
 # Bounded mutation testing
 
-This repository uses StrykerJS 10.0.0 for two Phase 4A profiles. The profiles
+This repository uses StrykerJS 10.0.0 for bounded Phase 4A profiles. The profiles
 use one worker and write local HTML and JSON reports. Do not commit reports.
 
 ## SDK profile
@@ -48,6 +48,48 @@ survivor by checking its source location and replacement in the JSON report,
 then run the matching baseline command after applying the replacement in a
 disposable copy. Mutation runs do not replace ordinary tests or browser tests.
 
-Daemon, CLI, backup-service, and other production targets are not configured
-in this bounded Phase 4A slice. Do not treat these profiles as a repository-wide
-baseline.
+## Daemon profile
+
+Run the selected native test before mutation testing:
+
+```bash
+npm run test:mutation:daemon:baseline
+```
+
+Run mutation testing for `bitcaster-daemon/src/endpoint.ts`:
+
+```bash
+npm run test:mutation:daemon
+```
+
+The command runner imports `dataDirTestSetup.ts` and executes only the strict
+native-config parser test. The selected test is pure and does not open a
+socket. The parser exercises endpoint URL normalization in the
+mutated daemon source.
+
+## CLI profile
+
+Run the selected native test before mutation testing:
+
+```bash
+npm run test:mutation:cli:baseline
+```
+
+Run mutation testing for `bitcaster-cli/src/config.ts`:
+
+```bash
+npm run test:mutation:cli
+```
+
+The command runner imports `dataDirTestSetup.ts` and executes only the existing
+config-list test. That test starts `bitcaster-cli/src/main.ts` in a child
+process, so the profile exercises the mutated TypeScript source instead of a
+compiled CLI `dist` file. It does not open a socket.
+
+Daemon and CLI reports are under
+`reports/mutation/stryker-js/{daemon,cli}/`. Reproduce a survivor by checking
+its source location and replacement in the JSON report, then run the matching
+baseline command after applying the replacement in a disposable copy.
+
+These profiles are representative runner proofs. They are not daemon or CLI
+whole-project baselines. Other source files remain unassessed in this phase.
