@@ -5,7 +5,7 @@ export default {
     command: 'node --experimental-strip-types --test bitcaster-client-sdk/test/marketUnits.test.ts',
   },
   mutate: ['bitcaster-client-sdk/src/marketUnits.ts'],
-  ignorePatterns: ['cdk/**', '.worktrees/**', '.stryker-tmp*/**'],
+  ignorePatterns: ['cdk/**', 'dlcdevkit/**', '.worktrees/**', '.stryker-tmp*/**'],
   reporters: ['clear-text', 'html', 'json'],
   htmlReporter: { fileName: 'reports/mutation/stryker-js/sdk/mutation.html' },
   jsonReporter: { fileName: 'reports/mutation/stryker-js/sdk/mutation.json' },

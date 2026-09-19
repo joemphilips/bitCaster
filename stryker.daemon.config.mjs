@@ -6,7 +6,7 @@ export default {
       'node --experimental-strip-types --import ./bitcaster-daemon/test/dataDirTestSetup.ts --test --test-name-pattern="strict native config rejects malformed" bitcaster-daemon/test/nativeConfig.test.ts',
   },
   mutate: ['bitcaster-daemon/src/endpoint.ts'],
-  ignorePatterns: ['cdk/**', '.worktrees/**', '.stryker-tmp*/**'],
+  ignorePatterns: ['cdk/**', 'dlcdevkit/**', '.worktrees/**', '.stryker-tmp*/**'],
   reporters: ['clear-text', 'html', 'json'],
   htmlReporter: { fileName: 'reports/mutation/stryker-js/daemon/mutation.html' },
   jsonReporter: { fileName: 'reports/mutation/stryker-js/daemon/mutation.json' },

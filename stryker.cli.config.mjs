@@ -6,7 +6,7 @@ export default {
       'node --experimental-strip-types --import ./bitcaster-daemon/test/dataDirTestSetup.ts --test --test-name-pattern="config list does not rewrite already sanitized config" bitcaster-cli/test/cli.test.ts',
   },
   mutate: ['bitcaster-cli/src/config.ts'],
-  ignorePatterns: ['cdk/**', '.worktrees/**', '.stryker-tmp*/**'],
+  ignorePatterns: ['cdk/**', 'dlcdevkit/**', '.worktrees/**', '.stryker-tmp*/**'],
   reporters: ['clear-text', 'html', 'json'],
   htmlReporter: { fileName: 'reports/mutation/stryker-js/cli/mutation.html' },
   jsonReporter: { fileName: 'reports/mutation/stryker-js/cli/mutation.json' },

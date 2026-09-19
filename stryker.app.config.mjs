@@ -3,7 +3,7 @@ export default {
   testRunner: 'vitest',
   plugins: ['@stryker-mutator/vitest-runner'],
   mutate: ['bitCaster-app/src/lib/formatAmount.ts'],
-  ignorePatterns: ['cdk/**', '.worktrees/**', '.stryker-tmp*/**'],
+  ignorePatterns: ['cdk/**', 'dlcdevkit/**', '.worktrees/**', '.stryker-tmp*/**'],
   testFiles: ['bitCaster-app/src/lib/__tests__/formatAmount.test.ts'],
   vitest: {
     configFile: 'stryker.app.vitest.config.ts',
