@@ -1,4 +1,4 @@
-import { renderHook, act } from "@testing-library/react";
+import { renderHook, act, waitFor } from "@testing-library/react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router";
@@ -144,7 +144,7 @@ beforeEach(() => {
     conditionId: "test-cond-id",
     marketsCreated: ["test-cond-id-Yes", "test-cond-id-No"],
     thumbnailUrl: null,
-        divisibility: 1_000,
+    divisibility: 1_000,
   });
   mockCreateEnumAnnouncement.mockResolvedValue("announcement-hex");
   mockEnsureKormirNsec.mockResolvedValue(undefined);
@@ -198,11 +198,7 @@ async function setupDraftForSubmission() {
   await act(async () => {
     result.current.onNext();
   });
-  // Step 3: outcomes (default names)
-  await act(async () => {
-    result.current.onNext();
-  });
-  // Step 4: description
+  // Binary markets enter review directly with canonical Yes/No outcomes.
   await act(async () => {
     result.current.onDescriptionChange("Test description");
   });
@@ -229,6 +225,96 @@ function setCategoricalOutcomes(outcomes: WizardOutcome[]) {
 function makeOutcome(id: string): WizardOutcome {
   return { id, label: id.toUpperCase(), description: "" };
 }
+
+describe("useMarketCreationState – wizard navigation", () => {
+  it("skips binary outcomes, initializes Yes/No, and returns to basic info", async () => {
+    const { result } = renderHook(() => useMarketCreationState(), { wrapper });
+
+    await act(async () => {
+      result.current.onOutcomeTypeSelect("yesno");
+      result.current.onNext();
+    });
+    expect(result.current.draft.currentStep).toBe(2);
+
+    await act(async () => {
+      result.current.onTitleChange("Binary market");
+      result.current.onNext();
+    });
+
+    expect(result.current.draft.currentStep).toBe(3);
+    expect(result.current.draft.stepOutcomes).toEqual({
+      outcomeType: "yesno",
+      outcomes: [
+        { id: "yes", label: "Yes", description: "" },
+        { id: "no", label: "No", description: "" },
+      ],
+      baseAsset: "sat",
+    });
+    expect(result.current.draft.stepReviewAndCreate).toEqual({ description: "" });
+
+    await act(async () => {
+      result.current.onBack();
+    });
+    expect(result.current.draft.currentStep).toBe(2);
+    expect(result.current.draft.stepBasicInfo?.title).toBe("Binary market");
+  });
+
+  it("restores a binary draft at outcomes as review without losing fields", async () => {
+    useMarketDraftStore.setState({
+      draft: {
+        ...defaultDraft(),
+        currentStep: 3,
+        stepGetStarted: { outcomeType: "yesno" },
+        stepBasicInfo: {
+          imageFile: null,
+          title: "Restored binary market",
+          categoryTags: ["finance"],
+          closingDate: "2030-01-01T00:00",
+        },
+        stepOutcomes: null,
+        stepReviewAndCreate: { description: "Keep this description" },
+      },
+      hasSavedDraft: true,
+    });
+
+    const { result } = renderHook(() => useMarketCreationState(), { wrapper });
+
+    await waitFor(() => {
+      expect(result.current.draft.currentStep).toBe(3);
+      expect(result.current.draft.stepOutcomes).toEqual({
+        outcomeType: "yesno",
+        outcomes: [
+          { id: "yes", label: "Yes", description: "" },
+          { id: "no", label: "No", description: "" },
+        ],
+        baseAsset: "sat",
+      });
+    });
+    expect(result.current.draft.stepBasicInfo?.title).toBe("Restored binary market");
+    expect(result.current.draft.stepBasicInfo?.categoryTags).toEqual(["finance"]);
+    expect(result.current.draft.stepReviewAndCreate?.description).toBe("Keep this description");
+  });
+
+  it("keeps categorical and numeric markets on the outcomes step", async () => {
+    const { result } = renderHook(() => useMarketCreationState(), { wrapper });
+
+    await act(async () => {
+      result.current.onOutcomeTypeSelect("categorical");
+      result.current.onNext();
+      result.current.onNext();
+    });
+    expect(result.current.draft.currentStep).toBe(3);
+    expect(result.current.draft.stepOutcomes?.outcomeType).toBe("categorical");
+
+    await act(async () => {
+      result.current.onBack();
+      result.current.onOutcomeTypeSelect("numeric");
+      result.current.onNext();
+    });
+    expect(result.current.draft.currentStep).toBe(3);
+    expect(result.current.draft.stepOutcomes?.outcomeType).toBe("numeric");
+  });
+});
 
 describe("useMarketCreationState – categorical outcomes", () => {
   it("adds and removes outcomes without creator probability state", async () => {
@@ -263,7 +349,7 @@ describe("useMarketCreationState – onCreateMarket", () => {
         conditionId: "test-cond-id",
         marketsCreated: [],
         thumbnailUrl: null,
-    divisibility: 1_000,
+        divisibility: 1_000,
       };
     });
 
@@ -449,7 +535,7 @@ describe("useMarketCreationState – onCreateMarket", () => {
     });
 
     expect(result.current.submitError).toBe(
-      "This mint requires a 1,000,001 subunits condition registration fee, which exceeds the 1,000,000 subunits app limit.",
+      "This mint requires a 1,000.001 sats condition registration fee, which exceeds the 1,000 sats app limit.",
     );
     expect(mockRegisterConditionWithFee).not.toHaveBeenCalled();
     expect(mockCreateMarket).not.toHaveBeenCalled();
@@ -592,9 +678,6 @@ describe("useMarketCreationState – onCreateMarket", () => {
     await act(async () => {
       const future = new Date(Date.now() + 86400000).toISOString().slice(0, 16);
       result.current.onClosingDateChange(future);
-    });
-    await act(async () => {
-      result.current.onNext();
     });
     await act(async () => {
       result.current.onNext();

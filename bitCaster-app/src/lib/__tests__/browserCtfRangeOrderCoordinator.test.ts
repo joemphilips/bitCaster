@@ -33,6 +33,13 @@ import {
   deriveDurableCustodyOperationId,
   deriveDurableCustodyWalletId,
 } from "@bitcaster/client-sdk/durableCustody";
+import { deriveDurableCustodyProofId } from "@bitcaster/client-sdk/durableCustody";
+import {
+  createEncryptedWalletBackupV2AssetIdentity,
+  encryptedWalletBackupV2LocalAssetKey,
+  verifyEncryptedWalletBackupV2RestoredProofSet,
+} from "@bitcaster/client-sdk";
+import { deriveDurableWalletProofSecret } from "@bitcaster/client-sdk/durableWalletProofDerivationLocator";
 import {
   buildDurableCtfRangeRecoveryQuery,
   createDurableCtfRangeResultEnvelope,
@@ -69,6 +76,12 @@ import {
   type BrowserCtfRangeEngine,
   type BrowserCtfRangeOrderCoordinatorDependencies,
 } from "../browserCtfRangeOrderCoordinator";
+import { admitBrowserEncryptedWalletBackupV2Asset } from "../browserEncryptedWalletBackupV2Admission";
+import {
+  readBrowserEncryptedWalletBackupV2LocalAvailableAmount,
+  type BrowserEncryptedWalletBackupV2TargetedRestoreInput,
+} from "../browserEncryptedWalletBackupV2Restore";
+import { browserWalletDatabaseName } from "../browserWalletProfile";
 import {
   browserRangeJournalIdentity,
   browserWalletScope,
@@ -739,6 +752,96 @@ describe("browser CTF range order coordinator", () => {
           );
         }),
     ).toBe(true);
+  });
+
+  it("keeps Buy source authorization out of local backup availability", async () => {
+    const database = createDatabase([], browserWalletDatabaseName(walletScopeId()));
+    const preparation = persistedPreparation("range-buy-local-custody-count");
+    const seeded = await admitDeterministicRegularProof(database, 8);
+    const counterSource = inMemoryCounterSource(async (keysetId, _start, count) => {
+      const cursor = await database.walletCounterCursors.get([walletScopeId(), keysetId]);
+      await database.walletCounterCursors.put({
+        scopeId: walletScopeId(),
+        keysetId,
+        next: (cursor?.next ?? 0) + count,
+      });
+    });
+    await counterSource.advanceToAtLeast(REGULAR_KEYSET_ID, 1);
+    const sourcePlans: Array<{
+      inputTotal: number;
+      sendAmount: number;
+      sourceFee: number;
+      keepAmount: number;
+    }> = [];
+    let now = Date.now();
+    const coordinator = createCoordinator(
+      database,
+      sourceWallet({ onPrepare: (plan) => sourcePlans.push(plan) }),
+      engineMock(),
+      {
+        now: () => ++now,
+        counterSource,
+        beforeCreateCapability: async () => {
+          const rows = await database.custodyProofs.toArray();
+          const authorities = new Map(
+            (await database.custodyProofBackupAuthorities.toArray()).map((row) => [
+              row.proofId,
+              row,
+            ]),
+          );
+          const activeRows = rows.filter(
+            ({ selectability }) => selectability === "selectable" || selectability === "locked",
+          );
+          const aggregate = {
+            activeRows: activeRows.length,
+            lockedNullLocator: activeRows.filter(
+              ({ proofId, selectability }) =>
+                selectability === "locked" && authorities.get(proofId)?.derivationLocator === null,
+            ).length,
+            selectableLocatored: activeRows.filter(
+              ({ proofId, selectability }) =>
+                selectability === "selectable" &&
+                authorities.get(proofId)?.derivationLocator !== null,
+            ).length,
+            selectableNullLocator: activeRows.filter(
+              ({ proofId, selectability }) =>
+                selectability === "selectable" &&
+                authorities.get(proofId)?.derivationLocator === null,
+            ).length,
+          };
+          expect(aggregate).toEqual({
+            activeRows: 3,
+            lockedNullLocator: 2,
+            selectableLocatored: 1,
+            selectableNullLocator: 0,
+          });
+          const desired = await database.encryptedWalletBackupV2DesiredAssets.get([
+            walletScopeId(),
+            encryptedWalletBackupV2LocalAssetKey(localAvailabilityInput(database).asset),
+          ]);
+          expect(desired?.activeProofCount).toBe(1);
+          expect(await database.walletCounterCursors.toArray()).toEqual(
+            expect.arrayContaining([
+              expect.objectContaining({ keysetId: preparation.offerKeyset.id, next: 2 }),
+            ]),
+          );
+
+          const localAmount = await readBrowserEncryptedWalletBackupV2LocalAvailableAmount(
+            localAvailabilityInput(database),
+          );
+          expect(localAmount).toBe(4n);
+        },
+      },
+    );
+
+    await expect(
+      coordinator.prepareAndSubmit({
+        seed: SEED,
+        preparation,
+        candidates: [seeded],
+      }),
+    ).resolves.toMatchObject({ orderId: "44444444-4444-4444-8444-444444444444" });
+    expect(sourcePlans).toEqual([{ inputTotal: 8, sendAmount: 3, sourceFee: 1, keepAmount: 4 }]);
   });
 
   it("repairs a missing legacy proof mirror from canonical custody authority", async () => {
@@ -1562,14 +1665,19 @@ describe("browser CTF range order coordinator", () => {
       let newCheckCalls = 0;
       const database = createDatabase();
       const engine = engineMock({ resultFailure: true, orderStatus: activeFokOrderStatus(status) });
-      const coordinator = createCoordinator(database, sourceWallet({ onCheck: () => newCheckCalls += 1 }), engine, {
-        now: () => now,
-        createMintRecovery: refundableRecovery(preparation),
-        executeRefundSwap: async () => {
-          newRefundCalls += 1;
-          throw new Error("active FOK must not start a refund");
+      const coordinator = createCoordinator(
+        database,
+        sourceWallet({ onCheck: () => (newCheckCalls += 1) }),
+        engine,
+        {
+          now: () => now,
+          createMintRecovery: refundableRecovery(preparation),
+          executeRefundSwap: async () => {
+            newRefundCalls += 1;
+            throw new Error("active FOK must not start a refund");
+          },
         },
-      });
+      );
       await coordinator.prepareAndSubmit({
         seed: SEED,
         preparation,
@@ -1585,7 +1693,9 @@ describe("browser CTF range order coordinator", () => {
       expect(newCheckCalls).toBe(0);
       expect(newRefundCalls).toBe(0);
       expect(
-        await database.proofOperations.get(deriveDurableCtfRangeRefundOperationId(preparation.operationId)),
+        await database.proofOperations.get(
+          deriveDurableCtfRangeRefundOperationId(preparation.operationId),
+        ),
       ).toBeUndefined();
       expect(
         (await readCtfRangePreparation(walletScopeId(), preparation.operationId, database))
@@ -1618,7 +1728,9 @@ describe("browser CTF range order coordinator", () => {
         pending: [{ operationId: existingPreparation.operationId, code: "recovery-pending" }],
       });
       const refundId = deriveDurableCtfRangeRefundOperationId(existingPreparation.operationId);
-      expect(await existingDatabase.proofOperations.get(refundId)).toMatchObject({ state: "prepared" });
+      expect(await existingDatabase.proofOperations.get(refundId)).toMatchObject({
+        state: "prepared",
+      });
 
       let resumedRefundCalls = 0;
       let resumedCheckCalls = 0;
@@ -1628,7 +1740,7 @@ describe("browser CTF range order coordinator", () => {
       });
       const resumed = createCoordinator(
         existingDatabase,
-        sourceWallet({ onCheck: () => resumedCheckCalls += 1 }),
+        sourceWallet({ onCheck: () => (resumedCheckCalls += 1) }),
         resumedEngine,
         {
           now: () => existingNow,
@@ -1646,10 +1758,17 @@ describe("browser CTF range order coordinator", () => {
       expect(resumedEngine.statusCalls).toBe(1);
       expect(resumedCheckCalls).toBe(0);
       expect(resumedRefundCalls).toBe(0);
-      expect(await existingDatabase.proofOperations.get(refundId)).toMatchObject({ state: "prepared" });
+      expect(await existingDatabase.proofOperations.get(refundId)).toMatchObject({
+        state: "prepared",
+      });
       expect(
-        (await readCtfRangePreparation(walletScopeId(), existingPreparation.operationId, existingDatabase))
-          ?.lifecycleState,
+        (
+          await readCtfRangePreparation(
+            walletScopeId(),
+            existingPreparation.operationId,
+            existingDatabase,
+          )
+        )?.lifecycleState,
       ).toBe("order-submitted");
     },
   );
@@ -2019,13 +2138,15 @@ async function bindJournalCapability(
   );
 }
 
-function inMemoryCounterSource(onReserve: () => void = () => {}): CounterSource {
+function inMemoryCounterSource(
+  onReserve: (keysetId: string, start: number, count: number) => void | Promise<void> = () => {},
+): CounterSource {
   const next = new Map<string, number>();
   return {
     async reserve(keysetId, count) {
-      onReserve();
       const start = next.get(keysetId) ?? 0;
       next.set(keysetId, start + count);
+      await onReserve(keysetId, start, count);
       return { start, count };
     },
     async advanceToAtLeast(keysetId, minNext) {
@@ -2038,6 +2159,12 @@ function sourceWallet(
   input: {
     onComplete?: () => Promise<void>;
     onCheck?: () => void;
+    onPrepare?: (plan: {
+      inputTotal: number;
+      sendAmount: number;
+      sourceFee: number;
+      keepAmount: number;
+    }) => void;
     inputState?: ProofState["state"];
   } = {},
 ) {
@@ -2053,6 +2180,7 @@ function sourceWallet(
     ): Promise<SwapPreview> {
       const inputTotal = proofs.reduce((total, proof) => total + amountToNumber(proof.amount), 0);
       const keepAmount = inputTotal - amount - 1;
+      input.onPrepare?.({ inputTotal, sendAmount: amount, sourceFee: 1, keepAmount });
       return {
         amount: Amount.from(amount),
         fees: Amount.from(1),
@@ -2721,8 +2849,9 @@ function sequentialId(...ids: string[]): () => string {
 
 function createDatabase(
   proofs: StoredProof[] = [storedSourceProof(sourceProof(REGULAR_KEYSET_ID))],
+  name = `bitcaster-browser-range-${crypto.randomUUID()}`,
 ): BitcasterDB {
-  const database = new BitcasterDB(`bitcaster-browser-range-${crypto.randomUUID()}`);
+  const database = new BitcasterDB(name);
   database.on("populate", (transaction) =>
     transaction.table("proofs").bulkAdd(
       proofs.map((proof) => ({
@@ -2734,4 +2863,125 @@ function createDatabase(
   );
   openDatabases.push(database);
   return database;
+}
+
+async function admitDeterministicRegularProof(
+  database: BitcasterDB,
+  amount: number,
+): Promise<StoredProof> {
+  const locator = {
+    schemaVersion: 1 as const,
+    kind: "nut13" as const,
+    keysetId: REGULAR_KEYSET_ID,
+    counter: 0,
+  };
+  const proof: StoredProof = {
+    id: REGULAR_KEYSET_ID,
+    amount: Amount.from(amount),
+    secret: deriveDurableWalletProofSecret({
+      seed: SEED,
+      locator,
+      proofKeysetId: REGULAR_KEYSET_ID,
+      proofAmount: amount,
+    }),
+    C: MINT_PUBLIC_KEY,
+    mintUrl: MINT_URL,
+    baseAsset: "sat",
+    unit: "msat",
+    receivedAt: 1,
+  };
+  const asset = createEncryptedWalletBackupV2AssetIdentity({
+    mintUrl: MINT_URL,
+    unit: "msat",
+    asset: { kind: "ordinary" },
+  });
+  const verified = await verifyEncryptedWalletBackupV2RestoredProofSet({
+    seed: SEED,
+    expectedAsset: asset,
+    unverified: {
+      proofs: [
+        {
+          mintUrl: MINT_URL,
+          unit: "msat",
+          asset: { kind: "ordinary" },
+          locator,
+          proof,
+          proofId: deriveDurableCustodyProofId({
+            scopeId: walletScopeId(),
+            normalizedMint: MINT_URL,
+            unit: "msat",
+            keysetId: REGULAR_KEYSET_ID,
+            secret: proof.secret,
+          }),
+        },
+      ],
+      counterHighWaterMarks: [
+        { mintUrl: MINT_URL, unit: "msat", keysetId: REGULAR_KEYSET_ID, nextCounter: 1 },
+      ],
+    },
+    port: {
+      async resolveKeyset({ mintUrl, unit, keysetId }) {
+        return {
+          mintUrl,
+          unit,
+          keysetId,
+          keyset: {},
+          requireDleq: false,
+          verify: () => true,
+        };
+      },
+      verifyProofs: () => undefined,
+      checkProofStates: async ({ proofs }) =>
+        proofs.map(({ proofId }) => ({ proofId, state: "UNSPENT" as const })),
+    },
+  });
+  await admitBrowserEncryptedWalletBackupV2Asset({
+    seed: SEED,
+    verified,
+    asset,
+    custodyRevision: 1n,
+    sourceOperationId: "backup-v2-test-seed",
+    wallet: deterministicRegularWallet(),
+    database,
+    scopeId: walletScopeId(),
+    isCurrentProfile: () => true,
+    lockManager: immediateLockManager(),
+  });
+  return proof;
+}
+
+function deterministicRegularWallet() {
+  return {
+    mint: { mintUrl: MINT_URL },
+    getKeyset: () => ({
+      id: REGULAR_KEYSET_ID,
+      unit: "msat",
+      keys: KEYS,
+      expiry: FINAL_EXPIRY,
+      verify: () => true,
+    }),
+  } as Parameters<typeof admitBrowserEncryptedWalletBackupV2Asset>[0]["wallet"];
+}
+
+function localAvailabilityInput(
+  database: BitcasterDB,
+): BrowserEncryptedWalletBackupV2TargetedRestoreInput {
+  return {
+    database,
+    scopeId: walletScopeId(),
+    seed: SEED,
+    keyHandle: {} as BrowserEncryptedWalletBackupV2TargetedRestoreInput["keyHandle"],
+    enrollmentEpoch: 1,
+    asset: createEncryptedWalletBackupV2AssetIdentity({
+      mintUrl: MINT_URL,
+      unit: "msat",
+      asset: { kind: "ordinary" },
+    }),
+    remote: {} as BrowserEncryptedWalletBackupV2TargetedRestoreInput["remote"],
+    requestUrl: () => "",
+    nowUnixSeconds: () => 1,
+    runtime: {} as BrowserEncryptedWalletBackupV2TargetedRestoreInput["runtime"],
+    signal: new AbortController().signal,
+    isCurrentProfile: () => true,
+  };
 }

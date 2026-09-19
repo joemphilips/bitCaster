@@ -123,6 +123,49 @@ describe("Settings generated nsec/npub reveal modal (P22 Link E)", () => {
   });
 });
 
+describe("Settings wallet seed backup visibility", () => {
+  const walletSeedPhrase =
+    "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
+
+  it("hides seed backup controls when no wallet exists", () => {
+    render(<Settings activeCategory="cashu" settings={settingsState()} seedPhrase="" />);
+
+    expect(screen.queryByText("Seed Backup")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /view seed phrase/i })).not.toBeInTheDocument();
+  });
+
+  it("shows the seed confirmation flow for an existing wallet", () => {
+    render(
+      <Settings activeCategory="cashu" settings={settingsState()} seedPhrase={walletSeedPhrase} />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /view seed phrase/i }));
+
+    expect(screen.getByRole("heading", { name: /security warning/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /i understand, show phrase/i })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /i understand, show phrase/i }));
+
+    expect(screen.getAllByText("abandon", { selector: "span" })).toHaveLength(11);
+    expect(screen.getByText("about", { selector: "span" })).toBeInTheDocument();
+  });
+
+  it("hides the open seed modal when the wallet disappears", () => {
+    const { rerender } = render(
+      <Settings activeCategory="cashu" settings={settingsState()} seedPhrase={walletSeedPhrase} />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /view seed phrase/i }));
+    expect(screen.getByRole("heading", { name: /security warning/i })).toBeInTheDocument();
+
+    rerender(<Settings activeCategory="cashu" settings={settingsState()} seedPhrase="" />);
+
+    expect(screen.queryByRole("heading", { name: /security warning/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /view seed phrase/i })).not.toBeInTheDocument();
+    expect(screen.queryAllByText("abandon", { selector: "span" })).toHaveLength(0);
+  });
+});
+
 describe("Settings liked-market close notifications opt-in (P22 Link G)", () => {
   // jsdom has no Notification API by default; stub one so the toggle is not
   // disabled as "unsupported".

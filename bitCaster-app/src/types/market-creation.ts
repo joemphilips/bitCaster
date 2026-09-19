@@ -112,6 +112,9 @@ export interface MarketCreationWizardProps {
   /** Registered market denominator returned by the successful create response. */
   createdMarketDivisibility: MarketDivisibility | null;
 
+  /** Open the wallet setup chooser before a wallet-owned action. */
+  onRequireWallet?: () => void;
+
   /** True when the wizard is being re-entered with a previously-saved draft. */
   hasSavedDraft: boolean;
 

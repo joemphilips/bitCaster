@@ -34,6 +34,30 @@ export interface BrowserEncryptedWalletBackupV2AssetSnapshot {
   readonly counterHighWaterMarks: readonly EncryptedWalletBackupV2CounterHighWaterMark[];
 }
 
+/** One local custody read with separate backup coverage and available amount facts. */
+export interface BrowserEncryptedWalletBackupV2LocalAssetRead {
+  readonly desired: EncryptedWalletBackupV2DesiredAssetRow | null;
+  readonly activeProofs: readonly ReturnType<typeof decodeBrowserCustodyProofRow>[];
+  readonly backupEligibleProofCount: number;
+  readonly snapshot: BrowserEncryptedWalletBackupV2AssetSnapshot | null;
+}
+
+export type BrowserEncryptedWalletBackupV2LocalAssetReadFailure =
+  | "invalid-action"
+  | "missing-authority"
+  | "proof-read"
+  | "snapshot-read";
+
+export class BrowserEncryptedWalletBackupV2LocalAssetReadError extends Error {
+  constructor(
+    readonly code: BrowserEncryptedWalletBackupV2LocalAssetReadFailure,
+    message: string,
+  ) {
+    super(message);
+    this.name = "BrowserEncryptedWalletBackupV2LocalAssetReadError";
+  }
+}
+
 interface BrowserEncryptedWalletBackupV2AssetSourceInput {
   readonly database: BitcasterDB;
   readonly scopeId: string;
@@ -45,6 +69,57 @@ export async function readBrowserEncryptedWalletBackupV2AssetSnapshot(
   input: BrowserEncryptedWalletBackupV2AssetSourceInput,
 ): Promise<BrowserEncryptedWalletBackupV2AssetSnapshot> {
   return materializeAssetSnapshot(await readRawAssetSnapshot(input));
+}
+
+/**
+ * Reads one bounded local asset state. Locator-bearing proofs define backup
+ * coverage. Locked operation proofs without locators remain local-only.
+ */
+export async function readBrowserEncryptedWalletBackupV2LocalAssetRead(input: {
+  readonly database: BitcasterDB;
+  readonly scopeId: string;
+  readonly asset: EncryptedWalletBackupV2AssetIdentity;
+}): Promise<BrowserEncryptedWalletBackupV2LocalAssetRead> {
+  const expected = createEncryptedWalletBackupV2DesiredAssetRow({
+    scopeId: input.scopeId,
+    asset: input.asset,
+    custodyRevision: 0n,
+    activeProofCount: 0,
+  });
+  let raw: Awaited<ReturnType<typeof readRawAssetSnapshot>>;
+  try {
+    raw = await readRawAssetSnapshot({
+      database: input.database,
+      scopeId: input.scopeId,
+      localAssetKey: expected.localAssetKey,
+      expectedAsset: input.asset,
+      localRead: true,
+    });
+  } catch (error) {
+    if (error instanceof BrowserEncryptedWalletBackupV2LocalAssetReadError) throw error;
+    throw localReadError("proof-read", "browser V2 local custody proof read failed");
+  }
+  const desired = raw.rawDesired === undefined ? null : raw.desired;
+  const backupEligibleProofCount = raw.proofRows.length;
+  let snapshot: BrowserEncryptedWalletBackupV2AssetSnapshot | null = null;
+  if (
+    desired !== null &&
+    desired.desiredAction === "replace" &&
+    raw.activeProofRows.length > 0 &&
+    backupEligibleProofCount === desired.activeProofCount
+  ) {
+    try {
+      snapshot = materializeAssetSnapshot(raw);
+    } catch {
+      throw localReadError("snapshot-read", "browser V2 local custody snapshot read failed");
+    }
+  }
+  return Object.freeze({
+    desired,
+    activeProofs: Object.freeze([...raw.activeProofRows]),
+    backupEligibleProofCount,
+    snapshot,
+  });
 }
 
 /** Reads exact selectable and locked rows for one V2 asset without broad mint scanning. */
@@ -66,7 +141,12 @@ export async function readBrowserEncryptedWalletBackupV2ExactLocalProofRows(inpu
   return activeRows(input.database, desired, context?.first ?? null);
 }
 
-async function readRawAssetSnapshot(input: BrowserEncryptedWalletBackupV2AssetSourceInput) {
+async function readRawAssetSnapshot(
+  input: BrowserEncryptedWalletBackupV2AssetSourceInput & {
+    readonly expectedAsset?: EncryptedWalletBackupV2AssetIdentity;
+    readonly localRead?: boolean;
+  },
+) {
   return input.database.transaction(
     "r",
     [
@@ -82,25 +162,84 @@ async function readRawAssetSnapshot(input: BrowserEncryptedWalletBackupV2AssetSo
         input.scopeId,
         input.localAssetKey,
       ]);
-      if (rawDesired === undefined) throw new Error("browser V2 desired asset is absent");
-      const desired = decodeEncryptedWalletBackupV2DesiredAssetRow(rawDesired);
-      if (desired.scopeId !== input.scopeId || desired.localAssetKey !== input.localAssetKey)
-        throw new Error("browser V2 desired asset is foreign");
+      if (rawDesired === undefined && input.expectedAsset === undefined) {
+        throw new Error("browser V2 desired asset is absent");
+      }
+      const expectedAsset = input.expectedAsset;
+      let desired: EncryptedWalletBackupV2DesiredAssetRow;
+      if (rawDesired === undefined) {
+        if (expectedAsset === undefined) throw new Error("browser V2 desired asset is absent");
+        desired = createEncryptedWalletBackupV2DesiredAssetRow({
+          scopeId: input.scopeId,
+          asset: expectedAsset,
+          custodyRevision: 0n,
+          activeProofCount: 0,
+        });
+      } else {
+        try {
+          desired = decodeEncryptedWalletBackupV2DesiredAssetRow(rawDesired);
+        } catch (error) {
+          if (!input.localRead) throw error;
+          throw localReadError("invalid-action", "browser V2 local custody asset is invalid");
+        }
+      }
+      if (desired.scopeId !== input.scopeId || desired.localAssetKey !== input.localAssetKey) {
+        if (!input.localRead) throw new Error("browser V2 desired asset is foreign");
+        throw localReadError("invalid-action", "browser V2 local custody asset is invalid");
+      }
       const context = desired.assetIdentity.startsWith("ctf:")
-        ? await ctfContext(input.database, desired)
+        ? await ctfContext(input.database, desired, rawDesired === undefined)
         : null;
+      if (desired.assetIdentity.startsWith("ctf:") && context === null) {
+        return {
+          rawDesired,
+          desired,
+          activeProofRows: [],
+          proofRows: [],
+          authorities: [],
+          context: null,
+          keysetIds: [],
+          associations: [],
+          cursors: [],
+        };
+      }
       const activeProofRows = await activeRows(input.database, desired, context?.first ?? null);
       const rawAuthorities = await input.database.custodyProofBackupAuthorities.bulkGet(
         activeProofRows.map((row) => [row.scopeId, row.proofId]),
       );
-      const eligibleProofs = activeProofRows.flatMap((proof, index) => {
+      const activeProofs = activeProofRows.map((proof, index) => {
         const rawAuthority = rawAuthorities[index];
         if (rawAuthority === undefined)
-          throw new Error("browser V2 proof backup authority is missing");
-        const authority = requireBrowserProofBackupAuthorityRow(rawAuthority);
-        if (authority.derivationLocator === null) return [];
-        return [{ proof, authority: requireBrowserProofBackupAuthorityForProof(authority, proof) }];
+          throw localReadRefusal(
+            input,
+            "missing-authority",
+            "browser V2 proof backup authority is missing",
+          );
+        let authority: ReturnType<typeof requireBrowserProofBackupAuthorityForProof>;
+        try {
+          authority = requireBrowserProofBackupAuthorityForProof(rawAuthority, proof);
+        } catch (error) {
+          if (!input.localRead) throw error;
+          throw localReadError(
+            "snapshot-read",
+            "browser V2 local custody proof authority is invalid",
+          );
+        }
+        if (
+          authority.derivationLocator === null &&
+          (proof.selectability !== "locked" || proof.reservationOperationId === null)
+        ) {
+          throw localReadRefusal(
+            input,
+            "snapshot-read",
+            "browser V2 local custody proof is not retained",
+          );
+        }
+        return { proof, authority };
       });
+      const eligibleProofs = activeProofs.filter(
+        ({ authority }) => authority.derivationLocator !== null,
+      );
       const proofRows = eligibleProofs.map(({ proof }) => proof);
       const authorities = eligibleProofs.map(({ authority }) => authority);
       const keysetIds = [...new Set(proofRows.map(({ keysetId }) => keysetId))];
@@ -111,9 +250,34 @@ async function readRawAssetSnapshot(input: BrowserEncryptedWalletBackupV2AssetSo
       const cursors = await input.database.walletCounterCursors.bulkGet(
         keysetIds.map((keysetId) => [input.scopeId, keysetId]),
       );
-      return { rawDesired, proofRows, authorities, context, keysetIds, associations, cursors };
+      return {
+        rawDesired,
+        desired,
+        activeProofRows,
+        proofRows,
+        authorities,
+        context,
+        keysetIds,
+        associations,
+        cursors,
+      };
     },
   );
+}
+
+function localReadRefusal(
+  input: { readonly localRead?: boolean },
+  code: Exclude<BrowserEncryptedWalletBackupV2LocalAssetReadFailure, "proof-read">,
+  message: string,
+): Error {
+  return input.localRead ? localReadError(code, message) : new Error(message);
+}
+
+function localReadError(
+  code: BrowserEncryptedWalletBackupV2LocalAssetReadFailure,
+  message: string,
+): BrowserEncryptedWalletBackupV2LocalAssetReadError {
+  return new BrowserEncryptedWalletBackupV2LocalAssetReadError(code, message);
 }
 
 function materializeAssetSnapshot(

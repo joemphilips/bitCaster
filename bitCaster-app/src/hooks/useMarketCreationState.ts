@@ -29,6 +29,7 @@ import {
 } from "@/lib/marketRegistrationFee";
 import {
   DEFAULT_MARKET_BASE_ASSET,
+  formatMarketSubunits,
   normalizeMarketBaseAsset,
   normalizeMarketDivisibility,
   defaultCollateralUnit,
@@ -82,6 +83,48 @@ function defaultYesNoOutcomes(): WizardOutcome[] {
   ];
 }
 
+function isCanonicalYesNoOutcomes(outcomes: WizardOutcome[] | null | undefined): boolean {
+  return (
+    outcomes?.length === 2 &&
+    outcomes[0]?.id === "yes" &&
+    outcomes[0].label === "Yes" &&
+    outcomes[1]?.id === "no" &&
+    outcomes[1].label === "No"
+  );
+}
+
+function normalizeRestoredBinaryDraft(draft: WizardDraft): WizardDraft {
+  if (draft.stepGetStarted?.outcomeType !== "yesno" || draft.currentStep < 3) return draft;
+
+  const stepOutcomes =
+    draft.stepOutcomes?.outcomeType === "yesno" &&
+    isCanonicalYesNoOutcomes(draft.stepOutcomes.outcomes)
+      ? draft.stepOutcomes
+      : {
+          outcomeType: "yesno" as const,
+          outcomes: defaultYesNoOutcomes(),
+          baseAsset: draft.stepOutcomes?.baseAsset ?? DEFAULT_MARKET_BASE_ASSET,
+        };
+  const currentStep = 3 as WizardStep;
+  const stepReviewAndCreate = draft.stepReviewAndCreate ?? { description: "" };
+
+  if (
+    draft.currentStep === currentStep &&
+    draft.stepOutcomes === stepOutcomes &&
+    draft.stepReviewAndCreate === stepReviewAndCreate
+  ) {
+    return draft;
+  }
+
+  return {
+    ...draft,
+    currentStep,
+    stepOutcomes,
+    stepReviewAndCreate,
+    lastModified: new Date().toISOString(),
+  };
+}
+
 export function useMarketCreationState() {
   const navigate = useNavigate();
   const nostrSignerMode = useSettingsStore((s) => s.nostrSignerMode);
@@ -97,6 +140,17 @@ export function useMarketCreationState() {
   // saved draft. We don't subscribe to `hasSavedDraft` because the first
   // keystroke would flip it to true and make the resume banner re-appear.
   const [hasSavedDraft] = useState(() => useMarketDraftStore.getState().hasSavedDraft);
+
+  useEffect(() => {
+    if (draft.stepGetStarted?.outcomeType !== "yesno" || draft.currentStep < 3) return;
+    setDraft((previous) => normalizeRestoredBinaryDraft(previous));
+  }, [
+    draft.currentStep,
+    draft.stepGetStarted?.outcomeType,
+    draft.stepOutcomes,
+    draft.stepReviewAndCreate,
+    setDraft,
+  ]);
 
   const [thumbnailFile, setThumbnailFile] = useState<File | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -122,9 +176,8 @@ export function useMarketCreationState() {
   const [createdMarketBaseAsset, setCreatedMarketBaseAsset] = useState<MarketBaseAsset | null>(
     null,
   );
-  const [createdMarketDivisibility, setCreatedMarketDivisibility] = useState<MarketDivisibility | null>(
-    null,
-  );
+  const [createdMarketDivisibility, setCreatedMarketDivisibility] =
+    useState<MarketDivisibility | null>(null);
   // Track the last blob URL created for the thumbnail preview so we can revoke
   // it when the user picks a new file or when the component unmounts. Without
   // this, every upload leaks a live Blob reference for the page's lifetime.
@@ -154,6 +207,7 @@ export function useMarketCreationState() {
   // --- Navigation ---
   const onNext = useCallback(() => {
     setDraft((prev) => {
+      const outcomeType = prev.stepGetStarted?.outcomeType ?? "yesno";
       const next = Math.min(prev.currentStep + 1, 4) as WizardStep;
       const updated: WizardDraft = {
         ...prev,
@@ -165,8 +219,13 @@ export function useMarketCreationState() {
       if (next === 2 && !updated.stepBasicInfo) {
         updated.stepBasicInfo = { imageFile: null, title: "", categoryTags: [], closingDate: "" };
       }
-      if (next === 3 && !updated.stepOutcomes) {
-        const outcomeType = updated.stepGetStarted?.outcomeType ?? "yesno";
+      if (next === 3 && outcomeType === "yesno" && !updated.stepOutcomes) {
+        updated.stepOutcomes = {
+          outcomeType,
+          outcomes: defaultYesNoOutcomes(),
+          baseAsset: DEFAULT_MARKET_BASE_ASSET,
+        };
+      } else if (next === 3 && !updated.stepOutcomes) {
         if (outcomeType === "numeric") {
           updated.stepOutcomes = {
             outcomeType,
@@ -181,7 +240,7 @@ export function useMarketCreationState() {
           };
         }
       }
-      if (next === 4 && !updated.stepReviewAndCreate) {
+      if (next >= 3 && !updated.stepReviewAndCreate) {
         updated.stepReviewAndCreate = { description: "" };
       }
       return updated;
@@ -191,7 +250,9 @@ export function useMarketCreationState() {
   const onBack = useCallback(() => {
     setDraft((prev) => ({
       ...prev,
-      currentStep: Math.max(Math.min(prev.currentStep, 4) - 1, 1) as WizardStep,
+      currentStep: (prev.stepGetStarted?.outcomeType === "yesno" && prev.currentStep >= 3
+        ? 2
+        : Math.max(Math.min(prev.currentStep, 4) - 1, 1)) as WizardStep,
       lastModified: new Date().toISOString(),
     }));
   }, []);
@@ -410,8 +471,8 @@ export function useMarketCreationState() {
           collateralUnit,
         );
         if (requiredRegistrationFee > MAX_CONDITION_REGISTRATION_FEE_SUBUNITS) {
-          const requiredFee = `${requiredRegistrationFee.toLocaleString()} subunits`;
-          const maxFee = `${MAX_CONDITION_REGISTRATION_FEE_SUBUNITS.toLocaleString()} subunits`;
+          const requiredFee = formatMarketSubunits(requiredRegistrationFee, baseAsset);
+          const maxFee = formatMarketSubunits(MAX_CONDITION_REGISTRATION_FEE_SUBUNITS, baseAsset);
           throw new Error(
             `This mint requires a ${requiredFee} condition registration fee, ` +
               `which exceeds the ${maxFee} app limit.`,
@@ -522,7 +583,10 @@ export function useMarketCreationState() {
         // has already been registered on the mint and the matching engine, so
         // a localStorage quota error must not surface as "Failed to create
         // market" and strand the user on the wizard.
-        const snapshotDivisibility = normalizeMarketDivisibility(createResponse.divisibility, baseAsset);
+        const snapshotDivisibility = normalizeMarketDivisibility(
+          createResponse.divisibility,
+          baseAsset,
+        );
         try {
           useCreatorMarketsStore.getState().addCreatedMarket({
             conditionId: condition_id,

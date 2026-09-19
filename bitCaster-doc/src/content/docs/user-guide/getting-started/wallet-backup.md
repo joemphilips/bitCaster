@@ -78,6 +78,12 @@ web app shows a persistent error. Unavailability does not prove that an asset
 is absent and does not authorize automatic mint recovery. Broad recovery
 remains available through the CLI.
 
+If a trade needs Engine Score and locally available funds are insufficient,
+the app checks wallet recovery. If recovery is unavailable, it offers Retry
+or Add funds. This message does not mean that other wallet funds are lost.
+Retry checks recovery again within the existing recovery limits.
+Keep browser data while a trade or payment remains unresolved.
+
 Wallet recovery supports monetary tokens with unit `msat` only. The web app
 shows their value in sats: 1,000 msat equals 1 sat. Recovery does not convert
 tokens with unit `sat`.

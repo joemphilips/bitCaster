@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Loader2, X } from "lucide-react";
 
-import { validateWord } from "@/lib/bip39";
+import { validate, validateWord } from "@/lib/bip39";
 
 interface WalletSetupModalProps {
   isCreating?: boolean;
@@ -29,14 +29,16 @@ export function WalletSetupModal({
     .filter(Boolean)
     .map((word) => word.toLowerCase());
   const hasSeedPhraseInput = words.length > 0;
-  const wordCountIsValid = words.length === 12 || words.length === 24;
+  const wordCountIsValid = words.length === 12;
   const invalidWord = wordCountIsValid ? words.find((word) => !validateWord(word)) : undefined;
   const seedPhraseError =
     hasSeedPhraseInput && !wordCountIsValid
       ? t("wallet.seedphraseWordCountError")
       : invalidWord
         ? t("wallet.invalidSeedphraseWord", { word: invalidWord })
-        : null;
+        : wordCountIsValid && !validate(words)
+          ? t("wallet.seedphraseChecksumError")
+          : null;
   const seedPhraseIsValid = hasSeedPhraseInput && !seedPhraseError;
 
   return (

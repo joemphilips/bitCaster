@@ -401,7 +401,7 @@ function PriceProtectionSection({
   disabled?: boolean;
 }) {
   const { t } = useTranslation();
-  const protectedPrice = enabled ? limitPrice : previewResponse?.worstPrice ?? null;
+  const protectedPrice = enabled ? limitPrice : (previewResponse?.worstPrice ?? null);
   const priceLabel = isSell ? t("trade.minimumSellPrice") : t("trade.maximumBuyPrice");
 
   return (
@@ -974,6 +974,7 @@ export function TradingPanel({
             baseAsset={baseAsset}
             divisibility={validDivisibility}
             presentation="detail"
+            onRequireWallet={walletReady ? undefined : () => onWalletRequired?.()}
           />
         ) : (
           <div data-testid="empty-trade-liquidity" className="space-y-3 py-4">

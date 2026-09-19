@@ -30,8 +30,8 @@ The bot also depends on the supported mint being available.
 
 ## Add funding
 
-After market creation, choose a suggested budget or enter a custom amount.
-Choose **No liquidity** to skip funding. Closing this screen does not undo
+After market creation, enter the amount in sats.
+You can skip funding. Closing this screen does not undo
 the market.
 
 For an existing market, open its `LIQUIDITY` tab. Follow the payment steps

@@ -15,7 +15,12 @@ import {
   shouldPromptForFundedActionBackup,
 } from "@/pages/MarketDetailPage";
 import { MarketDetailPage } from "@/pages/MarketDetailPage";
-import { fetchMarketDetail, fetchMarketPriceHistory, fetchOrderBook, MarketDetailUnavailableError } from "@/lib/markets";
+import {
+  fetchMarketDetail,
+  fetchMarketPriceHistory,
+  fetchOrderBook,
+  MarketDetailUnavailableError,
+} from "@/lib/markets";
 import {
   previewBrowserCtfRangeOrderFees,
   submitBrowserCtfRangeOrder,
@@ -56,6 +61,11 @@ const mocks = vi.hoisted(() => ({
     nostrProfile: null as { pubkey: string } | null,
     signerBackupState: "confirmed",
   },
+  topUpOverlayProps: null as {
+    deficit: number;
+    baseAsset: "sat";
+    proofUnit?: "sat" | "msat" | null;
+  } | null,
   liveStatusHandlers: [] as Array<(status: MarketStatusChanged) => void>,
   orderBookHandlers: new Map<string, (snapshot: OrderBookSnapshot) => void>(),
   windowPriceHistory: vi.fn((history: { timeframe: string; data: Array<unknown> }) => ({
@@ -74,18 +84,33 @@ vi.mock("@/components/market-detail/PriceChart", () => ({
 }));
 
 vi.mock("@/components/market-detail/TopUpOverlay", () => ({
-  TopUpOverlay: ({ onSuccess, onCancel }: { onSuccess: () => void; onCancel: () => void }) => (
-    <div role="dialog" aria-label="Top Up Wallet">
-      <h2>Top Up Wallet</h2>
-      <input data-testid="top-up-amount-input" />
-      <button data-testid="top-up-success" onClick={onSuccess}>
-        Simulate top-up success
-      </button>
-      <button data-testid="top-up-cancel" onClick={onCancel}>
-        Cancel
-      </button>
-    </div>
-  ),
+  TopUpOverlay: ({
+    deficit,
+    baseAsset,
+    proofUnit,
+    onSuccess,
+    onCancel,
+  }: {
+    deficit: number;
+    baseAsset: "sat";
+    proofUnit?: "sat" | "msat" | null;
+    onSuccess: () => void;
+    onCancel: () => void;
+  }) => {
+    mocks.topUpOverlayProps = { deficit, baseAsset, proofUnit };
+    return (
+      <div role="dialog" aria-label="Top Up Wallet">
+        <h2>Top Up Wallet</h2>
+        <input data-testid="top-up-amount-input" />
+        <button data-testid="top-up-success" onClick={onSuccess}>
+          Simulate top-up success
+        </button>
+        <button data-testid="top-up-cancel" onClick={onCancel}>
+          Cancel
+        </button>
+      </div>
+    );
+  },
 }));
 
 vi.mock("@/hooks/useMarketStatusLive", () => ({
@@ -98,7 +123,9 @@ vi.mock("@/hooks/useMarketStatusLive", () => ({
 }));
 
 vi.mock("@/lib/marketHub", async () => ({
-  applyConfirmedTradeDelta: (await vi.importActual<typeof import("@/lib/marketHub")>("@/lib/marketHub")).applyConfirmedTradeDelta,
+  applyConfirmedTradeDelta: (
+    await vi.importActual<typeof import("@/lib/marketHub")>("@/lib/marketHub")
+  ).applyConfirmedTradeDelta,
   onConfirmedTradeRecorded: vi.fn(
     (
       _conditionId: string,
@@ -222,7 +249,9 @@ vi.mock("@/stores/settings", () => ({
 }));
 
 vi.mock("@/lib/browserWalletProfile", async () => ({
-  ...(await vi.importActual<typeof import("@/lib/browserWalletProfile")>("@/lib/browserWalletProfile")),
+  ...(await vi.importActual<typeof import("@/lib/browserWalletProfile")>(
+    "@/lib/browserWalletProfile",
+  )),
   activeBrowserWalletScopeId: () => mocks.walletScopeId,
 }));
 
@@ -479,6 +508,7 @@ describe("MarketDetailPage live market status", () => {
     mocks.settingsState.nostrProfile = null;
     mocks.settingsState.signerBackupState = "confirmed";
     mocks.createImplicitWalletAndNostrIdentity.mockReset();
+    mocks.topUpOverlayProps = null;
   });
 
   it("applies a MarketStatusChanged close push to the detail page and removes trading", async () => {
@@ -749,13 +779,15 @@ describe("MarketDetailPage live market status", () => {
   it("shows temporary service unavailability instead of a missing-market or mint error", async () => {
     vi.mocked(fetchMarketDetail).mockRejectedValue(new MarketDetailUnavailableError());
     render(<MarketDetailPage />);
-    expect(await screen.findByText(
-      "Market details are temporarily unavailable. Please try again later.",
-    )).toBeInTheDocument();
+    expect(
+      await screen.findByText(
+        "Market details are temporarily unavailable. Please try again later.",
+      ),
+    ).toBeInTheDocument();
     expect(screen.queryByText("Market not found")).not.toBeInTheDocument();
-    expect(screen.queryByText(
-      "Failed to load market. Please check that the mint is running.",
-    )).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("Failed to load market. Please check that the mint is running."),
+    ).not.toBeInTheDocument();
     expect(fetchOrderBook).not.toHaveBeenCalled();
   });
 
@@ -1034,10 +1066,12 @@ describe("MarketDetailPage live market status", () => {
     fireEvent.change(screen.getAllByTestId("trade-amount-input")[0], {
       target: { value: "1" },
     });
-    await waitFor(() => expect(screen.getByTestId("trade-protected-price")).toHaveAttribute(
-      "data-price-numerator",
-      "500",
-    ));
+    await waitFor(() =>
+      expect(screen.getByTestId("trade-protected-price")).toHaveAttribute(
+        "data-price-numerator",
+        "500",
+      ),
+    );
     await waitFor(() => expect(screen.getByTestId("trade-confirm")).toBeEnabled());
     fireEvent.click(screen.getByTestId("trade-confirm"));
 
@@ -1060,7 +1094,8 @@ describe("MarketDetailPage live market status", () => {
     mocks.walletState.activeMintUrl = "https://mint.example";
     mocks.settingsState.nostrSignerMode = "nsec";
     mocks.buildIndexedDbTokenHoldings.mockResolvedValue({
-      baseUnitProofs: 20_000, outcomeProofsByOutcomeSetId: {},
+      baseUnitProofs: 20_000,
+      outcomeProofsByOutcomeSetId: {},
     });
     let resolveNewFees!: (fees: ReturnType<typeof rangeFeeFacts>) => void;
     const newFees = new Promise<ReturnType<typeof rangeFeeFacts>>((resolve) => {
@@ -1085,8 +1120,9 @@ describe("MarketDetailPage live market status", () => {
     expect(screen.queryByTestId("trade-consolidation-fee")).not.toBeInTheDocument();
     expect(screen.getByTestId("trade-confirm")).toBeDisabled();
     await act(async () => resolveNewFees(rangeFeeFacts("1500")));
-    await waitFor(() => expect(screen.getByTestId("trade-consolidation-fee"))
-      .toHaveTextContent("1.500 sats"));
+    await waitFor(() =>
+      expect(screen.getByTestId("trade-consolidation-fee")).toHaveTextContent("1.500 sats"),
+    );
     await waitFor(() => expect(screen.getByTestId("trade-confirm")).toBeEnabled());
     expect(submitBrowserCtfRangeOrder).not.toHaveBeenCalled();
   });
@@ -1435,7 +1471,9 @@ describe("MarketDetailPage live market status", () => {
     await screen.findByTestId("fok-preview-ready");
     const callsBefore = previewCallsBeforeSetup();
     fireEvent.click(screen.getByTestId("trade-confirm"));
-    expect(await screen.findByRole("heading", { name: "Do you have a Nostr account?" })).toBeInTheDocument();
+    expect(
+      await screen.findByRole("heading", { name: "Do you have a Nostr account?" }),
+    ).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "No, create one for me" }));
 
     await waitFor(() =>
@@ -1453,60 +1491,63 @@ describe("MarketDetailPage live market status", () => {
     { kind: "wallet", flushEffects: false },
     { kind: "signer-revision", flushEffects: false },
     { kind: "unmount", flushEffects: false },
-  ])("abandons deferred balance after $kind change (effects flushed: $flushEffects)", async ({ kind, flushEffects }) => {
-    mocks.walletState.setupComplete = true;
-    mocks.walletState.activeMintUrl = "https://mint.example";
-    mocks.settingsState.nostrSignerMode = "nsec";
-    mocks.buildIndexedDbTokenHoldings.mockResolvedValue({
-      baseUnitProofs: 20_000,
-      outcomeProofsByOutcomeSetId: {},
-    });
-    const market = fundedSatYesNoMarket({ state: "open" });
-    vi.mocked(fetchMarketDetail).mockResolvedValue(market);
-    vi.mocked(fetchOrderBook).mockImplementation(async (marketId) =>
-      marketId === "condition-yesno-Yes" ? askBook(400) : emptyBook,
-    );
-    mockAcceptedOrder();
+  ])(
+    "abandons deferred balance after $kind change (effects flushed: $flushEffects)",
+    async ({ kind, flushEffects }) => {
+      mocks.walletState.setupComplete = true;
+      mocks.walletState.activeMintUrl = "https://mint.example";
+      mocks.settingsState.nostrSignerMode = "nsec";
+      mocks.buildIndexedDbTokenHoldings.mockResolvedValue({
+        baseUnitProofs: 20_000,
+        outcomeProofsByOutcomeSetId: {},
+      });
+      const market = fundedSatYesNoMarket({ state: "open" });
+      vi.mocked(fetchMarketDetail).mockResolvedValue(market);
+      vi.mocked(fetchOrderBook).mockImplementation(async (marketId) =>
+        marketId === "condition-yesno-Yes" ? askBook(400) : emptyBook,
+      );
+      mockAcceptedOrder();
 
-    const rendered = render(<MarketDetailPage />);
-    await screen.findByRole("heading", { name: "Will it happen?" });
-    fireEvent.click(screen.getAllByTestId("trade-outcome-yes")[0]);
-    fireEvent.change(screen.getAllByTestId("trade-amount-input")[0], {
-      target: { value: "1" },
-    });
-    await waitFor(() => expect(screen.getByTestId("trade-confirm")).toBeEnabled());
+      const rendered = render(<MarketDetailPage />);
+      await screen.findByRole("heading", { name: "Will it happen?" });
+      fireEvent.click(screen.getAllByTestId("trade-outcome-yes")[0]);
+      fireEvent.change(screen.getAllByTestId("trade-amount-input")[0], {
+        target: { value: "1" },
+      });
+      await waitFor(() => expect(screen.getByTestId("trade-confirm")).toBeEnabled());
 
-    let resolveHoldings!: (holdings: {
-      baseUnitProofs: number;
-      outcomeProofsByOutcomeSetId: Record<string, never>;
-    }) => void;
-    const deferredHoldings = new Promise<{
-      baseUnitProofs: number;
-      outcomeProofsByOutcomeSetId: Record<string, never>;
-    }>((resolve) => {
-      resolveHoldings = resolve;
-    });
-    mocks.buildIndexedDbTokenHoldings.mockReturnValue(deferredHoldings);
-    fireEvent.click(screen.getByTestId("trade-confirm"));
-    await waitFor(() => expect(mocks.buildIndexedDbTokenHoldings).toHaveBeenCalled());
+      let resolveHoldings!: (holdings: {
+        baseUnitProofs: number;
+        outcomeProofsByOutcomeSetId: Record<string, never>;
+      }) => void;
+      const deferredHoldings = new Promise<{
+        baseUnitProofs: number;
+        outcomeProofsByOutcomeSetId: Record<string, never>;
+      }>((resolve) => {
+        resolveHoldings = resolve;
+      });
+      mocks.buildIndexedDbTokenHoldings.mockReturnValue(deferredHoldings);
+      fireEvent.click(screen.getByTestId("trade-confirm"));
+      await waitFor(() => expect(mocks.buildIndexedDbTokenHoldings).toHaveBeenCalled());
 
-    if (kind === "wallet") mocks.walletScopeId = "wallet-profile-b";
-    else if (kind === "signer-revision") mocks.signerRevision += 1;
-    else if (kind === "unmount") rendered.unmount();
-    else {
-      mocks.settingsState.nostrSignerMode = "nip07";
-      mocks.settingsState.nostrProfile = { pubkey: "b".repeat(64) };
-    }
-    if (flushEffects) rendered.rerender(<MarketDetailPage />);
-    mocks.getBalance.mockClear();
-    await act(async () => {
-      resolveHoldings({ baseUnitProofs: 20_000, outcomeProofsByOutcomeSetId: {} });
-    });
+      if (kind === "wallet") mocks.walletScopeId = "wallet-profile-b";
+      else if (kind === "signer-revision") mocks.signerRevision += 1;
+      else if (kind === "unmount") rendered.unmount();
+      else {
+        mocks.settingsState.nostrSignerMode = "nip07";
+        mocks.settingsState.nostrProfile = { pubkey: "b".repeat(64) };
+      }
+      if (flushEffects) rendered.rerender(<MarketDetailPage />);
+      mocks.getBalance.mockClear();
+      await act(async () => {
+        resolveHoldings({ baseUnitProofs: 20_000, outcomeProofsByOutcomeSetId: {} });
+      });
 
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    expect(mocks.getBalance).not.toHaveBeenCalled();
-    expect(submitBrowserCtfRangeOrder).not.toHaveBeenCalled();
-  });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(mocks.getBalance).not.toHaveBeenCalled();
+      expect(submitBrowserCtfRangeOrder).not.toHaveBeenCalled();
+    },
+  );
 
   it("requires explicit fee confirmation after collateral top-up before submission", async () => {
     mocks.walletState.setupComplete = true;
@@ -1574,7 +1615,65 @@ describe("MarketDetailPage live market status", () => {
     );
   });
 
-  it.each([false, true])("resumes Score top-up only for the same signer (changed: %s)", async (changedSigner) => {
+  it.each([false, true])(
+    "resumes Score top-up only for the same signer (changed: %s)",
+    async (changedSigner) => {
+      mocks.walletState.setupComplete = true;
+      mocks.walletState.activeMintUrl = "https://mint.example";
+      mocks.settingsState.nostrSignerMode = "nsec";
+      mocks.buildIndexedDbTokenHoldings.mockResolvedValue({
+        baseUnitProofs: 20_000,
+        outcomeProofsByOutcomeSetId: {},
+      });
+      mocks.getExactUnitBalance.mockResolvedValue(5_000);
+      const market = fundedSatYesNoMarket({ state: "open" });
+      vi.mocked(fetchMarketDetail).mockResolvedValue(market);
+      vi.mocked(fetchOrderBook).mockImplementation(async (marketId) =>
+        marketId === "condition-yesno-Yes" ? askBook(400) : emptyBook,
+      );
+      vi.mocked(submitBrowserCtfRangeOrder).mockImplementation(async (input) => {
+        await input.onScoreTopUpRequired?.({ requiredSats: 5, balanceSats: 0 });
+        return {
+          orderId: "order-score-1",
+          status: "filled",
+          remainingAmountSubunits: 0,
+          fills: [],
+          baseAsset: "sat",
+          divisibility: 1_000,
+          activeSettlementGroup: null,
+        };
+      });
+
+      render(<MarketDetailPage />);
+
+      await screen.findByRole("heading", { name: "Will it happen?" });
+      fireEvent.click(screen.getAllByTestId("trade-outcome-yes")[0]);
+      fireEvent.change(screen.getAllByTestId("trade-amount-input")[0], {
+        target: { value: "1" },
+      });
+      await waitFor(() => expect(screen.getAllByTestId("trade-confirm")[0]).toBeEnabled());
+      fireEvent.click(screen.getAllByTestId("trade-confirm")[0]);
+
+      await screen.findByTestId("insufficient-balance-top-up");
+      expect(submitBrowserCtfRangeOrder).toHaveBeenCalledTimes(1);
+      fireEvent.click(screen.getByTestId("insufficient-balance-top-up"));
+      if (changedSigner) {
+        mocks.settingsState.nostrSignerMode = "nip07";
+        mocks.settingsState.nostrProfile = { pubkey: "b".repeat(64) };
+      }
+      fireEvent.click(await screen.findByTestId("top-up-success"));
+
+      const submission = vi.mocked(submitBrowserCtfRangeOrder).mock.results[0].value;
+      if (changedSigner) await expect(submission).rejects.toThrow();
+      else await expect(submission).resolves.toMatchObject({ orderId: "order-score-1" });
+
+      await waitFor(() => expect(submitBrowserCtfRangeOrder).toHaveBeenCalledTimes(1));
+      expect(mocks.getExactUnitBalance).toHaveBeenCalledWith("https://mint.example", "msat");
+      expect(screen.queryByRole("dialog", { name: "Top Up Wallet" })).not.toBeInTheDocument();
+    },
+  );
+
+  it("passes Score top-up through the msat overlay and balance boundary", async () => {
     mocks.walletState.setupComplete = true;
     mocks.walletState.activeMintUrl = "https://mint.example";
     mocks.settingsState.nostrSignerMode = "nsec";
@@ -1582,7 +1681,8 @@ describe("MarketDetailPage live market status", () => {
       baseUnitProofs: 20_000,
       outcomeProofsByOutcomeSetId: {},
     });
-    mocks.getExactUnitBalance.mockResolvedValue(5);
+    let balanceMsat = 4_999;
+    mocks.getExactUnitBalance.mockImplementation(async () => balanceMsat);
     const market = fundedSatYesNoMarket({ state: "open" });
     vi.mocked(fetchMarketDetail).mockResolvedValue(market);
     vi.mocked(fetchOrderBook).mockImplementation(async (marketId) =>
@@ -1591,7 +1691,7 @@ describe("MarketDetailPage live market status", () => {
     vi.mocked(submitBrowserCtfRangeOrder).mockImplementation(async (input) => {
       await input.onScoreTopUpRequired?.({ requiredSats: 5, balanceSats: 0 });
       return {
-        orderId: "order-score-1",
+        orderId: "order-score-msat-boundary",
         status: "filled",
         remainingAmountSubunits: 0,
         fills: [],
@@ -1612,21 +1712,164 @@ describe("MarketDetailPage live market status", () => {
     fireEvent.click(screen.getAllByTestId("trade-confirm")[0]);
 
     await screen.findByTestId("insufficient-balance-top-up");
-    expect(submitBrowserCtfRangeOrder).toHaveBeenCalledTimes(1);
     fireEvent.click(screen.getByTestId("insufficient-balance-top-up"));
-    if (changedSigner) {
-      mocks.settingsState.nostrSignerMode = "nip07";
-      mocks.settingsState.nostrProfile = { pubkey: "b".repeat(64) };
-    }
+    await waitFor(() => expect(mocks.topUpOverlayProps).not.toBeNull());
+    expect(mocks.topUpOverlayProps).toEqual({
+      deficit: 5_000,
+      baseAsset: "sat",
+      proofUnit: "msat",
+    });
+
     fireEvent.click(await screen.findByTestId("top-up-success"));
+    await waitFor(() => expect(mocks.getExactUnitBalance).toHaveBeenCalledTimes(1));
+    expect(mocks.getExactUnitBalance).toHaveBeenCalledWith("https://mint.example", "msat");
+    expect(screen.getByTestId("insufficient-balance-top-up")).toBeInTheDocument();
 
-    const submission = vi.mocked(submitBrowserCtfRangeOrder).mock.results[0].value;
-    if (changedSigner) await expect(submission).rejects.toThrow();
-    else await expect(submission).resolves.toMatchObject({ orderId: "order-score-1" });
+    balanceMsat = 5_000;
+    fireEvent.click(screen.getByTestId("insufficient-balance-top-up"));
+    fireEvent.click(await screen.findByTestId("top-up-success"));
+    await waitFor(() => expect(mocks.getExactUnitBalance).toHaveBeenCalledTimes(2));
+    const submission = vi.mocked(submitBrowserCtfRangeOrder).mock.results[0]?.value;
+    await expect(submission).resolves.toMatchObject({ orderId: "order-score-msat-boundary" });
+  });
 
-    await waitFor(() => expect(submitBrowserCtfRangeOrder).toHaveBeenCalledTimes(1));
-    expect(mocks.getExactUnitBalance).toHaveBeenCalledWith("https://mint.example", "sat");
-    expect(screen.queryByRole("dialog", { name: "Top Up Wallet" })).not.toBeInTheDocument();
+  it.each([
+    { label: "unknown", balanceSats: null },
+    { label: "known", balanceSats: 0 },
+  ])(
+    "shows $label unavailable Score recovery and retries the same submission",
+    async ({ label, balanceSats }) => {
+      mocks.walletState.setupComplete = true;
+      mocks.walletState.activeMintUrl = "https://mint.example";
+      mocks.settingsState.nostrSignerMode = "nsec";
+      mocks.buildIndexedDbTokenHoldings.mockResolvedValue({
+        baseUnitProofs: 20_000,
+        outcomeProofsByOutcomeSetId: {},
+      });
+      const market = fundedSatYesNoMarket({ state: "open" });
+      vi.mocked(fetchMarketDetail).mockResolvedValue(market);
+      vi.mocked(fetchOrderBook).mockImplementation(async (marketId) =>
+        marketId === "condition-yesno-Yes" ? askBook(400) : emptyBook,
+      );
+      vi.mocked(submitBrowserCtfRangeOrder).mockImplementation(async (input) => {
+        await input.onScoreTopUpRequired?.({
+          requiredSats: 5,
+          balanceSats,
+          recoveryStatus: "unavailable",
+        });
+        return {
+          orderId: `order-score-retry-${label}`,
+          status: "filled",
+          remainingAmountSubunits: 0,
+          fills: [],
+          baseAsset: "sat",
+          divisibility: 1_000,
+          activeSettlementGroup: null,
+        };
+      });
+
+      render(<MarketDetailPage />);
+
+      await screen.findByRole("heading", { name: "Will it happen?" });
+      fireEvent.click(screen.getAllByTestId("trade-outcome-yes")[0]);
+      fireEvent.change(screen.getAllByTestId("trade-amount-input")[0], {
+        target: { value: "1" },
+      });
+      await waitFor(() => expect(screen.getAllByTestId("trade-confirm")[0]).toBeEnabled());
+      fireEvent.click(screen.getAllByTestId("trade-confirm")[0]);
+
+      await screen.findByTestId("insufficient-balance-retry");
+      expect(screen.getByTestId("insufficient-balance-top-up")).toBeInTheDocument();
+      expect(screen.getByRole("status")).toHaveTextContent(
+        "Wallet recovery is currently unavailable",
+      );
+      if (balanceSats === null) {
+        expect(screen.getByText("The balance in this browser is unavailable.")).toBeInTheDocument();
+        expect(screen.queryByText("You have")).not.toBeInTheDocument();
+      } else {
+        expect(screen.getByText(/You have/)).toBeInTheDocument();
+      }
+
+      fireEvent.click(screen.getByTestId("insufficient-balance-retry"));
+      const submission = vi.mocked(submitBrowserCtfRangeOrder).mock.results[0]?.value;
+      await expect(submission).resolves.toMatchObject({ orderId: `order-score-retry-${label}` });
+      await waitFor(() => expect(submitBrowserCtfRangeOrder).toHaveBeenCalledTimes(1));
+      expect(screen.queryByTestId("insufficient-balance-retry")).not.toBeInTheDocument();
+    },
+  );
+
+  it("keeps the same Score submission pending across repeated unavailable recovery callbacks", async () => {
+    mocks.walletState.setupComplete = true;
+    mocks.walletState.activeMintUrl = "https://mint.example";
+    mocks.settingsState.nostrSignerMode = "nsec";
+    mocks.buildIndexedDbTokenHoldings.mockResolvedValue({
+      baseUnitProofs: 20_000,
+      outcomeProofsByOutcomeSetId: {},
+    });
+    const market = fundedSatYesNoMarket({ state: "open" });
+    vi.mocked(fetchMarketDetail).mockResolvedValue(market);
+    vi.mocked(fetchOrderBook).mockImplementation(async (marketId) =>
+      marketId === "condition-yesno-Yes" ? askBook(400) : emptyBook,
+    );
+
+    let recoveryRequests = 0;
+    vi.mocked(submitBrowserCtfRangeOrder).mockImplementation(async (input) => {
+      const requestRecovery = async () => {
+        recoveryRequests += 1;
+        await input.onScoreTopUpRequired?.({
+          requiredSats: 5,
+          balanceSats: null,
+          recoveryStatus: "unavailable",
+        });
+      };
+      await requestRecovery();
+      await requestRecovery();
+      return {
+        orderId: "order-score-repeated-recovery",
+        status: "filled",
+        remainingAmountSubunits: 0,
+        fills: [],
+        baseAsset: "sat",
+        divisibility: 1_000,
+        activeSettlementGroup: null,
+      };
+    });
+
+    render(<MarketDetailPage />);
+
+    await screen.findByRole("heading", { name: "Will it happen?" });
+    fireEvent.click(screen.getAllByTestId("trade-outcome-yes")[0]);
+    fireEvent.change(screen.getAllByTestId("trade-amount-input")[0], {
+      target: { value: "1" },
+    });
+    await waitFor(() => expect(screen.getAllByTestId("trade-confirm")[0]).toBeEnabled());
+    fireEvent.click(screen.getAllByTestId("trade-confirm")[0]);
+
+    await screen.findByTestId("insufficient-balance-retry");
+    const submission = vi.mocked(submitBrowserCtfRangeOrder).mock.results[0]?.value;
+    let submissionSettled = false;
+    void submission?.then(() => {
+      submissionSettled = true;
+    });
+    expect(submitBrowserCtfRangeOrder).toHaveBeenCalledTimes(1);
+    expect(recoveryRequests).toBe(1);
+    expect(submissionSettled).toBe(false);
+    expect(screen.getByTestId("insufficient-balance-top-up")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId("insufficient-balance-retry"));
+    await waitFor(() => expect(recoveryRequests).toBe(2));
+    expect(submitBrowserCtfRangeOrder).toHaveBeenCalledTimes(1);
+    expect(submissionSettled).toBe(false);
+    expect(screen.getByTestId("insufficient-balance-retry")).toBeInTheDocument();
+    expect(screen.getByTestId("insufficient-balance-top-up")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId("insufficient-balance-retry"));
+    await expect(submission).resolves.toMatchObject({
+      orderId: "order-score-repeated-recovery",
+    });
+    expect(submitBrowserCtfRangeOrder).toHaveBeenCalledTimes(1);
+    expect(submissionSettled).toBe(true);
+    expect(screen.queryByTestId("insufficient-balance-retry")).not.toBeInTheDocument();
   });
 
   it("cancels an in-flight Score top-up without starting another submission", async () => {
@@ -1643,7 +1886,11 @@ describe("MarketDetailPage live market status", () => {
       marketId === "condition-yesno-Yes" ? askBook(400) : emptyBook,
     );
     vi.mocked(submitBrowserCtfRangeOrder).mockImplementation(async (input) => {
-      await input.onScoreTopUpRequired?.({ requiredSats: 5, balanceSats: 0 });
+      await input.onScoreTopUpRequired?.({
+        requiredSats: 5,
+        balanceSats: 0,
+        recoveryStatus: "unavailable",
+      });
       return {
         orderId: "order-score-cancelled",
         status: "filled",
@@ -1759,10 +2006,12 @@ describe("marketDetailDataReducer", () => {
   });
 
   it("adds a confirmed fill to history and preserves it against stale messages and REST", () => {
-    const initial = yesNoMarket({ outcomes: [
-      { id: "YES", label: "YES", odds: null },
-      { id: "NO", label: "NO", odds: null },
-    ] });
+    const initial = yesNoMarket({
+      outcomes: [
+        { id: "YES", label: "YES", odds: null },
+        { id: "NO", label: "NO", odds: null },
+      ],
+    });
     const trade: LatestConfirmedTrade = {
       primitiveOutcomeId: "YES",
       fillId: "00000000-0000-0000-0000-000000000001",
@@ -1778,10 +2027,12 @@ describe("marketDetailDataReducer", () => {
     expect(composeMarketDetail(live, "7d")?.priceHistory.data).toContainEqual(point);
     expect(composeMarketDetail(live, "24h")?.priceHistory.data).toContainEqual(point);
     expect(marketDetailDataReducer(live, action)).toBe(live);
-    expect(marketDetailDataReducer(live, {
-      ...action,
-      trade: { ...trade, eventOrder: "0001", priceTick: 500 },
-    })).toBe(live);
+    expect(
+      marketDetailDataReducer(live, {
+        ...action,
+        trade: { ...trade, eventOrder: "0001", priceTick: 500 },
+      }),
+    ).toBe(live);
     const reconciled = marketDetailDataReducer(live, {
       type: "historyLoaded",
       marketId: initial.id,

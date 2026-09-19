@@ -7,6 +7,7 @@ import { DepositStep } from "../DepositStep";
 
 const executeBrowserMarketFundingDelivery = vi.fn();
 const CONDITION_ID = "a".repeat(64);
+const mockWalletState = { activeMintUrl: "https://mint.example", mnemonic: "test mnemonic" };
 
 vi.mock("@/lib/browserMarketFundingDelivery", () => ({
   BrowserMarketFundingInsufficientBalanceError: class extends Error {},
@@ -19,16 +20,18 @@ vi.mock("@/lib/identityOps", () => ({ resolveCreatorPubkey: () => "subject-1" })
 vi.mock("@/stores/wallet", () => ({
   useBalance: () => 200_000_000,
   useWalletStore: Object.assign(
-    (selector: (state: { activeMintUrl: string }) => unknown) =>
-      selector({ activeMintUrl: "https://mint.example" }),
-    { getState: () => ({ activeMintUrl: "https://mint.example" }) },
+    (selector: (state: typeof mockWalletState) => unknown) => selector(mockWalletState),
+    { getState: () => mockWalletState },
   ),
 }));
 
-function renderStep(options: {
-  presentation?: "creation" | "detail";
-  divisibility?: 1_000 | 1_000_000;
-} = {}) {
+function renderStep(
+  options: {
+    presentation?: "creation" | "detail";
+    divisibility?: 1_000 | 1_000_000;
+    onRequireWallet?: () => void;
+  } = {},
+) {
   return render(
     <MemoryRouter initialEntries={["/creator/new"]}>
       <Routes>
@@ -57,9 +60,15 @@ async function openFunding() {
   return user;
 }
 
+async function enterFundingAmount(user: ReturnType<typeof userEvent.setup>, amount = "100") {
+  const input = screen.getByTestId("amm-funding-custom-budget");
+  await user.type(input, amount);
+}
+
 describe("DepositStep", () => {
   beforeEach(async () => {
     await i18n.changeLanguage("en");
+    mockWalletState.mnemonic = "test mnemonic";
     executeBrowserMarketFundingDelivery.mockReset();
     executeBrowserMarketFundingDelivery.mockResolvedValue({
       progress: "received",
@@ -91,10 +100,9 @@ describe("DepositStep", () => {
 
     expect(screen.getByText("Fund the market maker")).toBeInTheDocument();
     expect(
-      screen.getByText(
-        "Choose the bot quoting budget for this market, or continue without bot liquidity.",
-      ),
+      screen.getByText("Enter the exact amount of sats to give the market maker, or skip for now."),
     ).toBeInTheDocument();
+    expect(screen.queryByTestId("skip-amm-funding")).not.toBeInTheDocument();
     expect(screen.queryByText("Market created!")).not.toBeInTheDocument();
     expect(timeoutSpy.mock.calls.some(([, delay]) => delay === 5_000)).toBe(false);
     timeoutSpy.mockRestore();
@@ -103,6 +111,7 @@ describe("DepositStep", () => {
   it("uses the durable market-funding adapter without a legacy deposit request", async () => {
     renderStep();
     const user = await openFunding();
+    await enterFundingAmount(user);
 
     await user.click(screen.getByTestId("confirm-amm-funding"));
 
@@ -113,7 +122,7 @@ describe("DepositStep", () => {
           mintUrl: "https://mint.example",
           unit: "msat",
           divisibility: 1_000,
-          requestedAmount: "100000000",
+          requestedAmount: "100000",
         }),
       );
     });
@@ -124,6 +133,7 @@ describe("DepositStep", () => {
     const timeoutSpy = vi.spyOn(window, "setTimeout");
     renderStep();
     const user = await openFunding();
+    await enterFundingAmount(user);
     timeoutSpy.mockClear();
 
     await user.click(screen.getByTestId("confirm-amm-funding"));
@@ -142,6 +152,7 @@ describe("DepositStep", () => {
     });
     renderStep();
     const user = await openFunding();
+    await enterFundingAmount(user);
     timeoutSpy.mockClear();
 
     await user.click(screen.getByTestId("confirm-amm-funding"));
@@ -157,10 +168,11 @@ describe("DepositStep", () => {
     const timeoutSpy = vi.spyOn(window, "setTimeout");
     executeBrowserMarketFundingDelivery.mockResolvedValueOnce({
       progress: "credited",
-      transfer: { requestedAmount: "100000000" },
+      transfer: { requestedAmount: "100000" },
     });
     renderStep({ presentation: "detail" });
     const user = userEvent.setup();
+    await enterFundingAmount(user);
 
     expect(timeoutSpy.mock.calls.some(([, delay]) => delay === 5_000)).toBe(false);
     await user.click(screen.getByTestId("confirm-amm-funding"));
@@ -173,6 +185,7 @@ describe("DepositStep", () => {
   it("forwards the supplied market divisibility to the funding adapter", async () => {
     renderStep({ presentation: "detail", divisibility: 1_000_000 });
     const user = userEvent.setup();
+    await enterFundingAmount(user, "100000");
 
     await user.click(screen.getByTestId("confirm-amm-funding"));
 
@@ -199,5 +212,71 @@ describe("DepositStep", () => {
     expect(
       screen.getByText("Enter an amount divisible by 1000000 market subunits."),
     ).toBeInTheDocument();
+  });
+
+  it("converts the exact sats field through the SDK parser", async () => {
+    renderStep({ presentation: "detail" });
+    const user = userEvent.setup();
+
+    await enterFundingAmount(user, "1.000");
+    await user.click(screen.getByTestId("confirm-amm-funding"));
+
+    await waitFor(() => {
+      expect(executeBrowserMarketFundingDelivery).toHaveBeenCalledWith(
+        expect.objectContaining({ requestedAmount: "1000" }),
+      );
+    });
+  });
+
+  it("reflects the immutable resumed transfer amount in the exact sats field", async () => {
+    executeBrowserMarketFundingDelivery.mockResolvedValueOnce({
+      progress: "received",
+      transfer: { requestedAmount: "200000" },
+    });
+    renderStep({ presentation: "detail" });
+    const user = userEvent.setup();
+
+    await enterFundingAmount(user, "100");
+    await user.click(screen.getByTestId("confirm-amm-funding"));
+
+    await screen.findByText("Awaiting payment…");
+    expect(screen.getByTestId("amm-funding-custom-budget")).toHaveValue("200");
+  });
+
+  it("skips funding without invoking the wallet delivery adapter", async () => {
+    renderStep();
+    const user = await openFunding();
+
+    await user.click(screen.getByTestId("skip-amm-funding"));
+
+    expect(screen.getByTestId("market-detail-page")).toBeInTheDocument();
+    expect(executeBrowserMarketFundingDelivery).not.toHaveBeenCalled();
+  });
+
+  it("invokes the caller wallet chooser before detail funding when no wallet exists", async () => {
+    mockWalletState.mnemonic = "";
+    const onRequireWallet = vi.fn();
+    renderStep({ presentation: "detail", onRequireWallet });
+    const user = userEvent.setup();
+
+    await enterFundingAmount(user);
+    await user.click(screen.getByTestId("confirm-amm-funding"));
+
+    expect(onRequireWallet).toHaveBeenCalledOnce();
+    expect(executeBrowserMarketFundingDelivery).not.toHaveBeenCalled();
+  });
+
+  it("surfaces wallet absence when detail funding has no chooser caller", async () => {
+    mockWalletState.mnemonic = "";
+    renderStep({ presentation: "detail" });
+    const user = userEvent.setup();
+
+    await enterFundingAmount(user);
+    await user.click(screen.getByTestId("confirm-amm-funding"));
+
+    expect(
+      screen.getByText("Set up a wallet before funding the market maker."),
+    ).toBeInTheDocument();
+    expect(executeBrowserMarketFundingDelivery).not.toHaveBeenCalled();
   });
 });

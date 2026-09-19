@@ -18,8 +18,17 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("@/lib/markets", () => ({ getParticipationScore: mocks.getParticipationScore }));
 vi.mock("@/lib/browserParticipationScoreDelivery", () => ({
+  BrowserParticipationScoreAssetUnavailableError: class extends Error {
+    readonly recoveryStatus = "unavailable" as const;
+
+    constructor(readonly balanceMsat: number | null) {
+      super("browser Participation Score asset recovery is unavailable");
+    }
+  },
   BrowserParticipationScoreInsufficientBalanceError: class extends Error {
-    constructor(readonly balanceMsat: number) {
+    readonly recoveryStatus = "insufficient" as const;
+
+    constructor(readonly balanceMsat: number | null) {
       super("browser Participation Score balance is insufficient");
     }
   },
@@ -48,9 +57,10 @@ vi.mock("@/stores/settings", () => ({
 }));
 
 const { ensureParticipationScoreForNextMatch } = await import("../participationScorePayment");
-const { BrowserParticipationScoreInsufficientBalanceError } = await import(
-  "../browserParticipationScoreDelivery"
-);
+const { BrowserParticipationScoreInsufficientBalanceError } =
+  await import("../browserParticipationScoreDelivery");
+const { BrowserParticipationScoreAssetUnavailableError } =
+  await import("../browserParticipationScoreDelivery");
 
 const baseScore = {
   pubkey: "a".repeat(64),
@@ -150,6 +160,42 @@ describe("ensureParticipationScoreForNextMatch", () => {
       requiredSats: 4,
       balanceSats: 1.5,
       deficitSats: 2.5,
+      recoveryStatus: "insufficient",
+    });
+  });
+
+  it("returns unavailable recovery without attempting another payment", async () => {
+    mocks.getParticipationScore.mockResolvedValue({ ...baseScore, balance: -1 });
+    mocks.executeBrowserParticipationScoreDelivery.mockRejectedValue(
+      new BrowserParticipationScoreAssetUnavailableError(500),
+    );
+
+    await expect(
+      ensureParticipationScoreForNextMatch({ mintUrl: "https://mint.example", requiredScore: 4 }),
+    ).resolves.toMatchObject({
+      kind: "needs-regular-top-up",
+      recoveryStatus: "unavailable",
+      requiredSats: 5,
+      balanceSats: 0.5,
+      deficitSats: 4.5,
+    });
+    expect(mocks.executeBrowserParticipationScoreDelivery).toHaveBeenCalledOnce();
+  });
+
+  it("preserves an unknown balance for unavailable recovery", async () => {
+    mocks.getParticipationScore.mockResolvedValue({ ...baseScore, balance: -1 });
+    mocks.executeBrowserParticipationScoreDelivery.mockRejectedValue(
+      new BrowserParticipationScoreAssetUnavailableError(null),
+    );
+
+    await expect(
+      ensureParticipationScoreForNextMatch({ mintUrl: "https://mint.example", requiredScore: 4 }),
+    ).resolves.toMatchObject({
+      kind: "needs-regular-top-up",
+      recoveryStatus: "unavailable",
+      requiredSats: 5,
+      balanceSats: null,
+      deficitSats: null,
     });
   });
 

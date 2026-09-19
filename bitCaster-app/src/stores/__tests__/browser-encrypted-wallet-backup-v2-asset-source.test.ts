@@ -16,6 +16,7 @@ import { createEncryptedWalletBackupV2DesiredAssetRow } from "../browser-encrypt
 import {
   prepareBrowserEncryptedWalletBackupV2AssetBundle,
   readBrowserEncryptedWalletBackupV2AssetSnapshot,
+  readBrowserEncryptedWalletBackupV2LocalAssetRead,
 } from "../browser-encrypted-wallet-backup-v2-asset-source";
 import { createBrowserCustodyProofRow } from "../durable-custody-db";
 import { BitcasterDB } from "../proof-db";
@@ -113,6 +114,63 @@ describe("browser V2 asset source", () => {
     });
 
     expect(snapshot.proofs.map(({ proof }) => proof.secret)).toEqual([proofSecret(selectable)]);
+  });
+
+  it("validates retained null-locator proof authority before excluding it", async () => {
+    const fixture = await fixtureFor("ordinary");
+    database = fixture.database;
+    const selectable = proofRow(fixture.scopeId, REGULAR_KEYSET, 1, "regular", "selectable");
+    const retained = proofRow(fixture.scopeId, REGULAR_KEYSET, 2, "regular", "locked");
+    const desired = createEncryptedWalletBackupV2DesiredAssetRow({
+      scopeId: fixture.scopeId,
+      asset: fixture.asset,
+      custodyRevision: 7n,
+      activeProofCount: 1,
+    });
+    await fixture.database.custodyProofs.bulkPut([selectable, retained]);
+    await putCounter(fixture.database, fixture.scopeId, REGULAR_KEYSET, 3);
+    await fixture.database.encryptedWalletBackupV2DesiredAssets.put(desired);
+
+    for (const invalid of [
+      {
+        ...createBrowserProofBackupAuthorityRow(retained, 2, null, "order:preparation"),
+        proofFingerprint: "ff".repeat(32),
+      },
+      {
+        ...createBrowserProofBackupAuthorityRow(retained, 2, null, "order:preparation"),
+        proofRevision: retained.revision + 1,
+      },
+    ]) {
+      await fixture.database.custodyProofBackupAuthorities.bulkPut([
+        authority(selectable),
+        invalid,
+      ]);
+      await expect(
+        readBrowserEncryptedWalletBackupV2AssetSnapshot({
+          database: fixture.database,
+          scopeId: fixture.scopeId,
+          localAssetKey: desired.localAssetKey,
+        }),
+      ).rejects.toThrow(/backup authority/);
+    }
+  });
+
+  it("refuses a selectable null-locator proof", async () => {
+    const fixture = await fixtureFor("ordinary");
+    database = fixture.database;
+    const selectable = proofRow(fixture.scopeId, REGULAR_KEYSET, 1, "regular", "selectable");
+    await fixture.database.custodyProofs.put(selectable);
+    await fixture.database.custodyProofBackupAuthorities.put(
+      createBrowserProofBackupAuthorityRow(selectable, 2, null, "order:preparation"),
+    );
+
+    await expect(
+      readBrowserEncryptedWalletBackupV2LocalAssetRead({
+        database: fixture.database,
+        scopeId: fixture.scopeId,
+        asset: fixture.asset,
+      }),
+    ).rejects.toMatchObject({ code: "snapshot-read" });
   });
 
   it("binds a CTF snapshot to verified conditional keyset authority", async () => {

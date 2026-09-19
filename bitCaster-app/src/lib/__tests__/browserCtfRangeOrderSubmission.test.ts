@@ -2,10 +2,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { TradeTicket } from "@bitcaster/client-sdk/tradeTicket";
 import type { MarketDetail } from "@/types/market-detail";
 import {
+  BrowserCtfRangeScoreTopUpCancelledError,
   previewBrowserCtfRangeOrderFees,
   recoverBrowserCtfRangeOrder,
   recoverBrowserCtfRangeOrders,
   submitBrowserCtfRangeOrder,
+  type BrowserCtfRangeOrderSubmission,
 } from "../browserCtfRangeOrderSubmission";
 
 const KEYSET_KEYS = Object.fromEntries(
@@ -319,6 +321,7 @@ describe("submitBrowserCtfRangeOrder", () => {
         requiredSats: 3,
         balanceSats: 0,
         deficitSats: 3,
+        recoveryStatus: "insufficient",
       })
       .mockResolvedValueOnce({ kind: "sufficient", score: { ...score, balance: 3 } });
     let releaseTopUp!: () => void;
@@ -349,7 +352,6 @@ describe("submitBrowserCtfRangeOrder", () => {
       consentedFeeFacts: feeFacts(),
       onScoreTopUpRequired,
     });
-
     const beforeCreateCapability = (
       mocks.coordinatorInput as {
         beforeCreateCapability: (input: {
@@ -363,7 +365,11 @@ describe("submitBrowserCtfRangeOrder", () => {
       requiredScore: 7,
     });
     await Promise.resolve();
-    expect(onScoreTopUpRequired).toHaveBeenCalledWith({ requiredSats: 3, balanceSats: 0 });
+    expect(onScoreTopUpRequired).toHaveBeenCalledWith({
+      requiredSats: 3,
+      balanceSats: 0,
+      recoveryStatus: "insufficient",
+    });
     expect(mocks.ensureParticipationScoreForNextMatch).toHaveBeenNthCalledWith(1, {
       mintUrl: "https://mint.example",
       requiredScore: 7,
@@ -381,6 +387,150 @@ describe("submitBrowserCtfRangeOrder", () => {
       mintUrl: "https://mint.example",
       requiredScore: 7,
     });
+  });
+
+  it("requires a new explicit continuation for every unavailable Score retry", async () => {
+    const score = { purchasedTotal: 0, balance: -3, enabled: true };
+    mocks.ensureParticipationScoreForNextMatch
+      .mockResolvedValueOnce({
+        kind: "needs-regular-top-up",
+        score,
+        requiredSats: 3,
+        balanceSats: 0,
+        deficitSats: 3,
+        recoveryStatus: "unavailable",
+      })
+      .mockResolvedValueOnce({
+        kind: "needs-regular-top-up",
+        score,
+        requiredSats: 3,
+        balanceSats: 0,
+        deficitSats: 3,
+        recoveryStatus: "unavailable",
+      })
+      .mockResolvedValueOnce({ kind: "sufficient", score: { ...score, balance: 3 } });
+    const releases: Array<() => void> = [];
+    const onScoreTopUpRequired = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          releases.push(resolve);
+        }),
+    );
+
+    await submitBrowserCtfRangeOrder(scoreOrderInput(onScoreTopUpRequired));
+
+    const beforeCreateCapability = (
+      mocks.coordinatorInput as {
+        beforeCreateCapability: (input: {
+          mintUrl: string;
+          requiredScore: number;
+        }) => Promise<void>;
+      }
+    ).beforeCreateCapability;
+
+    const continuation = beforeCreateCapability({
+      mintUrl: "https://mint.example",
+      requiredScore: 7,
+    });
+    await Promise.resolve();
+    expect(onScoreTopUpRequired).toHaveBeenCalledWith({
+      requiredSats: 3,
+      balanceSats: 0,
+      recoveryStatus: "unavailable",
+    });
+    expect(onScoreTopUpRequired).toHaveBeenCalledTimes(1);
+    expect(releases).toHaveLength(1);
+    expect(mocks.ensureParticipationScoreForNextMatch).toHaveBeenCalledTimes(1);
+    let completed = false;
+    void continuation.then(() => {
+      completed = true;
+    });
+    await Promise.resolve();
+    expect(completed).toBe(false);
+
+    releases[0]!();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(onScoreTopUpRequired).toHaveBeenCalledTimes(2);
+    expect(releases).toHaveLength(2);
+    expect(mocks.ensureParticipationScoreForNextMatch).toHaveBeenCalledTimes(2);
+    expect(completed).toBe(false);
+
+    releases[1]!();
+    await continuation;
+    expect(mocks.ensureParticipationScoreForNextMatch).toHaveBeenCalledTimes(3);
+    expect(mocks.ensureParticipationScoreForNextMatch).toHaveBeenNthCalledWith(1, {
+      mintUrl: "https://mint.example",
+      requiredScore: 7,
+    });
+    expect(mocks.ensureParticipationScoreForNextMatch).toHaveBeenNthCalledWith(2, {
+      mintUrl: "https://mint.example",
+      requiredScore: 7,
+    });
+    expect(mocks.ensureParticipationScoreForNextMatch).toHaveBeenNthCalledWith(3, {
+      mintUrl: "https://mint.example",
+      requiredScore: 7,
+    });
+    expect(mocks.prepareAndSubmit).toHaveBeenCalledOnce();
+  });
+
+  it("throws the typed Score top-up error when no continuation is available", async () => {
+    mocks.ensureParticipationScoreForNextMatch.mockResolvedValueOnce({
+      kind: "needs-regular-top-up",
+      score: { purchasedTotal: 0, balance: -3, enabled: true },
+      requiredSats: 3,
+      balanceSats: null,
+      deficitSats: null,
+      recoveryStatus: "unavailable",
+    });
+
+    await submitBrowserCtfRangeOrder(scoreOrderInput());
+    const beforeCreateCapability = (
+      mocks.coordinatorInput as {
+        beforeCreateCapability: (input: {
+          mintUrl: string;
+          requiredScore: number;
+        }) => Promise<void>;
+      }
+    ).beforeCreateCapability;
+
+    await expect(
+      beforeCreateCapability({ mintUrl: "https://mint.example", requiredScore: 7 }),
+    ).rejects.toMatchObject({
+      name: "BrowserCtfRangeScoreTopUpRequiredError",
+      recoveryStatus: "unavailable",
+      balanceSats: null,
+    });
+    expect(mocks.ensureParticipationScoreForNextMatch).toHaveBeenCalledOnce();
+  });
+
+  it("propagates Score top-up cancellation without another ensure", async () => {
+    const cancellation = new BrowserCtfRangeScoreTopUpCancelledError();
+    mocks.ensureParticipationScoreForNextMatch.mockResolvedValueOnce({
+      kind: "needs-regular-top-up",
+      score: { purchasedTotal: 0, balance: -3, enabled: true },
+      requiredSats: 3,
+      balanceSats: 0,
+      deficitSats: 3,
+      recoveryStatus: "unavailable",
+    });
+    const onScoreTopUpRequired = vi.fn().mockRejectedValue(cancellation);
+
+    await submitBrowserCtfRangeOrder(scoreOrderInput(onScoreTopUpRequired));
+    const beforeCreateCapability = (
+      mocks.coordinatorInput as {
+        beforeCreateCapability: (input: {
+          mintUrl: string;
+          requiredScore: number;
+        }) => Promise<void>;
+      }
+    ).beforeCreateCapability;
+
+    await expect(
+      beforeCreateCapability({ mintUrl: "https://mint.example", requiredScore: 7 }),
+    ).rejects.toBe(cancellation);
+    expect(onScoreTopUpRequired).toHaveBeenCalledOnce();
+    expect(mocks.ensureParticipationScoreForNextMatch).toHaveBeenCalledOnce();
   });
 
   it.each(["Outcome", "Complement"] as const)(
@@ -456,11 +606,11 @@ describe("submitBrowserCtfRangeOrder", () => {
         sourceFee: "1",
       })
       .mockReturnValueOnce({
-      kind: "ready",
-      consolidationRounds: [],
-      selectedInputs: ["10000"],
-      consolidationFee: "0",
-      sourceFee: "1",
+        kind: "ready",
+        consolidationRounds: [],
+        selectedInputs: ["10000"],
+        consolidationFee: "0",
+        sourceFee: "1",
       });
     mocks.getBoundedCanonicalRangeProofsForKeyset
       .mockResolvedValueOnce([
@@ -730,6 +880,31 @@ function market(): MarketDetail {
       { id: "no-id", label: "NO", odds: 50 },
     ],
   } as MarketDetail;
+}
+
+function scoreOrderInput(
+  onScoreTopUpRequired?: BrowserCtfRangeOrderSubmission["onScoreTopUpRequired"],
+): BrowserCtfRangeOrderSubmission {
+  return {
+    market: market(),
+    ticket: {
+      marketId: "condition-1-YES",
+      request: {
+        outcomeId: "YES",
+        tokenSide: "Outcome",
+        side: "Buy",
+        price: 400,
+        amountSubunits: 1_000,
+        timeInForce: "FOK",
+      },
+    },
+    clientOrderId: "client-score-recovery-unavailable",
+    mintUrl: "https://mint.example",
+    mnemonic:
+      "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+    consentedFeeFacts: feeFacts(),
+    onScoreTopUpRequired,
+  };
 }
 
 function submitRangeOrder(

@@ -39,6 +39,7 @@ import { recoverBrowserFundedAsset } from "./browserFundedAssetRecovery";
 import { activeBrowserWalletScopeId } from "./browserWalletProfile";
 import { browserRangeSourceAsset } from "./browserCtfRangeOrderSource";
 import { ensureParticipationScoreForNextMatch } from "./participationScorePayment";
+import type { BrowserParticipationScoreRecoveryStatus } from "./browserParticipationScoreDelivery";
 
 const MINT_METADATA_CACHE_TTL_MS = 30_000;
 const MINT_METADATA_CACHE_LIMIT = 64;
@@ -69,7 +70,8 @@ export interface BrowserCtfRangeOrderSubmission {
   readonly consentedFeeFacts: CtfRangeOrderFeeFacts;
   readonly onScoreTopUpRequired?: (input: {
     readonly requiredSats: number;
-    readonly balanceSats: number;
+    readonly balanceSats: number | null;
+    readonly recoveryStatus?: BrowserParticipationScoreRecoveryStatus;
   }) => Promise<void>;
 }
 
@@ -363,15 +365,23 @@ function rangeSourceAsset(preparation: ReturnType<typeof buildBrowserCtfRangeOrd
 
 export class BrowserCtfRangeScoreTopUpRequiredError extends Error {
   readonly requiredSats: number;
-  readonly balanceSats: number;
+  readonly balanceSats: number | null;
+  readonly recoveryStatus: BrowserParticipationScoreRecoveryStatus;
 
-  constructor(input: { requiredSats: number; balanceSats: number }) {
+  constructor(input: {
+    requiredSats: number;
+    balanceSats: number | null;
+    recoveryStatus?: BrowserParticipationScoreRecoveryStatus;
+  }) {
     super(
-      "Participation Score balance is insufficient for this capability. Top up and retry to recover the prepared capability.",
+      input.recoveryStatus === "unavailable"
+        ? "Participation Score asset recovery is unavailable. Retry recovery or add funds."
+        : "Participation Score balance is insufficient for this capability. Top up and retry to recover the prepared capability.",
     );
     this.name = "BrowserCtfRangeScoreTopUpRequiredError";
     this.requiredSats = input.requiredSats;
     this.balanceSats = input.balanceSats;
+    this.recoveryStatus = input.recoveryStatus ?? "insufficient";
   }
 }
 
@@ -657,29 +667,32 @@ function createBrowserCtfRangeCoordinator(
     engine,
     allowInsecureLoopbackHttp,
     beforeCreateCapability: async ({ mintUrl, requiredScore }) => {
-      const score = await ensureParticipationScoreForNextMatch({
-        mintUrl,
-        requiredScore,
-      });
-      if (score.kind !== "needs-regular-top-up") return;
-      if (onScoreTopUpRequired === undefined) {
-        throw new BrowserCtfRangeScoreTopUpRequiredError({
+      while (true) {
+        const score = await ensureParticipationScoreForNextMatch({
+          mintUrl,
+          requiredScore,
+        });
+        switch (score.kind) {
+          case "disabled":
+          case "sufficient":
+          case "paid":
+            return;
+          case "needs-regular-top-up":
+            break;
+          default:
+            throw new Error("Participation Score preflight result is invalid");
+        }
+        if (onScoreTopUpRequired === undefined) {
+          throw new BrowserCtfRangeScoreTopUpRequiredError({
+            requiredSats: score.requiredSats,
+            balanceSats: score.balanceSats,
+            recoveryStatus: score.recoveryStatus,
+          });
+        }
+        await onScoreTopUpRequired({
           requiredSats: score.requiredSats,
           balanceSats: score.balanceSats,
-        });
-      }
-      await onScoreTopUpRequired({
-        requiredSats: score.requiredSats,
-        balanceSats: score.balanceSats,
-      });
-      const afterTopUp = await ensureParticipationScoreForNextMatch({
-        mintUrl,
-        requiredScore,
-      });
-      if (afterTopUp.kind === "needs-regular-top-up") {
-        throw new BrowserCtfRangeScoreTopUpRequiredError({
-          requiredSats: afterTopUp.requiredSats,
-          balanceSats: afterTopUp.balanceSats,
+          recoveryStatus: score.recoveryStatus,
         });
       }
     },

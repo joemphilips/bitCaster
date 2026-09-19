@@ -15,6 +15,13 @@ import { withWalletProfileLock } from "./walletProfileLock";
 
 type FundedPlan = { readonly kind: "ready" | "insufficient" | "not-reducible" | "round-limit" };
 
+type BrowserFundedAssetRecoveryDiagnostic =
+  | "local-plan"
+  | "canonical-repair"
+  | "driver-absent"
+  | "driver-outcome"
+  | "profile-or-lock";
+
 export type BrowserFundedAssetRecoveryOutcome<TPlan extends FundedPlan> =
   | { readonly kind: "ready"; readonly plan: TPlan }
   | { readonly kind: "not-recoverable"; readonly plan: TPlan }
@@ -38,21 +45,30 @@ export interface BrowserFundedAssetRecoveryInput<TPlan extends FundedPlan> {
 export async function recoverBrowserFundedAsset<TPlan extends FundedPlan>(
   input: BrowserFundedAssetRecoveryInput<TPlan>,
 ): Promise<BrowserFundedAssetRecoveryOutcome<TPlan>> {
+  let failureStage: BrowserFundedAssetRecoveryDiagnostic = "local-plan";
   try {
     requireMsatAsset(input.asset);
+    failureStage = "profile-or-lock";
     requireCurrent(input);
+    failureStage = "local-plan";
     const initial = await input.loadPlan();
+    failureStage = "profile-or-lock";
     requireCurrent(input);
     if (initial.kind === "ready") return { kind: "ready", plan: initial };
     if (initial.kind !== "insufficient") return { kind: "not-recoverable", plan: initial };
+    failureStage = "canonical-repair";
     if (await repairSelectableCanonicalRows(input)) {
+      failureStage = "local-plan";
       const repaired = await input.loadPlan();
+      failureStage = "profile-or-lock";
       requireCurrent(input);
       if (repaired.kind === "ready") return { kind: "ready", plan: repaired };
       if (repaired.kind !== "insufficient") return { kind: "not-recoverable", plan: repaired };
     }
+    failureStage = "driver-outcome";
     return await recoverBackupFirst(input);
   } catch {
+    reportFundedRecoveryDiagnostic(failureStage);
     return { kind: "persistent-error" };
   }
 }
@@ -87,7 +103,10 @@ async function recoverBackupFirst<TPlan extends FundedPlan>(
   input: BrowserFundedAssetRecoveryInput<TPlan>,
 ): Promise<BrowserFundedAssetRecoveryOutcome<TPlan>> {
   const driver = activeBrowserEncryptedWalletBackupV2RuntimeDriver(input.scopeId);
-  if (driver === null) return { kind: "persistent-error" };
+  if (driver === null) {
+    reportFundedRecoveryDiagnostic("driver-absent");
+    return { kind: "persistent-error" };
+  }
   let monitoringAbsent = false;
   const outcome = await driver.recoverTargetedAsset({
     asset: input.asset,
@@ -101,7 +120,11 @@ async function recoverBackupFirst<TPlan extends FundedPlan>(
     lockManager: input.lockManager,
   });
   requireCurrent(input);
-  return recoveryOutcome(outcome, monitoringAbsent);
+  const recovered = recoveryOutcome<TPlan>(outcome, monitoringAbsent);
+  if (recovered.kind === "persistent-error") {
+    reportFundedRecoveryDiagnostic("driver-outcome");
+  }
+  return recovered;
 }
 
 /** Reads one bounded monitoring page only after authenticated backup inventory lacks the asset. */
@@ -176,4 +199,8 @@ function requireCurrent(
   input: Pick<BrowserFundedAssetRecoveryInput<FundedPlan>, "isCurrentProfile">,
 ): void {
   if (!input.isCurrentProfile()) throw new Error("browser funded recovery profile is stale");
+}
+
+function reportFundedRecoveryDiagnostic(code: BrowserFundedAssetRecoveryDiagnostic): void {
+  console.warn(`funded-recovery-code=${code}`);
 }

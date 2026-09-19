@@ -18,6 +18,7 @@ import { createBrowserProofBackupAuthorityRow } from "../../stores/browser-proof
 import { createBrowserCustodyProofRow } from "../../stores/durable-custody-db";
 import { browserWalletDatabaseName } from "../browserWalletProfile";
 import {
+  readBrowserEncryptedWalletBackupV2LocalAvailableAmount,
   restoreAndAdmitBrowserEncryptedWalletBackupV2TargetedAsset,
   restoreBrowserEncryptedWalletBackupV2TargetedAsset,
 } from "../browserEncryptedWalletBackupV2Restore";
@@ -141,6 +142,9 @@ it("uses complete current local custody without backup network I/O", async () =>
     ...desired,
     syncState: "acknowledged",
   });
+  await expect(readBrowserEncryptedWalletBackupV2LocalAvailableAmount(fixture.input)).resolves.toBe(
+    0n,
+  );
   await expect(
     restoreAndAdmitBrowserEncryptedWalletBackupV2TargetedAsset({
       ...fixture.input,
@@ -158,10 +162,127 @@ it("uses complete current local custody without backup network I/O", async () =>
     syncState: "acknowledged",
     activeProofCount: 2,
   });
-  await expect(restoreBrowserEncryptedWalletBackupV2TargetedAsset(fixture.input)).rejects.toThrow(
-    /local custody asset is partial/,
+  await expect(restoreBrowserEncryptedWalletBackupV2TargetedAsset(fixture.input)).rejects.toEqual(
+    expect.objectContaining({
+      code: "partial",
+      message: "browser V2 local custody asset is partial",
+    }),
   );
   expect(fixture.remote.readDescriptorPage).not.toHaveBeenCalled();
+});
+
+it("returns zero local availability for a removal with retained operation proofs", async () => {
+  const fixture = await backupFixture();
+  const removal = createEncryptedWalletBackupV2DesiredAssetRow({
+    scopeId: fixture.input.scopeId,
+    asset: fixture.input.asset,
+    custodyRevision: 2n,
+    activeProofCount: 0,
+  });
+  await fixture.input.database.encryptedWalletBackupV2DesiredAssets.put(removal);
+  const pending = await putLocalProofWithoutAuthority(fixture);
+  const locked = {
+    ...pending,
+    selectability: "locked" as const,
+    reservationOperationId: "pending-operation",
+  };
+  await fixture.input.database.custodyProofs.put(locked);
+  await fixture.input.database.custodyProofBackupAuthorities.put(
+    createBrowserProofBackupAuthorityRow(locked, 1, null, "pending-operation"),
+  );
+
+  await expect(readBrowserEncryptedWalletBackupV2LocalAvailableAmount(fixture.input)).resolves.toBe(
+    0n,
+  );
+  await expect(restoreBrowserEncryptedWalletBackupV2TargetedAsset(fixture.input)).resolves.toEqual({
+    kind: "local-custody",
+  });
+  expect(fixture.remote.readDescriptorPage).not.toHaveBeenCalled();
+});
+
+it("tags missing local custody authority without backup network I/O", async () => {
+  const fixture = await backupFixture();
+  await putLocalProofWithoutAuthority(fixture);
+
+  await expect(
+    readBrowserEncryptedWalletBackupV2LocalAvailableAmount(fixture.input),
+  ).rejects.toEqual(expect.objectContaining({ code: "missing-authority" }));
+});
+
+it("tags an invalid desired action without backup network I/O", async () => {
+  const fixture = await backupFixture();
+  const desired = createEncryptedWalletBackupV2DesiredAssetRow({
+    scopeId: fixture.input.scopeId,
+    asset: fixture.input.asset,
+    custodyRevision: 2n,
+    activeProofCount: 0,
+  });
+  await fixture.input.database.encryptedWalletBackupV2DesiredAssets.put({
+    ...desired,
+    // Deliberately corrupt the persisted discriminator to exercise the
+    // fail-closed branch that typed rows cannot produce.
+    desiredAction: "corrupt" as never,
+    syncState: "acknowledged",
+  });
+
+  await expect(
+    readBrowserEncryptedWalletBackupV2LocalAvailableAmount(fixture.input),
+  ).rejects.toEqual(expect.objectContaining({ code: "invalid-action" }));
+});
+
+it("tags stale profile, local proof read, partial, and snapshot read guards", async () => {
+  const staleFixture = await backupFixture();
+  await expect(
+    readBrowserEncryptedWalletBackupV2LocalAvailableAmount({
+      ...staleFixture.input,
+      isCurrentProfile: () => false,
+    }),
+  ).rejects.toEqual(expect.objectContaining({ code: "stale-profile" }));
+
+  const staleDuringProofFixture = await backupFixture();
+  let profileChecks = 0;
+  await expect(
+    readBrowserEncryptedWalletBackupV2LocalAvailableAmount({
+      ...staleDuringProofFixture.input,
+      isCurrentProfile: () => profileChecks++ < 1,
+    }),
+  ).rejects.toEqual(expect.objectContaining({ code: "stale-profile" }));
+
+  const proofReadFixture = await backupFixture();
+  proofReadFixture.input.database.close();
+  await expect(
+    readBrowserEncryptedWalletBackupV2LocalAvailableAmount(proofReadFixture.input),
+  ).rejects.toEqual(expect.objectContaining({ code: "proof-read" }));
+
+  const partialFixture = await backupFixture();
+  const partialDesired = createEncryptedWalletBackupV2DesiredAssetRow({
+    scopeId: partialFixture.input.scopeId,
+    asset: partialFixture.input.asset,
+    custodyRevision: 2n,
+    activeProofCount: 2,
+  });
+  await partialFixture.input.database.encryptedWalletBackupV2DesiredAssets.put(partialDesired);
+  await putLocalProofWithAuthority(partialFixture);
+  await expect(
+    readBrowserEncryptedWalletBackupV2LocalAvailableAmount(partialFixture.input),
+  ).rejects.toEqual(expect.objectContaining({ code: "partial" }));
+
+  const snapshotFixture = await backupFixture();
+  const proofWithStaleAuthority = await putLocalProofWithAuthority(snapshotFixture, false);
+  await snapshotFixture.input.database.custodyProofs.put({
+    ...proofWithStaleAuthority,
+    revision: proofWithStaleAuthority.revision + 1,
+  });
+  const snapshotDesired = createEncryptedWalletBackupV2DesiredAssetRow({
+    scopeId: snapshotFixture.input.scopeId,
+    asset: snapshotFixture.input.asset,
+    custodyRevision: 2n,
+    activeProofCount: 1,
+  });
+  await snapshotFixture.input.database.encryptedWalletBackupV2DesiredAssets.put(snapshotDesired);
+  await expect(
+    readBrowserEncryptedWalletBackupV2LocalAvailableAmount(snapshotFixture.input),
+  ).rejects.toEqual(expect.objectContaining({ code: "snapshot-read" }));
 });
 
 it("falls through from an acknowledged evicted cache to its current bundle", async () => {
@@ -480,6 +601,66 @@ async function backupFixture() {
       isCurrentProfile: () => true,
     },
   };
+}
+
+async function putLocalProofWithoutAuthority(fixture: Awaited<ReturnType<typeof backupFixture>>) {
+  const locator = {
+    schemaVersion: 1 as const,
+    kind: "nut13" as const,
+    keysetId: KEYSET,
+    counter: 8,
+  };
+  const proof = createBrowserCustodyProofRow({
+    scopeId: fixture.input.scopeId,
+    normalizedMint: fixture.input.asset.mintUrl,
+    unit: "msat",
+    proof: {
+      id: KEYSET,
+      amount: Amount.from(1),
+      secret: deriveDurableWalletProofSecret({
+        seed: SEED,
+        locator,
+        proofKeysetId: KEYSET,
+        proofAmount: 1,
+      }),
+      C: `02${"55".repeat(32)}`,
+    },
+    asset: { kind: "regular" },
+    receivedAtMs: 1,
+  });
+  await fixture.input.database.custodyProofs.put(proof);
+  return proof;
+}
+
+async function putLocalProofWithAuthority(
+  fixture: Awaited<ReturnType<typeof backupFixture>>,
+  withCounters = true,
+) {
+  const proof = await putLocalProofWithoutAuthority(fixture);
+  const locator = {
+    schemaVersion: 1 as const,
+    kind: "nut13" as const,
+    keysetId: KEYSET,
+    counter: 8,
+  };
+  await fixture.input.database.custodyProofBackupAuthorities.put(
+    createBrowserProofBackupAuthorityRow(proof, 1, locator, "local"),
+  );
+  if (withCounters) {
+    await fixture.input.database.walletCounterAssociations.put({
+      scopeId: fixture.input.scopeId,
+      normalizedMint: fixture.input.asset.mintUrl,
+      unit: "msat",
+      keysetId: KEYSET,
+      recoveryComplete: true,
+    });
+    await fixture.input.database.walletCounterCursors.put({
+      scopeId: fixture.input.scopeId,
+      keysetId: KEYSET,
+      next: 9,
+    });
+  }
+  return proof;
 }
 
 function immediateLockManager(): Pick<LockManager, "request"> {

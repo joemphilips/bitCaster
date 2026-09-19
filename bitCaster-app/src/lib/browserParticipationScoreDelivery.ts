@@ -37,6 +37,8 @@ import { getBoundedCanonicalRegularProofs, type StoredProof } from "@/stores/pro
 
 export type ParticipationScoreDeliveryProgress = "pending" | "received" | "credited";
 
+export type BrowserParticipationScoreRecoveryStatus = "insufficient" | "unavailable";
+
 export interface BrowserParticipationScoreDeliveryResult {
   readonly transfer: DurableOutgoingCashuTransfer;
   readonly progress: ParticipationScoreDeliveryProgress;
@@ -44,9 +46,20 @@ export interface BrowserParticipationScoreDeliveryResult {
 }
 
 export class BrowserParticipationScoreInsufficientBalanceError extends Error {
-  constructor(readonly balanceMsat: number) {
+  readonly recoveryStatus: BrowserParticipationScoreRecoveryStatus = "insufficient";
+
+  constructor(readonly balanceMsat: number | null) {
     super("browser Participation Score balance is insufficient");
     this.name = "BrowserParticipationScoreInsufficientBalanceError";
+  }
+}
+
+export class BrowserParticipationScoreAssetUnavailableError extends Error {
+  readonly recoveryStatus: BrowserParticipationScoreRecoveryStatus = "unavailable";
+
+  constructor(readonly balanceMsat: number | null) {
+    super("browser Participation Score asset recovery is unavailable");
+    this.name = "BrowserParticipationScoreAssetUnavailableError";
   }
 }
 
@@ -175,6 +188,7 @@ async function preflightParticipationScoreAsset(input: {
   readonly requiredAmount: string;
   readonly mintUrl: string;
 }): Promise<void> {
+  let localBalanceMsat: number | null = null;
   const recovery = await recoverBrowserFundedAsset({
     database: input.context.database,
     scopeId: input.context.scopeId,
@@ -182,24 +196,27 @@ async function preflightParticipationScoreAsset(input: {
     mnemonic: input.context.mnemonic,
     asset: input.asset,
     requiredAmount: BigInt(input.requiredAmount),
-    loadPlan: async () =>
-      sumProofs(await readParticipationScoreCandidates(input.mintUrl, input.context.scopeId)) >=
-      Number(input.requiredAmount)
+    loadPlan: async () => {
+      const proofs = await readParticipationScoreCandidates(input.mintUrl, input.context.scopeId);
+      localBalanceMsat = sumProofs(proofs);
+      return localBalanceMsat >= Number(input.requiredAmount)
         ? { kind: "ready" as const }
-        : { kind: "insufficient" as const },
+        : { kind: "insufficient" as const };
+    },
     isCurrentProfile: () => {
       input.context.requireCapturedProfile();
       return true;
     },
   });
+  input.context.requireCapturedProfile();
   switch (recovery.kind) {
     case "ready":
     case "recovered":
       return;
     case "unavailable":
-      throw new BrowserParticipationScoreInsufficientBalanceError(0);
+      throw new BrowserParticipationScoreInsufficientBalanceError(localBalanceMsat);
     case "persistent-error":
-      throw new Error("Participation Score asset recovery is unavailable");
+      throw new BrowserParticipationScoreAssetUnavailableError(localBalanceMsat);
     case "not-recoverable":
       throw new BrowserParticipationScoreConsolidationRequiredError();
     default:

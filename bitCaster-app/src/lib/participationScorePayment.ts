@@ -1,7 +1,9 @@
 import {
+  BrowserParticipationScoreAssetUnavailableError,
   BrowserParticipationScoreInsufficientBalanceError,
   executeBrowserParticipationScoreDelivery,
   reconcileBrowserParticipationScoreDeliveryIfPresent,
+  type BrowserParticipationScoreRecoveryStatus,
 } from "@/lib/browserParticipationScoreDelivery";
 import {
   claimBrowserParticipationScoreDeliveryPointer,
@@ -10,10 +12,7 @@ import {
 } from "@/lib/browserParticipationScoreDeliveryPointer";
 import { captureBrowserMintPersistenceContext } from "@/lib/cashu";
 import { resolveCreatorPubkey } from "@/lib/identityOps";
-import {
-  getParticipationScore,
-  type ParticipationScoreResponse,
-} from "@/lib/markets";
+import { getParticipationScore, type ParticipationScoreResponse } from "@/lib/markets";
 import { useSettingsStore } from "@/stores/settings";
 import { planParticipationScoreTopUp } from "@bitcaster/client-sdk/participationScore";
 
@@ -34,8 +33,9 @@ export type ParticipationScorePreflightResult =
       kind: "needs-regular-top-up";
       score: ParticipationScoreResponse;
       requiredSats: number;
-      balanceSats: number;
-      deficitSats: number;
+      balanceSats: number | null;
+      deficitSats: number | null;
+      recoveryStatus: BrowserParticipationScoreRecoveryStatus;
     }
   | {
       kind: "paid";
@@ -130,12 +130,25 @@ export async function ensureParticipationScoreForNextMatch(input: {
     };
   } catch (error) {
     if (error instanceof BrowserParticipationScoreInsufficientBalanceError) {
+      const balanceSats = error.balanceMsat === null ? null : error.balanceMsat / 1_000;
       return {
         kind: "needs-regular-top-up",
         score,
         requiredSats: plan.deficitScore,
-        balanceSats: error.balanceMsat / 1_000,
-        deficitSats: plan.deficitScore - error.balanceMsat / 1_000,
+        balanceSats,
+        deficitSats: balanceSats === null ? null : plan.deficitScore - balanceSats,
+        recoveryStatus: error.recoveryStatus,
+      };
+    }
+    if (error instanceof BrowserParticipationScoreAssetUnavailableError) {
+      const balanceSats = error.balanceMsat === null ? null : error.balanceMsat / 1_000;
+      return {
+        kind: "needs-regular-top-up",
+        score,
+        requiredSats: plan.deficitScore,
+        balanceSats,
+        deficitSats: balanceSats === null ? null : plan.deficitScore - balanceSats,
+        recoveryStatus: error.recoveryStatus,
       };
     }
     throw error;

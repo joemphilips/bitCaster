@@ -41,7 +41,9 @@ const SCOPE_ID = `custody:wallet:${"11".repeat(32)}`;
 
 describe("recoverBrowserFundedAsset", () => {
   beforeEach(() => {
+    vi.restoreAllMocks();
     vi.clearAllMocks();
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
   });
 
   it("returns a ready local action plan without recovery I/O", async () => {
@@ -55,6 +57,7 @@ describe("recoverBrowserFundedAsset", () => {
     expect(mocks.engineAssets).not.toHaveBeenCalled();
     expect(mocks.wallet).not.toHaveBeenCalled();
     expect(mocks.driver.recoverTargetedAsset).not.toHaveBeenCalled();
+    expect(console.warn).not.toHaveBeenCalled();
   });
 
   it("rejects a sat product asset before loading the local plan", async () => {
@@ -67,6 +70,55 @@ describe("recoverBrowserFundedAsset", () => {
 
     expect(loadPlan).not.toHaveBeenCalled();
     expect(mocks.wallet).not.toHaveBeenCalled();
+    expectDiagnostic("local-plan");
+  });
+
+  it("labels a local-plan failure before recovery I/O", async () => {
+    const loadPlan = vi.fn().mockRejectedValue(new Error("local plan failed"));
+
+    await expect(recoverBrowserFundedAsset(input(loadPlan))).resolves.toEqual({
+      kind: "persistent-error",
+    });
+
+    expect(mocks.rows).not.toHaveBeenCalled();
+    expect(mocks.driver.recoverTargetedAsset).not.toHaveBeenCalled();
+    expectDiagnostic("local-plan");
+  });
+
+  it("labels canonical repair failures before backup recovery", async () => {
+    const loadPlan = vi.fn().mockResolvedValue({ kind: "insufficient" as const });
+    mocks.rows.mockRejectedValue(new Error("canonical rows failed"));
+
+    await expect(recoverBrowserFundedAsset(input(loadPlan))).resolves.toEqual({
+      kind: "persistent-error",
+    });
+
+    expect(mocks.driver.recoverTargetedAsset).not.toHaveBeenCalled();
+    expectDiagnostic("canonical-repair");
+  });
+
+  it("labels profile failures before local-plan I/O", async () => {
+    const loadPlan = vi.fn().mockResolvedValue({ kind: "ready" as const });
+
+    await expect(
+      recoverBrowserFundedAsset(input(loadPlan, { isCurrentProfile: () => false })),
+    ).resolves.toEqual({ kind: "persistent-error" });
+
+    expect(loadPlan).not.toHaveBeenCalled();
+    expectDiagnostic("profile-or-lock");
+  });
+
+  it("labels an absent recovery driver after local insufficiency", async () => {
+    const loadPlan = vi.fn().mockResolvedValue({ kind: "insufficient" as const });
+    mocks.rows.mockResolvedValue([]);
+    mocks.activeDriver.mockReturnValue(null);
+
+    await expect(recoverBrowserFundedAsset(input(loadPlan))).resolves.toEqual({
+      kind: "persistent-error",
+    });
+
+    expect(mocks.driver.recoverTargetedAsset).not.toHaveBeenCalled();
+    expectDiagnostic("driver-absent");
   });
 
   it("invokes backup recovery before one bounded exact monitoring read", async () => {
@@ -187,6 +239,7 @@ describe("recoverBrowserFundedAsset", () => {
       await expect(recoverBrowserFundedAsset(input(loadPlan))).resolves.toEqual({
         kind: "persistent-error",
       });
+      expectDiagnostic("driver-outcome");
     },
   );
 
@@ -212,6 +265,7 @@ describe("recoverBrowserFundedAsset", () => {
 
     expect(mocks.wallet).not.toHaveBeenCalled();
     expect(mocks.driver.recoverTargetedAsset).toHaveBeenCalledOnce();
+    expectDiagnostic("driver-outcome");
   });
 
   it("repairs only selectable canonical rows", async () => {
@@ -288,4 +342,9 @@ function input(
     loadPlan,
     isCurrentProfile: overrides.isCurrentProfile ?? (() => true),
   };
+}
+
+function expectDiagnostic(code: string): void {
+  expect(console.warn).toHaveBeenCalledTimes(1);
+  expect(console.warn).toHaveBeenCalledWith(`funded-recovery-code=${code}`);
 }

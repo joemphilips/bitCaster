@@ -1,8 +1,5 @@
 import { parseOutcomeSetId } from './outcomeSets.ts'
-import {
-  DEFAULT_SAT_MARKET_DIVISIBILITY,
-  defaultPriceStepSubunits,
-} from './marketUnits.ts'
+import { DEFAULT_SAT_MARKET_DIVISIBILITY, defaultPriceStepSubunits } from './marketUnits.ts'
 import type { AmmStrategyParams, PendingQRow } from './lmsrTypes.ts'
 
 /** Keep logit arguments strictly inside (0, 1). */
@@ -44,63 +41,6 @@ export interface LmsrDomainOutput {
   levels: LmsrLevel[]
   reserveRequests: ReserveRequest[]
   paused: boolean
-}
-
-export interface DepthPreview {
-  /** Estimated number of levels per side the bot would post. */
-  levelsPerSide: number
-  /** Estimated size per level, in shares. */
-  sharesPerLevel: number
-  /** Effective liquidity parameter b in CTF subunits. */
-  bSubunits: number
-}
-
-export function estimateDepthPreview(params: {
-  budgetSubunits: number
-  outcomeCount: number
-  /** Registered market price denominator. LMSR is ordinary-market only. */
-  divisibility: number | undefined
-  /** Optional: projected fee reserve to subtract from budget. Default 0. */
-  projectedFeeReserveSubunits?: number
-}): DepthPreview {
-  const priceDivisibility = normalizePriceDivisibility(params.divisibility)
-  const effectiveBudget = Math.max(
-    0,
-    Math.floor(params.budgetSubunits) - Math.floor(params.projectedFeeReserveSubunits ?? 0),
-  )
-  const outcomeCount = Math.max(0, Math.floor(params.outcomeCount))
-  const bSubunits = outcomeCount > 1 ? Math.floor(effectiveBudget / Math.log(outcomeCount)) : 0
-  if (bSubunits <= 0) return { levelsPerSide: 0, sharesPerLevel: 0, bSubunits: 0 }
-
-  const midpoint = 1 / Math.max(2, outcomeCount)
-  const levelsPerSide = Math.max(
-    buildLadder(
-      'ask',
-      midpoint,
-      0,
-      bSubunits,
-      priceDivisibility,
-      defaultPriceStepSubunits(priceDivisibility),
-      5,
-      1,
-    ).length,
-    buildLadder(
-      'bid',
-      midpoint,
-      0,
-      bSubunits,
-      priceDivisibility,
-      defaultPriceStepSubunits(priceDivisibility),
-      5,
-      1,
-    ).length,
-  )
-  const reservePerSide = Math.max(1, Math.floor(effectiveBudget / Math.max(2, outcomeCount)))
-  return {
-    levelsPerSide,
-    sharesPerLevel: levelsPerSide > 0 ? Math.max(1, Math.floor(reservePerSide / levelsPerSide)) : 0,
-    bSubunits,
-  }
 }
 
 export function computeLmsrLevels(input: LmsrDomainInput): LmsrDomainOutput {
@@ -208,10 +148,7 @@ export function normalizePriceDivisibility(value: unknown): typeof DEFAULT_SAT_M
   return value
 }
 
-export function normalizePriceStepSubunits(
-  value: number | undefined,
-  divisibility: unknown,
-): 10 {
+export function normalizePriceStepSubunits(value: number | undefined, divisibility: unknown): 10 {
   normalizePriceDivisibility(divisibility)
   const requiredPriceStep = defaultPriceStepSubunits(divisibility)
   if (value === undefined || value === requiredPriceStep) return requiredPriceStep

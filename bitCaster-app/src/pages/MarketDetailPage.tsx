@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useReducer,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { activeBrowserWalletScopeId } from "@/lib/browserWalletProfile";
 import { getNostrSignerRevision, subscribeToNostrSignerRevision } from "@/lib/nostr";
 import { useParams, useNavigate } from "react-router";
@@ -34,10 +42,7 @@ import {
   type MarketCommentsResponse,
 } from "@/lib/markets";
 import { buildTradeTicket } from "@/lib/tradeTicket";
-import {
-  buildProtectedTradeTicket,
-  type TradeTicket,
-} from "@bitcaster/client-sdk/tradeTicket";
+import { buildProtectedTradeTicket, type TradeTicket } from "@bitcaster/client-sdk/tradeTicket";
 import { displaySharesToFaceSubunits } from "@/lib/tradeCostPreview";
 import { assertNever } from "@/lib/enumDiscipline";
 import { addOrderSubmitNotifications } from "@/lib/orderNotifications";
@@ -71,6 +76,7 @@ import { useNotificationsStore } from "@/stores/notifications";
 import { createImplicitWalletAndNostrIdentity } from "@/lib/identityOps";
 import { canBackOrder } from "@bitcaster/client-sdk/tradingClient";
 import {
+  cashuAmountToMarketSubunits,
   formatMarketSubunits,
   normalizeMarketBaseAsset,
   normalizeMarketDivisibility,
@@ -108,7 +114,12 @@ export function shouldPromptForFundedActionBackup(walletBackupState: SecretBacku
 
 type TopUpStage = "closed" | "modal" | "overlay";
 type TopUpReason =
-  { kind: "collateral"; required: number; baseAsset: string } | { kind: "score"; required: number };
+  | { kind: "collateral"; required: number; baseAsset: string }
+  | {
+      kind: "score";
+      required: number;
+      recoveryStatus: "insufficient" | "unavailable";
+    };
 
 interface ActiveScoreTopUpContinuation {
   readonly intent: PendingTopUpOrderIntent;
@@ -243,8 +254,7 @@ export function pendingTopUpOrderIntentMatches(
     current.tradeSide === intent.tradeSide &&
     current.orderType === intent.orderType &&
     (intent.orderType !== "limit" || current.limitPrice === intent.limitPrice) &&
-    (intent.previewIdentityKey === null ||
-      current.previewIdentityKey === intent.previewIdentityKey)
+    (intent.previewIdentityKey === null || current.previewIdentityKey === intent.previewIdentityKey)
   );
 }
 
@@ -458,8 +468,11 @@ function emptyOrderBook(): OrderBook {
 function currentTradePreviewIdentityKey(routeId: string): string {
   const settings = useSettingsStore.getState();
   return [
-    routeId, settings.nostrSignerMode, settings.nostrProfile?.pubkey ?? "anonymous",
-    getNostrSignerRevision(), activeBrowserWalletScopeId() ?? "no-wallet",
+    routeId,
+    settings.nostrSignerMode,
+    settings.nostrProfile?.pubkey ?? "anonymous",
+    getNostrSignerRevision(),
+    activeBrowserWalletScopeId() ?? "no-wallet",
   ].join("\u0000");
 }
 
@@ -616,15 +629,21 @@ function appendConfirmedTradeHistory(
     const current = histories[timeframe] ?? {};
     histories[timeframe] = {
       ...current,
-      [trade.primitiveOutcomeId]: mergePriceHistory(current[trade.primitiveOutcomeId], {
-        timeframe,
-        data: [{
-          timestamp: trade.executedAt,
-          price: priceNumeratorToPercent(trade.priceTick, trade.divisibility),
-          volume: trade.faceAmountSubunits,
-          source: "fill",
-        }],
-      }, undefined),
+      [trade.primitiveOutcomeId]: mergePriceHistory(
+        current[trade.primitiveOutcomeId],
+        {
+          timeframe,
+          data: [
+            {
+              timestamp: trade.executedAt,
+              price: priceNumeratorToPercent(trade.priceTick, trade.divisibility),
+              volume: trade.faceAmountSubunits,
+              source: "fill",
+            },
+          ],
+        },
+        undefined,
+      ),
     };
     sources[timeframe] = { ...sources[timeframe], [trade.primitiveOutcomeId]: "live" };
   }
@@ -1021,8 +1040,11 @@ export function marketDetailDataReducer(
       if (validated.length !== canonicalNext.length) return state;
       // Append only an accepted new receipt. Duplicate and stale messages
       // must not alter chart history or trigger reconciliation requests.
-      if (!validated.includes(action.trade) || current.some((trade) =>
-        confirmedTradeFactsEqual(trade, action.trade))) return state;
+      if (
+        !validated.includes(action.trade) ||
+        current.some((trade) => confirmedTradeFactsEqual(trade, action.trade))
+      )
+        return state;
       return {
         ...state,
         ...appendConfirmedTradeHistory(state, action.conditionId, action.trade),
@@ -1128,7 +1150,9 @@ export function MarketDetailPage() {
   const activeMintUrl = useWalletStore((s) => s.activeMintUrl);
   const walletMnemonic = useWalletStore((s) => s.mnemonic);
   const signerRevision = useSyncExternalStore(
-    subscribeToNostrSignerRevision, getNostrSignerRevision, getNostrSignerRevision,
+    subscribeToNostrSignerRevision,
+    getNostrSignerRevision,
+    getNostrSignerRevision,
   );
   const addPendingTrade = usePendingTradesStore((s) => s.add);
   const nostrSignerMode = useSettingsStore((s) => s.nostrSignerMode);
@@ -1188,7 +1212,7 @@ export function MarketDetailPage() {
   // if the wallet balance changes live while they decide.
   const [topUpStage, setTopUpStage] = useState<TopUpStage>("closed");
   const [topUpReason, setTopUpReason] = useState<TopUpReason | null>(null);
-  const [balanceAtCheck, setBalanceAtCheck] = useState(0);
+  const [balanceAtCheck, setBalanceAtCheck] = useState<number | null>(0);
   const [showNostrAuthModal, setShowNostrAuthModal] = useState(false);
   const [showNostrChooser, setShowNostrChooser] = useState(false);
   const [lazySetupError, setLazySetupError] = useState<string | null>(null);
@@ -1267,9 +1291,11 @@ export function MarketDetailPage() {
           // Optional reconciliation must never replace a valid page with a
           // fatal error. Its failure is intentionally best-effort.
           if (showLoading) {
-            setError(error instanceof MarketDetailUnavailableError
-              ? t("market.detailsUnavailable")
-              : "Failed to load market. Please check that the mint is running.");
+            setError(
+              error instanceof MarketDetailUnavailableError
+                ? t("market.detailsUnavailable")
+                : "Failed to load market. Please check that the mint is running.",
+            );
           }
         })
         .finally(() => {
@@ -2014,8 +2040,16 @@ export function MarketDetailPage() {
           mnemonic: walletState.mnemonic,
           comment: signedComment ?? null,
           consentedFeeFacts,
-          onScoreTopUpRequired: async ({ requiredSats, balanceSats }) => {
-            if (!routeStillActive() || currentTradePreviewIdentityKey(routeId) !== capturedPreviewIdentityKey) {
+          onScoreTopUpRequired: async (input) => {
+            const {
+              requiredSats,
+              balanceSats,
+              recoveryStatus = balanceSats === null ? "unavailable" : "insufficient",
+            } = input;
+            if (
+              !routeStillActive() ||
+              currentTradePreviewIdentityKey(routeId) !== capturedPreviewIdentityKey
+            ) {
               throw new BrowserCtfRangeScoreTopUpCancelledError();
             }
             const intent = buildPendingTopUpOrderIntent({
@@ -2041,10 +2075,13 @@ export function MarketDetailPage() {
             setBalanceAtCheck(balanceSats);
             setPendingTopUpComment(comment?.trim() || undefined);
             setPendingTopUpIntent(intent);
-            setTopUpReason({ kind: "score", required: requiredSats });
+            setTopUpReason({ kind: "score", required: requiredSats, recoveryStatus });
             setTopUpStage("modal");
             await continuation;
-            if (!routeStillActive() || currentTradePreviewIdentityKey(routeId) !== capturedPreviewIdentityKey) {
+            if (
+              !routeStillActive() ||
+              currentTradePreviewIdentityKey(routeId) !== capturedPreviewIdentityKey
+            ) {
               throw new BrowserCtfRangeScoreTopUpCancelledError();
             }
           },
@@ -2281,43 +2318,40 @@ export function MarketDetailPage() {
     ],
   );
 
-  const handleWalletRequired = useCallback(
-    async () => {
-      if (market) {
-        try {
-          assertMarketAcceptsOrders(market);
-        } catch (error) {
-          setTradeSubmitStatus({
-            kind: "error",
-            message:
-              error instanceof Error
-                ? error.message
-                : "This market is closed and no longer accepts orders.",
-          });
-          return;
-        }
-      }
-      setLazySetupError(null);
-      if (nostrSignerMode === "none") {
-        setShowNostrChooser(true);
+  const handleWalletRequired = useCallback(async () => {
+    if (market) {
+      try {
+        assertMarketAcceptsOrders(market);
+      } catch (error) {
+        setTradeSubmitStatus({
+          kind: "error",
+          message:
+            error instanceof Error
+              ? error.message
+              : "This market is closed and no longer accepts orders.",
+        });
         return;
       }
-      setLazySetupCreating(true);
-      const result = await createImplicitWalletAndNostrIdentity();
-      setLazySetupCreating(false);
-      if (!result.ok) {
-        setLazySetupError(result.error ?? "Could not create wallet");
-        setShowNostrChooser(true);
-        return;
-      }
-      invalidateProtectedTradeAttempt();
-      setTradeSubmitStatus({
-        kind: "info",
-        message: "Trading identity changed. Review the new price preview and confirm again.",
-      });
-    },
-    [invalidateProtectedTradeAttempt, market, nostrSignerMode],
-  );
+    }
+    setLazySetupError(null);
+    if (nostrSignerMode === "none") {
+      setShowNostrChooser(true);
+      return;
+    }
+    setLazySetupCreating(true);
+    const result = await createImplicitWalletAndNostrIdentity();
+    setLazySetupCreating(false);
+    if (!result.ok) {
+      setLazySetupError(result.error ?? "Could not create wallet");
+      setShowNostrChooser(true);
+      return;
+    }
+    invalidateProtectedTradeAttempt();
+    setTradeSubmitStatus({
+      kind: "info",
+      message: "Trading identity changed. Review the new price preview and confirm again.",
+    });
+  }, [invalidateProtectedTradeAttempt, market, nostrSignerMode]);
 
   const handleCreateImplicitAccount = useCallback(async () => {
     setLazySetupCreating(true);
@@ -2390,15 +2424,21 @@ export function MarketDetailPage() {
 
       let balance: number;
       try {
-        balance = await getExactUnitBalance(activeMintUrl, "sat");
+        balance = await getExactUnitBalance(activeMintUrl, "msat");
       } catch {
         if (!isCurrentRoute(intent.marketId, routeGenerationRef.current)) {
           cancelActiveScoreTopUp();
           return;
         }
+        setBalanceAtCheck(null);
+        setTopUpReason({
+          kind: "score",
+          required: intent.required,
+          recoveryStatus: "unavailable",
+        });
         setTradeSubmitStatus({
           kind: "error",
-          message: t("trade.topUpStillInsufficient"),
+          message: t("insufficientBalance.localBalanceUnavailable"),
         });
         setTopUpStage("modal");
         return;
@@ -2407,9 +2447,14 @@ export function MarketDetailPage() {
         cancelActiveScoreTopUp();
         return;
       }
-      if (balance < intent.required) {
-        setBalanceAtCheck(balance);
-        setTopUpReason({ kind: "score", required: intent.required });
+      const requiredMsat = cashuAmountToMarketSubunits(intent.required, "sat");
+      if (balance < requiredMsat) {
+        setBalanceAtCheck(balance / 1_000);
+        setTopUpReason({
+          kind: "score",
+          required: intent.required,
+          recoveryStatus: "insufficient",
+        });
         setTradeSubmitStatus({
           kind: "error",
           message: t("trade.topUpStillInsufficient"),
@@ -2494,6 +2539,58 @@ export function MarketDetailPage() {
     setPendingTopUpIntent(null);
     setPendingTopUpComment(undefined);
   }, [cancelActiveScoreTopUp]);
+
+  const handleScoreTopUpRetry = useCallback(() => {
+    const activeScoreTopUp = activeScoreTopUpRef.current;
+    const intent = pendingTopUpIntent;
+    if (activeScoreTopUp === null || intent === null) return;
+
+    const routeIsCurrent = isCurrentRoute(intent.marketId, routeGenerationRef.current);
+    const intentIsCurrent =
+      intent === activeScoreTopUp.intent &&
+      pendingTopUpOrderIntentMatches(intent, {
+        market,
+        tradeSelection,
+        tradeAmount,
+        tradeSide,
+        orderType,
+        limitPrice,
+        previewIdentityKey,
+      });
+    if (!routeIsCurrent || !intentIsCurrent) {
+      cancelActiveScoreTopUp();
+      setTopUpStage("closed");
+      setTopUpReason(null);
+      setPendingTopUpIntent(null);
+      setPendingTopUpComment(undefined);
+      if (routeIsCurrent) {
+        setTradeSubmitStatus({
+          kind: "info",
+          message: t("trade.topUpIntentChanged"),
+        });
+      }
+      return;
+    }
+
+    activeScoreTopUpRef.current = null;
+    setTopUpStage("closed");
+    setTopUpReason(null);
+    setPendingTopUpIntent(null);
+    setPendingTopUpComment(undefined);
+    activeScoreTopUp.resolve();
+  }, [
+    cancelActiveScoreTopUp,
+    limitPrice,
+    market,
+    orderType,
+    pendingTopUpIntent,
+    previewIdentityKey,
+    isCurrentRoute,
+    t,
+    tradeAmount,
+    tradeSelection,
+    tradeSide,
+  ]);
 
   const handleStartTopUp = useCallback(() => {
     setTopUpStage("overlay");
@@ -2632,20 +2729,32 @@ export function MarketDetailPage() {
               ? t("insufficientBalance.sats", { count: amount })
               : formatMarketSubunits(amount, marketBaseAsset)
           }
+          recoveryUnavailable={
+            topUpReason?.kind === "score" && topUpReason.recoveryStatus === "unavailable"
+          }
+          onRetry={
+            topUpReason?.kind === "score" && topUpReason.recoveryStatus === "unavailable"
+              ? handleScoreTopUpRetry
+              : undefined
+          }
           onCancel={handleTopUpCancel}
           onTopUp={handleStartTopUp}
         />
       )}
       {topUpStage === "overlay" && (
         <TopUpOverlay
-          deficit={Math.max((topUpReason?.required ?? tradeAmount) - balanceAtCheck, 0)}
+          deficit={
+            topUpReason?.kind === "score"
+              ? Math.round(Math.max(topUpReason.required - (balanceAtCheck ?? 0), 0) * 1_000)
+              : Math.max((topUpReason?.required ?? tradeAmount) - (balanceAtCheck ?? 0), 0)
+          }
           baseAsset={topUpReason?.kind === "score" ? "sat" : marketBaseAsset}
-          proofUnit={topUpReason?.kind === "score" ? "sat" : undefined}
+          proofUnit={topUpReason?.kind === "score" ? "msat" : undefined}
           minimumDescription={
             topUpReason?.kind === "score"
               ? t("topUp.scoreMinimumDesc", {
                   sats: t("insufficientBalance.sats", {
-                    count: Math.max(topUpReason.required - balanceAtCheck, 0),
+                    count: Math.max(topUpReason.required - (balanceAtCheck ?? 0), 0),
                   }),
                 })
               : undefined

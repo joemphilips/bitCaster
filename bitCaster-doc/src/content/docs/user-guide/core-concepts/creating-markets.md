@@ -17,6 +17,12 @@ you to confirm that fee before proceeding. After creation, you can fund the mark
 step. That payment is non-refundable. Creating or funding a market does not
 set its displayed price; a confirmed trade does.
 
+For a yes/no market, the wizard uses Yes and No automatically. It skips the
+outcome-entry step. For a categorical market, enter the outcome names.
+If a payment needs a wallet, choose Create wallet or Restore wallet.
+Setup and cancellation preserve your draft. Setup does not submit the market
+or pay its fee. Continue only after you review the next action.
+
 ## Your role as oracle
 
 The creation flow uses your own Nostr private key to make a signed promise
@@ -53,19 +59,16 @@ This payment is a non-refundable subsidy for this market's bot. It does not
 fund your trading wallet. It gives you no market shares, fee income, or right
 to withdraw. Capital assigned to this market cannot fund a different market.
 
-Choose a preset budget or enter a custom amount. The first accepted payment
+Enter the amount in sats. The first accepted payment
 starts the bot without a creator-selected probability. Later payments add
 capital and can change its quotes even before another trade occurs. They do
 not rewrite past trades. If an earlier bot trade is still settling, the new
 funding waits before changing the quotes. The bot pauses new fills during
 that interval.
 
-The wizard also previews the estimated starting depth for the selected budget, showing roughly how many price levels the bot can post on each side and how many shares appear at each level. The preview is an estimate before mint fees, so actual quoted depth can be lower.
-
-Choose **No liquidity** to finish creation without funding the bot. If no
+Skip this step to finish creation without funding the bot. If no
 liquidity is available for the selected outcome, the `BUY` and `SELL` tabs
 show a message and a link to `LIQUIDITY`. You can fund the bot there later.
-Very small custom budgets may show a thin-liquidity warning.
 
 Funding does not set the public market price. Only a confirmed trade sets a
 public price. Before the first confirmed trade, the market has no price and

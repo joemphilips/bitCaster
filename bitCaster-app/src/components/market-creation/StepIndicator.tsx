@@ -1,9 +1,10 @@
 import { Check } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import type { WizardStep } from "@/types/market-creation";
+import type { OutcomeType, WizardStep } from "@/types/market-creation";
 
 interface StepIndicatorProps {
   currentStep: WizardStep;
+  outcomeType?: OutcomeType | null;
 }
 
 const steps: { step: WizardStep; labelKey: string; display: number }[] = [
@@ -12,15 +13,22 @@ const steps: { step: WizardStep; labelKey: string; display: number }[] = [
   { step: 3, labelKey: "marketCreation.stepOutcomes", display: 3 },
   { step: 4, labelKey: "marketCreation.stepReview", display: 4 },
 ];
+const binarySteps: { step: WizardStep; labelKey: string; display: number }[] = [
+  steps[0],
+  steps[1],
+  { step: 3, labelKey: "marketCreation.stepReview", display: 3 },
+];
 
-export function StepIndicator({ currentStep }: StepIndicatorProps) {
+export function StepIndicator({ currentStep, outcomeType }: StepIndicatorProps) {
   const { t } = useTranslation();
+  const visibleSteps = outcomeType === "yesno" ? binarySteps : steps;
+  const effectiveCurrentStep = outcomeType === "yesno" && currentStep >= 3 ? 3 : currentStep;
   return (
     <div className="flex items-center justify-center gap-0">
-      {steps.map(({ step, labelKey, display }, index) => {
-        const isCompleted = step < currentStep;
-        const isCurrent = step === currentStep;
-        const isFuture = step > currentStep;
+      {visibleSteps.map(({ step, labelKey, display }, index) => {
+        const isCompleted = step < effectiveCurrentStep;
+        const isCurrent = step === effectiveCurrentStep;
+        const isFuture = step > effectiveCurrentStep;
 
         return (
           <div key={step} className="flex items-center">
@@ -47,7 +55,7 @@ export function StepIndicator({ currentStep }: StepIndicatorProps) {
               </span>
             </div>
 
-            {index < steps.length - 1 && (
+            {index < visibleSteps.length - 1 && (
               <div
                 className={`w-8 sm:w-12 h-0.5 mx-1.5 sm:mx-2 mb-5 rounded-full transition-colors duration-300 ${
                   isCompleted ? "bg-green-600" : "bg-slate-200 dark:bg-slate-700"

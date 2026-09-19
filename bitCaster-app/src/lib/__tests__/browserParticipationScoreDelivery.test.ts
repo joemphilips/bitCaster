@@ -22,6 +22,7 @@ const getBoundedCanonicalRegularProofs = vi.fn();
 const getDurableCashuDeliveryStatus = vi.fn();
 const submitDurableCashuDelivery = vi.fn();
 const prepareBrowserDeterministicOutgoingCashuSend = vi.fn();
+const recoverBrowserFundedAsset = vi.fn();
 
 vi.mock("@/lib/browserDeterministicOutgoingCashu", () => ({
   prepareBrowserDeterministicOutgoingCashuSend: (...args: unknown[]) =>
@@ -49,7 +50,12 @@ vi.mock("@/lib/cashu", () => ({
 }));
 
 vi.mock("@/stores/proof-db", () => ({
-  getBoundedCanonicalRegularProofs: (...args: unknown[]) => getBoundedCanonicalRegularProofs(...args),
+  getBoundedCanonicalRegularProofs: (...args: unknown[]) =>
+    getBoundedCanonicalRegularProofs(...args),
+}));
+
+vi.mock("../browserFundedAssetRecovery", () => ({
+  recoverBrowserFundedAsset: (...args: unknown[]) => recoverBrowserFundedAsset(...args),
 }));
 
 const ACTIVE_KEYSET_ID = `01${"11".repeat(32)}`;
@@ -102,6 +108,7 @@ describe("browser Participation Score delivery", () => {
     getDurableCashuDeliveryStatus.mockReset();
     submitDurableCashuDelivery.mockReset();
     prepareBrowserDeterministicOutgoingCashuSend.mockReset();
+    recoverBrowserFundedAsset.mockReset();
   });
 
   it("recovers a lost POST response from status with the byte-identical stored token", async () => {
@@ -161,6 +168,10 @@ describe("browser Participation Score delivery", () => {
     readBrowserDurableOutgoingCashuTransfer.mockResolvedValue(null);
     getWalletForUnit.mockResolvedValue({ getKeyset: () => ({ id: ACTIVE_KEYSET_ID }) });
     getBoundedCanonicalRegularProofs.mockResolvedValue([{ amount: input.requestedAmount }]);
+    recoverBrowserFundedAsset.mockImplementation(async (recoveryInput) => {
+      await expect(recoveryInput.loadPlan()).resolves.toEqual({ kind: "ready" });
+      return { kind: "ready", plan: { kind: "ready" } };
+    });
     executeBrowserDurableOutgoingCashuTransfer.mockResolvedValue(transfer());
     getDurableCashuDeliveryStatus.mockResolvedValue(status("credited"));
 
@@ -186,7 +197,68 @@ describe("browser Participation Score delivery", () => {
         }),
       }),
     );
+    await executeBrowserDurableOutgoingCashuTransfer.mock.calls[0][0].preflightFundedAsset();
+    expect(recoverBrowserFundedAsset).toHaveBeenCalledOnce();
     expect(recoverBrowserDurableOutgoingCashuTransfer).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    {
+      name: "exact ordinary-msat absence",
+      recovery: { kind: "unavailable" as const },
+      proofs: [] as Array<{ amount: string }>,
+      loadPlan: true,
+      expectedErrorName: "BrowserParticipationScoreInsufficientBalanceError",
+      expectedStatus: "insufficient",
+      expectedBalanceMsat: 0,
+    },
+    {
+      name: "persistent recovery with unknown balance",
+      recovery: { kind: "persistent-error" as const },
+      loadPlan: false,
+      expectedErrorName: "BrowserParticipationScoreAssetUnavailableError",
+      expectedStatus: "unavailable",
+      expectedBalanceMsat: null,
+    },
+    {
+      name: "persistent recovery after a successful local balance read",
+      recovery: { kind: "persistent-error" as const },
+      proofs: [{ amount: "500" }],
+      loadPlan: true,
+      expectedErrorName: "BrowserParticipationScoreAssetUnavailableError",
+      expectedStatus: "unavailable",
+      expectedBalanceMsat: 500,
+    },
+  ])("maps $name before any Score send or recipient POST", async (scenario) => {
+    configureScoreRecoveryFixture(scenario);
+
+    await expect(executeBrowserParticipationScoreDelivery(input)).rejects.toMatchObject({
+      name: scenario.expectedErrorName,
+      recoveryStatus: scenario.expectedStatus,
+      balanceMsat: scenario.expectedBalanceMsat,
+    });
+    expect(prepareBrowserDeterministicOutgoingCashuSend).not.toHaveBeenCalled();
+    expect(submitDurableCashuDelivery).not.toHaveBeenCalled();
+  });
+
+  it("revalidates the captured profile before presenting unavailable recovery", async () => {
+    const requireCapturedProfile = vi.fn();
+    requireCapturedProfile
+      .mockImplementationOnce(() => undefined)
+      .mockImplementationOnce(() => {
+        throw new Error("browser funded recovery profile is stale");
+      });
+    configureScoreRecoveryFixture({
+      recovery: { kind: "persistent-error" },
+      loadPlan: false,
+      requireCapturedProfile,
+    });
+
+    await expect(executeBrowserParticipationScoreDelivery(input)).rejects.toThrow(
+      "browser funded recovery profile is stale",
+    );
+    expect(prepareBrowserDeterministicOutgoingCashuSend).not.toHaveBeenCalled();
+    expect(submitDurableCashuDelivery).not.toHaveBeenCalled();
   });
 
   it("reloads an acknowledged received transfer to credited without mint recovery", async () => {
@@ -210,6 +282,41 @@ describe("browser Participation Score delivery", () => {
     expect(getBoundedCanonicalRegularProofs).not.toHaveBeenCalled();
   });
 });
+
+function configureScoreRecoveryFixture(fixture: {
+  readonly recovery: { readonly kind: "unavailable" | "persistent-error" };
+  readonly proofs?: ReadonlyArray<{ readonly amount: string }>;
+  readonly loadPlan: boolean;
+  readonly requireCapturedProfile?: ReturnType<typeof vi.fn>;
+}): void {
+  captureBrowserMintPersistenceContext.mockReturnValue({
+    activeMintUrl: input.mintUrl,
+    database: {},
+    scopeId: "test-scope",
+    seed: new Uint8Array(64),
+    mnemonic: "test mnemonic",
+    requireCapturedProfile: fixture.requireCapturedProfile ?? vi.fn(),
+  });
+  readBrowserDurableOutgoingCashuTransfer.mockResolvedValue(null);
+  getWalletForUnit.mockResolvedValue({ getKeyset: () => ({ id: ACTIVE_KEYSET_ID }) });
+  if (fixture.proofs !== undefined) {
+    getBoundedCanonicalRegularProofs.mockResolvedValue(fixture.proofs);
+  }
+  recoverBrowserFundedAsset.mockImplementation(async (recoveryInput) => {
+    expect(recoveryInput.asset).toMatchObject({ mintUrl: input.mintUrl, unit: "msat" });
+    expect(recoveryInput.asset.assetIdentity).toBe("cashu:ordinary");
+    expect(recoveryInput.requiredAmount).toBe(21_000n);
+    if (fixture.loadPlan) {
+      await expect(recoveryInput.loadPlan()).resolves.toEqual({ kind: "insufficient" });
+    }
+    return fixture.recovery;
+  });
+  executeBrowserDurableOutgoingCashuTransfer.mockImplementation(async (transferInput) => {
+    await transferInput.preflightFundedAsset();
+    await transferInput.prepareWalletSendOperation();
+    return transfer();
+  });
+}
 
 function transfer() {
   const metadata = createParticipationScoreDeliveryMetadata(input);

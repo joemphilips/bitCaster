@@ -23,7 +23,8 @@ import {
 import type { BitcasterDB } from "../stores/proof-db";
 import { addProofs, type StoredProof } from "../stores/proof-db";
 import {
-  readBrowserEncryptedWalletBackupV2AssetSnapshot,
+  BrowserEncryptedWalletBackupV2LocalAssetReadError,
+  readBrowserEncryptedWalletBackupV2LocalAssetRead,
   readBrowserEncryptedWalletBackupV2ExactLocalProofRows,
 } from "../stores/browser-encrypted-wallet-backup-v2-asset-source";
 import { decodeDurableCustodyProofMaterialRecord } from "@bitcaster/client-sdk/durableCustodyProofMaterial";
@@ -92,6 +93,23 @@ export type BrowserEncryptedWalletBackupV2FailureClass =
   | "quota"
   | "transaction-inactive"
   | "unknown";
+
+export class BrowserEncryptedWalletBackupV2LocalCustodyError extends Error {
+  constructor(
+    readonly code:
+      | "removal"
+      | "missing-authority"
+      | "invalid-action"
+      | "partial"
+      | "stale-profile"
+      | "proof-read"
+      | "snapshot-read",
+    message: string,
+  ) {
+    super(message);
+    this.name = "BrowserEncryptedWalletBackupV2LocalCustodyError";
+  }
+}
 
 export interface BrowserEncryptedWalletBackupV2RestoreAndAdmitInput extends BrowserEncryptedWalletBackupV2TargetedRestoreInput {
   readonly wallet: CashuWallet;
@@ -409,54 +427,63 @@ async function repairLegacyProofCache(
 export async function readBrowserEncryptedWalletBackupV2LocalAvailableAmount(
   input: BrowserEncryptedWalletBackupV2TargetedRestoreInput,
 ): Promise<bigint | null> {
-  const row = await input.database.encryptedWalletBackupV2DesiredAssets.get([
-    input.scopeId,
-    encryptedWalletBackupV2LocalAssetKey(input.asset),
-  ]);
-  requireCurrent(input);
-  if (row === undefined) {
-    if ((await exactLocalProofCount(input)) !== 0)
-      throw new Error("browser V2 local custody asset authority is missing");
+  let local: Awaited<ReturnType<typeof readBrowserEncryptedWalletBackupV2LocalAssetRead>>;
+  requireCurrentForLocalCustody(input);
+  try {
+    local = await readBrowserEncryptedWalletBackupV2LocalAssetRead({
+      database: input.database,
+      scopeId: input.scopeId,
+      asset: input.asset,
+    });
+  } catch (error) {
+    if (error instanceof BrowserEncryptedWalletBackupV2LocalAssetReadError)
+      throw localCustodyError(error.code, error.message);
+    throw localCustodyError("proof-read", "browser V2 local custody proof read failed");
+  }
+  requireCurrentForLocalCustody(input);
+  if (local.desired === null) {
+    if (local.activeProofs.length === 0) return null;
+    if (local.backupEligibleProofCount === 0) return 0n;
+    throw localCustodyError(
+      "missing-authority",
+      "browser V2 local custody asset authority is missing",
+    );
+  }
+  const row = local.desired;
+  if (row.desiredAction === "remove") {
+    if (local.backupEligibleProofCount !== 0) {
+      throw localCustodyError("partial", "browser V2 local custody asset is partial");
+    }
+    return 0n;
+  }
+  if (local.activeProofs.length === 0 && row.syncState === "acknowledged") {
     return null;
   }
-  const localProofs = await readBrowserEncryptedWalletBackupV2ExactLocalProofRows({
-    database: input.database,
-    scopeId: input.scopeId,
-    asset: input.asset,
-  });
-  requireCurrent(input);
-  const localProofCount = localProofs.length;
-  if (row.desiredAction === "remove")
-    throw new Error("browser V2 local custody asset is marked for removal");
-  if (localProofCount === 0 && row.syncState === "acknowledged") {
-    if (row.desiredAction !== "replace") throw new Error("browser V2 desired asset is invalid");
-    return null;
-  }
-  if (localProofCount !== row.activeProofCount)
-    throw new Error("browser V2 local custody asset is partial");
-  const snapshot = await readBrowserEncryptedWalletBackupV2AssetSnapshot({
-    database: input.database,
-    scopeId: input.scopeId,
-    localAssetKey: row.localAssetKey,
-  });
-  requireCurrent(input);
-  if (snapshot.proofs.length === 0) return null;
-  return localProofs.reduce(
+  if (local.backupEligibleProofCount !== row.activeProofCount)
+    throw localCustodyError("partial", "browser V2 local custody asset is partial");
+  if (local.snapshot === null)
+    throw localCustodyError("snapshot-read", "browser V2 local custody snapshot read failed");
+  return local.activeProofs.reduce(
     (total, proof) => (proof.selectability === "selectable" ? total + BigInt(proof.amount) : total),
     0n,
   );
 }
 
-async function exactLocalProofCount(
+function localCustodyError(
+  code: ConstructorParameters<typeof BrowserEncryptedWalletBackupV2LocalCustodyError>[0],
+  message: string,
+): BrowserEncryptedWalletBackupV2LocalCustodyError {
+  return new BrowserEncryptedWalletBackupV2LocalCustodyError(code, message);
+}
+
+function requireCurrentForLocalCustody(
   input: BrowserEncryptedWalletBackupV2TargetedRestoreInput,
-): Promise<number> {
-  const rows = await readBrowserEncryptedWalletBackupV2ExactLocalProofRows({
-    database: input.database,
-    scopeId: input.scopeId,
-    asset: input.asset,
-  });
-  requireCurrent(input);
-  return rows.length;
+): void {
+  try {
+    requireCurrent(input);
+  } catch {
+    throw localCustodyError("stale-profile", "browser V2 targeted restore profile is stale");
+  }
 }
 
 async function requestProof(

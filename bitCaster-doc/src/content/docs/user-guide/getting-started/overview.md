@@ -107,7 +107,14 @@ cannot decrypt or spend your funds.
 Like any other cryptocurrency wallet, you are responsible for managing your own
 keys. Back up your 12-word mnemonic and keep it safe.
 
-When you first open the portfolio page or try to trade, bitCaster asks you to set up a wallet. You can create a new wallet (auto-generated locally in your browser) or import an existing wallet using your 12-word recovery phrase. A Nostr signing key is also created or connected at this point. These are separate secrets. Back up both the wallet recovery phrase and the Nostr secret key shown in the app. If you already use a Nostr account, connect it instead of generating a new one.
+Before your first wallet action, choose Create wallet or Restore wallet.
+A new wallet is generated locally in your browser. To restore a wallet, enter
+a valid 12-word recovery phrase. Setup does not submit a payment automatically.
+Recovery-phrase and backup controls are available only when a wallet exists.
+
+Your Nostr signing key is a separate secret. Back up both the wallet recovery
+phrase and any Nostr secret key shown in the app. If you already use a Nostr
+account, connect it instead of generating a new one.
 
 ## Market detail pages
 
