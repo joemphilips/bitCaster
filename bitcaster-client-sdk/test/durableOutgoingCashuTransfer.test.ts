@@ -18,6 +18,7 @@ import {
   runDurableOutgoingCashuTransfer,
   runDurableOutgoingCashuReclaim,
   scheduleDurableOutgoingCashuRecoveryRetry,
+  type DurableOutgoingCashuRecipientSequence,
 } from '../src/durableOutgoingCashuTransfer.ts'
 import {
   deriveDurableWalletOperationAuthority,
@@ -37,6 +38,8 @@ const SECOND_TOKEN_C = `02${'2'.repeat(64)}`
 test('strictly creates and decodes one exact outgoing bearer transfer', () => {
   const transfer = bearerTransfer()
 
+  assert.equal(transfer.schemaVersion, 2)
+  assert.equal(transfer.recipientSequence, null)
   assert.equal(transfer.deliveryState, 'prepared')
   assert.equal(transfer.walletSendOperationAuthority.requestFingerprint.length, 64)
   assert.throws(() => decodeDurableOutgoingCashuTransfer({ ...transfer, foreign: true }), /foreign/)
@@ -44,6 +47,209 @@ test('strictly creates and decodes one exact outgoing bearer transfer', () => {
     () => decodeDurableOutgoingCashuTransfer({ ...transfer, requestedAmount: '3' }),
     /foreign/,
   )
+  const legacy = { ...transfer } as Record<string, unknown>
+  delete legacy.recipientSequence
+  assert.throws(() => decodeDurableOutgoingCashuTransfer(legacy), /foreign/)
+  assert.throws(
+    () => decodeDurableOutgoingCashuTransfer({ ...transfer, schemaVersion: 1 }),
+    /unsupported/,
+  )
+})
+
+test('validates recipient sequence inputs and keeps sequence metadata through acknowledgement', async () => {
+  const sequenceCases = [
+    { name: 'initial', value: { predecessorTransferId: null } },
+    { name: 'successor', value: { predecessorTransferId: 'recipient-prior' } },
+    { name: 'decode-only predecessor', value: { predecessorTransferId: 'decode-only' } },
+  ] as const
+  for (const sequenceCase of sequenceCases) {
+    const transfer = recipientTransfer(`recipient-${sequenceCase.name}`, sequenceCase.value)
+    assert.deepEqual(transfer.recipientSequence, sequenceCase.value)
+    const admitted = admitDurableOutgoingCashuToken({
+      transfer,
+      keepProofs: [],
+      sendProofs: [sendProof()],
+      encodedToken: encodedToken([sendProof()]),
+      custodyRevisions: custodyRevisions(transfer.walletSendOperation, [], [sendProof()]),
+      dueAtMs: 10,
+    })
+    assert.deepEqual(admitted.recipientSequence, sequenceCase.value)
+  }
+
+  const transfer = recipientTransfer('recipient-ack-sequence', {
+    predecessorTransferId: 'recipient-prior',
+  })
+  const admitted = admitDurableOutgoingCashuToken({
+    transfer,
+    keepProofs: [],
+    sendProofs: [sendProof()],
+    encodedToken: encodedToken([sendProof()]),
+    custodyRevisions: custodyRevisions(transfer.walletSendOperation, [], [sendProof()]),
+    dueAtMs: 10,
+  })
+  const acknowledged = await acknowledgeDurableOutgoingCashuRecipient({
+    transfer: admitted,
+    receiptAdapter: {
+      readAndPersistReceipt: async ({ transfer: current }) =>
+        decodeDurableOutgoingCashuTransfer({
+          ...current,
+          deliveryState: 'recipient-acknowledged',
+          recipientReceipt: {
+            transferId: current.transferId,
+            expectedSubject: 'account-subject-1',
+            opaqueProductBinding: 'binding-1',
+            mintUrl: current.mintUrl,
+            unit: current.unit,
+            requestedAmount: current.requestedAmount,
+            tokenSha256: current.token!.sha256,
+            tokenLength: current.token!.encodedLength,
+            receiveOperationId: 'wallet-service-receive-1',
+            durableResultFingerprint: current.token!.sha256,
+          },
+          revision: current.revision + 1,
+        }),
+    },
+  })
+  assert.deepEqual(acknowledged.recipientSequence, transfer.recipientSequence)
+})
+
+test('rejects malformed, empty, self, and bearer recipient sequences', () => {
+  const recipient = recipientTransfer('recipient-sequence')
+  const cases = [
+    { value: {}, message: /sequence is invalid|foreign fields/ },
+    { value: { predecessorTransferId: '' }, message: /predecessor transfer id is invalid/ },
+    { value: { predecessorTransferId: '   ' }, message: /predecessor transfer id is invalid/ },
+    {
+      value: { predecessorTransferId: recipient.transferId },
+      message: /predecessor is self/,
+    },
+    { value: 'malformed', message: /sequence is invalid/ },
+  ] as const
+  for (const sequenceCase of cases) {
+    assert.throws(
+      () =>
+        decodeDurableOutgoingCashuTransfer({
+          ...recipient,
+          recipientSequence: sequenceCase.value,
+        }),
+      sequenceCase.message,
+    )
+  }
+  assert.throws(
+    () =>
+      decodeDurableOutgoingCashuTransfer({
+        ...bearerTransfer(),
+        recipientSequence: { predecessorTransferId: null },
+      }),
+    /sequence policy is invalid/,
+  )
+})
+
+test('coordinator treats omitted sequence as unsequenced and compares exact sequence', async () => {
+  const transfer = recipientTransfer('recipient-sequence-coordinator', {
+    predecessorTransferId: 'recipient-prior',
+  })
+  const admitted = admitDurableOutgoingCashuToken({
+    transfer,
+    keepProofs: [],
+    sendProofs: [sendProof()],
+    encodedToken: encodedToken([sendProof()]),
+    custodyRevisions: custodyRevisions(transfer.walletSendOperation, [], [sendProof()]),
+    dueAtMs: 10,
+  })
+  const request = {
+    transferId: transfer.transferId,
+    walletScopeId: transfer.walletScopeId,
+    mintUrl: transfer.mintUrl,
+    unit: transfer.unit,
+    requestedAmount: transfer.requestedAmount,
+    deliveryIntent: transfer.deliveryIntent,
+  }
+  const recover = (requestTransfer: typeof request & { recipientSequence?: typeof transfer.recipientSequence }) =>
+    runDurableOutgoingCashuTransfer({
+      mode: 'recover',
+      preMint: { recover: async () => admitted },
+      postMint: { persistMinted: async () => admitted },
+      transfer: requestTransfer,
+      wallet: {} as never,
+      restoreExactOutputs: async () => ({}) as never,
+      walletOperationStore: {} as never,
+    })
+
+  await assert.rejects(recover(request), /authority conflicts/)
+  const recovered = await recover({
+    ...request,
+    recipientSequence: { predecessorTransferId: 'recipient-prior' },
+  })
+  assert.deepEqual(recovered.recipientSequence, transfer.recipientSequence)
+})
+
+test('coordinator rejects initial-sequence identity mismatches before mint effects', async () => {
+  const cases = [
+    {
+      storedSequence: { predecessorTransferId: null },
+      requestSequence: undefined,
+    },
+    {
+      storedSequence: null,
+      requestSequence: { predecessorTransferId: null },
+    },
+  ] as const
+  for (const [index, sequenceCase] of cases.entries()) {
+    const transfer = recipientTransfer(
+      `recipient-sequence-mismatch-${index}`,
+      sequenceCase.storedSequence,
+    )
+    const admitted = admitDurableOutgoingCashuToken({
+      transfer,
+      keepProofs: [],
+      sendProofs: [sendProof()],
+      encodedToken: encodedToken([sendProof()]),
+      custodyRevisions: custodyRevisions(transfer.walletSendOperation, [], [sendProof()]),
+      dueAtMs: 10,
+    })
+    let walletEffects = 0
+    let postMintEffects = 0
+    const request = {
+      transferId: transfer.transferId,
+      walletScopeId: transfer.walletScopeId,
+      mintUrl: transfer.mintUrl,
+      unit: transfer.unit,
+      requestedAmount: transfer.requestedAmount,
+      deliveryIntent: transfer.deliveryIntent,
+      ...(sequenceCase.requestSequence === undefined
+        ? {}
+        : { recipientSequence: sequenceCase.requestSequence }),
+    }
+    await assert.rejects(
+      runDurableOutgoingCashuTransfer({
+        mode: 'recover',
+        preMint: { recover: async () => admitted },
+        postMint: {
+          persistMinted: async () => {
+            postMintEffects += 1
+            return admitted
+          },
+        },
+        transfer: request,
+        wallet: {
+          checkProofsStates: async () => {
+            walletEffects += 1
+            return []
+          },
+          completeSwap: async () => {
+            walletEffects += 1
+            return { keep: [], send: [] }
+          },
+        } as never,
+        restoreExactOutputs: async () => ({}) as never,
+        walletOperationStore: {} as never,
+      }),
+      /authority conflicts/,
+    )
+    assert.equal(walletEffects, 0)
+    assert.equal(postMintEffects, 0)
+  }
 })
 
 test('persists one exact keep derivation locator and reserves a bounded envelope', () => {
@@ -173,6 +379,7 @@ test('does not expose a token in redacted metadata and requires a persisted reci
       tokenProofLimit: 1,
     },
   })
+  assert.equal(recipient.recipientSequence, null)
   const admitted = admitDurableOutgoingCashuToken({
     transfer: recipient,
     keepProofs: [],
@@ -728,6 +935,26 @@ function reclaimEvidence(
       revision: 4,
     })),
   }
+}
+
+function recipientTransfer(
+  transferId: string,
+  recipientSequence?: DurableOutgoingCashuRecipientSequence | null,
+) {
+  return createDurableOutgoingCashuTransfer({
+    transferId,
+    walletScopeId: 'wallet-1',
+    requestedAmount: '2',
+    walletSendOperation: walletSendOperation(),
+    ...(recipientSequence === undefined ? {} : { recipientSequence }),
+    deliveryIntent: {
+      policy: 'durable-recipient-ack',
+      expectedSubject: 'account-subject-1',
+      opaqueProductBinding: 'binding-1',
+      tokenBytesLimit: 1024,
+      tokenProofLimit: 1,
+    },
+  })
 }
 
 function bearerTransfer() {

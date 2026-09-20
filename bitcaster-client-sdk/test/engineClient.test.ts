@@ -596,6 +596,67 @@ test('BitcasterEngineClient durable delivery timeout covers response-body consum
   assert.equal(bodySignalAborted, true)
 })
 
+test('BitcasterEngineClient durable delivery timeout covers authorization before fetch', async () => {
+  const deliveryId = '66666666-6666-4666-8666-666666666666'
+  let fetchCalls = 0
+  let authorizationSignal: AbortSignal | undefined
+  let releaseAuthorization!: () => void
+  const authorizationFinished = new Promise<string>((resolve) => {
+    releaseAuthorization = () => resolve('late-auth')
+  })
+  const client = new BitcasterEngineClient({
+    baseUrl: 'https://engine.example',
+    durableRecipientDeliveryRequestTimeoutMs: 5,
+    authorization: ({ signal }) => {
+      authorizationSignal = signal
+      return authorizationFinished
+    },
+    fetchImpl: async () => {
+      fetchCalls += 1
+      return new Response(null, { status: 404 })
+    },
+  })
+
+  await assert.rejects(
+    () => client.getDurableRecipientDeliveryStatus(deliveryId),
+    /durable recipient delivery request failed/,
+  )
+  assert.equal(fetchCalls, 0)
+  assert.equal(authorizationSignal?.aborted, true)
+  releaseAuthorization()
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(fetchCalls, 0)
+})
+
+test('BitcasterEngineClient skips authorization for an already-aborted durable delivery request', async () => {
+  const controller = new AbortController()
+  controller.abort()
+  let authorizationCalls = 0
+  let fetchCalls = 0
+  const client = new BitcasterEngineClient({
+    baseUrl: 'https://engine.example',
+    authorization: async () => {
+      authorizationCalls += 1
+      return 'late-auth'
+    },
+    fetchImpl: async () => {
+      fetchCalls += 1
+      return new Response(null, { status: 404 })
+    },
+  })
+
+  await assert.rejects(
+    () =>
+      client.getDurableRecipientDeliveryStatus(
+        '77777777-7777-4777-8777-777777777777',
+        controller.signal,
+      ),
+    /durable recipient delivery request failed/,
+  )
+  assert.equal(authorizationCalls, 0)
+  assert.equal(fetchCalls, 0)
+})
+
 test('BitcasterEngineClient default fetch keeps the browser fetch receiver', async () => {
   const originalFetch = globalThis.fetch
   let observedThis: unknown

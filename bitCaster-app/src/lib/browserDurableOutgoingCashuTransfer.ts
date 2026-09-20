@@ -51,10 +51,16 @@ import { withWalletProfileLock } from "./walletProfileLock";
 import {
   BrowserDurableCustodyAdapter,
   createBrowserCustodyProofRow,
+  persistBrowserOutgoingCashuTransferRewrite,
+  type BrowserMarketFundingHeadMutation,
   type StagedBrowserCustodyProof,
 } from "../stores/durable-custody-db";
 import {
   db,
+  browserOutgoingPredecessorKey,
+  decodeBrowserOutgoingCashuTransferRow as decodeOutgoingRow,
+  findBrowserOutgoingCashuTransferByPredecessor,
+  readBrowserMarketFundingHead,
   type BitcasterDB,
   type BrowserOutgoingCashuTransferAdmissionRow,
   type BrowserOutgoingCashuTransferRow,
@@ -93,6 +99,12 @@ export interface BrowserDurableOutgoingCashuContext {
 }
 
 export interface ExecuteBrowserDurableOutgoingCashuTransferInput {
+  readonly marketFundingAttempt?: {
+    readonly expectedPreviousTransferId: string | null;
+    readonly conditionId: string;
+    readonly divisibility: number;
+    readonly requireCredited: (transfer: DurableOutgoingCashuTransfer) => Promise<void>;
+  };
   readonly transfer: Omit<DurableOutgoingCashuCoordinatorInput["transfer"], "walletScopeId">;
   /** Reuse one exact durable-recipient product while the wallet lock is held. */
   readonly reuseRecipientBinding?: boolean;
@@ -139,8 +151,16 @@ export async function executeBrowserDurableOutgoingCashuTransfer(
         mode: "recover",
       });
     }
+    const marketFundingHead = await prepareFundingHeadMutation(input, scope.scopeId);
+    input.context.requireCapturedProfile();
     const operation = await input.prepareWalletSendOperation();
-    const transfer = await prepareBrowserOutgoingTransfer({ input, adapter, owner, operation });
+    const transfer = await prepareBrowserOutgoingTransfer({
+      input,
+      adapter,
+      owner,
+      operation,
+      marketFundingHead,
+    });
     input.context.requireCapturedProfile();
     const persisted = await runBrowserOutgoingCoordinator({
       context: input.context,
@@ -160,6 +180,29 @@ async function findReusableRecipientTransfer(
   input: ExecuteBrowserDurableOutgoingCashuTransferInput,
   scopeId: string,
 ): Promise<DurableOutgoingCashuTransfer | null> {
+  if (input.marketFundingAttempt) {
+    const intent = input.transfer.deliveryIntent;
+    if (intent.policy !== "durable-recipient-ack")
+      throw new Error("funding requires recipient authority");
+    const row = await findBrowserOutgoingCashuTransferByPredecessor({
+      scopeId,
+      recipientBinding: intent.opaqueProductBinding,
+      predecessorTransferId: input.marketFundingAttempt.expectedPreviousTransferId,
+      database: input.context.database ?? db,
+    });
+    if (!row) return null;
+    const existing = decodeOutgoingRow(scopeId, row);
+    if (
+      existing.mintUrl !== input.transfer.mintUrl ||
+      existing.unit !== input.transfer.unit ||
+      existing.deliveryIntent.policy !== "durable-recipient-ack" ||
+      existing.deliveryIntent.expectedSubject !== intent.expectedSubject ||
+      existing.deliveryIntent.opaqueProductBinding !== intent.opaqueProductBinding
+    ) {
+      throw new Error("funding successor scope conflicts");
+    }
+    return existing;
+  }
   if (input.reuseTransferId) {
     const row = await (input.context.database ?? db).outgoingCashuTransfers.get([
       scopeId,
@@ -171,6 +214,8 @@ async function findReusableRecipientTransfer(
       existing.mintUrl !== input.transfer.mintUrl ||
       existing.unit !== input.transfer.unit ||
       existing.requestedAmount !== input.transfer.requestedAmount ||
+      deriveDurableCustodyArtifactFingerprint(existing.recipientSequence) !==
+        deriveDurableCustodyArtifactFingerprint(input.transfer.recipientSequence ?? null) ||
       deriveDurableCustodyArtifactFingerprint(existing.deliveryIntent) !==
         deriveDurableCustodyArtifactFingerprint(input.transfer.deliveryIntent)
     ) {
@@ -194,6 +239,40 @@ async function findReusableRecipientTransfer(
     .toArray();
   if (rows.length > 1) throw new Error("browser outgoing recipient binding is ambiguous");
   return rows.length === 0 ? null : decodeOutgoingRow(scopeId, rows[0]!);
+}
+
+async function prepareFundingHeadMutation(
+  input: ExecuteBrowserDurableOutgoingCashuTransferInput,
+  scopeId: string,
+): Promise<BrowserMarketFundingHeadMutation | undefined> {
+  const attempt = input.marketFundingAttempt;
+  if (!attempt) return undefined;
+  const intent = input.transfer.deliveryIntent;
+  if (
+    intent.policy !== "durable-recipient-ack" ||
+    !input.transfer.recipientSequence ||
+    input.transfer.recipientSequence.predecessorTransferId !== attempt.expectedPreviousTransferId
+  ) {
+    throw new Error("funding sequence conflicts");
+  }
+  const database = input.context.database ?? db;
+  const head = await readBrowserMarketFundingHead(scopeId, intent.opaqueProductBinding, database);
+  if ((head?.transferId ?? null) !== attempt.expectedPreviousTransferId) {
+    throw new Error("funding head changed");
+  }
+  if (head) {
+    const previous = await database.outgoingCashuTransfers.get([scopeId, head.transferId]);
+    if (!previous) throw new Error("funding predecessor is missing");
+    await attempt.requireCredited(decodeOutgoingRow(scopeId, previous));
+  }
+  return {
+    accountSubject: intent.expectedSubject,
+    conditionId: attempt.conditionId,
+    divisibility: attempt.divisibility,
+    expectedPrevious:
+      head === null ? null : { transferId: head.transferId, revision: head.revision },
+    nextRevision: (head?.revision ?? 0) + 1,
+  };
 }
 
 /** Read one exact transfer without mint recovery, proof selection, or token presentation. */
@@ -312,7 +391,7 @@ export async function classifyBrowserDurableOutgoingBearerTransfer(input: {
   return withWalletProfileLock(
     scope.scopeId,
     () =>
-      database.transaction("rw", database.outgoingCashuTransfers, async () => {
+      database.transaction("rw", database.outgoingCashuTransfers, async (transaction) => {
         input.context.requireCapturedProfile();
         const row = await database.outgoingCashuTransfers.get([
           scope.scopeId,
@@ -326,7 +405,9 @@ export async function classifyBrowserDurableOutgoingBearerTransfer(input: {
           states: input.states,
           dueAtMs: (input.context.now ?? Date.now)(),
         }).transfer;
-        await database.outgoingCashuTransfers.put(
+        await persistBrowserOutgoingCashuTransferRewrite(
+          database,
+          transaction,
           browserOutgoingCashuTransferRow(scope.scopeId, classified, row.admissionState),
         );
         return classified;
@@ -346,7 +427,7 @@ export async function acknowledgeBrowserDurableOutgoingCashuRecipient(input: {
   return withWalletProfileLock(
     scope.scopeId,
     () =>
-      database.transaction("rw", database.outgoingCashuTransfers, async () => {
+      database.transaction("rw", database.outgoingCashuTransfers, async (transaction) => {
         input.context.requireCapturedProfile();
         const row = await database.outgoingCashuTransfers.get([
           scope.scopeId,
@@ -368,7 +449,9 @@ export async function acknowledgeBrowserDurableOutgoingCashuRecipient(input: {
           },
         });
         input.context.requireCapturedProfile();
-        await database.outgoingCashuTransfers.put(
+        await persistBrowserOutgoingCashuTransferRewrite(
+          database,
+          transaction,
           browserOutgoingCashuTransferRow(scope.scopeId, acknowledged, row.admissionState),
         );
         return acknowledged;
@@ -514,7 +597,7 @@ async function persistBrowserOutgoingRetry(
   return withWalletProfileLock(
     scope.scopeId,
     () =>
-      database.transaction("rw", database.outgoingCashuTransfers, async () => {
+      database.transaction("rw", database.outgoingCashuTransfers, async (transaction) => {
         context.requireCapturedProfile();
         const existing = await database.outgoingCashuTransfers.get([
           scope.scopeId,
@@ -532,7 +615,9 @@ async function persistBrowserOutgoingRetry(
         ) {
           throw new Error("browser outgoing retry transfer revision conflicts");
         }
-        await database.outgoingCashuTransfers.put(
+        await persistBrowserOutgoingCashuTransferRewrite(
+          database,
+          transaction,
           browserOutgoingCashuTransferRow(scope.scopeId, next, existing.admissionState),
         );
         return "retried";
@@ -546,6 +631,7 @@ async function prepareBrowserOutgoingTransfer(input: {
   readonly adapter: BrowserDurableCustodyAdapter;
   readonly owner: BrowserOutgoingScopeOwner;
   readonly operation: DurableWalletSendOperation;
+  readonly marketFundingHead?: BrowserMarketFundingHeadMutation;
 }): Promise<DurableOutgoingCashuTransfer> {
   const { input: request, adapter, owner, operation } = input;
   const scope = browserWalletScope(request.context.seed);
@@ -572,6 +658,9 @@ async function prepareBrowserOutgoingTransfer(input: {
       predecessorProofs: { [binding.record.operation.operationId]: predecessors },
       outgoingTransfer: browserOutgoingCashuTransferRow(scope.scopeId, transfer, "reserved"),
       outgoingAdmission: outgoingAdmission(scope.scopeId, transfer),
+      ...(input.marketFundingHead === undefined
+        ? {}
+        : { marketFundingHead: input.marketFundingHead }),
     },
   );
   return transfer;
@@ -1065,6 +1154,9 @@ export function browserOutgoingCashuTransferRow(
     dueAtMs: transfer.recovery.dueAtMs,
     transferId: transfer.transferId,
     recipientBinding: recipientBinding(transfer),
+    ...(browserOutgoingPredecessorKey(transfer) === undefined
+      ? {}
+      : { predecessorKey: browserOutgoingPredecessorKey(transfer) }),
     admissionState,
     transfer,
   };
@@ -1092,29 +1184,8 @@ function transferRequest(
     unit: transfer.unit,
     requestedAmount: transfer.requestedAmount,
     deliveryIntent: transfer.deliveryIntent,
+    recipientSequence: transfer.recipientSequence,
   };
-}
-
-function decodeOutgoingRow(
-  scopeId: string,
-  row: BrowserOutgoingCashuTransferRow,
-): DurableOutgoingCashuTransfer {
-  const transfer = decodeDurableOutgoingCashuTransfer(row.transfer);
-  if (
-    row.scopeId !== scopeId ||
-    row.transferId !== transfer.transferId ||
-    row.mintUrl !== transfer.mintUrl ||
-    row.mintRecoveryState !== mintRecoveryState(transfer) ||
-    row.localAuthorityState !== localAuthorityState(transfer) ||
-    row.bearerMintUrl !== bearerMintUrl(transfer) ||
-    row.dueAtMs !== transfer.recovery.dueAtMs ||
-    row.recipientBinding !== recipientBinding(transfer) ||
-    (row.admissionState !== "reserved" && row.admissionState !== "consumed") ||
-    transfer.walletScopeId !== scopeId
-  ) {
-    throw new Error("browser outgoing transfer row is foreign");
-  }
-  return transfer;
 }
 
 function recipientBinding(transfer: DurableOutgoingCashuTransfer): string | null {

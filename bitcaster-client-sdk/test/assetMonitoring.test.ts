@@ -625,6 +625,22 @@ test('asset-monitoring client uses bounded reads, exact paths, and authorization
   )
 })
 
+test('asset-monitoring assets forwards a caller abort signal', async () => {
+  const controller = new AbortController()
+  let observedSignal: AbortSignal | undefined
+  const client = new BitcasterEngineClient({
+    baseUrl: 'https://engine.example',
+    fetchImpl: async (_input, init) => {
+      observedSignal = init?.signal
+      return jsonResponse(assetsResponse())
+    },
+  })
+
+  await client.getAssetMonitoringAssets({ walletId: WALLET_ID }, controller.signal)
+
+  assert.equal(observedSignal, controller.signal)
+})
+
 test('asset-monitoring client rejects an oversized response before parsing', async () => {
   const client = new BitcasterEngineClient({
     baseUrl: 'https://engine.example',

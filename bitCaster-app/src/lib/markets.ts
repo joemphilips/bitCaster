@@ -31,7 +31,6 @@ import { NDKEvent, type NDKSigner } from "@nostr-dev-kit/ndk";
 import { bytesToHex } from "nostr-tools/utils";
 import { toWireAmountBearing } from "@bitcaster/client-sdk/ctfRegistration";
 import {
-  decodeDurableRecipientDeliveryStatus,
   decodeDurableRecipientDeliverySubmission,
   type DurableRecipientDeliveryStatus,
   type DurableRecipientDeliverySubmission,
@@ -1141,33 +1140,14 @@ export async function submitDurableCashuDelivery(
   submission: DurableRecipientDeliverySubmission,
 ): Promise<DurableRecipientDeliveryStatus> {
   const exact = decodeDurableRecipientDeliverySubmission(submission);
-  const url = `${window.location.origin}/api/v1/cashu-deliveries/${encodeURIComponent(exact.deliveryId)}`;
-  const bodyText = JSON.stringify(exact);
-  const payloadHash = await sha256Hex(new TextEncoder().encode(bodyText));
-  const authHeader = await generateNip98Header(url, "POST", payloadHash);
-  const response = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: authHeader },
-    body: bodyText,
-  });
-  if (!response.ok) {
-    throw new Error(`Durable Cashu delivery submission failed: ${response.status}`);
-  }
-  return decodeDurableRecipientDeliveryStatus(await response.json());
+  return createAuthenticatedBrowserEngineClient().submitDurableRecipientDelivery(exact);
 }
 
 /** Read one exact durable Cashu delivery status. A missing id is not an error. */
 export async function getDurableCashuDeliveryStatus(
   deliveryId: string,
 ): Promise<DurableRecipientDeliveryStatus | null> {
-  const url = `${window.location.origin}/api/v1/cashu-deliveries/${encodeURIComponent(deliveryId)}`;
-  const authHeader = await generateNip98Header(url, "GET");
-  const response = await fetch(url, { headers: { Authorization: authHeader } });
-  if (response.status === 404) return null;
-  if (!response.ok) {
-    throw new Error(`Durable Cashu delivery status failed: ${response.status}`);
-  }
-  return decodeDurableRecipientDeliveryStatus(await response.json());
+  return createAuthenticatedBrowserEngineClient().getDurableRecipientDeliveryStatus(deliveryId);
 }
 
 export async function getParticipationScore(): Promise<ParticipationScoreResponse> {

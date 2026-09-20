@@ -70,6 +70,7 @@ export interface EngineAuthorizationRequest {
   method: string
   bodyText?: string
   payloadHash?: string
+  signal?: AbortSignal
 }
 
 export interface SettlementCapabilityReference {
@@ -493,18 +494,22 @@ export class BitcasterEngineClient {
 
   async getAssetMonitoringAssets(
     queryInput: AssetMonitoringAssetsQuery,
+    signal?: AbortSignal,
   ): Promise<AssetMonitoringAssetsResponse> {
     const query = assetMonitoringAssetsQueryString(decodeAssetMonitoringAssetsQuery(queryInput))
     const response = await this.request(
       `/api/v1/asset-monitoring/assets?${query}`,
-      {},
+      { signal },
       undefined,
       false,
       ASSET_MONITORING_ERROR_RESPONSE_BYTES_MAX,
     )
-    return decodeAssetMonitoringAssetsResponse(
-      await readAllocationBoundedJsonResponse(response, ASSET_MONITORING_RESPONSE_BYTES_MAX),
+    const body = await readAllocationBoundedJsonResponse(
+      response,
+      ASSET_MONITORING_RESPONSE_BYTES_MAX,
     )
+    signal?.throwIfAborted()
+    return decodeAssetMonitoringAssetsResponse(body)
   }
 
   async getAssetMonitoringHistory(
@@ -753,10 +758,11 @@ export class BitcasterEngineClient {
 
   async getDurableRecipientDeliveryStatus(
     deliveryId: string,
+    signal?: AbortSignal,
   ): Promise<DurableRecipientDeliveryStatus | null> {
     return this.requestDurableRecipientDelivery(
       `/api/v1/cashu-deliveries/${encodePathSegment(deliveryId)}`,
-      {},
+      { signal },
       undefined,
       true,
       async (response) => {
@@ -773,6 +779,7 @@ export class BitcasterEngineClient {
 
   async submitDurableRecipientDelivery(
     submission: DurableRecipientDeliverySubmission,
+    signal?: AbortSignal,
   ): Promise<DurableRecipientDeliveryStatus> {
     const exact = decodeDurableRecipientDeliverySubmission(submission)
     const bodyText = JSON.stringify(exact)
@@ -782,6 +789,7 @@ export class BitcasterEngineClient {
         method: 'POST',
         body: bodyText,
         headers: { 'content-type': 'application/json' },
+        signal,
       },
       bodyText,
       false,
@@ -920,12 +928,23 @@ export class BitcasterEngineClient {
     read: (response: Response) => Promise<T>,
   ): Promise<T> {
     const url = `${this.baseUrl}${path}`
-    const headers = await this.authorizedHeaders(url, init, bodyText)
     const lifetime = createBoundedRequestLifetime(
-      undefined,
+      init.signal ?? undefined,
       this.durableRecipientDeliveryRequestTimeoutMs,
     )
     try {
+      if (lifetime.signal.aborted) {
+        throw new Error('durable recipient delivery request failed')
+      }
+      let headers: Record<string, string>
+      try {
+        headers = await this.authorizedHeaders(url, init, bodyText, lifetime.signal)
+      } catch {
+        throw new Error('durable recipient delivery request failed')
+      }
+      if (lifetime.signal.aborted) {
+        throw new Error('durable recipient delivery request failed')
+      }
       let response: Response
       try {
         response = await this.fetchImpl(url, {
@@ -965,17 +984,45 @@ export class BitcasterEngineClient {
     url: string,
     init: RequestInit,
     bodyText: string | undefined,
+    signal?: AbortSignal,
   ): Promise<Record<string, string>> {
     const headers = normalizeHeaders(init.headers)
     if (this.authorization) {
-      headers.Authorization = await this.authorization({
+      const authorizationRequest: EngineAuthorizationRequest = {
         url,
         method: init.method ?? 'GET',
         bodyText,
-      })
+        ...(signal === undefined ? {} : { signal }),
+      }
+      const authorization = this.authorization(authorizationRequest)
+      headers.Authorization = signal
+        ? await awaitAbortable(Promise.resolve(authorization), signal)
+        : await authorization
     }
     return headers
   }
+}
+
+async function awaitAbortable<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) throw new Error('request aborted')
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => {
+      cleanup()
+      reject(new Error('request aborted'))
+    }
+    const cleanup = () => signal.removeEventListener('abort', onAbort)
+    signal.addEventListener('abort', onAbort, { once: true })
+    operation.then(
+      (value) => {
+        cleanup()
+        resolve(value)
+      },
+      (error: unknown) => {
+        cleanup()
+        reject(error)
+      },
+    )
+  })
 }
 
 async function readSettlementCapabilityResultResponse(

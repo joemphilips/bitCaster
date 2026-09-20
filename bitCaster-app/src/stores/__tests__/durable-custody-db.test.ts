@@ -1,7 +1,8 @@
 // @vitest-environment node
 import "fake-indexeddb/auto";
+import Dexie from "dexie";
 import { afterEach, describe, expect, it } from "vitest";
-import type { Proof } from "@cashu/cashu-ts";
+import { Amount, OutputData, type Proof } from "@cashu/cashu-ts";
 import {
   createDurableProofOperationFacts,
   deriveDurableCustodyScopeId,
@@ -13,17 +14,32 @@ import {
   type DurableCustodyScope,
 } from "@bitcaster/client-sdk/durableCustody";
 import type { DurableCustodyProofOperationInput } from "@bitcaster/client-sdk/durableCustodyProofOperation";
+import { deriveMarketFundingProductBinding } from "@bitcaster/client-sdk/marketFundingDelivery";
+import {
+  createDurableOutgoingCashuTransfer,
+  type DurableOutgoingCashuTransfer,
+} from "@bitcaster/client-sdk/durableOutgoingCashuTransfer";
+import { serializeDurableWalletSendOperation } from "@bitcaster/client-sdk/durableWalletOperation";
 import {
   bindDurableCustodyProofOperation,
   createDurableCustodyProofOperation,
   deriveDurableCustodyProofResultFingerprint,
 } from "@bitcaster/client-sdk/durableCustodyProofOperationRecord";
-import { BrowserDurableCustodyAdapter, createBrowserCustodyProofRow } from "../durable-custody-db";
+import {
+  BrowserDurableCustodyAdapter,
+  createBrowserCustodyProofRow,
+  persistBrowserOutgoingCashuTransferRewrite,
+} from "../durable-custody-db";
 import {
   bindBrowserProofBackupAuthorityTerminalOperation,
   createBrowserProofBackupAuthorityRow,
 } from "../browser-proof-backup-authority";
-import { BitcasterDB } from "../proof-db";
+import {
+  BitcasterDB,
+  browserOutgoingPredecessorKey,
+  findBrowserOutgoingCashuTransferByPredecessor,
+  type BrowserOutgoingCashuTransferRow,
+} from "../proof-db";
 
 const MINT = "https://mint.example";
 const KEYSET = `01${"11".repeat(32)}`;
@@ -243,6 +259,127 @@ describe("browser durable custody adapter", () => {
       "locked",
     );
     expect(await database.custodyProofBackupAuthorities.count()).toBe(1);
+  });
+
+  it.each([
+    { predecessorTransferId: null, expectedIndexKey: "", sequenced: true },
+    {
+      predecessorTransferId: "prior-transfer",
+      expectedIndexKey: "prior-transfer",
+      sequenced: true,
+    },
+    { predecessorTransferId: null, expectedIndexKey: undefined, sequenced: false },
+  ])("uses one unique predecessor index key for %#", async (input) => {
+    const database = createDatabase();
+    const first = fundingTransfer(
+      "indexed-first",
+      input.predecessorTransferId,
+      undefined,
+      input.sequenced,
+    );
+    await database.outgoingCashuTransfers.put(fundingRow(first));
+
+    expect(browserOutgoingPredecessorKey(first)).toBe(input.expectedIndexKey);
+    const resolved = await findBrowserOutgoingCashuTransferByPredecessor({
+      scopeId: first.walletScopeId,
+      recipientBinding: fundingBinding(first),
+      predecessorTransferId: input.predecessorTransferId,
+      database,
+    });
+    if (input.expectedIndexKey === undefined) {
+      expect(resolved).toBeNull();
+    } else {
+      expect(resolved).toMatchObject({ transferId: first.transferId });
+    }
+
+    const duplicate = fundingTransfer(
+      "indexed-duplicate",
+      input.predecessorTransferId,
+      undefined,
+      input.sequenced,
+    );
+    if (input.expectedIndexKey === undefined) {
+      await expect(database.outgoingCashuTransfers.put(fundingRow(duplicate))).resolves.toEqual([
+        duplicate.walletScopeId,
+        duplicate.transferId,
+      ]);
+    } else {
+      await expect(database.outgoingCashuTransfers.put(fundingRow(duplicate))).rejects.toThrow();
+    }
+  });
+
+  it("rolls back custody, outgoing transfer, and funding head on a head CAS conflict", async () => {
+    const database = createDatabase();
+    const adapter = new BrowserDurableCustodyAdapter(database);
+    const scope = walletScope();
+    const owner = await claim(adapter, scope, 70);
+    const first = fundingTransfer("funding-first", null, scope.scopeId);
+    await persistFundingTransfer(adapter, scope, owner, first, {
+      expectedPrevious: null,
+      nextRevision: 1,
+    });
+
+    const second = fundingTransfer("funding-second", first.transferId, scope.scopeId);
+    await expect(
+      persistFundingTransfer(adapter, scope, observedOwner(owner, 71), second, {
+        expectedPrevious: { transferId: first.transferId, revision: 99 },
+        nextRevision: 100,
+      }),
+    ).rejects.toThrow("head CAS conflict");
+
+    expect(await database.outgoingCashuTransfers.count()).toBe(1);
+    expect(
+      await database.marketFundingHeads.get([scope.scopeId, fundingBinding(first)]),
+    ).toMatchObject({ transferId: first.transferId, revision: 1 });
+    expect(await adapter.readOperation(scope, "funding-custody:funding-second")).toBeNull();
+  });
+
+  it("rejects higher-revision sequence tampering and keeps the original predecessor occupied", async () => {
+    const database = createDatabase();
+    const original = fundingTransfer("tamper-target", null);
+    await database.outgoingCashuTransfers.put(fundingRow(original));
+    const tampered = { ...fundingTransfer("tamper-target", "other-transfer"), revision: 1 };
+
+    await expect(rewriteOutgoing(database, fundingRow(tampered))).rejects.toThrow(
+      "immutable request identity",
+    );
+    await expect(
+      findBrowserOutgoingCashuTransferByPredecessor({
+        scopeId: original.walletScopeId,
+        recipientBinding: fundingBinding(original),
+        predecessorTransferId: null,
+        database,
+      }),
+    ).resolves.toMatchObject({ transferId: original.transferId });
+    expect(
+      await findBrowserOutgoingCashuTransferByPredecessor({
+        scopeId: original.walletScopeId,
+        recipientBinding: fundingBinding(original),
+        predecessorTransferId: "other-transfer",
+        database,
+      }),
+    ).toBeNull();
+  });
+
+  it("preserves an unchanged recipient sequence across a higher-revision rewrite", async () => {
+    const database = createDatabase();
+    const original = fundingTransfer("rewrite-target", null);
+    await database.outgoingCashuTransfers.put(fundingRow(original));
+    const replacement = { ...original, revision: original.revision + 1 };
+
+    await rewriteOutgoing(database, fundingRow(replacement));
+    expect(
+      (await database.outgoingCashuTransfers.get([original.walletScopeId, original.transferId]))
+        ?.transfer.revision,
+    ).toBe(1);
+    expect(
+      await findBrowserOutgoingCashuTransferByPredecessor({
+        scopeId: original.walletScopeId,
+        recipientBinding: fundingBinding(original),
+        predecessorTransferId: null,
+        database,
+      }),
+    ).toMatchObject({ transferId: original.transferId });
   });
 
   it("does not back up a specialized refund without a deterministic locator", async () => {
@@ -790,6 +927,136 @@ function selection(
   expectedRevision: number | null,
 ) {
   return { scope, owner, operationRows: [{ operationId, expectedRevision }] };
+}
+
+function fundingTransfer(
+  transferId: string,
+  predecessorTransferId: string | null,
+  scopeId = "wallet-scope-funding",
+  sequenced = true,
+): DurableOutgoingCashuTransfer {
+  const output = OutputData.createSingleDeterministicData(
+    1,
+    new Uint8Array(64).fill(7),
+    transferId.charCodeAt(0),
+    KEYSET,
+  );
+  const operation = serializeDurableWalletSendOperation({
+    operationId: `wallet-send:${transferId}`,
+    mintUrl: MINT,
+    unit: "msat",
+    preview: {
+      amount: Amount.from(1),
+      fees: Amount.zero(),
+      keysetId: KEYSET,
+      inputs: [
+        { id: KEYSET, amount: Amount.from(1), secret: `wallet-input:${transferId}`, C: PUBLIC_KEY },
+      ],
+      sendOutputs: [output],
+      keepOutputs: [],
+      unselectedProofs: [],
+    },
+  });
+  return createDurableOutgoingCashuTransfer({
+    transferId,
+    walletScopeId: scopeId,
+    requestedAmount: "1",
+    walletSendOperation: operation,
+    recipientSequence: sequenced ? { predecessorTransferId } : null,
+    deliveryIntent: {
+      policy: "durable-recipient-ack",
+      expectedSubject: "account-1",
+      opaqueProductBinding: deriveMarketFundingProductBinding({
+        conditionId: "aa".repeat(32),
+        divisibility: 1_000,
+        accountSubject: "account-1",
+      }),
+      tokenBytesLimit: 1024,
+      tokenProofLimit: 1,
+    },
+  });
+}
+
+function fundingRow(transfer: DurableOutgoingCashuTransfer): BrowserOutgoingCashuTransferRow {
+  const predecessorKey = browserOutgoingPredecessorKey(transfer);
+  return {
+    scopeId: transfer.walletScopeId,
+    mintUrl: transfer.mintUrl,
+    mintRecoveryState: transfer.deliveryState === "prepared" ? "pending" : "complete",
+    localAuthorityState: "nonterminal",
+    bearerMintUrl: null,
+    dueAtMs: transfer.recovery.dueAtMs,
+    transferId: transfer.transferId,
+    recipientBinding:
+      transfer.deliveryIntent.policy === "durable-recipient-ack"
+        ? transfer.deliveryIntent.opaqueProductBinding
+        : null,
+    ...(predecessorKey === undefined ? {} : { predecessorKey }),
+    admissionState: "consumed",
+    transfer,
+  };
+}
+
+function fundingBinding(transfer: DurableOutgoingCashuTransfer): string {
+  if (transfer.deliveryIntent.policy !== "durable-recipient-ack") {
+    throw new Error("test transfer is not a durable recipient transfer");
+  }
+  return transfer.deliveryIntent.opaqueProductBinding;
+}
+
+async function persistFundingTransfer(
+  adapter: BrowserDurableCustodyAdapter,
+  scope: DurableCustodyScope,
+  owner: DurableCustodyOwnerAuthorization,
+  transfer: DurableOutgoingCashuTransfer,
+  head: {
+    expectedPrevious: { transferId: string; revision: number } | null;
+    nextRevision: number;
+  },
+): Promise<void> {
+  const operationId = `funding-custody:${transfer.transferId}`;
+  const binding = operationBinding(
+    scope,
+    operationId,
+    proof(`funding-input:${transfer.transferId}`),
+    "funding-output",
+  );
+  const boundOperationId = binding.record.operation.operationId;
+  const predecessor = createBrowserCustodyProofRow({
+    scopeId: scope.scopeId,
+    normalizedMint: MINT,
+    unit: "msat",
+    proof: binding.operation.inputs[0] as Proof,
+    asset: { kind: "regular" },
+    receivedAtMs: owner.observedAtMs,
+  });
+  await adapter.transactAtomic(
+    selection(scope, owner, boundOperationId, null),
+    (transaction) =>
+      bindDurableCustodyProofOperation(transaction, binding.record, binding.artifacts),
+    {
+      predecessorProofs: { [boundOperationId]: [predecessor] },
+      outgoingTransfer: fundingRow(transfer),
+      outgoingAdmission: null,
+      marketFundingHead: {
+        accountSubject: "account-1",
+        conditionId: "aa".repeat(32),
+        divisibility: 1_000,
+        ...head,
+      },
+    },
+  );
+}
+
+async function rewriteOutgoing(
+  database: BitcasterDB,
+  row: BrowserOutgoingCashuTransferRow,
+): Promise<void> {
+  await database.transaction("rw", database.outgoingCashuTransfers, async () => {
+    const transaction = Dexie.currentTransaction;
+    if (transaction === undefined) throw new Error("missing test transaction");
+    await persistBrowserOutgoingCashuTransferRewrite(database, transaction, row);
+  });
 }
 
 function createDatabase(): BitcasterDB {

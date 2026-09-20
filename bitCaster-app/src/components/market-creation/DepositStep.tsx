@@ -1,10 +1,12 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router";
 import { Check, Info, Loader2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import {
   BrowserMarketFundingInsufficientBalanceError,
   executeBrowserMarketFundingDelivery,
+  readBrowserMarketFundingHeadId,
+  type BrowserMarketFundingDeliveryResult,
   type MarketFundingDeliveryProgress,
 } from "@/lib/browserMarketFundingDelivery";
 import { InsufficientBalanceModal } from "@/components/shared/InsufficientBalanceModal";
@@ -59,6 +61,7 @@ export function DepositStep({
   baseAsset = "sat",
   presentation = "creation",
   divisibility: divisibilityInput,
+  outcomeCount,
   onRequireWallet,
 }: DepositStepProps) {
   const { t } = useTranslation();
@@ -71,11 +74,23 @@ export function DepositStep({
     null,
   );
   const [fundingBusy, setFundingBusy] = useState(false);
+  const [headTransferId, setHeadTransferId] = useState<string | null>(null);
+  const [headReady, setHeadReady] = useState(false);
+  const [headReadRevision, setHeadReadRevision] = useState(0);
+  const generation = useRef(0);
+  const inFlight = useRef(false);
   const [topUpStage, setTopUpStage] = useState<"closed" | "modal" | "overlay">("closed");
   const [error, setError] = useState<string | null>(null);
   const cashuUnit = defaultCollateralUnit(baseAsset);
   const activeMintUrl = useWalletStore((state) => state.activeMintUrl);
   const walletMnemonic = useWalletStore((state) => state.mnemonic);
+  const accountSubject = useSettingsStore((settings) =>
+    resolveCreatorPubkey({
+      nostrSignerMode: settings.nostrSignerMode,
+      nsecSecret: settings.nsecSecret,
+      nostrProfilePubkey: settings.nostrProfile?.pubkey,
+    }),
+  );
   const balance = useBalance(activeMintUrl, { baseAsset });
   const divisibility = normalizeMarketDivisibility(divisibilityInput, baseAsset);
   const fundingAmountMsat = useMemo(
@@ -83,6 +98,71 @@ export function DepositStep({
     [fundingAmountSats],
   );
   const fundingAmountInputError = fundingAmountSats.trim() !== "" && fundingAmountMsat === null;
+
+  const applyFundingResult = useCallback((result: BrowserMarketFundingDeliveryResult) => {
+    setHeadTransferId(result.transfer.transferId);
+    setFundingAmountSats(formatFundingInput(Number(result.transfer.requestedAmount)));
+    setDeliveryProgress(result.progress);
+  }, []);
+
+  useEffect(() => {
+    const current = ++generation.current;
+    let cancelled = false;
+    setHeadReady(false);
+    setHeadTransferId(null);
+    setDeliveryProgress(null);
+    setError(null);
+    inFlight.current = false;
+    if (!walletMnemonic.trim() || !accountSubject) {
+      setHeadReady(true);
+      setFundingBusy(false);
+      return;
+    }
+    setFundingBusy(true);
+    const common = {
+      accountSubject,
+      conditionId,
+      mintUrl: activeMintUrl,
+      unit: cashuUnit,
+      divisibility,
+    };
+    void (async () => {
+      try {
+        const exactId = await readBrowserMarketFundingHeadId(common);
+        if (cancelled || current !== generation.current) return;
+        setHeadTransferId(exactId);
+        if (exactId !== null) {
+          const result = await executeBrowserMarketFundingDelivery({
+            ...common,
+            attempt: { kind: "resume", transferId: exactId },
+          });
+          if (cancelled || current !== generation.current) return;
+          applyFundingResult(result);
+        }
+        setHeadReady(true);
+      } catch (err) {
+        if (!cancelled && current === generation.current) {
+          setError(err instanceof Error ? err.message : t("marketCreation.ecashSubmitError"));
+        }
+      } finally {
+        if (!cancelled && current === generation.current) setFundingBusy(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+      generation.current += 1;
+    };
+  }, [
+    accountSubject,
+    activeMintUrl,
+    walletMnemonic,
+    conditionId,
+    cashuUnit,
+    divisibility,
+    applyFundingResult,
+    headReadRevision,
+    t,
+  ]);
 
   useEffect(() => {
     if (presentation === "detail") return undefined;
@@ -96,18 +176,19 @@ export function DepositStep({
   }, [conditionId, navigate, presentation]);
 
   useEffect(() => {
-    if (presentation === "detail" || deliveryProgress !== "credited") return undefined;
+    if (presentation === "detail" || deliveryProgress !== "credited" || fundingBusy) return undefined;
     const timer = window.setTimeout(continueToMarket, 5_000);
     return () => window.clearTimeout(timer);
-  }, [continueToMarket, deliveryProgress, presentation]);
+  }, [continueToMarket, deliveryProgress, presentation, fundingBusy]);
 
   const submitMarketFunding = useCallback(async () => {
-    if (fundingBusy || deliveryProgress === "credited") return;
-    if (fundingAmountMsat === null || fundingAmountMsat < 1) {
+    if (fundingBusy || inFlight.current) return;
+    const resuming = headTransferId !== null && deliveryProgress !== "credited";
+    if (!resuming && (fundingAmountMsat === null || fundingAmountMsat < 1)) {
       setError(t("marketCreation.ammFundingAmountError"));
       return;
     }
-    if (fundingAmountMsat % divisibility !== 0) {
+    if (!resuming && fundingAmountMsat !== null && fundingAmountMsat % divisibility !== 0) {
       setError(t("marketCreation.ammFundingDivisibilityError", { divisibility }));
       return;
     }
@@ -120,14 +201,20 @@ export function DepositStep({
       return;
     }
     setError(null);
+    if (!headReady) return;
+    const current = generation.current;
+    const attempt =
+      headTransferId !== null && deliveryProgress !== "credited"
+        ? { kind: "resume" as const, transferId: headTransferId }
+        : {
+            kind: "begin" as const,
+            expectedPreviousTransferId: headTransferId,
+            newAttemptId: crypto.randomUUID(),
+            requestedAmount: String(fundingAmountMsat),
+          };
+    inFlight.current = true;
     setFundingBusy(true);
     try {
-      const settings = useSettingsStore.getState();
-      const accountSubject = resolveCreatorPubkey({
-        nostrSignerMode: settings.nostrSignerMode,
-        nsecSecret: settings.nsecSecret,
-        nostrProfilePubkey: settings.nostrProfile?.pubkey,
-      });
       if (!accountSubject) throw new Error("The active wallet identity is unavailable.");
       const result = await executeBrowserMarketFundingDelivery({
         accountSubject,
@@ -135,36 +222,36 @@ export function DepositStep({
         mintUrl: activeMintUrl,
         unit: cashuUnit,
         divisibility,
-        requestedAmount: String(fundingAmountMsat),
+        outcomeCount,
+        attempt,
         availableAmount: balance,
       });
-      const persistedAmount = Number(result.transfer.requestedAmount);
-      if (
-        Number.isSafeInteger(persistedAmount) &&
-        persistedAmount > 0 &&
-        persistedAmount !== fundingAmountMsat
-      ) {
-        // A reload can resume an existing transfer with a different immutable
-        // amount. Reflect that persisted authority in the exact sats field.
-        setFundingAmountSats(formatFundingInput(persistedAmount));
-      }
-      setDeliveryProgress(result.progress);
+      if (current === generation.current) applyFundingResult(result);
     } catch (err) {
+      if (current !== generation.current) return;
       if (err instanceof BrowserMarketFundingInsufficientBalanceError) {
         setTopUpStage("modal");
         return;
       }
       setError(err instanceof Error ? err.message : t("marketCreation.ecashSubmitError"));
     } finally {
-      setFundingBusy(false);
+      if (current === generation.current) {
+        inFlight.current = false;
+        setFundingBusy(false);
+      }
     }
   }, [
     activeMintUrl,
+    accountSubject,
+    applyFundingResult,
+    headReady,
+    headTransferId,
     balance,
     cashuUnit,
     conditionId,
     deliveryProgress,
     divisibility,
+    outcomeCount,
     fundingAmountMsat,
     fundingBusy,
     onRequireWallet,
@@ -173,10 +260,10 @@ export function DepositStep({
   ]);
 
   const canSubmitFunding =
-    fundingAmountMsat !== null &&
-    fundingAmountMsat > 0 &&
+    headReady &&
     !fundingBusy &&
-    deliveryProgress !== "credited";
+    ((headTransferId !== null && deliveryProgress !== "credited") ||
+      (fundingAmountMsat !== null && fundingAmountMsat > 0));
 
   if (stage === "created") {
     return (
@@ -219,6 +306,7 @@ export function DepositStep({
           aria-invalid={fundingAmountInputError ? "true" : "false"}
           aria-describedby="amm-funding-amount-hint"
           value={fundingAmountSats}
+          disabled={fundingBusy || (headTransferId !== null && deliveryProgress !== "credited")}
           onChange={(event) => setFundingAmountSats(event.target.value)}
           className={`w-full rounded-lg border bg-slate-950 px-3 py-2 text-sm text-slate-100 outline-none focus:border-blue-400 ${
             fundingAmountInputError ? "border-red-400" : "border-slate-700"
@@ -237,8 +325,10 @@ export function DepositStep({
       {deliveryProgress && (
         <p className="mb-4 rounded-lg border border-emerald-400/30 bg-emerald-500/10 p-3 text-sm text-emerald-100">
           {deliveryProgress === "credited"
-            ? t("marketCreation.statusPaymentReceived")
-            : t("marketCreation.statusAwaitingPayment")}
+            ? t("marketCreation.statusPaymentCredited")
+            : deliveryProgress === "received"
+              ? t("marketCreation.statusPaymentReceived")
+              : t("marketCreation.statusAwaitingPayment")}
         </p>
       )}
 
@@ -276,9 +366,21 @@ export function DepositStep({
       </div>
 
       {error && (
-        <p className="mt-3 rounded-lg border border-red-400/30 bg-red-500/10 p-3 text-sm text-red-100">
-          {error}
-        </p>
+        <div className="mt-3 rounded-lg border border-red-400/30 bg-red-500/10 p-3 text-sm text-red-100">
+          <p role="alert">{error}</p>
+          {!headReady && !fundingBusy && (
+            <button
+              type="button"
+              onClick={() => {
+                setError(null);
+                setHeadReadRevision((value) => value + 1);
+              }}
+              className="mt-2 underline"
+            >
+              {t("marketCreation.retryWalletPayment")}
+            </button>
+          )}
+        </div>
       )}
 
       {topUpStage === "modal" && (

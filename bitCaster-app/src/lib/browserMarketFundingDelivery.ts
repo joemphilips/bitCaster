@@ -10,6 +10,7 @@ import {
   createMarketFundingDeliveryMetadata,
   deriveMarketFundingProductBinding,
   marketFundingDeliveryIntent,
+  requireMarketFundingActivationAmount,
   type MarketFundingDeliveryInput,
 } from "@bitcaster/client-sdk/marketFundingDelivery";
 import { deriveDurableRecipientTokenAllowance } from "@bitcaster/client-sdk/durableRecipientDelivery";
@@ -18,12 +19,15 @@ import {
   type EncryptedWalletBackupV2AssetIdentity,
 } from "@bitcaster/client-sdk";
 import type { DurableWalletProofDerivationLocator } from "@bitcaster/client-sdk/durableWalletProofDerivationLocator";
-import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
+import {
+  amountToNumber,
+  computeInputFeeSubunitsFromPpk,
+} from "@bitcaster/client-sdk/proofSelection";
 import type { DurableOutgoingCashuTransfer } from "@bitcaster/client-sdk/durableOutgoingCashuTransfer";
 import {
   acknowledgeBrowserDurableOutgoingCashuRecipient,
   executeBrowserDurableOutgoingCashuTransfer,
-  findBrowserDurableOutgoingCashuTransferByRecipientBinding,
+  readBrowserDurableOutgoingCashuTransfer,
   recoverBrowserDurableOutgoingCashuTransfer,
   type BrowserDurableOutgoingCashuContext,
 } from "@/lib/browserDurableOutgoingCashuTransfer";
@@ -33,7 +37,13 @@ import {
 } from "@/lib/browserDeterministicOutgoingCashu";
 import { captureBrowserMintPersistenceContext, getWalletForUnit } from "@/lib/cashu";
 import { recoverBrowserFundedAsset } from "@/lib/browserFundedAssetRecovery";
-import { getBoundedCanonicalRegularProofs, type StoredProof } from "@/stores/proof-db";
+import {
+  getBoundedCanonicalRegularProofs,
+  decodeBrowserOutgoingCashuTransferRow,
+  findBrowserOutgoingCashuTransferByPredecessor,
+  readBrowserMarketFundingHead,
+  type StoredProof,
+} from "@/stores/proof-db";
 import { getDurableCashuDeliveryStatus, submitDurableCashuDelivery } from "@/lib/markets";
 
 export type MarketFundingDeliveryProgress = "pending" | "received" | "credited";
@@ -42,6 +52,26 @@ export interface BrowserMarketFundingDeliveryResult {
   readonly transfer: DurableOutgoingCashuTransfer;
   readonly progress: MarketFundingDeliveryProgress;
 }
+
+export type BrowserMarketFundingDeliveryAttempt =
+  | {
+      readonly kind: "begin";
+      readonly expectedPreviousTransferId: string | null;
+      readonly newAttemptId: string;
+      readonly requestedAmount: string;
+    }
+  | {
+      readonly kind: "resume";
+      readonly transferId: string;
+    };
+
+export type BrowserMarketFundingDeliveryInput =
+  Omit<MarketFundingDeliveryInput, "deliveryId" | "requestedAmount"> & {
+    readonly outcomeCount?: number;
+    /** Classifies only a final locked shortfall. It never bypasses recovery or selection. */
+    readonly availableAmount?: number;
+    readonly attempt: BrowserMarketFundingDeliveryAttempt;
+  };
 
 export class BrowserMarketFundingInsufficientBalanceError extends Error {
   constructor() {
@@ -57,71 +87,106 @@ export class BrowserMarketFundingConsolidationRequiredError extends Error {
   }
 }
 
-/** Prepare one durable outgoing transfer, then submit its stored token. */
-export async function executeBrowserMarketFundingDelivery(
-  input: Omit<MarketFundingDeliveryInput, "deliveryId"> & {
-    readonly deliveryId?: string;
-    /** Classifies only a final locked shortfall. It never bypasses recovery or selection. */
-    readonly availableAmount?: number;
-  },
-): Promise<BrowserMarketFundingDeliveryResult> {
+/** Read the exact persisted funding head for the captured wallet and scope. */
+export async function readBrowserMarketFundingHeadId(
+  input: Omit<MarketFundingDeliveryInput, "deliveryId" | "requestedAmount">,
+): Promise<string | null> {
   const context = captureBrowserMintPersistenceContext();
+  context.requireCapturedProfile();
+  if (input.mintUrl !== context.activeMintUrl) {
+    throw new Error("market funding mint conflicts with the captured wallet");
+  }
   const productBindingSha256 = deriveMarketFundingProductBinding({
     accountSubject: input.accountSubject,
     conditionId: input.conditionId,
     divisibility: input.divisibility,
   });
-  const prior = await findBrowserDurableOutgoingCashuTransferByRecipientBinding({
+  const head = await readBrowserMarketFundingHead(
+    context.scopeId,
     productBindingSha256,
-    context,
-  });
-  if (prior !== null) {
-    if (prior.token !== null) {
-      return reconcileBrowserMarketFundingDelivery({
-        transfer: prior,
-        metadata: persistedMarketFundingMetadata(input, prior),
-        readStatus: getDurableCashuDeliveryStatus,
-        submit: submitDurableCashuDelivery,
-        context,
-      });
-    }
-    const wallet = await getWalletForUnit(prior.mintUrl, prior.unit);
-    const recovered = await recoverBrowserDurableOutgoingCashuTransfer({
-      transferId: prior.transferId,
-      wallet,
-      restoreExactOutputs: (restore) =>
-        restoreBrowserDeterministicOutgoingCashuOutputs({
-          wallet,
-          restore,
-          diagnosticLabel: "Market funding",
-        }),
+    context.database,
+  );
+  context.requireCapturedProfile();
+  if (head === null) return null;
+  if (
+    head.scopeId !== context.scopeId ||
+    head.recipientBinding !== productBindingSha256 ||
+    head.accountSubject !== input.accountSubject ||
+    head.conditionId !== input.conditionId ||
+    head.divisibility !== input.divisibility ||
+    head.mintUrl !== input.mintUrl ||
+    head.unit !== input.unit
+  ) {
+    throw new Error("market funding head scope conflicts with the captured wallet");
+  }
+  return head.transferId;
+}
+
+/** Prepare or resume one durable outgoing transfer, then submit its stored token. */
+export async function executeBrowserMarketFundingDelivery(
+  input: BrowserMarketFundingDeliveryInput,
+): Promise<BrowserMarketFundingDeliveryResult> {
+  const context = captureBrowserMintPersistenceContext();
+  context.requireCapturedProfile();
+  if (input.mintUrl !== context.activeMintUrl) {
+    throw new Error("market funding mint conflicts with the captured wallet");
+  }
+  if (input.attempt.kind === "resume") {
+    const persisted = await readBrowserDurableOutgoingCashuTransfer({
+      transferId: input.attempt.transferId,
       context,
     });
-    if (recovered === null) {
-      throw new Error("market funding transfer disappeared during recovery");
-    }
+    if (persisted === null) throw new Error("market funding transfer is not persisted");
+    return reconcileOrRecoverPersistedMarketFunding({
+      transfer: persisted,
+      input,
+      context,
+    });
+  }
+  const begin = input.attempt;
+  const beginInput = { ...input, attempt: begin };
+  const indexedSuccessor = await findPersistedMarketFundingSuccessor({
+    input: beginInput,
+    context,
+  });
+  if (indexedSuccessor !== null && indexedSuccessor.token !== null) {
     return reconcileBrowserMarketFundingDelivery({
-      transfer: recovered,
-      metadata: persistedMarketFundingMetadata(input, recovered),
+      transfer: indexedSuccessor,
+      metadata: persistedMarketFundingMetadata(input, indexedSuccessor),
       readStatus: getDurableCashuDeliveryStatus,
       submit: submitDurableCashuDelivery,
       context,
     });
   }
-  const deliveryId = input.deliveryId ?? crypto.randomUUID();
-  const metadata: MarketFundingDeliveryInput = { ...input, deliveryId };
+
+  const metadata: MarketFundingDeliveryInput = {
+    ...input,
+    deliveryId: begin.newAttemptId,
+    requestedAmount: begin.requestedAmount,
+  };
   const durableMetadata = createMarketFundingDeliveryMetadata(metadata);
-  const wallet = await getWalletForUnit(context.activeMintUrl, input.unit);
+  const wallet = await getWalletForUnit(durableMetadata.mintUrl, durableMetadata.unit);
   context.requireCapturedProfile();
   const keepLocators: Array<DurableWalletProofDerivationLocator | null> = [];
   const asset = ordinaryFundingAsset(durableMetadata.mintUrl, durableMetadata.unit);
   const transfer = await executeBrowserDurableOutgoingCashuTransfer({
-    reuseRecipientBinding: true,
+    marketFundingAttempt: {
+      expectedPreviousTransferId: begin.expectedPreviousTransferId,
+      conditionId: durableMetadata.destinationId,
+      divisibility: input.divisibility,
+      requireCredited: (predecessor) => requireCreditedMarketFundingPredecessor({
+        transfer: predecessor,
+        input,
+      }),
+    },
     transfer: {
-      transferId: deliveryId,
+      transferId: begin.newAttemptId,
       mintUrl: durableMetadata.mintUrl,
       unit: durableMetadata.unit,
       requestedAmount: durableMetadata.requestedAmount,
+      recipientSequence: {
+        predecessorTransferId: begin.expectedPreviousTransferId,
+      },
       deliveryIntent: marketFundingDeliveryIntent({
         accountSubject: durableMetadata.accountSubject,
         productBindingSha256: durableMetadata.productBindingSha256,
@@ -147,23 +212,41 @@ export async function executeBrowserMarketFundingDelivery(
       if (sumProofs(proofs) < Number(durableMetadata.requestedAmount)) {
         if (
           input.availableAmount !== undefined &&
-          input.availableAmount >= Number(input.requestedAmount)
+          input.availableAmount >= Number(begin.requestedAmount)
         ) {
           throw new BrowserMarketFundingConsolidationRequiredError();
         }
         throw new BrowserMarketFundingInsufficientBalanceError();
       }
-      return prepareBrowserDeterministicOutgoingCashuSend({
-        operationId: `market-funding:${deliveryId}`,
+      const operation = await prepareBrowserDeterministicOutgoingCashuSend({
+        operationId: `market-funding:${begin.newAttemptId}`,
         wallet,
         proofs,
-        amount: Number(input.requestedAmount),
+        amount: Number(begin.requestedAmount),
         mintUrl: durableMetadata.mintUrl,
         unit: durableMetadata.unit,
         seed: context.seed,
         keepProofDerivationLocators: keepLocators,
         diagnosticLabel: "Market funding",
       });
+      const keyset = wallet.getKeyset(operation.preview.keysetId);
+      if (
+        keyset.id !== operation.preview.keysetId ||
+        keyset.unit !== "msat" ||
+        keyset.conditional ||
+        !keyset.verify() ||
+        operation.preview.sendOutputs.some((output) => output.blindedMessage.id !== keyset.id)
+      ) {
+        throw new Error("Market funding receive-fee keyset is invalid");
+      }
+      requireMarketFundingActivationAmount({
+        grossMsat: Number(operation.preview.amount),
+        receiveFeeMsat: computeInputFeeSubunitsFromPpk(
+          operation.preview.sendOutputs.length * keyset.fee,
+        ),
+        outcomeCount: input.outcomeCount ?? 8,
+      });
+      return operation;
     },
     keepProofDerivationLocators: keepLocators,
     wallet,
@@ -182,6 +265,96 @@ export async function executeBrowserMarketFundingDelivery(
     submit: submitDurableCashuDelivery,
     context,
   });
+}
+
+async function findPersistedMarketFundingSuccessor(input: {
+  readonly input: BrowserMarketFundingDeliveryInput & {
+    readonly attempt: Extract<BrowserMarketFundingDeliveryAttempt, { kind: "begin" }>;
+  };
+  readonly context: ReturnType<typeof captureBrowserMintPersistenceContext>;
+}): Promise<DurableOutgoingCashuTransfer | null> {
+  const productBindingSha256 = deriveMarketFundingProductBinding({
+    accountSubject: input.input.accountSubject,
+    conditionId: input.input.conditionId,
+    divisibility: input.input.divisibility,
+  });
+  const row = await findBrowserOutgoingCashuTransferByPredecessor({
+    scopeId: input.context.scopeId,
+    recipientBinding: productBindingSha256,
+    predecessorTransferId: input.input.attempt.expectedPreviousTransferId,
+    database: input.context.database,
+  });
+  input.context.requireCapturedProfile();
+  if (row === null) return null;
+  const transfer = decodeBrowserOutgoingCashuTransferRow(input.context.scopeId, row);
+  if (
+    transfer.deliveryIntent.policy !== "durable-recipient-ack" ||
+    transfer.recipientSequence === null ||
+    transfer.recipientSequence.predecessorTransferId !==
+      input.input.attempt.expectedPreviousTransferId
+  ) {
+    throw new Error("market funding successor sequence conflicts");
+  }
+  marketFundingMetadata(transfer, persistedMarketFundingMetadata(input.input, transfer));
+  return transfer;
+}
+
+async function reconcileOrRecoverPersistedMarketFunding(input: {
+  readonly transfer: DurableOutgoingCashuTransfer;
+  readonly input: BrowserMarketFundingDeliveryInput;
+  readonly context: BrowserDurableOutgoingCashuContext;
+}): Promise<BrowserMarketFundingDeliveryResult> {
+  const metadata = persistedMarketFundingMetadata(input.input, input.transfer);
+  marketFundingMetadata(input.transfer, metadata);
+  if (input.transfer.token !== null) {
+    return reconcileBrowserMarketFundingDelivery({
+      transfer: input.transfer,
+      metadata,
+      readStatus: getDurableCashuDeliveryStatus,
+      submit: submitDurableCashuDelivery,
+      context: input.context,
+    });
+  }
+  const wallet = await getWalletForUnit(input.transfer.mintUrl, input.transfer.unit);
+  const recovered = await recoverBrowserDurableOutgoingCashuTransfer({
+    transferId: input.transfer.transferId,
+    wallet,
+    restoreExactOutputs: (restore) =>
+      restoreBrowserDeterministicOutgoingCashuOutputs({
+        wallet,
+        restore,
+        diagnosticLabel: "Market funding",
+      }),
+    context: input.context,
+  });
+  if (recovered === null) throw new Error("market funding transfer disappeared during recovery");
+  return reconcileBrowserMarketFundingDelivery({
+    transfer: recovered,
+    metadata: persistedMarketFundingMetadata(input.input, recovered),
+    readStatus: getDurableCashuDeliveryStatus,
+    submit: submitDurableCashuDelivery,
+    context: input.context,
+  });
+}
+
+async function requireCreditedMarketFundingPredecessor(input: {
+  readonly transfer: DurableOutgoingCashuTransfer;
+  readonly input: BrowserMarketFundingDeliveryInput;
+}): Promise<void> {
+  if (input.transfer.token === null) {
+    throw new Error("market funding predecessor has no stored token");
+  }
+  const metadata = persistedMarketFundingMetadata(input.input, input.transfer);
+  const submission = createMarketFundingDeliverySubmission({
+    metadata: marketFundingMetadata(input.transfer, metadata),
+    token: input.transfer.token.encodedToken,
+  });
+  const status = await getDurableCashuDeliveryStatus(input.transfer.transferId);
+  if (status === null) throw new Error("market funding predecessor status is unavailable");
+  assertDurableRecipientDeliveryStatusAuthority({ expected: submission, status });
+  if (status.state !== "credited") {
+    throw new Error("market funding predecessor is not credited");
+  }
 }
 
 function ordinaryFundingAsset(
@@ -246,14 +419,12 @@ function sumProofs(proofs: readonly StoredProof[]): number {
 }
 
 function persistedMarketFundingMetadata(
-  input: Omit<MarketFundingDeliveryInput, "deliveryId">,
+  input: Omit<MarketFundingDeliveryInput, "deliveryId" | "requestedAmount">,
   transfer: DurableOutgoingCashuTransfer,
 ): MarketFundingDeliveryInput {
   return {
     ...input,
     deliveryId: transfer.transferId,
-    mintUrl: transfer.mintUrl,
-    unit: "msat",
     requestedAmount: transfer.requestedAmount,
   };
 }

@@ -24,9 +24,11 @@ Alpha, Beta, and Gamma can share one budget when they are outcomes of the
 same event.
 
 Review the amount and any fees before you confirm. The app shows amounts in
-sats. Mint fees can reduce the amount available to the bot. A completed
-payment does not guarantee immediate liquidity or a fill for your next order.
-The bot also depends on the supported mint being available.
+sats. Before it prepares a payment, the app checks that the amount remains at
+or above the required minimum after applicable receive fees. Mint fees can
+reduce the amount available to the bot. A completed payment does not
+guarantee immediate liquidity or a fill for your next order. The bot also
+depends on the supported mint being available.
 
 ## Add funding
 
@@ -39,8 +41,15 @@ with funds from the supported mint. Wait for the app to confirm completion.
 You can make more funding payments later. You do not need to be the creator.
 
 If a payment is still pending, check or resume that payment in the app.
-Do not make a second payment only because the first one is taking time.
-A second payment is a separate, non-refundable subsidy.
+After a reload, resume the same payment. A received payment is not yet
+credited to the market. Wait for the app to confirm credit before you make
+another explicit funding payment. Do not make a second payment only because
+the first one is taking time. A second payment is a separate, non-refundable
+subsidy.
+
+If recovery is incomplete or unavailable, that is different from insufficient
+balance. Funds that are already ready in this wallet can be used without
+waiting for remote recovery.
 
 ## What changes after funding
 

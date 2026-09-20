@@ -37,6 +37,7 @@ const currentTableNames = [
   "mintQuotes",
   "outgoingCashuTransferAdmissions",
   "outgoingCashuTransfers",
+  "marketFundingHeads",
   "participationScoreDeliveryPointers",
   "targetedAssetRecoveryAttempts",
 ].sort();
@@ -51,7 +52,7 @@ describe("browser wallet databases", () => {
     activateBrowserWalletDatabase(scopes[1]!);
     await db.open();
 
-    expect(db.verno).toBe(16);
+    expect(db.verno).toBe(17);
     expect(db.tables.map(({ name }) => name).sort()).toEqual(currentTableNames);
     expect(db.custodyProofs.schema.primKey.keyPath).toEqual(["scopeId", "proofId"]);
     expect(db.custodyProofs.schema.idxByName["[scopeId+selectability+proofId]"]).toBeDefined();
@@ -131,6 +132,10 @@ describe("browser wallet databases", () => {
       db.mintQuotes.schema.idxByName[
         "[scopeId+paymentMethod+recoveryState+lastRecoveryAttemptAtMs+quoteRecordId]"
       ],
+    ).toBeDefined();
+    expect(db.marketFundingHeads.schema.primKey.keyPath).toEqual(["scopeId", "recipientBinding"]);
+    expect(
+      db.outgoingCashuTransfers.schema.idxByName["[scopeId+recipientBinding+predecessorKey]"],
     ).toBeDefined();
   });
 

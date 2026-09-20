@@ -100,7 +100,8 @@ function registrationWallet(keysetId = V2_KEYSET_ID) {
 
 function transfer(overrides: Record<string, unknown> = {}) {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
+    recipientSequence: null,
     transferId: "ctf-condition-registration:test",
     walletScopeId: "scope-1",
     mintUrl: "https://mint.example.test",

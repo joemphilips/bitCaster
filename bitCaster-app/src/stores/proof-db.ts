@@ -1,18 +1,24 @@
 import Dexie, { type Table } from "dexie";
 import type { DurableBolt11MintQuote } from "@bitcaster/client-sdk/durableBolt11MintQuote";
-import type { DurableOutgoingCashuTransfer } from "@bitcaster/client-sdk/durableOutgoingCashuTransfer";
+import {
+  decodeDurableOutgoingCashuTransfer,
+  type DurableOutgoingCashuTransfer,
+} from "@bitcaster/client-sdk/durableOutgoingCashuTransfer";
 import {
   decodeDurableCustodyProofMaterialRecord,
   deserializeDurableCustodyProofArtifact,
 } from "@bitcaster/client-sdk/durableCustodyProofMaterial";
 import { Amount, type Proof } from "@cashu/cashu-ts";
 import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
+import { deriveDurableCustodyArtifactFingerprint } from "@bitcaster/client-sdk/durableCustody";
 import {
   COLLATERAL_UNIT_REGISTRY,
+  parseMarketDivisibility,
   normalizeMarketBaseAsset,
   parseCashuProofUnit,
   type CashuProofUnit,
 } from "@bitcaster/client-sdk/marketUnits";
+import { deriveMarketFundingProductBinding } from "@bitcaster/client-sdk/marketFundingDelivery";
 import type { CtfProofOperationCompletion } from "@bitcaster/client-sdk/ctfSplit";
 import {
   readAuthenticatedCtfRedeemTerminalEvidence,
@@ -287,9 +293,256 @@ export interface BrowserOutgoingCashuTransferRow {
   transferId: string;
   /** A durable-recipient product binding enables one bounded product resume lookup. */
   recipientBinding: string | null;
+  /**
+   * The indexed predecessor relation for a durable-recipient transfer.
+   * The empty string is reserved for the first transfer in a sequence.
+   * Unsequenced transfers omit this property so they do not enter the index.
+   */
+  predecessorKey?: string;
   /** Reserved records have a matching local-only physical admission row. */
   admissionState: "reserved" | "consumed";
   transfer: DurableOutgoingCashuTransfer;
+}
+
+/** One scoped market-funding sequence head. This row is coordination state only. */
+export interface BrowserMarketFundingHeadRow {
+  scopeId: string;
+  recipientBinding: string;
+  transferId: string;
+  revision: number;
+  mintUrl: string;
+  unit: string;
+  accountSubject: string;
+  conditionId: string;
+  divisibility: number;
+}
+
+/** Derive the indexed predecessor component. Undefined excludes unsequenced rows from the index. */
+export function browserOutgoingPredecessorKey(
+  transfer: DurableOutgoingCashuTransfer,
+): string | undefined {
+  const sequence = transfer.recipientSequence;
+  if (sequence === null) return undefined;
+  return sequence.predecessorTransferId ?? "";
+}
+
+/** Validate one outgoing row and its derived indexes before a browser write. */
+export function decodeBrowserOutgoingCashuTransferRow(
+  scopeId: string,
+  row: BrowserOutgoingCashuTransferRow,
+): DurableOutgoingCashuTransfer {
+  const transfer = decodeDurableOutgoingCashuTransfer(row.transfer);
+  const expectedPredecessorKey = browserOutgoingPredecessorKey(transfer);
+  const expectedRowKeys = [
+    "admissionState",
+    "bearerMintUrl",
+    "dueAtMs",
+    "localAuthorityState",
+    "mintRecoveryState",
+    "mintUrl",
+    "recipientBinding",
+    "scopeId",
+    "transfer",
+    "transferId",
+    ...(expectedPredecessorKey === undefined ? [] : ["predecessorKey"]),
+  ].sort();
+  const actualRowKeys = Object.keys(row).sort();
+  if (
+    actualRowKeys.length !== expectedRowKeys.length ||
+    actualRowKeys.some((key, index) => key !== expectedRowKeys[index]) ||
+    row.scopeId !== scopeId ||
+    row.transferId !== transfer.transferId ||
+    row.mintUrl !== transfer.mintUrl ||
+    row.mintRecoveryState !== browserOutgoingMintRecoveryState(transfer) ||
+    row.localAuthorityState !== browserOutgoingLocalAuthorityState(transfer) ||
+    row.bearerMintUrl !== browserOutgoingBearerMintUrl(transfer) ||
+    row.dueAtMs !== transfer.recovery.dueAtMs ||
+    row.recipientBinding !== browserOutgoingRecipientBinding(transfer) ||
+    (expectedPredecessorKey === undefined
+      ? row.predecessorKey !== undefined
+      : row.predecessorKey !== expectedPredecessorKey) ||
+    (row.admissionState !== "reserved" && row.admissionState !== "consumed") ||
+    transfer.walletScopeId !== scopeId
+  ) {
+    throw new Error("browser outgoing transfer row is foreign");
+  }
+  return transfer;
+}
+
+/** Compare immutable request identity before accepting any higher-revision rewrite. */
+export function assertBrowserOutgoingCashuTransferImmutableIdentity(
+  currentRow: BrowserOutgoingCashuTransferRow,
+  replacementRow: BrowserOutgoingCashuTransferRow,
+): void {
+  const current = decodeBrowserOutgoingCashuTransferRow(currentRow.scopeId, currentRow);
+  const replacement = decodeBrowserOutgoingCashuTransferRow(replacementRow.scopeId, replacementRow);
+  if (
+    currentRow.scopeId !== replacementRow.scopeId ||
+    current.transferId !== replacement.transferId ||
+    current.walletScopeId !== replacement.walletScopeId ||
+    current.mintUrl !== replacement.mintUrl ||
+    current.unit !== replacement.unit ||
+    current.requestedAmount !== replacement.requestedAmount ||
+    deriveDurableCustodyArtifactFingerprint(current.deliveryIntent) !==
+      deriveDurableCustodyArtifactFingerprint(replacement.deliveryIntent) ||
+    deriveDurableCustodyArtifactFingerprint(current.recipientSequence) !==
+      deriveDurableCustodyArtifactFingerprint(replacement.recipientSequence) ||
+    deriveDurableCustodyArtifactFingerprint(current.walletSendOperation) !==
+      deriveDurableCustodyArtifactFingerprint(replacement.walletSendOperation) ||
+    deriveDurableCustodyArtifactFingerprint(current.walletSendOperationAuthority) !==
+      deriveDurableCustodyArtifactFingerprint(replacement.walletSendOperationAuthority) ||
+    deriveDurableCustodyArtifactFingerprint(current.keepProofDerivationLocators) !==
+      deriveDurableCustodyArtifactFingerprint(replacement.keepProofDerivationLocators)
+  ) {
+    throw new Error("browser outgoing transfer immutable request identity conflicts");
+  }
+}
+
+/** Decode and validate one persisted market-funding head projection. */
+export function decodeBrowserMarketFundingHeadRow(value: unknown): BrowserMarketFundingHeadRow {
+  if (typeof value !== "object" || value === null) {
+    throw new Error("browser market funding head is invalid");
+  }
+  const row = value as Record<string, unknown>;
+  const keys = Object.keys(row).sort();
+  const expected = [
+    "accountSubject",
+    "conditionId",
+    "divisibility",
+    "mintUrl",
+    "recipientBinding",
+    "revision",
+    "scopeId",
+    "transferId",
+    "unit",
+  ].sort();
+  if (keys.length !== expected.length || keys.some((key, index) => key !== expected[index])) {
+    throw new Error("browser market funding head has unexpected fields");
+  }
+  if (
+    typeof row.scopeId !== "string" ||
+    typeof row.recipientBinding !== "string" ||
+    !/^[0-9a-f]{64}$/.test(row.recipientBinding) ||
+    typeof row.transferId !== "string" ||
+    row.transferId.length === 0 ||
+    typeof row.accountSubject !== "string" ||
+    row.accountSubject.length === 0 ||
+    row.accountSubject.length > 256 ||
+    /[^\x20-\x7e]/.test(row.accountSubject) ||
+    row.accountSubject.includes("\0") ||
+    typeof row.conditionId !== "string" ||
+    !/^[0-9a-f]{1,128}$/.test(row.conditionId) ||
+    typeof row.unit !== "string" ||
+    row.unit !== "msat" ||
+    row.unit.length === 0 ||
+    !Number.isSafeInteger(row.revision) ||
+    (row.revision as number) < 1 ||
+    parseMarketDivisibility(row.divisibility) === null
+  ) {
+    throw new Error("browser market funding head fields are invalid");
+  }
+  const mintUrl = normalizeUrl(row.mintUrl as string);
+  const divisibility = parseMarketDivisibility(row.divisibility);
+  if (divisibility === null) throw new Error("browser market funding divisibility is invalid");
+  if (
+    deriveMarketFundingProductBinding({
+      conditionId: row.conditionId as string,
+      divisibility,
+      accountSubject: row.accountSubject as string,
+    }) !== row.recipientBinding
+  ) {
+    throw new Error("browser market funding head product binding is foreign");
+  }
+  return {
+    scopeId: row.scopeId as string,
+    recipientBinding: row.recipientBinding as string,
+    transferId: row.transferId as string,
+    revision: row.revision as number,
+    mintUrl,
+    unit: row.unit as string,
+    accountSubject: row.accountSubject as string,
+    conditionId: row.conditionId as string,
+    divisibility,
+  };
+}
+
+/** Read one scoped market-funding head. The row is decoded before it leaves storage. */
+export async function readBrowserMarketFundingHead(
+  scopeId: string,
+  recipientBinding: string,
+  database: BitcasterDB = db,
+): Promise<BrowserMarketFundingHeadRow | null> {
+  const row = await database.marketFundingHeads.get([scopeId, recipientBinding]);
+  return row === undefined ? null : decodeBrowserMarketFundingHeadRow(row);
+}
+
+/** Resolve the exact first successor for one predecessor in one recipient sequence. */
+export async function findBrowserOutgoingCashuTransferByPredecessor(input: {
+  readonly scopeId: string;
+  readonly recipientBinding: string;
+  readonly predecessorTransferId: string | null;
+  readonly database?: BitcasterDB;
+}): Promise<BrowserOutgoingCashuTransferRow | null> {
+  const predecessorKey = input.predecessorTransferId ?? "";
+  const rows = await (input.database ?? db).outgoingCashuTransfers
+    .where("[scopeId+recipientBinding+predecessorKey]")
+    .equals([input.scopeId, input.recipientBinding, predecessorKey])
+    .toArray();
+  if (rows.length > 1) throw new Error("browser outgoing predecessor relation is ambiguous");
+  if (rows.length === 0) return null;
+  const row = rows[0]!;
+  decodeBrowserOutgoingCashuTransferRow(input.scopeId, row);
+  return row;
+}
+
+function browserOutgoingMintRecoveryState(
+  transfer: DurableOutgoingCashuTransfer,
+): BrowserOutgoingCashuTransferRow["mintRecoveryState"] {
+  switch (transfer.deliveryState) {
+    case "prepared":
+      return "pending";
+    case "delivery-pending":
+    case "recipient-acknowledged":
+    case "bearer-spent":
+    case "bearer-partial":
+    case "reclaim-prepared":
+    case "reclaimed":
+      return "complete";
+    default:
+      return assertNever(transfer.deliveryState);
+  }
+}
+
+function browserOutgoingLocalAuthorityState(
+  transfer: DurableOutgoingCashuTransfer,
+): BrowserOutgoingCashuTransferRow["localAuthorityState"] {
+  switch (transfer.deliveryState) {
+    case "prepared":
+    case "delivery-pending":
+    case "bearer-partial":
+    case "reclaim-prepared":
+      return "nonterminal";
+    case "recipient-acknowledged":
+    case "bearer-spent":
+    case "reclaimed":
+      return "terminal";
+    default:
+      return assertNever(transfer.deliveryState);
+  }
+}
+
+function browserOutgoingRecipientBinding(transfer: DurableOutgoingCashuTransfer): string | null {
+  return transfer.deliveryIntent.policy === "durable-recipient-ack"
+    ? transfer.deliveryIntent.opaqueProductBinding
+    : null;
+}
+
+function browserOutgoingBearerMintUrl(transfer: DurableOutgoingCashuTransfer): string | null {
+  return transfer.deliveryIntent.policy === "bearer-spend-classification" ? transfer.mintUrl : null;
+}
+
+function assertNever(value: never): never {
+  throw new Error(`unexpected browser outgoing delivery state: ${String(value)}`);
 }
 
 /** Local-only physical storage reservation. This row must never enter proof backup. */
@@ -372,6 +625,7 @@ export class BitcasterDB extends Dexie {
   >;
   mintQuotes!: Table<BrowserMintQuoteRow, [string, "bolt11", string]>;
   outgoingCashuTransfers!: Table<BrowserOutgoingCashuTransferRow, [string, string]>;
+  marketFundingHeads!: Table<BrowserMarketFundingHeadRow, [string, string]>;
   outgoingCashuTransferAdmissions!: Table<
     BrowserOutgoingCashuTransferAdmissionRow,
     [string, string]
@@ -537,6 +791,11 @@ export class BitcasterDB extends Dexie {
       custodyProofs:
         "&[scopeId+proofId], [scopeId+selectability], [scopeId+selectability+proofId], [scopeId+normalizedMint+unit+selectability], [scopeId+conditionId+outcomeCollection+selectability], [scopeId+normalizedMint+unit+keysetId+selectability], [scopeId+normalizedMint+unit+assetKind+selectability], [scopeId+normalizedMint+unit+conditionId+outcomeCollection+selectability], [scopeId+normalizedMint+unit+assetKind+selectability+curve+amount+proofId], [scopeId+normalizedMint+unit+keysetId+assetKind+selectability+curve+amount+proofId], [scopeId+normalizedMint+unit+keysetId+conditionId+outcomeCollection+selectability+curve+amount+proofId]",
     });
+    this.version(17).stores({
+      outgoingCashuTransfers:
+        "&[scopeId+transferId], [scopeId+mintUrl+mintRecoveryState+dueAtMs+transferId], [scopeId+mintRecoveryState+dueAtMs+mintUrl+transferId], [scopeId+localAuthorityState+transferId], [scopeId+bearerMintUrl+localAuthorityState+transferId], [scopeId+recipientBinding+transferId], &[scopeId+recipientBinding+predecessorKey]",
+      marketFundingHeads: "&[scopeId+recipientBinding], [scopeId+transferId]",
+    });
     this.encryptedWalletBackupEnrollmentResults = this.table(
       "encryptedWalletBackupWalletEnrollmentResults",
     );
@@ -558,6 +817,7 @@ export class BitcasterDB extends Dexie {
     this.targetedAssetRecoveryAttempts = this.table("targetedAssetRecoveryAttempts");
     this.mintQuotes = this.table("mintQuotes");
     this.outgoingCashuTransfers = this.table("outgoingCashuTransfers");
+    this.marketFundingHeads = this.table("marketFundingHeads");
     this.outgoingCashuTransferAdmissions = this.table("outgoingCashuTransferAdmissions");
     this.participationScoreDeliveryPointers = this.table("participationScoreDeliveryPointers");
   }

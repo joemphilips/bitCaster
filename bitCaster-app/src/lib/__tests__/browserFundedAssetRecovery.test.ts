@@ -48,6 +48,7 @@ describe("recoverBrowserFundedAsset", () => {
 
   it("returns a ready local action plan without recovery I/O", async () => {
     const loadPlan = vi.fn().mockResolvedValue({ kind: "ready" as const });
+    mocks.engineAssets.mockRejectedValue(new Error("monitoring unavailable"));
 
     await expect(recoverBrowserFundedAsset(input(loadPlan))).resolves.toEqual({
       kind: "ready",
@@ -155,12 +156,90 @@ describe("recoverBrowserFundedAsset", () => {
       kind: "recovered",
     });
 
-    expect(mocks.engineAssets).toHaveBeenCalledWith(expect.objectContaining({ pageSize: 200 }));
+    expect(mocks.engineAssets).toHaveBeenCalledWith(
+      expect.objectContaining({ pageSize: 200 }),
+      expect.any(AbortSignal),
+    );
     expect(mocks.engineAssets).toHaveBeenCalledOnce();
     expect(order).toEqual(["driver", "monitoring"]);
     expect(mocks.driver.recoverTargetedAsset).toHaveBeenCalledWith(
       expect.objectContaining({ asset, requiredAmount: 10n }),
     );
+  });
+
+  it("follows the monitoring cursor when the exact fact is on the second page", async () => {
+    const loadPlan = vi.fn().mockResolvedValue({ kind: "insufficient" as const });
+    mocks.rows.mockResolvedValue([]);
+    mocks.activeDriver.mockReturnValue(mocks.driver);
+    mocks.engineAssets
+      .mockResolvedValueOnce({ assets: [], nextCursor: "cursor-1" })
+      .mockResolvedValueOnce({ assets: [monitoringFact(10)], nextCursor: null });
+    mocks.driver.recoverTargetedAsset.mockImplementation(
+      async ({ readExactMonitoringRecovery }) => {
+        await readExactMonitoringRecovery();
+        return { kind: "restored-mint" };
+      },
+    );
+
+    await expect(recoverBrowserFundedAsset(input(loadPlan))).resolves.toEqual({
+      kind: "recovered",
+    });
+
+    expect(mocks.engineAssets).toHaveBeenNthCalledWith(
+      1,
+      {
+        walletId: expect.any(String),
+        pageSize: 200,
+      },
+      expect.any(AbortSignal),
+    );
+    expect(mocks.engineAssets).toHaveBeenNthCalledWith(
+      2,
+      {
+        walletId: expect.any(String),
+        pageSize: 200,
+        cursor: "cursor-1",
+      },
+      expect.any(AbortSignal),
+    );
+  });
+
+  it("times out the bounded monitoring read without treating it as absence", async () => {
+    vi.useFakeTimers();
+    try {
+      const loadPlan = vi.fn().mockResolvedValue({ kind: "insufficient" as const });
+      mocks.rows.mockResolvedValue([]);
+      mocks.activeDriver.mockReturnValue(mocks.driver);
+      let observedSignal: AbortSignal | undefined;
+      mocks.engineAssets.mockImplementation(
+        async (_query: unknown, signal: AbortSignal) =>
+          new Promise<never>((_resolve, reject) => {
+            observedSignal = signal;
+            signal.addEventListener("abort", () => reject(new Error("monitoring timed out")), {
+              once: true,
+            });
+          }),
+      );
+      mocks.driver.recoverTargetedAsset.mockImplementation(
+        async ({ readExactMonitoringRecovery }) => {
+          await readExactMonitoringRecovery();
+          return { kind: "unavailable" };
+        },
+      );
+
+      const recovery = recoverBrowserFundedAsset(input(loadPlan));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(mocks.engineAssets).toHaveBeenCalledOnce();
+      await vi.advanceTimersByTimeAsync(30_000);
+
+      await expect(recovery).resolves.toEqual({ kind: "persistent-error" });
+      expect(observedSignal).toBeInstanceOf(AbortSignal);
+      expect(observedSignal?.aborted).toBe(true);
+      expectDiagnostic("driver-outcome");
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("does not read engine monitoring or load a mint when backup restoration succeeds", async () => {
@@ -196,6 +275,72 @@ describe("recoverBrowserFundedAsset", () => {
 
     expect(mocks.wallet).not.toHaveBeenCalled();
     expect(mocks.driver.recoverTargetedAsset).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    {
+      label: "incomplete",
+      page: { assets: [monitoringFact(10)], nextCursor: null, incomplete: true },
+    },
+    { label: "stale", page: { assets: [monitoringFact(10)], nextCursor: null, stale: true } },
+    { label: "building", page: { assets: [monitoringFact(10)], nextCursor: null, building: true } },
+  ])("does not infer absence from a $label monitoring page", async ({ page }) => {
+    const loadPlan = vi.fn().mockResolvedValue({ kind: "insufficient" as const });
+    mocks.rows.mockResolvedValue([]);
+    mocks.activeDriver.mockReturnValue(mocks.driver);
+    mocks.engineAssets.mockResolvedValue(page);
+    mocks.driver.recoverTargetedAsset.mockImplementation(
+      async ({ readExactMonitoringRecovery }) => {
+        await readExactMonitoringRecovery();
+        return { kind: "unavailable" };
+      },
+    );
+
+    await expect(recoverBrowserFundedAsset(input(loadPlan))).resolves.toEqual({
+      kind: "persistent-error",
+    });
+    expect(mocks.wallet).not.toHaveBeenCalled();
+    expectDiagnostic("driver-outcome");
+  });
+
+  it("fails closed when monitoring pagination repeats a cursor", async () => {
+    const loadPlan = vi.fn().mockResolvedValue({ kind: "insufficient" as const });
+    mocks.rows.mockResolvedValue([]);
+    mocks.activeDriver.mockReturnValue(mocks.driver);
+    mocks.engineAssets
+      .mockResolvedValueOnce({ assets: [], nextCursor: "cursor-1" })
+      .mockResolvedValueOnce({ assets: [], nextCursor: "cursor-1" });
+    mocks.driver.recoverTargetedAsset.mockImplementation(
+      async ({ readExactMonitoringRecovery }) => {
+        await readExactMonitoringRecovery();
+        return { kind: "unavailable" };
+      },
+    );
+
+    await expect(recoverBrowserFundedAsset(input(loadPlan))).resolves.toEqual({
+      kind: "persistent-error",
+    });
+
+    expect(mocks.engineAssets).toHaveBeenCalledTimes(2);
+    expectDiagnostic("driver-outcome");
+  });
+
+  it("fails closed when monitoring is unavailable", async () => {
+    const loadPlan = vi.fn().mockResolvedValue({ kind: "insufficient" as const });
+    mocks.rows.mockResolvedValue([]);
+    mocks.activeDriver.mockReturnValue(mocks.driver);
+    mocks.engineAssets.mockRejectedValue(new Error("monitoring unavailable"));
+    mocks.driver.recoverTargetedAsset.mockImplementation(
+      async ({ readExactMonitoringRecovery }) => {
+        await readExactMonitoringRecovery();
+        return { kind: "unavailable" };
+      },
+    );
+
+    await expect(recoverBrowserFundedAsset(input(loadPlan))).resolves.toEqual({
+      kind: "persistent-error",
+    });
+    expectDiagnostic("driver-outcome");
   });
 
   it("returns ordinary insufficiency when the exact monitoring fact is below the action amount", async () => {

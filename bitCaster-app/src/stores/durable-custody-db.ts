@@ -31,7 +31,6 @@ import {
   type DurableCustodyTransition,
 } from "@bitcaster/client-sdk/durableCustody";
 import { createDurableCustodyProofMaterialRecord } from "@bitcaster/client-sdk/durableCustodyProofMaterial";
-import { decodeDurableOutgoingCashuTransfer } from "@bitcaster/client-sdk/durableOutgoingCashuTransfer";
 import { verifyDurableWalletConditionalKeyset } from "@bitcaster/client-sdk/recoverableWalletStorage";
 import {
   db,
@@ -40,6 +39,11 @@ import {
   type BitcasterDB,
   type BrowserOutgoingCashuTransferAdmissionRow,
   type BrowserOutgoingCashuTransferRow,
+  type BrowserMarketFundingHeadRow,
+  assertBrowserOutgoingCashuTransferImmutableIdentity,
+  browserOutgoingPredecessorKey,
+  decodeBrowserMarketFundingHeadRow,
+  decodeBrowserOutgoingCashuTransferRow,
   type StoredProof,
 } from "./proof-db";
 import {
@@ -145,6 +149,8 @@ export interface BrowserCustodyTransactionOptions {
   readonly outgoingTransfer?: BrowserOutgoingCashuTransferRow;
   /** A physical pre-mint reservation. Null consumes an existing reservation. */
   readonly outgoingAdmission?: BrowserOutgoingCashuTransferAdmissionRow | null;
+  /** Atomically advance one scoped market-funding head with the outgoing transfer. */
+  readonly marketFundingHead?: BrowserMarketFundingHeadMutation;
   /** Include browser counter authority in this physical custody commit. */
   readonly walletCounterAuthority?: {
     readonly beforePersist?: () => void | Promise<void>;
@@ -157,9 +163,21 @@ export interface BrowserCustodyTransactionOptions {
   };
 }
 
+export interface BrowserMarketFundingHeadMutation {
+  readonly accountSubject: string;
+  readonly conditionId: string;
+  readonly divisibility: number;
+  readonly expectedPrevious: { readonly transferId: string; readonly revision: number } | null;
+  readonly nextRevision: number;
+}
+
 export type BrowserCustodyCurrentTransactionOptions = Omit<
   BrowserCustodyTransactionOptions,
-  "outgoingTransfer" | "outgoingAdmission" | "walletCounterAuthority" | "injectFault"
+  | "outgoingTransfer"
+  | "outgoingAdmission"
+  | "marketFundingHead"
+  | "walletCounterAuthority"
+  | "injectFault"
 > & {
   readonly injectFault?: "before-commit";
 };
@@ -292,6 +310,7 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
       !atomic &&
       (options.outgoingTransfer !== undefined ||
         options.outgoingAdmission !== undefined ||
+        options.marketFundingHead !== undefined ||
         options.walletCounterAuthority !== undefined)
     ) {
       throw new Error("browser custody extension requires atomic transaction");
@@ -317,6 +336,7 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
     if (
       options.outgoingTransfer !== undefined ||
       options.outgoingAdmission !== undefined ||
+      options.marketFundingHead !== undefined ||
       options.walletCounterAuthority !== undefined
     ) {
       throw new Error("browser current custody transaction cannot run external extensions");
@@ -375,8 +395,17 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
         options.outgoingTransfer,
         options.outgoingAdmission,
       );
+      if (options.marketFundingHead !== undefined) {
+        await this.#persistMarketFundingHead(
+          selection.scope.scopeId,
+          options.outgoingTransfer,
+          options.marketFundingHead,
+        );
+      }
     } else if (atomic && options.outgoingAdmission !== undefined) {
       throw new Error("browser outgoing admission requires an outgoing transfer");
+    } else if (atomic && options.marketFundingHead !== undefined) {
+      throw new Error("browser market funding head requires an outgoing transfer");
     }
     if (options.walletCounterAuthority?.afterPersist !== undefined) {
       await options.walletCounterAuthority.afterPersist();
@@ -677,7 +706,11 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
       this.#database.custodyConditionalKeysets,
       this.#database.encryptedWalletBackupV2DesiredAssets,
       ...(atomic
-        ? [this.#database.outgoingCashuTransfers, this.#database.outgoingCashuTransferAdmissions]
+        ? [
+            this.#database.outgoingCashuTransfers,
+            this.#database.outgoingCashuTransferAdmissions,
+            ...(options.marketFundingHead === undefined ? [] : [this.#database.marketFundingHeads]),
+          ]
         : []),
       ...(options.walletCounterAuthority === undefined
         ? []
@@ -852,56 +885,90 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
     scopeId: string,
     row: BrowserOutgoingCashuTransferRow,
   ): Promise<void> {
-    const transfer = decodeDurableOutgoingCashuTransfer(row.transfer);
+    const dexieTransaction = Dexie.currentTransaction;
+    if (dexieTransaction === undefined) {
+      throw new Error("browser outgoing transfer write is outside a database transaction");
+    }
+    await persistOutgoingTransferRowInCurrentTransaction(
+      this.#database,
+      dexieTransaction,
+      scopeId,
+      row,
+      true,
+    );
+  }
+
+  async #persistMarketFundingHead(
+    scopeId: string,
+    outgoingRow: BrowserOutgoingCashuTransferRow,
+    mutation: BrowserMarketFundingHeadMutation,
+  ): Promise<void> {
+    const transfer = decodeBrowserOutgoingCashuTransferRow(scopeId, outgoingRow);
+    if (transfer.deliveryIntent.policy !== "durable-recipient-ack") {
+      throw new Error("browser market funding head requires a durable recipient transfer");
+    }
+    const sequence = transfer.recipientSequence;
+    if (sequence === null) {
+      throw new Error("browser market funding head requires a recipient sequence");
+    }
     if (
-      row.scopeId !== scopeId ||
-      row.transferId !== transfer.transferId ||
-      row.mintUrl !== transfer.mintUrl ||
-      row.mintRecoveryState !== mintRecoveryState(transfer) ||
-      row.localAuthorityState !== localAuthorityState(transfer) ||
-      row.dueAtMs !== transfer.recovery.dueAtMs ||
-      row.recipientBinding !==
-        (transfer.deliveryIntent.policy === "durable-recipient-ack"
-          ? transfer.deliveryIntent.opaqueProductBinding
-          : null) ||
-      (row.admissionState !== "reserved" && row.admissionState !== "consumed") ||
-      transfer.walletScopeId !== scopeId
+      !Number.isSafeInteger(mutation.nextRevision) ||
+      mutation.nextRevision < 1 ||
+      typeof mutation.accountSubject !== "string" ||
+      mutation.accountSubject.length === 0 ||
+      typeof mutation.conditionId !== "string" ||
+      typeof mutation.divisibility !== "number"
     ) {
-      throw new Error("browser outgoing transfer row is foreign");
+      throw new Error("browser market funding head mutation is invalid");
     }
-    const existing = await this.#database.outgoingCashuTransfers.get([
-      scopeId,
-      transfer.transferId,
-    ]);
-    if (existing !== undefined) {
-      const current = decodeDurableOutgoingCashuTransfer(existing.transfer);
-      if (current.revision > transfer.revision) {
-        throw new Error("browser outgoing transfer revision is stale");
+    const recipientBinding = transfer.deliveryIntent.opaqueProductBinding;
+    const previous = mutation.expectedPrevious;
+    if (previous === null) {
+      if (sequence.predecessorTransferId !== null || mutation.nextRevision !== 1) {
+        throw new Error("browser market funding initial head is invalid");
       }
+    } else {
       if (
-        current.revision === transfer.revision &&
-        deriveDurableCustodyArtifactFingerprint(current) !==
-          deriveDurableCustodyArtifactFingerprint(transfer)
+        !Number.isSafeInteger(previous.revision) ||
+        previous.revision < 1 ||
+        previous.transferId.length === 0 ||
+        sequence.predecessorTransferId !== previous.transferId ||
+        mutation.nextRevision !== previous.revision + 1
       ) {
-        throw new Error("browser outgoing transfer revision conflicts");
+        throw new Error("browser market funding predecessor head is invalid");
       }
     }
-    await this.#database.outgoingCashuTransfers.put({
+    const expectedHead: BrowserMarketFundingHeadRow = {
       scopeId,
-      mintUrl: transfer.mintUrl,
-      mintRecoveryState: mintRecoveryState(transfer),
-      localAuthorityState: localAuthorityState(transfer),
-      bearerMintUrl:
-        transfer.deliveryIntent.policy === "bearer-spend-classification" ? transfer.mintUrl : null,
-      dueAtMs: transfer.recovery.dueAtMs,
+      recipientBinding,
       transferId: transfer.transferId,
-      recipientBinding:
-        transfer.deliveryIntent.policy === "durable-recipient-ack"
-          ? transfer.deliveryIntent.opaqueProductBinding
-          : null,
-      admissionState: row.admissionState,
-      transfer,
-    });
+      revision: mutation.nextRevision,
+      mintUrl: transfer.mintUrl,
+      unit: transfer.unit,
+      accountSubject: mutation.accountSubject,
+      conditionId: mutation.conditionId,
+      divisibility: mutation.divisibility,
+    };
+    const validatedNext = decodeBrowserMarketFundingHeadRow(expectedHead);
+    if (validatedNext.mintUrl !== transfer.mintUrl || validatedNext.unit !== transfer.unit) {
+      throw new Error("browser market funding head transfer metadata conflicts");
+    }
+    if (validatedNext.accountSubject !== transfer.deliveryIntent.expectedSubject) {
+      throw new Error("browser market funding head account subject conflicts");
+    }
+    const existingRow = await this.#database.marketFundingHeads.get([scopeId, recipientBinding]);
+    const existing =
+      existingRow === undefined ? null : decodeBrowserMarketFundingHeadRow(existingRow);
+    if (previous === null) {
+      if (existing !== null) throw new Error("browser market funding head CAS conflict");
+    } else if (
+      existing === null ||
+      existing.transferId !== previous.transferId ||
+      existing.revision !== previous.revision
+    ) {
+      throw new Error("browser market funding head CAS conflict");
+    }
+    await this.#database.marketFundingHeads.put(validatedNext);
   }
 
   async #persistOutgoingAdmission(
@@ -2424,40 +2491,87 @@ function assertCurrentReadwriteTransaction(
   }
 }
 
+/**
+ * Persist a direct outgoing-transfer rewrite inside the caller's active transaction.
+ * The row must already exist. This is the shared guard for acknowledgement and retry paths.
+ */
+export async function persistBrowserOutgoingCashuTransferRewrite(
+  database: BitcasterDB,
+  dexieTransaction: Transaction,
+  row: BrowserOutgoingCashuTransferRow,
+): Promise<void> {
+  await persistOutgoingTransferRowInCurrentTransaction(
+    database,
+    dexieTransaction,
+    row.scopeId,
+    row,
+    false,
+  );
+}
+
+async function persistOutgoingTransferRowInCurrentTransaction(
+  database: BitcasterDB,
+  dexieTransaction: Transaction,
+  scopeId: string,
+  row: BrowserOutgoingCashuTransferRow,
+  allowCreate: boolean,
+): Promise<void> {
+  assertCurrentReadwriteTransaction(
+    dexieTransaction,
+    database,
+    [database.outgoingCashuTransfers],
+    "browser outgoing transfer",
+  );
+  const transfer = decodeBrowserOutgoingCashuTransferRow(scopeId, row);
+  const key: [string, string] = [scopeId, transfer.transferId];
+  const existingRow = await database.outgoingCashuTransfers.get(key);
+  if (existingRow === undefined && !allowCreate) {
+    throw new Error("browser outgoing transfer rewrite target is missing");
+  }
+  if (existingRow !== undefined) {
+    const current = decodeBrowserOutgoingCashuTransferRow(scopeId, existingRow);
+    assertBrowserOutgoingCashuTransferImmutableIdentity(existingRow, row);
+    if (current.revision > transfer.revision) {
+      throw new Error("browser outgoing transfer revision is stale");
+    }
+    if (
+      current.revision === transfer.revision &&
+      deriveDurableCustodyArtifactFingerprint(current) !==
+        deriveDurableCustodyArtifactFingerprint(transfer)
+    ) {
+      throw new Error("browser outgoing transfer revision conflicts");
+    }
+  }
+  const predecessorKey = browserOutgoingPredecessorKey(transfer);
+  if (predecessorKey !== undefined) {
+    const relationRows = await database.outgoingCashuTransfers
+      .where("[scopeId+recipientBinding+predecessorKey]" as never)
+      .equals([
+        scopeId,
+        transfer.deliveryIntent.policy === "durable-recipient-ack"
+          ? transfer.deliveryIntent.opaqueProductBinding
+          : null,
+        predecessorKey,
+      ] as never)
+      .toArray();
+    for (const relationRow of relationRows) {
+      const related = decodeBrowserOutgoingCashuTransferRow(scopeId, relationRow);
+      if (related.transferId !== transfer.transferId) {
+        throw new Error("browser outgoing transfer predecessor relation conflicts");
+      }
+    }
+  }
+  const persisted: BrowserOutgoingCashuTransferRow = { ...row };
+  if (predecessorKey === undefined) {
+    delete persisted.predecessorKey;
+  } else {
+    persisted.predecessorKey = predecessorKey;
+  }
+  await database.outgoingCashuTransfers.put(persisted);
+}
+
 function abortActiveTransaction(transaction: Transaction): void {
   if (transaction.active) transaction.abort();
-}
-
-function mintRecoveryState(
-  transfer: ReturnType<typeof decodeDurableOutgoingCashuTransfer>,
-): "pending" | "complete" {
-  switch (transfer.deliveryState) {
-    case "prepared":
-      return "pending";
-    case "delivery-pending":
-    case "recipient-acknowledged":
-    case "bearer-spent":
-    case "bearer-partial":
-    case "reclaim-prepared":
-    case "reclaimed":
-      return "complete";
-  }
-}
-
-function localAuthorityState(
-  transfer: ReturnType<typeof decodeDurableOutgoingCashuTransfer>,
-): "nonterminal" | "terminal" {
-  switch (transfer.deliveryState) {
-    case "prepared":
-    case "delivery-pending":
-    case "bearer-partial":
-    case "reclaim-prepared":
-      return "nonterminal";
-    case "recipient-acknowledged":
-    case "bearer-spent":
-    case "reclaimed":
-      return "terminal";
-  }
 }
 
 function assertNever(value: never): never {

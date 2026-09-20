@@ -14,6 +14,7 @@ import {
   applyMarketPriceHistory,
   priceNumeratorToPercent,
   createAuthenticatedBrowserEngineClient,
+  getDurableCashuDeliveryStatus,
   generateNip98Header,
   validateLatestConfirmedTrades,
 } from "../markets";
@@ -1348,5 +1349,46 @@ describe("NIP-98 signer binding", () => {
     );
 
     expect(mocks.eventSign).toHaveBeenCalledWith(explicitSigner);
+  });
+});
+
+describe("durable Cashu delivery transport", () => {
+  it("uses the bounded SDK status path for a stalled response body", async () => {
+    const originalFetch = globalThis.fetch;
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          init?.signal?.addEventListener(
+            "abort",
+            () => controller.error(new DOMException("aborted", "AbortError")),
+            { once: true },
+          );
+        },
+      });
+      return new Response(body, { status: 200 });
+    });
+    globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
+    vi.useFakeTimers();
+    mocks.eventSign.mockClear();
+    try {
+      const pending = getDurableCashuDeliveryStatus(
+        "88888888-8888-4888-8888-888888888888",
+      );
+      const rejection = expect(pending).rejects.toThrow(
+        /durable recipient delivery request failed/,
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      expect(fetchMock).toHaveBeenCalledOnce();
+      const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+      expect(url).toContain("/api/v1/cashu-deliveries/88888888-8888-4888-8888-888888888888");
+      expect((init.headers as Record<string, string>).Authorization).toMatch(/^Nostr /);
+      expect(mocks.eventSign).toHaveBeenCalledOnce();
+
+      await vi.advanceTimersByTimeAsync(10_000);
+      await rejection;
+    } finally {
+      vi.useRealTimers();
+      globalThis.fetch = originalFetch;
+    }
   });
 });

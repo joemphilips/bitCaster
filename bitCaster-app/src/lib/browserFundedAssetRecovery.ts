@@ -15,6 +15,12 @@ import { withWalletProfileLock } from "./walletProfileLock";
 
 type FundedPlan = { readonly kind: "ready" | "insufficient" | "not-reducible" | "round-limit" };
 
+const ASSET_MONITORING_PAGE_SIZE = 200;
+const ASSET_MONITORING_RECOVERY_TIMEOUT_MS = 30_000;
+// This is a safety bound for one recovery read, not an asset-count limit. A
+// bounded read that reaches it is incomplete and never proves asset absence.
+const ASSET_MONITORING_RECOVERY_PAGES_MAX = 64;
+
 type BrowserFundedAssetRecoveryDiagnostic =
   | "local-plan"
   | "canonical-repair"
@@ -127,22 +133,71 @@ async function recoverBackupFirst<TPlan extends FundedPlan>(
   return recovered;
 }
 
-/** Reads one bounded monitoring page only after authenticated backup inventory lacks the asset. */
+/** Reads bounded monitoring pages only after authenticated backup lacks the asset. */
 async function readExactMonitoringRecovery<TPlan extends FundedPlan>(
   input: BrowserFundedAssetRecoveryInput<TPlan>,
 ) {
   requireCurrent(input);
   const walletId = deriveDurableCustodyWalletId(input.seed);
-  const page = await createAuthenticatedBrowserEngineClient().getAssetMonitoringAssets({
-    walletId,
-    pageSize: 200,
-  });
-  requireCurrent(input);
-  const fact = page.assets.find((candidate) =>
-    encryptedWalletBackupV2AssetMatchesMonitoringAsset(input.asset, candidate.asset),
-  );
-  if (fact === undefined || BigInt(fact.availableSubunits) < input.requiredAmount) return null;
-  return { fact };
+  const client = createAuthenticatedBrowserEngineClient();
+  const lifetime = createAssetMonitoringRecoveryLifetime();
+  const seenCursors = new Set<string>();
+  let cursor: string | undefined;
+
+  try {
+    for (let pageNumber = 0; pageNumber < ASSET_MONITORING_RECOVERY_PAGES_MAX; pageNumber += 1) {
+      requireCurrent(input);
+      lifetime.signal.throwIfAborted();
+      const page = await client.getAssetMonitoringAssets(
+        {
+          walletId,
+          pageSize: ASSET_MONITORING_PAGE_SIZE,
+          ...(cursor === undefined ? {} : { cursor }),
+        },
+        lifetime.signal,
+      );
+      lifetime.signal.throwIfAborted();
+      requireCurrent(input);
+
+      // A stale, building, or incomplete page cannot establish either presence
+      // or absence. Preserve the existing recovery-unavailable outcome and do
+      // not scan a partial page for a recovery fact.
+      if (page.stale || page.building || page.incomplete) {
+        throw new Error("asset monitoring page is incomplete");
+      }
+
+      const fact = page.assets.find((candidate) =>
+        encryptedWalletBackupV2AssetMatchesMonitoringAsset(input.asset, candidate.asset),
+      );
+      if (fact !== undefined && BigInt(fact.availableSubunits) >= input.requiredAmount) {
+        return { fact };
+      }
+
+      const nextCursor = page.nextCursor ?? null;
+      if (nextCursor === null) return null;
+      if (seenCursors.has(nextCursor)) {
+        throw new Error("asset monitoring cursor did not advance");
+      }
+      seenCursors.add(nextCursor);
+      cursor = nextCursor;
+    }
+
+    throw new Error("asset monitoring recovery page bound exceeded");
+  } finally {
+    lifetime.dispose();
+  }
+}
+
+function createAssetMonitoringRecoveryLifetime(): {
+  readonly signal: AbortSignal;
+  dispose(): void;
+} {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), ASSET_MONITORING_RECOVERY_TIMEOUT_MS);
+  return {
+    signal: controller.signal,
+    dispose: () => clearTimeout(timeout),
+  };
 }
 
 async function loadWallet<TPlan extends FundedPlan>(input: BrowserFundedAssetRecoveryInput<TPlan>) {
