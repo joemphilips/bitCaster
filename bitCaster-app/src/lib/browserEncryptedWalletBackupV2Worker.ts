@@ -29,6 +29,7 @@ import {
   prepareBrowserEncryptedWalletBackupV2AssetBundle,
   readBrowserEncryptedWalletBackupV2AssetSnapshot,
 } from "../stores/browser-encrypted-wallet-backup-v2-asset-source";
+import { BrowserEncryptedWalletBackupV2TerminalSealStore } from "../stores/browser-encrypted-wallet-backup-v2-terminal-seal-store";
 import { decodeEncryptedWalletBackupV2DesiredAssetRow } from "../stores/browser-encrypted-wallet-backup-v2-desired-asset";
 import type { BitcasterDB } from "../stores/proof-db";
 
@@ -150,6 +151,10 @@ async function prepareAssetBundle(
     keyHandle: input.keyHandle,
     seed: input.seed,
     runtime: input.runtime,
+    terminalSealStore: new BrowserEncryptedWalletBackupV2TerminalSealStore({
+      database: input.database,
+      scopeId: input.scopeId,
+    }),
     bundleIdExists: (id) => head.bundles.some((item) => item.bundleId === id),
   });
 }

@@ -1,15 +1,19 @@
 // @vitest-environment node
 import "fake-indexeddb/auto";
 import { schnorr } from "@noble/curves/secp256k1.js";
+import { deriveConditionalKeysetId, type Proof } from "@cashu/cashu-ts";
 import {
   collectEncryptedWalletBackupV2DescriptorPages,
   createEncryptedWalletBackupV2AssetIdentity,
   createEncryptedWalletBackupV2CurrentHead,
   createEncryptedWalletBackupV2KeyHandle,
   decodeEncryptedWalletBackupV2UploadGroup,
+  decryptEncryptedWalletBackupV2ProofSetBundle,
+  deriveDurableCustodyWalletId,
   enumerateEncryptedWalletBackupV2DescriptorPages,
   issueEncryptedWalletBackupV2BundleSupersessionReceipt,
   prepareEncryptedWalletBackupV2TransportBundle,
+  deriveRootCtfOutcomeCollectionId,
   type EncryptedWalletBackupV2BundleDescriptor,
   type EncryptedWalletBackupV2BundleSupersessionReceipt,
   type EncryptedWalletBackupV2DescriptorPage,
@@ -18,19 +22,24 @@ import {
 } from "@bitcaster/client-sdk";
 import { deriveDurableCustodyScopeId } from "@bitcaster/client-sdk/durableCustody";
 import { deriveDurableWalletProofSecret } from "@bitcaster/client-sdk/durableWalletProofDerivationLocator";
+import { deserializeDurableCustodyProofArtifact } from "@bitcaster/client-sdk/durableCustodyProofMaterial";
 import { encodeCanonicalBackupCbor } from "@bitcaster/client-sdk/encryptedWalletBackupCbor";
 import { EncryptedWalletBackupV2HttpTransportError } from "@bitcaster/client-sdk/encryptedWalletBackupV2HttpAdapter";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createEncryptedWalletBackupV2DesiredAssetRow } from "../../stores/browser-encrypted-wallet-backup-v2-desired-asset";
 import { EncryptedWalletBackupV2DexieAuthorityStore } from "../../stores/encrypted-wallet-backup-v2-db";
 import { createBrowserProofBackupAuthorityRow } from "../../stores/browser-proof-backup-authority";
-import { createBrowserCustodyProofRow } from "../../stores/durable-custody-db";
+import {
+  BrowserDurableCustodyAdapter,
+  createBrowserCustodyProofRow,
+} from "../../stores/durable-custody-db";
 import { BitcasterDB } from "../../stores/proof-db";
 import { browserWalletDatabaseName } from "../browserWalletProfile";
 import {
   runBrowserEncryptedWalletBackupV2WorkerCycle,
   type BrowserEncryptedWalletBackupV2WorkerInput,
 } from "../browserEncryptedWalletBackupV2Worker";
+import { commitBrowserCtfTerminalOperation } from "../../test/browserEncryptedWalletBackupV2CommittedTerminalFixture";
 
 const REALM = "backup.example";
 const SIGNING_KEY_ID = "55".repeat(16);
@@ -38,6 +47,21 @@ const SIGNING_PRIVATE_KEY = fromHex("03".repeat(32));
 const SIGNING_PUBLIC_KEY = toHex(schnorr.getPublicKey(SIGNING_PRIVATE_KEY));
 const REGULAR_KEYSET = `01${"33".repeat(32)}`;
 const PUBLIC_KEY = `02${"22".repeat(32)}`;
+const CTF_CONDITION_ID = "aa".repeat(32);
+const CTF_OUTCOME = "YES";
+const CTF_OUTCOME_ID = deriveRootCtfOutcomeCollectionId({
+  conditionId: CTF_CONDITION_ID,
+  outcomeCollection: CTF_OUTCOME,
+});
+const CTF_PUBLIC_KEY = `02${"66".repeat(32)}`;
+const CTF_KEYSET = deriveConditionalKeysetId({
+  keys: { "1": CTF_PUBLIC_KEY },
+  unit: "msat",
+  input_fee_ppk: 100,
+  final_expiry: 100,
+  conditionId: CTF_CONDITION_ID,
+  outcomeCollectionId: CTF_OUTCOME_ID,
+});
 const openDatabases: BitcasterDB[] = [];
 let sequence = 0;
 
@@ -50,6 +74,40 @@ afterEach(async () => {
 });
 
 describe("browser V2 backup worker", () => {
+  it("default worker seals committed local losing proof before upload", async () => {
+    const fixture = await terminalWorkerFixture();
+
+    await expect(runBrowserEncryptedWalletBackupV2WorkerCycle(fixture.input)).resolves.toEqual({
+      kind: "committed",
+    });
+    expect(fixture.remote.mutations).toHaveLength(1);
+    const group = decodeEncryptedWalletBackupV2UploadGroup({
+      bytes: fixture.remote.mutations[0]!.bytes,
+      expectedRequestAuthPublicKey: fixture.input.keyHandle.requestAuthPublicKey,
+      expectedContext: {
+        realm: REALM,
+        walletId: fixture.input.keyHandle.walletId,
+        enrollmentEpoch: 1,
+      },
+    });
+    const added = group.mutationEvidence.envelope.mutation.addedBundle;
+    if (added === null) throw new Error("test worker bundle is missing");
+    const restored = await decryptEncryptedWalletBackupV2ProofSetBundle({
+      keyHandle: fixture.input.keyHandle,
+      seed: fixture.input.seed,
+      expectedAsset: fixture.asset,
+      custodyRevision: BigInt(added.custodyRevision),
+      runtime: { subtle: crypto.subtle, getRandomValues: randomValues },
+      descriptor: added,
+      objects: group.objects,
+    });
+    expect(restored.proofs).toHaveLength(2);
+    expect(restored.proofs.filter(({ terminalSeal }) => terminalSeal !== undefined)).toHaveLength(
+      1,
+    );
+    expect(fixture.remote.appliedMutations).toBe(1);
+  });
+
   it("backs up an eligible proof when a transient locked proof has no locator", async () => {
     const fixture = await workerFixture(0);
     const locator = {
@@ -649,6 +707,194 @@ async function workerFixture(assetCount: number) {
       current = value;
     },
   };
+}
+
+async function terminalWorkerFixture() {
+  const seed = new Uint8Array(64).fill(19);
+  const keyHandle = await createEncryptedWalletBackupV2KeyHandle({
+    seed,
+    realm: REALM,
+    runtime: { subtle: crypto.subtle },
+  });
+  const walletId = deriveDurableCustodyWalletId(seed);
+  const scope = {
+    scopeKind: "wallet" as const,
+    walletId,
+    scopeId: deriveDurableCustodyScopeId({ scopeKind: "wallet", walletId }),
+  };
+  const database = new BitcasterDB(browserWalletDatabaseName(scope.scopeId));
+  openDatabases.push(database);
+  await database.open();
+  const store = new EncryptedWalletBackupV2DexieAuthorityStore({
+    database,
+    scopeId: scope.scopeId,
+    realm: REALM,
+    walletId: keyHandle.walletId,
+    enrollmentEpoch: 1,
+    requestAuthPublicKey: keyHandle.requestAuthPublicKey,
+  });
+  const remote = new FakeRemote(keyHandle.walletId, keyHandle.requestAuthPublicKey);
+  await store.acceptCompetingHead({
+    collectedHeadEvidence: remote.evidence(),
+    stalePreparedMutation: { mutationId: "00".repeat(16), requestDigest: "00".repeat(32) },
+  });
+  const custody = new BrowserDurableCustodyAdapter(database);
+  const owner = await custody.claimScope(scope, {
+    incarnationId: "worker-terminal",
+    observedAtMs: 10,
+    leaseExpiresAtMs: 10_000,
+  });
+  const locator = {
+    schemaVersion: 1 as const,
+    kind: "nut13" as const,
+    keysetId: CTF_KEYSET,
+    counter: 1,
+  };
+  const predecessor = createBrowserCustodyProofRow({
+    scopeId: scope.scopeId,
+    normalizedMint: "https://mint.example",
+    unit: "msat",
+    proof: {
+      id: CTF_KEYSET,
+      amount: 1 as never,
+      secret: deriveDurableWalletProofSecret({
+        seed,
+        locator,
+        proofKeysetId: CTF_KEYSET,
+        proofAmount: 1,
+      }),
+      C: CTF_PUBLIC_KEY,
+    },
+    asset: { kind: "conditional", conditionId: CTF_CONDITION_ID, outcomeCollection: CTF_OUTCOME },
+    receivedAtMs: 1,
+  });
+  await database.custodyProofs.put(predecessor);
+  await database.custodyProofBackupAuthorities.put(
+    createBrowserProofBackupAuthorityRow(predecessor, 10, locator, "admission:worker"),
+  );
+  await database.custodyConditionalKeysets.put({
+    schemaVersion: 1,
+    scopeId: scope.scopeId,
+    normalizedMint: "https://mint.example",
+    unit: "msat",
+    keysetId: CTF_KEYSET,
+    denominationPublicKeys: { "1": CTF_PUBLIC_KEY },
+    inputFeePpk: 100,
+    conditionId: CTF_CONDITION_ID,
+    outcomeCollection: CTF_OUTCOME,
+    outcomeCollectionId: CTF_OUTCOME_ID,
+    registeredAtUnixSeconds: 0,
+    finalExpiryUnixSeconds: 100,
+    curve: "secp256k1",
+  });
+  const asset = createEncryptedWalletBackupV2AssetIdentity({
+    mintUrl: "https://mint.example",
+    unit: "msat",
+    asset: {
+      kind: "ctf",
+      conditionId: CTF_CONDITION_ID,
+      outcomeCollectionId: CTF_OUTCOME_ID,
+      outcomeLabel: CTF_OUTCOME,
+      registeredAt: 0,
+      finalExpiry: 100,
+    },
+  });
+  const initialDesired = createEncryptedWalletBackupV2DesiredAssetRow({
+    scopeId: scope.scopeId,
+    asset,
+    custodyRevision: 1n,
+    activeProofCount: 1,
+  });
+  await database.encryptedWalletBackupV2DesiredAssets.put(initialDesired);
+  await commitBrowserCtfTerminalOperation({
+    adapter: custody,
+    scope,
+    owner,
+    operationId: "ctf-redeem-worker",
+    mintUrl: "https://mint.example",
+    proofs: [proofFromWorkerRow(predecessor)],
+    predecessorProofs: [predecessor],
+    publicKey: CTF_PUBLIC_KEY,
+  });
+  const siblingLocator = { ...locator, counter: 2 };
+  const sibling = createBrowserCustodyProofRow({
+    scopeId: scope.scopeId,
+    normalizedMint: "https://mint.example",
+    unit: "msat",
+    proof: {
+      id: CTF_KEYSET,
+      amount: 1 as never,
+      secret: deriveDurableWalletProofSecret({
+        seed,
+        locator: siblingLocator,
+        proofKeysetId: CTF_KEYSET,
+        proofAmount: 1,
+      }),
+      C: CTF_PUBLIC_KEY,
+    },
+    asset: { kind: "conditional", conditionId: CTF_CONDITION_ID, outcomeCollection: CTF_OUTCOME },
+    receivedAtMs: 1,
+  });
+  await database.custodyProofs.put(sibling);
+  await database.custodyProofBackupAuthorities.put(
+    createBrowserProofBackupAuthorityRow(sibling, 20, siblingLocator, "receive:sibling"),
+  );
+  await database.walletCounterAssociations.put({
+    scopeId: scope.scopeId,
+    normalizedMint: "https://mint.example",
+    unit: "msat",
+    keysetId: CTF_KEYSET,
+    recoveryComplete: true,
+  });
+  await database.walletCounterCursors.put({
+    scopeId: scope.scopeId,
+    keysetId: CTF_KEYSET,
+    next: 3,
+  });
+  const currentDesired = await database.encryptedWalletBackupV2DesiredAssets.get([
+    scope.scopeId,
+    initialDesired.localAssetKey,
+  ]);
+  if (currentDesired === undefined) throw new Error("test desired asset is missing");
+  await database.encryptedWalletBackupV2DesiredAssets.put({
+    ...createEncryptedWalletBackupV2DesiredAssetRow({
+      scopeId: scope.scopeId,
+      asset,
+      custodyRevision: BigInt(currentDesired.custodyRevision) + 1n,
+      activeProofCount: 2,
+    }),
+    syncState: "pending",
+  });
+  let current = true;
+  const input: BrowserEncryptedWalletBackupV2WorkerInput = {
+    database,
+    scopeId: scope.scopeId,
+    seed,
+    keyHandle,
+    enrollmentEpoch: 1,
+    pinnedReceiptKeys: [{ keyId: SIGNING_KEY_ID, publicKey: SIGNING_PUBLIC_KEY }],
+    remote,
+    requestUrl: (kind, cursor) =>
+      `https://backup.example/v2/${kind}${cursor === null ? "" : `?after=${cursor}`}`,
+    nowUnixSeconds: () => 1_000,
+    runtime: { subtle: crypto.subtle, getRandomValues: randomValues },
+    signal: new AbortController().signal,
+    isCurrentProfile: () => current,
+  };
+  return { database, scopeId: scope.scopeId, seed, input, asset, remote };
+}
+
+function proofFromWorkerRow(row: ReturnType<typeof createBrowserCustodyProofRow>): Proof {
+  const proof = deserializeDurableCustodyProofArtifact(
+    JSON.parse(new TextDecoder().decode(row.proofBody)),
+  );
+  return {
+    id: proof.id,
+    amount: Number(proof.amount),
+    secret: proof.secret,
+    C: proof.C,
+    ...(proof.dleq === undefined ? {} : { dleq: structuredClone(proof.dleq) }),
+  } as unknown as Proof;
 }
 
 function ordinaryAsset(mintUrl: string) {

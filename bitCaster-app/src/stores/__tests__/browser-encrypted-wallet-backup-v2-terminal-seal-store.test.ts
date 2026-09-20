@@ -3,22 +3,14 @@ import "fake-indexeddb/auto";
 import Dexie from "dexie";
 import { deriveConditionalKeysetId, type Proof } from "@cashu/cashu-ts";
 import {
-  createDurableProofOperationFacts,
   deriveDurableCustodyScopeId,
   deriveDurableCustodyWalletId,
-  prepareDurableCustodyExactArtifact,
-  type DurableCustodyOwnerAuthorization,
-  type DurableCustodyRecord,
   type DurableCustodyScope,
 } from "@bitcaster/client-sdk/durableCustody";
 import { deriveRootCtfOutcomeCollectionId } from "@bitcaster/client-sdk/durableCtfRangeOperation";
-import {
-  bindDurableCustodyProofOperation,
-  createDurableCustodyProofOperation,
-} from "@bitcaster/client-sdk/durableCustodyProofOperationRecord";
-import type { DurableCustodyProofOperationInput } from "@bitcaster/client-sdk/durableCustodyProofOperation";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { browserWalletDatabaseName } from "../../lib/browserWalletProfile";
+import { commitBrowserCtfTerminalOperation } from "../../test/browserEncryptedWalletBackupV2CommittedTerminalFixture";
 import { BrowserEncryptedWalletBackupV2TerminalSealStore } from "../browser-encrypted-wallet-backup-v2-terminal-seal-store";
 import { BrowserDurableCustodyAdapter, createBrowserCustodyProofRow } from "../durable-custody-db";
 import { createBrowserProofBackupAuthorityRow } from "../browser-proof-backup-authority";
@@ -166,8 +158,6 @@ async function terminalFixture(seedByte: number, inputCount = 1) {
   const inputs = Array.from({ length: inputCount }, (_, index) =>
     proof(`terminal-proof-${seedByte}-${index}`),
   );
-  const operation = operationBinding(scope, requestedOperationId, inputs);
-  const operationId = operation.record.operation.operationId;
   const predecessors = inputs.map((input) =>
     createBrowserCustodyProofRow({
       scopeId: scope.scopeId,
@@ -199,130 +189,24 @@ async function terminalFixture(seedByte: number, inputCount = 1) {
     finalExpiryUnixSeconds: 2,
     curve: "secp256k1",
   });
-  await adapter.transact(
-    { scope, owner, operationRows: [{ operationId, expectedRevision: null }] },
-    (transaction) =>
-      bindDurableCustodyProofOperation(transaction, operation.record, operation.artifacts),
-    { predecessorProofs: { [operationId]: predecessors } },
-  );
-  const rejection = prepareDurableCustodyExactArtifact({
-    schemaVersion: 1,
-    kind: "authenticated-terminal-mint-rejection",
-    operationId,
-    semanticKind: "ctf-redeem",
-    normalizedMint: MINT,
-    requestFingerprint: operation.record.operation.exactRequest.requestFingerprint,
-    code: 13015,
-    transportProvenance: "authenticated-mint-transport",
-    transportOperationId: operation.record.operation.retainedOperationKey,
-    rejectionBody: { code: 13015 },
-    predecessorDisposition: "retain",
-    selectedSuccessorProofIds: [],
+  const committed = await commitBrowserCtfTerminalOperation({
+    adapter,
+    scope,
+    owner,
+    operationId: requestedOperationId,
+    mintUrl: MINT,
+    proofs: inputs,
+    predecessorProofs: predecessors,
+    publicKey: PUBLIC_KEY,
   });
-  await adapter.transact(
-    {
-      scope,
-      owner: observedOwner(owner, 20),
-      operationRows: [{ operationId, expectedRevision: 0 }],
-    },
-    (transaction) =>
-      transaction.reconcileAuthenticatedTerminalMintRejection!({
-        operationId,
-        expectedRevision: 0,
-        authorization: observedOwner(owner, 20),
-        rejectionHandle: `terminal:${rejection.fingerprint}`,
-        rejectionFingerprint: rejection.fingerprint,
-        exactRejection: rejection,
-        code: 13015,
-        predecessorDisposition: "retain",
-      }),
-  );
-  const committed = await adapter.readOperation(scope, operationId);
-  if (committed === null || committed.operation.terminalMintRejection === null) {
-    throw new Error("test terminal operation was not committed");
-  }
   return {
     database,
     scope,
-    operationId,
+    operationId: committed.operationId,
     proofId: predecessors[0]!.proofId,
     proofIds: predecessors.map(({ proofId }) => proofId),
-    rejection,
-    rejectionReferenceArtifactId:
-      committed.operation.terminalMintRejection.exactRejection.artifactId,
-  };
-}
-
-function operationBinding(
-  scope: DurableCustodyScope,
-  operationId: string,
-  inputs: readonly Proof[],
-): {
-  record: DurableCustodyRecord;
-  operation: DurableCustodyProofOperationInput;
-  artifacts: {
-    requestBody: ReturnType<typeof prepareDurableCustodyExactArtifact>;
-    output: ReturnType<typeof prepareDurableCustodyExactArtifact>;
-    privateMaterial: ReturnType<typeof prepareDurableCustodyExactArtifact>;
-  };
-} {
-  const operation: DurableCustodyProofOperationInput = {
-    operationId,
-    kind: "ctf-redeem",
-    mintUrl: MINT,
-    inputs,
-    outputs: {
-      regular: [
-        {
-          blindedMessage: { amount: 1, id: inputs[0]!.id, B_: PUBLIC_KEY },
-          blindingFactor: "7",
-          secret: `output-${operationId}`,
-        },
-      ],
-    },
-    metadata: { unit: "msat" },
-  };
-  const artifacts = {
-    requestBody: prepareDurableCustodyExactArtifact(operation),
-    output: prepareDurableCustodyExactArtifact(operation.outputs),
-    privateMaterial: prepareDurableCustodyExactArtifact(operation),
-  };
-  const facts = createDurableProofOperationFacts({
-    unit: "msat",
-    binding: { kind: "wallet", activityId: operationId, stage: "ctf-redeem" },
-    horizon: { notBeforeMs: null, notAfterMs: null, safetyMarginMs: 0 },
-    hasOutputs: true,
-    inputKeysetRequirement: "required",
-    keysets: [
-      {
-        keysetId: inputs[0]!.id!,
-        unit: "msat",
-        curve: "secp256k1",
-        publicKeys: { "1": PUBLIC_KEY },
-        keysetExpiryMs: null,
-        requireDleq: false,
-        usedByInputs: true,
-        usedByOutputs: true,
-      },
-    ],
-  });
-  return {
-    operation,
-    artifacts,
-    record: createDurableCustodyProofOperation({
-      scope,
-      operation,
-      facts,
-      inventoryAccountId: null,
-      exactBoundary: {
-        method: "POST",
-        path: "/v1/redeem_outcome",
-        idempotencyKey: operationId,
-        requestBody: artifacts.requestBody,
-        output: artifacts.output,
-        privateMaterial: artifacts.privateMaterial,
-      },
-    }),
+    rejection: committed.rejection,
+    rejectionReferenceArtifactId: committed.rejectionReferenceArtifactId,
   };
 }
 
@@ -337,11 +221,4 @@ function walletScope(seedByte: number): Extract<DurableCustodyScope, { scopeKind
     walletId,
     scopeId: deriveDurableCustodyScopeId({ scopeKind: "wallet", walletId }),
   };
-}
-
-function observedOwner(
-  owner: DurableCustodyOwnerAuthorization,
-  observedAtMs: number,
-): DurableCustodyOwnerAuthorization {
-  return { ...owner, observedAtMs };
 }

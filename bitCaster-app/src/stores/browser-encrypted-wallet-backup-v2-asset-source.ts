@@ -1,6 +1,7 @@
 import {
   createEncryptedWalletBackupV2AssetIdentity,
   deserializeDurableCustodyProofArtifact,
+  issueEncryptedWalletBackupV2TerminalSeal,
   prepareEncryptedWalletBackupV2ProofSetBundle,
   verifyDurableWalletConditionalKeyset,
   type EncryptedWalletBackupV2AssetIdentity,
@@ -10,7 +11,9 @@ import {
   type EncryptedWalletBackupV2ProofSetAsset,
   type EncryptedWalletBackupV2ProofSetProof,
   type EncryptedWalletBackupV2BundleRuntime,
+  type EncryptedWalletBackupV2CommittedTerminalSealStore,
 } from "@bitcaster/client-sdk";
+import { deriveDurableCustodyProofId } from "@bitcaster/client-sdk/durableCustody";
 import { decodeDurableWalletProofDerivationLocator } from "@bitcaster/client-sdk/durableWalletProofDerivationLocator";
 import {
   requireBrowserProofBackupAuthorityForProof,
@@ -38,6 +41,7 @@ export interface BrowserEncryptedWalletBackupV2AssetSnapshot {
 }
 
 export interface BrowserEncryptedWalletBackupV2LosingProof {
+  readonly proofId: string;
   readonly proof: EncryptedWalletBackupV2ProofSetProof;
   readonly origin: BrowserProofBackupTerminalAuthority;
 }
@@ -309,6 +313,7 @@ function materializeAssetSnapshot(
     }
     return [
       Object.freeze({
+        proofId: row.proofId,
         proof: proofs[index]!,
         origin: Object.freeze({ ...authority.terminalAuthority }),
       }),
@@ -331,21 +336,66 @@ export async function prepareBrowserEncryptedWalletBackupV2AssetBundle(input: {
   readonly seed: Uint8Array;
   readonly runtime: EncryptedWalletBackupV2BundleRuntime;
   readonly bundleIdExists?: (bundleId: string) => boolean | Promise<boolean>;
+  readonly terminalSealStore?: EncryptedWalletBackupV2CommittedTerminalSealStore;
 }): Promise<EncryptedWalletBackupV2PreparedTransportBundle> {
   if (input.snapshot.desired.desiredAction !== "replace")
     throw new Error("browser V2 removal has no proof bundle");
-  if (input.snapshot.losingProofs.length > 0)
-    throw new Error("browser V2 losing proof requires an issued terminal seal");
+  const proofs = await issueLocalTerminalSeals(input);
   return prepareEncryptedWalletBackupV2ProofSetBundle({
     keyHandle: input.keyHandle,
     seed: input.seed,
     asset: input.snapshot.asset,
-    proofs: input.snapshot.proofs,
+    proofs,
     custodyRevision: BigInt(input.snapshot.desired.custodyRevision),
     counterHighWaterMarks: input.snapshot.counterHighWaterMarks,
     runtime: input.runtime,
     bundleIdExists: input.bundleIdExists,
   });
+}
+
+async function issueLocalTerminalSeals(input: {
+  readonly snapshot: BrowserEncryptedWalletBackupV2AssetSnapshot;
+  readonly seed: Uint8Array;
+  readonly terminalSealStore?: EncryptedWalletBackupV2CommittedTerminalSealStore;
+}): Promise<readonly EncryptedWalletBackupV2ProofSetProof[]> {
+  const losingByProof = new Map(
+    input.snapshot.losingProofs.map((losing) => [losing.proof, losing] as const),
+  );
+  if (losingByProof.size !== input.snapshot.losingProofs.length)
+    throw new Error("browser V2 losing proof binding is duplicated");
+  if (
+    input.snapshot.losingProofs.some(
+      ({ proof, proofId }) =>
+        !input.snapshot.proofs.some((candidate) => candidate === proof) ||
+        deriveDurableCustodyProofId({
+          scopeId: input.snapshot.desired.scopeId,
+          normalizedMint: proof.mintUrl,
+          unit: proof.unit,
+          keysetId: proof.proof.id,
+          secret: proof.proof.secret,
+        }) !== proofId,
+    )
+  )
+    throw new Error("browser V2 losing proof binding is invalid");
+  if (input.snapshot.proofs.some(({ terminalSeal }) => terminalSeal !== undefined))
+    throw new Error("browser V2 terminal seal must be issued from local custody");
+  return Promise.all(
+    input.snapshot.proofs.map(async (proof) => {
+      const losing = losingByProof.get(proof);
+      if (losing === undefined) return proof;
+      if (losing.origin.kind === "remote-seal")
+        throw new Error("browser V2 remote terminal seal requires remote reuse authority");
+      if (input.terminalSealStore === undefined)
+        throw new Error("browser V2 losing proof requires a terminal seal store");
+      const terminalSeal = await issueEncryptedWalletBackupV2TerminalSeal({
+        seed: input.seed,
+        proof,
+        operationId: losing.origin.operationId,
+        store: input.terminalSealStore,
+      });
+      return Object.freeze({ ...proof, terminalSeal });
+    }),
+  );
 }
 
 async function activeRows(
