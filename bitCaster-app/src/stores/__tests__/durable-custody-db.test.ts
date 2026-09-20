@@ -157,6 +157,45 @@ describe("browser durable custody adapter", () => {
     });
   });
 
+  it("requires an existing exact predecessor for canonical reservations", async () => {
+    const database = createDatabase();
+    const adapter = new BrowserDurableCustodyAdapter(database);
+    const scope = walletScope();
+    const owner = await claim(adapter, scope, 12);
+    const source = operationBinding(scope, "canonical-ctf-claim", proof("ctf-input"), "regular");
+    const predecessor = createBrowserCustodyProofRow({
+      scopeId: scope.scopeId,
+      normalizedMint: MINT,
+      unit: "msat",
+      proof: source.operation.inputs[0] as Proof,
+      asset: { kind: "regular" },
+      receivedAtMs: 1,
+    });
+    const bind = () =>
+      adapter.transact(
+        selection(scope, owner, source.record.operation.operationId, null),
+        (transaction) =>
+          bindDurableCustodyProofOperation(transaction, source.record, source.artifacts),
+        {
+          predecessorProofs: { [source.record.operation.operationId]: [predecessor] },
+          requirePersistedPredecessors: true,
+        },
+      );
+
+    await expect(bind()).rejects.toThrow(/predecessor proof is not persisted/);
+    expect(await database.custodyProofs.count()).toBe(0);
+    expect(await database.custodyOperations.count()).toBe(0);
+
+    await database.custodyProofs.put(predecessor);
+    await database.custodyProofBackupAuthorities.put(
+      createBrowserProofBackupAuthorityRow(predecessor, 12, null, "ctf-admission"),
+    );
+    await expect(bind()).resolves.toBeUndefined();
+    expect((await adapter.readProof(scope.scopeId, predecessor.proofId))?.selectability).toBe(
+      "locked",
+    );
+  });
+
   it("rejects reservation of a proof with terminal CTF authority", async () => {
     const database = createDatabase();
     const adapter = new BrowserDurableCustodyAdapter(database);

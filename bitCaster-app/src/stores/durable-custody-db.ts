@@ -142,6 +142,7 @@ interface BrowserCustodyProofPersistenceResult {
 
 export interface BrowserCustodyTransactionOptions {
   readonly predecessorProofs?: Readonly<Record<string, readonly BrowserCustodyProofRow[]>>;
+  readonly requirePersistedPredecessors?: boolean;
   readonly successorProofs?: Readonly<Record<string, readonly StagedBrowserCustodyProof[]>>;
   readonly conditionalKeysets?: Readonly<Record<string, BrowserCustodyConditionalKeysetAuthority>>;
   readonly injectFault?: "before-commit" | "after-commit";
@@ -826,6 +827,8 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
       const existing = proofs.get(candidate.proofId);
       if (existing) {
         assertSameProofAuthority(existing, candidate);
+      } else if (options.requirePersistedPredecessors === true) {
+        throw new Error("browser custody predecessor proof is not persisted");
       } else {
         proofs.set(candidate.proofId, candidate);
       }
