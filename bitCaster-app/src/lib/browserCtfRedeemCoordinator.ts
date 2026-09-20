@@ -7,7 +7,14 @@ import {
 } from "@bitcaster/client-sdk/durableCustody";
 import {
   buildKeysetRedeemOperationId,
+  classifyPreparedDurableCtfRedeemInputs,
+  executePreparedDurableCtfRedeem,
   prepareDurableCtfRedeemOperation,
+  readPreparedDurableCtfRedeemRequest,
+  restorePreparedDurableCtfRedeemOutputs,
+  type AuthenticatedCtfRedeemTerminalEvidence,
+  type RedeemWallet,
+  type RestoreOutputGroups,
 } from "@bitcaster/client-sdk/ctfRedeem";
 import {
   assertDurableCustodyMintOperationAuthority,
@@ -31,7 +38,100 @@ import { storedProofFromCustodyRow } from "../stores/proof-db";
 import { browserWalletScope } from "./browserCtfRangeOrderSource";
 import type { BrowserCtfRedeemLeg } from "./browserCtfRedeemSelection";
 import { normalizeUrl } from "./url";
-import { readPreparedDurableCtfRedeemRequest } from "@bitcaster/client-sdk/ctfRedeem";
+
+export type BrowserCanonicalCtfRedeemRecoveryResult =
+  | { readonly kind: "redeemed"; readonly proofs: readonly Proof[] }
+  | { readonly kind: "losing"; readonly evidence: AuthenticatedCtfRedeemTerminalEvidence }
+  | { readonly kind: "pending" }
+  | { readonly kind: "already-completed" }
+  | { readonly kind: "already-losing" };
+
+export async function recoverBrowserCanonicalCtfRedeemOperation(input: {
+  readonly seed: Uint8Array;
+  readonly mintUrl: string;
+  readonly conditionId: string;
+  readonly outcomeCollection: string;
+  readonly operationId: string;
+  readonly wallet: RedeemWallet;
+  readonly restoreOutputs: (
+    mintUrl: string,
+    outputs: Parameters<RestoreOutputGroups>[1],
+    regularKeyset: MintKeys,
+  ) => ReturnType<RestoreOutputGroups>;
+  readonly adapter: BrowserDurableCustodyAdapter;
+  readonly owner: DurableCustodyOwnerAuthorization;
+  readonly observedAtMs: number;
+}): Promise<BrowserCanonicalCtfRedeemRecoveryResult> {
+  const scope = browserWalletScope(input.seed);
+  const snapshot = await input.adapter.readOperationSnapshot(scope, input.operationId);
+  if (snapshot === null) throw new Error("browser CTF redeem operation is missing");
+  const record = snapshot.record;
+  const authority = assertDurableCustodyMintOperationAuthority(
+    record,
+    requiredArtifact(
+      snapshot.artifacts,
+      record.operation.privateMaterial.exactPrivateMaterial.artifactId,
+    ),
+  );
+  const operation = authority.operation;
+  const metadata = operation.metadata;
+  if (
+    record.operation.semanticKind !== "ctf-redeem" ||
+    operation.kind !== "ctf-redeem" ||
+    operation.mintUrl !== normalizeUrl(input.mintUrl) ||
+    metadata?.conditionId !== input.conditionId ||
+    metadata.outcomeCollection !== input.outcomeCollection
+  ) {
+    throw new Error("browser CTF redeem recovery asset authority is foreign");
+  }
+  const regularKeyset = authority.keysets.find(
+    (keyset) => keyset.identity.kind === "regular" && keyset.id === metadata.regularKeysetId,
+  );
+  if (regularKeyset === undefined) {
+    throw new Error("browser CTF redeem regular keyset authority is missing");
+  }
+  const keys = mintKeysFromAuthority(regularKeyset);
+  readPreparedDurableCtfRedeemRequest({ operation, seed: input.seed, regularKeyset: keys });
+  if (record.operation.result.state === "applied") return { kind: "already-completed" };
+  if (record.operation.terminalMintRejection !== null) return { kind: "already-losing" };
+  if (record.operation.result.state !== "none") {
+    throw new Error("browser CTF redeem staged result requires recovery");
+  }
+  if (record.operation.state === "dispatch-intent") {
+    await markBrowserCanonicalCtfRedeemTransportAttempted(input);
+  } else if (record.operation.state === "transport-attempted") {
+    const state = await classifyPreparedDurableCtfRedeemInputs({ operation, wallet: input.wallet });
+    if (state === "pending") return { kind: "pending" };
+    if (state === "spent") {
+      const proofs = await restorePreparedDurableCtfRedeemOutputs({
+        operation,
+        seed: input.seed,
+        regularKeyset: keys,
+        restoreOutputGroups: (mintUrl, outputs) => input.restoreOutputs(mintUrl, outputs, keys),
+      });
+      return {
+        kind: "redeemed",
+        proofs: await commitBrowserCanonicalCtfRedeemResult({ ...input, proofs }),
+      };
+    }
+  } else {
+    throw new Error("browser CTF redeem recovery state is invalid");
+  }
+  const submitted = await executePreparedDurableCtfRedeem({
+    operation,
+    seed: input.seed,
+    regularKeyset: keys,
+    wallet: input.wallet,
+  });
+  if (submitted.kind === "losing") return submitted;
+  return {
+    kind: "redeemed",
+    proofs: await commitBrowserCanonicalCtfRedeemResult({
+      ...input,
+      proofs: submitted.proofs,
+    }),
+  };
+}
 
 export async function markBrowserCanonicalCtfRedeemTransportAttempted(input: {
   readonly seed: Uint8Array;

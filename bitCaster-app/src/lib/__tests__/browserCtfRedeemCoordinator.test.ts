@@ -4,10 +4,12 @@ import { afterEach, describe, expect, it } from "vitest";
 import { secp256k1 } from "@noble/curves/secp256k1.js";
 import { bytesToHex } from "@noble/curves/utils.js";
 import {
+  CheckStateEnum,
   deriveConditionalKeysetId,
   deriveKeysetId,
   createBlindSignature,
   createDLEQProof,
+  hashToCurve,
   pointFromHex,
   type CounterSource,
   type MintKeys,
@@ -28,6 +30,7 @@ import {
   bindBrowserCanonicalCtfRedeemLeg,
   commitBrowserCanonicalCtfRedeemResult,
   markBrowserCanonicalCtfRedeemTransportAttempted,
+  recoverBrowserCanonicalCtfRedeemOperation,
 } from "../browserCtfRedeemCoordinator";
 import { readBrowserCanonicalCtfRedeemLegs } from "../browserCtfRedeemSelection";
 
@@ -39,6 +42,7 @@ const OUTCOME_ID = deriveRootCtfOutcomeCollectionId({
   outcomeCollection: OUTCOME,
 });
 const SEED = new Uint8Array(64).fill(7);
+const INPUT_Y = hashToCurve(new TextEncoder().encode("ctf-input")).toHex(true);
 const MINT_PRIVATE_KEY = Uint8Array.from([...new Uint8Array(31), 1]);
 const MINT_PUBLIC_KEY = bytesToHex(secp256k1.getPublicKey(MINT_PRIVATE_KEY, true));
 const KEYS = { "1": MINT_PUBLIC_KEY };
@@ -294,7 +298,184 @@ describe("browser canonical CTF redeem binding", () => {
     ).toBe("none");
     expect(await database.proofs.count()).toBe(0);
   });
+
+  it("restores the exact payout after complete spent-input evidence", async () => {
+    const entry = await fixture();
+    const record = await entry.bind();
+    const payout = await signedPayout(entry.adapter, entry.scope, record.operation.operationId);
+    await markBrowserCanonicalCtfRedeemTransportAttempted({
+      seed: SEED,
+      operationId: record.operation.operationId,
+      adapter: entry.adapter,
+      owner: { ...entry.owner, observedAtMs: 4 },
+    });
+    let restoreCalls = 0;
+
+    const result = await recover(
+      entry,
+      record.operation.operationId,
+      {
+        loadMint: async () => undefined,
+        redeemOutcomeProofs: async () => {
+          throw new Error("spent inputs must not be resubmitted");
+        },
+        checkProofsStates: async () => [{ Y: INPUT_Y, state: CheckStateEnum.SPENT, witness: null }],
+      },
+      async (_mintUrl, outputs, keyset) => {
+        restoreCalls += 1;
+        expect(outputs.regular).toHaveLength(1);
+        expect(keyset.id).toBe(REGULAR_KEYSET.id);
+        return { regular: payout };
+      },
+    );
+
+    expect(result.kind).toBe("redeemed");
+    expect(restoreCalls).toBe(1);
+    expect(
+      (await entry.adapter.readProof(entry.scope.scopeId, entry.proof.proofId))?.selectability,
+    ).toBe("spent");
+    expect(await entry.database.proofs.count()).toBe(1);
+    const replay = await recover(
+      entry,
+      record.operation.operationId,
+      {
+        loadMint: async () => {
+          throw new Error("completed replay must not contact mint");
+        },
+        redeemOutcomeProofs: async () => {
+          throw new Error("completed replay must not redeem");
+        },
+      },
+      async () => {
+        throw new Error("completed replay must not restore");
+      },
+    );
+    expect(replay).toEqual({ kind: "already-completed" });
+    expect(await entry.database.proofs.count()).toBe(1);
+  });
+
+  it("leaves exact inputs reserved when mint-state evidence is incomplete", async () => {
+    const entry = await fixture();
+    const record = await entry.bind();
+    await markBrowserCanonicalCtfRedeemTransportAttempted({
+      seed: SEED,
+      operationId: record.operation.operationId,
+      adapter: entry.adapter,
+      owner: { ...entry.owner, observedAtMs: 4 },
+    });
+
+    const result = await recover(
+      entry,
+      record.operation.operationId,
+      {
+        loadMint: async () => undefined,
+        redeemOutcomeProofs: async () => {
+          throw new Error("pending inputs must not redeem");
+        },
+        checkProofsStates: async () => [],
+      },
+      async () => {
+        throw new Error("pending inputs must not restore");
+      },
+    );
+
+    expect(result).toEqual({ kind: "pending" });
+    expect(
+      (await entry.adapter.readProof(entry.scope.scopeId, entry.proof.proofId))?.selectability,
+    ).toBe("locked");
+    expect(await entry.database.proofs.count()).toBe(0);
+  });
+
+  it("retries an exact prepared request when every input remains unspent", async () => {
+    const entry = await fixture();
+    const record = await entry.bind();
+    const payout = await signedPayout(entry.adapter, entry.scope, record.operation.operationId);
+    await markBrowserCanonicalCtfRedeemTransportAttempted({
+      seed: SEED,
+      operationId: record.operation.operationId,
+      adapter: entry.adapter,
+      owner: { ...entry.owner, observedAtMs: 4 },
+    });
+    let redeemCalls = 0;
+
+    const result = await recover(
+      entry,
+      record.operation.operationId,
+      {
+        loadMint: async () => undefined,
+        checkProofsStates: async () => [
+          { Y: INPUT_Y, state: CheckStateEnum.UNSPENT, witness: null },
+        ],
+        redeemOutcomeProofs: async ({ inputs, outputs }) => {
+          redeemCalls += 1;
+          expect(inputs[0]?.witness).toBe('{"oracle_sig":"test"}');
+          expect(outputs).toHaveLength(1);
+          return payout;
+        },
+      },
+      async () => {
+        throw new Error("unspent inputs must not restore");
+      },
+    );
+
+    expect(result.kind).toBe("redeemed");
+    expect(redeemCalls).toBe(1);
+    expect(
+      (await entry.adapter.readProof(entry.scope.scopeId, entry.proof.proofId))?.selectability,
+    ).toBe("spent");
+  });
+
+  it("submits the persisted request after a crash before the transport attempt", async () => {
+    const entry = await fixture();
+    const record = await entry.bind();
+    const payout = await signedPayout(entry.adapter, entry.scope, record.operation.operationId);
+    let observedState: string | undefined;
+
+    const result = await recover(
+      entry,
+      record.operation.operationId,
+      {
+        loadMint: async () => undefined,
+        checkProofsStates: async () => {
+          throw new Error("unsubmitted inputs need no mint-state check");
+        },
+        redeemOutcomeProofs: async () => {
+          observedState = (
+            await entry.adapter.readOperation(entry.scope, record.operation.operationId)
+          )?.operation.state;
+          return payout;
+        },
+      },
+      async () => {
+        throw new Error("unsubmitted inputs must not restore");
+      },
+    );
+
+    expect(observedState).toBe("transport-attempted");
+    expect(result.kind).toBe("redeemed");
+    expect(await entry.database.proofs.count()).toBe(1);
+  });
 });
+
+function recover(
+  entry: Awaited<ReturnType<typeof fixture>>,
+  operationId: string,
+  wallet: Parameters<typeof recoverBrowserCanonicalCtfRedeemOperation>[0]["wallet"],
+  restoreOutputs: Parameters<typeof recoverBrowserCanonicalCtfRedeemOperation>[0]["restoreOutputs"],
+) {
+  return recoverBrowserCanonicalCtfRedeemOperation({
+    seed: SEED,
+    mintUrl: MINT,
+    conditionId: CONDITION,
+    outcomeCollection: OUTCOME,
+    operationId,
+    wallet,
+    restoreOutputs,
+    adapter: entry.adapter,
+    owner: { ...entry.owner, observedAtMs: 5 },
+    observedAtMs: 5,
+  });
+}
 
 async function signedPayout(
   adapter: BrowserDurableCustodyAdapter,
