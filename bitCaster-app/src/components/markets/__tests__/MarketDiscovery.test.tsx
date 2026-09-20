@@ -94,6 +94,62 @@ describe("MarketDiscovery", () => {
     expect(screen.getByText("No markets found")).toBeInTheDocument();
   });
 
+  it("keeps discovery controls mounted while a request is loading or fails", () => {
+    const { rerender } = render(
+      <MarketDiscovery
+        categoryTags={testCategoryTags}
+        markets={[]}
+        selectedTags={[]}
+        sort="trending"
+        onSortChange={vi.fn()}
+        status="loading"
+        statusMessage="Loading markets..."
+      />,
+    );
+
+    expect(screen.getByTestId("market-discovery-bar")).toBeInTheDocument();
+    expect(screen.getByText("Loading markets...")).toBeInTheDocument();
+
+    rerender(
+      <MarketDiscovery
+        categoryTags={testCategoryTags}
+        markets={[]}
+        selectedTags={[]}
+        sort="trending"
+        onSortChange={vi.fn()}
+        status="error"
+        statusMessage="The catalogue is unavailable."
+      />,
+    );
+
+    expect(screen.getByTestId("market-discovery-bar")).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent("The catalogue is unavailable.");
+  });
+
+  it("shows the page-local scope notice when advanced filters are active without tags", async () => {
+    const user = userEvent.setup();
+    const onClearAll = vi.fn();
+    render(
+      <MarketDiscovery
+        categoryTags={[]}
+        markets={[]}
+        selectedTags={[]}
+        sort="trending"
+        onSortChange={vi.fn()}
+        onClearAll={onClearAll}
+      />,
+    );
+
+    await user.click(screen.getByTitle("Show filters"));
+    await user.click(screen.getByRole("button", { name: "Yes/No" }));
+
+    expect(
+      screen.getByText("Tag counts and advanced filters apply only to the currently loaded page."),
+    ).toBeInTheDocument();
+    await user.click(screen.getByTestId("market-discovery-clear-all"));
+    expect(onClearAll).toHaveBeenCalledOnce();
+  });
+
   it("renders sort pills and category chips on a single discovery row (Issue 5.1)", () => {
     render(
       <MarketDiscovery

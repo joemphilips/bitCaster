@@ -2133,7 +2133,13 @@ export function MarketDetailPage() {
         loadMarket({ showLoading: false });
       } catch (e) {
         if (!routeStillActive()) return;
-        if (e instanceof BrowserCtfRangeScoreTopUpCancelledError) return;
+        if (e instanceof BrowserCtfRangeScoreTopUpCancelledError) {
+          setTradeSubmitStatus({
+            kind: "info",
+            message: t("trade.scoreTopUpCancelled"),
+          });
+          return;
+        }
         if (e instanceof BrowserCtfRangeScoreTopUpRequiredError) {
           setTradeSubmitStatus({ kind: "error", message: e.message });
           return;
@@ -2176,6 +2182,7 @@ export function MarketDetailPage() {
       rangeFeePreview,
       previewClient,
       invalidatePreviewForMarket,
+      t,
     ],
   );
 

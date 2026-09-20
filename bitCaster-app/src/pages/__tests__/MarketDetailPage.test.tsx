@@ -1918,6 +1918,9 @@ describe("MarketDetailPage live market status", () => {
     await waitFor(() => expect(submitBrowserCtfRangeOrder).toHaveBeenCalledTimes(1));
     expect(screen.queryByTestId("insufficient-balance-cancel")).not.toBeInTheDocument();
     expect(screen.queryByTestId("insufficient-balance-top-up")).not.toBeInTheDocument();
+    expect(screen.getByTestId("trade-submit-status")).toHaveTextContent(
+      "Participation Score top-up was cancelled. The order was not submitted.",
+    );
   });
 
   it("does not auto-execute a sat market order when post-top-up balance is still insufficient", async () => {

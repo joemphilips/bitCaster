@@ -25,13 +25,7 @@ import {
 } from "@/stores/wallet";
 import { ToastContainer } from "@/components/ui/Toast";
 import { normalizeStoredMintUrls } from "@/stores/proof-db";
-import {
-  recoverKeysetCountersForMint,
-  recoverBrowserDurableOutgoingCashuTransfersInPass,
-  captureBrowserMintPersistenceContext,
-  recoverPendingTokenReceives,
-  recoverPendingWalletMints,
-} from "@/lib/cashu";
+import { captureBrowserMintPersistenceContext } from "@/lib/cashu";
 import { recoverBrowserDurableBolt11MintQuotesInPass } from "@/lib/browserDurableBolt11MintQuote";
 import { recoverBrowserDurableWalletMeltsInPass } from "@/lib/browserDurableWalletMelt";
 import { startNip17Listener } from "@/lib/nip17-listener";
@@ -40,9 +34,9 @@ import { refreshMintInfoWithoutActivating, userAddAndSelectMint } from "@/lib/wa
 import { rehydratePersistedNostrIdentity } from "@/lib/identityOps";
 import { reconcileAcceptedLocalWalletPayments } from "@/lib/pendingLocalWalletPayments";
 import { BrowserPreReleaseResetGate } from "@/lib/BrowserPreReleaseResetGate";
-import { recoverBrowserCtfRangeOrders } from "@/lib/browserCtfRangeOrderSubmission";
 import { useEncryptedWalletBackupDriver } from "@/hooks/useEncryptedWalletBackupDriver";
 import { useAssetMonitoringReporter } from "@/hooks/useAssetMonitoringReporter";
+import { useBrowserCtfRangeOrderRecovery } from "@/hooks/useBrowserCtfRangeOrderRecovery";
 import { DEFAULT_MARKET_BASE_ASSET } from "@bitcaster/client-sdk/marketUnits";
 
 const RANGE_RECOVERY_RETRY_MS = 15_000;
@@ -69,10 +63,11 @@ function WizardRoutes() {
   );
 }
 
-function ShellRoutes({ canReadOrderStatus }: { canReadOrderStatus: boolean }) {
+export function ShellRoutes({ canReadOrderStatus }: { canReadOrderStatus: boolean }) {
   const navigate = useNavigate();
   const location = useLocation();
   const { t } = useTranslation();
+  const searchQuery = new URLSearchParams(location.search).get("search") ?? "";
   const nostrProfile = useSettingsStore((s) => s.nostrProfile);
   const totalBalance = useBalance(undefined, { baseAsset: DEFAULT_MARKET_BASE_ASSET });
 
@@ -94,13 +89,13 @@ function ShellRoutes({ canReadOrderStatus }: { canReadOrderStatus: boolean }) {
     <AppShell
       navigationItems={navigationItems}
       user={user}
+      searchQuery={searchQuery}
       onNavigate={(href) => navigate(href)}
       onSearchChange={(query) => {
-        const trimmed = query.trim();
         navigate(
           {
             pathname: "/markets",
-            search: trimmed ? `?search=${encodeURIComponent(trimmed)}` : "",
+            search: query ? `?search=${encodeURIComponent(query)}` : "",
           },
           { replace: location.pathname.startsWith("/markets") },
         );
@@ -177,116 +172,11 @@ function AppRoutes() {
     normalizeStoredMintUrls().catch(() => {});
   }, [walletMnemonic]);
 
-  // P8 follow-up: cashu-ts deterministic counter recovery.
-  //
-  // CDK rejects re-used deterministic blinded outputs as a database duplicate.
-  // A different device can advance the same seed's mint-side cursor.
-  //
-  // Recovery walks `wallet.batchRestore(...)` for default sat keysets and
-  // advances the canonical keyset cursor past the highest signed output.
-  // Non-default units recover on the duplicate-output repair path with an
-  // explicit unit, so startup does not fan out across every mint unit.
-  // Each scan is monotonic. The effect runs once per mint at startup.
-  useEffect(() => {
-    if (!walletMnemonic || !nostrSignerReady) return;
-    const mintUrls = walletMintUrls.split("\n").filter(Boolean);
-    let cancelled = false;
-    let running = false;
-    let rerunRequested = false;
-    let receivesRecovered = false;
-    let receiveCacheRepaired = false;
-    let receiveRecoveryAfterOperationId: string | null = null;
-    let mintsRecovered = false;
-    let countersRecovered = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-
-    const schedule = () => {
-      if (cancelled || timer !== undefined) return;
-      timer = setTimeout(() => {
-        timer = undefined;
-        void runRecovery();
-      }, RANGE_RECOVERY_RETRY_MS);
-    };
-    const runRecovery = async () => {
-      if (running) {
-        rerunRequested = true;
-        return;
-      }
-      running = true;
-      let retryRequired = false;
-      try {
-        if (!receivesRecovered) {
-          try {
-            const result = await recoverPendingTokenReceives({
-              repairCurrentInventory: !receiveCacheRepaired,
-              afterOperationId: receiveRecoveryAfterOperationId,
-            });
-            receiveCacheRepaired = true;
-            receiveRecoveryAfterOperationId = result.lastAttemptedOperationId;
-            receivesRecovered = result.pending === 0;
-            retryRequired ||= !receivesRecovered;
-          } catch {
-            retryRequired = true;
-          }
-        }
-        if (!mintsRecovered) {
-          try {
-            const result = await recoverPendingWalletMints();
-            mintsRecovered = result.pending === 0;
-            retryRequired ||= !mintsRecovered;
-          } catch {
-            retryRequired = true;
-          }
-        }
-        try {
-          const result = await recoverBrowserCtfRangeOrders({
-            mnemonic: walletMnemonic,
-            mintUrls,
-          });
-          retryRequired ||= result.pending.length > 0;
-        } catch {
-          retryRequired = true;
-        }
-        try {
-          const result = await recoverBrowserDurableOutgoingCashuTransfersInPass({
-            mintUrls,
-            passCutoffMs: Date.now(),
-          });
-          retryRequired ||= result.pending > 0 || result.hasMore;
-        } catch {
-          retryRequired = true;
-        }
-        if (!countersRecovered) {
-          try {
-            let complete = true;
-            for (const mintUrl of mintUrls) {
-              const result = await recoverKeysetCountersForMint(mintUrl, { baseAsset: "sat" });
-              complete &&= result.complete;
-            }
-            countersRecovered = complete;
-            retryRequired ||= !complete;
-          } catch {
-            retryRequired = true;
-          }
-        }
-      } finally {
-        running = false;
-        if (retryRequired) schedule();
-        if (rerunRequested && !cancelled) {
-          rerunRequested = false;
-          void runRecovery();
-        }
-      }
-    };
-    const onOnline = () => void runRecovery();
-    window.addEventListener("online", onOnline);
-    void runRecovery();
-    return () => {
-      cancelled = true;
-      if (timer !== undefined) clearTimeout(timer);
-      window.removeEventListener("online", onOnline);
-    };
-  }, [nostrSignerReady, walletMnemonic, walletMintUrls]);
+  useBrowserCtfRangeOrderRecovery({
+    nostrSignerReady,
+    walletMnemonic,
+    walletMintUrls,
+  });
 
   // BOLT11 quote recovery is independent from CTF range recovery. One pass
   // checks each pending quote at most once. An online event starts a new pass.

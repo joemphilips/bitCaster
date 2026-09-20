@@ -116,6 +116,15 @@ Your Nostr signing key is a separate secret. Back up both the wallet recovery
 phrase and any Nostr secret key shown in the app. If you already use a Nostr
 account, connect it instead of generating a new one.
 
+## Find a market
+
+Use search, tags, and filters on the market list. The controls stay available
+while results load, when loading fails, and when no markets match. Use
+**Clear all** to remove the search text, selected tags, and filters.
+
+Tag counts and advanced filters apply to the loaded results, not the whole
+catalogue. Load more results when you need to look further.
+
 ## Market detail pages
 
 The market chart shows recorded trades for each primitive outcome. If only one

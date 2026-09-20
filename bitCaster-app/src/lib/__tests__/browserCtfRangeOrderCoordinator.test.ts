@@ -62,13 +62,14 @@ import {
   deriveSettlementCapabilityArtifactDigest,
   encodeSettlementCapabilityArtifact,
 } from "@bitcaster/client-sdk/settlementCapabilityArtifact";
-import type {
-  CreateSettlementCapabilityRequest,
-  OrderStatusResponse,
-  SettlementCapabilityResponse,
-  SettlementCapabilityResultResponse,
-  SubmitOrderRequest,
-  SubmitOrderResponse,
+import {
+  EngineClientError,
+  type CreateSettlementCapabilityRequest,
+  type OrderStatusResponse,
+  type SettlementCapabilityResponse,
+  type SettlementCapabilityResultResponse,
+  type SubmitOrderRequest,
+  type SubmitOrderResponse,
 } from "@bitcaster/client-sdk/engineClient";
 import { sha256 } from "@noble/hashes/sha2.js";
 import {
@@ -1350,6 +1351,37 @@ describe("browser CTF range order coordinator", () => {
     ).toBe(true);
   });
 
+  it("keeps a curated capability rejection code without exposing provider detail", async () => {
+    const database = createDatabase();
+    const preparation = persistedPreparation("range-capability-coded-rejection");
+    const engine = engineMock({
+      onCreate: async () => {
+        throw new EngineClientError(
+          400,
+          "provider response contains a secret",
+          "settlement-capability-invalid-artifact",
+          "provider detail contains a secret",
+        );
+      },
+    });
+    const coordinator = createCoordinator(database, sourceWallet(), engine);
+
+    const rejection = await coordinator
+      .prepareAndSubmit({
+        seed: SEED,
+        preparation,
+        candidates: [sourceProof(preparation.offerKeyset.id)],
+      })
+      .catch((error: unknown) => error);
+    expect(rejection).toMatchObject({
+      code: "settlement-capability-invalid-artifact",
+      message: "The engine rejected the capability artifact.",
+    });
+    expect(String(rejection)).not.toContain("secret");
+    expect((rejection as { cause?: unknown }).cause).toBeUndefined();
+    expect(engine.submitCalls).toBe(0);
+  });
+
   it("marks only a classified definitive submission rejection as rejected", async () => {
     const database = createDatabase();
     const preparation = persistedPreparation("range-definitive-rejection");
@@ -1379,6 +1411,38 @@ describe("browser CTF range order coordinator", () => {
         ({ reservedBy }) => reservedBy === custodyOperationId(preparation.operationId),
       ),
     ).toBe(true);
+  });
+
+  it("keeps a curated definitive submission code without exposing provider detail", async () => {
+    const database = createDatabase();
+    const preparation = persistedPreparation("range-coded-submission-rejection");
+    const engine = engineMock({
+      onSubmit: async () => {
+        throw new EngineClientError(
+          409,
+          "provider response contains a secret",
+          "order-capability-route-mismatch",
+          "provider detail contains a secret",
+        );
+      },
+    });
+    const coordinator = createCoordinator(database, sourceWallet(), engine, {
+      isDefinitiveOrderRejection: () => true,
+    });
+
+    const rejection = await coordinator
+      .prepareAndSubmit({
+        seed: SEED,
+        preparation,
+        candidates: [sourceProof(preparation.offerKeyset.id)],
+      })
+      .catch((error: unknown) => error);
+    expect(rejection).toMatchObject({
+      code: "order-capability-route-mismatch",
+      message: "The settlement capability does not match the order route.",
+    });
+    expect(String(rejection)).not.toContain("secret");
+    expect((rejection as { cause?: unknown }).cause).toBeUndefined();
   });
 
   it("does not classify a foreign submit response as a definitive rejection", async () => {
@@ -1650,6 +1714,82 @@ describe("browser CTF range order coordinator", () => {
     const legacyProofs = await database.proofs.toArray();
     expect(legacyProofs).toHaveLength(1);
     expect(legacyProofs[0]).not.toHaveProperty("reservedBy");
+    expect(
+      (await readCtfRangePreparation(walletScopeId(), preparation.operationId, database))
+        ?.lifecycleState,
+    ).toBe("terminal");
+  });
+
+  it("ends a paused capability attempt after another tab refunds it at expiry", async () => {
+    const database = createDatabase();
+    const preparation = persistedPreparation("range-expiry-race");
+    let now = 20_000;
+    let releaseCapability: () => void = () => {};
+    let enterCapability: () => void = () => {};
+    const capabilityEntered = new Promise<void>((resolve) => {
+      enterCapability = resolve;
+    });
+    const capabilityMayContinue = new Promise<void>((resolve) => {
+      releaseCapability = resolve;
+    });
+    const wallet = sourceWallet();
+    const engineA = engineMock();
+    const coordinatorA = createCoordinator(database, wallet, engineA, {
+      now: () => now,
+      beforeCreateCapability: async () => {
+        enterCapability();
+        await capabilityMayContinue;
+      },
+    });
+    const attempt = coordinatorA.prepareAndSubmit({
+      seed: SEED,
+      preparation,
+      candidates: [sourceProof(preparation.offerKeyset.id)],
+    });
+    await capabilityEntered;
+
+    now = preparation.expiry * 1_000;
+    let refundCalls = 0;
+    const engineB = engineMock();
+    const coordinatorB = createCoordinator(database, wallet, engineB, {
+      now: () => now,
+      createMintRecovery: refundableRecovery(preparation),
+      executeRefundSwap: async (_mintUrl, request) => {
+        refundCalls += 1;
+        return { signatures: request.outputs.map(signBlindedMessage) };
+      },
+    });
+    await expect(coordinatorB.recoverPage({ seed: SEED, limit: 8 })).resolves.toMatchObject({
+      recoveredOperationIds: [preparation.operationId],
+      pending: [],
+    });
+
+    releaseCapability();
+    await expect(attempt).rejects.toMatchObject({
+      code: "order-attempt-ended",
+      message:
+        "The prepared order attempt ended before capability creation. No order was submitted.",
+    });
+    expect(engineA.createCalls).toBe(0);
+    expect(engineA.submitCalls).toBe(0);
+    expect(engineB.createCalls).toBe(0);
+    expect(engineB.submitCalls).toBe(0);
+    expect(refundCalls).toBe(1);
+    expect(await database.custodyReservations.count()).toBe(0);
+    expect(
+      (await database.custodyProofs.toArray()).filter(
+        ({ selectability }) => selectability === "selectable",
+      ),
+    ).toHaveLength(1);
+    expect(
+      await database.proofOperations.get(
+        deriveDurableCtfRangeRefundOperationId(preparation.operationId),
+      ),
+    ).toMatchObject({
+      kind: "ctf-range-refund",
+      state: "completed",
+      metadata: { rangeOperationId: preparation.operationId },
+    });
     expect(
       (await readCtfRangePreparation(walletScopeId(), preparation.operationId, database))
         ?.lifecycleState,

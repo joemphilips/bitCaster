@@ -99,15 +99,16 @@ import {
   type PersistedCtfRangeOrderPreparation,
 } from "@bitcaster/client-sdk/ctfRangeOrderProtocol";
 import { calculateSettlementCapabilityV1Tariff } from "@bitcaster/client-sdk/participationScore";
-import type {
-  CreateSettlementCapabilityRequest,
-  NostrKind1Event,
-  OrderStatusResponse,
-  SettlementCapabilityResultResponse,
-  SettlementCapabilityAdmissionPolicyResponse,
-  SettlementCapabilityResponse,
-  SubmitOrderRequest,
-  SubmitOrderResponse,
+import {
+  EngineClientError,
+  type CreateSettlementCapabilityRequest,
+  type NostrKind1Event,
+  type OrderStatusResponse,
+  type SettlementCapabilityResultResponse,
+  type SettlementCapabilityAdmissionPolicyResponse,
+  type SettlementCapabilityResponse,
+  type SubmitOrderRequest,
+  type SubmitOrderResponse,
 } from "@bitcaster/client-sdk/engineClient";
 import { decodeSubmitOrderResponse } from "@bitcaster/client-sdk/engineClient";
 import type { WalletId } from "@bitcaster/client-sdk/durableCustody";
@@ -241,18 +242,77 @@ export interface BrowserCtfRangeRecoveryPage {
 export const BROWSER_CTF_RANGE_ORDER_ERROR_CODES = [
   "invalid-order-type",
   "insufficient-funds",
+  "score-top-up-required",
+  "score-top-up-cancelled",
   "asset-recovery-failed",
   "source-preparation-failed",
   "mint-source-uncertain",
   "custody-commit-failed",
   "capability-creation-failed",
   "capability-validation-failed",
+  "order-attempt-ended",
+  "settlement-capability-invalid-request",
+  "settlement-capability-invalid-artifact",
+  "settlement-capability-policy-rejected",
+  "settlement-capability-score-required",
+  "settlement-capability-not-found",
+  "settlement-capability-conflict",
+  "settlement-capability-market-unavailable",
+  "settlement-capability-request-too-large",
+  "settlement-capability-admission-limited",
+  "settlement-capability-capacity-exhausted",
+  "settlement-capability-admission-unavailable",
+  "order-invalid-request",
+  "order-invalid-comment",
+  "order-market-not-found",
+  "order-capability-not-found",
+  "order-capability-route-mismatch",
+  "order-capability-not-current",
+  "order-processing-conflict",
+  "order-market-closed",
   "order-submission-rejected",
   "order-submission-uncertain",
   "recovery-pending",
 ] as const;
 
 export type BrowserCtfRangeOrderErrorCode = (typeof BROWSER_CTF_RANGE_ORDER_ERROR_CODES)[number];
+
+const SETTLEMENT_CAPABILITY_ERROR_CODES = new Set<string>([
+  "settlement-capability-invalid-request",
+  "settlement-capability-invalid-artifact",
+  "settlement-capability-policy-rejected",
+  "settlement-capability-score-required",
+  "settlement-capability-not-found",
+  "settlement-capability-conflict",
+  "settlement-capability-market-unavailable",
+  "settlement-capability-request-too-large",
+  "settlement-capability-admission-limited",
+  "settlement-capability-capacity-exhausted",
+  "settlement-capability-admission-unavailable",
+]);
+
+const DEFINITIVE_ORDER_SUBMISSION_ERROR_CODES = new Set<string>([
+  "order-invalid-request",
+  "order-invalid-comment",
+  "order-market-not-found",
+  "order-capability-not-found",
+  "order-capability-route-mismatch",
+  "order-capability-not-current",
+  "order-processing-conflict",
+  "order-market-closed",
+]);
+
+function isSettlementCapabilityErrorCode(
+  value: string,
+): value is Extract<BrowserCtfRangeOrderErrorCode, `settlement-capability-${string}`> {
+  return SETTLEMENT_CAPABILITY_ERROR_CODES.has(value);
+}
+
+function isDefinitiveOrderSubmissionErrorCode(
+  value: string,
+): value is Extract<BrowserCtfRangeOrderErrorCode, `order-${string}`> {
+  return DEFINITIVE_ORDER_SUBMISSION_ERROR_CODES.has(value);
+}
 
 interface AppliedSourceCommitInput {
   readonly scope: DurableCustodyScope;
@@ -1807,6 +1867,18 @@ export class BrowserCtfRangeOrderCoordinator {
         this.#database,
       );
     } catch {
+      try {
+        const current = await readCtfRangePreparation(
+          scope.scopeId,
+          preparation.operationId,
+          this.#database,
+        );
+        if (current?.lifecycleState === "terminal") {
+          throw rangeError("order-attempt-ended");
+        }
+      } catch (error) {
+        if (error instanceof BrowserCtfRangeOrderError) throw error;
+      }
       throw rangeError("capability-creation-failed");
     }
     const capability = await this.#createVerifiedCapability(preparation, operation, request);
@@ -1877,8 +1949,14 @@ export class BrowserCtfRangeOrderCoordinator {
     let response: SettlementCapabilityResponse;
     try {
       response = await this.#engine.createSettlementCapability(request);
-    } catch {
-      throw rangeError("capability-creation-failed");
+    } catch (error) {
+      const code =
+        error instanceof EngineClientError && error.code !== undefined ? error.code : undefined;
+      throw rangeError(
+        code !== undefined && isSettlementCapabilityErrorCode(code)
+          ? code
+          : "capability-creation-failed",
+      );
     }
     let capability: ReturnType<typeof validateAndProjectCtfRangeSettlementCapabilityResponse>;
     try {
@@ -1920,7 +1998,13 @@ export class BrowserCtfRangeOrderCoordinator {
       } catch {
         throw rangeError("order-submission-uncertain");
       }
-      throw rangeError("order-submission-rejected");
+      const code =
+        error instanceof EngineClientError && error.code !== undefined ? error.code : undefined;
+      throw rangeError(
+        code !== undefined && isDefinitiveOrderSubmissionErrorCode(code)
+          ? code
+          : "order-submission-rejected",
+      );
     }
     try {
       submitted = requireImmediateSubmitResponse(
@@ -2602,12 +2686,47 @@ export function browserCtfRangeOrderErrorMessage(code: BrowserCtfRangeOrderError
   const messages: Record<BrowserCtfRangeOrderErrorCode, string> = {
     "invalid-order-type": "The browser supports only FOK range orders.",
     "insufficient-funds": "The wallet has insufficient selectable funds for this order.",
+    "score-top-up-required":
+      "Participation Score top-up is required before this order can be submitted.",
+    "score-top-up-cancelled":
+      "Participation Score top-up was cancelled. The order was not submitted.",
     "asset-recovery-failed": "The wallet could not recover the exact funds for this order.",
     "source-preparation-failed": "The wallet could not prepare the range authorization.",
     "mint-source-uncertain": "The mint result is uncertain. Funds recovery is pending.",
     "custody-commit-failed": "The wallet could not commit the durable range operation.",
-    "capability-creation-failed": "The engine did not create a settlement capability.",
+    "capability-creation-failed":
+      "The settlement capability result is uncertain. The order was not submitted.",
     "capability-validation-failed": "The engine returned an invalid settlement capability.",
+    "order-attempt-ended":
+      "The prepared order attempt ended before capability creation. No order was submitted.",
+    "settlement-capability-invalid-request":
+      "The engine rejected the capability request because its fields are invalid.",
+    "settlement-capability-invalid-artifact": "The engine rejected the capability artifact.",
+    "settlement-capability-policy-rejected":
+      "The engine rejected the capability because it does not meet admission policy.",
+    "settlement-capability-score-required":
+      "The engine requires more Participation Score for this capability.",
+    "settlement-capability-not-found": "The engine could not find the capability request.",
+    "settlement-capability-conflict":
+      "The capability request conflicts with an existing operation.",
+    "settlement-capability-market-unavailable": "The market is not available for this capability.",
+    "settlement-capability-request-too-large":
+      "The capability request exceeds a supported size or count limit.",
+    "settlement-capability-admission-limited":
+      "Capability admission is busy. The capability result may be uncertain.",
+    "settlement-capability-capacity-exhausted":
+      "Capability admission capacity is exhausted. The capability result may be uncertain.",
+    "settlement-capability-admission-unavailable":
+      "Capability admission is temporarily unavailable. The capability result may be uncertain.",
+    "order-invalid-request":
+      "The engine rejected the order request because its fields are invalid.",
+    "order-invalid-comment": "The engine rejected the order comment.",
+    "order-market-not-found": "The engine could not find the market.",
+    "order-capability-not-found": "The engine could not find the settlement capability.",
+    "order-capability-route-mismatch": "The settlement capability does not match the order route.",
+    "order-capability-not-current": "The settlement capability is not current for this order.",
+    "order-processing-conflict": "The engine rejected the order because processing conflicted.",
+    "order-market-closed": "The engine rejected the order because the market closed.",
     "order-submission-rejected": "The engine rejected the order. It will not retry.",
     "order-submission-uncertain": "The order acknowledgement is uncertain. It will not retry.",
     "recovery-pending": "The durable range operation still requires funds recovery.",

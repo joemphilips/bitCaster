@@ -40,11 +40,44 @@ import { activeBrowserWalletScopeId } from "./browserWalletProfile";
 import { browserRangeSourceAsset } from "./browserCtfRangeOrderSource";
 import { ensureParticipationScoreForNextMatch } from "./participationScorePayment";
 import type { BrowserParticipationScoreRecoveryStatus } from "./browserParticipationScoreDelivery";
+import {
+  beginBrowserCtfRangeOrderAttempt,
+  endBrowserCtfRangeOrderAttempt,
+} from "./browserCtfRangeOrderRecoveryWake";
 
 const MINT_METADATA_CACHE_TTL_MS = 30_000;
 const MINT_METADATA_CACHE_LIMIT = 64;
 const ADMISSION_POLICY_CACHE_TTL_MS = 30_000;
 const BROWSER_CONSOLIDATION_ROUNDS_MAX = 256;
+const ORDER_FAILURE_CODES = new Set<BrowserCtfRangeOrderErrorCode>([
+  "invalid-order-type",
+  "capability-creation-failed",
+  "capability-validation-failed",
+  "order-attempt-ended",
+  "score-top-up-required",
+  "score-top-up-cancelled",
+  "settlement-capability-invalid-request",
+  "settlement-capability-invalid-artifact",
+  "settlement-capability-policy-rejected",
+  "settlement-capability-score-required",
+  "settlement-capability-not-found",
+  "settlement-capability-conflict",
+  "settlement-capability-market-unavailable",
+  "settlement-capability-request-too-large",
+  "settlement-capability-admission-limited",
+  "settlement-capability-capacity-exhausted",
+  "settlement-capability-admission-unavailable",
+  "order-invalid-request",
+  "order-invalid-comment",
+  "order-market-not-found",
+  "order-capability-not-found",
+  "order-capability-route-mismatch",
+  "order-capability-not-current",
+  "order-processing-conflict",
+  "order-market-closed",
+  "order-submission-rejected",
+  "order-submission-uncertain",
+]);
 const mintMetadataCache = new Map<
   string,
   { expiresAtMs: number; value: ReturnType<typeof loadCtfRangeMintMetadata> }
@@ -114,6 +147,11 @@ export async function submitBrowserCtfRangeOrder(
     isLoopbackMint(input.mintUrl),
     input.onScoreTopUpRequired,
   );
+  beginBrowserCtfRangeOrderAttempt({
+    scopeId,
+    operationId: preparation.operationId,
+  });
+  let failed = false;
   try {
     const consolidated = await consolidateBrowserRangeSource({
       coordinator,
@@ -133,19 +171,52 @@ export async function submitBrowserCtfRangeOrder(
       currentFeeFacts: consolidated.currentFeeFacts,
     });
   } catch (error) {
-    if (error instanceof BrowserCtfRangeOrderError) {
+    failed = true;
+    const durableCode =
+      error instanceof BrowserCtfRangeOrderError
+        ? error.code
+        : error instanceof BrowserCtfRangeScoreTopUpRequiredError
+          ? "score-top-up-required"
+          : error instanceof BrowserCtfRangeScoreTopUpCancelledError
+            ? "score-top-up-cancelled"
+            : null;
+    if (durableCode !== null) {
       const record = await readCtfRangePreparation(scopeId, preparation.operationId);
-      if (record !== null || error.code === "asset-recovery-failed") {
+      if (record !== null) {
         await persistRangeMessages({
           scopeId,
           operationId: preparation.operationId,
-          revision: record?.revision ?? 0,
-          code: error.code,
+          revision: record.revision,
+          code: durableCode,
+          observedAtMs: Date.now(),
+          ...(record.lifecycleState === "terminal" ? { includeRecovery: false } : {}),
+        });
+      } else if (durableCode === "asset-recovery-failed" && record === null) {
+        await persistRangeMessages({
+          scopeId,
+          operationId: preparation.operationId,
+          revision: 0,
+          code: durableCode,
           observedAtMs: Date.now(),
         });
       }
     }
     throw error;
+  } finally {
+    let retainedRecoveryWork = false;
+    if (failed) {
+      try {
+        const record = await readCtfRangePreparation(scopeId, preparation.operationId);
+        retainedRecoveryWork = record !== null && record.lifecycleState !== "terminal";
+      } catch {
+        // Preserve the original failure. A later scheduled pass can inspect the journal.
+      }
+    }
+    endBrowserCtfRangeOrderAttempt({
+      scopeId,
+      operationId: preparation.operationId,
+      retainedRecoveryWork,
+    });
   }
 }
 
@@ -638,22 +709,18 @@ async function persistRangeMessages(input: {
   revision: number;
   code: BrowserCtfRangeOrderErrorCode;
   observedAtMs: number;
+  includeRecovery?: boolean;
 }): Promise<void> {
-  const kind = orderFailureCode(input.code) ? "order" : "funds";
-  await recordBrowserCtfRangeMessage({ ...input, kind });
-  if (kind === "order") {
-    await recordBrowserCtfRangeMessage({ ...input, code: "recovery-pending", kind: "funds" });
+  const { includeRecovery, ...message } = input;
+  const kind = orderFailureCode(message.code) ? "order" : "funds";
+  await recordBrowserCtfRangeMessage({ ...message, kind });
+  if (kind === "order" && includeRecovery !== false) {
+    await recordBrowserCtfRangeMessage({ ...message, code: "recovery-pending", kind: "funds" });
   }
 }
 
 function orderFailureCode(code: BrowserCtfRangeOrderErrorCode): boolean {
-  return (
-    code === "invalid-order-type" ||
-    code === "capability-creation-failed" ||
-    code === "capability-validation-failed" ||
-    code === "order-submission-rejected" ||
-    code === "order-submission-uncertain"
-  );
+  return ORDER_FAILURE_CODES.has(code);
 }
 
 function createBrowserCtfRangeCoordinator(

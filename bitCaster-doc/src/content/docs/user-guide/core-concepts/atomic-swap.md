@@ -58,6 +58,11 @@ trade. A confirmed settlement can still need wallet recovery. Refund eligibility
 does not mean a refund is complete. An operation leaves this active list when
 the wallet finishes its work. The list is not your completed-trade history.
 
+Wallet preparation is separate from order acceptance. The progress list shows
+which stage is confirmed. A prepared payment does not prove that the engine
+accepted an order. A rejected order can still need funds recovery. An accepted
+order is not a completed trade until settlement is confirmed.
+
 ## What the engine can see
 
 Your wallet sends the ecash records, called proofs, that authorize this order.

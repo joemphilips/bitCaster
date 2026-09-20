@@ -3,12 +3,18 @@ import type { TradeTicket } from "@bitcaster/client-sdk/tradeTicket";
 import type { MarketDetail } from "@/types/market-detail";
 import {
   BrowserCtfRangeScoreTopUpCancelledError,
+  BrowserCtfRangeScoreTopUpRequiredError,
   previewBrowserCtfRangeOrderFees,
   recoverBrowserCtfRangeOrder,
   recoverBrowserCtfRangeOrders,
   submitBrowserCtfRangeOrder,
   type BrowserCtfRangeOrderSubmission,
 } from "../browserCtfRangeOrderSubmission";
+import { BrowserCtfRangeOrderError } from "../browserCtfRangeOrderCoordinator";
+import {
+  listenForBrowserCtfRangeRecoveryWake,
+  publishBrowserCtfRangeRecoveryWake,
+} from "../browserCtfRangeOrderRecoveryWake";
 
 const KEYSET_KEYS = Object.fromEntries(
   [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384].map((amount) => [
@@ -33,6 +39,7 @@ const mocks = vi.hoisted(() => ({
   recoverPage: vi.fn(),
   recoverClientOrder: vi.fn(),
   recoverFundedAsset: vi.fn(),
+  readPreparation: vi.fn(),
   recordMessage: vi.fn(),
   ensureParticipationScoreForNextMatch: vi.fn(),
   database: {},
@@ -63,7 +70,7 @@ vi.mock("@/stores/proof-db", () => ({
 }));
 
 vi.mock("@/stores/ctf-range-order-db", () => ({
-  readCtfRangePreparation: vi.fn().mockResolvedValue(null),
+  readCtfRangePreparation: mocks.readPreparation,
 }));
 
 vi.mock("@/stores/ctf-range-order-messages", () => ({
@@ -162,12 +169,79 @@ describe("submitBrowserCtfRangeOrder", () => {
     mocks.prepareAndSubmit.mockResolvedValue({ orderId: "order-1" });
     mocks.recoverPage.mockReset();
     mocks.recoverClientOrder.mockReset();
+    mocks.readPreparation.mockResolvedValue(null);
+    mocks.readPreparation.mockClear();
     mocks.recordMessage.mockResolvedValue(undefined);
     mocks.ensureParticipationScoreForNextMatch.mockReset();
     mocks.recoverFundedAsset.mockImplementation(async ({ loadPlan }) => ({
       kind: "ready",
       plan: await loadPlan(),
     }));
+  });
+
+  it("wakes existing recovery once after a failed active attempt retains work", async () => {
+    let rejectAttempt!: (error: Error) => void;
+    mocks.prepareAndSubmit.mockImplementationOnce(
+      () => new Promise<never>((_resolve, reject) => (rejectAttempt = reject)),
+    );
+    mocks.readPreparation.mockResolvedValue({ lifecycleState: "prepared" });
+    const wakes: string[] = [];
+    const stopWake = listenForBrowserCtfRangeRecoveryWake("custody:wallet:scope-1", () => {
+      wakes.push("wake");
+    });
+
+    const submission = submitRangeOrder("client-retained-recovery");
+    await vi.waitFor(() => expect(mocks.prepareAndSubmit).toHaveBeenCalledOnce());
+    expect(wakes).toHaveLength(0);
+    rejectAttempt(new Error("active attempt failed"));
+    await expect(submission).rejects.toThrow("active attempt failed");
+
+    expect(wakes).toEqual(["wake"]);
+    stopWake();
+  });
+
+  it("does not wake for a successful or terminal active attempt", async () => {
+    const wakes: string[] = [];
+    const stopWake = listenForBrowserCtfRangeRecoveryWake("custody:wallet:scope-1", () => {
+      wakes.push("wake");
+    });
+
+    await expect(submitRangeOrder("client-success-no-recovery")).resolves.toEqual({
+      orderId: "order-1",
+    });
+    expect(wakes).toHaveLength(0);
+
+    mocks.prepareAndSubmit.mockRejectedValueOnce(new Error("terminal attempt failed"));
+    mocks.readPreparation.mockResolvedValue({ lifecycleState: "terminal" });
+    await expect(submitRangeOrder("client-terminal-no-recovery")).rejects.toThrow(
+      "terminal attempt failed",
+    );
+    expect(wakes).toHaveLength(0);
+    stopWake();
+  });
+
+  it("lets a recovery wake run recovery without submitting a new order", async () => {
+    mocks.recoverPage.mockResolvedValue({
+      recoveredOperationIds: [],
+      pending: [],
+      nextCursor: null,
+    });
+    const recovery = vi.fn(() =>
+      recoverBrowserCtfRangeOrders({
+        mnemonic:
+          "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+        mintUrls: ["https://mint.example"],
+      }),
+    );
+    const stopWake = listenForBrowserCtfRangeRecoveryWake("custody:wallet:scope-1", () => {
+      void recovery();
+    });
+
+    publishBrowserCtfRangeRecoveryWake({ scopeId: "custody:wallet:scope-1" });
+    await vi.waitFor(() => expect(recovery).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(mocks.recoverPage).toHaveBeenCalledOnce());
+    expect(mocks.prepareAndSubmit).not.toHaveBeenCalled();
+    stopWake();
   });
 
   it("recovers an insufficient explicit submission before returning insufficient funds", async () => {
@@ -531,6 +605,81 @@ describe("submitBrowserCtfRangeOrder", () => {
     ).rejects.toBe(cancellation);
     expect(onScoreTopUpRequired).toHaveBeenCalledOnce();
     expect(mocks.ensureParticipationScoreForNextMatch).toHaveBeenCalledOnce();
+  });
+
+  it("records a retained-funds explanation for a cancelled Score continuation", async () => {
+    const cancellation = new BrowserCtfRangeScoreTopUpCancelledError();
+    mocks.readPreparation.mockResolvedValue({ revision: 3, lifecycleState: "prepared" });
+    mocks.prepareAndSubmit.mockRejectedValueOnce(cancellation);
+
+    await expect(submitRangeOrder("client-score-cancelled")).rejects.toBe(cancellation);
+
+    expect(mocks.recordMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        operationId: "range-operation",
+        revision: 3,
+        code: "score-top-up-cancelled",
+        kind: "order",
+      }),
+    );
+    expect(mocks.recordMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        operationId: "range-operation",
+        revision: 3,
+        code: "recovery-pending",
+        kind: "funds",
+      }),
+    );
+  });
+
+  it("records a retained-funds explanation for required Score continuation", async () => {
+    const required = new BrowserCtfRangeScoreTopUpRequiredError({
+      requiredSats: 3,
+      balanceSats: 0,
+      recoveryStatus: "insufficient",
+    });
+    mocks.readPreparation.mockResolvedValue({ revision: 4, lifecycleState: "prepared" });
+    mocks.prepareAndSubmit.mockRejectedValueOnce(required);
+
+    await expect(submitRangeOrder("client-score-required")).rejects.toBe(required);
+
+    expect(mocks.recordMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        operationId: "range-operation",
+        revision: 4,
+        code: "score-top-up-required",
+        kind: "order",
+      }),
+    );
+    expect(mocks.recordMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        operationId: "range-operation",
+        revision: 4,
+        code: "recovery-pending",
+        kind: "funds",
+      }),
+    );
+  });
+
+  it("records a terminal order explanation without stale pending-funds recovery", async () => {
+    const ended = new BrowserCtfRangeOrderError(
+      "order-attempt-ended",
+      "The prepared order attempt ended before capability creation. No order was submitted.",
+    );
+    mocks.readPreparation.mockResolvedValue({ revision: 5, lifecycleState: "terminal" });
+    mocks.prepareAndSubmit.mockRejectedValueOnce(ended);
+
+    await expect(submitRangeOrder("client-score-terminal")).rejects.toBe(ended);
+
+    expect(mocks.recordMessage).toHaveBeenCalledTimes(1);
+    expect(mocks.recordMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        operationId: "range-operation",
+        revision: 5,
+        code: "order-attempt-ended",
+        kind: "order",
+      }),
+    );
   });
 
   it.each(["Outcome", "Complement"] as const)(
