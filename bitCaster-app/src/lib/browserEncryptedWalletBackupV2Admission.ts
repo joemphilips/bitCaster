@@ -55,6 +55,11 @@ export async function admitBrowserEncryptedWalletBackupV2Asset(
   requireCurrent(input);
   const verified = requireEncryptedWalletBackupV2VerifiedProofSet(input.verified);
   if (
+    verified.proofs.some((proof) => proof.selectionAuthority === "terminal-sealed-non-selectable")
+  ) {
+    throw new Error("browser V2 sealed losing proof needs non-selectable admission");
+  }
+  if (
     verified.proofs.some(({ unit }) => unit !== "msat") ||
     verified.counterHighWaterMarks.some(({ unit }) => unit !== "msat")
   ) {

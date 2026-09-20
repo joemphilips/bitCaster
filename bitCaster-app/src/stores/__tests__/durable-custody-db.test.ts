@@ -2,7 +2,8 @@
 import "fake-indexeddb/auto";
 import Dexie from "dexie";
 import { afterEach, describe, expect, it } from "vitest";
-import { Amount, OutputData, type Proof } from "@cashu/cashu-ts";
+import { Amount, OutputData, deriveConditionalKeysetId, type Proof } from "@cashu/cashu-ts";
+import { deriveRootCtfOutcomeCollectionId } from "@bitcaster/client-sdk/durableCtfRangeOperation";
 import {
   createDurableProofOperationFacts,
   deriveDurableCustodyScopeId,
@@ -12,6 +13,7 @@ import {
   type DurableCustodyOwnerAuthorization,
   type DurableCustodyRecord,
   type DurableCustodyScope,
+  type DurableCustodyTransaction,
 } from "@bitcaster/client-sdk/durableCustody";
 import type { DurableCustodyProofOperationInput } from "@bitcaster/client-sdk/durableCustodyProofOperation";
 import { deriveMarketFundingProductBinding } from "@bitcaster/client-sdk/marketFundingDelivery";
@@ -20,6 +22,7 @@ import {
   type DurableOutgoingCashuTransfer,
 } from "@bitcaster/client-sdk/durableOutgoingCashuTransfer";
 import { serializeDurableWalletSendOperation } from "@bitcaster/client-sdk/durableWalletOperation";
+import { createEncryptedWalletBackupV2AssetIdentity } from "@bitcaster/client-sdk/encryptedWalletBackupV2ProofSet";
 import {
   bindDurableCustodyProofOperation,
   createDurableCustodyProofOperation,
@@ -34,16 +37,31 @@ import {
   bindBrowserProofBackupAuthorityTerminalOperation,
   createBrowserProofBackupAuthorityRow,
 } from "../browser-proof-backup-authority";
+import { createEncryptedWalletBackupV2DesiredAssetRow } from "../browser-encrypted-wallet-backup-v2-desired-asset";
 import {
   BitcasterDB,
   browserOutgoingPredecessorKey,
   findBrowserOutgoingCashuTransferByPredecessor,
+  storedProofRow,
   type BrowserOutgoingCashuTransferRow,
 } from "../proof-db";
 
 const MINT = "https://mint.example";
 const KEYSET = `01${"11".repeat(32)}`;
 const PUBLIC_KEY = `02${"11".repeat(32)}`;
+const TERMINAL_CONDITION = "aa".repeat(32);
+const TERMINAL_OUTCOME_ID = deriveRootCtfOutcomeCollectionId({
+  conditionId: TERMINAL_CONDITION,
+  outcomeCollection: "YES",
+});
+const TERMINAL_KEYSET = deriveConditionalKeysetId({
+  keys: { "1": PUBLIC_KEY },
+  unit: "msat",
+  input_fee_ppk: 0,
+  final_expiry: 2,
+  conditionId: TERMINAL_CONDITION,
+  outcomeCollectionId: TERMINAL_OUTCOME_ID,
+});
 const openDatabases: BitcasterDB[] = [];
 
 afterEach(async () => {
@@ -54,6 +72,188 @@ afterEach(async () => {
 });
 
 describe("browser durable custody adapter", () => {
+  it("commits authenticated losing CTF evidence with retained proof, cache, and backup revision", async () => {
+    const { database, adapter, scope, owner, source, predecessor } =
+      await terminalFixture("losing");
+    const terminalOwner = observedOwner(owner, 20);
+    const exactRejection = terminalRejection(source);
+    const operationId = source.record.operation.operationId;
+
+    await adapter.transact(selection(scope, terminalOwner, operationId, 0), (transaction) =>
+      transaction.reconcileAuthenticatedTerminalMintRejection!({
+        operationId,
+        expectedRevision: 0,
+        authorization: terminalOwner,
+        rejectionHandle: `terminal:${exactRejection.fingerprint}`,
+        rejectionFingerprint: exactRejection.fingerprint,
+        exactRejection,
+        code: 13015,
+        predecessorDisposition: "retain",
+      }),
+    );
+
+    const retained = await adapter.readProof(scope.scopeId, predecessor.proofId);
+    expect(retained).toMatchObject({
+      selectability: "verified-losing",
+      reservationOperationId: null,
+      revision: 2,
+    });
+    expect(retained?.proofFingerprint).toBe(predecessor.proofFingerprint);
+    expect(retained?.proofBody.byteLength).toBe(predecessor.proofBody.byteLength);
+    expect(await database.custodyReservations.count()).toBe(0);
+    expect((await adapter.readOperation(scope, operationId))?.operation.state).toBe("aborted");
+    const snapshot = await adapter.readOperationSnapshot(scope, operationId);
+    expect(
+      snapshot?.artifacts.some(
+        ({ reference }) => reference.fingerprint === exactRejection.fingerprint,
+      ),
+    ).toBe(true);
+    expect(
+      await database.custodyProofBackupAuthorities.get([scope.scopeId, predecessor.proofId]),
+    ).toMatchObject({
+      proofState: "verified-losing",
+      terminalOperationId: operationId,
+      updatedAtMs: 20,
+    });
+    expect(await database.proofs.get(source.operation.inputs[0]!.secret)).toMatchObject({
+      terminalOperationId: operationId,
+    });
+    expect(
+      (await database.proofs.get(source.operation.inputs[0]!.secret))?.reservedBy,
+    ).toBeUndefined();
+    expect(await database.encryptedWalletBackupV2DesiredAssets.toArray()).toMatchObject([
+      { custodyRevision: "2", activeProofCount: 1, desiredAction: "replace" },
+    ]);
+    const databaseName = database.name;
+    database.close();
+    const reopenedDatabase = new BitcasterDB(databaseName);
+    openDatabases.splice(openDatabases.indexOf(database), 1, reopenedDatabase);
+    const reopened = new BrowserDurableCustodyAdapter(reopenedDatabase);
+    expect((await reopened.readProof(scope.scopeId, predecessor.proofId))?.selectability).toBe(
+      "verified-losing",
+    );
+  });
+
+  it("rejects terminal reconciliation in a current transaction without legacy cache authority", async () => {
+    const { database, adapter, scope, owner, source, predecessor } =
+      await terminalFixture("current-transaction");
+    const terminalOwner = observedOwner(owner, 20);
+    const operationId = source.record.operation.operationId;
+    const exactRejection = terminalRejection(source);
+    await expect(
+      database.transaction(
+        "rw",
+        database.tables.filter((table) => table.name !== database.proofs.name),
+        async () => {
+          const currentTransaction = Dexie.currentTransaction;
+          if (!currentTransaction) throw new Error("missing test transaction");
+          await adapter.transactInCurrentTransaction(
+            currentTransaction,
+            selection(scope, terminalOwner, operationId, 0),
+            (transaction) =>
+              transaction.reconcileAuthenticatedTerminalMintRejection!({
+                operationId,
+                expectedRevision: 0,
+                authorization: terminalOwner,
+                rejectionHandle: `terminal:${exactRejection.fingerprint}`,
+                rejectionFingerprint: exactRejection.fingerprint,
+                exactRejection,
+                code: 13015,
+                predecessorDisposition: "retain",
+              }),
+          );
+        },
+      ),
+    ).rejects.toThrow("browser terminal cache transaction does not cover required tables");
+    expect((await adapter.readProof(scope.scopeId, predecessor.proofId))?.selectability).toBe(
+      "locked",
+    );
+    expect((await adapter.readOperation(scope, operationId))?.operation.state).toBe(
+      "dispatch-intent",
+    );
+    expect(await database.custodyReservations.count()).toBe(1);
+  });
+
+  it("rejects non-13015 terminal claims and rolls back an injected terminal write fault", async () => {
+    const { database, adapter, scope, owner, source, predecessor } = await terminalFixture("fault");
+    const terminalOwner = observedOwner(owner, 20);
+    const operationId = source.record.operation.operationId;
+    const exactRejection = terminalRejection(source);
+    const reconcile = (code: 13015) => (transaction: DurableCustodyTransaction) =>
+      transaction.reconcileAuthenticatedTerminalMintRejection!({
+        operationId,
+        expectedRevision: 0,
+        authorization: terminalOwner,
+        rejectionHandle: `terminal:${exactRejection.fingerprint}`,
+        rejectionFingerprint: exactRejection.fingerprint,
+        exactRejection,
+        code,
+        predecessorDisposition: "retain",
+      });
+    await expect(
+      adapter.transact(selection(scope, terminalOwner, operationId, 0), () => {
+        throw new Error("mint timeout");
+      }),
+    ).rejects.toThrow("mint timeout");
+    await expect(
+      adapter.transact(selection(scope, terminalOwner, operationId, 0), reconcile(13014 as 13015)),
+    ).rejects.toThrow();
+    await expect(
+      adapter.transact(
+        selection(scope, { ...terminalOwner, incarnationId: "foreign-owner" }, operationId, 0),
+        reconcile(13015),
+      ),
+    ).rejects.toThrow();
+    await expect(
+      adapter.transact(selection(scope, terminalOwner, operationId, 1), reconcile(13015)),
+    ).rejects.toThrow();
+    await expect(
+      adapter.transact(selection(scope, terminalOwner, operationId, 0), reconcile(13015), {
+        injectFault: "before-commit",
+      }),
+    ).rejects.toThrow("injected browser custody fault before commit");
+    expect((await adapter.readProof(scope.scopeId, predecessor.proofId))?.selectability).toBe(
+      "locked",
+    );
+    expect((await adapter.readOperation(scope, operationId))?.operation.state).toBe(
+      "dispatch-intent",
+    );
+    expect(await database.custodyReservations.count()).toBe(1);
+    expect(await database.encryptedWalletBackupV2DesiredAssets.toArray()).toMatchObject([
+      { custodyRevision: "1", activeProofCount: 1 },
+    ]);
+  });
+
+  it("refuses a foreign locked predecessor without condemning the local proof", async () => {
+    const { database, adapter, scope, owner, source, predecessor } =
+      await terminalFixture("foreign");
+    const operationId = source.record.operation.operationId;
+    const locked = await database.custodyProofs.get([scope.scopeId, predecessor.proofId]);
+    await database.custodyProofs.put({ ...locked!, normalizedMint: "https://foreign.example" });
+    const terminalOwner = observedOwner(owner, 20);
+    const exactRejection = terminalRejection(source);
+    await expect(
+      adapter.transact(selection(scope, terminalOwner, operationId, 0), (transaction) =>
+        transaction.reconcileAuthenticatedTerminalMintRejection!({
+          operationId,
+          expectedRevision: 0,
+          authorization: terminalOwner,
+          rejectionHandle: `terminal:${exactRejection.fingerprint}`,
+          rejectionFingerprint: exactRejection.fingerprint,
+          exactRejection,
+          code: 13015,
+          predecessorDisposition: "retain",
+        }),
+      ),
+    ).rejects.toThrow();
+    expect((await adapter.readOperation(scope, operationId))?.operation.state).toBe(
+      "dispatch-intent",
+    );
+    expect(await database.custodyReservations.count()).toBe(1);
+    expect(await database.encryptedWalletBackupV2DesiredAssets.toArray()).toMatchObject([
+      { custodyRevision: "1", activeProofCount: 1 },
+    ]);
+  });
   it("rejects a full-length V3 proof before browser custody can persist it", async () => {
     const database = createDatabase();
     const scope = walletScope();
@@ -849,11 +1049,117 @@ async function stageSourceResult(
   return { source, predecessor, authorizationProof, successor, resultFingerprint };
 }
 
+async function terminalFixture(suffix: string) {
+  const database = createDatabase();
+  const adapter = new BrowserDurableCustodyAdapter(database);
+  const scope = walletScope();
+  const owner = await claim(adapter, scope, 10);
+  const source = operationBinding(
+    scope,
+    `redeem-${suffix}`,
+    { ...proof(`terminal-${suffix}`), id: TERMINAL_KEYSET },
+    `output-${suffix}`,
+    "ctf-redeem",
+  );
+  const predecessor = createBrowserCustodyProofRow({
+    scopeId: scope.scopeId,
+    normalizedMint: MINT,
+    unit: "msat",
+    proof: source.operation.inputs[0] as Proof,
+    asset: { kind: "conditional", conditionId: TERMINAL_CONDITION, outcomeCollection: "YES" },
+    receivedAtMs: 1,
+  });
+  await database.custodyProofs.put(predecessor);
+  await database.custodyProofBackupAuthorities.put(
+    createBrowserProofBackupAuthorityRow(
+      predecessor,
+      10,
+      {
+        schemaVersion: 1,
+        kind: "nut13",
+        keysetId: TERMINAL_KEYSET,
+        counter: 1,
+      },
+      `admission-${suffix}`,
+    ),
+  );
+  await database.custodyConditionalKeysets.put({
+    schemaVersion: 1,
+    scopeId: scope.scopeId,
+    normalizedMint: MINT,
+    unit: "msat",
+    keysetId: TERMINAL_KEYSET,
+    denominationPublicKeys: { "1": PUBLIC_KEY },
+    inputFeePpk: 0,
+    conditionId: TERMINAL_CONDITION,
+    outcomeCollection: "YES",
+    outcomeCollectionId: TERMINAL_OUTCOME_ID,
+    registeredAtUnixSeconds: 1,
+    finalExpiryUnixSeconds: 2,
+    curve: "secp256k1",
+  });
+  const asset = createEncryptedWalletBackupV2AssetIdentity({
+    mintUrl: MINT,
+    unit: "msat",
+    asset: {
+      kind: "ctf",
+      conditionId: TERMINAL_CONDITION,
+      outcomeLabel: "YES",
+      outcomeCollectionId: TERMINAL_OUTCOME_ID,
+      registeredAt: 1,
+      finalExpiry: 2,
+    },
+  });
+  await database.encryptedWalletBackupV2DesiredAssets.put(
+    createEncryptedWalletBackupV2DesiredAssetRow({
+      scopeId: scope.scopeId,
+      asset,
+      custodyRevision: 1n,
+      activeProofCount: 1,
+    }),
+  );
+  await database.proofs.put(
+    storedProofRow({
+      ...(source.operation.inputs[0] as Proof),
+      mintUrl: MINT,
+      unit: "msat",
+      baseAsset: "sat",
+      conditionId: TERMINAL_CONDITION,
+      outcomeCollection: "YES",
+      reservedBy: source.record.operation.operationId,
+    }),
+  );
+  await adapter.transact(
+    selection(scope, owner, source.record.operation.operationId, null),
+    (transaction) => bindDurableCustodyProofOperation(transaction, source.record, source.artifacts),
+    { predecessorProofs: { [source.record.operation.operationId]: [predecessor] } },
+  );
+  return { database, adapter, scope, owner, source, predecessor };
+}
+
+function terminalRejection(source: ReturnType<typeof operationBinding>) {
+  return prepareDurableCustodyExactArtifact({
+    schemaVersion: 1,
+    kind: "authenticated-terminal-mint-rejection",
+    operationId: source.record.operation.operationId,
+    semanticKind: "ctf-redeem",
+    normalizedMint: MINT,
+    requestFingerprint: source.record.operation.exactRequest.requestFingerprint,
+    code: 13015,
+    transportProvenance: "authenticated-mint-transport",
+    transportOperationId: source.operation.operationId,
+    rejectionBody: { code: 13015 },
+    predecessorDisposition: "retain",
+    selectedSuccessorProofIds: [],
+  });
+}
+
 function operationBinding(
   scope: DurableCustodyScope,
   operationId: string,
   inputProof: Proof,
   outputSecret: string,
+  kind: "wallet-send" | "ctf-redeem" = "wallet-send",
 ): {
   record: DurableCustodyRecord;
   operation: DurableCustodyProofOperationInput;
@@ -865,13 +1171,13 @@ function operationBinding(
 } {
   const operation: DurableCustodyProofOperationInput = {
     operationId,
-    kind: "wallet-send",
+    kind,
     mintUrl: MINT,
     inputs: [inputProof],
     outputs: {
       authorization: [
         {
-          blindedMessage: { amount: 1, id: KEYSET, B_: `02${"33".repeat(32)}` },
+          blindedMessage: { amount: 1, id: inputProof.id, B_: `02${"33".repeat(32)}` },
           blindingFactor: "7",
           secret: outputSecret,
         },
@@ -887,13 +1193,17 @@ function operationBinding(
   };
   const facts = createDurableProofOperationFacts({
     unit: "msat",
-    binding: { kind: "wallet", activityId: operationId, stage: "send" },
+    binding: {
+      kind: "wallet",
+      activityId: operationId,
+      stage: kind === "ctf-redeem" ? "ctf-redeem" : "send",
+    },
     horizon: { notBeforeMs: null, notAfterMs: null, safetyMarginMs: 0 },
     hasOutputs: true,
     inputKeysetRequirement: "required",
     keysets: [
       {
-        keysetId: KEYSET,
+        keysetId: inputProof.id,
         unit: "msat",
         curve: "secp256k1",
         publicKeys: { "1": PUBLIC_KEY },
@@ -914,7 +1224,7 @@ function operationBinding(
       inventoryAccountId: null,
       exactBoundary: {
         method: "POST",
-        path: "/v1/swap",
+        path: kind === "ctf-redeem" ? "/v1/redeem_outcome" : "/v1/swap",
         idempotencyKey: operationId,
         ...artifacts,
       },

@@ -3,6 +3,7 @@ import "fake-indexeddb/auto";
 import { afterEach, describe, expect, it } from "vitest";
 import { deriveDurableCustodyScopeId } from "@bitcaster/client-sdk/durableCustody";
 import { createBrowserCustodyProofRow } from "../durable-custody-db";
+import type { BrowserCustodyProofRow } from "../durable-custody-types";
 import { BitcasterDB, getCanonicalCtfProofPage } from "../proof-db";
 
 const MINT = "https://mint.example";
@@ -72,7 +73,7 @@ describe("canonical CTF proof pages", () => {
     );
     await database.custodyProofs.bulkPut(rows);
 
-    const selected: typeof rows = [];
+    const selected: BrowserCustodyProofRow[] = [];
     let afterProofId: string | null = null;
     do {
       const page = await getCanonicalCtfProofPage(

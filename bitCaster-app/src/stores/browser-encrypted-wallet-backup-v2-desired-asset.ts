@@ -222,7 +222,7 @@ async function firstActiveProof(
     readonly keysetId: string;
   },
 ): Promise<BrowserCustodyProofRow | null> {
-  for (const state of ["selectable", "locked"] as const) {
+  for (const state of ["selectable", "locked", "verified-losing"] as const) {
     const rows = await database.custodyProofs
       .where("[scopeId+normalizedMint+unit+keysetId+selectability]")
       .equals([expected.scopeId, expected.normalizedMint, expected.unit, expected.keysetId, state])
@@ -290,7 +290,16 @@ async function persistDesiredAssetUpdates(
 }
 
 function isActive(proof: BrowserCustodyProofRow): boolean {
-  return proof.selectability === "selectable" || proof.selectability === "locked";
+  switch (proof.selectability) {
+    case "selectable":
+    case "locked":
+    case "verified-losing":
+      return true;
+    case "spent":
+      return false;
+    default:
+      throw new Error("browser V2 desired asset proof state is invalid");
+  }
 }
 
 function isBackupEligible(

@@ -213,6 +213,34 @@ export function bindBrowserProofBackupAuthorityTerminalOperation(
   });
 }
 
+/** Commit the proof revision and terminal binding as one strict authority row. */
+export function classifyBrowserProofBackupAuthorityVerifiedLosing(
+  current: BrowserProofBackupAuthorityRow,
+  proof: BrowserCustodyProofRow,
+  terminalOperationId: string,
+  classifiedAtMs: number,
+): BrowserProofBackupAuthorityRow {
+  const authority = requireBrowserProofBackupAuthorityRow(current);
+  requireProofBinding(authority, proof);
+  if (
+    authority.proofState !== "locked" ||
+    authority.terminalOperationId !== null ||
+    proof.selectability !== "verified-losing"
+  ) {
+    throw new Error("browser proof backup losing classification is invalid");
+  }
+  const time = requireTime(classifiedAtMs, "proof terminal classification time");
+  requireNextProofAuthorityRevision(authority, proof, time);
+  return requireBrowserProofBackupAuthorityRow({
+    ...authority,
+    proofRevision: proof.revision,
+    proofState: proof.selectability,
+    terminalOperationId: requireOperationId(terminalOperationId, "proof terminal operation"),
+    recordUpdatedAtUnixSeconds: Math.floor(time / 1_000),
+    updatedAtMs: time,
+  });
+}
+
 function requireNextProofAuthorityRevision(
   authority: BrowserProofBackupAuthorityRow,
   proof: BrowserCustodyProofRow,
@@ -247,6 +275,9 @@ export function requireBrowserProofBackupAuthorityRow(
     row.terminalOperationId === null
       ? null
       : requireOperationId(row.terminalOperationId, "proof terminal operation");
+  if (proofState === "verified-losing" && terminalOperationId === null) {
+    throw new Error("browser proof backup losing classification is unbound");
+  }
   if (recordUpdatedAtUnixSeconds < recordCreatedAtUnixSeconds) {
     throw new Error("browser proof backup authority is invalid");
   }
@@ -420,7 +451,12 @@ export function sameBrowserProofDerivationLocator(
 }
 
 function requireProofState(value: unknown): BrowserCustodyProofSelectability {
-  if (value !== "selectable" && value !== "locked" && value !== "spent") {
+  if (
+    value !== "selectable" &&
+    value !== "locked" &&
+    value !== "verified-losing" &&
+    value !== "spent"
+  ) {
     throw new Error("browser proof backup authority state is invalid");
   }
   return value;
