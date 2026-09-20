@@ -1,4 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import i18n from "@/i18n";
 import { Amount, OutputData } from "@cashu/cashu-ts";
 
 const mocks = vi.hoisted(() => ({
@@ -153,6 +154,33 @@ describe("registerConditionWithFee", () => {
       condition_id: "cond-1",
       keysets: { Yes: "ks-yes", No: "ks-no" },
     });
+  });
+
+  afterEach(async () => {
+    await i18n.changeLanguage("en");
+  });
+
+  it.each([
+    [
+      "en",
+      "The mint's market creation fee is invalid. Supported fees range from 0.001 sats to 1,000 sats.",
+    ],
+    [
+      "ja",
+      "ミントのマーケット作成手数料が無効です。対応する手数料の範囲は 0.001 sats から 1,000 sats です。",
+    ],
+  ])("reports invalid fee bounds in sats before payment (%s)", async (language, expected) => {
+    await i18n.changeLanguage(language);
+    await expect(
+      registerConditionWithFee({
+        mintUrl: "https://mint.example.test",
+        requiredFeeSubunits: 1_000_001,
+        request,
+      }),
+    ).rejects.toThrow(expected);
+    expect(mocks.getWalletForUnit).not.toHaveBeenCalled();
+    expect(mocks.executeOutgoing).not.toHaveBeenCalled();
+    expect(mocks.registerCondition).not.toHaveBeenCalled();
   });
 
   it("charges one-vs-rest registration fees for every generated collection", () => {

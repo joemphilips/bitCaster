@@ -2,7 +2,8 @@ import { TrendingUp, Droplets, Calendar, Clock, CheckCircle } from "lucide-react
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { MarketDetail } from "@/types/market-detail";
-import { formatMarketSubunits, normalizeMarketBaseAsset } from "@bitcaster/client-sdk/marketUnits";
+import { normalizeMarketBaseAsset } from "@bitcaster/client-sdk/marketUnits";
+import { InlineAmount } from "@/components/shared/InlineAmount";
 
 interface MarketStatsProps {
   market: MarketDetail;
@@ -61,13 +62,13 @@ export function MarketStats({ market }: MarketStatsProps) {
     {
       icon: TrendingUp,
       label: t("market.volume"),
-      value: formatMarketSubunits(market.volumeLifetimeSubunits, baseAsset),
+      value: <InlineAmount amountSubunits={market.volumeLifetimeSubunits} baseAsset={baseAsset} />,
       color: "text-blue-500",
     },
     {
       icon: Droplets,
       label: t("market.botBudget"),
-      value: formatMarketSubunits(market.ammBotBudgetSubunits, baseAsset),
+      value: <InlineAmount amountSubunits={market.ammBotBudgetSubunits} baseAsset={baseAsset} />,
       color: "text-cyan-500",
       testId: "market-bot-budget",
     },

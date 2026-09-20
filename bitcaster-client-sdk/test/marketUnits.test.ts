@@ -120,6 +120,24 @@ test('formats sat-only product amounts', () => {
   assert.throws(() => formatShareFace('sat', 10_000), /unsupported market divisibility/)
 })
 
+test('formats safe integer msat amounts without floating-point loss', () => {
+  const locale = new Intl.NumberFormat().resolvedOptions().locale
+  const separator = locale.startsWith('de') ? ',' : '.'
+  const expected = locale.startsWith('de')
+    ? '9.007.199.254.740,991 sats'
+    : '9,007,199,254,740.991 sats'
+  assert.equal(formatMarketSubunits(1_001, 'sat'), `1${separator}001 sats`)
+  assert.equal(formatMarketSubunits(-1_001, 'sat'), `-1${separator}001 sats`)
+  assert.equal(formatMarketSubunits(Number.MAX_SAFE_INTEGER, 'sat'), expected)
+  assert.equal(formatMarketSubunits(-Number.MAX_SAFE_INTEGER, 'sat'), `-${expected}`)
+})
+
+test('preserves noninteger and nonfinite amount formatting', () => {
+  assert.equal(formatMarketSubunits(1.5, 'sat'), '0.002 sats')
+  assert.equal(formatMarketSubunits(Number.POSITIVE_INFINITY, 'sat'), '0 sats')
+  assert.equal(formatMarketSubunits(Number.NaN, 'sat'), '0 sats')
+})
+
 test('computes sat-only buffer and fee estimate', () => {
   assert.equal(bufferSubunits('sat', 0), 0)
   assert.equal(bufferSubunits('sat', 10_000), 10_000)

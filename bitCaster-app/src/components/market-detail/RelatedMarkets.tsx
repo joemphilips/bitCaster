@@ -1,7 +1,8 @@
 import { ChevronRight, TrendingUp } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { RelatedMarket } from "@/types/market-detail";
-import { formatMarketSubunits, formatPricePercentage } from "@bitcaster/client-sdk/marketUnits";
+import { formatPricePercentage } from "@bitcaster/client-sdk/marketUnits";
+import { InlineAmount } from "@/components/shared/InlineAmount";
 
 interface RelatedMarketsProps {
   markets: RelatedMarket[];
@@ -60,7 +61,7 @@ function RelatedMarketCard({ market, onClick }: { market: RelatedMarket; onClick
       <div className="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
         <div className="flex items-center gap-1">
           <TrendingUp className="w-3.5 h-3.5" />
-          <span>{formatMarketSubunits(market.volume, market.baseAsset)}</span>
+          <InlineAmount amountSubunits={market.volume} baseAsset={market.baseAsset} />
         </div>
         <span>{formatClosingDate(market.closingDate, t, i18n.language)}</span>
       </div>

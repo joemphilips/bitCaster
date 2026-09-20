@@ -160,10 +160,36 @@ export function formatMarketSubunits(amountSubunits: number, baseAsset: unknown)
   requireMarketBaseAsset(baseAsset)
   if (!Number.isFinite(amountSubunits)) return '0 sats'
   const sign = amountSubunits < 0 ? '-' : ''
+  if (Number.isSafeInteger(amountSubunits)) {
+    return `${sign}${formatSafeIntegerMarketSubunits(Math.abs(amountSubunits))} sats`
+  }
   const absoluteAmount = Math.abs(amountSubunits)
   return `${sign}${(absoluteAmount / 1_000).toLocaleString(undefined, {
     maximumFractionDigits: 3,
   })} sats`
+}
+
+/** Keep the whole safe msat value exact before locale formatting. */
+function formatSafeIntegerMarketSubunits(amountSubunits: number): string {
+  const wholeSats = Math.floor(amountSubunits / 1_000)
+  const remainderMsat = amountSubunits % 1_000
+  const wholeText = new Intl.NumberFormat(undefined, {
+    maximumFractionDigits: 0,
+  }).format(wholeSats)
+  if (remainderMsat === 0) return wholeText
+
+  const fractionParts = new Intl.NumberFormat(undefined, {
+    minimumFractionDigits: 3,
+    maximumFractionDigits: 3,
+    useGrouping: false,
+  }).formatToParts(remainderMsat / 1_000)
+  const decimalSeparator = fractionParts.find((part) => part.type === 'decimal')?.value
+  const fractionText = fractionParts.find((part) => part.type === 'fraction')?.value
+  if (decimalSeparator === undefined || fractionText === undefined) {
+    throw new Error('locale does not provide a decimal fraction for msat formatting')
+  }
+  const fractionDigits = remainderMsat % 100 === 0 ? 1 : remainderMsat % 10 === 0 ? 2 : 3
+  return `${wholeText}${decimalSeparator}${fractionText.slice(0, fractionDigits)}`
 }
 
 export function formatAmount(amountSubunits: number, baseAsset: unknown): string {

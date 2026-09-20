@@ -1,6 +1,6 @@
 import type { Fund } from "@/types/portfolio";
 import { Coins } from "lucide-react";
-import { formatMarketSubunits } from "@bitcaster/client-sdk/marketUnits";
+import { InlineAmount } from "@/components/shared/InlineAmount";
 
 interface FundRowProps {
   fund: Fund;
@@ -27,7 +27,7 @@ export function FundRow({ fund }: FundRowProps) {
       {/* Amount */}
       <div className="text-right shrink-0">
         <div className="text-sm font-mono font-medium text-slate-900 dark:text-white">
-          {formatMarketSubunits(fund.amount, "sat")}
+          <InlineAmount amountSubunits={fund.amount} baseAsset="sat" />
         </div>
       </div>
     </li>

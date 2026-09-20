@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useNavigate } from "react-router";
+import { useTranslation } from "react-i18next";
 import type {
   WizardDraft,
   WizardStep,
@@ -126,6 +127,7 @@ function normalizeRestoredBinaryDraft(draft: WizardDraft): WizardDraft {
 }
 
 export function useMarketCreationState() {
+  const { t } = useTranslation();
   const navigate = useNavigate();
   const nostrSignerMode = useSettingsStore((s) => s.nostrSignerMode);
   const relays = useSettingsStore((s) => s.relays);
@@ -473,10 +475,7 @@ export function useMarketCreationState() {
         if (requiredRegistrationFee > MAX_CONDITION_REGISTRATION_FEE_SUBUNITS) {
           const requiredFee = formatMarketSubunits(requiredRegistrationFee, baseAsset);
           const maxFee = formatMarketSubunits(MAX_CONDITION_REGISTRATION_FEE_SUBUNITS, baseAsset);
-          throw new Error(
-            `This mint requires a ${requiredFee} condition registration fee, ` +
-              `which exceeds the ${maxFee} app limit.`,
-          );
+          throw new Error(t("marketCreation.registrationFeeOverLimit", { requiredFee, maxFee }));
         }
 
         const wallet = useWalletStore.getState();
@@ -623,7 +622,7 @@ export function useMarketCreationState() {
         setIsSubmitting(false);
       }
     },
-    [thumbnailFile, isSubmitting, navigate, nostrSignerMode, relays, clearDraft],
+    [thumbnailFile, isSubmitting, navigate, nostrSignerMode, relays, clearDraft, t],
   );
 
   const onCreateMarket = useCallback(async () => {

@@ -13,6 +13,7 @@ import type { DurableWalletProofDerivationLocator } from "@bitcaster/client-sdk/
 import type { DurableOutgoingCashuTransfer } from "@bitcaster/client-sdk/durableOutgoingCashuTransfer";
 import {
   defaultCollateralUnit,
+  formatMarketSubunits,
   parseCashuProofUnit,
   type CashuProofUnit,
 } from "@bitcaster/client-sdk/marketUnits";
@@ -29,6 +30,7 @@ import { recoverBrowserFundedAsset } from "@/lib/browserFundedAssetRecovery";
 import { captureBrowserMintPersistenceContext, getWalletForUnit } from "@/lib/cashu";
 import { MintError, registerCondition } from "@/lib/markets";
 import { getBoundedCanonicalRegularProofs, type StoredProof } from "@/stores/proof-db";
+import i18n from "@/i18n";
 
 export const MAX_CONDITION_REGISTRATION_FEE_SUBUNITS = 1_000_000;
 const REGISTRATION_FEE_TOKEN_BYTES_LIMIT = 61_440;
@@ -81,7 +83,10 @@ export async function registerConditionWithFee(input: {
     input.requiredFeeSubunits > MAX_CONDITION_REGISTRATION_FEE_SUBUNITS
   ) {
     throw new Error(
-      `Condition registration fee must be between 1 and ${MAX_CONDITION_REGISTRATION_FEE_SUBUNITS} subunits.`,
+      i18n.t("marketCreation.registrationFeeInvalid", {
+        minimum: formatMarketSubunits(1, "sat"),
+        maximum: formatMarketSubunits(MAX_CONDITION_REGISTRATION_FEE_SUBUNITS, "sat"),
+      }),
     );
   }
 

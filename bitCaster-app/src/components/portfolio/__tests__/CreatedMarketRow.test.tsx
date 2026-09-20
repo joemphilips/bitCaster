@@ -44,7 +44,7 @@ describe("CreatedMarketRow", () => {
     );
 
     expect(screen.getByText("Vol: 2.5 sats")).toBeInTheDocument();
-    expect(screen.getByText("0.125 sats")).toBeInTheDocument();
+    expect(screen.getByRole("group", { name: "0.125 sats" })).toBeInTheDocument();
   });
 
   it("shows a working close-market control inline before the view button", async () => {

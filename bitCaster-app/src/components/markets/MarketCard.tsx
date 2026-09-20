@@ -4,7 +4,8 @@ import { useTranslation } from "react-i18next";
 import { getMarketThumbnail } from "@/lib/markets";
 import { useBookmarkStore } from "@/stores/bookmarks";
 import { useMarketState } from "@/hooks/useMarketState";
-import { formatMarketSubunits, formatPricePercentage } from "@bitcaster/client-sdk/marketUnits";
+import { formatPricePercentage } from "@bitcaster/client-sdk/marketUnits";
+import { InlineAmount } from "@/components/shared/InlineAmount";
 import type {
   Market,
   YesNoMarket,
@@ -135,11 +136,7 @@ function CategoricalOutcomes({
                 <span
                   aria-label={
                     outcome.odds == null
-                      ? t(
-                            priceAuthorityUnavailable
-                            ? "market.priceUnavailable"
-                            : "trade.noTrades",
-                        )
+                      ? t(priceAuthorityUnavailable ? "market.priceUnavailable" : "trade.noTrades")
                       : undefined
                   }
                 >
@@ -413,7 +410,10 @@ export function MarketCard({
           >
             <TrendingUp className="w-3.5 h-3.5 flex-shrink-0" />
             <span className="truncate">
-              {formatMarketSubunits(market.volumeLifetimeSubunits, market.baseAsset)}
+              <InlineAmount
+                amountSubunits={market.volumeLifetimeSubunits}
+                baseAsset={market.baseAsset}
+              />
             </span>
           </div>
           <div
@@ -424,7 +424,10 @@ export function MarketCard({
           >
             <Droplet className="w-3.5 h-3.5" />
             <span className="font-mono font-medium">
-              {formatMarketSubunits(market.ammBotBudgetSubunits, market.baseAsset)}
+              <InlineAmount
+                amountSubunits={market.ammBotBudgetSubunits}
+                baseAsset={market.baseAsset}
+              />
             </span>
           </div>
           <button

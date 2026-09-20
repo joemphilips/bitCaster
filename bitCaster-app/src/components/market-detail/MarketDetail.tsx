@@ -203,12 +203,13 @@ export function MarketDetail({
 
   return (
     <div className="min-h-screen bg-slate-50 pb-[calc(9rem+env(safe-area-inset-bottom))] dark:bg-slate-900 lg:pb-0">
-      {/* Desktop Layout: Two Columns (single column when resolved) */}
+      {/* Desktop Layout: keep the panel out of the main content flow so its
+          height does not stretch the gap between the header and chart. */}
       <div className="max-w-7xl mx-auto">
-        <div className="p-4 lg:grid lg:grid-cols-[1fr_380px] lg:gap-6 lg:p-6">
+        <div className="relative p-4 lg:p-6">
           {/* Header stays before the panel on mobile and occupies the first
               column above the content on desktop. */}
-          <div className="order-1 space-y-6 lg:col-start-1 lg:row-start-1">
+          <div className="order-1 space-y-6 lg:mr-[404px]">
             <div className="bg-white dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 overflow-hidden">
               <MarketHeader market={market} onShare={onShare} />
             </div>
@@ -228,13 +229,13 @@ export function MarketDetail({
           </div>
 
           <div
-            className="order-2 lg:col-start-2 lg:row-start-1 lg:row-span-full"
+            className="order-2 lg:absolute lg:top-6 lg:right-6 lg:bottom-6 lg:w-[380px]"
             data-testid="trading-panel-responsive"
           >
             <div className="lg:sticky lg:top-6">{tradingPanel}</div>
           </div>
 
-          <div className="order-3 space-y-6 lg:col-start-1 lg:row-start-2">
+          <div className="order-3 mt-6 space-y-6 lg:mr-[404px]">
             <PriceChart
               priceHistory={market.priceHistory}
               chartTimeframe={chartTimeframe}
@@ -243,9 +244,9 @@ export function MarketDetail({
               outcomes={market.type === "categorical" ? outcomes : undefined}
               currentDisplay={currentDisplay}
               emptyDisplay={
-                market.type !== "numeric"
-                && market.latestConfirmedTradesValid === true
-                && market.latestConfirmedTrades?.length === 0
+                market.type !== "numeric" &&
+                market.latestConfirmedTradesValid === true &&
+                market.latestConfirmedTrades?.length === 0
                   ? t("trade.noTrades")
                   : undefined
               }
@@ -344,7 +345,8 @@ export function MarketDetail({
                       ? t("trade.previewLoading")
                       : tradeAmount > 0
                         ? t("trade.shareCount", {
-                            count: tradeAmount.toLocaleString(),
+                            count: tradeAmount,
+                            formattedCount: tradeAmount.toLocaleString(),
                           })
                         : t("trade.enterAmount")}
                 </p>

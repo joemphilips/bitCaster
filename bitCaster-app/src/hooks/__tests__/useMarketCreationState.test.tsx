@@ -1,5 +1,6 @@
 import { renderHook, act, waitFor } from "@testing-library/react";
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import i18n from "@/i18n";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router";
 import { useSettingsStore } from "@/stores/settings";
@@ -524,7 +525,21 @@ describe("useMarketCreationState – onCreateMarket", () => {
     expect(mockRegisterConditionWithFee).not.toHaveBeenCalled();
   });
 
-  it("blocks market creation when the registration fee exceeds the app cap", async () => {
+  afterEach(async () => {
+    await i18n.changeLanguage("en");
+  });
+
+  it.each([
+    [
+      "en",
+      "This mint requires a 1,000.001 sats condition registration fee, which exceeds the 1,000 sats app limit.",
+    ],
+    [
+      "ja",
+      "このミントのマーケット作成手数料 1,000.001 sats は、アプリの上限 1,000 sats を超えています。",
+    ],
+  ])("shows the registration fee cap in sats (%s)", async (language, expected) => {
+    await i18n.changeLanguage(language);
     mockWalletState.mints[0].info.nuts.CTF.registration_fees = [
       { unit: "msat", registration_fee_base: 1000001, registration_fee_per_keyset: 0 },
     ];
@@ -534,9 +549,7 @@ describe("useMarketCreationState – onCreateMarket", () => {
       await result.current.onCreateMarket();
     });
 
-    expect(result.current.submitError).toBe(
-      "This mint requires a 1,000.001 sats condition registration fee, which exceeds the 1,000 sats app limit.",
-    );
+    expect(result.current.submitError).toBe(expected);
     expect(mockRegisterConditionWithFee).not.toHaveBeenCalled();
     expect(mockCreateMarket).not.toHaveBeenCalled();
   });

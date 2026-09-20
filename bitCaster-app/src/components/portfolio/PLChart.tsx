@@ -1,5 +1,5 @@
 import type { PLChartData, PLTimeSelector } from "@/types/portfolio";
-import { formatMarketSubunits } from "@bitcaster/client-sdk/marketUnits";
+import { InlineAmount } from "@/components/shared/InlineAmount";
 
 const TIME_RANGES: PLTimeSelector[] = ["1D", "1W", "1M", "ALL"];
 
@@ -55,14 +55,14 @@ export function PLChart({
           <div className="text-2xl font-bold text-amber-600 dark:text-amber-300">—</div>
         ) : totalValueSats != null ? (
           <div className="text-2xl font-bold font-mono text-slate-900 dark:text-white">
-            {formatMarketSubunits(totalValueSats, "sat")}
+            <InlineAmount amountSubunits={totalValueSats} baseAsset="sat" />
           </div>
         ) : (
           <div
             className={`text-2xl font-bold font-mono ${isPositive ? "text-emerald-500" : "text-rose-500"}`}
           >
             {isPositive ? "+" : ""}
-            {formatMarketSubunits(currentPL, "sat")}
+            <InlineAmount amountSubunits={currentPL} baseAsset="sat" />
           </div>
         )}
         {valuationKnown && data.length > 0 && (
@@ -70,7 +70,7 @@ export function PLChart({
             className={`text-sm font-mono ${periodPositive ? "text-emerald-500" : "text-rose-500"}`}
           >
             {periodPositive ? "+" : ""}
-            {formatMarketSubunits(periodChange, "sat")} this period
+            <InlineAmount amountSubunits={periodChange} baseAsset="sat" /> this period
           </div>
         )}
       </div>

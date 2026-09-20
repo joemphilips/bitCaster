@@ -13,7 +13,8 @@ import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router";
 import type { MarketDetail } from "@/types/market-detail";
-import { formatMarketSubunits, normalizeMarketBaseAsset } from "@bitcaster/client-sdk/marketUnits";
+import { normalizeMarketBaseAsset } from "@bitcaster/client-sdk/marketUnits";
+import { InlineAmount } from "@/components/shared/InlineAmount";
 import { fetchPublicNostrProfile, type PublicNostrProfile } from "@/lib/nostr";
 import { getMintIconUrl } from "@/lib/mints";
 import { assertNever } from "@/lib/enumDiscipline";
@@ -328,7 +329,7 @@ export function MarketHeader({ market, onShare }: MarketHeaderProps) {
             aria-label={t("market.volume")}
           >
             <TrendingUp className="w-3.5 h-3.5" />
-            <span>{formatMarketSubunits(market.volumeLifetimeSubunits, baseAsset)}</span>
+            <InlineAmount amountSubunits={market.volumeLifetimeSubunits} baseAsset={baseAsset} />
           </div>
           <div
             className="flex items-center gap-1"
@@ -338,7 +339,7 @@ export function MarketHeader({ market, onShare }: MarketHeaderProps) {
           >
             <Droplet className="w-3.5 h-3.5" />
             <span className="font-mono font-medium">
-              {formatMarketSubunits(market.ammBotBudgetSubunits, baseAsset)}
+              <InlineAmount amountSubunits={market.ammBotBudgetSubunits} baseAsset={baseAsset} />
             </span>
           </div>
           <button

@@ -40,7 +40,8 @@ within the limit or does not fill. It does not stay on the order book for later.
 Markets can have two outcomes, such as Yes and No, or up to eight named
 outcomes. You can fund your wallet through a Lightning invoice or with an
 existing Cashu token from the supported mint. The app shows amounts in sats.
-Small amounts can have decimal places.
+Small amounts can have decimal places. Compact balance and market summaries
+show these digits in smaller text. The amount stays exact.
 
 Check the selected outcome before confirming. In the example above, Alpha
 means that Alpha wins. Not Alpha means that Beta or Gamma wins.

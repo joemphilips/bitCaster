@@ -2,7 +2,8 @@ import type { KeyboardEvent } from "react";
 import { Trash2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { Position } from "@/types/portfolio";
-import { formatMarketSubunits, normalizeMarketBaseAsset } from "@bitcaster/client-sdk/marketUnits";
+import { normalizeMarketBaseAsset } from "@bitcaster/client-sdk/marketUnits";
+import { InlineAmount } from "@/components/shared/InlineAmount";
 
 interface PositionRowProps {
   position: Position;
@@ -126,14 +127,14 @@ export function PositionRow({ position, onSell, onClaim, onDiscard, onView }: Po
         ) : (
           <>
             <div className="text-sm font-mono font-medium text-slate-900 dark:text-white">
-              {formatMarketSubunits(position.currentValueSats, baseAsset)}
+              <InlineAmount amountSubunits={position.currentValueSats} baseAsset={baseAsset} />
             </div>
             <div
               className={`text-xs font-mono ${isPositive ? "text-emerald-500" : "text-rose-500"}`}
             >
               {isPositive ? "+" : ""}
-              {formatMarketSubunits(position.profitLossSats, baseAsset)} ({isPositive ? "+" : ""}
-              {position.profitLossPercent.toFixed(1)}%)
+              <InlineAmount amountSubunits={position.profitLossSats} baseAsset={baseAsset} />
+              {` (${isPositive ? "+" : ""}${position.profitLossPercent.toFixed(1)}%)`}
             </div>
           </>
         )}

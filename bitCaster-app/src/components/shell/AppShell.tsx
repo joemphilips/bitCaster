@@ -6,7 +6,7 @@ import { MainNav } from "./MainNav";
 import { UserMenu } from "./UserMenu";
 import { NotificationBell } from "./NotificationBell";
 import { BitCasterLogo } from "./BitCasterLogo";
-import { formatMarketSubunits } from "@bitcaster/client-sdk/marketUnits";
+import { InlineAmount } from "@/components/shared/InlineAmount";
 
 export interface AppShellProps {
   children: React.ReactNode;
@@ -203,7 +203,7 @@ export function AppShell({
               <div>
                 <div className="font-medium text-slate-900 dark:text-slate-100">{user.name}</div>
                 <div className="text-sm text-amber-400 font-mono">
-                  {formatMarketSubunits(user.balance ?? 0, "sat")}
+                  <InlineAmount amountSubunits={user.balance ?? 0} baseAsset="sat" />
                 </div>
               </div>
             </div>

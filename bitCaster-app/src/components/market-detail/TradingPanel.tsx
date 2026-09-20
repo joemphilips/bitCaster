@@ -28,9 +28,12 @@ function formatNullablePrice(
   authority: Pick<MarketDetail, "latestConfirmedTrades" | "latestConfirmedTradesValid">,
   noTrades: string,
   priceUnavailable: string,
-): string {
-  if (authority.latestConfirmedTradesValid !== true) return priceUnavailable;
-  return price == null ? noTrades : formatPricePercentage(price, divisibility);
+): React.ReactNode {
+  if (authority.latestConfirmedTradesValid !== true) {
+    return <span aria-label={priceUnavailable}>—</span>;
+  }
+  if (price == null) return <span aria-label={noTrades}>—</span>;
+  return formatPricePercentage(price, divisibility);
 }
 
 interface TradingPanelProps {
@@ -515,6 +518,14 @@ function feeAssetLabel(asset: TradeFeeFacts["settlementAsset"]): string {
   return asset.kind === "regular" ? "sats" : "conditional tokens";
 }
 
+function formatFeeAmount(
+  value: string | number | bigint,
+  asset: TradeFeeFacts["settlementAsset"],
+): string {
+  const amount = formatMsatSubunits(value);
+  return asset.kind === "regular" ? amount : `${amount} (${feeAssetLabel(asset)})`;
+}
+
 function previewReasonKey(reason: string): string {
   return `trade.previewReason.${reason}`;
 }
@@ -688,8 +699,7 @@ function FokOrderPreviewSection({
                 data-testid="trade-settlement-input-fee"
                 className="text-slate-600 dark:text-slate-300"
               >
-                {formatMsatSubunits(feeFacts.settlementInputFeeSubunits)} (
-                {feeAssetLabel(feeFacts.settlementAsset)})
+                {formatFeeAmount(feeFacts.settlementInputFeeSubunits, feeFacts.settlementAsset)}
               </span>
             </div>
             <div className="flex justify-between text-sm">
@@ -700,8 +710,7 @@ function FokOrderPreviewSection({
                 data-testid="trade-source-preparation-fee"
                 className="text-slate-600 dark:text-slate-300"
               >
-                {formatMsatSubunits(feeFacts.sourcePreparationFeeSubunits)} (
-                {feeAssetLabel(feeFacts.preparationAsset)})
+                {formatFeeAmount(feeFacts.sourcePreparationFeeSubunits, feeFacts.preparationAsset)}
               </span>
             </div>
             <div className="flex justify-between text-sm">
@@ -712,8 +721,7 @@ function FokOrderPreviewSection({
                 data-testid="trade-consolidation-fee"
                 className="text-slate-600 dark:text-slate-300"
               >
-                {formatMsatSubunits(feeFacts.consolidationFeeSubunits)} (
-                {feeAssetLabel(feeFacts.preparationAsset)})
+                {formatFeeAmount(feeFacts.consolidationFeeSubunits, feeFacts.preparationAsset)}
               </span>
             </div>
             {buyTotal != null && (
@@ -806,7 +814,10 @@ export function TradingPanel({
   const divisibility = validDivisibility ?? 0;
   const wholeShareLabel = divisibility > 0 ? formatShareFace(baseAsset, divisibility) : "";
   const shareCountLabel = (shares: number) =>
-    t("trade.shareCount", { count: shares.toLocaleString() });
+    t("trade.shareCount", {
+      count: shares,
+      formattedCount: shares.toLocaleString(),
+    });
   const [tradeAmountText, setTradeAmountText] = useState(
     tradeAmount > 0 ? String(tradeAmount) : "",
   );

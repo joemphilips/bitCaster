@@ -1,6 +1,7 @@
 import { useTranslation } from "react-i18next";
 import type { ActivityItem, ActivityType } from "@/types/portfolio";
-import { formatMarketSubunits, normalizeMarketBaseAsset } from "@bitcaster/client-sdk/marketUnits";
+import { normalizeMarketBaseAsset } from "@bitcaster/client-sdk/marketUnits";
+import { InlineAmount } from "@/components/shared/InlineAmount";
 import { ArrowDownLeft, ArrowUpRight, ShoppingCart, Tag, Trophy, Coins } from "lucide-react";
 
 const TYPE_META: Record<
@@ -118,7 +119,10 @@ export function ActivityFeed({ activity, onViewActivity }: ActivityFeedProps) {
                 item.type === "creator_fee_claimed"
                   ? "+"
                   : "-"}
-                {formatMarketSubunits(item.amountSats, normalizeMarketBaseAsset(item.baseAsset))}
+                <InlineAmount
+                  amountSubunits={item.amountSats}
+                  baseAsset={normalizeMarketBaseAsset(item.baseAsset)}
+                />
               </div>
               <div className="flex items-center justify-end gap-1 mt-0.5">
                 <span className="text-xs text-slate-400 dark:text-slate-500">{date}</span>

@@ -7,7 +7,9 @@ import type {
   TradeFeeFacts,
 } from "@/types/market-detail";
 
-vi.mock("../MarketHeader", () => ({ MarketHeader: () => <div /> }));
+vi.mock("../MarketHeader", () => ({
+  MarketHeader: () => <div data-testid="market-header-mock" />,
+}));
 const { tradingPanelMock } = vi.hoisted(() => ({
   tradingPanelMock: vi.fn(
     (props: { tradeTab?: string; onTradeTabChange?: (tab: string) => void }) => (
@@ -17,8 +19,14 @@ const { tradingPanelMock } = vi.hoisted(() => ({
 }));
 vi.mock("../TradingPanel", () => ({ TradingPanel: tradingPanelMock }));
 vi.mock("../PriceChart", () => ({
-  PriceChart: ({ currentDisplay, emptyDisplay }: { currentDisplay?: string; emptyDisplay?: string }) => (
-    <div>
+  PriceChart: ({
+    currentDisplay,
+    emptyDisplay,
+  }: {
+    currentDisplay?: string;
+    emptyDisplay?: string;
+  }) => (
+    <div data-testid="price-chart-mock">
       <div>{currentDisplay}</div>
       <div data-testid="chart-empty-display">{emptyDisplay}</div>
     </div>
@@ -53,7 +61,7 @@ function makeMarket(overrides: Partial<MarketDetailType> = {}): MarketDetailType
     activeSince: "2026-01-01T00:00:00Z",
     state: "open",
     baseAsset: "sat",
-          divisibility: 1_000,
+    divisibility: 1_000,
     baseUnit: "sats",
     creator: {
       id: "creator",
@@ -164,6 +172,29 @@ describe("MarketDetail", () => {
     expect(screen.getByTestId("trading-panel-mock")).toBeInTheDocument();
   });
 
+  it("keeps mobile source order while isolating the desktop panel column", () => {
+    render(
+      <MarketDetail
+        market={makeMarket()}
+        chartTimeframe="7d"
+        tradeSelection={null}
+        tradeAmount={0}
+        tradePreview={null}
+        tradeSide="Buy"
+        orderType="market"
+        limitOrderPreview={null}
+        limitPrice={50}
+      />,
+    );
+
+    const panel = screen.getByTestId("trading-panel-responsive");
+    const header = screen.getByTestId("market-header-mock");
+    const chart = screen.getByTestId("price-chart-mock");
+
+    expect(header.compareDocumentPosition(panel) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(panel.compareDocumentPosition(chart) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
   it("does not expose sticky confirm for an empty selected route or LIQUIDITY", () => {
     const emptyMarket = makeMarket({
       orderBook: { bids: [], asks: [], spread: 0 },
@@ -261,37 +292,62 @@ describe("MarketDetail", () => {
   });
 
   it.each([
-    ["valid empty authority", { latestConfirmedTradesValid: true, latestConfirmedTrades: [] }, true],
-    ["categorical empty authority", {
-      type: "categorical", latestConfirmedTradesValid: true, latestConfirmedTrades: [],
-    }, true],
-    ["disabled numeric empty authority", {
-      type: "numeric", unit: "USD", precision: 2, loBound: 0, hiBound: 100,
-      currentPrice: null, latestConfirmedTradesValid: true, latestConfirmedTrades: [],
-    }, false],
+    [
+      "valid empty authority",
+      { latestConfirmedTradesValid: true, latestConfirmedTrades: [] },
+      true,
+    ],
+    [
+      "categorical empty authority",
+      {
+        type: "categorical",
+        latestConfirmedTradesValid: true,
+        latestConfirmedTrades: [],
+      },
+      true,
+    ],
+    [
+      "disabled numeric empty authority",
+      {
+        type: "numeric",
+        unit: "USD",
+        precision: 2,
+        loBound: 0,
+        hiBound: 100,
+        currentPrice: null,
+        latestConfirmedTradesValid: true,
+        latestConfirmedTrades: [],
+      },
+      false,
+    ],
     ["invalid authority", { latestConfirmedTradesValid: false, latestConfirmedTrades: [] }, false],
     ["missing authority", {}, false],
     ["missing records", { latestConfirmedTradesValid: true }, false],
-    ["traded with empty history", {
-      latestConfirmedTradesValid: true,
-      latestConfirmedTrades: [{
-        primitiveOutcomeId: "Yes",
-        fillId: "00000000-0000-0000-0000-000000000010",
-        executedAt: "2030-01-01T00:00:00Z",
-        eventOrder: "0001",
-        priceTick: 500,
-        divisibility: 1_000,
-        faceAmountSubunits: 100,
-      }],
-    }, false],
+    [
+      "traded with empty history",
+      {
+        latestConfirmedTradesValid: true,
+        latestConfirmedTrades: [
+          {
+            primitiveOutcomeId: "Yes",
+            fillId: "00000000-0000-0000-0000-000000000010",
+            executedAt: "2030-01-01T00:00:00Z",
+            eventOrder: "0001",
+            priceTick: 500,
+            divisibility: 1_000,
+            faceAmountSubunits: 100,
+          },
+        ],
+      },
+      false,
+    ],
   ] as const)("sets the chart empty message from %s", (_name, authority, noTrades) => {
     render(
       <MarketDetail
         market={makeMarket({
           ...authority,
-          latestConfirmedTrades: "latestConfirmedTrades" in authority
-            ? [...authority.latestConfirmedTrades]
-            : undefined,
+          latestConfirmedTrades:
+            "latestConfirmedTrades" in authority ? [...authority.latestConfirmedTrades] : undefined,
         })}
         chartTimeframe="7d"
         tradeSelection={null}
@@ -304,8 +360,9 @@ describe("MarketDetail", () => {
       />,
     );
 
-    expect(screen.getByTestId("chart-empty-display").textContent)
-      .toBe(noTrades ? "No trades yet" : "");
+    expect(screen.getByTestId("chart-empty-display").textContent).toBe(
+      noTrades ? "No trades yet" : "",
+    );
   });
 
   it("keeps the disabled numeric current value unavailable", () => {
@@ -384,7 +441,7 @@ describe("MarketDetail", () => {
     render(
       <MarketDetail
         market={makeMarket({
-    divisibility: 1_000,
+          divisibility: 1_000,
           outcomeOrderBooks: {
             Yes: {
               bids: [],
@@ -627,9 +684,37 @@ describe("MarketDetail", () => {
       />,
     );
 
-    expect(screen.getByText("This order cannot be filled at the requested terms.")).toBeInTheDocument();
+    expect(
+      screen.getByText("This order cannot be filled at the requested terms."),
+    ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Confirm" })).toBeDisabled();
   });
+
+  it.each([
+    [1, "1 share"],
+    [2, "2 shares"],
+  ] as const)(
+    "localizes the mobile confirmation share count for %s",
+    (tradeAmount, expectedLabel) => {
+      render(
+        <MarketDetail
+          market={makeMarket()}
+          chartTimeframe="7d"
+          tradeSelection={{ side: "yes" }}
+          tradeAmount={tradeAmount}
+          tradePreview={readyPreview()}
+          tradeFeeFacts={feeFacts()}
+          feeConsentCurrent
+          tradeSide="Buy"
+          orderType="market"
+          limitOrderPreview={null}
+          limitPrice={50}
+        />,
+      );
+
+      expect(screen.getByText(expectedLabel)).toBeInTheDocument();
+    },
+  );
 
   it("keeps the mobile sticky confirm for categorical NO complement liquidity", () => {
     const categoricalMarket = makeMarket({

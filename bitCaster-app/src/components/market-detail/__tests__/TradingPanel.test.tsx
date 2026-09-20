@@ -510,8 +510,10 @@ describe("TradingPanel", () => {
       />,
     );
 
-    expect(screen.getAllByText("No trades yet")).toHaveLength(2);
-    expect(screen.queryAllByText("market.priceUnavailable")).toHaveLength(0);
+    expect(screen.getAllByLabelText("No trades yet")).toHaveLength(2);
+    expect(screen.getAllByText("—")).toHaveLength(2);
+    expect(screen.queryAllByLabelText("market.priceUnavailable")).toHaveLength(0);
+    expect(screen.getByRole("button", { name: "Yes No trades yet" })).toBeInTheDocument();
   });
 
   it("labels malformed or missing price authority as unavailable", () => {
@@ -532,8 +534,10 @@ describe("TradingPanel", () => {
       />,
     );
 
-    expect(screen.getAllByText("market.priceUnavailable")).toHaveLength(2);
-    expect(screen.queryAllByText("No trades yet")).toHaveLength(0);
+    expect(screen.getAllByLabelText("market.priceUnavailable")).toHaveLength(2);
+    expect(screen.queryAllByLabelText("No trades yet")).toHaveLength(0);
+    expect(screen.getAllByText("—")).toHaveLength(2);
+    expect(screen.getByRole("button", { name: "Yes market.priceUnavailable" })).toBeInTheDocument();
   });
 
   it("keeps a valid partial categorical snapshot as no trades only for null outcomes", () => {
@@ -571,8 +575,8 @@ describe("TradingPanel", () => {
     );
 
     expect(screen.getByText("25.0%")).toBeInTheDocument();
-    expect(screen.getByText("No trades yet")).toBeInTheDocument();
-    expect(screen.queryByText("market.priceUnavailable")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("No trades yet")).toHaveTextContent("—");
+    expect(screen.queryByLabelText("market.priceUnavailable")).not.toBeInTheDocument();
   });
 
   function StatefulLimitTradingPanel({
@@ -638,15 +642,9 @@ describe("TradingPanel", () => {
     expect(screen.getByTestId("trade-projected-final-price")).toHaveTextContent("0.0310%");
     expect(screen.getByText("Quote payment")).toBeInTheDocument();
     expect(screen.getByTestId("trade-quote-payment")).toHaveTextContent("15.000 sats");
-    expect(screen.getByTestId("trade-settlement-input-fee")).toHaveTextContent(
-      "10.000 sats (sats)",
-    );
-    expect(screen.getByTestId("trade-source-preparation-fee")).toHaveTextContent(
-      "2.000 sats (sats)",
-    );
-    expect(screen.getByTestId("trade-consolidation-fee")).toHaveTextContent(
-      "3.000 sats (sats)",
-    );
+    expect(screen.getByTestId("trade-settlement-input-fee")).toHaveTextContent(/^10\.000 sats$/);
+    expect(screen.getByTestId("trade-source-preparation-fee")).toHaveTextContent(/^2\.000 sats$/);
+    expect(screen.getByTestId("trade-consolidation-fee")).toHaveTextContent(/^3\.000 sats$/);
     expect(screen.getByTestId("trade-grand-total")).toHaveTextContent("30.000 sats");
     expect(screen.getByRole("button", { name: "Buy YES for 50 shares" })).toBeInTheDocument();
     expect(screen.queryByText("Market Creator fee (1%)")).not.toBeInTheDocument();
@@ -655,6 +653,26 @@ describe("TradingPanel", () => {
     expect(
       screen.queryByText("Gross settlement payout per filled share if this outcome wins"),
     ).not.toBeInTheDocument();
+  });
+
+  it.each([
+    [1, "Buy YES for 1 share"],
+    [2, "Buy YES for 2 shares"],
+  ] as const)("localizes the confirmation share count for %s", (tradeAmount, buttonName) => {
+    render(
+      <TradingPanel
+        market={makeMarket()}
+        tradeSelection={{ side: "yes" }}
+        tradeAmount={tradeAmount}
+        tradePreview={readyPreview()}
+        feeConsentCurrent
+        tradeSide="Buy"
+        orderType="market"
+        onTradeConfirm={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: buttonName })).toBeInTheDocument();
   });
 
   it("turns buy submit into a top-up button when local funds are insufficient", () => {
@@ -770,15 +788,9 @@ describe("TradingPanel", () => {
     );
 
     expect(screen.getByTestId("trade-quote-payment")).toHaveTextContent("0.150 sats");
-    expect(screen.getByTestId("trade-settlement-input-fee")).toHaveTextContent(
-      "0.100 sats (sats)",
-    );
-    expect(screen.getByTestId("trade-source-preparation-fee")).toHaveTextContent(
-      "0.200 sats (sats)",
-    );
-    expect(screen.getByTestId("trade-consolidation-fee")).toHaveTextContent(
-      "0.300 sats (sats)",
-    );
+    expect(screen.getByTestId("trade-settlement-input-fee")).toHaveTextContent(/^0\.100 sats$/);
+    expect(screen.getByTestId("trade-source-preparation-fee")).toHaveTextContent(/^0\.200 sats$/);
+    expect(screen.getByTestId("trade-consolidation-fee")).toHaveTextContent(/^0\.300 sats$/);
     expect(screen.getByTestId("trade-fee-consent-required")).toBeInTheDocument();
     expect(screen.getByTestId("trade-confirm")).toBeDisabled();
   });
@@ -803,9 +815,7 @@ describe("TradingPanel", () => {
     expect(screen.getByText(/Price per share: 0\.30 sats \(30\.0%\)/)).toBeInTheDocument();
     expect(screen.getByText("Quote payment")).toBeInTheDocument();
     expect(screen.getByTestId("trade-quote-payment")).toHaveTextContent("15.000 sats");
-    expect(screen.getByTestId("trade-settlement-input-fee")).toHaveTextContent(
-      "10.000 sats (sats)",
-    );
+    expect(screen.getByTestId("trade-settlement-input-fee")).toHaveTextContent(/^10\.000 sats$/);
     expect(screen.getByTestId("trade-grand-total")).toHaveTextContent("30.000 sats");
     expect(screen.queryByText("Shares you receive if order fills")).not.toBeInTheDocument();
     expect(screen.queryByText("Market Creator fee (1%)")).not.toBeInTheDocument();
@@ -845,15 +855,9 @@ describe("TradingPanel", () => {
 
     expect(screen.getByText("1 share = 1 sats")).toBeInTheDocument();
     expect(screen.getByTestId("trade-quote-payment")).toHaveTextContent("0.100 sats");
-    expect(screen.getByTestId("trade-settlement-input-fee")).toHaveTextContent(
-      "0.001 sats (sats)",
-    );
-    expect(screen.getByTestId("trade-source-preparation-fee")).toHaveTextContent(
-      "0.002 sats (sats)",
-    );
-    expect(screen.getByTestId("trade-consolidation-fee")).toHaveTextContent(
-      "0.003 sats (sats)",
-    );
+    expect(screen.getByTestId("trade-settlement-input-fee")).toHaveTextContent(/^0\.001 sats$/);
+    expect(screen.getByTestId("trade-source-preparation-fee")).toHaveTextContent(/^0\.002 sats$/);
+    expect(screen.getByTestId("trade-consolidation-fee")).toHaveTextContent(/^0\.003 sats$/);
     expect(screen.getByTestId("trade-grand-total")).toHaveTextContent("0.106 sats");
   });
 
@@ -1058,9 +1062,7 @@ describe("TradingPanel", () => {
     expect(screen.getByText("Quote proceeds")).toBeInTheDocument();
     expect(screen.getByTestId("trade-quote-payment")).toHaveTextContent("0.050 sats");
     expect(screen.getByTestId("trade-net-proceeds")).toHaveTextContent("-0.050 sats");
-    expect(screen.getByTestId("trade-settlement-input-fee")).toHaveTextContent(
-      "0.100 sats (sats)",
-    );
+    expect(screen.getByTestId("trade-settlement-input-fee")).toHaveTextContent(/^0\.100 sats$/);
     expect(screen.getByTestId("trade-source-preparation-fee")).toHaveTextContent(
       "5.000 sats (conditional tokens)",
     );
