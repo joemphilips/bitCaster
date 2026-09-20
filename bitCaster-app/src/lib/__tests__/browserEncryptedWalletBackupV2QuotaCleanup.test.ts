@@ -300,13 +300,14 @@ async function candidate(
       });
       await database.custodyProofs.put(proof);
       await database.custodyProofBackupAuthorities.put({
-        schemaVersion: 3,
+        schemaVersion: 4,
         scopeId,
         proofId: proof.proofId,
         proofFingerprint: proof.proofFingerprint,
         proofRevision: 0,
         proofState: "selectable",
         terminalOperationId: null,
+        terminalAuthority: null,
         recordCreatedAtUnixSeconds: 1,
         recordUpdatedAtUnixSeconds: 1,
         derivationLocator: null,

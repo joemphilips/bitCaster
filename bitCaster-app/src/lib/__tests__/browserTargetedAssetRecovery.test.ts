@@ -382,11 +382,11 @@ it("keeps exact conditional metadata in canonical and legacy proof admission", a
   );
 });
 
-it("does not re-admit an exact proof that already exists in canonical custody", async () => {
+it("does not re-admit a persisted losing proof while importing a fresh sibling", async () => {
   mocks.localAmount.mockResolvedValueOnce(null).mockResolvedValueOnce(2n);
   const input = await fixture();
   input.monitoringFact.availableSubunits = 2;
-  const existing = exactProof(4);
+  const losing = exactProof(4);
   const fresh = exactProof(5);
   input.monitoringFact.recoveryHint = {
     keysetIds: [KEYSET],
@@ -401,16 +401,17 @@ it("does not re-admit an exact proof that already exists in canonical custody", 
         scopeId: input.scopeId,
         normalizedMint: input.asset.mintUrl,
         unit: input.asset.unit,
-        keysetId: existing.id,
-        secret: existing.secret,
+        keysetId: losing.id,
+        secret: losing.secret,
       }),
+      selectability: "verified-losing",
     },
   ]);
   input.wallet.restore
-    .mockResolvedValueOnce({ proofs: [existing] })
+    .mockResolvedValueOnce({ proofs: [losing] })
     .mockResolvedValueOnce({ proofs: [fresh] });
   input.wallet.groupProofsByState.mockResolvedValueOnce({
-    unspent: [existing, fresh],
+    unspent: [losing, fresh],
     pending: [],
     spent: [],
   });
@@ -420,6 +421,9 @@ it("does not re-admit an exact proof that already exists in canonical custody", 
   expect(mocks.admit).toHaveBeenCalledOnce();
   expect(mocks.admit).toHaveBeenCalledWith(
     expect.objectContaining({ proofs: [expect.objectContaining(fresh)] }),
+  );
+  expect(mocks.admit.mock.calls[0]?.[0].proofs).not.toEqual(
+    expect.arrayContaining([expect.objectContaining(losing)]),
   );
 });
 

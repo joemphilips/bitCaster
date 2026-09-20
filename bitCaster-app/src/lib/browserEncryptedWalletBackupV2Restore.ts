@@ -402,7 +402,9 @@ async function repairLegacyProofCache(
     asset: input.asset,
   });
   if (rows.length === 0) throw new Error("browser V2 local custody asset is absent");
-  const proofs: StoredProof[] = rows.map((row) => {
+  const selectableRows = rows.filter((row) => row.selectability !== "verified-losing");
+  if (selectableRows.length === 0) return;
+  const proofs: StoredProof[] = selectableRows.map((row) => {
     const { proof: material } = decodeDurableCustodyProofMaterialRecord(row);
     const proof = deserializeDurableCustodyProofArtifact({
       schemaVersion: 1,

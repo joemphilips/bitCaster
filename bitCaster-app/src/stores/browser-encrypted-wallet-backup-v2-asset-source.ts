@@ -15,6 +15,7 @@ import { decodeDurableWalletProofDerivationLocator } from "@bitcaster/client-sdk
 import {
   requireBrowserProofBackupAuthorityForProof,
   requireBrowserProofBackupAuthorityRow,
+  type BrowserProofBackupTerminalAuthority,
 } from "./browser-proof-backup-authority";
 import {
   createEncryptedWalletBackupV2DesiredAssetRow,
@@ -31,7 +32,14 @@ export interface BrowserEncryptedWalletBackupV2AssetSnapshot {
   readonly desired: EncryptedWalletBackupV2DesiredAssetRow;
   readonly asset: ReturnType<typeof createEncryptedWalletBackupV2AssetIdentity>;
   readonly proofs: readonly EncryptedWalletBackupV2ProofSetProof[];
+  /** Losing bodies are retained, but cannot enter a bundle until sealed. */
+  readonly losingProofs: readonly BrowserEncryptedWalletBackupV2LosingProof[];
   readonly counterHighWaterMarks: readonly EncryptedWalletBackupV2CounterHighWaterMark[];
+}
+
+export interface BrowserEncryptedWalletBackupV2LosingProof {
+  readonly proof: EncryptedWalletBackupV2ProofSetProof;
+  readonly origin: BrowserProofBackupTerminalAuthority;
 }
 
 /** One local custody read with separate backup coverage and available amount facts. */
@@ -122,7 +130,7 @@ export async function readBrowserEncryptedWalletBackupV2LocalAssetRead(input: {
   });
 }
 
-/** Reads exact selectable and locked rows for one V2 asset without broad mint scanning. */
+/** Reads exact active rows for one V2 asset without broad mint scanning. */
 export async function readBrowserEncryptedWalletBackupV2ExactLocalProofRows(input: {
   readonly database: BitcasterDB;
   readonly scopeId: string;
@@ -293,10 +301,24 @@ function materializeAssetSnapshot(
   const proofs = raw.proofRows.map((row, index) =>
     proofSnapshot(row, raw.authorities[index], desired, asset.proofSetAsset, keysets),
   );
+  const losingProofs = raw.proofRows.flatMap((row, index) => {
+    if (row.selectability !== "verified-losing") return [];
+    const authority = raw.authorities[index];
+    if (authority === undefined || authority.terminalAuthority === null) {
+      throw new Error("browser V2 losing proof origin is invalid");
+    }
+    return [
+      Object.freeze({
+        proof: proofs[index]!,
+        origin: Object.freeze({ ...authority.terminalAuthority }),
+      }),
+    ];
+  });
   return Object.freeze({
     desired,
     asset: asset.identity,
     proofs: Object.freeze(proofs),
+    losingProofs: Object.freeze(losingProofs),
     counterHighWaterMarks: Object.freeze(
       counterMarks(desired, proofs, raw.keysetIds, raw.associations, raw.cursors),
     ),
@@ -312,6 +334,8 @@ export async function prepareBrowserEncryptedWalletBackupV2AssetBundle(input: {
 }): Promise<EncryptedWalletBackupV2PreparedTransportBundle> {
   if (input.snapshot.desired.desiredAction !== "replace")
     throw new Error("browser V2 removal has no proof bundle");
+  if (input.snapshot.losingProofs.length > 0)
+    throw new Error("browser V2 losing proof requires an issued terminal seal");
   return prepareEncryptedWalletBackupV2ProofSetBundle({
     keyHandle: input.keyHandle,
     seed: input.seed,
@@ -337,7 +361,7 @@ async function activeRows(
     ctf === null
       ? [desired.scopeId, desired.mintUrl, desired.unit, "regular"]
       : [desired.scopeId, desired.mintUrl, desired.unit, ctf.conditionId, ctf.outcomeCollection];
-  const states = ["selectable", "locked"] as const;
+  const states = ["selectable", "locked", "verified-losing"] as const;
   const groups = await Promise.all(
     states.map((state) =>
       database.custodyProofs

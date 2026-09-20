@@ -221,7 +221,7 @@ describe("browser V2 backup worker", () => {
           ]);
           const asset = fixture.assets.get(localAssetKey);
           if (!desired || !asset) throw new Error("test asset is absent");
-          return { desired, asset, proofs: [], counterHighWaterMarks: [] };
+          return { desired, asset, proofs: [], losingProofs: [], counterHighWaterMarks: [] };
         },
       },
     };
@@ -606,7 +606,7 @@ async function workerFixture(assetCount: number) {
       const row = await database.encryptedWalletBackupV2DesiredAssets.get([scopeId, localAssetKey]);
       const asset = assets.get(localAssetKey);
       if (!row || !asset) throw new Error("test asset is absent");
-      return { desired: row, asset, proofs: [], counterHighWaterMarks: [] };
+      return { desired: row, asset, proofs: [], losingProofs: [], counterHighWaterMarks: [] };
     },
     prepare: async ({ snapshot, keyHandle: handle }) =>
       prepareEncryptedWalletBackupV2TransportBundle({

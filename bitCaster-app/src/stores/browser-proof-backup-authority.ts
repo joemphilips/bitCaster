@@ -13,14 +13,28 @@ import type {
 
 export type BrowserProofDerivationLocatorAuthority = DurableWalletProofDerivationLocator | null;
 
+export interface BrowserLocalTerminalAuthority {
+  kind: "local-operation";
+  operationId: string;
+}
+
+export interface BrowserRemoteTerminalSealAuthority {
+  kind: "remote-seal";
+}
+
+export type BrowserProofBackupTerminalAuthority =
+  | BrowserLocalTerminalAuthority
+  | BrowserRemoteTerminalSealAuthority;
+
 interface BrowserProofBackupAuthorityBase {
-  schemaVersion: 3;
+  schemaVersion: 4;
   scopeId: string;
   proofId: string;
   proofFingerprint: string;
   proofRevision: number;
   proofState: BrowserCustodyProofSelectability;
   terminalOperationId: string | null;
+  terminalAuthority: BrowserProofBackupTerminalAuthority | null;
   recordCreatedAtUnixSeconds: number;
   recordUpdatedAtUnixSeconds: number;
   derivationLocator: SerializableDurableWalletProofDerivationLocator | null;
@@ -59,7 +73,7 @@ export function createBrowserRemoteProofBackupAuthorityRow(input: {
   }
   requireBrowserProofDerivationLocator(input.derivationLocator);
   const authority = requireBrowserProofBackupAuthorityRow({
-    schemaVersion: 3 as const,
+    schemaVersion: 4 as const,
     scopeId: proof.scopeId,
     proofId: proof.proofId,
     proofFingerprint: proof.proofFingerprint,
@@ -67,6 +81,7 @@ export function createBrowserRemoteProofBackupAuthorityRow(input: {
     proofState: proof.selectability,
     admissionOperationId: null,
     terminalOperationId: null,
+    terminalAuthority: proof.selectability === "verified-losing" ? { kind: "remote-seal" } : null,
     ...recordTimes(input.observedAtMs),
     backupState: "remote-backed",
     derivationLocator: serializeBrowserProofDerivationLocator(input.derivationLocator),
@@ -94,7 +109,7 @@ export function createBrowserProofBackupAuthorityRow(
   }
   requireBrowserProofDerivationLocator(derivationLocator);
   return requireBrowserProofBackupAuthorityRow({
-    schemaVersion: 3 as const,
+    schemaVersion: 4 as const,
     scopeId: proof.scopeId,
     proofId: proof.proofId,
     proofFingerprint: proof.proofFingerprint,
@@ -102,6 +117,7 @@ export function createBrowserProofBackupAuthorityRow(
     proofState: proof.selectability,
     admissionOperationId: requireOperationId(admissionOperationId, "proof admission operation"),
     terminalOperationId: null,
+    terminalAuthority: null,
     ...recordTimes(observedAtMs),
     backupState: "local-only",
     derivationLocator: serializeBrowserProofDerivationLocator(derivationLocator),
@@ -193,9 +209,16 @@ export function bindBrowserProofBackupAuthorityTerminalOperation(
 ): BrowserProofBackupAuthorityRow {
   const authority = requireBrowserProofBackupAuthorityRow(current);
   const terminal = requireOperationId(terminalOperationId, "proof terminal operation");
-  if (authority.terminalOperationId === terminal) return authority;
+  if (
+    authority.terminalAuthority?.kind === "local-operation" &&
+    authority.terminalAuthority.operationId === terminal
+  )
+    return authority;
   if (authority.terminalOperationId !== null) {
     throw new Error("browser proof backup terminal operation conflicts");
+  }
+  if (authority.terminalAuthority !== null) {
+    throw new Error("browser proof backup terminal authority conflicts");
   }
   const time = requireTime(classifiedAtMs, "proof terminal classification time");
   if (time < authority.updatedAtMs) {
@@ -208,6 +231,7 @@ export function bindBrowserProofBackupAuthorityTerminalOperation(
   return requireBrowserProofBackupAuthorityRow({
     ...authority,
     terminalOperationId: terminal,
+    terminalAuthority: { kind: "local-operation", operationId: terminal },
     recordUpdatedAtUnixSeconds,
     updatedAtMs: time,
   });
@@ -224,18 +248,23 @@ export function classifyBrowserProofBackupAuthorityVerifiedLosing(
   requireProofBinding(authority, proof);
   if (
     authority.proofState !== "locked" ||
-    authority.terminalOperationId !== null ||
+    authority.terminalAuthority !== null ||
     proof.selectability !== "verified-losing"
   ) {
     throw new Error("browser proof backup losing classification is invalid");
   }
   const time = requireTime(classifiedAtMs, "proof terminal classification time");
   requireNextProofAuthorityRevision(authority, proof, time);
+  const terminal = requireOperationId(terminalOperationId, "proof terminal operation");
   return requireBrowserProofBackupAuthorityRow({
     ...authority,
     proofRevision: proof.revision,
     proofState: proof.selectability,
-    terminalOperationId: requireOperationId(terminalOperationId, "proof terminal operation"),
+    terminalOperationId: terminal,
+    terminalAuthority: {
+      kind: "local-operation",
+      operationId: terminal,
+    },
     recordUpdatedAtUnixSeconds: Math.floor(time / 1_000),
     updatedAtMs: time,
   });
@@ -275,9 +304,6 @@ export function requireBrowserProofBackupAuthorityRow(
     row.terminalOperationId === null
       ? null
       : requireOperationId(row.terminalOperationId, "proof terminal operation");
-  if (proofState === "verified-losing" && terminalOperationId === null) {
-    throw new Error("browser proof backup losing classification is unbound");
-  }
   if (recordUpdatedAtUnixSeconds < recordCreatedAtUnixSeconds) {
     throw new Error("browser proof backup authority is invalid");
   }
@@ -292,6 +318,12 @@ export function requireBrowserProofBackupAuthorityRow(
     row.backupRecordCommitment === null
       ? null
       : requireFingerprint(row.backupRecordCommitment, "backup record commitment");
+  const terminalAuthority = requireTerminalAuthority(
+    row.terminalAuthority,
+    proofState,
+    terminalOperationId,
+    backupState,
+  );
   if (
     (backupState === "local-only" &&
       (admissionOperationId === null ||
@@ -305,13 +337,14 @@ export function requireBrowserProofBackupAuthorityRow(
     throw new Error("browser proof backup authority is invalid");
   }
   const base = {
-    schemaVersion: 3 as const,
+    schemaVersion: 4 as const,
     scopeId: decodeDurableCustodyScopeId(row.scopeId),
     proofId: requireFingerprint(row.proofId, "proof id"),
     proofFingerprint: requireFingerprint(row.proofFingerprint, "proof fingerprint"),
     proofRevision: requireRevision(row.proofRevision),
     proofState,
     terminalOperationId,
+    terminalAuthority,
     recordCreatedAtUnixSeconds,
     recordUpdatedAtUnixSeconds,
     derivationLocator: serializeBrowserProofDerivationLocator(derivationLocator),
@@ -348,6 +381,7 @@ function requireAuthorityRecord(value: unknown): Record<string, unknown> {
     "proofState",
     "admissionOperationId",
     "terminalOperationId",
+    "terminalAuthority",
     "recordCreatedAtUnixSeconds",
     "recordUpdatedAtUnixSeconds",
     "backupState",
@@ -357,7 +391,7 @@ function requireAuthorityRecord(value: unknown): Record<string, unknown> {
     "updatedAtMs",
   ];
   if (
-    row.schemaVersion !== 3 ||
+    row.schemaVersion !== 4 ||
     Object.keys(row).length !== fields.length ||
     fields.some((field) => !(field in row)) ||
     (row.backupState !== "local-only" && row.backupState !== "remote-backed")
@@ -372,6 +406,61 @@ function requireBackupState(value: unknown): "local-only" | "remote-backed" {
     throw new Error("browser proof backup authority state is invalid");
   }
   return value;
+}
+
+function requireTerminalAuthority(
+  value: unknown,
+  proofState: BrowserCustodyProofSelectability,
+  terminalOperationId: string | null,
+  backupState: "local-only" | "remote-backed",
+): BrowserProofBackupTerminalAuthority | null {
+  if (value === null) {
+    if (proofState === "verified-losing") {
+      throw new Error("browser proof backup losing classification is unbound");
+    }
+    if (terminalOperationId !== null) {
+      throw new Error("browser proof backup terminal authority is invalid");
+    }
+    return null;
+  }
+  if (typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("browser proof backup terminal authority is invalid");
+  }
+  const authority = value as Record<string, unknown>;
+  if (typeof authority.kind !== "string") {
+    throw new Error("browser proof backup terminal authority is invalid");
+  }
+  switch (authority.kind) {
+    case "local-operation": {
+      if (
+        Object.keys(authority).length !== 2 ||
+        !("operationId" in authority) ||
+        terminalOperationId === null
+      ) {
+        throw new Error("browser proof backup terminal authority is invalid");
+      }
+      const operationId = requireOperationId(
+        authority.operationId,
+        "proof terminal authority operation",
+      );
+      if (operationId !== terminalOperationId) {
+        throw new Error("browser proof backup terminal authority is invalid");
+      }
+      return { kind: "local-operation", operationId };
+    }
+    case "remote-seal":
+      if (
+        Object.keys(authority).length !== 1 ||
+        terminalOperationId !== null ||
+        proofState !== "verified-losing" ||
+        backupState !== "remote-backed"
+      ) {
+        throw new Error("browser proof backup terminal authority is invalid");
+      }
+      return { kind: "remote-seal" };
+    default:
+      throw new Error("browser proof backup terminal authority is invalid");
+  }
 }
 
 function recordTimes(

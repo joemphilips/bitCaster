@@ -72,6 +72,7 @@ describe("browser proof backup authority", () => {
       proofState: "verified-losing",
       proofRevision: 2,
       terminalOperationId: "redeem-a",
+      terminalAuthority: { kind: "local-operation", operationId: "redeem-a" },
       updatedAtMs: 3,
     });
   });
@@ -124,6 +125,27 @@ describe("browser proof backup authority", () => {
       admissionOperationId: null,
       backupRecordId: proof.proofId,
       backupRecordCommitment: "66".repeat(32),
+    });
+  });
+
+  it("records a restored verified-losing proof as a remote-seal authority", () => {
+    const proof = {
+      ...custodyProof(),
+      revision: 1,
+      selectability: "verified-losing" as const,
+    };
+    expect(
+      createBrowserRemoteProofBackupAuthorityRow({
+        proof,
+        observedAtMs: 2,
+        derivationLocator: nut13(DERIVATION_KEYSET, 7),
+        restoreProofId: proof.proofId,
+        restoreProofCommitment: "66".repeat(32),
+      }),
+    ).toMatchObject({
+      proofState: "verified-losing",
+      terminalOperationId: null,
+      terminalAuthority: { kind: "remote-seal" },
     });
   });
 
@@ -205,6 +227,75 @@ describe("browser proof backup authority", () => {
       "derivation locator is invalid",
     );
   });
+
+  it.each([
+    {
+      name: "losing row without terminal authority",
+      patch: { proofState: "verified-losing", proofRevision: 1, terminalAuthority: null },
+      message: "losing classification is unbound",
+    },
+    {
+      name: "remote authority with a copied operation id",
+      patch: {
+        proofState: "verified-losing",
+        terminalOperationId: "copied-operation",
+        terminalAuthority: { kind: "remote-seal" },
+        backupState: "remote-backed",
+        admissionOperationId: null,
+        backupRecordId: "44".repeat(32),
+        backupRecordCommitment: "55".repeat(32),
+      },
+      message: "terminal authority is invalid",
+    },
+    {
+      name: "local authority with mismatched operation id",
+      patch: {
+        terminalOperationId: "terminal-a",
+        terminalAuthority: { kind: "local-operation", operationId: "terminal-b" },
+      },
+      message: "terminal authority is invalid",
+    },
+    {
+      name: "unknown authority fields",
+      patch: {
+        proofState: "verified-losing",
+        backupState: "remote-backed",
+        admissionOperationId: null,
+        backupRecordId: "44".repeat(32),
+        backupRecordCommitment: "55".repeat(32),
+        terminalAuthority: { kind: "remote-seal", extra: true },
+      },
+      message: "terminal authority is invalid",
+    },
+    {
+      name: "unknown authority variant",
+      patch: {
+        proofState: "verified-losing",
+        backupState: "remote-backed",
+        admissionOperationId: null,
+        backupRecordId: "44".repeat(32),
+        backupRecordCommitment: "55".repeat(32),
+        terminalAuthority: { kind: "copied-seal" },
+      },
+      message: "terminal authority is invalid",
+    },
+  ])("rejects $name", ({ patch, message }) => {
+    expect(() =>
+      requireBrowserProofBackupAuthorityRow({
+        ...authorityRow({ derivationLocator: nut13(DERIVATION_KEYSET, 0) }),
+        ...patch,
+      }),
+    ).toThrow(message);
+  });
+
+  it("rejects the pre-terminal-authority schema", () => {
+    const { terminalAuthority: _terminalAuthority, ...schema3 } = authorityRow({
+      derivationLocator: nut13(DERIVATION_KEYSET, 0),
+    });
+    expect(() => requireBrowserProofBackupAuthorityRow(schema3)).toThrow(
+      "browser proof backup authority is invalid",
+    );
+  });
 });
 
 function custodyProof() {
@@ -226,7 +317,7 @@ function custodyProof() {
 
 function authorityRow(locator: { derivationLocator: unknown }) {
   return {
-    schemaVersion: 3,
+    schemaVersion: 4,
     scopeId: walletScope().scopeId,
     proofId: "44".repeat(32),
     proofFingerprint: "55".repeat(32),
@@ -234,6 +325,7 @@ function authorityRow(locator: { derivationLocator: unknown }) {
     proofState: "selectable",
     admissionOperationId: "admission-a",
     terminalOperationId: null,
+    terminalAuthority: null,
     recordCreatedAtUnixSeconds: 0,
     recordUpdatedAtUnixSeconds: 0,
     backupState: "local-only",
