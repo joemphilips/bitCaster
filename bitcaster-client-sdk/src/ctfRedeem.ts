@@ -1,9 +1,14 @@
 import {
   Amount,
   CheckStateEnum,
+  Keyset,
   MintOperationError,
   OutputData,
+  hashToCurve,
+  hashToCurveBls,
+  isBlsKeyset,
   type MintKeys,
+  type MintKeyset,
   type OutputDataLike,
   type Proof,
   type ProofState,
@@ -32,6 +37,7 @@ import {
   requireProofArray,
   requireSameOperationAuthority,
 } from './ctfProofOperationAuthority.ts'
+import { isCanonicalNut02V2KeysetId } from './durableSeedDerivedPolicy.ts'
 
 export { canonicalProofOperationMintIdentity } from './ctfProofOperationAuthority.ts'
 
@@ -124,6 +130,7 @@ export async function readVerifiedCtfLosingOutcomeEvidence(input: {
 export interface RedeemWallet {
   loadMint(): Promise<void>
   mint?: {
+    getKeySets(): Promise<{ keysets: MintKeyset[] }>
     getKeys(keysetId?: string): Promise<{ keysets: MintKeys[] }>
   }
   redeemOutcomeProofs(options: { inputs: Proof[]; outputs: OutputDataLike[] }): Promise<Proof[]>
@@ -332,15 +339,53 @@ export async function getActiveRegularKeyset(
   wallet: Pick<RedeemWallet, 'mint'>,
   unit: string,
 ): Promise<MintKeys> {
-  if (!wallet.mint?.getKeys) {
+  if (!wallet.mint?.getKeySets || !wallet.mint.getKeys) {
     throw new Error('Cashu wallet adapter does not expose mint keyset lookup')
   }
-  const response = await wallet.mint.getKeys()
-  const keyset = response.keysets.find(
-    (candidate) => candidate.unit === unit && candidate.active !== false,
+  const metadataResponse = await wallet.mint.getKeySets()
+  const regularMetadata = metadataResponse.keysets.find(
+    (candidate) =>
+      candidate.unit === unit &&
+      candidate.active === true &&
+      candidate.conditional === undefined &&
+      isCanonicalNut02V2KeysetId(candidate.id),
   )
-  if (!keyset) throw new Error(`Mint did not return an active regular ${unit} keyset`)
-  return keyset
+  if (!regularMetadata) {
+    const nonCanonical = metadataResponse.keysets.find(
+      (candidate) =>
+        candidate.unit === unit && candidate.active === true && candidate.conditional === undefined,
+    )
+    if (nonCanonical) {
+      throw new Error('Mint did not return a canonical NUT-02 V2 active regular keyset')
+    }
+    throw new Error(`Mint did not return an active regular ${unit} keyset`)
+  }
+
+  const response = await wallet.mint.getKeys(regularMetadata.id)
+  const keyset = response.keysets.find((candidate) => candidate.id === regularMetadata.id)
+  const metadataFee = regularMetadata.input_fee_ppk ?? 0
+  const metadataExpiry = regularMetadata.final_expiry ?? null
+  if (
+    !keyset ||
+    keyset.id !== regularMetadata.id ||
+    keyset.unit !== unit ||
+    keyset.active === false ||
+    keyset.conditional !== undefined ||
+    !isCanonicalNut02V2KeysetId(keyset.id) ||
+    (keyset.input_fee_ppk !== undefined && keyset.input_fee_ppk !== metadataFee) ||
+    (keyset.final_expiry !== undefined && keyset.final_expiry !== metadataExpiry)
+  ) {
+    throw new Error(`Mint did not return exact active regular ${unit} keyset ${regularMetadata.id}`)
+  }
+  const authoritative = {
+    ...keyset,
+    input_fee_ppk: metadataFee,
+    ...(metadataExpiry === null ? {} : { final_expiry: metadataExpiry }),
+  }
+  if (!Keyset.verifyKeysetId(authoritative)) {
+    throw new Error(`Mint returned invalid regular ${unit} keyset material`)
+  }
+  return authoritative
 }
 
 function requireMatchingCtfRedeemOperation(
@@ -531,7 +576,8 @@ async function resumeCtfRedeem(params: {
   const states = await params.wallet.checkProofsStates(
     entry.inputs.map(({ id, secret }) => ({ id, secret })),
   )
-  if (allStates(states, CheckStateEnum.SPENT)) {
+  const hasExactInputStates = exactRedeemInputStates(entry.inputs, states)
+  if (hasExactInputStates && allStates(states, CheckStateEnum.SPENT)) {
     const restored = await params.restoreOutputGroups(params.mintUrl, entry.outputs)
     const final = requireExactCtfRedeemProofs(
       restored.regular,
@@ -544,7 +590,7 @@ async function resumeCtfRedeem(params: {
     )
     return { proofs: final, losing: false }
   }
-  if (allStates(states, CheckStateEnum.UNSPENT)) {
+  if (hasExactInputStates && allStates(states, CheckStateEnum.UNSPENT)) {
     const outputData = deserializeOutputGroups(entry.outputs).regular ?? []
     if (outputData.length === 0) {
       throw new Error(`proof operation ${entry.operationId} has no redeem outputs`)
@@ -562,6 +608,19 @@ async function resumeCtfRedeem(params: {
   }
 
   throw new Error(`Proof operation ${entry.operationId} is still pending at the mint`)
+}
+
+function exactRedeemInputStates(inputs: readonly Proof[], states: readonly ProofState[]): boolean {
+  if (states.length !== inputs.length) return false
+  const expectedYs = new Set(
+    inputs.map(({ id, secret }) => {
+      const bytes = new TextEncoder().encode(secret)
+      return isBlsKeyset(id) ? hashToCurveBls(bytes).toHex(true) : hashToCurve(bytes).toHex(true)
+    }),
+  )
+  if (expectedYs.size !== inputs.length) return false
+  const observedYs = new Set(states.map(({ Y }) => Y))
+  return observedYs.size === states.length && [...observedYs].every((Y) => expectedYs.has(Y))
 }
 
 function requireCompletedCtfRedeemProofs(entry: CtfProofOperationRecord): Proof[] {

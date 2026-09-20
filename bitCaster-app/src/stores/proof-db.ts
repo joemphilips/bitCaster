@@ -10,7 +10,10 @@ import {
 } from "@bitcaster/client-sdk/durableCustodyProofMaterial";
 import { Amount, type Proof } from "@cashu/cashu-ts";
 import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
-import { deriveDurableCustodyArtifactFingerprint } from "@bitcaster/client-sdk/durableCustody";
+import {
+  decodeDurableCustodyScopeId,
+  deriveDurableCustodyArtifactFingerprint,
+} from "@bitcaster/client-sdk/durableCustody";
 import {
   COLLATERAL_UNIT_REGISTRY,
   parseMarketDivisibility,
@@ -796,6 +799,10 @@ export class BitcasterDB extends Dexie {
         "&[scopeId+transferId], [scopeId+mintUrl+mintRecoveryState+dueAtMs+transferId], [scopeId+mintRecoveryState+dueAtMs+mintUrl+transferId], [scopeId+localAuthorityState+transferId], [scopeId+bearerMintUrl+localAuthorityState+transferId], [scopeId+recipientBinding+transferId], &[scopeId+recipientBinding+predecessorKey]",
       marketFundingHeads: "&[scopeId+recipientBinding], [scopeId+transferId]",
     });
+    this.version(18).stores({
+      custodyProofs:
+        "&[scopeId+proofId], [scopeId+selectability], [scopeId+selectability+proofId], [scopeId+normalizedMint+unit+selectability], [scopeId+conditionId+outcomeCollection+selectability], [scopeId+normalizedMint+unit+keysetId+selectability], [scopeId+normalizedMint+unit+assetKind+selectability], [scopeId+normalizedMint+unit+conditionId+outcomeCollection+selectability], [scopeId+normalizedMint+unit+assetKind+selectability+curve+amount+proofId], [scopeId+normalizedMint+unit+keysetId+assetKind+selectability+curve+amount+proofId], [scopeId+normalizedMint+unit+keysetId+conditionId+outcomeCollection+selectability+curve+amount+proofId], [scopeId+normalizedMint+unit+conditionId+selectability+proofId]",
+    });
     this.encryptedWalletBackupEnrollmentResults = this.table(
       "encryptedWalletBackupWalletEnrollmentResults",
     );
@@ -880,6 +887,64 @@ export async function getCanonicalSelectableProofs(
 ): Promise<StoredProof[] | null> {
   const proofs = await getCanonicalCurrentProofs(scopeId, database);
   return proofs?.filter((proof) => !proof.reservedBy && !proof.terminalOperationId) ?? null;
+}
+
+export const CANONICAL_CTF_PROOF_PAGE_LIMIT_MAX = 256;
+
+export async function getCanonicalCtfProofPage(
+  mintUrl: string,
+  options: {
+    scopeId: string;
+    conditionId: string;
+    selectability: "selectable" | "locked";
+    afterProofId?: string | null;
+    limit?: number;
+  },
+  database: BitcasterDB = db,
+): Promise<{ proofs: BrowserCustodyProofRow[]; nextProofId: string | null }> {
+  const scopeId = decodeDurableCustodyScopeId(options.scopeId);
+  const normalizedMint = normalizeUrl(mintUrl);
+  const conditionId = options.conditionId;
+  const afterProofId = options.afterProofId ?? null;
+  const limit = options.limit ?? CANONICAL_CTF_PROOF_PAGE_LIMIT_MAX;
+  if (!/^[0-9a-f]{64}$/.test(conditionId)) {
+    throw new Error("CTF proof selection requires a canonical condition ID");
+  }
+  if (afterProofId !== null && !/^[0-9a-f]{64}$/.test(afterProofId)) {
+    throw new Error("CTF proof selection cursor is invalid");
+  }
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > CANONICAL_CTF_PROOF_PAGE_LIMIT_MAX) {
+    throw new Error("CTF proof selection page limit is invalid");
+  }
+  if (options.selectability !== "selectable" && options.selectability !== "locked") {
+    throw new Error("CTF proof selection state is invalid");
+  }
+  const prefix = [scopeId, normalizedMint, "msat", conditionId, options.selectability];
+  const rows = await database.custodyProofs
+    .where("[scopeId+normalizedMint+unit+conditionId+selectability+proofId]")
+    .between([...prefix, afterProofId ?? ""], [...prefix, "\uffff"], afterProofId === null, true)
+    .limit(limit)
+    .toArray();
+  const proofs = rows.map(decodeBrowserCustodyProofRow);
+  for (const proof of proofs) {
+    if (
+      proof.scopeId !== scopeId ||
+      proof.normalizedMint !== normalizedMint ||
+      proof.unit !== "msat" ||
+      proof.conditionId !== conditionId ||
+      proof.assetKind !== "conditional" ||
+      proof.selectability !== options.selectability ||
+      proof.curve !== "secp256k1" ||
+      !/^01[0-9a-f]{64}$/.test(proof.keysetId) ||
+      (afterProofId !== null && proof.proofId <= afterProofId)
+    ) {
+      throw new Error("canonical CTF proof selector row is invalid");
+    }
+  }
+  return {
+    proofs,
+    nextProofId: proofs.length === limit ? proofs[proofs.length - 1]!.proofId : null,
+  };
 }
 
 /** Converts one verified custody row to the Cashu proof shape used by readers. */
