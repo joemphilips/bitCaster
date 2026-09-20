@@ -580,6 +580,53 @@ test('product-wallet helper rejects sat before keyset resolution', async () => {
   assert.equal(resolverCalls, 0)
 })
 
+test('product-wallet helper rejects oversized input before decoding or resolving', async () => {
+  let decodeCalls = 0
+  let resolverCalls = 0
+  await expectCode(
+    validateProductWalletTokenImport({
+      encodedToken: 'cashuA-product-wallet-token-over-bound',
+      bounds: { maxEncodedBytes: 16 },
+      decode: () => {
+        decodeCalls += 1
+        return token('https://mint.example', 'msat', [REGULAR_SHORT_ID])
+      },
+      resolveKeysets: async () => {
+        resolverCalls += 1
+        return lookup([metadata(REGULAR_FULL_ID, 'msat')])
+      },
+    }),
+    'encoded_too_large',
+  )
+  assert.equal(decodeCalls, 0)
+  assert.equal(resolverCalls, 0)
+})
+
+test('product-wallet helper rejects mapped private addresses before resolver access', async () => {
+  for (const address of ['127.0.0.1', '10.0.0.1', '169.254.1.1']) {
+    let resolverCalls = 0
+    await assert.rejects(
+      validateProductWalletTokenImport({
+        encodedToken: 'cashuA-product-wallet-double',
+        decode: () => token(`https://[::ffff:${address}]`, 'msat', [REGULAR_SHORT_ID]),
+        resolveKeysets: async () => {
+          resolverCalls += 1
+          return lookup([metadata(REGULAR_FULL_ID, 'msat')])
+        },
+      }),
+      TokenImportValidationError,
+    )
+    assert.equal(resolverCalls, 0)
+  }
+
+  const publicAddress = await validateProductWalletTokenImport({
+    encodedToken: 'cashuA-product-wallet-double',
+    decode: () => token('https://[::ffff:8.8.8.8]', 'msat', [REGULAR_SHORT_ID]),
+    resolveKeysets: matchingResolver('regular', REGULAR_FULL_ID, 'msat'),
+  })
+  assert.deepEqual(publicAddress.canonicalMintUrls, ['https://[::ffff:808:808]'])
+})
+
 test('product-wallet helper rejects conditional sat and mixed-source msat imports', async () => {
   await expectCode(
     validateProductWalletTokenImport({

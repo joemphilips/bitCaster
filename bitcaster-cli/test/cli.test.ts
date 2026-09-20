@@ -2378,6 +2378,16 @@ test('P47-6b: market close --attestation rejects invalid event JSON before RPC',
       attestation: JSON.stringify({ ...kind89Event(), tags: ['e', 'c'.repeat(64)] }),
       stderr: /Oracle attestation must be a kind-89 Nostr event/,
     },
+    ...[
+      { name: 'null event', event: null },
+      { name: 'numeric tag item', event: { ...kind89Event(), tags: [['d', 1]] } },
+      { name: 'numeric content', event: { ...kind89Event(), content: 1 } },
+      { name: 'string timestamp', event: { ...kind89Event(), createdAt: '1' } },
+    ].map(({ name, event }) => ({
+      name,
+      attestation: JSON.stringify(event),
+      stderr: /Oracle attestation must be a kind-89 Nostr event/,
+    })),
   ]
 
   for (const invalidCase of invalidCases) {

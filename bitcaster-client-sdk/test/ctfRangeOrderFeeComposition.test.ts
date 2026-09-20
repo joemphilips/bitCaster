@@ -120,6 +120,52 @@ test('rejects a changed settlement or preparation asset identity', () => {
   )
 })
 
+test('accepts matching and rejects changed conditional asset identities', () => {
+  const consented = conditionalFacts()
+  const cases = [
+    {
+      name: 'matching conditional identity',
+      current: consented,
+      expected: 'accept',
+    },
+    {
+      name: 'changed condition identity',
+      current: {
+        ...consented,
+        preparationAsset: { ...CONDITIONAL_ASSET, conditionId: 'condition-2' },
+      },
+      expected: 'reject',
+    },
+    {
+      name: 'changed outcome identity',
+      current: {
+        ...consented,
+        preparationAsset: { ...CONDITIONAL_ASSET, outcomeCollection: 'NO' },
+      },
+      expected: 'reject',
+    },
+  ] as const
+
+  for (const scenario of cases) {
+    const assertConsent = () =>
+      assertCtfRangeOrderFeeConsent({
+        consented,
+        current: scenario.current,
+        paidConsolidationFeeSubunits: '0',
+      })
+
+    if (scenario.expected === 'accept') {
+      assert.doesNotThrow(assertConsent, scenario.name)
+    } else {
+      assert.throws(
+        assertConsent,
+        /^Error: CTF range fee consent does not match the current preparation plan$/,
+        scenario.name,
+      )
+    }
+  }
+})
+
 test('rejects malformed, unsafe, and overpaid fee facts', () => {
   const facts = composeFacts()
 
@@ -153,6 +199,13 @@ function composeFacts(): CtfRangeOrderFeeFacts {
     settlementAsset: REGULAR_ASSET,
     preparationAsset: REGULAR_ASSET,
   })
+}
+
+function conditionalFacts(): CtfRangeOrderFeeFacts {
+  return {
+    ...composeFacts(),
+    preparationAsset: CONDITIONAL_ASSET,
+  }
 }
 
 function authorizationWithHeadroom(): CtfRangeOrderAuthorizationPlan {

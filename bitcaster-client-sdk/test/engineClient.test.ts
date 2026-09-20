@@ -159,8 +159,19 @@ test('isKind89NostrEvent validates oracle attestation event shape from SDK', () 
   }
 
   assert.equal(isKind89NostrEvent(event), true)
-  assert.equal(isKind89NostrEvent({ ...event, kind: 1 }), false)
-  assert.equal(isKind89NostrEvent({ ...event, tags: ['d', 'condition-1'] }), false)
+  for (const invalid of [
+    null,
+    [],
+    1,
+    { ...event, kind: 1 },
+    { ...event, tags: ['d', 'condition-1'] },
+    { ...event, tags: [['d', 'condition-1'], [1]] },
+    { ...event, tags: [['d', 1]] },
+    { ...event, content: 1 },
+    { ...event, createdAt: '1' },
+  ]) {
+    assert.equal(isKind89NostrEvent(invalid), false)
+  }
 })
 
 test('decodeSettlementGroupStateChangedDelta enforces the exact owner notification contract', () => {
