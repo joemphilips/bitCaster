@@ -302,8 +302,20 @@ export function readPreparedDurableCtfRedeemRequest(input: {
     plan: metadata.seedOutputPlan,
   }).outputData
   if (
-    JSON.stringify(outputs.map(serializeDurableCustodyOutput)) !==
-    JSON.stringify(operation.outputs.regular)
+    outputs.length !== operation.outputs.regular.length ||
+    outputs.some((output, index) => {
+      const expected = serializeDurableCustodyOutput(output)
+      const persisted = operation.outputs.regular[index]!
+      return (
+        amountToNumber(expected.blindedMessage.amount) !==
+          amountToNumber(persisted.blindedMessage.amount) ||
+        expected.blindedMessage.id !== persisted.blindedMessage.id ||
+        expected.blindedMessage.B_ !== persisted.blindedMessage.B_ ||
+        expected.blindingFactor !== persisted.blindingFactor ||
+        expected.secret !== persisted.secret ||
+        (expected.ephemeralE ?? null) !== (persisted.ephemeralE ?? null)
+      )
+    })
   ) {
     throw new Error('prepared CTF redeem outputs conflict with seed authority')
   }

@@ -94,6 +94,28 @@ test('CTF redeem preparation reserves exact seed outputs and no mint effect', as
     regularKeyset: REGULAR_KEYSET,
   })
   assert.equal(request.outputs[0]?.blindedMessage.B_, prepared.outputData[0]?.blindedMessage.B_)
+  const canonicalized = {
+    ...prepared.operation,
+    outputs: {
+      regular: prepared.operation.outputs.regular!.map((output) => ({
+        secret: output.secret,
+        blindingFactor: output.blindingFactor,
+        blindedMessage: {
+          B_: output.blindedMessage.B_,
+          id: output.blindedMessage.id,
+          amount: Number(output.blindedMessage.amount),
+        },
+      })),
+    },
+  }
+  assert.equal(
+    readPreparedDurableCtfRedeemRequest({
+      operation: canonicalized,
+      seed: SEED,
+      regularKeyset: REGULAR_KEYSET,
+    }).outputs[0]?.blindedMessage.B_,
+    prepared.outputData[0]?.blindedMessage.B_,
+  )
 })
 
 test('prepared CTF redeem execution uses the persisted request and classifies only mint code 13015', async () => {
