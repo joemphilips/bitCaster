@@ -1127,14 +1127,10 @@ export class DaemonDurableOutgoingCashuCoordinator {
       const authority = exactAuthority(record, store)
       const fullResult = verifyDurableWalletSendResult(currentTransfer.walletSendOperation, {
         keep: input.keepProofs.map((proof) =>
-          hydrateDurableWalletProof(
-            proof as Parameters<typeof hydrateDurableWalletProof>[0],
-          ),
+          hydrateDurableWalletProof(proof as Parameters<typeof hydrateDurableWalletProof>[0]),
         ),
         send: input.sendProofs.map((proof) =>
-          hydrateDurableWalletProof(
-            proof as Parameters<typeof hydrateDurableWalletProof>[0],
-          ),
+          hydrateDurableWalletProof(proof as Parameters<typeof hydrateDurableWalletProof>[0]),
         ),
       })
       const mintedKeepProofs = fullResult.keep.slice(

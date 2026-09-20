@@ -13,9 +13,14 @@ export function listenForSettlementProgressHints(
     if (!(event instanceof CustomEvent)) return;
     const value: unknown = event.detail;
     if (value === null) listener(null);
-    else if (typeof value === "object" && value !== null &&
-      "orderId" in value && typeof value.orderId === "string" &&
-      "marketId" in value && typeof value.marketId === "string") {
+    else if (
+      typeof value === "object" &&
+      value !== null &&
+      "orderId" in value &&
+      typeof value.orderId === "string" &&
+      "marketId" in value &&
+      typeof value.marketId === "string"
+    ) {
       listener({ orderId: value.orderId, marketId: value.marketId });
     }
   };

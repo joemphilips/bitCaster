@@ -23,10 +23,12 @@ const mocks = vi.hoisted(() => ({
   },
 }));
 
-vi.mock("dexie-react-hooks", () => ({ useLiveQuery: (query: () => unknown) => {
-  query();
-  return mocks.page;
-} }));
+vi.mock("dexie-react-hooks", () => ({
+  useLiveQuery: (query: () => unknown) => {
+    query();
+    return mocks.page;
+  },
+}));
 vi.mock("@/lib/browserWalletProfile", () => ({
   browserWalletScopeIdFromMnemonic: () => mocks.scopeId,
 }));
@@ -60,11 +62,20 @@ describe("DurableWalletErrors", () => {
   });
 
   it("can read later alerts without dismissing an unresolved alert", () => {
-    const cursor = { observedAtMs: 10, operationId: "range-1", revision: 3, code: "mint-source-uncertain" };
+    const cursor = {
+      observedAtMs: 10,
+      operationId: "range-1",
+      revision: 3,
+      code: "mint-source-uncertain",
+    };
     Object.assign(mocks.page, { nextCursor: cursor });
     render(<DurableWalletErrors />);
     fireEvent.click(screen.getByRole("button", { name: "Next" }));
-    expect(mocks.readPage).toHaveBeenLastCalledWith({ scopeId: "scope-1", limit: 8, after: cursor });
+    expect(mocks.readPage).toHaveBeenLastCalledWith({
+      scopeId: "scope-1",
+      limit: 8,
+      after: cursor,
+    });
     expect(mocks.acknowledge).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "First alerts" }));
     expect(mocks.readPage).toHaveBeenLastCalledWith({ scopeId: "scope-1", limit: 8 });
@@ -73,7 +84,14 @@ describe("DurableWalletErrors", () => {
   });
 
   it("keeps First available when a later page becomes empty", () => {
-    Object.assign(mocks.page, { nextCursor: { observedAtMs: 10, operationId: "range-1", revision: 3, code: "mint-source-uncertain" } });
+    Object.assign(mocks.page, {
+      nextCursor: {
+        observedAtMs: 10,
+        operationId: "range-1",
+        revision: 3,
+        code: "mint-source-uncertain",
+      },
+    });
     const view = render(<DurableWalletErrors />);
     fireEvent.click(screen.getByRole("button", { name: "Next" }));
     const messages = mocks.page.messages;
@@ -85,7 +103,14 @@ describe("DurableWalletErrors", () => {
   });
 
   it("starts at the first page when the wallet scope changes", () => {
-    Object.assign(mocks.page, { nextCursor: { observedAtMs: 10, operationId: "range-1", revision: 3, code: "mint-source-uncertain" } });
+    Object.assign(mocks.page, {
+      nextCursor: {
+        observedAtMs: 10,
+        operationId: "range-1",
+        revision: 3,
+        code: "mint-source-uncertain",
+      },
+    });
     const view = render(<DurableWalletErrors />);
     fireEvent.click(screen.getByRole("button", { name: "Next" }));
     mocks.scopeId = "scope-2";

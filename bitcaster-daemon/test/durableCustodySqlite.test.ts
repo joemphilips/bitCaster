@@ -711,10 +711,7 @@ test('exact reservation locks a retained wallet-receive proof', async () => {
     const database = await openDaemonStateSqlite(fixture.directory)
     try {
       const proofId = prepared.record.operation.reservation.inputs[0]!.proofId
-      const proof = new DurableCustodySqliteStore(database).getProof(
-        fixture.walletScopeId,
-        proofId,
-      )
+      const proof = new DurableCustodySqliteStore(database).getProof(fixture.walletScopeId, proofId)
       assert.equal(proof?.selectability, 'locked')
       assert.equal(proof?.reservationOperationId, prepared.record.operation.operationId)
       assert.equal(proof?.revision, 1)

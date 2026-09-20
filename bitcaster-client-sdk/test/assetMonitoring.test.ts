@@ -121,10 +121,12 @@ test('asset-monitoring rejects sat money and msat display assets', () => {
   ]) {
     const report = validReport()
     const holding = report.holdings[0]!
-    assert.throws(() => decodeAssetMonitoringReportRequest({
-      ...report,
-      holdings: [{ ...holding, asset: { ...holding.asset, ...units } }],
-    }))
+    assert.throws(() =>
+      decodeAssetMonitoringReportRequest({
+        ...report,
+        holdings: [{ ...holding, asset: { ...holding.asset, ...units } }],
+      }),
+    )
   }
 })
 

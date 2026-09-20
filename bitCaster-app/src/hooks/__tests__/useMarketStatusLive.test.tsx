@@ -26,9 +26,8 @@ vi.mock("@/lib/webNotifications", () => ({
 }));
 
 vi.mock("@/lib/likedMarketClose", async () => {
-  const actual = await vi.importActual<typeof import("@/lib/likedMarketClose")>(
-    "@/lib/likedMarketClose",
-  );
+  const actual =
+    await vi.importActual<typeof import("@/lib/likedMarketClose")>("@/lib/likedMarketClose");
   return {
     ...actual,
     reconcileLikedMarketCloses: (...args: Parameters<typeof actual.reconcileLikedMarketCloses>) => {

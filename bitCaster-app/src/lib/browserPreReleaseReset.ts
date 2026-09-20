@@ -9,10 +9,7 @@ const PRE_RELEASE_BROWSER_RESET_EPOCH = "phase-9e-5a";
 /** This compile-time gate makes the destructive reset impossible in production builds. */
 export const PRE_RELEASE_BROWSER_RESET_ENABLED = import.meta.env.DEV;
 
-type BrowserResetStorage = Pick<
-  Storage,
-  "getItem" | "key" | "length" | "removeItem" | "setItem"
->;
+type BrowserResetStorage = Pick<Storage, "getItem" | "key" | "length" | "removeItem" | "setItem">;
 
 export interface BrowserPreReleaseResetDependencies {
   readonly storage: BrowserResetStorage;
@@ -34,8 +31,9 @@ function isBitcasterBrowserStorageKey(key: string): boolean {
 /** Returns true only for the never-deployed development profile that needs this reset. */
 export function shouldRunPreReleaseBrowserReset(
   developmentBuild = PRE_RELEASE_BROWSER_RESET_ENABLED,
-  storage: BrowserResetStorage | null =
-    developmentBuild && typeof window !== "undefined" ? window.localStorage : null,
+  storage: BrowserResetStorage | null = developmentBuild && typeof window !== "undefined"
+    ? window.localStorage
+    : null,
 ): boolean {
   return (
     developmentBuild &&
@@ -85,6 +83,9 @@ export async function resetPreReleaseBrowserState(
   );
 
   clearBitcasterBrowserStorage(activeDependencies.storage);
-  activeDependencies.storage.setItem(PRE_RELEASE_BROWSER_RESET_EPOCH_KEY, PRE_RELEASE_BROWSER_RESET_EPOCH);
+  activeDependencies.storage.setItem(
+    PRE_RELEASE_BROWSER_RESET_EPOCH_KEY,
+    PRE_RELEASE_BROWSER_RESET_EPOCH,
+  );
   return true;
 }

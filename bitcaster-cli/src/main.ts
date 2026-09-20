@@ -668,11 +668,7 @@ function registerOrderCommand(program: Command): void {
     .option('--outcome <id>', 'Outcome id')
     .option('--side <side>', 'Order side: buy or sell', parseSide)
     .option('--price <n>', 'Limit price', parseIntegerOption('price'))
-    .option(
-      '--amount-msat <msat>',
-      'Order face amount in msat',
-      parseIntegerOption('amount msat'),
-    )
+    .option('--amount-msat <msat>', 'Order face amount in msat', parseIntegerOption('amount msat'))
     .option(
       '--min-fill-msat <msat>',
       'Minimum fill in msat (default: one whole share, 1000 msat)',

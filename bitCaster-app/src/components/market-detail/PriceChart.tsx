@@ -179,10 +179,7 @@ export function PriceChart({
     [priceHistory, chartTimeframe, outcomePriceHistories, outcomes, disabledNumeric],
   );
   const chartData = useMemo(() => alignSeries(series), [series]);
-  const xScale = useMemo(
-    () => xScaleFor(chartData, chartTimeframe),
-    [chartData, chartTimeframe],
-  );
+  const xScale = useMemo(() => xScaleFor(chartData, chartTimeframe), [chartData, chartTimeframe]);
   const hasChartData = series.length > 0 && chartData[0].length > 0;
   const latestValues = series
     .map((s) => {
@@ -290,7 +287,10 @@ export function PriceChart({
 
       <div className="relative h-56 mb-4 rounded-xl bg-slate-50 dark:bg-slate-900 overflow-hidden">
         {!hasChartData ? (
-          <div data-testid="price-chart-empty-state" className="absolute inset-0 flex items-center justify-center text-slate-400 dark:text-slate-500 text-sm">
+          <div
+            data-testid="price-chart-empty-state"
+            className="absolute inset-0 flex items-center justify-center text-slate-400 dark:text-slate-500 text-sm"
+          >
             {emptyDisplay ?? t("market.noDataAvailable")}
           </div>
         ) : (

@@ -418,8 +418,7 @@ function hasExactCompleteSetSuccessorAuthority(
     return (
       entries.length === 2 &&
       entries.every(
-        ([group, asset]) =>
-          (group === 'send' || group === 'keep') && isCollateralMsatAsset(asset),
+        ([group, asset]) => (group === 'send' || group === 'keep') && isCollateralMsatAsset(asset),
       )
     )
   }

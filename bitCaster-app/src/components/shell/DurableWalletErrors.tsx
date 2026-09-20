@@ -22,9 +22,12 @@ function WalletAlertPage({ scopeId }: { scopeId: string }) {
   const { t } = useTranslation();
   const [after, setAfter] = useState<BrowserCtfRangeMessageCursor>();
   const page = useLiveQuery(
-    () => pageActiveBrowserCtfRangeMessages({
-      scopeId, limit: VISIBLE_MESSAGE_LIMIT, ...(after ? { after } : {}),
-    }),
+    () =>
+      pageActiveBrowserCtfRangeMessages({
+        scopeId,
+        limit: VISIBLE_MESSAGE_LIMIT,
+        ...(after ? { after } : {}),
+      }),
     [scopeId, after],
   );
   if (!page || (page.messages.length === 0 && after === undefined)) return null;
@@ -79,7 +82,11 @@ function WalletAlertPage({ scopeId }: { scopeId: string }) {
           </button>
         )}
         {page.nextCursor !== null && (
-          <button type="button" className="text-sm underline" onClick={() => setAfter(page.nextCursor!)}>
+          <button
+            type="button"
+            className="text-sm underline"
+            onClick={() => setAfter(page.nextCursor!)}
+          >
             {t("common.next")}
           </button>
         )}

@@ -62,7 +62,9 @@ export function hasExecutableLiquidity(input: {
   if (divisibility === null) return false;
 
   if (input.side === "Sell") {
-    return input.book?.bids.some((order) => isPositiveExecutableOrder(order, divisibility)) ?? false;
+    return (
+      input.book?.bids.some((order) => isPositiveExecutableOrder(order, divisibility)) ?? false
+    );
   }
 
   if (input.book?.asks.some((order) => isPositiveExecutableOrder(order, divisibility))) {

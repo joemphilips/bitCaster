@@ -4,3354 +4,3403 @@
  */
 
 export interface paths {
-    "/api/v1/markets/{conditionId}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Register a new market on the matching engine
-         * @description Validates the condition exists in the mint, creates market order books, and optionally stores a thumbnail. The authenticated pubkey from the NIP-98 header is recorded as the market creator — no creator field in the request body is needed.
-         */
-        post: operations["createMarket"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/markets/{conditionId}/oracle-attestation": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Submit a signed oracle attestation directly to the engine
-         * @description Accepts a Nostr kind-89 DLC oracle attestation event and closes any open market identified by conditionId when the event and embedded kormir/rust-dlc attestation verify against that market's registered oracle. Nostr relay publication is optional: this endpoint is the direct closure path for bitCaster markets. The payload is self-authenticating, so no NIP-98 header is required.
-         */
-        post: operations["submitOracleAttestation"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/markets/{conditionId}/price-history": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Fetch primitive outcome price history for a market
-         * @description Returns primitive outcome price points grouped by primitive outcome id. Settled trade ticks (`source = fill`) are added only when settlement commits and are filtered to the requested timeframe. Compound outcome-set matches are projected only when settlement commits, and the response never uses compound outcome ids.
-         */
-        get: operations["getMarketPriceHistory"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/markets/{conditionId}/comments": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Fetch verified trade comments for a market
-         * @description Returns engine-indexed comments attached to orders in this condition after those orders have produced at least one settled fill. The response is condition-keyed and returns the public kind-1 author pubkey while intentionally omitting order ids, fill ids, ephemeral pubkeys, and counterparty ids.
-         */
-        get: operations["getMarketComments"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/conditions/{conditionId}/attestation": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Fetch the verified oracle witness for a closed condition
-         * @description Returns the oracle witness persisted when the engine closed the market from a verified DLC oracle attestation. Clients use this witness as input to the mint's `POST /v1/redeem_outcome` endpoint. The mint still verifies the witness before paying out; this endpoint is a convenience cache for already-closed bitCaster conditions, not the payout authority.
-         */
-        get: operations["getConditionAttestation"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/conditions/{conditionId}/orders/batch": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Submit multiple orders for one condition
-         * @description Applies current settlement-capability references in request order across visible books that share conditionId. The server loads every immutable order term from each durable DCB binding; the authenticated owner and route condition must exactly match the prebound intent. References are not bearer authority and foreign, stale, or non-current references fail closed. An exact retry by the same authenticated owner for the same order, reference, and fingerprint returns its prior accepted admission result even if the capability has since become selected or terminal. Each item returns an independent result; envelope, auth, closed-market, and rate-limit failures still use HTTP errors.
-         */
-        post: operations["batchSubmitOrders"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/conditions/{conditionId}/orders/cancel-batch": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Cancel multiple orders for one condition
-         * @description Cancels order ids under conditionId with privacy-preserving notCanceled failures. The response does not disclose whether an uncanceled order exists but belongs to another user.
-         */
-        post: operations["batchCancelOrders"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/{marketId}/orders": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * List the authenticated user's resting orders
-         * @description Returns live resting orders in this market owned by the authenticated user. Used by clients that need to rebuild local order-tracking state after a restart.
-         */
-        get: operations["listRestingOrders"];
-        put?: never;
-        /**
-         * Submit a new order
-         * @description Submits the current settlement capability referenced by the request. The server loads every immutable order term from the durable DCB binding; the authenticated owner and route market must exactly match that prebound intent. The reference is not bearer authority and is rejected when it is foreign, stale, or no longer current. An exact retry by the same authenticated owner for the same order, reference, and fingerprint returns the prior accepted admission result even if the capability has since become selected or terminal.
-         */
-        post: operations["submitOrder"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/orders/preview": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Preview one public FOK order
-         * @description Plans one read-only Fill-Or-Kill order against one captured market snapshot. The preview is not authorization, reservation, or order submission. Final admission rechecks the current market state and economic terms. NIP-98 authentication is optional; when present, the authenticated subject is used for self-match exclusion.
-         */
-        post: operations["PreviewFokOrder"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/orders/mine": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * List authenticated user's orders for a condition
-         * @description Returns the caller's live resting orders plus bounded recent order history for the requested condition. The conditionId query parameter is required to avoid global user-order scans.
-         */
-        get: operations["listMyOrders"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/{marketId}/orders/{orderId}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Fetch the current state of an order
-         * @description Returns the order's live status, remaining/filled amounts, and the list of fills produced so far. Clients poll this endpoint to observe async state changes (fills, cancellation, expiry) without holding an open connection. Only the order's owner (matching the authenticated pubkey) may query its status.
-         */
-        get: operations["getOrderStatus"];
-        put?: never;
-        post?: never;
-        /** Cancel an existing order */
-        delete: operations["cancelOrder"];
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/{marketId}/orderbook": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Get the current order book snapshot */
-        get: operations["getOrderBook"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/{marketId}/metadata": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Get market metadata
-         * @description Returns aggregated metadata for a market including trading volume, trade count, unique trader count, and liquidity.
-         */
-        get: operations["getMarketMetadata"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/{conditionId}/thumbnail": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Get the thumbnail image for a condition */
-        get: operations["getThumbnail"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/participation-score": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Read the authenticated user's participation Score
-         * @description Returns the caller's non-withdrawable Participation Score balance and ledger totals. Score is a sat-denominated engine-use credit, separate from market collateral units. The server applies the immutable capability-admission tariff from verified capability work facts. The tariff is not a per-order, per-fill, or settlement-failure fee and is not returned by this endpoint.
-         */
-        get: operations["getParticipationScore"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/cashu-deliveries/{deliveryId}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Read one authenticated durable Cashu delivery status
-         * @description Stable Problem Details codes apply to the documented application branches. Route constraints, framework binding, authentication, rate limits, and Score-specific failures can use other bodies. A request failure does not prove that no value was received. Preserve the original delivery identity.
-         */
-        get: operations["getDurableCashuDeliveryStatus"];
-        put?: never;
-        /**
-         * Submit one authenticated durable Cashu delivery
-         * @description Stable Problem Details codes apply to the documented application branches. Route constraints, framework binding, authentication, rate limits, and Score-specific failures can use other bodies. A request failure does not prove that no value was received. Preserve the original delivery identity.
-         */
-        post: operations["submitDurableCashuDelivery"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/creators/{pubkey}/markets": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * List markets created by a given Nostr pubkey
-         * @description Returns every market whose creator (authenticated via NIP-98 at registration time) matches the supplied pubkey, along with aggregated volume data so the creator dashboard can render totals without additional round-trips.
-         */
-        get: operations["listCreatorMarkets"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/markets/query": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Catalogue proxy — list markets with filters, sort, and pagination
-         * @description Returns the public market catalogue with matching-engine market state, mint condition data, and trading summary fields. This is the read endpoint the markets list page (`/markets`) and discovery surfaces consume.
-         *     Anonymous by default. NIP-98 is OPTIONAL — when present, the request is authenticated and routed to a higher per-pubkey rate-limit bucket; when absent, the per-IP bucket applies. Authentication does NOT change the response shape or visibility — every market visible to an anonymous caller is also visible to an authenticated caller and vice versa.
-         *     The response combines condition metadata (`outcomes`, `creatorPubkey`, `deadline`, and oracle attestation/close metadata) with trading state (`state`, `volume*`, and `createdAt`). A market missing either side of that public data is omitted from the catalogue until both are available.
-         */
-        get: operations["queryMarkets"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/settlement-capabilities": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Validate and bind one range-settlement authorization
-         * @description Stages one canonical NUT-CTF range-settlement artifact, validates its mint authority, reserves its exact input proofs, and binds it durably to the authenticated subject's order identity before returning. The artifact is a sensitive bearer capability containing conditioned proof secrets and public blinded outputs, but never refund private keys, output secrets, or blinding factors. A successful or response-uncertain attempt must be retried byte-identically. Once the key is durably associated with an artifact, changing any artifact or order-binding field fails closed. A definitive rejection before staging stores no key association.
-         */
-        post: operations["createSettlementCapability"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/asset-monitoring/reports": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Submit one complete display-only asset holdings report
-         * @description Accepts one complete best-effort holdings snapshot for the authenticated account and canonical wallet id. The engine does not verify proof ownership and does not accept a seed signature or backup state. An exact retry of the latest report returns no content. Reusing the latest report id with different content, or using an invalid interval or wallet lifecycle, returns a conflict.
-         */
-        post: operations["submitAssetMonitoringReport"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/asset-monitoring/summary": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Read the active wallet asset-monitoring summary */
-        get: operations["getAssetMonitoringSummary"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/asset-monitoring/assets": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Read one page of active wallet monitored assets */
-        get: operations["getAssetMonitoringAssets"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/asset-monitoring/history": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Read bounded estimated active wallet value history */
-        get: operations["getAssetMonitoringHistory"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/portfolio": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Read the bounded active wallet portfolio first-paint data */
-        get: operations["getPortfolio"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/settlement-capabilities/policy": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Read the current range-settlement admission policy
-         * @description Returns the coordinator public key that every newly created bitCaster PAY_TO_UNLOCK authorization must bind. Clients fetch this authenticated policy before creating a range operation. Historical operations retain their persisted coordinator key.
-         */
-        get: operations["getSettlementCapabilityAdmissionPolicy"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/settlement-capabilities/{artifactId}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Read one owned settlement-capability lifecycle
-         * @description Returns lifecycle facts only when the capability belongs to the authenticated subject and the supplied binding digest matches. A reference or digest is not bearer authorization.
-         */
-        get: operations["getSettlementCapability"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/settlement-capability-results/{resultId}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Retrieve one owned settlement result envelope */
-        get: operations["getSettlementCapabilityResult"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/settlement-capability-results/by-operation": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Retrieve one owned result by durable SDK operation id */
-        get: operations["getSettlementCapabilityResultByOperation"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/settlement-capability-results/{resultId}/acknowledgement": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Acknowledge durable local commit of a settlement result
-         * @description Advances acknowledgement only after the owner has durably committed the exact recovered outputs and SDK operation transition. Repeating the same expected version is idempotent; stale or foreign authority fails closed.
-         */
-        post: operations["acknowledgeSettlementCapabilityResult"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-}
-export type webhooks = Record<string, never>;
-export interface components {
-    schemas: {
-        /** @description Canonical lowercase SHA-256 digest. */
-        Sha256Digest: string;
-        /** @enum {string} */
-        DurableCashuRecipientKind: "matching-engine";
-        /** @enum {string} */
-        DurableCashuDeliveryPurpose: "market-funding" | "participation-score";
-        /** @enum {string} */
-        DurableCashuCreditPolicy: "exact-amount" | "net-of-receive-fee";
-        /** @enum {string} */
-        DurableCashuDeliveryState: "pending" | "received" | "credited";
-        /** @enum {string} */
-        DurableCashuCreditVerification: "exact-amount" | "net-of-receive-fee";
-        DurableCashuDeliverySubmission: {
-            schemaVersion: number;
-            /**
-             * Format: uuid
-             * @description Lowercase canonical UUID delivery identifier.
-             */
-            deliveryId: string;
-            /** @description Bounded ASCII subject identifier. NUL is invalid. */
-            accountSubject: string;
-            recipientKind: components["schemas"]["DurableCashuRecipientKind"];
-            purpose: components["schemas"]["DurableCashuDeliveryPurpose"];
-            /** @description Bounded ASCII destination identifier. NUL is invalid. */
-            destinationId: string;
-            productBindingSha256: components["schemas"]["Sha256Digest"];
-            /**
-             * Format: uri
-             * @description Canonical origin only. A non-default port is allowed. Credentials, path, query, fragment, trailing slash, and explicit default ports are invalid.
-             */
-            mintUrl: string;
-            /** @enum {string} */
-            unit: "msat";
-            /** @description Positive decimal amount. The value must not exceed signed 64-bit maximum 9223372036854775807. */
-            requestedAmount: string;
-            creditPolicy: components["schemas"]["DurableCashuCreditPolicy"];
-            tokenSha256: components["schemas"]["Sha256Digest"];
-            /** Format: int32 */
-            tokenEncodedLength: number;
-            token: string;
-        };
-        /** @description Tuple fingerprint input order is schemaVersion, deliveryId, accountSubject, recipientKind, purpose, destinationId, productBindingSha256, mintUrl, unit, requestedAmount, creditPolicy, tokenSha256, tokenEncodedLength. SHA-256 uses UTF-8 fields joined by NUL after the domain string "bitcaster/durable-cashu-delivery/v1". */
-        DurableCashuDeliveryImmutableTuple: {
-            schemaVersion: number;
-            /**
-             * Format: uuid
-             * @description Lowercase canonical UUID delivery identifier.
-             */
-            deliveryId: string;
-            /** @description Bounded ASCII subject identifier. NUL is invalid. */
-            accountSubject: string;
-            recipientKind: components["schemas"]["DurableCashuRecipientKind"];
-            purpose: components["schemas"]["DurableCashuDeliveryPurpose"];
-            /** @description Bounded ASCII destination identifier. NUL is invalid. */
-            destinationId: string;
-            productBindingSha256: components["schemas"]["Sha256Digest"];
-            /**
-             * Format: uri
-             * @description Canonical origin only. A non-default port is allowed. Credentials, path, query, fragment, trailing slash, and explicit default ports are invalid.
-             */
-            mintUrl: string;
-            /** @enum {string} */
-            unit: "msat";
-            /** @description Positive decimal amount. The value must not exceed signed 64-bit maximum 9223372036854775807. */
-            requestedAmount: string;
-            creditPolicy: components["schemas"]["DurableCashuCreditPolicy"];
-            tokenSha256: components["schemas"]["Sha256Digest"];
-            /** Format: int32 */
-            tokenEncodedLength: number;
-        };
-        DurableCashuDeliveryResult: {
-            /** @description Non-negative decimal amount. The value must not exceed signed 64-bit maximum 9223372036854775807. */
-            creditedAmount: string;
-            /** @description Non-negative decimal amount. The value must not exceed signed 64-bit maximum 9223372036854775807. */
-            receiveFee: string;
-            creditVerification: components["schemas"]["DurableCashuCreditVerification"];
-            /** @description Bounded ASCII receive operation identifier. NUL is invalid. */
-            receiveOperationId: string;
-            /** Format: date-time */
-            receivedAt: string;
-            /** @description Bounded ASCII business event identifier. NUL is invalid. This field requires businessEventAt and is valid only for a credited state. */
-            businessEventId?: string;
-            /**
-             * Format: date-time
-             * @description Business event time. This field requires businessEventId and is valid only for a credited state.
-             */
-            businessEventAt?: string;
-        };
-        /** @description Delivery state. A pending state has a null result. A received state has a receive result and no business event. The received result can omit both business event fields or set both fields to null. A credited state has a receive result and both non-null business event fields. SDK decoders enforce these paired fields. */
-        DurableCashuDeliveryStatus: {
-            delivery: components["schemas"]["DurableCashuDeliveryImmutableTuple"];
-            tupleFingerprint: components["schemas"]["Sha256Digest"];
-            state: components["schemas"]["DurableCashuDeliveryState"];
-            result: components["schemas"]["DurableCashuDeliveryResult"] | null;
-        } & (unknown & unknown);
-        /**
-         * @description Canonical monitored-asset identity kind.
-         * @enum {string}
-         */
-        AssetMonitoringAssetKind: "collateral" | "conditional";
-        AssetMonitoringAssetReference: components["schemas"]["AssetMonitoringCollateralAssetReference"] | components["schemas"]["AssetMonitoringConditionalAssetReference"];
-        AssetMonitoringCollateralAssetReference: {
-            /**
-             * Format: uri
-             * @description Canonical mint URL. It has no trailing slash.
-             */
-            canonicalMintUrl: string;
-            /** @enum {string} */
-            kind: "collateral";
-            cashuUnit: components["schemas"]["CollateralUnit"];
-            displayBaseAsset: components["schemas"]["BaseAsset"];
-        };
-        AssetMonitoringConditionalAssetReference: {
-            /**
-             * Format: uri
-             * @description Canonical mint URL. It has no trailing slash.
-             */
-            canonicalMintUrl: string;
-            /** @enum {string} */
-            kind: "conditional";
-            cashuUnit: components["schemas"]["CollateralUnit"];
-            displayBaseAsset: components["schemas"]["BaseAsset"];
-            conditionId: string;
-            parentConditionId: string;
-            outcomeUniverseDigest: components["schemas"]["Sha256Digest"];
-            internalOutcomeSetId: string;
-        };
-        AssetMonitoringRecoveryCounterInterval: {
-            /** Format: int32 */
-            start: number;
-            /** Format: int32 */
-            count: number;
-        };
-        AssetMonitoringRecoveryHint: {
-            keysetIds: string[];
-            counterIntervals: components["schemas"]["AssetMonitoringRecoveryCounterInterval"][];
-        };
-        AssetMonitoringReportedHolding: {
-            asset: components["schemas"]["AssetMonitoringAssetReference"];
-            /** Format: int64 */
-            availableSubunits: number;
-            /** Format: int64 */
-            pendingOutgoingSubunits: number;
-            recoveryHint?: components["schemas"]["AssetMonitoringRecoveryHint"] | null;
-        };
-        AssetMonitoringReportRequest: {
-            /** @description Canonical local durable wallet identifier. */
-            walletId: string;
-            /**
-             * Format: uuid
-             * @description Client-generated report identifier for exact retry handling.
-             */
-            reportId: string;
-            /** @description True for the first report and for a wallet switch. */
-            startsNewInterval: boolean;
-            holdings: components["schemas"]["AssetMonitoringReportedHolding"][];
-        };
-        /** @enum {string} */
-        AssetMonitoringValuationStatus: "valued" | "unvalued";
-        AssetMonitoringAssetResponse: {
-            asset: components["schemas"]["AssetMonitoringAssetReference"];
-            /** Format: int64 */
-            availableSubunits: number;
-            /** Format: int64 */
-            pendingOutgoingSubunits: number;
-            /** Format: int64 */
-            availableValueMsat?: number | null;
-            /** Format: int64 */
-            pendingOutgoingValueMsat?: number | null;
-            /** Format: int64 */
-            estimatedValueMsat?: number | null;
-            valuationStatus: components["schemas"]["AssetMonitoringValuationStatus"];
-            recoveryHint: components["schemas"]["AssetMonitoringRecoveryHint"] | null;
-        };
-        AssetMonitoringSummaryResponse: {
-            /** @enum {string} */
-            collateralUnit: "msat";
-            /** Format: int64 */
-            availableValueMsat: number | null;
-            /** Format: int64 */
-            pendingOutgoingValueMsat: number | null;
-            /** Format: int64 */
-            estimatedTotalValueMsat: number | null;
-            /** Format: int32 */
-            unvaluedAssetCount: number;
-            /** Format: int64 */
-            unvaluedAvailableSubunits: number | null;
-            /** Format: int64 */
-            unvaluedPendingOutgoingSubunits: number | null;
-            /** Format: date-time */
-            asOf?: string | null;
-            /** Format: int64 */
-            intervalRevision?: number | null;
-            coverageBoundary?: string | null;
-            valuationRevision: string;
-            stale: boolean;
-            incomplete: boolean;
-            building: boolean;
-        };
-        AssetMonitoringAssetsResponse: {
-            assets: components["schemas"]["AssetMonitoringAssetResponse"][];
-            nextCursor?: string | null;
-            /** Format: date-time */
-            asOf?: string | null;
-            /** Format: int64 */
-            intervalRevision?: number | null;
-            coverageBoundary?: string | null;
-            valuationRevision: string;
-            stale: boolean;
-            incomplete: boolean;
-            building: boolean;
-        };
-        AssetMonitoringHistoryPointResponse: {
-            /** Format: date-time */
-            asOf: string;
-            /** Format: int64 */
-            estimatedTotalValueMsat: number | null;
-        };
-        AssetMonitoringHistoryResponse: {
-            /** @enum {string} */
-            timeframe: "1D" | "1W" | "1M" | "ALL";
-            points: components["schemas"]["AssetMonitoringHistoryPointResponse"][];
-            /** Format: date-time */
-            asOf?: string | null;
-            /** Format: int64 */
-            intervalRevision?: number | null;
-            coverageBoundary?: string | null;
-            valuationRevision: string;
-            stale: boolean;
-            incomplete: boolean;
-            building: boolean;
-        };
-        AssetMonitoringPortfolioResponse: {
-            summary: components["schemas"]["AssetMonitoringSummaryResponse"];
-            assets: components["schemas"]["AssetMonitoringAssetsResponse"];
-            history: components["schemas"]["AssetMonitoringHistoryResponse"];
-        };
-        SettlementCapabilityReference: {
-            /** Format: uuid */
-            artifactId: string;
-            bindingDigest: components["schemas"]["Sha256Digest"];
-        };
-        /** @enum {string} */
-        SettlementCapabilityState: "staged" | "bindingPending" | "bound" | "selected" | "uncertain" | "terminal" | "quarantined";
-        /** @description Immutable economic order terms authenticated by the settlement capability binding. Later order submission supplies only the resulting capability reference; the server loads these terms from the current durable DCB binding. */
-        SettlementOrderIntent: {
-            /** @description Primitive outcome segment of the top-level marketId. It must not contain a finite outcome-set separator such as "|". */
-            outcomeId: string;
-            tokenSide: components["schemas"]["TokenSide"];
-            side: components["schemas"]["OrderSide"];
-            price: components["schemas"]["Probability"];
-            /** @description Conditional-token face amount in the market collateral sub-unit. */
-            amountSubunits: components["schemas"]["CollateralSubunits"];
-            /** @description Minimum aggregate conditional-token face amount that this order accepts in one matching round. It must not exceed amountSubunits and must be a whole tradable unit for the market divisibility. */
-            minimumFillAmountSubunits: components["schemas"]["CollateralSubunits"];
-            /** @description Required explicit quote asset. No default is implied. */
-            baseAsset: components["schemas"]["BaseAsset"];
-            /** @description Required explicit collateral unit. No default is implied. */
-            collateralUnit: components["schemas"]["CollateralUnit"];
-            /** @description Public settlement capability requests accept only FOK. FOK means Fill-Or-Kill and forbids expiresAt. */
-            timeInForce: components["schemas"]["SettlementCapabilityTimeInForce"];
-            /**
-             * Format: date-time
-             * @description Exactly null for FOK. Requiring the field gives the authenticated intent one canonical wire representation.
-             */
-            expiresAt: string | null;
-        };
-        CreateSettlementCapabilityRequest: {
-            /** @description Client-generated idempotency key for this exact artifact and order binding. It is scoped to the authenticated subject. Successful or response-uncertain attempts must retry the exact request; a definitive rejection before staging stores no key association. */
-            stageIdempotencyKey: string;
-            /** @description Stable client order identity used to derive the server order id. Reusing it with a different authorization fingerprint conflicts. */
-            clientOrderId: string;
-            /** @description Primitive outcome market id in `{conditionId}-{outcomeName}` form. */
-            marketId: string;
-            /** @description Economic order terms to authenticate in the durable capability binding. Once the stage idempotency key is durably associated, reusing it with different terms conflicts. */
-            orderIntent: components["schemas"]["SettlementOrderIntent"];
-            /**
-             * Format: byte
-             * @description Base64 encoding of at most 262144 canonical JSON bytes produced by the shared SDK settlement-capability artifact encoder.
-             */
-            artifact: string;
-        };
-        SettlementCapabilityResponse: {
-            reference: components["schemas"]["SettlementCapabilityReference"];
-            /** Format: uuid */
-            orderId: string;
-            clientOrderId: string;
-            marketId: string;
-            artifactDigest: components["schemas"]["Sha256Digest"];
-            state: components["schemas"]["SettlementCapabilityState"];
-            /** Format: int64 */
-            version: number;
-            /** Format: date-time */
-            authorizationExpiresAt: string;
-            /** Format: date-time */
-            stageExpiresAt: string;
-            /** @description Current or terminal group that selected this capability, or null before selection. */
-            settlementGroup: components["schemas"]["SettlementGroupSummary"] | null;
-        };
-        SettlementCapabilityAdmissionPolicyResponse: {
-            /** @description Current environment BIP-340 x-only coordinator public key. Every input proof in a newly admitted bitCaster PAY_TO_UNLOCK artifact must bind this exact key. */
-            coordinatorPubkey: string;
-        };
-        SettlementCapabilityResultResponse: {
-            /** Format: uuid */
-            resultId: string;
-            reference: components["schemas"]["SettlementCapabilityReference"];
-            operationId: string;
-            requestDigest: components["schemas"]["Sha256Digest"];
-            envelopeDigest: components["schemas"]["Sha256Digest"];
-            /**
-             * Format: byte
-             * @description Base64-encoded canonical owner result envelope. It contains the selected bitmap and mint signatures but no unblinding material.
-             */
-            envelope: string;
-            /** Format: date-time */
-            createdAt: string;
-            /** Format: date-time */
-            acknowledgedAt?: string | null;
-            /** Format: int64 */
-            version: number;
-            /** @description Atomic group that produced this owner result envelope. */
-            settlementGroup: components["schemas"]["SettlementGroupSummary"];
-        };
-        AcknowledgeSettlementCapabilityResultRequest: {
-            /** Format: int64 */
-            expectedVersion: number;
-        };
-        /**
-         * Format: int64
-         * @description A non-negative amount of satoshis.
-         */
-        Sats: number;
-        /**
-         * Format: int64
-         * @description Product collateral subunits in msat (1/1000 sat). Wire amount = collateral subunits. Request fields enforce minimum 1 at validation; response fields (remainingAmountSubunits, filledAmountSubunits) may be 0 for filled/cancelled orders.
-         */
-        CollateralSubunits: number;
-        /** @description Market price numerator `k`. Valid range is `1 <= k <= D - 1`, where `D` is the market's immutable `divisibility`. Immutable price denominator D is per-market. Current yes/no and categorical markets use D=1000 (0.1% precision). Numeric market creation and trading are currently disabled; D=1000000 (0.0001% precision) is reserved for a future numeric trade representation. */
-        Probability: number;
-        /**
-         * @description Product quote asset. The current product accepts only exact `sat`; product collateral is held in `msat`.
-         * @enum {string}
-         */
-        BaseAsset: "sat";
-        /**
-         * @description Product collateral unit. The current product accepts only exact `msat`; callers must provide it explicitly where required.
-         * @enum {string}
-         */
-        CollateralUnit: "msat";
-        /**
-         * @description Direction of an order relative to the outcome token.
-         * @enum {string}
-         */
-        OrderSide: "Buy" | "Sell";
-        /**
-         * @description Which token on the primitive outcome book is being traded. `Outcome` means the selected primitive outcome named by outcomeId; `Complement` means the one-vs-rest complement of that outcome.
-         *     Note on binary YES/NO markets: only the YES route is public. Trade YES with tokenSide=Outcome on cond-YES, and trade NO with tokenSide=Complement on cond-YES. Categorical markets (3+ outcomes) also expose atomic outcome routes only; complement collections are accessed via TokenSide: Complement on the corresponding atomic route.
-         * @enum {string}
-         */
-        TokenSide: "Outcome" | "Complement";
-        /**
-         * @description Execution semantics of an order.
-         * @enum {string}
-         */
-        OrderType: "Limit" | "Market";
-        /**
-         * @description Time-in-force policy. GTC = Good-Till-Cancel (rests on book), FOK = Fill-Or-Kill (reject if not fully filled), FAK = Fill-And-Kill (cancel remaining after partial fill), GTD = Good-Till-Date. GTD requires a non-null `expiresAt`; GTC, FOK, and FAK forbid `expiresAt`.
-         * @enum {string}
-         */
-        TimeInForce: "GTC" | "FOK" | "FAK" | "GTD";
-        /**
-         * @description Public settlement capability time-in-force. FOK means Fill-Or-Kill. Public capability requests are FOK-only. They cannot rest on the book and cannot carry an expiry.
-         * @enum {string}
-         */
-        SettlementCapabilityTimeInForce: "FOK";
-        /**
-         * @description Coarse reason for the read-only FOK preview result. `fillable` means the requested face amount passes the current price and match limits. `insufficient_liquidity` means more available market capacity may help. Other values do not promise that more capacity will help.
-         * @enum {string}
-         */
-        FokPreviewReason: "fillable" | "insufficient_liquidity" | "price_limit" | "request_too_large" | "market_unavailable" | "temporarily_unavailable";
-        /** @description Economic terms for one read-only public FOK preview. This request contains no time-in-force choice, owner, capability, proof, order identity, expiry, or caller match bound. */
-        PreviewFokOrderRequest: {
-            /** @description Primitive outcome market id in `{conditionId}-{outcomeName}` form. The condition segment starts with an alphanumeric character and can then contain alphanumeric characters or hyphens. The outcome segment contains one or more alphanumeric characters and must not contain a finite outcome-set separator such as `|`. Binary YES/NO markets expose only the `{conditionId}-YES` route; trade NO with `tokenSide=Complement`, and do not use `{conditionId}-NO`. */
-            marketId: string;
-            /** @description Order direction relative to the selected token. */
-            side: components["schemas"]["OrderSide"];
-            /** @description Token represented by the selected-token price. `Complement` means the one-vs-rest complement of the primitive outcome route. */
-            tokenSide: components["schemas"]["TokenSide"];
-            /**
-             * Format: int32
-             * @description Selected-token limit-price numerator `k`. The server also requires `k < D` for the market's immutable price denominator and validates the token-side mapping before planning.
-             */
-            price: number;
-            /**
-             * Format: int64
-             * @description Positive conditional-token face amount in market collateral subunits. The server requires a whole tradable unit for the market's immutable divisibility `D`; the maximum is 1e14.
-             */
-            faceAmountSubunits: number;
-        };
-        /** @description One read-only FOK result from one captured market snapshot. Execution estimates are null unless the full requested face amount is currently executable. Quote payment excludes client-composed wallet preparation, settlement input, and consolidation fees. Final admission repeats the authoritative plan. */
-        PreviewFokOrderResponse: {
-            /** @description True only when the complete requested face amount passes the selected-token price and bounded match checks. */
-            fullFillAvailable: boolean;
-            reason: components["schemas"]["FokPreviewReason"];
-            /** @description Opaque revision for the captured preview snapshot. Null when no authoritative market snapshot is available. This value is display metadata and is not authorization for final admission. */
-            previewRevision: string | null;
-            /**
-             * Format: int64
-             * @description Exact quote payment in market base-asset subunits. Null when the request is not fully fillable. This excludes client-composed fees.
-             */
-            quotePaymentSubunits: number | null;
-            /** @description Selected-token average execution price, computed from the exact `quotePaymentSubunits` as `quotePaymentSubunits * D / faceAmountSubunits`. It may be fractional. Null when the request is not fully fillable; quotePaymentSubunits remains authoritative for exact payment. */
-            averagePrice: number | null;
-            /**
-             * Format: int32
-             * @description Worst selected-token execution-price numerator across the canonical fill order. Null when the request is not fully fillable.
-             */
-            worstPrice: number | null;
-            /**
-             * Format: int32
-             * @description Latest confirmed primitive-route displayed trade-price numerator. Null when the market has no confirmed trade or no authoritative snapshot. This is a display price, not a selected-token execution price.
-             */
-            currentLatestTradePrice: number | null;
-            /**
-             * Format: int32
-             * @description Projected final primitive-route displayed trade-price numerator after this preview's canonical fills. Complement routes use the primitive-route display mapping. Null when the request is not fully fillable.
-             */
-            projectedFinalPrice: number | null;
-            /**
-             * Format: int32
-             * @description Immutable market price denominator `D`. Null when no authoritative market snapshot is available.
-             */
-            priceDenominator: number | null;
-            /** @description A conservative hint that additional condition funding capacity may help. True only for `insufficient_liquidity` when fresh capacity might make the request executable; it never guarantees execution. */
-            subsidyMayHelp: boolean;
-        };
-        /**
-         * @description Order lifecycle for public FOK orders and internal GTC quotes. A public FOK order is filled or cancelled. An internal GTC quote can rest or partially fill.
-         * @enum {string}
-         */
-        OrderLifecycleStatus: "resting" | "matched" | "partially_filled" | "filled" | "cancelled" | "expired" | "evicted_capacity" | "rejected_capacity" | "failed";
-        /**
-         * @description Public atomic settlement-group lifecycle. `Prepared` is the bounded coalescing state. `SubmissionPending` means the group is frozen and its exact request authority was durably committed before mint I/O. `RejectedBeforeSubmission` means this group stopped before committing a mint request for a reason other than authorization expiry. `ExpiredBeforeSubmission` means authorization expired before submission. Neither status confirms wallet recovery or authorizes a refund.
-         * @enum {string}
-         */
-        SettlementGroupStatus: "Prepared" | "SubmissionPending" | "Reconciling" | "Confirmed" | "DefinitivelyRejected" | "Refundable" | "ExpiredBeforeSubmission" | "RejectedBeforeSubmission";
-        SettlementGroupSummary: {
-            /** Format: uuid */
-            groupId: string;
-            status: components["schemas"]["SettlementGroupStatus"];
-            /** Format: int32 */
-            revision: number;
-            /** Format: date-time */
-            coalescingDeadline: string;
-            /**
-             * Format: date-time
-             * @description Null for `Prepared`, `RejectedBeforeSubmission`, and `ExpiredBeforeSubmission`, which transitions directly from `Prepared` without mint submission. Non-null for every lifecycle path that reached `SubmissionPending`, and preserved through later transitions.
-             */
-            frozenAt: string | null;
-        };
-        /**
-         * @description How two orders were matched together. Terminology mirrors Polymarket CTF Exchange V2: `Complementary` pairs a Buy against a Sell of the same outcome (no split required); `Mint` pairs two Buys for complementary outcome sets and the maker supplies the complementary CTF side from exact inventory, primitive complement legs, or an at-match collateral split. The `Merge` path (Sell vs Sell) is not yet supported in bitCaster.
-         * @enum {string}
-         */
-        MatchPath: "Complementary" | "Mint";
-        /**
-         * @description Lifecycle status of a fill-shaped order execution row. `Matched` means its atomic mint settlement group is not yet confirmed; `Filled` means settlement committed; `Failed` means the group was definitively rejected and this fill will not be retried.
-         * @enum {string}
-         */
-        FillStatus: "Matched" | "Filled" | "Failed";
-        OracleNostrEvent: {
-            /** @description NIP-01 event id of the kind-89 attestation. */
-            id: string;
-            /** @description X-only BIP-340/Nostr public key of the oracle. */
-            pubkey: string;
-            /**
-             * Format: int64
-             * @description NIP-01 created_at timestamp in Unix seconds.
-             */
-            createdAt: number;
-            /**
-             * @description Nostr event kind for DLC oracle attestations.
-             * @enum {integer}
-             */
-            kind: 89;
-            /** @description NIP-01 tags committed into the event id. NIP-88 attestations include an e-tag pointing to the kind-88 announcement event id. */
-            tags: string[][];
-            /** @description Base64-encoded DLC oracle_attestation payload. */
-            content: string;
-            /** @description BIP-340 Schnorr signature over the NIP-01 event id. */
-            sig: string;
-        };
-        OracleAttestationResponse: {
-            /**
-             * @description Engine processing result for the submitted attestation.
-             * @enum {string}
-             */
-            result: "Closed" | "AlreadyClosed" | "DuplicateReplay" | "WrongKind" | "InvalidSignature" | "InvalidPayload" | "NoMatchingMarket";
-        };
-        ConditionAttestationResponse: {
-            /** @description bitCaster condition id for the closed market. */
-            conditionId: string;
-            /** @description The single outcome attested by the DLC oracle. */
-            attestedOutcome: string;
-            oracleWitness: components["schemas"]["OracleWitness"];
-            registeredAuthority: components["schemas"]["RegisteredConditionAuthority"];
-        };
-        RegisteredConditionAuthority: {
-            eventId: string;
-            outcomes: string[];
-            threshold: number;
-            oracles: components["schemas"]["RegisteredConditionOracle"][];
-        };
-        RegisteredConditionOracle: {
-            oraclePublicKey: string;
-            noncePoint: string;
-            announcementIdentity: string;
-        };
-        ConditionAttestationProblem: {
-            /** @enum {string} */
-            result: "InvalidConditionId" | "MarketNotFound" | "AttestationNotAvailable";
-        };
-        OracleWitness: {
-            oracle_sigs: components["schemas"]["OracleWitnessSig"][];
-        };
-        OracleWitnessSig: {
-            /** @description X-only BIP-340 oracle public key. */
-            oracle_pubkey: string;
-            /** @description Oracle signature over the attested outcome. */
-            oracle_sig: string;
-            /** @description Outcome string signed by the oracle. */
-            outcome: string;
-        };
-        /** @description One leg of a match: the taker's incoming order crossing a single maker. Canonical settlement amounts are carried by `quotePaymentSubunits`, `outcomeFaceAmountSubunits`, `baseAsset`, `divisibility`, and `tokenSide`. `amountSubunits` is the conditional-token face amount in market collateral subunits (msat). `quotePaymentSubunits + baseAsset + divisibility` is the authoritative quote payment. */
-        Fill: {
-            /**
-             * Format: uuid
-             * @description Unique fill identifier.
-             */
-            id: string;
-            /**
-             * Format: uuid
-             * @description The incoming (aggressor) order that triggered this fill.
-             */
-            takerOrderId: string;
-            /**
-             * Format: uuid
-             * @description The resting order that was matched against.
-             */
-            makerOrderId: string;
-            /** @description Conditional-token face amount matched for settlement in market collateral subunits (msat). */
-            amountSubunits: components["schemas"]["CollateralSubunits"];
-            executionPrice: components["schemas"]["Probability"];
-            path: components["schemas"]["MatchPath"];
-            status: components["schemas"]["FillStatus"];
-            /** @description Required product base asset for the canonical settlement amount. */
-            baseAsset: components["schemas"]["BaseAsset"];
-            /**
-             * Format: int32
-             * @description Immutable price denominator `D`, server-determined.
-             * @enum {integer}
-             */
-            divisibility: 1000 | 1000000;
-            /**
-             * Format: int64
-             * @description Engine-computed quote payment in the market base-asset sub-unit. This field plus `baseAsset` and `divisibility` is the authoritative quote payment.
-             */
-            quotePaymentSubunits: number;
-            /**
-             * Format: int64
-             * @description Engine-computed conditional-token face amount in the market base-asset sub-unit.
-             */
-            outcomeFaceAmountSubunits: number;
-            /** @description Which token on the primitive outcome book was traded for the order that produced this fill. */
-            tokenSide: components["schemas"]["TokenSide"];
-            /**
-             * Format: date-time
-             * @description Timestamp when this fill was executed.
-             */
-            filledAt: string;
-            /** @description Atomic settlement group that durably owns this fill reservation. */
-            settlementGroup: components["schemas"]["SettlementGroupSummary"];
-        };
-        /** @description Reference-only order submission. The server loads all immutable order identity and economic terms from the current durable DCB binding. The authenticated owner and route market must exactly match that prebound intent. This reference is not bearer authority. */
-        SubmitOrderRequest: {
-            /** @description Current capability binding to submit. Possession does not authorize use: the server verifies ownership, route identity, and current DCB authorization state. */
-            settlementCapability: components["schemas"]["SettlementCapabilityReference"];
-            /** @description Optional signed Nostr kind-1 event to index as a verified trade comment once this order produces a fill. The event pubkey must match the NIP-98 submitter and include an `r` tag for the market detail URL. */
-            comment: components["schemas"]["NostrKind1Event"] | null;
-            /** @description Display-only wallet attribution. It does not authorize custody or settlement. */
-            walletId?: string;
-        };
-        NostrKind1Event: {
-            id: string;
-            pubkey: string;
-            /**
-             * Format: int64
-             * @description NIP-01 created_at Unix timestamp.
-             */
-            createdAt: number;
-            /** @enum {integer} */
-            kind: 1;
-            tags: string[][];
-            content: string;
-            sig: string;
-        };
-        OrderStatusResponse: {
-            /**
-             * Format: uuid
-             * @description The order's unique identifier.
-             */
-            orderId: string;
-            /** @description The market this order belongs to. */
-            marketId: string;
-            status: components["schemas"]["OrderLifecycleStatus"];
-            remainingAmountSubunits: components["schemas"]["CollateralSubunits"];
-            /** @description Conditional-token face amount already consumed by committed fills or reserved by a nonterminal atomic settlement group. */
-            filledAmountSubunits: components["schemas"]["CollateralSubunits"];
-            /** @description All fills and active or terminal atomic settlement groups produced against this order so far. */
-            fills: components["schemas"]["Fill"][];
-            /** @description The order's original conditional-token face amount. */
-            amountSubunits: components["schemas"]["CollateralSubunits"];
-            /** @description The primitive route outcome this order trades against. */
-            outcomeId: string;
-            side: components["schemas"]["OrderSide"];
-            price: components["schemas"]["Probability"];
-            /** Format: date-time */
-            placedAt: string;
-            timeInForce: components["schemas"]["TimeInForce"];
-            /** Format: date-time */
-            expiresAt?: string | null;
-            /** @description Current nonterminal settlement group for this order, or null when no group currently owns an unconfirmed fill. */
-            activeSettlementGroup: components["schemas"]["SettlementGroupSummary"] | null;
-            tokenSide: components["schemas"]["TokenSide"];
-            /** @description Base asset context for amount and price fields. */
-            baseAsset: components["schemas"]["BaseAsset"];
-            /**
-             * Format: int32
-             * @description Immutable price denominator `D`, server-determined.
-             * @enum {integer}
-             */
-            divisibility: 1000 | 1000000;
-        };
-        RestingOrderResponse: {
-            /**
-             * Format: uuid
-             * @description The unique identifier assigned by the matching engine.
-             */
-            orderId: string;
-            /** @description The market this order belongs to. */
-            marketId: string;
-            /** @description The primitive route outcome this order trades against. */
-            outcomeId: string;
-            tokenSide: components["schemas"]["TokenSide"];
-            side: components["schemas"]["OrderSide"];
-            price: components["schemas"]["Probability"];
-            remainingAmountSubunits: components["schemas"]["CollateralSubunits"];
-            amountSubunits: components["schemas"]["CollateralSubunits"];
-            timeInForce: components["schemas"]["TimeInForce"];
-            /** Format: date-time */
-            placedAt: string;
-            /** Format: date-time */
-            expiresAt?: string | null;
-            /** @description Base asset context for amount and price fields. */
-            baseAsset: components["schemas"]["BaseAsset"];
-            /**
-             * Format: int32
-             * @description Immutable price denominator `D`, server-determined.
-             * @enum {integer}
-             */
-            divisibility: 1000 | 1000000;
-        };
-        ListRestingOrdersResponse: {
-            orders: components["schemas"]["RestingOrderResponse"][];
-        };
-        OrderEntry: {
-            /** Format: uuid */
-            orderId: string;
-            marketId: string;
-            conditionId: string;
-            baseAsset: components["schemas"]["BaseAsset"];
-            /**
-             * Format: int32
-             * @enum {integer}
-             */
-            divisibility: 1000 | 1000000;
-            side: components["schemas"]["OrderSide"];
-            price: components["schemas"]["Probability"];
-            amountSubunits: components["schemas"]["CollateralSubunits"];
-            remainingAmountSubunits: components["schemas"]["CollateralSubunits"];
-            tokenSide: components["schemas"]["TokenSide"];
-            status: components["schemas"]["OrderLifecycleStatus"];
-            /** Format: date-time */
-            placedAt: string;
-            /** Format: date-time */
-            filledAt?: string | null;
-            clientOrderId?: string | null;
-            /** @description Current nonterminal settlement group for this order, or null. */
-            activeSettlementGroup: components["schemas"]["SettlementGroupSummary"] | null;
-        };
-        ListMyOrdersResponse: {
-            orders: components["schemas"]["OrderEntry"][];
-            nextCursor?: string | null;
-        };
-        SubmitOrderResponse: {
-            /**
-             * Format: uuid
-             * @description The unique identifier assigned to this order.
-             */
-            orderId: string;
-            status: components["schemas"]["OrderLifecycleStatus"];
-            remainingAmountSubunits: components["schemas"]["CollateralSubunits"];
-            /** @description List of fills produced by this order. Empty if no matches. */
-            fills: components["schemas"]["Fill"][];
-            /** @description Base asset context for amount and price fields. */
-            baseAsset: components["schemas"]["BaseAsset"];
-            /**
-             * Format: int32
-             * @enum {integer}
-             */
-            divisibility: 1000 | 1000000;
-            /** @description Current nonterminal settlement group for this order, or null. */
-            activeSettlementGroup: components["schemas"]["SettlementGroupSummary"] | null;
-        };
-        BatchSubmitOrdersRequest: {
-            orders: components["schemas"]["BatchSubmitOrderRequestItem"][];
-        };
-        /** @description Reference-only batch item. The server loads every immutable order fact from the current durable DCB binding. Possession of the reference is not bearer authority; ownership, route condition, and current authorization are verified. */
-        BatchSubmitOrderRequestItem: {
-            settlementCapability: components["schemas"]["SettlementCapabilityReference"];
-            /** @description Display-only wallet attribution. It does not authorize custody or settlement. */
-            walletId?: string;
-        };
-        /** @description Every request item appears exactly once in either `accepted` or `rejected`. Consumers may reconstruct request order by sorting both arrays by `requestIndex`. */
-        BatchSubmitOrdersResponse: {
-            accepted: components["schemas"]["BatchSubmitOrderSuccess"][];
-            rejected: components["schemas"]["BatchSubmitOrderFailure"][];
-        };
-        /** @description Accepted admission result with binding-owned order and execution facts. */
-        BatchSubmitOrderSuccess: {
-            /** Format: int32 */
-            requestIndex: number;
-            clientOrderId: string;
-            marketId: string;
-            /** Format: uuid */
-            orderId: string;
-            status: components["schemas"]["OrderLifecycleStatus"];
-            remainingAmountSubunits: components["schemas"]["CollateralSubunits"];
-            fills: components["schemas"]["Fill"][];
-            baseAsset: components["schemas"]["BaseAsset"];
-            /**
-             * Format: int32
-             * @description Immutable price denominator `D`, server-determined.
-             * @enum {integer}
-             */
-            divisibility: 1000 | 1000000;
-            /** @description Current nonterminal settlement group for this order, or null. */
-            activeSettlementGroup: components["schemas"]["SettlementGroupSummary"] | null;
-        };
-        /** @description Per-item admission failure. This variant exposes no binding-owned identity, market, order, amount, fill, asset, divisibility, or free-form dependency details. */
-        BatchSubmitOrderFailure: {
-            /** Format: int32 */
-            requestIndex: number;
-            errorCode: components["schemas"]["BatchSubmitOrderErrorCode"];
-        };
-        /**
-         * @description `capabilityNotFound` covers absent, foreign, or digest-mismatched references. `capabilityNotCurrent` covers stale, expired, selected, or otherwise non-current capabilities only when no matching accepted admission exists. An exact authenticated owner, order, reference, and fingerprint replay returns its prior accepted admission result even if the capability later became selected or terminal.
-         * @enum {string}
-         */
-        BatchSubmitOrderErrorCode: "capabilityNotFound" | "capabilityNotCurrent" | "routeMismatch" | "authorityUnavailable" | "marketClosed" | "bookRejected";
-        BatchCancelOrdersRequest: {
-            orderIds: string[];
-        };
-        BatchCancelOrdersResponse: {
-            canceled: string[];
-            notCanceled: {
-                [key: string]: components["schemas"]["BatchCancelOrderFailure"];
-            };
-        };
-        BatchCancelOrderFailure: {
-            errorCode: components["schemas"]["BatchCancelOrderErrorCode"];
-            errorMessage: string;
-        };
-        /** @enum {string} */
-        BatchCancelOrderErrorCode: "notFoundOrNotActiveOrNotAuthorized" | "duplicateOrderId" | "invalidOrderId" | "bookRejected";
-        /** @description A single price level in the order book depth. */
-        LevelDto: {
-            price: components["schemas"]["Probability"];
-            amount: components["schemas"]["CollateralSubunits"];
-        };
-        /** @description Order book snapshot for market-detail rendering. When `depthLimit` is present, `bids` and `asks` contain at most that many top executable price levels per side; clients must not treat the snapshot as full depth. */
-        OrderBookSnapshot: {
-            /** @description The market ID in the format "{conditionId}-{outcomeName}". */
-            marketId: string;
-            /** @description Buy-side levels sorted by price descending (best bid first). */
-            bids: components["schemas"]["LevelDto"][];
-            /** @description Sell-side levels sorted by price ascending (best ask first). */
-            asks: components["schemas"]["LevelDto"][];
-            /** @description Difference between best ask and best bid. Null if either side is empty. */
-            spread?: number | null;
-            /** @description Maximum number of top price levels included per side. Null or absent means the producer did not declare whether the snapshot is bounded. */
-            depthLimit?: number | null;
-        };
-        /** @description Lifecycle-change notification pushed over the market hub when a condition's market transitions state (e.g. open -> closed). Sent to every per-outcome market group of the condition. Carries only wire-visible, public lifecycle data. */
-        MarketStatusChanged: {
-            /** @description The condition identifier whose lifecycle changed. */
-            conditionId: string;
-            /**
-             * @description New engine-side lifecycle state. `open` accepts new orders; `closed` does not.
-             * @enum {string}
-             */
-            state: "open" | "closed";
-            /**
-             * Format: date-time
-             * @description Engine-side close timestamp. Null unless the new state is `closed`.
-             */
-            closedAt?: string | null;
-            /** @description Winning outcome known to the engine after an oracle attestation close. Null for deadline-only closes or non-resolving transitions. */
-            finalOutcome?: string | null;
-        };
-        CreateMarketOutcome: {
-            /** @description Outcome label (e.g. "Yes", "Alice"). */
-            name: string;
-        };
-        /** @description JSON payload embedded in the multipart `metadata` field of the createMarket endpoint. This request contains market metadata only. It accepts no opening probability and no initial funding payment or proof. Use the separate post-creation funding flow for bot funding. */
-        CreateMarketRequest: {
-            /** @description Human-readable market title. */
-            title: string;
-            /** @description Detailed market description. */
-            description: string;
-            /** @description The outcomes for the market (2 through 8). */
-            outcomes: components["schemas"]["CreateMarketOutcome"][];
-            /**
-             * @description Market outcome type. Use `yesno` or `categorical` for currently supported markets. The `numeric` value remains in the wire enum for compatibility, but numeric market creation and trading are currently disabled.
-             * @enum {string}
-             */
-            outcomeType?: "yesno" | "categorical" | "numeric";
-            /** @description Required immutable product base asset. Must be exact `sat`. */
-            baseAsset: components["schemas"]["BaseAsset"];
-            /** @description Optional category tags for the market. */
-            categoryTags?: string[];
-            /** @description Hex-encoded DLC oracle announcement TLV registered with the mint for this condition. The engine persists its oracle pubkey, DLC event id, and maturity time so direct oracle attestations can close the market. */
-            oracleAnnouncementHex?: string | null;
-        };
-        CreateMarketResponse: {
-            /** @description The condition ID this market was registered for. */
-            conditionId: string;
-            /** @description List of per-outcome market IDs created (format: "{conditionId}-{outcomeName}"). */
-            marketsCreated: string[];
-            /** @description Required immutable product base asset. Always exact `sat`. */
-            baseAsset: components["schemas"]["BaseAsset"];
-            /** @description URL to the uploaded thumbnail, or null if none was provided. */
-            thumbnailUrl?: string | null;
-            /**
-             * Format: int32
-             * @description Immutable price denominator `D`, server-determined. Current yes/no and categorical markets use `1000`; `1000000` is reserved for a future numeric trade representation.
-             * @enum {integer}
-             */
-            divisibility: 1000 | 1000000;
-        };
-        MarketPriceHistoryPoint: {
-            /** Format: date-time */
-            timestamp: string;
-            /** @description Market price numerator `k`. Valid range is `1 <= k <= D - 1`, where `D` is the market's immutable `divisibility`. Current yes/no and categorical markets use D=1000 (0.1% price precision). Numeric market creation and trading are currently disabled. */
-            price: number;
-            /**
-             * Format: int64
-             * @description Volume represented in the market's collateral/share subunits.
-             */
-            volumeSubunits: number;
-            /**
-             * @description `fill` is a settlement-committed trade tick inside the selected timeframe.
-             * @enum {string}
-             */
-            source: "fill";
-        };
-        MarketOutcomePriceHistory: {
-            /** @description Primitive outcome id. Compound outcome ids are not returned. */
-            outcomeId: string;
-            data: components["schemas"]["MarketPriceHistoryPoint"][];
-        };
-        MarketPriceHistoryResponse: {
-            conditionId: string;
-            /** @enum {string} */
-            timeframe: "1h" | "24h" | "7d" | "30d" | "all";
-            outcomes: components["schemas"]["MarketOutcomePriceHistory"][];
-        };
-        MarketComment: {
-            /**
-             * Format: uuid
-             * @description Opaque stable comment identifier.
-             */
-            commentId: string;
-            content: string;
-            /**
-             * Format: date-time
-             * @description Timestamp from the signed Nostr kind-1 comment event.
-             */
-            createdAt: string;
-            /** @description Nostr pubkey that signed the comment. */
-            authorPubkey: string;
-        };
-        MarketCommentsResponse: {
-            conditionId: string;
-            comments: components["schemas"]["MarketComment"][];
-        };
-        MarketMetadataSnapshot: {
-            /** @description The market ID. */
-            marketId: string;
-            /**
-             * Format: int64
-             * @description Total trading volume in market collateral subunits across all fills.
-             */
-            totalVolumeSubunits: number;
-            /** @description Total number of fills (trades) executed. */
-            totalTrades: number;
-            /**
-             * Format: int64
-             * @description Always zero. Does not report bot funding, custody, or executable order-book depth.
-             */
-            totalLiquiditySubunits: number;
-        };
-        CreatorMarketEntry: {
-            /** @description The condition ID this market was registered under. */
-            conditionId: string;
-            /**
-             * Format: int64
-             * @description Aggregated trading volume in market collateral subunits across every per-outcome market belonging to this condition.
-             */
-            totalVolumeSubunits: number;
-            /**
-             * Format: date-time
-             * @description When this market was registered with the matching engine.
-             */
-            createdAt: string;
-            /**
-             * @description Engine-side lifecycle state. `open` accepts new orders; `closed` does not.
-             * @enum {string}
-             */
-            state: "open" | "closed";
-        };
-        CreatorMarketsResponse: {
-            /** @description The creator pubkey this response belongs to (echoed from the path). */
-            pubkey: string;
-            /** @description Markets created by this pubkey. May be empty if the creator has not registered any markets yet. */
-            markets: components["schemas"]["CreatorMarketEntry"][];
-        };
-        ParticipationScoreResponse: {
-            /** @description Authenticated Nostr pubkey whose Score is returned. */
-            pubkey: string;
-            /**
-             * Format: int64
-             * @description Current Participation Score balance. It may be negative after a capability-admission charge.
-             */
-            balance: number;
-            /**
-             * Format: int64
-             * @description Total Score purchased by this pubkey.
-             */
-            purchasedTotal: number;
-            /**
-             * Format: int64
-             * @description Total Score consumed by capability-admission and invalid-validation charges.
-             */
-            consumedTotal: number;
-            /** @description Whether Participation Score purchase and payment is enabled by the engine. */
-            enabled: boolean;
-        };
-        /** @description One settlement-confirmed execution used by the public market-price projection. It does not represent a quote, order insertion, funding payment, or registration-time value. */
-        LatestConfirmedTrade: {
-            primitiveOutcomeId: string;
-            /** Format: uuid */
-            fillId: string;
-            /** Format: date-time */
-            executedAt: string;
-            eventOrder: string;
-            priceTick: number;
-            /**
-             * Format: int32
-             * @enum {integer}
-             */
-            divisibility: 1000 | 1000000;
-            /** Format: int64 */
-            faceAmountSubunits: number;
-        };
-        MarketCatalogueEntry: {
-            /** @description The condition identifier (hex string derived from the oracle announcement). Stable identifier for the market. */
-            conditionId: string;
-            /** @description Outcome names sourced from the mintd condition snapshot. Singleton outcome books use `marketId = "{conditionId}-{outcomeName}"`; the one-vs-rest complement is selected on order submission with `tokenSide = "Complement"` rather than a compound public market ID. */
-            outcomes: string[];
-            /** @description Optional human-readable title from market registration. Null when the creator did not supply one. */
-            title?: string | null;
-            /** @description Detailed market description supplied by the creator at registration time. Market detail pages render this as the resolution criteria text. */
-            description?: string | null;
-            /** @description Optional thumbnail URL. Null when no thumbnail was uploaded. */
-            thumbnailUrl?: string | null;
-            /** @description Creator's Nostr pubkey (64-char lowercase hex), captured at registration time via NIP-98. Null on legacy markets that predate creator tracking. */
-            creatorPubkey?: string | null;
-            /**
-             * Format: date-time
-             * @description Oracle attestation deadline carried from the mintd condition snapshot. The market auto-closes at this instant when the kind-89 attestation has not yet been observed.
-             */
-            deadline?: string | null;
-            /**
-             * Format: date-time
-             * @description Engine-side close timestamp. Null while the market is open. Closed market detail pages use this value as the resolution date; deadline remains the scheduled oracle maturity time.
-             */
-            closedAt?: string | null;
-            /** @description Winning outcome known to the engine after an oracle attestation close. Null for deadline-only closes or markets that have not yet resolved. */
-            finalOutcome?: string | null;
-            /**
-             * @description Engine-side lifecycle state. `open` accepts new orders; `closed` does not. Source of truth is the matching engine's lifecycle state, NOT mintd's attestation status.
-             * @enum {string}
-             */
-            state: "open" | "closed";
-            /**
-             * Format: date-time
-             * @description When the market was registered with the matching engine.
-             */
-            createdAt: string;
-            /**
-             * Format: int64
-             * @description Trading volume over the last 24 hours in the market collateral's base subunits (msat). Drives the `Trending` sort dimension.
-             */
-            volume24hSubunits: number;
-            /**
-             * Format: int64
-             * @description Trading volume over the last 30 days in the market collateral's base subunits (msat). Drives the `Popular` sort dimension.
-             */
-            volume30dSubunits: number;
-            /**
-             * Format: int64
-             * @description Total face amount of currently-resting orders across the market's order books, denominated in product collateral subunits (msat).
-             */
-            liquiditySubunits: number;
-            /**
-             * Format: int64
-             * @description Total confirmed post-creation funding assigned to the LMSR bot, denominated in product collateral subunits (msat). It can increase after additional accepted funding payments. It is operator-owned and non-withdrawable. It is not a depositor position, live residual, or order-book depth.
-             */
-            ammBotBudgetSubunits: number;
-            /**
-             * Format: int64
-             * @description Cumulative settled collateral face amount of all fills in the market's history.
-             */
-            volumeLifetimeSubunits: number;
-            baseAsset: components["schemas"]["BaseAsset"];
-            /**
-             * Format: int32
-             * @description Immutable price denominator `D`, server-determined.
-             * @enum {integer}
-             */
-            divisibility: 1000 | 1000000;
-            /** @description Category tags supplied at market registration. Filterable via the `tag` query parameter. */
-            categoryTags: string[];
-            /**
-             * Format: date-time
-             * @description When the engine last successfully pulled the mintd condition snapshot used to populate this entry's mintd-sourced fields. Mirrored on every entry so callers can render staleness indicators per market without an additional request.
-             */
-            lastSuccessfulRefreshAt: string;
-            /** @description Bounded latest confirmed execution per primitive outcome. This is the public market-price authority. The array is sorted by canonical primitive outcome ID. Missing outcomes are absent. An untraded market has an empty array and no public price; clients should show `No trades yet` or an em dash rather than inventing a price from registration, funding, a uniform default, or a quote midpoint. A midpoint is an order-entry reference only. For a yes/no market, derive the complementary display price from the same confirmed fill; do not combine trades from different executions. */
-            latestConfirmedTrades: components["schemas"]["LatestConfirmedTrade"][];
-        };
-        MarketCatalogueResponse: {
-            /** @description Page of markets matching the supplied filters, ordered by the requested `sort` dimension. Empty when no markets match. */
-            markets: components["schemas"]["MarketCatalogueEntry"][];
-            /** @description Opaque (HMAC-signed) pagination cursor for the next page. Null when this is the last page. Pass back as `?cursor=...` to continue. */
-            nextCursor?: string | null;
-            /**
-             * Format: date-time
-             * @description Top-level mirror of the mintd-mirror's most recent successful refresh time. Useful for rendering a single staleness banner covering the whole catalogue when the mintd poller has been failing.
-             */
-            lastSuccessfulRefreshAt: string;
-        };
-        /** @description RFC 9457 problem details. The matching engine returns this shape on 4xx and 5xx responses where additional context helps the caller recover. */
-        ProblemDetails: {
-            /** @description A URI reference identifying the problem type. */
-            type?: string;
-            /** @description A short, human-readable summary of the problem. */
-            title?: string;
-            /** @description The HTTP status code generated for this occurrence. */
-            status?: number;
-            /** @description A human-readable explanation specific to this occurrence. */
-            detail?: string;
-            /** @description A URI reference identifying the specific occurrence. */
-            instance?: string;
-            /** @description Stable application error code, when provided by the endpoint. */
-            code?: string;
-            /** @description The capacity limit that rejected admission, when applicable. */
-            limitCode?: string;
-            /** @description Diagnostic correlation identifier, when provided. */
-            traceId?: string;
-        };
-    };
-    responses: never;
+  '/api/v1/markets/{conditionId}': {
     parameters: {
-        /** @description The primitive outcome book to trade on, in the format "{conditionId}-{outcomeName}" (e.g. "deadbeef…abc-Alice"). Public market IDs never contain finite outcome-set separators such as "|"; use SettlementOrderIntent.tokenSide during capability creation to choose the primitive outcome token or its one-vs-rest complement. Binary YES/NO markets expose only the YES route ("{conditionId}-YES"); NO is traded as tokenSide=Complement on that YES route, and "{conditionId}-NO" is not a valid market ID. */
-        MarketId: string;
-        /** @description The condition identifier (hex string derived from the oracle announcement). */
-        ConditionId: string;
-        /** @description Canonical local durable wallet identifier. */
-        AssetMonitoringWalletId: string;
-        /** @description Lowercase canonical UUID delivery identifier. It must equal the required body deliveryId. */
-        DurableCashuDeliveryId: string;
-    };
-    requestBodies: never;
-    headers: {
-        /** @description The authenticated private response must not be stored. */
-        AssetMonitoringNoStore: "no-store";
-    };
-    pathItems: never;
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    /**
+     * Register a new market on the matching engine
+     * @description Validates the condition exists in the mint, creates market order books, and optionally stores a thumbnail. The authenticated pubkey from the NIP-98 header is recorded as the market creator — no creator field in the request body is needed.
+     */
+    post: operations['createMarket']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/markets/{conditionId}/oracle-attestation': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    /**
+     * Submit a signed oracle attestation directly to the engine
+     * @description Accepts a Nostr kind-89 DLC oracle attestation event and closes any open market identified by conditionId when the event and embedded kormir/rust-dlc attestation verify against that market's registered oracle. Nostr relay publication is optional: this endpoint is the direct closure path for bitCaster markets. The payload is self-authenticating, so no NIP-98 header is required.
+     */
+    post: operations['submitOracleAttestation']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/markets/{conditionId}/price-history': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /**
+     * Fetch primitive outcome price history for a market
+     * @description Returns primitive outcome price points grouped by primitive outcome id. Settled trade ticks (`source = fill`) are added only when settlement commits and are filtered to the requested timeframe. Compound outcome-set matches are projected only when settlement commits, and the response never uses compound outcome ids.
+     */
+    get: operations['getMarketPriceHistory']
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/markets/{conditionId}/comments': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /**
+     * Fetch verified trade comments for a market
+     * @description Returns engine-indexed comments attached to orders in this condition after those orders have produced at least one settled fill. The response is condition-keyed and returns the public kind-1 author pubkey while intentionally omitting order ids, fill ids, ephemeral pubkeys, and counterparty ids.
+     */
+    get: operations['getMarketComments']
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/conditions/{conditionId}/attestation': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /**
+     * Fetch the verified oracle witness for a closed condition
+     * @description Returns the oracle witness persisted when the engine closed the market from a verified DLC oracle attestation. Clients use this witness as input to the mint's `POST /v1/redeem_outcome` endpoint. The mint still verifies the witness before paying out; this endpoint is a convenience cache for already-closed bitCaster conditions, not the payout authority.
+     */
+    get: operations['getConditionAttestation']
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/conditions/{conditionId}/orders/batch': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    /**
+     * Submit multiple orders for one condition
+     * @description Applies current settlement-capability references in request order across visible books that share conditionId. The server loads every immutable order term from each durable DCB binding; the authenticated owner and route condition must exactly match the prebound intent. References are not bearer authority and foreign, stale, or non-current references fail closed. An exact retry by the same authenticated owner for the same order, reference, and fingerprint returns its prior accepted admission result even if the capability has since become selected or terminal. Each item returns an independent result; envelope, auth, closed-market, and rate-limit failures still use HTTP errors.
+     */
+    post: operations['batchSubmitOrders']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/conditions/{conditionId}/orders/cancel-batch': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    /**
+     * Cancel multiple orders for one condition
+     * @description Cancels order ids under conditionId with privacy-preserving notCanceled failures. The response does not disclose whether an uncanceled order exists but belongs to another user.
+     */
+    post: operations['batchCancelOrders']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/{marketId}/orders': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /**
+     * List the authenticated user's resting orders
+     * @description Returns live resting orders in this market owned by the authenticated user. Used by clients that need to rebuild local order-tracking state after a restart.
+     */
+    get: operations['listRestingOrders']
+    put?: never
+    /**
+     * Submit a new order
+     * @description Submits the current settlement capability referenced by the request. The server loads every immutable order term from the durable DCB binding; the authenticated owner and route market must exactly match that prebound intent. The reference is not bearer authority and is rejected when it is foreign, stale, or no longer current. An exact retry by the same authenticated owner for the same order, reference, and fingerprint returns the prior accepted admission result even if the capability has since become selected or terminal.
+     */
+    post: operations['submitOrder']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/orders/preview': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    /**
+     * Preview one public FOK order
+     * @description Plans one read-only Fill-Or-Kill order against one captured market snapshot. The preview is not authorization, reservation, or order submission. Final admission rechecks the current market state and economic terms. NIP-98 authentication is optional; when present, the authenticated subject is used for self-match exclusion.
+     */
+    post: operations['PreviewFokOrder']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/orders/mine': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /**
+     * List authenticated user's orders for a condition
+     * @description Returns the caller's live resting orders plus bounded recent order history for the requested condition. The conditionId query parameter is required to avoid global user-order scans.
+     */
+    get: operations['listMyOrders']
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/{marketId}/orders/{orderId}': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /**
+     * Fetch the current state of an order
+     * @description Returns the order's live status, remaining/filled amounts, and the list of fills produced so far. Clients poll this endpoint to observe async state changes (fills, cancellation, expiry) without holding an open connection. Only the order's owner (matching the authenticated pubkey) may query its status.
+     */
+    get: operations['getOrderStatus']
+    put?: never
+    post?: never
+    /** Cancel an existing order */
+    delete: operations['cancelOrder']
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/{marketId}/orderbook': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /** Get the current order book snapshot */
+    get: operations['getOrderBook']
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/{marketId}/metadata': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /**
+     * Get market metadata
+     * @description Returns aggregated metadata for a market including trading volume, trade count, unique trader count, and liquidity.
+     */
+    get: operations['getMarketMetadata']
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/{conditionId}/thumbnail': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /** Get the thumbnail image for a condition */
+    get: operations['getThumbnail']
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/participation-score': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /**
+     * Read the authenticated user's participation Score
+     * @description Returns the caller's non-withdrawable Participation Score balance and ledger totals. Score is a sat-denominated engine-use credit, separate from market collateral units. The server applies the immutable capability-admission tariff from verified capability work facts. The tariff is not a per-order, per-fill, or settlement-failure fee and is not returned by this endpoint.
+     */
+    get: operations['getParticipationScore']
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/cashu-deliveries/{deliveryId}': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /**
+     * Read one authenticated durable Cashu delivery status
+     * @description Stable Problem Details codes apply to the documented application branches. Route constraints, framework binding, authentication, rate limits, and Score-specific failures can use other bodies. A request failure does not prove that no value was received. Preserve the original delivery identity.
+     */
+    get: operations['getDurableCashuDeliveryStatus']
+    put?: never
+    /**
+     * Submit one authenticated durable Cashu delivery
+     * @description Stable Problem Details codes apply to the documented application branches. Route constraints, framework binding, authentication, rate limits, and Score-specific failures can use other bodies. A request failure does not prove that no value was received. Preserve the original delivery identity.
+     */
+    post: operations['submitDurableCashuDelivery']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/creators/{pubkey}/markets': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /**
+     * List markets created by a given Nostr pubkey
+     * @description Returns every market whose creator (authenticated via NIP-98 at registration time) matches the supplied pubkey, along with aggregated volume data so the creator dashboard can render totals without additional round-trips.
+     */
+    get: operations['listCreatorMarkets']
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/markets/query': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /**
+     * Catalogue proxy — list markets with filters, sort, and pagination
+     * @description Returns the public market catalogue with matching-engine market state, mint condition data, and trading summary fields. This is the read endpoint the markets list page (`/markets`) and discovery surfaces consume.
+     *     Anonymous by default. NIP-98 is OPTIONAL — when present, the request is authenticated and routed to a higher per-pubkey rate-limit bucket; when absent, the per-IP bucket applies. Authentication does NOT change the response shape or visibility — every market visible to an anonymous caller is also visible to an authenticated caller and vice versa.
+     *     The response combines condition metadata (`outcomes`, `creatorPubkey`, `deadline`, and oracle attestation/close metadata) with trading state (`state`, `volume*`, and `createdAt`). A market missing either side of that public data is omitted from the catalogue until both are available.
+     */
+    get: operations['queryMarkets']
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/settlement-capabilities': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    /**
+     * Validate and bind one range-settlement authorization
+     * @description Stages one canonical NUT-CTF range-settlement artifact, validates its mint authority, reserves its exact input proofs, and binds it durably to the authenticated subject's order identity before returning. The artifact is a sensitive bearer capability containing conditioned proof secrets and public blinded outputs, but never refund private keys, output secrets, or blinding factors. A successful or response-uncertain attempt must be retried byte-identically. Once the key is durably associated with an artifact, changing any artifact or order-binding field fails closed. A definitive rejection before staging stores no key association.
+     */
+    post: operations['createSettlementCapability']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/asset-monitoring/reports': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    /**
+     * Submit one complete display-only asset holdings report
+     * @description Accepts one complete best-effort holdings snapshot for the authenticated account and canonical wallet id. The engine does not verify proof ownership and does not accept a seed signature or backup state. An exact retry of the latest report returns no content. Reusing the latest report id with different content, or using an invalid interval or wallet lifecycle, returns a conflict.
+     */
+    post: operations['submitAssetMonitoringReport']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/asset-monitoring/summary': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /** Read the active wallet asset-monitoring summary */
+    get: operations['getAssetMonitoringSummary']
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/asset-monitoring/assets': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /** Read one page of active wallet monitored assets */
+    get: operations['getAssetMonitoringAssets']
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/asset-monitoring/history': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /** Read bounded estimated active wallet value history */
+    get: operations['getAssetMonitoringHistory']
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/portfolio': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /** Read the bounded active wallet portfolio first-paint data */
+    get: operations['getPortfolio']
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/settlement-capabilities/policy': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /**
+     * Read the current range-settlement admission policy
+     * @description Returns the coordinator public key that every newly created bitCaster PAY_TO_UNLOCK authorization must bind. Clients fetch this authenticated policy before creating a range operation. Historical operations retain their persisted coordinator key.
+     */
+    get: operations['getSettlementCapabilityAdmissionPolicy']
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/settlement-capabilities/{artifactId}': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /**
+     * Read one owned settlement-capability lifecycle
+     * @description Returns lifecycle facts only when the capability belongs to the authenticated subject and the supplied binding digest matches. A reference or digest is not bearer authorization.
+     */
+    get: operations['getSettlementCapability']
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/settlement-capability-results/{resultId}': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /** Retrieve one owned settlement result envelope */
+    get: operations['getSettlementCapabilityResult']
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/settlement-capability-results/by-operation': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /** Retrieve one owned result by durable SDK operation id */
+    get: operations['getSettlementCapabilityResultByOperation']
+    put?: never
+    post?: never
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/settlement-capability-results/{resultId}/acknowledgement': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    get?: never
+    put?: never
+    /**
+     * Acknowledge durable local commit of a settlement result
+     * @description Advances acknowledgement only after the owner has durably committed the exact recovered outputs and SDK operation transition. Repeating the same expected version is idempotent; stale or foreign authority fails closed.
+     */
+    post: operations['acknowledgeSettlementCapabilityResult']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
 }
-export type $defs = Record<string, never>;
+export type webhooks = Record<string, never>
+export interface components {
+  schemas: {
+    /** @description Canonical lowercase SHA-256 digest. */
+    Sha256Digest: string
+    /** @enum {string} */
+    DurableCashuRecipientKind: 'matching-engine'
+    /** @enum {string} */
+    DurableCashuDeliveryPurpose: 'market-funding' | 'participation-score'
+    /** @enum {string} */
+    DurableCashuCreditPolicy: 'exact-amount' | 'net-of-receive-fee'
+    /** @enum {string} */
+    DurableCashuDeliveryState: 'pending' | 'received' | 'credited'
+    /** @enum {string} */
+    DurableCashuCreditVerification: 'exact-amount' | 'net-of-receive-fee'
+    DurableCashuDeliverySubmission: {
+      schemaVersion: number
+      /**
+       * Format: uuid
+       * @description Lowercase canonical UUID delivery identifier.
+       */
+      deliveryId: string
+      /** @description Bounded ASCII subject identifier. NUL is invalid. */
+      accountSubject: string
+      recipientKind: components['schemas']['DurableCashuRecipientKind']
+      purpose: components['schemas']['DurableCashuDeliveryPurpose']
+      /** @description Bounded ASCII destination identifier. NUL is invalid. */
+      destinationId: string
+      productBindingSha256: components['schemas']['Sha256Digest']
+      /**
+       * Format: uri
+       * @description Canonical origin only. A non-default port is allowed. Credentials, path, query, fragment, trailing slash, and explicit default ports are invalid.
+       */
+      mintUrl: string
+      /** @enum {string} */
+      unit: 'msat'
+      /** @description Positive decimal amount. The value must not exceed signed 64-bit maximum 9223372036854775807. */
+      requestedAmount: string
+      creditPolicy: components['schemas']['DurableCashuCreditPolicy']
+      tokenSha256: components['schemas']['Sha256Digest']
+      /** Format: int32 */
+      tokenEncodedLength: number
+      token: string
+    }
+    /** @description Tuple fingerprint input order is schemaVersion, deliveryId, accountSubject, recipientKind, purpose, destinationId, productBindingSha256, mintUrl, unit, requestedAmount, creditPolicy, tokenSha256, tokenEncodedLength. SHA-256 uses UTF-8 fields joined by NUL after the domain string "bitcaster/durable-cashu-delivery/v1". */
+    DurableCashuDeliveryImmutableTuple: {
+      schemaVersion: number
+      /**
+       * Format: uuid
+       * @description Lowercase canonical UUID delivery identifier.
+       */
+      deliveryId: string
+      /** @description Bounded ASCII subject identifier. NUL is invalid. */
+      accountSubject: string
+      recipientKind: components['schemas']['DurableCashuRecipientKind']
+      purpose: components['schemas']['DurableCashuDeliveryPurpose']
+      /** @description Bounded ASCII destination identifier. NUL is invalid. */
+      destinationId: string
+      productBindingSha256: components['schemas']['Sha256Digest']
+      /**
+       * Format: uri
+       * @description Canonical origin only. A non-default port is allowed. Credentials, path, query, fragment, trailing slash, and explicit default ports are invalid.
+       */
+      mintUrl: string
+      /** @enum {string} */
+      unit: 'msat'
+      /** @description Positive decimal amount. The value must not exceed signed 64-bit maximum 9223372036854775807. */
+      requestedAmount: string
+      creditPolicy: components['schemas']['DurableCashuCreditPolicy']
+      tokenSha256: components['schemas']['Sha256Digest']
+      /** Format: int32 */
+      tokenEncodedLength: number
+    }
+    DurableCashuDeliveryResult: {
+      /** @description Non-negative decimal amount. The value must not exceed signed 64-bit maximum 9223372036854775807. */
+      creditedAmount: string
+      /** @description Non-negative decimal amount. The value must not exceed signed 64-bit maximum 9223372036854775807. */
+      receiveFee: string
+      creditVerification: components['schemas']['DurableCashuCreditVerification']
+      /** @description Bounded ASCII receive operation identifier. NUL is invalid. */
+      receiveOperationId: string
+      /** Format: date-time */
+      receivedAt: string
+      /** @description Bounded ASCII business event identifier. NUL is invalid. This field requires businessEventAt and is valid only for a credited state. */
+      businessEventId?: string
+      /**
+       * Format: date-time
+       * @description Business event time. This field requires businessEventId and is valid only for a credited state.
+       */
+      businessEventAt?: string
+    }
+    /** @description Delivery state. A pending state has a null result. A received state has a receive result and no business event. The received result can omit both business event fields or set both fields to null. A credited state has a receive result and both non-null business event fields. SDK decoders enforce these paired fields. */
+    DurableCashuDeliveryStatus: {
+      delivery: components['schemas']['DurableCashuDeliveryImmutableTuple']
+      tupleFingerprint: components['schemas']['Sha256Digest']
+      state: components['schemas']['DurableCashuDeliveryState']
+      result: components['schemas']['DurableCashuDeliveryResult'] | null
+    } & (unknown & unknown)
+    /**
+     * @description Canonical monitored-asset identity kind.
+     * @enum {string}
+     */
+    AssetMonitoringAssetKind: 'collateral' | 'conditional'
+    AssetMonitoringAssetReference:
+      | components['schemas']['AssetMonitoringCollateralAssetReference']
+      | components['schemas']['AssetMonitoringConditionalAssetReference']
+    AssetMonitoringCollateralAssetReference: {
+      /**
+       * Format: uri
+       * @description Canonical mint URL. It has no trailing slash.
+       */
+      canonicalMintUrl: string
+      /** @enum {string} */
+      kind: 'collateral'
+      cashuUnit: components['schemas']['CollateralUnit']
+      displayBaseAsset: components['schemas']['BaseAsset']
+    }
+    AssetMonitoringConditionalAssetReference: {
+      /**
+       * Format: uri
+       * @description Canonical mint URL. It has no trailing slash.
+       */
+      canonicalMintUrl: string
+      /** @enum {string} */
+      kind: 'conditional'
+      cashuUnit: components['schemas']['CollateralUnit']
+      displayBaseAsset: components['schemas']['BaseAsset']
+      conditionId: string
+      parentConditionId: string
+      outcomeUniverseDigest: components['schemas']['Sha256Digest']
+      internalOutcomeSetId: string
+    }
+    AssetMonitoringRecoveryCounterInterval: {
+      /** Format: int32 */
+      start: number
+      /** Format: int32 */
+      count: number
+    }
+    AssetMonitoringRecoveryHint: {
+      keysetIds: string[]
+      counterIntervals: components['schemas']['AssetMonitoringRecoveryCounterInterval'][]
+    }
+    AssetMonitoringReportedHolding: {
+      asset: components['schemas']['AssetMonitoringAssetReference']
+      /** Format: int64 */
+      availableSubunits: number
+      /** Format: int64 */
+      pendingOutgoingSubunits: number
+      recoveryHint?: components['schemas']['AssetMonitoringRecoveryHint'] | null
+    }
+    AssetMonitoringReportRequest: {
+      /** @description Canonical local durable wallet identifier. */
+      walletId: string
+      /**
+       * Format: uuid
+       * @description Client-generated report identifier for exact retry handling.
+       */
+      reportId: string
+      /** @description True for the first report and for a wallet switch. */
+      startsNewInterval: boolean
+      holdings: components['schemas']['AssetMonitoringReportedHolding'][]
+    }
+    /** @enum {string} */
+    AssetMonitoringValuationStatus: 'valued' | 'unvalued'
+    AssetMonitoringAssetResponse: {
+      asset: components['schemas']['AssetMonitoringAssetReference']
+      /** Format: int64 */
+      availableSubunits: number
+      /** Format: int64 */
+      pendingOutgoingSubunits: number
+      /** Format: int64 */
+      availableValueMsat?: number | null
+      /** Format: int64 */
+      pendingOutgoingValueMsat?: number | null
+      /** Format: int64 */
+      estimatedValueMsat?: number | null
+      valuationStatus: components['schemas']['AssetMonitoringValuationStatus']
+      recoveryHint: components['schemas']['AssetMonitoringRecoveryHint'] | null
+    }
+    AssetMonitoringSummaryResponse: {
+      /** @enum {string} */
+      collateralUnit: 'msat'
+      /** Format: int64 */
+      availableValueMsat: number | null
+      /** Format: int64 */
+      pendingOutgoingValueMsat: number | null
+      /** Format: int64 */
+      estimatedTotalValueMsat: number | null
+      /** Format: int32 */
+      unvaluedAssetCount: number
+      /** Format: int64 */
+      unvaluedAvailableSubunits: number | null
+      /** Format: int64 */
+      unvaluedPendingOutgoingSubunits: number | null
+      /** Format: date-time */
+      asOf?: string | null
+      /** Format: int64 */
+      intervalRevision?: number | null
+      coverageBoundary?: string | null
+      valuationRevision: string
+      stale: boolean
+      incomplete: boolean
+      building: boolean
+    }
+    AssetMonitoringAssetsResponse: {
+      assets: components['schemas']['AssetMonitoringAssetResponse'][]
+      nextCursor?: string | null
+      /** Format: date-time */
+      asOf?: string | null
+      /** Format: int64 */
+      intervalRevision?: number | null
+      coverageBoundary?: string | null
+      valuationRevision: string
+      stale: boolean
+      incomplete: boolean
+      building: boolean
+    }
+    AssetMonitoringHistoryPointResponse: {
+      /** Format: date-time */
+      asOf: string
+      /** Format: int64 */
+      estimatedTotalValueMsat: number | null
+    }
+    AssetMonitoringHistoryResponse: {
+      /** @enum {string} */
+      timeframe: '1D' | '1W' | '1M' | 'ALL'
+      points: components['schemas']['AssetMonitoringHistoryPointResponse'][]
+      /** Format: date-time */
+      asOf?: string | null
+      /** Format: int64 */
+      intervalRevision?: number | null
+      coverageBoundary?: string | null
+      valuationRevision: string
+      stale: boolean
+      incomplete: boolean
+      building: boolean
+    }
+    AssetMonitoringPortfolioResponse: {
+      summary: components['schemas']['AssetMonitoringSummaryResponse']
+      assets: components['schemas']['AssetMonitoringAssetsResponse']
+      history: components['schemas']['AssetMonitoringHistoryResponse']
+    }
+    SettlementCapabilityReference: {
+      /** Format: uuid */
+      artifactId: string
+      bindingDigest: components['schemas']['Sha256Digest']
+    }
+    /** @enum {string} */
+    SettlementCapabilityState:
+      | 'staged'
+      | 'bindingPending'
+      | 'bound'
+      | 'selected'
+      | 'uncertain'
+      | 'terminal'
+      | 'quarantined'
+    /** @description Immutable economic order terms authenticated by the settlement capability binding. Later order submission supplies only the resulting capability reference; the server loads these terms from the current durable DCB binding. */
+    SettlementOrderIntent: {
+      /** @description Primitive outcome segment of the top-level marketId. It must not contain a finite outcome-set separator such as "|". */
+      outcomeId: string
+      tokenSide: components['schemas']['TokenSide']
+      side: components['schemas']['OrderSide']
+      price: components['schemas']['Probability']
+      /** @description Conditional-token face amount in the market collateral sub-unit. */
+      amountSubunits: components['schemas']['CollateralSubunits']
+      /** @description Minimum aggregate conditional-token face amount that this order accepts in one matching round. It must not exceed amountSubunits and must be a whole tradable unit for the market divisibility. */
+      minimumFillAmountSubunits: components['schemas']['CollateralSubunits']
+      /** @description Required explicit quote asset. No default is implied. */
+      baseAsset: components['schemas']['BaseAsset']
+      /** @description Required explicit collateral unit. No default is implied. */
+      collateralUnit: components['schemas']['CollateralUnit']
+      /** @description Public settlement capability requests accept only FOK. FOK means Fill-Or-Kill and forbids expiresAt. */
+      timeInForce: components['schemas']['SettlementCapabilityTimeInForce']
+      /**
+       * Format: date-time
+       * @description Exactly null for FOK. Requiring the field gives the authenticated intent one canonical wire representation.
+       */
+      expiresAt: string | null
+    }
+    CreateSettlementCapabilityRequest: {
+      /** @description Client-generated idempotency key for this exact artifact and order binding. It is scoped to the authenticated subject. Successful or response-uncertain attempts must retry the exact request; a definitive rejection before staging stores no key association. */
+      stageIdempotencyKey: string
+      /** @description Stable client order identity used to derive the server order id. Reusing it with a different authorization fingerprint conflicts. */
+      clientOrderId: string
+      /** @description Primitive outcome market id in `{conditionId}-{outcomeName}` form. */
+      marketId: string
+      /** @description Economic order terms to authenticate in the durable capability binding. Once the stage idempotency key is durably associated, reusing it with different terms conflicts. */
+      orderIntent: components['schemas']['SettlementOrderIntent']
+      /**
+       * Format: byte
+       * @description Base64 encoding of at most 262144 canonical JSON bytes produced by the shared SDK settlement-capability artifact encoder.
+       */
+      artifact: string
+    }
+    SettlementCapabilityResponse: {
+      reference: components['schemas']['SettlementCapabilityReference']
+      /** Format: uuid */
+      orderId: string
+      clientOrderId: string
+      marketId: string
+      artifactDigest: components['schemas']['Sha256Digest']
+      state: components['schemas']['SettlementCapabilityState']
+      /** Format: int64 */
+      version: number
+      /** Format: date-time */
+      authorizationExpiresAt: string
+      /** Format: date-time */
+      stageExpiresAt: string
+      /** @description Current or terminal group that selected this capability, or null before selection. */
+      settlementGroup: components['schemas']['SettlementGroupSummary'] | null
+    }
+    SettlementCapabilityAdmissionPolicyResponse: {
+      /** @description Current environment BIP-340 x-only coordinator public key. Every input proof in a newly admitted bitCaster PAY_TO_UNLOCK artifact must bind this exact key. */
+      coordinatorPubkey: string
+    }
+    SettlementCapabilityResultResponse: {
+      /** Format: uuid */
+      resultId: string
+      reference: components['schemas']['SettlementCapabilityReference']
+      operationId: string
+      requestDigest: components['schemas']['Sha256Digest']
+      envelopeDigest: components['schemas']['Sha256Digest']
+      /**
+       * Format: byte
+       * @description Base64-encoded canonical owner result envelope. It contains the selected bitmap and mint signatures but no unblinding material.
+       */
+      envelope: string
+      /** Format: date-time */
+      createdAt: string
+      /** Format: date-time */
+      acknowledgedAt?: string | null
+      /** Format: int64 */
+      version: number
+      /** @description Atomic group that produced this owner result envelope. */
+      settlementGroup: components['schemas']['SettlementGroupSummary']
+    }
+    AcknowledgeSettlementCapabilityResultRequest: {
+      /** Format: int64 */
+      expectedVersion: number
+    }
+    /**
+     * Format: int64
+     * @description A non-negative amount of satoshis.
+     */
+    Sats: number
+    /**
+     * Format: int64
+     * @description Product collateral subunits in msat (1/1000 sat). Wire amount = collateral subunits. Request fields enforce minimum 1 at validation; response fields (remainingAmountSubunits, filledAmountSubunits) may be 0 for filled/cancelled orders.
+     */
+    CollateralSubunits: number
+    /** @description Market price numerator `k`. Valid range is `1 <= k <= D - 1`, where `D` is the market's immutable `divisibility`. Immutable price denominator D is per-market. Current yes/no and categorical markets use D=1000 (0.1% precision). Numeric market creation and trading are currently disabled; D=1000000 (0.0001% precision) is reserved for a future numeric trade representation. */
+    Probability: number
+    /**
+     * @description Product quote asset. The current product accepts only exact `sat`; product collateral is held in `msat`.
+     * @enum {string}
+     */
+    BaseAsset: 'sat'
+    /**
+     * @description Product collateral unit. The current product accepts only exact `msat`; callers must provide it explicitly where required.
+     * @enum {string}
+     */
+    CollateralUnit: 'msat'
+    /**
+     * @description Direction of an order relative to the outcome token.
+     * @enum {string}
+     */
+    OrderSide: 'Buy' | 'Sell'
+    /**
+     * @description Which token on the primitive outcome book is being traded. `Outcome` means the selected primitive outcome named by outcomeId; `Complement` means the one-vs-rest complement of that outcome.
+     *     Note on binary YES/NO markets: only the YES route is public. Trade YES with tokenSide=Outcome on cond-YES, and trade NO with tokenSide=Complement on cond-YES. Categorical markets (3+ outcomes) also expose atomic outcome routes only; complement collections are accessed via TokenSide: Complement on the corresponding atomic route.
+     * @enum {string}
+     */
+    TokenSide: 'Outcome' | 'Complement'
+    /**
+     * @description Execution semantics of an order.
+     * @enum {string}
+     */
+    OrderType: 'Limit' | 'Market'
+    /**
+     * @description Time-in-force policy. GTC = Good-Till-Cancel (rests on book), FOK = Fill-Or-Kill (reject if not fully filled), FAK = Fill-And-Kill (cancel remaining after partial fill), GTD = Good-Till-Date. GTD requires a non-null `expiresAt`; GTC, FOK, and FAK forbid `expiresAt`.
+     * @enum {string}
+     */
+    TimeInForce: 'GTC' | 'FOK' | 'FAK' | 'GTD'
+    /**
+     * @description Public settlement capability time-in-force. FOK means Fill-Or-Kill. Public capability requests are FOK-only. They cannot rest on the book and cannot carry an expiry.
+     * @enum {string}
+     */
+    SettlementCapabilityTimeInForce: 'FOK'
+    /**
+     * @description Coarse reason for the read-only FOK preview result. `fillable` means the requested face amount passes the current price and match limits. `insufficient_liquidity` means more available market capacity may help. Other values do not promise that more capacity will help.
+     * @enum {string}
+     */
+    FokPreviewReason:
+      | 'fillable'
+      | 'insufficient_liquidity'
+      | 'price_limit'
+      | 'request_too_large'
+      | 'market_unavailable'
+      | 'temporarily_unavailable'
+    /** @description Economic terms for one read-only public FOK preview. This request contains no time-in-force choice, owner, capability, proof, order identity, expiry, or caller match bound. */
+    PreviewFokOrderRequest: {
+      /** @description Primitive outcome market id in `{conditionId}-{outcomeName}` form. The condition segment starts with an alphanumeric character and can then contain alphanumeric characters or hyphens. The outcome segment contains one or more alphanumeric characters and must not contain a finite outcome-set separator such as `|`. Binary YES/NO markets expose only the `{conditionId}-YES` route; trade NO with `tokenSide=Complement`, and do not use `{conditionId}-NO`. */
+      marketId: string
+      /** @description Order direction relative to the selected token. */
+      side: components['schemas']['OrderSide']
+      /** @description Token represented by the selected-token price. `Complement` means the one-vs-rest complement of the primitive outcome route. */
+      tokenSide: components['schemas']['TokenSide']
+      /**
+       * Format: int32
+       * @description Selected-token limit-price numerator `k`. The server also requires `k < D` for the market's immutable price denominator and validates the token-side mapping before planning.
+       */
+      price: number
+      /**
+       * Format: int64
+       * @description Positive conditional-token face amount in market collateral subunits. The server requires a whole tradable unit for the market's immutable divisibility `D`; the maximum is 1e14.
+       */
+      faceAmountSubunits: number
+    }
+    /** @description One read-only FOK result from one captured market snapshot. Execution estimates are null unless the full requested face amount is currently executable. Quote payment excludes client-composed wallet preparation, settlement input, and consolidation fees. Final admission repeats the authoritative plan. */
+    PreviewFokOrderResponse: {
+      /** @description True only when the complete requested face amount passes the selected-token price and bounded match checks. */
+      fullFillAvailable: boolean
+      reason: components['schemas']['FokPreviewReason']
+      /** @description Opaque revision for the captured preview snapshot. Null when no authoritative market snapshot is available. This value is display metadata and is not authorization for final admission. */
+      previewRevision: string | null
+      /**
+       * Format: int64
+       * @description Exact quote payment in market base-asset subunits. Null when the request is not fully fillable. This excludes client-composed fees.
+       */
+      quotePaymentSubunits: number | null
+      /** @description Selected-token average execution price, computed from the exact `quotePaymentSubunits` as `quotePaymentSubunits * D / faceAmountSubunits`. It may be fractional. Null when the request is not fully fillable; quotePaymentSubunits remains authoritative for exact payment. */
+      averagePrice: number | null
+      /**
+       * Format: int32
+       * @description Worst selected-token execution-price numerator across the canonical fill order. Null when the request is not fully fillable.
+       */
+      worstPrice: number | null
+      /**
+       * Format: int32
+       * @description Latest confirmed primitive-route displayed trade-price numerator. Null when the market has no confirmed trade or no authoritative snapshot. This is a display price, not a selected-token execution price.
+       */
+      currentLatestTradePrice: number | null
+      /**
+       * Format: int32
+       * @description Projected final primitive-route displayed trade-price numerator after this preview's canonical fills. Complement routes use the primitive-route display mapping. Null when the request is not fully fillable.
+       */
+      projectedFinalPrice: number | null
+      /**
+       * Format: int32
+       * @description Immutable market price denominator `D`. Null when no authoritative market snapshot is available.
+       */
+      priceDenominator: number | null
+      /** @description A conservative hint that additional condition funding capacity may help. True only for `insufficient_liquidity` when fresh capacity might make the request executable; it never guarantees execution. */
+      subsidyMayHelp: boolean
+    }
+    /**
+     * @description Order lifecycle for public FOK orders and internal GTC quotes. A public FOK order is filled or cancelled. An internal GTC quote can rest or partially fill.
+     * @enum {string}
+     */
+    OrderLifecycleStatus:
+      | 'resting'
+      | 'matched'
+      | 'partially_filled'
+      | 'filled'
+      | 'cancelled'
+      | 'expired'
+      | 'evicted_capacity'
+      | 'rejected_capacity'
+      | 'failed'
+    /**
+     * @description Public atomic settlement-group lifecycle. `Prepared` is the bounded coalescing state. `SubmissionPending` means the group is frozen and its exact request authority was durably committed before mint I/O. `RejectedBeforeSubmission` means this group stopped before committing a mint request for a reason other than authorization expiry. `ExpiredBeforeSubmission` means authorization expired before submission. Neither status confirms wallet recovery or authorizes a refund.
+     * @enum {string}
+     */
+    SettlementGroupStatus:
+      | 'Prepared'
+      | 'SubmissionPending'
+      | 'Reconciling'
+      | 'Confirmed'
+      | 'DefinitivelyRejected'
+      | 'Refundable'
+      | 'ExpiredBeforeSubmission'
+      | 'RejectedBeforeSubmission'
+    SettlementGroupSummary: {
+      /** Format: uuid */
+      groupId: string
+      status: components['schemas']['SettlementGroupStatus']
+      /** Format: int32 */
+      revision: number
+      /** Format: date-time */
+      coalescingDeadline: string
+      /**
+       * Format: date-time
+       * @description Null for `Prepared`, `RejectedBeforeSubmission`, and `ExpiredBeforeSubmission`, which transitions directly from `Prepared` without mint submission. Non-null for every lifecycle path that reached `SubmissionPending`, and preserved through later transitions.
+       */
+      frozenAt: string | null
+    }
+    /**
+     * @description How two orders were matched together. Terminology mirrors Polymarket CTF Exchange V2: `Complementary` pairs a Buy against a Sell of the same outcome (no split required); `Mint` pairs two Buys for complementary outcome sets and the maker supplies the complementary CTF side from exact inventory, primitive complement legs, or an at-match collateral split. The `Merge` path (Sell vs Sell) is not yet supported in bitCaster.
+     * @enum {string}
+     */
+    MatchPath: 'Complementary' | 'Mint'
+    /**
+     * @description Lifecycle status of a fill-shaped order execution row. `Matched` means its atomic mint settlement group is not yet confirmed; `Filled` means settlement committed; `Failed` means the group was definitively rejected and this fill will not be retried.
+     * @enum {string}
+     */
+    FillStatus: 'Matched' | 'Filled' | 'Failed'
+    OracleNostrEvent: {
+      /** @description NIP-01 event id of the kind-89 attestation. */
+      id: string
+      /** @description X-only BIP-340/Nostr public key of the oracle. */
+      pubkey: string
+      /**
+       * Format: int64
+       * @description NIP-01 created_at timestamp in Unix seconds.
+       */
+      createdAt: number
+      /**
+       * @description Nostr event kind for DLC oracle attestations.
+       * @enum {integer}
+       */
+      kind: 89
+      /** @description NIP-01 tags committed into the event id. NIP-88 attestations include an e-tag pointing to the kind-88 announcement event id. */
+      tags: string[][]
+      /** @description Base64-encoded DLC oracle_attestation payload. */
+      content: string
+      /** @description BIP-340 Schnorr signature over the NIP-01 event id. */
+      sig: string
+    }
+    OracleAttestationResponse: {
+      /**
+       * @description Engine processing result for the submitted attestation.
+       * @enum {string}
+       */
+      result:
+        | 'Closed'
+        | 'AlreadyClosed'
+        | 'DuplicateReplay'
+        | 'WrongKind'
+        | 'InvalidSignature'
+        | 'InvalidPayload'
+        | 'NoMatchingMarket'
+    }
+    ConditionAttestationResponse: {
+      /** @description bitCaster condition id for the closed market. */
+      conditionId: string
+      /** @description The single outcome attested by the DLC oracle. */
+      attestedOutcome: string
+      oracleWitness: components['schemas']['OracleWitness']
+      registeredAuthority: components['schemas']['RegisteredConditionAuthority']
+    }
+    RegisteredConditionAuthority: {
+      eventId: string
+      outcomes: string[]
+      threshold: number
+      oracles: components['schemas']['RegisteredConditionOracle'][]
+    }
+    RegisteredConditionOracle: {
+      oraclePublicKey: string
+      noncePoint: string
+      announcementIdentity: string
+    }
+    ConditionAttestationProblem: {
+      /** @enum {string} */
+      result: 'InvalidConditionId' | 'MarketNotFound' | 'AttestationNotAvailable'
+    }
+    OracleWitness: {
+      oracle_sigs: components['schemas']['OracleWitnessSig'][]
+    }
+    OracleWitnessSig: {
+      /** @description X-only BIP-340 oracle public key. */
+      oracle_pubkey: string
+      /** @description Oracle signature over the attested outcome. */
+      oracle_sig: string
+      /** @description Outcome string signed by the oracle. */
+      outcome: string
+    }
+    /** @description One leg of a match: the taker's incoming order crossing a single maker. Canonical settlement amounts are carried by `quotePaymentSubunits`, `outcomeFaceAmountSubunits`, `baseAsset`, `divisibility`, and `tokenSide`. `amountSubunits` is the conditional-token face amount in market collateral subunits (msat). `quotePaymentSubunits + baseAsset + divisibility` is the authoritative quote payment. */
+    Fill: {
+      /**
+       * Format: uuid
+       * @description Unique fill identifier.
+       */
+      id: string
+      /**
+       * Format: uuid
+       * @description The incoming (aggressor) order that triggered this fill.
+       */
+      takerOrderId: string
+      /**
+       * Format: uuid
+       * @description The resting order that was matched against.
+       */
+      makerOrderId: string
+      /** @description Conditional-token face amount matched for settlement in market collateral subunits (msat). */
+      amountSubunits: components['schemas']['CollateralSubunits']
+      executionPrice: components['schemas']['Probability']
+      path: components['schemas']['MatchPath']
+      status: components['schemas']['FillStatus']
+      /** @description Required product base asset for the canonical settlement amount. */
+      baseAsset: components['schemas']['BaseAsset']
+      /**
+       * Format: int32
+       * @description Immutable price denominator `D`, server-determined.
+       * @enum {integer}
+       */
+      divisibility: 1000 | 1000000
+      /**
+       * Format: int64
+       * @description Engine-computed quote payment in the market base-asset sub-unit. This field plus `baseAsset` and `divisibility` is the authoritative quote payment.
+       */
+      quotePaymentSubunits: number
+      /**
+       * Format: int64
+       * @description Engine-computed conditional-token face amount in the market base-asset sub-unit.
+       */
+      outcomeFaceAmountSubunits: number
+      /** @description Which token on the primitive outcome book was traded for the order that produced this fill. */
+      tokenSide: components['schemas']['TokenSide']
+      /**
+       * Format: date-time
+       * @description Timestamp when this fill was executed.
+       */
+      filledAt: string
+      /** @description Atomic settlement group that durably owns this fill reservation. */
+      settlementGroup: components['schemas']['SettlementGroupSummary']
+    }
+    /** @description Reference-only order submission. The server loads all immutable order identity and economic terms from the current durable DCB binding. The authenticated owner and route market must exactly match that prebound intent. This reference is not bearer authority. */
+    SubmitOrderRequest: {
+      /** @description Current capability binding to submit. Possession does not authorize use: the server verifies ownership, route identity, and current DCB authorization state. */
+      settlementCapability: components['schemas']['SettlementCapabilityReference']
+      /** @description Optional signed Nostr kind-1 event to index as a verified trade comment once this order produces a fill. The event pubkey must match the NIP-98 submitter and include an `r` tag for the market detail URL. */
+      comment: components['schemas']['NostrKind1Event'] | null
+      /** @description Display-only wallet attribution. It does not authorize custody or settlement. */
+      walletId?: string
+    }
+    NostrKind1Event: {
+      id: string
+      pubkey: string
+      /**
+       * Format: int64
+       * @description NIP-01 created_at Unix timestamp.
+       */
+      createdAt: number
+      /** @enum {integer} */
+      kind: 1
+      tags: string[][]
+      content: string
+      sig: string
+    }
+    OrderStatusResponse: {
+      /**
+       * Format: uuid
+       * @description The order's unique identifier.
+       */
+      orderId: string
+      /** @description The market this order belongs to. */
+      marketId: string
+      status: components['schemas']['OrderLifecycleStatus']
+      remainingAmountSubunits: components['schemas']['CollateralSubunits']
+      /** @description Conditional-token face amount already consumed by committed fills or reserved by a nonterminal atomic settlement group. */
+      filledAmountSubunits: components['schemas']['CollateralSubunits']
+      /** @description All fills and active or terminal atomic settlement groups produced against this order so far. */
+      fills: components['schemas']['Fill'][]
+      /** @description The order's original conditional-token face amount. */
+      amountSubunits: components['schemas']['CollateralSubunits']
+      /** @description The primitive route outcome this order trades against. */
+      outcomeId: string
+      side: components['schemas']['OrderSide']
+      price: components['schemas']['Probability']
+      /** Format: date-time */
+      placedAt: string
+      timeInForce: components['schemas']['TimeInForce']
+      /** Format: date-time */
+      expiresAt?: string | null
+      /** @description Current nonterminal settlement group for this order, or null when no group currently owns an unconfirmed fill. */
+      activeSettlementGroup: components['schemas']['SettlementGroupSummary'] | null
+      tokenSide: components['schemas']['TokenSide']
+      /** @description Base asset context for amount and price fields. */
+      baseAsset: components['schemas']['BaseAsset']
+      /**
+       * Format: int32
+       * @description Immutable price denominator `D`, server-determined.
+       * @enum {integer}
+       */
+      divisibility: 1000 | 1000000
+    }
+    RestingOrderResponse: {
+      /**
+       * Format: uuid
+       * @description The unique identifier assigned by the matching engine.
+       */
+      orderId: string
+      /** @description The market this order belongs to. */
+      marketId: string
+      /** @description The primitive route outcome this order trades against. */
+      outcomeId: string
+      tokenSide: components['schemas']['TokenSide']
+      side: components['schemas']['OrderSide']
+      price: components['schemas']['Probability']
+      remainingAmountSubunits: components['schemas']['CollateralSubunits']
+      amountSubunits: components['schemas']['CollateralSubunits']
+      timeInForce: components['schemas']['TimeInForce']
+      /** Format: date-time */
+      placedAt: string
+      /** Format: date-time */
+      expiresAt?: string | null
+      /** @description Base asset context for amount and price fields. */
+      baseAsset: components['schemas']['BaseAsset']
+      /**
+       * Format: int32
+       * @description Immutable price denominator `D`, server-determined.
+       * @enum {integer}
+       */
+      divisibility: 1000 | 1000000
+    }
+    ListRestingOrdersResponse: {
+      orders: components['schemas']['RestingOrderResponse'][]
+    }
+    OrderEntry: {
+      /** Format: uuid */
+      orderId: string
+      marketId: string
+      conditionId: string
+      baseAsset: components['schemas']['BaseAsset']
+      /**
+       * Format: int32
+       * @enum {integer}
+       */
+      divisibility: 1000 | 1000000
+      side: components['schemas']['OrderSide']
+      price: components['schemas']['Probability']
+      amountSubunits: components['schemas']['CollateralSubunits']
+      remainingAmountSubunits: components['schemas']['CollateralSubunits']
+      tokenSide: components['schemas']['TokenSide']
+      status: components['schemas']['OrderLifecycleStatus']
+      /** Format: date-time */
+      placedAt: string
+      /** Format: date-time */
+      filledAt?: string | null
+      clientOrderId?: string | null
+      /** @description Current nonterminal settlement group for this order, or null. */
+      activeSettlementGroup: components['schemas']['SettlementGroupSummary'] | null
+    }
+    ListMyOrdersResponse: {
+      orders: components['schemas']['OrderEntry'][]
+      nextCursor?: string | null
+    }
+    SubmitOrderResponse: {
+      /**
+       * Format: uuid
+       * @description The unique identifier assigned to this order.
+       */
+      orderId: string
+      status: components['schemas']['OrderLifecycleStatus']
+      remainingAmountSubunits: components['schemas']['CollateralSubunits']
+      /** @description List of fills produced by this order. Empty if no matches. */
+      fills: components['schemas']['Fill'][]
+      /** @description Base asset context for amount and price fields. */
+      baseAsset: components['schemas']['BaseAsset']
+      /**
+       * Format: int32
+       * @enum {integer}
+       */
+      divisibility: 1000 | 1000000
+      /** @description Current nonterminal settlement group for this order, or null. */
+      activeSettlementGroup: components['schemas']['SettlementGroupSummary'] | null
+    }
+    BatchSubmitOrdersRequest: {
+      orders: components['schemas']['BatchSubmitOrderRequestItem'][]
+    }
+    /** @description Reference-only batch item. The server loads every immutable order fact from the current durable DCB binding. Possession of the reference is not bearer authority; ownership, route condition, and current authorization are verified. */
+    BatchSubmitOrderRequestItem: {
+      settlementCapability: components['schemas']['SettlementCapabilityReference']
+      /** @description Display-only wallet attribution. It does not authorize custody or settlement. */
+      walletId?: string
+    }
+    /** @description Every request item appears exactly once in either `accepted` or `rejected`. Consumers may reconstruct request order by sorting both arrays by `requestIndex`. */
+    BatchSubmitOrdersResponse: {
+      accepted: components['schemas']['BatchSubmitOrderSuccess'][]
+      rejected: components['schemas']['BatchSubmitOrderFailure'][]
+    }
+    /** @description Accepted admission result with binding-owned order and execution facts. */
+    BatchSubmitOrderSuccess: {
+      /** Format: int32 */
+      requestIndex: number
+      clientOrderId: string
+      marketId: string
+      /** Format: uuid */
+      orderId: string
+      status: components['schemas']['OrderLifecycleStatus']
+      remainingAmountSubunits: components['schemas']['CollateralSubunits']
+      fills: components['schemas']['Fill'][]
+      baseAsset: components['schemas']['BaseAsset']
+      /**
+       * Format: int32
+       * @description Immutable price denominator `D`, server-determined.
+       * @enum {integer}
+       */
+      divisibility: 1000 | 1000000
+      /** @description Current nonterminal settlement group for this order, or null. */
+      activeSettlementGroup: components['schemas']['SettlementGroupSummary'] | null
+    }
+    /** @description Per-item admission failure. This variant exposes no binding-owned identity, market, order, amount, fill, asset, divisibility, or free-form dependency details. */
+    BatchSubmitOrderFailure: {
+      /** Format: int32 */
+      requestIndex: number
+      errorCode: components['schemas']['BatchSubmitOrderErrorCode']
+    }
+    /**
+     * @description `capabilityNotFound` covers absent, foreign, or digest-mismatched references. `capabilityNotCurrent` covers stale, expired, selected, or otherwise non-current capabilities only when no matching accepted admission exists. An exact authenticated owner, order, reference, and fingerprint replay returns its prior accepted admission result even if the capability later became selected or terminal.
+     * @enum {string}
+     */
+    BatchSubmitOrderErrorCode:
+      | 'capabilityNotFound'
+      | 'capabilityNotCurrent'
+      | 'routeMismatch'
+      | 'authorityUnavailable'
+      | 'marketClosed'
+      | 'bookRejected'
+    BatchCancelOrdersRequest: {
+      orderIds: string[]
+    }
+    BatchCancelOrdersResponse: {
+      canceled: string[]
+      notCanceled: {
+        [key: string]: components['schemas']['BatchCancelOrderFailure']
+      }
+    }
+    BatchCancelOrderFailure: {
+      errorCode: components['schemas']['BatchCancelOrderErrorCode']
+      errorMessage: string
+    }
+    /** @enum {string} */
+    BatchCancelOrderErrorCode:
+      | 'notFoundOrNotActiveOrNotAuthorized'
+      | 'duplicateOrderId'
+      | 'invalidOrderId'
+      | 'bookRejected'
+    /** @description A single price level in the order book depth. */
+    LevelDto: {
+      price: components['schemas']['Probability']
+      amount: components['schemas']['CollateralSubunits']
+    }
+    /** @description Order book snapshot for market-detail rendering. When `depthLimit` is present, `bids` and `asks` contain at most that many top executable price levels per side; clients must not treat the snapshot as full depth. */
+    OrderBookSnapshot: {
+      /** @description The market ID in the format "{conditionId}-{outcomeName}". */
+      marketId: string
+      /** @description Buy-side levels sorted by price descending (best bid first). */
+      bids: components['schemas']['LevelDto'][]
+      /** @description Sell-side levels sorted by price ascending (best ask first). */
+      asks: components['schemas']['LevelDto'][]
+      /** @description Difference between best ask and best bid. Null if either side is empty. */
+      spread?: number | null
+      /** @description Maximum number of top price levels included per side. Null or absent means the producer did not declare whether the snapshot is bounded. */
+      depthLimit?: number | null
+    }
+    /** @description Lifecycle-change notification pushed over the market hub when a condition's market transitions state (e.g. open -> closed). Sent to every per-outcome market group of the condition. Carries only wire-visible, public lifecycle data. */
+    MarketStatusChanged: {
+      /** @description The condition identifier whose lifecycle changed. */
+      conditionId: string
+      /**
+       * @description New engine-side lifecycle state. `open` accepts new orders; `closed` does not.
+       * @enum {string}
+       */
+      state: 'open' | 'closed'
+      /**
+       * Format: date-time
+       * @description Engine-side close timestamp. Null unless the new state is `closed`.
+       */
+      closedAt?: string | null
+      /** @description Winning outcome known to the engine after an oracle attestation close. Null for deadline-only closes or non-resolving transitions. */
+      finalOutcome?: string | null
+    }
+    CreateMarketOutcome: {
+      /** @description Outcome label (e.g. "Yes", "Alice"). */
+      name: string
+    }
+    /** @description JSON payload embedded in the multipart `metadata` field of the createMarket endpoint. This request contains market metadata only. It accepts no opening probability and no initial funding payment or proof. Use the separate post-creation funding flow for bot funding. */
+    CreateMarketRequest: {
+      /** @description Human-readable market title. */
+      title: string
+      /** @description Detailed market description. */
+      description: string
+      /** @description The outcomes for the market (2 through 8). */
+      outcomes: components['schemas']['CreateMarketOutcome'][]
+      /**
+       * @description Market outcome type. Use `yesno` or `categorical` for currently supported markets. The `numeric` value remains in the wire enum for compatibility, but numeric market creation and trading are currently disabled.
+       * @enum {string}
+       */
+      outcomeType?: 'yesno' | 'categorical' | 'numeric'
+      /** @description Required immutable product base asset. Must be exact `sat`. */
+      baseAsset: components['schemas']['BaseAsset']
+      /** @description Optional category tags for the market. */
+      categoryTags?: string[]
+      /** @description Hex-encoded DLC oracle announcement TLV registered with the mint for this condition. The engine persists its oracle pubkey, DLC event id, and maturity time so direct oracle attestations can close the market. */
+      oracleAnnouncementHex?: string | null
+    }
+    CreateMarketResponse: {
+      /** @description The condition ID this market was registered for. */
+      conditionId: string
+      /** @description List of per-outcome market IDs created (format: "{conditionId}-{outcomeName}"). */
+      marketsCreated: string[]
+      /** @description Required immutable product base asset. Always exact `sat`. */
+      baseAsset: components['schemas']['BaseAsset']
+      /** @description URL to the uploaded thumbnail, or null if none was provided. */
+      thumbnailUrl?: string | null
+      /**
+       * Format: int32
+       * @description Immutable price denominator `D`, server-determined. Current yes/no and categorical markets use `1000`; `1000000` is reserved for a future numeric trade representation.
+       * @enum {integer}
+       */
+      divisibility: 1000 | 1000000
+    }
+    MarketPriceHistoryPoint: {
+      /** Format: date-time */
+      timestamp: string
+      /** @description Market price numerator `k`. Valid range is `1 <= k <= D - 1`, where `D` is the market's immutable `divisibility`. Current yes/no and categorical markets use D=1000 (0.1% price precision). Numeric market creation and trading are currently disabled. */
+      price: number
+      /**
+       * Format: int64
+       * @description Volume represented in the market's collateral/share subunits.
+       */
+      volumeSubunits: number
+      /**
+       * @description `fill` is a settlement-committed trade tick inside the selected timeframe.
+       * @enum {string}
+       */
+      source: 'fill'
+    }
+    MarketOutcomePriceHistory: {
+      /** @description Primitive outcome id. Compound outcome ids are not returned. */
+      outcomeId: string
+      data: components['schemas']['MarketPriceHistoryPoint'][]
+    }
+    MarketPriceHistoryResponse: {
+      conditionId: string
+      /** @enum {string} */
+      timeframe: '1h' | '24h' | '7d' | '30d' | 'all'
+      outcomes: components['schemas']['MarketOutcomePriceHistory'][]
+    }
+    MarketComment: {
+      /**
+       * Format: uuid
+       * @description Opaque stable comment identifier.
+       */
+      commentId: string
+      content: string
+      /**
+       * Format: date-time
+       * @description Timestamp from the signed Nostr kind-1 comment event.
+       */
+      createdAt: string
+      /** @description Nostr pubkey that signed the comment. */
+      authorPubkey: string
+    }
+    MarketCommentsResponse: {
+      conditionId: string
+      comments: components['schemas']['MarketComment'][]
+    }
+    MarketMetadataSnapshot: {
+      /** @description The market ID. */
+      marketId: string
+      /**
+       * Format: int64
+       * @description Total trading volume in market collateral subunits across all fills.
+       */
+      totalVolumeSubunits: number
+      /** @description Total number of fills (trades) executed. */
+      totalTrades: number
+      /**
+       * Format: int64
+       * @description Always zero. Does not report bot funding, custody, or executable order-book depth.
+       */
+      totalLiquiditySubunits: number
+    }
+    CreatorMarketEntry: {
+      /** @description The condition ID this market was registered under. */
+      conditionId: string
+      /**
+       * Format: int64
+       * @description Aggregated trading volume in market collateral subunits across every per-outcome market belonging to this condition.
+       */
+      totalVolumeSubunits: number
+      /**
+       * Format: date-time
+       * @description When this market was registered with the matching engine.
+       */
+      createdAt: string
+      /**
+       * @description Engine-side lifecycle state. `open` accepts new orders; `closed` does not.
+       * @enum {string}
+       */
+      state: 'open' | 'closed'
+    }
+    CreatorMarketsResponse: {
+      /** @description The creator pubkey this response belongs to (echoed from the path). */
+      pubkey: string
+      /** @description Markets created by this pubkey. May be empty if the creator has not registered any markets yet. */
+      markets: components['schemas']['CreatorMarketEntry'][]
+    }
+    ParticipationScoreResponse: {
+      /** @description Authenticated Nostr pubkey whose Score is returned. */
+      pubkey: string
+      /**
+       * Format: int64
+       * @description Current Participation Score balance. It may be negative after a capability-admission charge.
+       */
+      balance: number
+      /**
+       * Format: int64
+       * @description Total Score purchased by this pubkey.
+       */
+      purchasedTotal: number
+      /**
+       * Format: int64
+       * @description Total Score consumed by capability-admission and invalid-validation charges.
+       */
+      consumedTotal: number
+      /** @description Whether Participation Score purchase and payment is enabled by the engine. */
+      enabled: boolean
+    }
+    /** @description One settlement-confirmed execution used by the public market-price projection. It does not represent a quote, order insertion, funding payment, or registration-time value. */
+    LatestConfirmedTrade: {
+      primitiveOutcomeId: string
+      /** Format: uuid */
+      fillId: string
+      /** Format: date-time */
+      executedAt: string
+      eventOrder: string
+      priceTick: number
+      /**
+       * Format: int32
+       * @enum {integer}
+       */
+      divisibility: 1000 | 1000000
+      /** Format: int64 */
+      faceAmountSubunits: number
+    }
+    MarketCatalogueEntry: {
+      /** @description The condition identifier (hex string derived from the oracle announcement). Stable identifier for the market. */
+      conditionId: string
+      /** @description Outcome names sourced from the mintd condition snapshot. Singleton outcome books use `marketId = "{conditionId}-{outcomeName}"`; the one-vs-rest complement is selected on order submission with `tokenSide = "Complement"` rather than a compound public market ID. */
+      outcomes: string[]
+      /** @description Optional human-readable title from market registration. Null when the creator did not supply one. */
+      title?: string | null
+      /** @description Detailed market description supplied by the creator at registration time. Market detail pages render this as the resolution criteria text. */
+      description?: string | null
+      /** @description Optional thumbnail URL. Null when no thumbnail was uploaded. */
+      thumbnailUrl?: string | null
+      /** @description Creator's Nostr pubkey (64-char lowercase hex), captured at registration time via NIP-98. Null on legacy markets that predate creator tracking. */
+      creatorPubkey?: string | null
+      /**
+       * Format: date-time
+       * @description Oracle attestation deadline carried from the mintd condition snapshot. The market auto-closes at this instant when the kind-89 attestation has not yet been observed.
+       */
+      deadline?: string | null
+      /**
+       * Format: date-time
+       * @description Engine-side close timestamp. Null while the market is open. Closed market detail pages use this value as the resolution date; deadline remains the scheduled oracle maturity time.
+       */
+      closedAt?: string | null
+      /** @description Winning outcome known to the engine after an oracle attestation close. Null for deadline-only closes or markets that have not yet resolved. */
+      finalOutcome?: string | null
+      /**
+       * @description Engine-side lifecycle state. `open` accepts new orders; `closed` does not. Source of truth is the matching engine's lifecycle state, NOT mintd's attestation status.
+       * @enum {string}
+       */
+      state: 'open' | 'closed'
+      /**
+       * Format: date-time
+       * @description When the market was registered with the matching engine.
+       */
+      createdAt: string
+      /**
+       * Format: int64
+       * @description Trading volume over the last 24 hours in the market collateral's base subunits (msat). Drives the `Trending` sort dimension.
+       */
+      volume24hSubunits: number
+      /**
+       * Format: int64
+       * @description Trading volume over the last 30 days in the market collateral's base subunits (msat). Drives the `Popular` sort dimension.
+       */
+      volume30dSubunits: number
+      /**
+       * Format: int64
+       * @description Total face amount of currently-resting orders across the market's order books, denominated in product collateral subunits (msat).
+       */
+      liquiditySubunits: number
+      /**
+       * Format: int64
+       * @description Total confirmed post-creation funding assigned to the LMSR bot, denominated in product collateral subunits (msat). It can increase after additional accepted funding payments. It is operator-owned and non-withdrawable. It is not a depositor position, live residual, or order-book depth.
+       */
+      ammBotBudgetSubunits: number
+      /**
+       * Format: int64
+       * @description Cumulative settled collateral face amount of all fills in the market's history.
+       */
+      volumeLifetimeSubunits: number
+      baseAsset: components['schemas']['BaseAsset']
+      /**
+       * Format: int32
+       * @description Immutable price denominator `D`, server-determined.
+       * @enum {integer}
+       */
+      divisibility: 1000 | 1000000
+      /** @description Category tags supplied at market registration. Filterable via the `tag` query parameter. */
+      categoryTags: string[]
+      /**
+       * Format: date-time
+       * @description When the engine last successfully pulled the mintd condition snapshot used to populate this entry's mintd-sourced fields. Mirrored on every entry so callers can render staleness indicators per market without an additional request.
+       */
+      lastSuccessfulRefreshAt: string
+      /** @description Bounded latest confirmed execution per primitive outcome. This is the public market-price authority. The array is sorted by canonical primitive outcome ID. Missing outcomes are absent. An untraded market has an empty array and no public price; clients should show `No trades yet` or an em dash rather than inventing a price from registration, funding, a uniform default, or a quote midpoint. A midpoint is an order-entry reference only. For a yes/no market, derive the complementary display price from the same confirmed fill; do not combine trades from different executions. */
+      latestConfirmedTrades: components['schemas']['LatestConfirmedTrade'][]
+    }
+    MarketCatalogueResponse: {
+      /** @description Page of markets matching the supplied filters, ordered by the requested `sort` dimension. Empty when no markets match. */
+      markets: components['schemas']['MarketCatalogueEntry'][]
+      /** @description Opaque (HMAC-signed) pagination cursor for the next page. Null when this is the last page. Pass back as `?cursor=...` to continue. */
+      nextCursor?: string | null
+      /**
+       * Format: date-time
+       * @description Top-level mirror of the mintd-mirror's most recent successful refresh time. Useful for rendering a single staleness banner covering the whole catalogue when the mintd poller has been failing.
+       */
+      lastSuccessfulRefreshAt: string
+    }
+    /** @description RFC 9457 problem details. The matching engine returns this shape on 4xx and 5xx responses where additional context helps the caller recover. */
+    ProblemDetails: {
+      /** @description A URI reference identifying the problem type. */
+      type?: string
+      /** @description A short, human-readable summary of the problem. */
+      title?: string
+      /** @description The HTTP status code generated for this occurrence. */
+      status?: number
+      /** @description A human-readable explanation specific to this occurrence. */
+      detail?: string
+      /** @description A URI reference identifying the specific occurrence. */
+      instance?: string
+      /** @description Stable application error code, when provided by the endpoint. */
+      code?: string
+      /** @description The capacity limit that rejected admission, when applicable. */
+      limitCode?: string
+      /** @description Diagnostic correlation identifier, when provided. */
+      traceId?: string
+    }
+  }
+  responses: never
+  parameters: {
+    /** @description The primitive outcome book to trade on, in the format "{conditionId}-{outcomeName}" (e.g. "deadbeef…abc-Alice"). Public market IDs never contain finite outcome-set separators such as "|"; use SettlementOrderIntent.tokenSide during capability creation to choose the primitive outcome token or its one-vs-rest complement. Binary YES/NO markets expose only the YES route ("{conditionId}-YES"); NO is traded as tokenSide=Complement on that YES route, and "{conditionId}-NO" is not a valid market ID. */
+    MarketId: string
+    /** @description The condition identifier (hex string derived from the oracle announcement). */
+    ConditionId: string
+    /** @description Canonical local durable wallet identifier. */
+    AssetMonitoringWalletId: string
+    /** @description Lowercase canonical UUID delivery identifier. It must equal the required body deliveryId. */
+    DurableCashuDeliveryId: string
+  }
+  requestBodies: never
+  headers: {
+    /** @description The authenticated private response must not be stored. */
+    AssetMonitoringNoStore: 'no-store'
+  }
+  pathItems: never
+}
+export type $defs = Record<string, never>
 export interface operations {
-    createMarket: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description The condition identifier (hex string derived from the oracle announcement). */
-                conditionId: components["parameters"]["ConditionId"];
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "multipart/form-data": {
-                    /** @description JSON-encoded CreateMarketRequest object containing market title, description, outcomes, and category tags. */
-                    metadata: string;
-                    /**
-                     * Format: binary
-                     * @description Optional thumbnail image (JPEG, PNG, or WebP, max 5 MB).
-                     */
-                    thumbnail?: string;
-                };
-            };
-        };
-        responses: {
-            /** @description Market created */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["CreateMarketResponse"];
-                };
-            };
-            /** @description Validation error */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": string;
-                };
-            };
-            /** @description Missing or invalid NIP-98 authentication */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Market already exists for this condition */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": string;
-                };
-            };
-        };
-    };
-    submitOracleAttestation: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description The condition identifier (hex string derived from the oracle announcement). */
-                conditionId: components["parameters"]["ConditionId"];
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["OracleNostrEvent"];
-            };
-        };
-        responses: {
-            /** @description Attestation accepted. Result is "Closed", "AlreadyClosed", or "DuplicateReplay". */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["OracleAttestationResponse"];
-                };
-            };
-            /** @description The submitted event is not a valid kind-89 oracle attestation, or its signatures/payload do not verify. */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["OracleAttestationResponse"];
-                };
-            };
-            /** @description The attestation verified, but no open market is registered for the attesting oracle. */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["OracleAttestationResponse"];
-                };
-            };
-        };
-    };
-    getMarketPriceHistory: {
-        parameters: {
-            query?: {
-                timeframe?: "1h" | "24h" | "7d" | "30d" | "all";
-            };
-            header?: never;
-            path: {
-                /** @description The condition identifier (hex string derived from the oracle announcement). */
-                conditionId: components["parameters"]["ConditionId"];
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Primitive outcome price history */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["MarketPriceHistoryResponse"];
-                };
-            };
-            /** @description Invalid condition id or timeframe */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    getMarketComments: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description The condition identifier (hex string derived from the oracle announcement). */
-                conditionId: components["parameters"]["ConditionId"];
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Verified market comments */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["MarketCommentsResponse"];
-                };
-            };
-            /** @description Invalid condition id */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    getConditionAttestation: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description The condition identifier (hex string derived from the oracle announcement). */
-                conditionId: components["parameters"]["ConditionId"];
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Verified oracle witness for the resolved condition */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ConditionAttestationResponse"];
-                };
-            };
-            /** @description Invalid condition id */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ConditionAttestationProblem"];
-                };
-            };
-            /** @description Market not found, market not closed by oracle resolution, or no redeemable oracle witness is stored for the closed market. */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ConditionAttestationProblem"];
-                };
-            };
-        };
-    };
-    batchSubmitOrders: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description The condition identifier (hex string derived from the oracle announcement). */
-                conditionId: components["parameters"]["ConditionId"];
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["BatchSubmitOrdersRequest"];
-            };
-        };
-        responses: {
-            /** @description Per-item batch submit result */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["BatchSubmitOrdersResponse"];
-                };
-            };
-            /** @description order-invalid-request. Application request validation failed. Framework input validation can return a different body shape. */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ProblemDetails"];
-                };
-            };
-            /** @description Missing or invalid NIP-98 authentication */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description market-closed. The market is closed before submission. Framework authorization failures can return a different body. */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ProblemDetails"];
-                };
-            };
-            /** @description order-market-not-found. The condition is not registered. */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ProblemDetails"];
-                };
-            };
-            /** @description order-batch-conflict or order-market-closed. A failed whole-request response does not establish that no item was accepted. Reconcile the original item identities before retrying without changes. */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ProblemDetails"];
-                };
-            };
-            /** @description order-batch-limited. The application item-weighted rate limit was reached. Framework rate limiting can return a different body. */
-            429: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ProblemDetails"];
-                };
-            };
-        };
-    };
-    batchCancelOrders: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description The condition identifier (hex string derived from the oracle announcement). */
-                conditionId: components["parameters"]["ConditionId"];
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["BatchCancelOrdersRequest"];
-            };
-        };
-        responses: {
-            /** @description Batch cancel result */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["BatchCancelOrdersResponse"];
-                };
-            };
-            /** @description order-invalid-request. Application request validation failed. Framework input validation can return a different body shape. */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ProblemDetails"];
-                };
-            };
-            /** @description Missing or invalid NIP-98 authentication */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description order-market-not-found. The condition is not registered. */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ProblemDetails"];
-                };
-            };
-            /** @description order-batch-limited. The application item-weighted rate limit was reached. Framework rate limiting can return a different body. */
-            429: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ProblemDetails"];
-                };
-            };
-        };
-    };
-    listRestingOrders: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description The primitive outcome book to trade on, in the format "{conditionId}-{outcomeName}" (e.g. "deadbeef…abc-Alice"). Public market IDs never contain finite outcome-set separators such as "|"; use SettlementOrderIntent.tokenSide during capability creation to choose the primitive outcome token or its one-vs-rest complement. Binary YES/NO markets expose only the YES route ("{conditionId}-YES"); NO is traded as tokenSide=Complement on that YES route, and "{conditionId}-NO" is not a valid market ID. */
-                marketId: components["parameters"]["MarketId"];
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Resting orders owned by the authenticated user */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ListRestingOrdersResponse"];
-                };
-            };
-            /** @description order-invalid-request. Application request validation failed. Framework input validation can return a different body shape. */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ProblemDetails"];
-                };
-            };
-            /** @description Missing or invalid NIP-98 authentication */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    submitOrder: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description The primitive outcome book to trade on, in the format "{conditionId}-{outcomeName}" (e.g. "deadbeef…abc-Alice"). Public market IDs never contain finite outcome-set separators such as "|"; use SettlementOrderIntent.tokenSide during capability creation to choose the primitive outcome token or its one-vs-rest complement. Binary YES/NO markets expose only the YES route ("{conditionId}-YES"); NO is traded as tokenSide=Complement on that YES route, and "{conditionId}-NO" is not a valid market ID. */
-                marketId: components["parameters"]["MarketId"];
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["SubmitOrderRequest"];
-            };
-        };
-        responses: {
-            /** @description Order accepted */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["SubmitOrderResponse"];
-                };
-            };
-            /** @description Application validation failed with order-invalid-request or order-invalid-comment. Framework input validation can return a different body shape. */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ProblemDetails"];
-                };
-            };
-            /** @description Missing or invalid NIP-98 authentication */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description The application closed-market gate returns market-closed. Framework authorization failures can return a different body. */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ProblemDetails"];
-                };
-            };
-            /** @description order-market-not-found means the market is not registered. order-capability-not-found means the capability is absent, belongs to another owner, or its binding digest does not match. */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ProblemDetails"];
-                };
-            };
-            /** @description order-capability-route-mismatch means the route differs from the bound intent. order-capability-not-current means no current capability or matching accepted replay exists. An exact accepted replay returns its prior result. order-book-conflict permits an unchanged request retry. order-processing-conflict and order-market-closed are distinct, definitive submission failures. A submission failure alone does not authorize a refund. */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ProblemDetails"];
-                };
-            };
-            /** @description order-admission-unavailable or order-processing-unavailable. Retain the original operation for retry and recovery. */
-            503: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ProblemDetails"];
-                };
-            };
-        };
-    };
-    PreviewFokOrder: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** @description One bounded preview request. The raw request body is limited to 16 KiB and oversized declared-length or chunked bodies are rejected before JSON binding or planning. */
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["PreviewFokOrderRequest"];
-            };
-        };
-        responses: {
-            /** @description Read-only FOK preview result. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["PreviewFokOrderResponse"];
-                };
-            };
-            /** @description Invalid market route, price, face amount, or request shape. */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ProblemDetails"];
-                };
-            };
-            /** @description Raw request body exceeds the 16 KiB limit. */
-            413: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Preview rate limit or concurrency limit exceeded. */
-            429: {
-                headers: {
-                    /** @description Number of seconds before the client should retry. */
-                    "Retry-After"?: number;
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ProblemDetails"];
-                };
-            };
-        };
-    };
-    listMyOrders: {
-        parameters: {
-            query: {
-                conditionId: string;
-                cursor?: string;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Caller-owned orders for the condition */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ListMyOrdersResponse"];
-                };
-            };
-            /** @description order-invalid-request. Application request validation failed. Framework input validation can return a different body shape. */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ProblemDetails"];
-                };
-            };
-            /** @description Missing or invalid NIP-98 authentication */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    getOrderStatus: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description The primitive outcome book to trade on, in the format "{conditionId}-{outcomeName}" (e.g. "deadbeef…abc-Alice"). Public market IDs never contain finite outcome-set separators such as "|"; use SettlementOrderIntent.tokenSide during capability creation to choose the primitive outcome token or its one-vs-rest complement. Binary YES/NO markets expose only the YES route ("{conditionId}-YES"); NO is traded as tokenSide=Complement on that YES route, and "{conditionId}-NO" is not a valid market ID. */
-                marketId: components["parameters"]["MarketId"];
-                /** @description The order's unique identifier. */
-                orderId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Current order status */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["OrderStatusResponse"];
-                };
-            };
-            /** @description order-invalid-request. Application request validation failed. Framework input validation can return a different body shape. */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ProblemDetails"];
-                };
-            };
-            /** @description Missing or invalid NIP-98 authentication */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description The order belongs to another authenticated owner. */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description order-not-found. The order is unavailable for this request. */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ProblemDetails"];
-                };
-            };
-        };
-    };
-    cancelOrder: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description The primitive outcome book to trade on, in the format "{conditionId}-{outcomeName}" (e.g. "deadbeef…abc-Alice"). Public market IDs never contain finite outcome-set separators such as "|"; use SettlementOrderIntent.tokenSide during capability creation to choose the primitive outcome token or its one-vs-rest complement. Binary YES/NO markets expose only the YES route ("{conditionId}-YES"); NO is traded as tokenSide=Complement on that YES route, and "{conditionId}-NO" is not a valid market ID. */
-                marketId: components["parameters"]["MarketId"];
-                /** @description The unique identifier of the order to cancel. */
-                orderId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Order cancelled */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description order-invalid-request. Application request validation failed. Framework input validation can return a different body shape. */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ProblemDetails"];
-                };
-            };
-            /** @description Missing or invalid NIP-98 authentication */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description order-not-found. Missing, foreign, and wrong-route cancellation targets return the same response. */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ProblemDetails"];
-                };
-            };
-            /** @description order-cancellation-conflict. Order state changed before cancellation could be committed. Retry the original request. */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ProblemDetails"];
-                };
-            };
-        };
-    };
-    getOrderBook: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description The primitive outcome book to trade on, in the format "{conditionId}-{outcomeName}" (e.g. "deadbeef…abc-Alice"). Public market IDs never contain finite outcome-set separators such as "|"; use SettlementOrderIntent.tokenSide during capability creation to choose the primitive outcome token or its one-vs-rest complement. Binary YES/NO markets expose only the YES route ("{conditionId}-YES"); NO is traded as tokenSide=Complement on that YES route, and "{conditionId}-NO" is not a valid market ID. */
-                marketId: components["parameters"]["MarketId"];
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Current order book */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["OrderBookSnapshot"];
-                };
-            };
-            /** @description order-invalid-request. Application request validation failed. Framework input validation can return a different body shape. */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ProblemDetails"];
-                };
-            };
-        };
-    };
-    getMarketMetadata: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description The primitive outcome book to trade on, in the format "{conditionId}-{outcomeName}" (e.g. "deadbeef…abc-Alice"). Public market IDs never contain finite outcome-set separators such as "|"; use SettlementOrderIntent.tokenSide during capability creation to choose the primitive outcome token or its one-vs-rest complement. Binary YES/NO markets expose only the YES route ("{conditionId}-YES"); NO is traded as tokenSide=Complement on that YES route, and "{conditionId}-NO" is not a valid market ID. */
-                marketId: components["parameters"]["MarketId"];
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Market metadata */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["MarketMetadataSnapshot"];
-                };
-            };
-        };
-    };
-    getThumbnail: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description The condition identifier (hex string derived from the oracle announcement). */
-                conditionId: components["parameters"]["ConditionId"];
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description The thumbnail image */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "image/*": string;
-                };
-            };
-            /** @description No thumbnail for this condition */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    getParticipationScore: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Participation Score state for the authenticated pubkey */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ParticipationScoreResponse"];
-                };
-            };
-            /** @description Missing or invalid NIP-98 authentication */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    getDurableCashuDeliveryStatus: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description Lowercase canonical UUID delivery identifier. It must equal the required body deliveryId. */
-                deliveryId: components["parameters"]["DurableCashuDeliveryId"];
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Delivery status. The bearer token is never returned. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["DurableCashuDeliveryStatus"];
-                };
-            };
-            /** @description Missing or invalid authentication. */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description The delivery belongs to a different subject. Application code: cashu-delivery-forbidden. */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ProblemDetails"];
-                };
-            };
-            /** @description No delivery exists, or the identifier is invalid. Handler code: cashu-delivery-not-found. Route constraints can return a different body. */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ProblemDetails"];
-                };
-            };
-            /** @description The saved delivery was rejected. Application code: cashu-delivery-conflict. */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ProblemDetails"];
-                };
-            };
-            /** @description Delivery status rate limit exceeded. */
-            429: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    submitDurableCashuDelivery: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description Lowercase canonical UUID delivery identifier. It must equal the required body deliveryId. */
-                deliveryId: components["parameters"]["DurableCashuDeliveryId"];
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["DurableCashuDeliverySubmission"];
-            };
-        };
-        responses: {
-            /** @description The immutable delivery request was accepted. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["DurableCashuDeliveryStatus"];
-                };
-            };
-            /** @description Invalid delivery or funding request. Application codes: cashu-delivery-invalid-request, market-funding-invalid-request. */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ProblemDetails"];
-                };
-            };
-            /** @description Missing or invalid authentication. */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Subject mismatch or a closed funding market. Application codes: cashu-delivery-forbidden, market-closed. */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ProblemDetails"];
-                };
-            };
-            /** @description Funding market not found. Application code: market-funding-market-not-found. */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ProblemDetails"];
-                };
-            };
-            /** @description The delivery conflicts with saved state. Shared application code: cashu-delivery-conflict. Score-specific refusals can use another body. */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ProblemDetails"];
-                };
-            };
-            /** @description Delivery submission rate limit exceeded. */
-            429: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Delivery state could not be read after admission. Application code: cashu-delivery-state-unavailable. Check the original delivery before retrying. */
-            500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ProblemDetails"];
-                };
-            };
-            /** @description The funding recipient is unavailable or its receipt could not be verified. Application codes: cashu-delivery-recipient-unavailable, cashu-delivery-invalid-receipt. Keep the original delivery for recovery. Score-specific failures can use another body. */
-            502: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ProblemDetails"];
-                };
-            };
-            /** @description Participation Score mint pre-admission is unavailable. */
-            503: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ProblemDetails"];
-                };
-            };
-        };
-    };
-    listCreatorMarkets: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description Nostr pubkey (hex) of the market creator. */
-                pubkey: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description List of markets created by this pubkey */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["CreatorMarketsResponse"];
-                };
-            };
-        };
-    };
-    queryMarkets: {
-        parameters: {
-            query?: {
-                /** @description Repeatable category tag filter (e.g. `?tag=politics&tag=tech`). A market matches when at least one of its category tags matches at least one supplied tag (OR semantics across the supplied tags). */
-                tag?: string[];
-                /** @description State filter against the matching engine's lifecycle state. Default is `Open`. Use `All` to include both Open and Closed markets in a single response. The match is case-insensitive on the wire (`open` works the same as `Open`). */
-                state?: "Open" | "Closed" | "All";
-                /** @description Restrict the result to markets whose creator pubkey matches. 64-character lowercase hex Nostr pubkey. Different from `/api/v1/creators/{pubkey}/markets` — that endpoint returns the creator-dashboard volume rollup; this filter returns the full catalogue response. */
-                creator_pubkey?: string;
-                /** @description Comma-separated list of conditionIds to bulk-fetch (e.g. `?ids=abc,def,123`). Returns only the named markets that match the other filters. Capped at 100 ids per request — exceeding the cap is a 400. */
-                ids?: string;
-                /** @description Full-text market search query. When present, results are ordered by relevance. The active `tag`, `state`, `creator_pubkey`, and `ids` filters also constrain the search. Capped at 200 normalized characters. */
-                search?: string;
-                /** @description Sort dimension. `Trending` orders by 24h trading volume descending; `Popular` orders by 30d trading volume descending; `New` orders by RegisterMarket timestamp descending. Ties on the sort dimension break by `conditionId` ascending so paginated streams remain deterministic. */
-                sort?: "Trending" | "Popular" | "New";
-                /** @description Opaque pagination token returned in `nextCursor` from a previous page. The engine HMAC-signs cursors before returning them and verifies the signature before reading the underlying boundary — tampered or unsigned cursors are 400. Omit for the first page. */
-                cursor?: string;
-                /** @description Page size cap. Default 20, hard cap 50 — exceeding the cap is a 400. Page sizes below 1 are also a 400. */
-                page_size?: number;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Paginated catalogue of markets matching the filters. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["MarketCatalogueResponse"];
-                };
-            };
-            /** @description Invalid query parameters — typo'd `state`/`sort` value, malformed `creator_pubkey`, `ids` over the 100-cap, `page_size` outside `[1, 50]`, or a tampered/malformed `cursor`. */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ProblemDetails"];
-                };
-            };
-            /** @description NIP-98 token was supplied but rejected (e.g. expired, signature mismatch, body-payload mismatch). Anonymous callers do NOT see 401 from this route. */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Rate limit exceeded. Anonymous callers share a per-IP bucket; NIP-98-authenticated callers have their own per-pubkey bucket with a higher permit ceiling. The engine returns this when the applicable bucket is empty. */
-            429: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Latest confirmed trade data is temporarily unavailable. Retry the request later. The ProblemDetails `type` is `/errors/market-latest-trades-unavailable`. */
-            503: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ProblemDetails"];
-                };
-            };
-        };
-    };
-    createSettlementCapability: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["CreateSettlementCapabilityRequest"];
-            };
-        };
-        responses: {
-            /** @description Capability validated, input-reserved, and durably bound. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["SettlementCapabilityResponse"];
-                };
-            };
-            /** @description Application rejection of a malformed, noncanonical, expired, or unsupported artifact. Framework input binding can return a different error body. */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ProblemDetails"];
-                };
-            };
-            /** @description Missing or invalid authentication. */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Participation Score is insufficient for capability preparation. */
-            402: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ProblemDetails"];
-                };
-            };
-            /** @description Idempotency conflict, reused input proof, mismatched order binding, or capability lifecycle conflict. */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ProblemDetails"];
-                };
-            };
-            /** @description Application rejection of an artifact or request above the advertised byte/count limits. Framework request-size rejection can return a different error body. */
-            413: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ProblemDetails"];
-                };
-            };
-            /** @description Application capability admission or process capacity is saturated. Framework rate-limit rejection can return a different error body. */
-            429: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ProblemDetails"];
-                };
-            };
-            /** @description Mint validation or durable capability authority is unavailable. */
-            503: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ProblemDetails"];
-                };
-            };
-        };
-    };
-    submitAssetMonitoringReport: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["AssetMonitoringReportRequest"];
-            };
-        };
-        responses: {
-            /** @description Report accepted or exact latest-report retry accepted. */
-            204: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Malformed, noncanonical, or out-of-bound report field. */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Missing or invalid authentication. */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Latest-report idempotency or wallet interval lifecycle conflict. */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Request exceeds the 1 MiB report limit. */
-            413: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Authenticated-subject report rate limit exceeded. */
-            429: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    getAssetMonitoringSummary: {
-        parameters: {
-            query: {
-                /** @description Canonical local durable wallet identifier. */
-                walletId: components["parameters"]["AssetMonitoringWalletId"];
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Bounded active-wallet monitoring summary. */
-            200: {
-                headers: {
-                    "Cache-Control": components["headers"]["AssetMonitoringNoStore"];
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["AssetMonitoringSummaryResponse"];
-                };
-            };
-            /** @description Malformed wallet id. */
-            400: {
-                headers: {
-                    "Cache-Control": components["headers"]["AssetMonitoringNoStore"];
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ProblemDetails"];
-                };
-            };
-            /** @description Missing or invalid authentication. */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Wallet is not active for the authenticated account. */
-            409: {
-                headers: {
-                    "Cache-Control": components["headers"]["AssetMonitoringNoStore"];
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description The active event-store provider has no bounded monitoring reader. */
-            503: {
-                headers: {
-                    "Cache-Control": components["headers"]["AssetMonitoringNoStore"];
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ProblemDetails"];
-                };
-            };
-        };
-    };
-    getAssetMonitoringAssets: {
-        parameters: {
-            query: {
-                /** @description Canonical local durable wallet identifier. */
-                walletId: components["parameters"]["AssetMonitoringWalletId"];
-                pageSize?: number;
-                cursor?: string;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Canonically ordered bounded active-wallet asset page. */
-            200: {
-                headers: {
-                    "Cache-Control": components["headers"]["AssetMonitoringNoStore"];
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["AssetMonitoringAssetsResponse"];
-                };
-            };
-            /** @description Malformed wallet id, page size, or cursor. */
-            400: {
-                headers: {
-                    "Cache-Control": components["headers"]["AssetMonitoringNoStore"];
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ProblemDetails"];
-                };
-            };
-            /** @description Missing or invalid authentication. */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Wallet is not active for the authenticated account. */
-            409: {
-                headers: {
-                    "Cache-Control": components["headers"]["AssetMonitoringNoStore"];
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description The active event-store provider has no bounded monitoring reader. */
-            503: {
-                headers: {
-                    "Cache-Control": components["headers"]["AssetMonitoringNoStore"];
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ProblemDetails"];
-                };
-            };
-        };
-    };
-    getAssetMonitoringHistory: {
-        parameters: {
-            query: {
-                /** @description Canonical local durable wallet identifier. */
-                walletId: components["parameters"]["AssetMonitoringWalletId"];
-                timeframe?: "1D" | "1W" | "1M" | "ALL";
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description At most 300 deterministic value points from compact active-interval facts. */
-            200: {
-                headers: {
-                    "Cache-Control": components["headers"]["AssetMonitoringNoStore"];
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["AssetMonitoringHistoryResponse"];
-                };
-            };
-            /** @description Malformed wallet id or timeframe. */
-            400: {
-                headers: {
-                    "Cache-Control": components["headers"]["AssetMonitoringNoStore"];
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ProblemDetails"];
-                };
-            };
-            /** @description Missing or invalid authentication. */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Wallet is not active for the authenticated account. */
-            409: {
-                headers: {
-                    "Cache-Control": components["headers"]["AssetMonitoringNoStore"];
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description The active event-store provider has no bounded monitoring reader. */
-            503: {
-                headers: {
-                    "Cache-Control": components["headers"]["AssetMonitoringNoStore"];
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ProblemDetails"];
-                };
-            };
-        };
-    };
-    getPortfolio: {
-        parameters: {
-            query: {
-                /** @description Canonical local durable wallet identifier. */
-                walletId: components["parameters"]["AssetMonitoringWalletId"];
-                timeframe?: "1D" | "1W" | "1M" | "ALL";
-                pageSize?: number;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Bounded active-wallet monitoring summary, asset page, and value history. */
-            200: {
-                headers: {
-                    "Cache-Control": components["headers"]["AssetMonitoringNoStore"];
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["AssetMonitoringPortfolioResponse"];
-                };
-            };
-            /** @description Malformed wallet id, timeframe, or page size. */
-            400: {
-                headers: {
-                    "Cache-Control": components["headers"]["AssetMonitoringNoStore"];
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ProblemDetails"];
-                };
-            };
-            /** @description Missing or invalid authentication. */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Wallet is not active for the authenticated account. */
-            409: {
-                headers: {
-                    "Cache-Control": components["headers"]["AssetMonitoringNoStore"];
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Authenticated history-read rate limit exceeded. */
-            429: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description The active event-store provider has no bounded monitoring reader. */
-            503: {
-                headers: {
-                    "Cache-Control": components["headers"]["AssetMonitoringNoStore"];
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ProblemDetails"];
-                };
-            };
-        };
-    };
-    getSettlementCapabilityAdmissionPolicy: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Current coordinator-bound settlement admission policy. */
-            200: {
-                headers: {
-                    /** @description The admission key must not be served from a cache. */
-                    "Cache-Control"?: "no-store";
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["SettlementCapabilityAdmissionPolicyResponse"];
-                };
-            };
-            /** @description Missing or invalid authentication. */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Settlement admission policy is unavailable. */
-            503: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ProblemDetails"];
-                };
-            };
-        };
-    };
-    getSettlementCapability: {
-        parameters: {
-            query: {
-                bindingDigest: components["schemas"]["Sha256Digest"];
-            };
-            header?: never;
-            path: {
-                artifactId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Owner-filtered capability lifecycle. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["SettlementCapabilityResponse"];
-                };
-            };
-            /** @description Invalid capability binding digest. */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ProblemDetails"];
-                };
-            };
-            /** @description Missing or invalid authentication. */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Capability is absent, foreign, or has a different binding digest. */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ProblemDetails"];
-                };
-            };
-        };
-    };
-    getSettlementCapabilityResult: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                resultId: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Authenticated result envelope for the capability owner. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["SettlementCapabilityResultResponse"];
-                };
-            };
-            /** @description Missing or invalid authentication. */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Result is absent or belongs to another subject. */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ProblemDetails"];
-                };
-            };
-        };
-    };
-    getSettlementCapabilityResultByOperation: {
-        parameters: {
-            query: {
-                operationId: string;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Authenticated result envelope for the capability owner. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["SettlementCapabilityResultResponse"];
-                };
-            };
-            /** @description Invalid operation identifier. */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ProblemDetails"];
-                };
-            };
-            /** @description Missing or invalid authentication. */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Result is absent or belongs to another subject. */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ProblemDetails"];
-                };
-            };
-        };
-    };
-    acknowledgeSettlementCapabilityResult: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                resultId: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["AcknowledgeSettlementCapabilityResultRequest"];
-            };
-        };
-        responses: {
-            /** @description Result acknowledgement recorded or already recorded. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["SettlementCapabilityResultResponse"];
-                };
-            };
-            /** @description Invalid expected version. */
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ProblemDetails"];
-                };
-            };
-            /** @description Missing or invalid authentication. */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Result is absent or belongs to another subject. */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ProblemDetails"];
-                };
-            };
-            /** @description Result lifecycle version conflict. */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ProblemDetails"];
-                };
-            };
-        };
-    };
+  createMarket: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        /** @description The condition identifier (hex string derived from the oracle announcement). */
+        conditionId: components['parameters']['ConditionId']
+      }
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'multipart/form-data': {
+          /** @description JSON-encoded CreateMarketRequest object containing market title, description, outcomes, and category tags. */
+          metadata: string
+          /**
+           * Format: binary
+           * @description Optional thumbnail image (JPEG, PNG, or WebP, max 5 MB).
+           */
+          thumbnail?: string
+        }
+      }
+    }
+    responses: {
+      /** @description Market created */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CreateMarketResponse']
+        }
+      }
+      /** @description Validation error */
+      400: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': string
+        }
+      }
+      /** @description Missing or invalid NIP-98 authentication */
+      401: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+      /** @description Market already exists for this condition */
+      409: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': string
+        }
+      }
+    }
+  }
+  submitOracleAttestation: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        /** @description The condition identifier (hex string derived from the oracle announcement). */
+        conditionId: components['parameters']['ConditionId']
+      }
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['OracleNostrEvent']
+      }
+    }
+    responses: {
+      /** @description Attestation accepted. Result is "Closed", "AlreadyClosed", or "DuplicateReplay". */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['OracleAttestationResponse']
+        }
+      }
+      /** @description The submitted event is not a valid kind-89 oracle attestation, or its signatures/payload do not verify. */
+      400: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['OracleAttestationResponse']
+        }
+      }
+      /** @description The attestation verified, but no open market is registered for the attesting oracle. */
+      404: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['OracleAttestationResponse']
+        }
+      }
+    }
+  }
+  getMarketPriceHistory: {
+    parameters: {
+      query?: {
+        timeframe?: '1h' | '24h' | '7d' | '30d' | 'all'
+      }
+      header?: never
+      path: {
+        /** @description The condition identifier (hex string derived from the oracle announcement). */
+        conditionId: components['parameters']['ConditionId']
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Primitive outcome price history */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['MarketPriceHistoryResponse']
+        }
+      }
+      /** @description Invalid condition id or timeframe */
+      400: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+    }
+  }
+  getMarketComments: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        /** @description The condition identifier (hex string derived from the oracle announcement). */
+        conditionId: components['parameters']['ConditionId']
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Verified market comments */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['MarketCommentsResponse']
+        }
+      }
+      /** @description Invalid condition id */
+      400: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+    }
+  }
+  getConditionAttestation: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        /** @description The condition identifier (hex string derived from the oracle announcement). */
+        conditionId: components['parameters']['ConditionId']
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Verified oracle witness for the resolved condition */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['ConditionAttestationResponse']
+        }
+      }
+      /** @description Invalid condition id */
+      400: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['ConditionAttestationProblem']
+        }
+      }
+      /** @description Market not found, market not closed by oracle resolution, or no redeemable oracle witness is stored for the closed market. */
+      404: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['ConditionAttestationProblem']
+        }
+      }
+    }
+  }
+  batchSubmitOrders: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        /** @description The condition identifier (hex string derived from the oracle announcement). */
+        conditionId: components['parameters']['ConditionId']
+      }
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['BatchSubmitOrdersRequest']
+      }
+    }
+    responses: {
+      /** @description Per-item batch submit result */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['BatchSubmitOrdersResponse']
+        }
+      }
+      /** @description order-invalid-request. Application request validation failed. Framework input validation can return a different body shape. */
+      400: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/problem+json': components['schemas']['ProblemDetails']
+        }
+      }
+      /** @description Missing or invalid NIP-98 authentication */
+      401: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+      /** @description market-closed. The market is closed before submission. Framework authorization failures can return a different body. */
+      403: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/problem+json': components['schemas']['ProblemDetails']
+        }
+      }
+      /** @description order-market-not-found. The condition is not registered. */
+      404: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/problem+json': components['schemas']['ProblemDetails']
+        }
+      }
+      /** @description order-batch-conflict or order-market-closed. A failed whole-request response does not establish that no item was accepted. Reconcile the original item identities before retrying without changes. */
+      409: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/problem+json': components['schemas']['ProblemDetails']
+        }
+      }
+      /** @description order-batch-limited. The application item-weighted rate limit was reached. Framework rate limiting can return a different body. */
+      429: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/problem+json': components['schemas']['ProblemDetails']
+        }
+      }
+    }
+  }
+  batchCancelOrders: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        /** @description The condition identifier (hex string derived from the oracle announcement). */
+        conditionId: components['parameters']['ConditionId']
+      }
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['BatchCancelOrdersRequest']
+      }
+    }
+    responses: {
+      /** @description Batch cancel result */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['BatchCancelOrdersResponse']
+        }
+      }
+      /** @description order-invalid-request. Application request validation failed. Framework input validation can return a different body shape. */
+      400: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/problem+json': components['schemas']['ProblemDetails']
+        }
+      }
+      /** @description Missing or invalid NIP-98 authentication */
+      401: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+      /** @description order-market-not-found. The condition is not registered. */
+      404: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/problem+json': components['schemas']['ProblemDetails']
+        }
+      }
+      /** @description order-batch-limited. The application item-weighted rate limit was reached. Framework rate limiting can return a different body. */
+      429: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/problem+json': components['schemas']['ProblemDetails']
+        }
+      }
+    }
+  }
+  listRestingOrders: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        /** @description The primitive outcome book to trade on, in the format "{conditionId}-{outcomeName}" (e.g. "deadbeef…abc-Alice"). Public market IDs never contain finite outcome-set separators such as "|"; use SettlementOrderIntent.tokenSide during capability creation to choose the primitive outcome token or its one-vs-rest complement. Binary YES/NO markets expose only the YES route ("{conditionId}-YES"); NO is traded as tokenSide=Complement on that YES route, and "{conditionId}-NO" is not a valid market ID. */
+        marketId: components['parameters']['MarketId']
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Resting orders owned by the authenticated user */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['ListRestingOrdersResponse']
+        }
+      }
+      /** @description order-invalid-request. Application request validation failed. Framework input validation can return a different body shape. */
+      400: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/problem+json': components['schemas']['ProblemDetails']
+        }
+      }
+      /** @description Missing or invalid NIP-98 authentication */
+      401: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+    }
+  }
+  submitOrder: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        /** @description The primitive outcome book to trade on, in the format "{conditionId}-{outcomeName}" (e.g. "deadbeef…abc-Alice"). Public market IDs never contain finite outcome-set separators such as "|"; use SettlementOrderIntent.tokenSide during capability creation to choose the primitive outcome token or its one-vs-rest complement. Binary YES/NO markets expose only the YES route ("{conditionId}-YES"); NO is traded as tokenSide=Complement on that YES route, and "{conditionId}-NO" is not a valid market ID. */
+        marketId: components['parameters']['MarketId']
+      }
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['SubmitOrderRequest']
+      }
+    }
+    responses: {
+      /** @description Order accepted */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['SubmitOrderResponse']
+        }
+      }
+      /** @description Application validation failed with order-invalid-request or order-invalid-comment. Framework input validation can return a different body shape. */
+      400: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/problem+json': components['schemas']['ProblemDetails']
+        }
+      }
+      /** @description Missing or invalid NIP-98 authentication */
+      401: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+      /** @description The application closed-market gate returns market-closed. Framework authorization failures can return a different body. */
+      403: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/problem+json': components['schemas']['ProblemDetails']
+        }
+      }
+      /** @description order-market-not-found means the market is not registered. order-capability-not-found means the capability is absent, belongs to another owner, or its binding digest does not match. */
+      404: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/problem+json': components['schemas']['ProblemDetails']
+        }
+      }
+      /** @description order-capability-route-mismatch means the route differs from the bound intent. order-capability-not-current means no current capability or matching accepted replay exists. An exact accepted replay returns its prior result. order-book-conflict permits an unchanged request retry. order-processing-conflict and order-market-closed are distinct, definitive submission failures. A submission failure alone does not authorize a refund. */
+      409: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/problem+json': components['schemas']['ProblemDetails']
+        }
+      }
+      /** @description order-admission-unavailable or order-processing-unavailable. Retain the original operation for retry and recovery. */
+      503: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/problem+json': components['schemas']['ProblemDetails']
+        }
+      }
+    }
+  }
+  PreviewFokOrder: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /** @description One bounded preview request. The raw request body is limited to 16 KiB and oversized declared-length or chunked bodies are rejected before JSON binding or planning. */
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['PreviewFokOrderRequest']
+      }
+    }
+    responses: {
+      /** @description Read-only FOK preview result. */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['PreviewFokOrderResponse']
+        }
+      }
+      /** @description Invalid market route, price, face amount, or request shape. */
+      400: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/problem+json': components['schemas']['ProblemDetails']
+        }
+      }
+      /** @description Raw request body exceeds the 16 KiB limit. */
+      413: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+      /** @description Preview rate limit or concurrency limit exceeded. */
+      429: {
+        headers: {
+          /** @description Number of seconds before the client should retry. */
+          'Retry-After'?: number
+          [name: string]: unknown
+        }
+        content: {
+          'application/problem+json': components['schemas']['ProblemDetails']
+        }
+      }
+    }
+  }
+  listMyOrders: {
+    parameters: {
+      query: {
+        conditionId: string
+        cursor?: string
+      }
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Caller-owned orders for the condition */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['ListMyOrdersResponse']
+        }
+      }
+      /** @description order-invalid-request. Application request validation failed. Framework input validation can return a different body shape. */
+      400: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/problem+json': components['schemas']['ProblemDetails']
+        }
+      }
+      /** @description Missing or invalid NIP-98 authentication */
+      401: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+    }
+  }
+  getOrderStatus: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        /** @description The primitive outcome book to trade on, in the format "{conditionId}-{outcomeName}" (e.g. "deadbeef…abc-Alice"). Public market IDs never contain finite outcome-set separators such as "|"; use SettlementOrderIntent.tokenSide during capability creation to choose the primitive outcome token or its one-vs-rest complement. Binary YES/NO markets expose only the YES route ("{conditionId}-YES"); NO is traded as tokenSide=Complement on that YES route, and "{conditionId}-NO" is not a valid market ID. */
+        marketId: components['parameters']['MarketId']
+        /** @description The order's unique identifier. */
+        orderId: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Current order status */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['OrderStatusResponse']
+        }
+      }
+      /** @description order-invalid-request. Application request validation failed. Framework input validation can return a different body shape. */
+      400: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/problem+json': components['schemas']['ProblemDetails']
+        }
+      }
+      /** @description Missing or invalid NIP-98 authentication */
+      401: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+      /** @description The order belongs to another authenticated owner. */
+      403: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+      /** @description order-not-found. The order is unavailable for this request. */
+      404: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/problem+json': components['schemas']['ProblemDetails']
+        }
+      }
+    }
+  }
+  cancelOrder: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        /** @description The primitive outcome book to trade on, in the format "{conditionId}-{outcomeName}" (e.g. "deadbeef…abc-Alice"). Public market IDs never contain finite outcome-set separators such as "|"; use SettlementOrderIntent.tokenSide during capability creation to choose the primitive outcome token or its one-vs-rest complement. Binary YES/NO markets expose only the YES route ("{conditionId}-YES"); NO is traded as tokenSide=Complement on that YES route, and "{conditionId}-NO" is not a valid market ID. */
+        marketId: components['parameters']['MarketId']
+        /** @description The unique identifier of the order to cancel. */
+        orderId: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Order cancelled */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+      /** @description order-invalid-request. Application request validation failed. Framework input validation can return a different body shape. */
+      400: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/problem+json': components['schemas']['ProblemDetails']
+        }
+      }
+      /** @description Missing or invalid NIP-98 authentication */
+      401: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+      /** @description order-not-found. Missing, foreign, and wrong-route cancellation targets return the same response. */
+      404: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/problem+json': components['schemas']['ProblemDetails']
+        }
+      }
+      /** @description order-cancellation-conflict. Order state changed before cancellation could be committed. Retry the original request. */
+      409: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/problem+json': components['schemas']['ProblemDetails']
+        }
+      }
+    }
+  }
+  getOrderBook: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        /** @description The primitive outcome book to trade on, in the format "{conditionId}-{outcomeName}" (e.g. "deadbeef…abc-Alice"). Public market IDs never contain finite outcome-set separators such as "|"; use SettlementOrderIntent.tokenSide during capability creation to choose the primitive outcome token or its one-vs-rest complement. Binary YES/NO markets expose only the YES route ("{conditionId}-YES"); NO is traded as tokenSide=Complement on that YES route, and "{conditionId}-NO" is not a valid market ID. */
+        marketId: components['parameters']['MarketId']
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Current order book */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['OrderBookSnapshot']
+        }
+      }
+      /** @description order-invalid-request. Application request validation failed. Framework input validation can return a different body shape. */
+      400: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/problem+json': components['schemas']['ProblemDetails']
+        }
+      }
+    }
+  }
+  getMarketMetadata: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        /** @description The primitive outcome book to trade on, in the format "{conditionId}-{outcomeName}" (e.g. "deadbeef…abc-Alice"). Public market IDs never contain finite outcome-set separators such as "|"; use SettlementOrderIntent.tokenSide during capability creation to choose the primitive outcome token or its one-vs-rest complement. Binary YES/NO markets expose only the YES route ("{conditionId}-YES"); NO is traded as tokenSide=Complement on that YES route, and "{conditionId}-NO" is not a valid market ID. */
+        marketId: components['parameters']['MarketId']
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Market metadata */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['MarketMetadataSnapshot']
+        }
+      }
+    }
+  }
+  getThumbnail: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        /** @description The condition identifier (hex string derived from the oracle announcement). */
+        conditionId: components['parameters']['ConditionId']
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description The thumbnail image */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'image/*': string
+        }
+      }
+      /** @description No thumbnail for this condition */
+      404: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+    }
+  }
+  getParticipationScore: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Participation Score state for the authenticated pubkey */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['ParticipationScoreResponse']
+        }
+      }
+      /** @description Missing or invalid NIP-98 authentication */
+      401: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+    }
+  }
+  getDurableCashuDeliveryStatus: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        /** @description Lowercase canonical UUID delivery identifier. It must equal the required body deliveryId. */
+        deliveryId: components['parameters']['DurableCashuDeliveryId']
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Delivery status. The bearer token is never returned. */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['DurableCashuDeliveryStatus']
+        }
+      }
+      /** @description Missing or invalid authentication. */
+      401: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+      /** @description The delivery belongs to a different subject. Application code: cashu-delivery-forbidden. */
+      403: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/problem+json': components['schemas']['ProblemDetails']
+        }
+      }
+      /** @description No delivery exists, or the identifier is invalid. Handler code: cashu-delivery-not-found. Route constraints can return a different body. */
+      404: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/problem+json': components['schemas']['ProblemDetails']
+        }
+      }
+      /** @description The saved delivery was rejected. Application code: cashu-delivery-conflict. */
+      409: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/problem+json': components['schemas']['ProblemDetails']
+        }
+      }
+      /** @description Delivery status rate limit exceeded. */
+      429: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+    }
+  }
+  submitDurableCashuDelivery: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        /** @description Lowercase canonical UUID delivery identifier. It must equal the required body deliveryId. */
+        deliveryId: components['parameters']['DurableCashuDeliveryId']
+      }
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['DurableCashuDeliverySubmission']
+      }
+    }
+    responses: {
+      /** @description The immutable delivery request was accepted. */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['DurableCashuDeliveryStatus']
+        }
+      }
+      /** @description Invalid delivery or funding request. Application codes: cashu-delivery-invalid-request, market-funding-invalid-request. */
+      400: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/problem+json': components['schemas']['ProblemDetails']
+        }
+      }
+      /** @description Missing or invalid authentication. */
+      401: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+      /** @description Subject mismatch or a closed funding market. Application codes: cashu-delivery-forbidden, market-closed. */
+      403: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/problem+json': components['schemas']['ProblemDetails']
+        }
+      }
+      /** @description Funding market not found. Application code: market-funding-market-not-found. */
+      404: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/problem+json': components['schemas']['ProblemDetails']
+        }
+      }
+      /** @description The delivery conflicts with saved state. Shared application code: cashu-delivery-conflict. Score-specific refusals can use another body. */
+      409: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/problem+json': components['schemas']['ProblemDetails']
+        }
+      }
+      /** @description Delivery submission rate limit exceeded. */
+      429: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+      /** @description Delivery state could not be read after admission. Application code: cashu-delivery-state-unavailable. Check the original delivery before retrying. */
+      500: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/problem+json': components['schemas']['ProblemDetails']
+        }
+      }
+      /** @description The funding recipient is unavailable or its receipt could not be verified. Application codes: cashu-delivery-recipient-unavailable, cashu-delivery-invalid-receipt. Keep the original delivery for recovery. Score-specific failures can use another body. */
+      502: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/problem+json': components['schemas']['ProblemDetails']
+        }
+      }
+      /** @description Participation Score mint pre-admission is unavailable. */
+      503: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/problem+json': components['schemas']['ProblemDetails']
+        }
+      }
+    }
+  }
+  listCreatorMarkets: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        /** @description Nostr pubkey (hex) of the market creator. */
+        pubkey: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description List of markets created by this pubkey */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['CreatorMarketsResponse']
+        }
+      }
+    }
+  }
+  queryMarkets: {
+    parameters: {
+      query?: {
+        /** @description Repeatable category tag filter (e.g. `?tag=politics&tag=tech`). A market matches when at least one of its category tags matches at least one supplied tag (OR semantics across the supplied tags). */
+        tag?: string[]
+        /** @description State filter against the matching engine's lifecycle state. Default is `Open`. Use `All` to include both Open and Closed markets in a single response. The match is case-insensitive on the wire (`open` works the same as `Open`). */
+        state?: 'Open' | 'Closed' | 'All'
+        /** @description Restrict the result to markets whose creator pubkey matches. 64-character lowercase hex Nostr pubkey. Different from `/api/v1/creators/{pubkey}/markets` — that endpoint returns the creator-dashboard volume rollup; this filter returns the full catalogue response. */
+        creator_pubkey?: string
+        /** @description Comma-separated list of conditionIds to bulk-fetch (e.g. `?ids=abc,def,123`). Returns only the named markets that match the other filters. Capped at 100 ids per request — exceeding the cap is a 400. */
+        ids?: string
+        /** @description Full-text market search query. When present, results are ordered by relevance. The active `tag`, `state`, `creator_pubkey`, and `ids` filters also constrain the search. Capped at 200 normalized characters. */
+        search?: string
+        /** @description Sort dimension. `Trending` orders by 24h trading volume descending; `Popular` orders by 30d trading volume descending; `New` orders by RegisterMarket timestamp descending. Ties on the sort dimension break by `conditionId` ascending so paginated streams remain deterministic. */
+        sort?: 'Trending' | 'Popular' | 'New'
+        /** @description Opaque pagination token returned in `nextCursor` from a previous page. The engine HMAC-signs cursors before returning them and verifies the signature before reading the underlying boundary — tampered or unsigned cursors are 400. Omit for the first page. */
+        cursor?: string
+        /** @description Page size cap. Default 20, hard cap 50 — exceeding the cap is a 400. Page sizes below 1 are also a 400. */
+        page_size?: number
+      }
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Paginated catalogue of markets matching the filters. */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['MarketCatalogueResponse']
+        }
+      }
+      /** @description Invalid query parameters — typo'd `state`/`sort` value, malformed `creator_pubkey`, `ids` over the 100-cap, `page_size` outside `[1, 50]`, or a tampered/malformed `cursor`. */
+      400: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/problem+json': components['schemas']['ProblemDetails']
+        }
+      }
+      /** @description NIP-98 token was supplied but rejected (e.g. expired, signature mismatch, body-payload mismatch). Anonymous callers do NOT see 401 from this route. */
+      401: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+      /** @description Rate limit exceeded. Anonymous callers share a per-IP bucket; NIP-98-authenticated callers have their own per-pubkey bucket with a higher permit ceiling. The engine returns this when the applicable bucket is empty. */
+      429: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+      /** @description Latest confirmed trade data is temporarily unavailable. Retry the request later. The ProblemDetails `type` is `/errors/market-latest-trades-unavailable`. */
+      503: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/problem+json': components['schemas']['ProblemDetails']
+        }
+      }
+    }
+  }
+  createSettlementCapability: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['CreateSettlementCapabilityRequest']
+      }
+    }
+    responses: {
+      /** @description Capability validated, input-reserved, and durably bound. */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['SettlementCapabilityResponse']
+        }
+      }
+      /** @description Application rejection of a malformed, noncanonical, expired, or unsupported artifact. Framework input binding can return a different error body. */
+      400: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/problem+json': components['schemas']['ProblemDetails']
+        }
+      }
+      /** @description Missing or invalid authentication. */
+      401: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+      /** @description Participation Score is insufficient for capability preparation. */
+      402: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/problem+json': components['schemas']['ProblemDetails']
+        }
+      }
+      /** @description Idempotency conflict, reused input proof, mismatched order binding, or capability lifecycle conflict. */
+      409: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/problem+json': components['schemas']['ProblemDetails']
+        }
+      }
+      /** @description Application rejection of an artifact or request above the advertised byte/count limits. Framework request-size rejection can return a different error body. */
+      413: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/problem+json': components['schemas']['ProblemDetails']
+        }
+      }
+      /** @description Application capability admission or process capacity is saturated. Framework rate-limit rejection can return a different error body. */
+      429: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/problem+json': components['schemas']['ProblemDetails']
+        }
+      }
+      /** @description Mint validation or durable capability authority is unavailable. */
+      503: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/problem+json': components['schemas']['ProblemDetails']
+        }
+      }
+    }
+  }
+  submitAssetMonitoringReport: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['AssetMonitoringReportRequest']
+      }
+    }
+    responses: {
+      /** @description Report accepted or exact latest-report retry accepted. */
+      204: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+      /** @description Malformed, noncanonical, or out-of-bound report field. */
+      400: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+      /** @description Missing or invalid authentication. */
+      401: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+      /** @description Latest-report idempotency or wallet interval lifecycle conflict. */
+      409: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+      /** @description Request exceeds the 1 MiB report limit. */
+      413: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+      /** @description Authenticated-subject report rate limit exceeded. */
+      429: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+    }
+  }
+  getAssetMonitoringSummary: {
+    parameters: {
+      query: {
+        /** @description Canonical local durable wallet identifier. */
+        walletId: components['parameters']['AssetMonitoringWalletId']
+      }
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Bounded active-wallet monitoring summary. */
+      200: {
+        headers: {
+          'Cache-Control': components['headers']['AssetMonitoringNoStore']
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['AssetMonitoringSummaryResponse']
+        }
+      }
+      /** @description Malformed wallet id. */
+      400: {
+        headers: {
+          'Cache-Control': components['headers']['AssetMonitoringNoStore']
+          [name: string]: unknown
+        }
+        content: {
+          'application/problem+json': components['schemas']['ProblemDetails']
+        }
+      }
+      /** @description Missing or invalid authentication. */
+      401: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+      /** @description Wallet is not active for the authenticated account. */
+      409: {
+        headers: {
+          'Cache-Control': components['headers']['AssetMonitoringNoStore']
+          [name: string]: unknown
+        }
+        content?: never
+      }
+      /** @description The active event-store provider has no bounded monitoring reader. */
+      503: {
+        headers: {
+          'Cache-Control': components['headers']['AssetMonitoringNoStore']
+          [name: string]: unknown
+        }
+        content: {
+          'application/problem+json': components['schemas']['ProblemDetails']
+        }
+      }
+    }
+  }
+  getAssetMonitoringAssets: {
+    parameters: {
+      query: {
+        /** @description Canonical local durable wallet identifier. */
+        walletId: components['parameters']['AssetMonitoringWalletId']
+        pageSize?: number
+        cursor?: string
+      }
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Canonically ordered bounded active-wallet asset page. */
+      200: {
+        headers: {
+          'Cache-Control': components['headers']['AssetMonitoringNoStore']
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['AssetMonitoringAssetsResponse']
+        }
+      }
+      /** @description Malformed wallet id, page size, or cursor. */
+      400: {
+        headers: {
+          'Cache-Control': components['headers']['AssetMonitoringNoStore']
+          [name: string]: unknown
+        }
+        content: {
+          'application/problem+json': components['schemas']['ProblemDetails']
+        }
+      }
+      /** @description Missing or invalid authentication. */
+      401: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+      /** @description Wallet is not active for the authenticated account. */
+      409: {
+        headers: {
+          'Cache-Control': components['headers']['AssetMonitoringNoStore']
+          [name: string]: unknown
+        }
+        content?: never
+      }
+      /** @description The active event-store provider has no bounded monitoring reader. */
+      503: {
+        headers: {
+          'Cache-Control': components['headers']['AssetMonitoringNoStore']
+          [name: string]: unknown
+        }
+        content: {
+          'application/problem+json': components['schemas']['ProblemDetails']
+        }
+      }
+    }
+  }
+  getAssetMonitoringHistory: {
+    parameters: {
+      query: {
+        /** @description Canonical local durable wallet identifier. */
+        walletId: components['parameters']['AssetMonitoringWalletId']
+        timeframe?: '1D' | '1W' | '1M' | 'ALL'
+      }
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description At most 300 deterministic value points from compact active-interval facts. */
+      200: {
+        headers: {
+          'Cache-Control': components['headers']['AssetMonitoringNoStore']
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['AssetMonitoringHistoryResponse']
+        }
+      }
+      /** @description Malformed wallet id or timeframe. */
+      400: {
+        headers: {
+          'Cache-Control': components['headers']['AssetMonitoringNoStore']
+          [name: string]: unknown
+        }
+        content: {
+          'application/problem+json': components['schemas']['ProblemDetails']
+        }
+      }
+      /** @description Missing or invalid authentication. */
+      401: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+      /** @description Wallet is not active for the authenticated account. */
+      409: {
+        headers: {
+          'Cache-Control': components['headers']['AssetMonitoringNoStore']
+          [name: string]: unknown
+        }
+        content?: never
+      }
+      /** @description The active event-store provider has no bounded monitoring reader. */
+      503: {
+        headers: {
+          'Cache-Control': components['headers']['AssetMonitoringNoStore']
+          [name: string]: unknown
+        }
+        content: {
+          'application/problem+json': components['schemas']['ProblemDetails']
+        }
+      }
+    }
+  }
+  getPortfolio: {
+    parameters: {
+      query: {
+        /** @description Canonical local durable wallet identifier. */
+        walletId: components['parameters']['AssetMonitoringWalletId']
+        timeframe?: '1D' | '1W' | '1M' | 'ALL'
+        pageSize?: number
+      }
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Bounded active-wallet monitoring summary, asset page, and value history. */
+      200: {
+        headers: {
+          'Cache-Control': components['headers']['AssetMonitoringNoStore']
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['AssetMonitoringPortfolioResponse']
+        }
+      }
+      /** @description Malformed wallet id, timeframe, or page size. */
+      400: {
+        headers: {
+          'Cache-Control': components['headers']['AssetMonitoringNoStore']
+          [name: string]: unknown
+        }
+        content: {
+          'application/problem+json': components['schemas']['ProblemDetails']
+        }
+      }
+      /** @description Missing or invalid authentication. */
+      401: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+      /** @description Wallet is not active for the authenticated account. */
+      409: {
+        headers: {
+          'Cache-Control': components['headers']['AssetMonitoringNoStore']
+          [name: string]: unknown
+        }
+        content?: never
+      }
+      /** @description Authenticated history-read rate limit exceeded. */
+      429: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+      /** @description The active event-store provider has no bounded monitoring reader. */
+      503: {
+        headers: {
+          'Cache-Control': components['headers']['AssetMonitoringNoStore']
+          [name: string]: unknown
+        }
+        content: {
+          'application/problem+json': components['schemas']['ProblemDetails']
+        }
+      }
+    }
+  }
+  getSettlementCapabilityAdmissionPolicy: {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Current coordinator-bound settlement admission policy. */
+      200: {
+        headers: {
+          /** @description The admission key must not be served from a cache. */
+          'Cache-Control'?: 'no-store'
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['SettlementCapabilityAdmissionPolicyResponse']
+        }
+      }
+      /** @description Missing or invalid authentication. */
+      401: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+      /** @description Settlement admission policy is unavailable. */
+      503: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/problem+json': components['schemas']['ProblemDetails']
+        }
+      }
+    }
+  }
+  getSettlementCapability: {
+    parameters: {
+      query: {
+        bindingDigest: components['schemas']['Sha256Digest']
+      }
+      header?: never
+      path: {
+        artifactId: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Owner-filtered capability lifecycle. */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['SettlementCapabilityResponse']
+        }
+      }
+      /** @description Invalid capability binding digest. */
+      400: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/problem+json': components['schemas']['ProblemDetails']
+        }
+      }
+      /** @description Missing or invalid authentication. */
+      401: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+      /** @description Capability is absent, foreign, or has a different binding digest. */
+      404: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/problem+json': components['schemas']['ProblemDetails']
+        }
+      }
+    }
+  }
+  getSettlementCapabilityResult: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        resultId: string
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Authenticated result envelope for the capability owner. */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['SettlementCapabilityResultResponse']
+        }
+      }
+      /** @description Missing or invalid authentication. */
+      401: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+      /** @description Result is absent or belongs to another subject. */
+      404: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/problem+json': components['schemas']['ProblemDetails']
+        }
+      }
+    }
+  }
+  getSettlementCapabilityResultByOperation: {
+    parameters: {
+      query: {
+        operationId: string
+      }
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Authenticated result envelope for the capability owner. */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['SettlementCapabilityResultResponse']
+        }
+      }
+      /** @description Invalid operation identifier. */
+      400: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/problem+json': components['schemas']['ProblemDetails']
+        }
+      }
+      /** @description Missing or invalid authentication. */
+      401: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+      /** @description Result is absent or belongs to another subject. */
+      404: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/problem+json': components['schemas']['ProblemDetails']
+        }
+      }
+    }
+  }
+  acknowledgeSettlementCapabilityResult: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        resultId: string
+      }
+      cookie?: never
+    }
+    requestBody: {
+      content: {
+        'application/json': components['schemas']['AcknowledgeSettlementCapabilityResultRequest']
+      }
+    }
+    responses: {
+      /** @description Result acknowledgement recorded or already recorded. */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['SettlementCapabilityResultResponse']
+        }
+      }
+      /** @description Invalid expected version. */
+      400: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/problem+json': components['schemas']['ProblemDetails']
+        }
+      }
+      /** @description Missing or invalid authentication. */
+      401: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+      /** @description Result is absent or belongs to another subject. */
+      404: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/problem+json': components['schemas']['ProblemDetails']
+        }
+      }
+      /** @description Result lifecycle version conflict. */
+      409: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/problem+json': components['schemas']['ProblemDetails']
+        }
+      }
+    }
+  }
 }

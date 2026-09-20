@@ -281,7 +281,12 @@ test('order writes preserve range custody rows and do not notify wallet holdings
       const fresh = await recordSubmittedOrder(
         'condition-1-YES',
         'fresh-client-order',
-        { orderId: 'fresh-engine-order', status: 'submitted', baseAsset: 'sat', divisibility: 1_000 },
+        {
+          orderId: 'fresh-engine-order',
+          status: 'submitted',
+          baseAsset: 'sat',
+          divisibility: 1_000,
+        },
         null,
         'Outcome',
         'Buy',
@@ -368,7 +373,11 @@ test('order writes preserve range custody rows and do not notify wallet holdings
         1_000,
       )
       assert.equal(submitted.orderId, 'source-engine-order')
-      const submittedRow = await readOrderRowMetadata(home, mutation.fence.scopeId, submitted.orderId)
+      const submittedRow = await readOrderRowMetadata(
+        home,
+        mutation.fence.scopeId,
+        submitted.orderId,
+      )
       assert.equal(submittedRow.scopeId, mutation.fence.scopeId)
       assert.equal(submittedRow.revision, 0)
       assert.equal(submittedRow.createdAtMs, Date.parse(submitted.createdAt))
@@ -376,9 +385,11 @@ test('order writes preserve range custody rows and do not notify wallet holdings
       const metadataAfterSubmitted = await openDaemonStateSqlite(home)
       try {
         assert.equal(
-          (metadataAfterSubmitted
-            .prepare('SELECT schema_version FROM target_state_metadata WHERE scope_id = ?')
-            .get(mutation.fence.scopeId) as { schema_version: number }).schema_version,
+          (
+            metadataAfterSubmitted
+              .prepare('SELECT schema_version FROM target_state_metadata WHERE scope_id = ?')
+              .get(mutation.fence.scopeId) as { schema_version: number }
+          ).schema_version,
           1,
         )
       } finally {
@@ -398,7 +409,11 @@ test('order writes preserve range custody rows and do not notify wallet holdings
         1_000,
       )
       assert.equal(discovered.status, 'Filled')
-      const discoveredRow = await readOrderRowMetadata(home, mutation.fence.scopeId, discovered.orderId)
+      const discoveredRow = await readOrderRowMetadata(
+        home,
+        mutation.fence.scopeId,
+        discovered.orderId,
+      )
       assert.equal(discoveredRow.scopeId, mutation.fence.scopeId)
       assert.equal(discoveredRow.revision, submittedRow.revision + 1)
       assert.equal(discoveredRow.createdAtMs, submittedRow.createdAtMs)
@@ -410,7 +425,11 @@ test('order writes preserve range custody rows and do not notify wallet holdings
         status: 'cancelled',
       })
       assert.equal(cancelled.status, 'cancelled')
-      const cancelledRow = await readOrderRowMetadata(home, mutation.fence.scopeId, cancelled.orderId)
+      const cancelledRow = await readOrderRowMetadata(
+        home,
+        mutation.fence.scopeId,
+        cancelled.orderId,
+      )
       assert.equal(cancelledRow.scopeId, mutation.fence.scopeId)
       assert.equal(cancelledRow.revision, discoveredRow.revision + 1)
       assert.equal(cancelledRow.createdAtMs, submittedRow.createdAtMs)
@@ -431,10 +450,10 @@ test('order writes preserve range custody rows and do not notify wallet holdings
           divisibility: 1_000,
         }),
       ])
-      assert.deepEqual(
-        concurrent.map(({ orderId }) => orderId).sort(),
-        ['concurrent-engine-a', 'concurrent-engine-b'],
-      )
+      assert.deepEqual(concurrent.map(({ orderId }) => orderId).sort(), [
+        'concurrent-engine-a',
+        'concurrent-engine-b',
+      ])
       assert.deepEqual(await readOrderWriteAuthoritySnapshot(home, mutation.fence.scopeId), before)
 
       const rollbackBefore = await readOrderWriteAuthoritySnapshot(home, mutation.fence.scopeId)
@@ -1496,7 +1515,12 @@ function preservedProofOperation(): ProofOperationRecord {
   }
 }
 
-function rangeSourceOperation(sourceProof: { id: string; amount: number; secret: string; C: string }) {
+function rangeSourceOperation(sourceProof: {
+  id: string
+  amount: number
+  secret: string
+  C: string
+}) {
   return {
     operationId: 'range-source-operation',
     kind: 'wallet-send' as const,

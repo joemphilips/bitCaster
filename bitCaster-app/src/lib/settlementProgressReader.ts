@@ -23,12 +23,16 @@ export function createSettlementProgressReader(read = fetchOrderStatus) {
       rejectAborted = () => reject(new Error("Settlement status is unavailable."));
       controller.signal.addEventListener("abort", rejectAborted, { once: true });
     });
-    const work = Promise.resolve().then(async () => {
-      controller.signal.throwIfAborted();
-      const response = await read(marketId, orderId, controller.signal);
-      controller.signal.throwIfAborted();
-      return response === null ? null : settlementGroupForOrder(response, marketId, orderId);
-    }).finally(() => { occupied = false; });
+    const work = Promise.resolve()
+      .then(async () => {
+        controller.signal.throwIfAborted();
+        const response = await read(marketId, orderId, controller.signal);
+        controller.signal.throwIfAborted();
+        return response === null ? null : settlementGroupForOrder(response, marketId, orderId);
+      })
+      .finally(() => {
+        occupied = false;
+      });
     try {
       return await Promise.race([work, aborted]);
     } finally {
@@ -54,9 +58,14 @@ export function settlementGroupForOrder(
   const first = groups[0];
   if (!first) return null;
   for (const group of groups) {
-    if (!group || group.groupId !== first.groupId || group.revision !== first.revision ||
-        group.status !== first.status || group.frozenAt !== first.frozenAt ||
-        group.coalescingDeadline !== first.coalescingDeadline) {
+    if (
+      !group ||
+      group.groupId !== first.groupId ||
+      group.revision !== first.revision ||
+      group.status !== first.status ||
+      group.frozenAt !== first.frozenAt ||
+      group.coalescingDeadline !== first.coalescingDeadline
+    ) {
       throw new Error("Settlement status summaries disagree.");
     }
   }

@@ -139,15 +139,17 @@ describe("mapCatalogueEntryToMarket", () => {
     const marketWithTrades = mapCatalogueEntryToMarket({
       ...yesNoEntry,
       divisibility: 1_000,
-      latestConfirmedTrades: [{
-        primitiveOutcomeId: "YES",
-        fillId: "00000000-0000-0000-0000-000000000002",
-        executedAt: "2026-05-02T09:58:00Z",
-        eventOrder: "0002",
-        priceTick: 620,
-        divisibility: 1_000,
-        faceAmountSubunits: 1_000,
-      }],
+      latestConfirmedTrades: [
+        {
+          primitiveOutcomeId: "YES",
+          fillId: "00000000-0000-0000-0000-000000000002",
+          executedAt: "2026-05-02T09:58:00Z",
+          eventOrder: "0002",
+          priceTick: 620,
+          divisibility: 1_000,
+          faceAmountSubunits: 1_000,
+        },
+      ],
     });
 
     expect(marketWithTrades.type).toBe("yesno");
@@ -263,18 +265,10 @@ describe("latest confirmed trade authority validation", () => {
     expect(latestConfirmedTradesAuthorityValid([], ["YES", "NO"], 1_000)).toBe(true);
     expect(validateLatestConfirmedTrades([yes, no], ["YES", "NO"], 1_000)).toEqual([]);
     expect(
-      validateLatestConfirmedTrades(
-        [{ ...yes, fillId: "not-a-uuid" }],
-        ["YES", "NO"],
-        1_000,
-      ),
+      validateLatestConfirmedTrades([{ ...yes, fillId: "not-a-uuid" }], ["YES", "NO"], 1_000),
     ).toEqual([]);
     expect(
-      validateLatestConfirmedTrades(
-        [{ ...yes, executedAt: "2026-05-02" }],
-        ["YES", "NO"],
-        1_000,
-      ),
+      validateLatestConfirmedTrades([{ ...yes, executedAt: "2026-05-02" }], ["YES", "NO"], 1_000),
     ).toEqual([]);
     expect(latestConfirmedTradesAuthorityValid([no, yes], ["YES", "NO"], 1_000)).toBe(true);
   });
@@ -1371,9 +1365,7 @@ describe("durable Cashu delivery transport", () => {
     vi.useFakeTimers();
     mocks.eventSign.mockClear();
     try {
-      const pending = getDurableCashuDeliveryStatus(
-        "88888888-8888-4888-8888-888888888888",
-      );
+      const pending = getDurableCashuDeliveryStatus("88888888-8888-4888-8888-888888888888");
       const rejection = expect(pending).rejects.toThrow(
         /durable recipient delivery request failed/,
       );

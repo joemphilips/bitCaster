@@ -65,13 +65,15 @@ export type BrowserMarketFundingDeliveryAttempt =
       readonly transferId: string;
     };
 
-export type BrowserMarketFundingDeliveryInput =
-  Omit<MarketFundingDeliveryInput, "deliveryId" | "requestedAmount"> & {
-    readonly outcomeCount?: number;
-    /** Classifies only a final locked shortfall. It never bypasses recovery or selection. */
-    readonly availableAmount?: number;
-    readonly attempt: BrowserMarketFundingDeliveryAttempt;
-  };
+export type BrowserMarketFundingDeliveryInput = Omit<
+  MarketFundingDeliveryInput,
+  "deliveryId" | "requestedAmount"
+> & {
+  readonly outcomeCount?: number;
+  /** Classifies only a final locked shortfall. It never bypasses recovery or selection. */
+  readonly availableAmount?: number;
+  readonly attempt: BrowserMarketFundingDeliveryAttempt;
+};
 
 export class BrowserMarketFundingInsufficientBalanceError extends Error {
   constructor() {
@@ -174,10 +176,11 @@ export async function executeBrowserMarketFundingDelivery(
       expectedPreviousTransferId: begin.expectedPreviousTransferId,
       conditionId: durableMetadata.destinationId,
       divisibility: input.divisibility,
-      requireCredited: (predecessor) => requireCreditedMarketFundingPredecessor({
-        transfer: predecessor,
-        input,
-      }),
+      requireCredited: (predecessor) =>
+        requireCreditedMarketFundingPredecessor({
+          transfer: predecessor,
+          input,
+        }),
     },
     transfer: {
       transferId: begin.newAttemptId,

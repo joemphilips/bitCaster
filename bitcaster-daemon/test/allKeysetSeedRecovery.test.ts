@@ -22,10 +22,7 @@ import {
   recoverAllDaemonWalletFromSeed,
   type AllKeysetSeedRecoveryTransport,
 } from '../src/emergencySeedRecovery.ts'
-import {
-  createSeedRecoveryProfile,
-  withDaemonHome,
-} from './seedRecoveryTestSupport.ts'
+import { createSeedRecoveryProfile, withDaemonHome } from './seedRecoveryTestSupport.ts'
 
 const V2_ID = `01${'a'.repeat(64)}`
 const MINT_PRIVATE_KEY = Uint8Array.from([...new Uint8Array(31), 1])

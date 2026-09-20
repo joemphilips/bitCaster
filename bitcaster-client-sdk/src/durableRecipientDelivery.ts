@@ -333,8 +333,7 @@ function decodeTuple(value: unknown, allowToken = false): DurableRecipientDelive
   } catch {
     throw new Error('durable recipient delivery mint URL is not normalized')
   }
-  if (value.unit !== 'msat')
-    throw new Error('durable recipient unit is invalid')
+  if (value.unit !== 'msat') throw new Error('durable recipient unit is invalid')
   requireAmount(value.requestedAmount, 'requested amount')
   if (value.creditPolicy !== 'exact-amount' && value.creditPolicy !== 'net-of-receive-fee') {
     throw new Error('durable recipient credit policy is invalid')

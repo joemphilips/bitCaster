@@ -47,10 +47,7 @@ function resolveTradeOutcome(
   return resolveOutcomeSets(market, selection)
 }
 
-function marketPriceFor(
-  side: SdkTradeSide,
-  divisibility: number,
-): number {
+function marketPriceFor(side: SdkTradeSide, divisibility: number): number {
   return side === 'Buy' ? divisibility - 1 : 1
 }
 

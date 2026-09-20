@@ -44,9 +44,9 @@ describe("extractMintUrlFromV4Token", () => {
 
 it("rejects product sat minting before mint I/O", async () => {
   const { mintProofsForUnit } = await import("@/lib/cashu");
-  await expect(
-    mintProofsForUnit(1, {} as never, "https://mint.example", "sat"),
-  ).rejects.toThrow(/requires msat/);
+  await expect(mintProofsForUnit(1, {} as never, "https://mint.example", "sat")).rejects.toThrow(
+    /requires msat/,
+  );
 });
 
 describe("decodeToken real v4 fixture", () => {

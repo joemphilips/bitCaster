@@ -1,9 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import {
-  BitcasterEngineClient,
-  EngineClientError,
-} from '../src/engineClient.ts'
+import { BitcasterEngineClient, EngineClientError } from '../src/engineClient.ts'
 import {
   decodePreviewFokOrderResponse,
   FOK_PREVIEW_RESPONSE_BYTES_MAX,
@@ -155,7 +152,11 @@ test('previewFokOrder rejects partial execution estimates and incoherent snapsho
     { ...nonfillableResponse('insufficient_liquidity'), quotePaymentSubunits: 1 },
     { ...fillableResponse(), previewRevision: null },
     { ...fillableResponse(), priceDenominator: null },
-    { ...nonfillableResponse('market_unavailable'), previewRevision: 'revision-1', priceDenominator: null },
+    {
+      ...nonfillableResponse('market_unavailable'),
+      previewRevision: 'revision-1',
+      priceDenominator: null,
+    },
     { ...nonfillableResponse('market_unavailable'), currentLatestTradePrice: 10 },
     { ...fillableResponse(), averagePrice: 1_000 },
   ]
@@ -172,9 +173,15 @@ test('previewFokOrder rejects partial execution estimates and incoherent snapsho
 test('previewFokOrder enforces side-aware limits and whole-share face amounts', async () => {
   const cases = [
     { request, response: { ...fillableResponse(), worstPrice: 501 } },
-    { request: { ...request, side: 'Sell' as const }, response: { ...fillableResponse(), worstPrice: 499 } },
+    {
+      request: { ...request, side: 'Sell' as const },
+      response: { ...fillableResponse(), worstPrice: 499 },
+    },
     { request, response: { ...fillableResponse(), averagePrice: 501 } },
-    { request: { ...request, side: 'Sell' as const }, response: { ...fillableResponse(), averagePrice: 499 } },
+    {
+      request: { ...request, side: 'Sell' as const },
+      response: { ...fillableResponse(), averagePrice: 499 },
+    },
     { request: { ...request, faceAmountSubunits: 1_001 }, response: fillableResponse() },
   ]
   let responseIndex = 0
@@ -237,7 +244,10 @@ test('previewFokOrder validates static request bounds before network I/O', async
 })
 
 test('previewFokOrder rejects a response over the 16 KiB bound', async () => {
-  const body = JSON.stringify({ ...nonfillableResponse('market_unavailable'), padding: 'x'.repeat(17_000) })
+  const body = JSON.stringify({
+    ...nonfillableResponse('market_unavailable'),
+    padding: 'x'.repeat(17_000),
+  })
   assert.ok(new TextEncoder().encode(body).byteLength > FOK_PREVIEW_RESPONSE_BYTES_MAX)
   const client = new BitcasterEngineClient({
     baseUrl: 'https://engine.example',

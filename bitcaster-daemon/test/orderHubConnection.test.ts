@@ -36,10 +36,13 @@ test('order lifecycle callbacks require an owned order identity', () => {
 
   assert.deepEqual(parseOrderLifecycleChanged(lifecycle), identity)
   assert.deepEqual(parseSettlementGroupStateChanged(settlement), identity)
-  assert.deepEqual(parseSettlementGroupStateChanged({
-    ...settlement,
-    settlementGroup: { ...settlement.settlementGroup, status: 'RejectedBeforeSubmission' },
-  }), identity)
+  assert.deepEqual(
+    parseSettlementGroupStateChanged({
+      ...settlement,
+      settlementGroup: { ...settlement.settlementGroup, status: 'RejectedBeforeSubmission' },
+    }),
+    identity,
+  )
   assert.throws(() => parseOrderLifecycleChanged({ ...lifecycle, tradeId: 'obsolete' }))
 })
 

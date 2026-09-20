@@ -76,10 +76,7 @@ function primitivePriceFromTrade(
   return trade.divisibility - trade.priceTick;
 }
 
-function primitiveIdForOutcome(
-  market: MarketDetail,
-  outcomeSetId: string,
-): string | null {
+function primitiveIdForOutcome(market: MarketDetail, outcomeSetId: string): string | null {
   const members = parseOutcomeSetId(outcomeSetId);
   if (members.length !== 1) return null;
   const member = members[0];
@@ -135,7 +132,9 @@ function deriveCategoricalPrice(
   if (!outcomeSetId) return null;
   const primitiveId = primitiveIdForOutcome(market, outcomeSetId);
   if (primitiveId) {
-    return latestTradeForOutcome(market.latestConfirmedTrades ?? [], primitiveId)?.priceTick ?? null;
+    return (
+      latestTradeForOutcome(market.latestConfirmedTrades ?? [], primitiveId)?.priceTick ?? null
+    );
   }
 
   // A one-vs-rest route is the complement of one primitive outcome. Derive it
@@ -165,14 +164,13 @@ function deriveNumericPrice(
   const latest = latestTradeAcrossOutcomes(market.latestConfirmedTrades ?? []);
   if (!latest) return null;
   if (latest.primitiveOutcomeId !== ids.hi && latest.primitiveOutcomeId !== ids.lo) return null;
-  const hiTick = latest.primitiveOutcomeId === ids.hi
-    ? latest.priceTick
-    : latest.divisibility - latest.priceTick;
+  const hiTick =
+    latest.primitiveOutcomeId === ids.hi
+      ? latest.priceTick
+      : latest.divisibility - latest.priceTick;
   if (!Number.isFinite(hiTick / latest.divisibility)) return null;
   if (outcomeSetId === ids.lo) return latest.divisibility - hiTick;
-  return outcomeSetId === ids.hi || outcomeSetId == null
-    ? hiTick
-    : null;
+  return outcomeSetId === ids.hi || outcomeSetId == null ? hiTick : null;
 }
 
 export function deriveConfirmedMarketPrice(
@@ -207,9 +205,10 @@ export function useMarketPrice({
     marketId != null &&
     outcomeSetId != null &&
     outcomeSetMarketId(market.id, outcomeSetId) === marketId;
-  const divisibility = exactMarketIdentity && market
-    ? normalizeMarketDivisibility(market.divisibility, market.baseAsset)
-    : DEFAULT_SAT_MARKET_DIVISIBILITY;
+  const divisibility =
+    exactMarketIdentity && market
+      ? normalizeMarketDivisibility(market.divisibility, market.baseAsset)
+      : DEFAULT_SAT_MARKET_DIVISIBILITY;
   const baseAsset = exactMarketIdentity && market ? market.baseAsset : "sat";
   const currentPrice = useMemo(
     () => (exactMarketIdentity && market ? deriveConfirmedMarketPrice(market, outcomeSetId) : null),

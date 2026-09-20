@@ -1152,7 +1152,12 @@ test('durable send hydrates passthrough proofs before canonical custody completi
     const passthroughProofs: Proof[] = []
     for (let index = 0; index < 47; index += 1) {
       const proof = signedProof(
-        OutputData.createSingleData(8, KEYSET_ID, `passthrough-unselected-${index}`, BigInt(200 + index)),
+        OutputData.createSingleData(
+          8,
+          KEYSET_ID,
+          `passthrough-unselected-${index}`,
+          BigInt(200 + index),
+        ),
       )
       const { p2pkE: _p2pkE, ...canonicalProof } = proof
       passthroughProofs.push(await fixture.addAvailableProof(MINT_URL, canonicalProof))
@@ -1176,8 +1181,12 @@ test('durable send hydrates passthrough proofs before canonical custody completi
       { sendOutputs, keepOutputs: [] },
     )
     wallet.prepareSwapToSend = async (_amount, proofs) => {
-      const selected = proofs.filter((proof) => selectedProofs.some(({ secret }) => secret === proof.secret))
-      preparedPassthrough = proofs.filter((proof) => !selected.some(({ secret }) => secret === proof.secret))
+      const selected = proofs.filter((proof) =>
+        selectedProofs.some(({ secret }) => secret === proof.secret),
+      )
+      preparedPassthrough = proofs.filter(
+        (proof) => !selected.some(({ secret }) => secret === proof.secret),
+      )
       assert.equal(selected.length, 17)
       assert.equal(preparedPassthrough.length, 47)
       return {
@@ -1871,7 +1880,7 @@ async function createFixture(
           secret: proof.secret,
         })
         return (
-          database
+          (database
             .prepare(
               `SELECT proof_fingerprint AS proofFingerprint, proof_body AS proofBody,
                       revision, selectability, nut07_state AS nut07State
@@ -1885,8 +1894,8 @@ async function createFixture(
                 selectability: string
                 nut07State: string
               }
-            | undefined
-        ) ?? null
+            | undefined) ?? null
+        )
       }),
     targetWalletHasProof: async (proof: Proof) =>
       withDurableCustodyUnitOfWork(directory, fence, Date.now(), (database) => {
@@ -1986,10 +1995,7 @@ function canonicalProofMaterial(proof: {
   }
 }
 
-function walletProofSnapshot(
-  state: Awaited<ReturnType<typeof readState>>,
-  proof: Proof,
-) {
+function walletProofSnapshot(state: Awaited<ReturnType<typeof readState>>, proof: Proof) {
   const record = state?.wallet.proofs.find(({ proof: value }) => value.secret === proof.secret)
   return record === undefined
     ? null

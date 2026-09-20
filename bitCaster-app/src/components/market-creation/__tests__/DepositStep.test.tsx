@@ -144,7 +144,9 @@ describe("DepositStep", () => {
   it("ignores a late funding head from the previous condition", async () => {
     let resolvePrevious!: (value: string) => void;
     readBrowserMarketFundingHeadId.mockReturnValueOnce(
-      new Promise<string>((resolve) => { resolvePrevious = resolve; }),
+      new Promise<string>((resolve) => {
+        resolvePrevious = resolve;
+      }),
     );
     const step = (conditionId: string) => (
       <MemoryRouter>

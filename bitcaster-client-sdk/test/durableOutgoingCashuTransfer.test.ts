@@ -165,7 +165,9 @@ test('coordinator treats omitted sequence as unsequenced and compares exact sequ
     requestedAmount: transfer.requestedAmount,
     deliveryIntent: transfer.deliveryIntent,
   }
-  const recover = (requestTransfer: typeof request & { recipientSequence?: typeof transfer.recipientSequence }) =>
+  const recover = (
+    requestTransfer: typeof request & { recipientSequence?: typeof transfer.recipientSequence },
+  ) =>
     runDurableOutgoingCashuTransfer({
       mode: 'recover',
       preMint: { recover: async () => admitted },

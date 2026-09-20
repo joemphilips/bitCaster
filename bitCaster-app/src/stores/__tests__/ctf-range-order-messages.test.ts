@@ -78,10 +78,13 @@ describe("durable browser range messages", () => {
     const first = await page(database);
     expect(first.messages).toHaveLength(8);
     const next = await pageActiveBrowserCtfRangeMessages(
-      { scopeId: "scope-1", limit: 8, after: first.nextCursor! }, database,
+      { scopeId: "scope-1", limit: 8, after: first.nextCursor! },
+      database,
     );
     expect(next.messages.map((item) => item.revision)).toEqual([9, 10]);
-    expect([...first.messages, ...next.messages].every((item) => item.status === "active")).toBe(true);
+    expect([...first.messages, ...next.messages].every((item) => item.status === "active")).toBe(
+      true,
+    );
   });
 });
 

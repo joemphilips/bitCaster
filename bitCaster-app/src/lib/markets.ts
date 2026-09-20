@@ -1,9 +1,4 @@
-import type {
-  CurrentOdds,
-  LatestConfirmedTrade,
-  Market,
-  FilterState,
-} from "@/types/market";
+import type { CurrentOdds, LatestConfirmedTrade, Market, FilterState } from "@/types/market";
 import type {
   MarketDetail,
   OrderBook,
@@ -170,10 +165,8 @@ export type MarketCatalogueEntry = components["schemas"]["MarketCatalogueEntry"]
 export type MarketCatalogueResponse = components["schemas"]["MarketCatalogueResponse"];
 
 const MAX_REGISTERED_PRIMITIVE_OUTCOMES = 8;
-const UUID_RE =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const RFC3339_DATE_TIME_RE =
-  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const RFC3339_DATE_TIME_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
 
 function compareEventOrder(left: string, right: string): number {
   if (left === right) return 0;
@@ -278,10 +271,7 @@ export function latestConfirmedTradesAuthorityValid(
     return false;
   }
   const validated = validateLatestConfirmedTrades(raw, registeredPrimitiveOutcomeIds, divisibility);
-  return (
-    validated.length === raw.length &&
-    validated.every((trade, index) => trade === raw[index])
-  );
+  return validated.length === raw.length && validated.every((trade, index) => trade === raw[index]);
 }
 
 function latestTradeByOutcome(
@@ -419,7 +409,10 @@ export function mapCatalogueEntryToMarket(entry: MarketCatalogueEntry): Market {
     };
   }
 
-  const categoricalOdds = deriveCategoricalOdds(latestConfirmedTrades, registeredPrimitiveOutcomeIds);
+  const categoricalOdds = deriveCategoricalOdds(
+    latestConfirmedTrades,
+    registeredPrimitiveOutcomeIds,
+  );
 
   return {
     ...base,
@@ -530,7 +523,10 @@ function mapCatalogueEntryToMarketDetail(entry: MarketCatalogueEntry): MarketDet
     divisibility,
   );
   const yesNoOdds = deriveYesNoOdds(latestConfirmedTrades, registeredPrimitiveOutcomeIds);
-  const categoricalOdds = deriveCategoricalOdds(latestConfirmedTrades, registeredPrimitiveOutcomeIds);
+  const categoricalOdds = deriveCategoricalOdds(
+    latestConfirmedTrades,
+    registeredPrimitiveOutcomeIds,
+  );
 
   const base = {
     id: entry.conditionId,
@@ -852,9 +848,9 @@ export function applyMarketPriceHistory(
   )?.id;
   const primary =
     market.type === "yesno"
-      ? (semanticYesOutcomeId
-          ? histories[semanticYesOutcomeId]
-          : histories[Object.keys(histories)[0]])
+      ? semanticYesOutcomeId
+        ? histories[semanticYesOutcomeId]
+        : histories[Object.keys(histories)[0]]
       : histories[Object.keys(histories)[0]];
 
   if (market.type === "categorical") {

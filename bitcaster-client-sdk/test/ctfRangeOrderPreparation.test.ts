@@ -997,9 +997,9 @@ test('authorization lifetime cap only shortens the mint-derived expiry', () => {
   assert.equal(persistedPreparation('lifetime-cap', 'Buy', 60).expiry, 80)
   assert.equal(persistedPreparation('lifetime-cap', 'Buy', 680).expiry, 700)
   assert.ok(
-    Buffer.from(encodePersistedCtfRangeOrderPreparation(
-      persistedPreparation('lifetime-cap', 'Buy', 1_000),
-    )).equals(Buffer.from(encodePersistedCtfRangeOrderPreparation(baseline))),
+    Buffer.from(
+      encodePersistedCtfRangeOrderPreparation(persistedPreparation('lifetime-cap', 'Buy', 1_000)),
+    ).equals(Buffer.from(encodePersistedCtfRangeOrderPreparation(baseline))),
     'a larger lifetime cap changed the default preparation bytes',
   )
 })

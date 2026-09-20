@@ -1,10 +1,6 @@
 #!/usr/bin/env node
 
-import {
-  Mint as CashuMint,
-  Wallet as CashuWallet,
-  type Proof,
-} from '@cashu/cashu-ts'
+import { Mint as CashuMint, Wallet as CashuWallet, type Proof } from '@cashu/cashu-ts'
 import {
   parseCtfSettingsFromMintInfo,
   registrationFeeForPolicy,
@@ -24,11 +20,7 @@ if (collateral !== 'msat') {
 
 const announcements = parseStringArray(announcementsJson, 'announcements-json')
 const outcomes = parseStringArray(outcomesJson, 'outcomes-json')
-const tags = [
-  ['title', title],
-  ['description', description],
-  ...(ticker ? [['n', ticker]] : []),
-]
+const tags = [['title', title], ['description', description], ...(ticker ? [['n', ticker]] : [])]
 const info = await fetchMintInfo(mintUrl)
 const settings = parseCtfSettingsFromMintInfo(info)
 const requiredFeeSubunits = registrationFeeForPolicy(outcomes, settings, collateral)

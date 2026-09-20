@@ -66,12 +66,7 @@ export function decodePreviewFokOrderResponse(
   if (fullFillAvailable !== (reason === 'fillable')) {
     throw new Error('preview fill flag does not match reason')
   }
-  const executionEstimate = [
-    quotePaymentSubunits,
-    averagePrice,
-    worstPrice,
-    projectedFinalPrice,
-  ]
+  const executionEstimate = [quotePaymentSubunits, averagePrice, worstPrice, projectedFinalPrice]
   if (fullFillAvailable) {
     if (executionEstimate.some((field) => field === null)) {
       throw new Error('preview execution estimate nullability is invalid')
@@ -118,12 +113,14 @@ export function decodePreviewFokOrderResponse(
     }
   }
   if (fullFillAvailable && projectedFinalPrice !== null && priceDenominator !== null) {
-    const selectedFinalPrice = request.tokenSide === 'Complement'
-      ? priceDenominator - projectedFinalPrice
-      : projectedFinalPrice
-    const finalSatisfiesLimit = request.side === 'Buy'
-      ? selectedFinalPrice <= request.price
-      : selectedFinalPrice >= request.price
+    const selectedFinalPrice =
+      request.tokenSide === 'Complement'
+        ? priceDenominator - projectedFinalPrice
+        : projectedFinalPrice
+    const finalSatisfiesLimit =
+      request.side === 'Buy'
+        ? selectedFinalPrice <= request.price
+        : selectedFinalPrice >= request.price
     if (!finalSatisfiesLimit) {
       throw new Error('preview final price limit is invalid')
     }
@@ -212,12 +209,7 @@ function nullablePrice(value: unknown, name: string): number | null {
 
 function nullablePriceDenominator(value: unknown): number | null {
   if (value === null) return null
-  if (
-    typeof value !== 'number' ||
-    !Number.isSafeInteger(value) ||
-    value < 2 ||
-    value > 1_000_000
-  ) {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 2 || value > 1_000_000) {
     throw new Error('preview price denominator is invalid')
   }
   return value

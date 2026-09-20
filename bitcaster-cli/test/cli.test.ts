@@ -2163,10 +2163,7 @@ test('P47-4: bitcaster-cli wallet split (renamed from split-complete-set)', asyn
 test('bitcaster-cli wallet split rejects invalid sats text before daemon RPC', async () => {
   for (const amount of ['0', '-1', '1.0001', '9007199254740992']) {
     const amountArgs = amount === '-1' ? ['--', amount] : [amount]
-    await assertCliFailure(
-      ['wallet', 'split', 'cond-1', ...amountArgs],
-      /Invalid amount sats:/,
-    )
+    await assertCliFailure(['wallet', 'split', 'cond-1', ...amountArgs], /Invalid amount sats:/)
   }
 })
 
@@ -2523,12 +2520,18 @@ test('public order submit rejects the removed --tif option', async () => {
 test('market creation rejects the removed --liquidity-sats option', async () => {
   await assertCliFailure(
     [
-      'market', 'create',
-      '--condition-id', 'cond-1',
-      '--title', 'Winner',
-      '--description', 'Alpha or Beta',
-      '--outcomes', 'Alpha,Beta',
-      '--liquidity-sats', '0',
+      'market',
+      'create',
+      '--condition-id',
+      'cond-1',
+      '--title',
+      'Winner',
+      '--description',
+      'Alpha or Beta',
+      '--outcomes',
+      'Alpha,Beta',
+      '--liquidity-sats',
+      '0',
     ],
     /unknown option '--liquidity-sats'/,
   )

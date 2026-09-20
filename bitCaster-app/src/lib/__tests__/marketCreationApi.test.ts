@@ -148,10 +148,7 @@ describe("requiredMarketCreationOutcomeCollections", () => {
 const createMarketParams = {
   title: "Test Market",
   description: "Test description",
-  outcomes: [
-    { name: "Yes" },
-    { name: "No" },
-  ],
+  outcomes: [{ name: "Yes" }, { name: "No" }],
   baseAsset: "sat" as const,
   divisibility: 1_000,
   categoryTags: ["crypto"],

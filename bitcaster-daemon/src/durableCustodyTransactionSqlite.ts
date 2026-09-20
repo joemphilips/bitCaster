@@ -204,9 +204,8 @@ export class DurableCustodyTransactionSqlite implements DurableCustodyTransactio
         position,
       )
       if (reserved.changes !== 1) throw new Error('custody proof reservation CAS lost')
-      const locked = (retainedInputProofIds.has(proofId)
-        ? lockRetainedProof
-        : lockSelectableProof
+      const locked = (
+        retainedInputProofIds.has(proofId) ? lockRetainedProof : lockSelectableProof
       ).run(input.operationId, this.#nowMs, this.#scopeId, proofId)
       if (locked.changes !== 1) throw new Error('custody proof lock CAS lost')
     })

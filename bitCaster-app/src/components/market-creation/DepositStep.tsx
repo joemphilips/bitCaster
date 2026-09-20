@@ -176,7 +176,8 @@ export function DepositStep({
   }, [conditionId, navigate, presentation]);
 
   useEffect(() => {
-    if (presentation === "detail" || deliveryProgress !== "credited" || fundingBusy) return undefined;
+    if (presentation === "detail" || deliveryProgress !== "credited" || fundingBusy)
+      return undefined;
     const timer = window.setTimeout(continueToMarket, 5_000);
     return () => window.clearTimeout(timer);
   }, [continueToMarket, deliveryProgress, presentation, fundingBusy]);

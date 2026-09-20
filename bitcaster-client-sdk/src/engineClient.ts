@@ -658,7 +658,11 @@ export class BitcasterEngineClient {
     )
   }
 
-  async getOrderStatus(marketId: string, orderId: string, signal?: AbortSignal): Promise<OrderStatusResponse | null> {
+  async getOrderStatus(
+    marketId: string,
+    orderId: string,
+    signal?: AbortSignal,
+  ): Promise<OrderStatusResponse | null> {
     const response = await this.request(
       `/api/v1/${encodePathSegment(marketId)}/orders/${encodePathSegment(orderId)}`,
       { signal },
@@ -868,7 +872,9 @@ export class BitcasterEngineClient {
         detail,
         problem?.code,
         problem?.detail,
-        response.status === 429 ? parseRetryAfterHeader(response.headers.get('retry-after')) : undefined,
+        response.status === 429
+          ? parseRetryAfterHeader(response.headers.get('retry-after'))
+          : undefined,
       )
     }
     return response

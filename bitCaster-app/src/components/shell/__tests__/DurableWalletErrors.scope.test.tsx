@@ -35,7 +35,9 @@ it("hides old wallet alerts while the new wallet query is pending", async () => 
   mocks.scopeId = "scope-b";
   view.rerender(<DurableWalletErrors />);
   expect(screen.queryByRole("alert")).not.toBeInTheDocument();
-  expect(screen.queryByRole("button", { name: "Dismiss this wallet alert" })).not.toBeInTheDocument();
+  expect(
+    screen.queryByRole("button", { name: "Dismiss this wallet alert" }),
+  ).not.toBeInTheDocument();
 
   resolveNewPage(alertPage("scope-b"));
   expect(await screen.findByRole("alert")).toHaveTextContent("scope-b-operation");
@@ -45,11 +47,18 @@ it("hides old wallet alerts while the new wallet query is pending", async () => 
 
 function alertPage(scopeId: string) {
   return {
-    messages: [{
-      scopeId, operationId: `${scopeId}-operation`, revision: 1,
-      code: "recovery-pending", kind: "funds", status: "active",
-      observedAtMs: 10, acknowledgedAtMs: null,
-    }],
+    messages: [
+      {
+        scopeId,
+        operationId: `${scopeId}-operation`,
+        revision: 1,
+        code: "recovery-pending",
+        kind: "funds",
+        status: "active",
+        observedAtMs: 10,
+        acknowledgedAtMs: null,
+      },
+    ],
     nextCursor: null,
   };
 }

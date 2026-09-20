@@ -89,11 +89,13 @@ const common = {
 const TOKEN = "cashuBabc123";
 const TOKEN_SHA256 = bytesToHex(sha256(new TextEncoder().encode(TOKEN)));
 
-function begin(overrides: Partial<{
-  expectedPreviousTransferId: string | null;
-  newAttemptId: string;
-  requestedAmount: string;
-}> = {}) {
+function begin(
+  overrides: Partial<{
+    expectedPreviousTransferId: string | null;
+    newAttemptId: string;
+    requestedAmount: string;
+  }> = {},
+) {
   return {
     kind: "begin" as const,
     expectedPreviousTransferId: null,

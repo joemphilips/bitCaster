@@ -57,8 +57,14 @@ describe("pre-release browser reset", () => {
     ]);
     kormir.close();
 
-    localStorage.setItem("bitcaster-wallet", JSON.stringify({ state: { mnemonic: "legacy seed" } }));
-    localStorage.setItem("bitcaster-settings", JSON.stringify({ state: { nsecSecret: "legacy-nsec" } }));
+    localStorage.setItem(
+      "bitcaster-wallet",
+      JSON.stringify({ state: { mnemonic: "legacy seed" } }),
+    );
+    localStorage.setItem(
+      "bitcaster-settings",
+      JSON.stringify({ state: { nsecSecret: "legacy-nsec" } }),
+    );
     localStorage.setItem(
       "bitcaster.pendingLocalWalletPayments.v1",
       JSON.stringify([
@@ -110,7 +116,10 @@ describe("pre-release browser reset", () => {
       baseAsset: "sat",
       unit: "msat",
     });
-    localStorage.setItem("bitcaster-wallet", JSON.stringify({ state: { mnemonic: "current seed" } }));
+    localStorage.setItem(
+      "bitcaster-wallet",
+      JSON.stringify({ state: { mnemonic: "current seed" } }),
+    );
 
     expect(await resetPreReleaseBrowserState()).toBe(false);
     expect(await db.proofs.get("current-proof")).toMatchObject({ secret: "current-proof" });
@@ -120,7 +129,10 @@ describe("pre-release browser reset", () => {
   });
 
   it("keeps the epoch absent after a failed delete and retries before recovery can mount", async () => {
-    localStorage.setItem("bitcaster-wallet", JSON.stringify({ state: { mnemonic: "legacy seed" } }));
+    localStorage.setItem(
+      "bitcaster-wallet",
+      JSON.stringify({ state: { mnemonic: "legacy seed" } }),
+    );
     let failDelete = true;
     const deleteDatabase = vi.fn(async (databaseName: string) => {
       if (failDelete && databaseName === "kormir") throw new Error("injected delete failure");
@@ -134,7 +146,9 @@ describe("pre-release browser reset", () => {
       deleteDatabase,
     };
 
-    await expect(resetPreReleaseBrowserState(dependencies)).rejects.toThrow("injected delete failure");
+    await expect(resetPreReleaseBrowserState(dependencies)).rejects.toThrow(
+      "injected delete failure",
+    );
     expect(localStorage.getItem(PRE_RELEASE_BROWSER_RESET_EPOCH_KEY)).toBeNull();
     expect(localStorage.getItem("bitcaster-wallet")).not.toBeNull();
 

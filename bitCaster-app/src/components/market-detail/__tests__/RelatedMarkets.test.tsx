@@ -44,7 +44,12 @@ describe("RelatedMarkets", () => {
   it("uses the exact one-million denominator and never defaults missing divisibility", () => {
     const { rerender } = render(
       <RelatedMarkets
-        markets={[makeRelatedMarket({ currentOdds: { yes: 250_000, no: 750_000 }, divisibility: 1_000_000 })]}
+        markets={[
+          makeRelatedMarket({
+            currentOdds: { yes: 250_000, no: 750_000 },
+            divisibility: 1_000_000,
+          }),
+        ]}
       />,
     );
 
@@ -53,9 +58,7 @@ describe("RelatedMarkets", () => {
     expect(screen.queryByText("2500.0000%")).not.toBeInTheDocument();
 
     rerender(
-      <RelatedMarkets
-        markets={[makeRelatedMarket({ currentOdds: { yes: 2_500, no: 7_500 } })]}
-      />,
+      <RelatedMarkets markets={[makeRelatedMarket({ currentOdds: { yes: 2_500, no: 7_500 } })]} />,
     );
     expect(screen.getAllByText("—")).toHaveLength(2);
     expect(screen.getAllByLabelText("market.priceUnavailable")).toHaveLength(2);
