@@ -66,12 +66,7 @@ vi.mock("@/stores/proof-db", () => ({
       equals: vi.fn().mockReturnThis(),
     },
   },
-  getProofs: vi
-    .fn()
-    .mockResolvedValue([
-      { secret: "s1", amount: 100, mintUrl: "http://localhost:8085", id: "id1", C: "C1" },
-    ]),
-  getUnitProofs: vi
+  getCanonicalSelectableProofs: vi
     .fn()
     .mockResolvedValue([
       { secret: "s1", amount: 100, mintUrl: "http://localhost:8085", id: "id1", C: "C1" },
@@ -653,10 +648,9 @@ describe("useDepositWithdrawState", () => {
       expect(result.current.currentView).toBe("send-ecash");
     });
 
-    it("selects msat proofs when paying lightning", async () => {
+    it("lets the melt boundary select canonical msat proofs when paying lightning", async () => {
       const proofDb = await import("@/stores/proof-db");
       const cashu = await import("@/lib/cashu");
-      vi.mocked(proofDb.getUnitProofs).mockClear();
       vi.mocked(cashu.createMeltQuote).mockResolvedValueOnce({
         quote: "q1",
         amount: 1000,
@@ -679,7 +673,7 @@ describe("useDepositWithdrawState", () => {
         await result.current.onConfirmMelt();
       });
 
-      expect(proofDb.getUnitProofs).toHaveBeenCalledWith("http://localhost:8085", { unit: "msat" });
+      expect(proofDb.getCanonicalSelectableProofs).not.toHaveBeenCalled();
       expect(proofDb.addProofs).not.toHaveBeenCalled();
       expect(proofDb.removeProofs).not.toHaveBeenCalled();
       expect(result.current.currentView).toBe("success");
@@ -690,11 +684,7 @@ describe("useDepositWithdrawState", () => {
         amountSats: 1_000,
         baseAsset: "sat",
       });
-      expect(cashu.meltProofs).toHaveBeenCalledWith(
-        expect.any(Object),
-        expect.any(Array),
-        "http://localhost:8085",
-      );
+      expect(cashu.meltProofs).toHaveBeenCalledWith(expect.any(Object), "http://localhost:8085");
     });
   });
 });

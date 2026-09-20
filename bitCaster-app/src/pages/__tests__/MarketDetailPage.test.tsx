@@ -825,6 +825,124 @@ describe("MarketDetailPage live market status", () => {
     }
   });
 
+  it("recovers after 39 temporary detail failures without overlapping requests", async () => {
+    vi.useFakeTimers();
+    try {
+      let calls = 0;
+      vi.mocked(fetchMarketDetail).mockImplementation(() => {
+        calls += 1;
+        return calls <= 39
+          ? Promise.reject(new MarketDetailUnavailableError())
+          : Promise.resolve(yesNoMarket({ title: "Recovered market" }));
+      });
+      vi.mocked(fetchOrderBook).mockResolvedValue(emptyBook);
+
+      render(<MarketDetailPage />);
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(
+        screen.getByText("Market details are temporarily unavailable. Please try again later."),
+      ).toBeInTheDocument();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(78_000);
+      });
+
+      expect(screen.getByRole("heading", { name: "Recovered market" })).toBeInTheDocument();
+      expect(fetchMarketDetail).toHaveBeenCalledTimes(40);
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps manual Retry serial with an in-flight automatic retry", async () => {
+    vi.useFakeTimers();
+    try {
+      let resolveRetry!: (detail: MarketDetail) => void;
+      const pendingRetry = new Promise<MarketDetail>((resolve) => {
+        resolveRetry = resolve;
+      });
+      vi.mocked(fetchMarketDetail)
+        .mockRejectedValueOnce(new MarketDetailUnavailableError())
+        .mockImplementationOnce(() => pendingRetry);
+      vi.mocked(fetchOrderBook).mockResolvedValue(emptyBook);
+
+      render(<MarketDetailPage />);
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10_000);
+      });
+      expect(fetchMarketDetail).toHaveBeenCalledTimes(2);
+
+      fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+      fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+      expect(fetchMarketDetail).toHaveBeenCalledTimes(2);
+
+      await act(async () => {
+        resolveRetry(yesNoMarket({ title: "Recovered market", state: "open" }));
+        await Promise.resolve();
+      });
+      expect(screen.getByRole("heading", { name: "Recovered market" })).toBeInTheDocument();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2_000);
+      });
+      expect(fetchMarketDetail).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not start an automatic retry after its elapsed-time deadline", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.mocked(fetchMarketDetail).mockRejectedValue(new MarketDetailUnavailableError());
+      render(<MarketDetailPage />);
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(fetchMarketDetail).toHaveBeenCalledTimes(1);
+
+      vi.setSystemTime(Date.now() + 95_000);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2_000);
+      });
+      expect(fetchMarketDetail).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps the short retry bound for a permanent detail error", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.mocked(fetchMarketDetail).mockRejectedValue(new Error("market is missing"));
+      render(<MarketDetailPage />);
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(90_000);
+      });
+      expect(fetchMarketDetail).toHaveBeenCalledTimes(6);
+      expect(
+        screen.getByText("Failed to load market. Please check that the mint is running."),
+      ).toBeInTheDocument();
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
   it("does not retry a stale route after navigation", async () => {
     vi.useFakeTimers();
     try {

@@ -34,6 +34,7 @@ import {
   addProofs,
   addProofsIfMissing,
   DURABLE_BOLT11_MINT_QUOTE_OPERATION_METADATA_KEY,
+  getBoundedCanonicalRegularProofs,
   getProofOperation,
   getProofOperations,
   isWalletCounterRecoveryComplete,
@@ -1598,12 +1599,17 @@ export async function createMeltQuote(
 /** Melt proofs to pay a Lightning invoice. */
 export async function meltProofs(
   quote: MeltQuoteResponse,
-  proofs: Proof[],
   mintUrl?: string,
 ): Promise<{ paid: boolean; change: Proof[] }> {
   const context = captureBrowserMintPersistenceContext();
   const normalizedMintUrl = normalizeUrl(mintUrl ?? context.activeMintUrl);
   const wallet = await getWalletForMnemonicUnit(normalizedMintUrl, "msat", context.mnemonic);
+  const proofs = await getBoundedCanonicalRegularProofs(
+    normalizedMintUrl,
+    { scopeId: context.scopeId, unit: "msat" },
+    context.database,
+  );
+  context.requireCapturedProfile();
   const response = await meltBrowserDurableWallet({
     quote,
     mintUrl: normalizedMintUrl,

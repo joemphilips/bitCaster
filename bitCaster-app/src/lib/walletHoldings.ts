@@ -1,7 +1,12 @@
 import { buildTokenHoldings } from "@bitcaster/client-sdk/tradingClient";
 import { normalizeMarketBaseAsset } from "@bitcaster/client-sdk/marketUnits";
 import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
-import { getProofs, isCtfProof, type StoredProof } from "@/stores/proof-db";
+import { getCanonicalSelectableProofs, isCtfProof, type StoredProof } from "@/stores/proof-db";
+import {
+  activeBrowserWalletScopeId,
+  requireActiveBrowserWalletScopeId,
+} from "@/lib/browserWalletProfile";
+import { normalizeUrl } from "@/lib/url";
 
 export async function buildIndexedDbTokenHoldings(input: {
   mintUrl?: string;
@@ -12,8 +17,14 @@ export async function buildIndexedDbTokenHoldings(input: {
   const baseUnitProofs: Array<{ amount: number }> = [];
   const baseAsset = normalizeMarketBaseAsset(input.baseAsset);
 
-  const proofs = await getProofs(input.mintUrl);
+  const scopeId = requireActiveBrowserWalletScopeId();
+  const proofs = await getCanonicalSelectableProofs(scopeId);
+  if (activeBrowserWalletScopeId() !== scopeId)
+    throw new Error("The wallet profile changed during trade preflight");
+  if (proofs === null) throw new Error("Canonical wallet custody is unavailable");
+  const normalizedMint = input.mintUrl ? normalizeUrl(input.mintUrl) : undefined;
   for (const proof of proofs) {
+    if (normalizedMint && proof.mintUrl !== normalizedMint) continue;
     if (proofBaseAsset(proof) !== baseAsset) continue;
     if (isCtfProof(proof)) {
       if (proofConditionId(proof) !== input.conditionId) continue;

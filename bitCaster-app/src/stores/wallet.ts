@@ -21,10 +21,8 @@ import { handoffBrowserEncryptedWalletBackupV2Seed } from "@/lib/browserEncrypte
 import {
   activateBrowserWalletDatabase,
   db,
-  getProofs,
-  getUnitProofs,
+  getCanonicalSelectableProofs,
   isCtfProof,
-  type StoredProof,
 } from "./proof-db";
 import { createActiveBrowserWalletCounterSource } from "./browser-wallet-counter-db";
 import type { MintConnectionTestStatus } from "@/types/wallet";
@@ -420,9 +418,17 @@ export function useBalance(
   const mnemonic = useWalletStore((state) => state.mnemonic);
   const balance = useLiveQuery(
     async () => {
-      const proofs = await getProofs(normalized);
+      const scopeId = browserWalletScopeIdFromMnemonic(mnemonic);
+      if (scopeId === null) return 0;
+      const proofs = await getCanonicalSelectableProofs(scopeId);
+      if (proofs === null) throw new Error("Canonical wallet custody is unavailable");
       return proofs
-        .filter((p) => !isCtfProof(p) && normalizeMarketBaseAsset(p.baseAsset) === baseAsset)
+        .filter(
+          (p) =>
+            (!normalized || p.mintUrl === normalized) &&
+            !isCtfProof(p) &&
+            normalizeMarketBaseAsset(p.baseAsset) === baseAsset,
+        )
         .reduce((sum, p) => {
           const unit = parseCashuProofUnit(p.unit);
           return unit ? sum + cashuAmountToMarketSubunits(amountToNumber(p.amount), unit) : sum;
@@ -438,8 +444,7 @@ export async function getBalance(
   mintUrl?: string,
   options: { baseAsset?: MarketBaseAsset | string | null } = {},
 ): Promise<number> {
-  const proofs = await getUnitProofs(mintUrl, { unit: defaultCollateralUnit(options.baseAsset) });
-  return proofs.reduce((sum: number, p: StoredProof) => sum + amountToNumber(p.amount), 0);
+  return getExactUnitBalance(mintUrl, defaultCollateralUnit(options.baseAsset));
 }
 
 /** Read the spendable balance for one exact Cashu unit. */
@@ -447,8 +452,21 @@ export async function getExactUnitBalance(
   mintUrl: string | undefined,
   unit: string,
 ): Promise<number> {
-  const proofs = await getUnitProofs(mintUrl, { unit });
-  return proofs.reduce((sum: number, p: StoredProof) => sum + amountToNumber(p.amount), 0);
+  const scopeId = activeBrowserWalletScopeId();
+  if (scopeId === null) throw new Error("The wallet profile is unavailable");
+  const proofs = await getCanonicalSelectableProofs(scopeId);
+  if (proofs === null) throw new Error("Canonical wallet custody is unavailable");
+  const normalizedMint = mintUrl ? normalizeUrl(mintUrl) : undefined;
+  const exactUnit = parseCashuProofUnit(unit);
+  if (!exactUnit) throw new Error(`Unsupported Cashu proof unit '${unit}'`);
+  return proofs
+    .filter(
+      (proof) =>
+        (!normalizedMint || proof.mintUrl === normalizedMint) &&
+        !isCtfProof(proof) &&
+        proof.unit === exactUnit,
+    )
+    .reduce((sum, proof) => sum + amountToNumber(proof.amount), 0);
 }
 
 /**

@@ -19,7 +19,12 @@ import {
   type BrowserDurableWalletMeltContext,
   type BrowserDurableWalletMeltWallet,
 } from "../browserDurableWalletMelt";
-import { BitcasterDB, storedProofRow } from "../../stores/proof-db";
+import {
+  BitcasterDB,
+  getBoundedCanonicalRegularProofs,
+  getCanonicalSelectableProofs,
+  storedProofRow,
+} from "../../stores/proof-db";
 import { createBrowserCustodyProofRow } from "../../stores/durable-custody-db";
 import { createBrowserProofBackupAuthorityRow } from "../../stores/browser-proof-backup-authority";
 import { browserWalletScope } from "../browserCtfRangeOrderSource";
@@ -40,6 +45,68 @@ afterEach(async () => {
 });
 
 describe("browser durable wallet melt", () => {
+  it("selects a canonical successor when a retired predecessor remains in the legacy cache", async () => {
+    const database = createDatabase();
+    const predecessor = proofForOutput(
+      OutputData.createSingleData(1, KEYSET_ID, "retired-predecessor", 7n),
+    );
+    const successor = proofForOutput(
+      OutputData.createSingleData(1, KEYSET_ID, "selectable-successor", 11n),
+    );
+    await seedInput(database, predecessor);
+    const rolloverQuote = meltQuote("quote-rollover");
+    const rolloverWallet = meltWallet(meltPreview(rolloverQuote, predecessor, successor), {
+      state: "PAID",
+      change: [successor],
+    });
+    await meltBrowserDurableWallet({
+      quote: rolloverQuote,
+      mintUrl: MINT,
+      proofs: [predecessor],
+      wallet: rolloverWallet,
+      context: meltContext(database),
+    });
+    await database.proofs.put(
+      storedProofRow({ ...predecessor, mintUrl: MINT, baseAsset: "sat", unit: "msat" }),
+    );
+
+    const selected = await getBoundedCanonicalRegularProofs(
+      MINT,
+      { scopeId: browserWalletScope(SEED).scopeId, unit: "msat" },
+      database,
+    );
+    expect(selected.map(({ secret }) => secret)).toEqual([successor.secret]);
+    expect(
+      (await getCanonicalSelectableProofs(browserWalletScope(SEED).scopeId, database))?.map(
+        ({ secret }) => secret,
+      ),
+    ).toEqual([successor.secret]);
+    expect(await database.proofs.get(predecessor.secret)).toBeDefined();
+
+    const quote = meltQuote("quote-successor");
+    const wallet = meltWallet(meltPreview(quote, successor), { state: "PAID", change: [] });
+    await expect(
+      meltBrowserDurableWallet({
+        quote,
+        mintUrl: MINT,
+        proofs: [predecessor],
+        wallet,
+        context: meltContext(database),
+      }),
+    ).rejects.toThrow("browser wallet melt predecessor custody proof is foreign");
+    expect(wallet.prepareMelt).not.toHaveBeenCalled();
+    await expect(
+      meltBrowserDurableWallet({
+        quote,
+        mintUrl: MINT,
+        proofs: selected,
+        wallet,
+        context: meltContext(database),
+      }),
+    ).resolves.toMatchObject({ paid: true });
+    expect(wallet.prepareMelt).toHaveBeenCalledOnce();
+  });
+
   it("retires canonical inputs and admits only paid change", async () => {
     const database = createDatabase();
     const input = proofForOutput(OutputData.createSingleData(1, KEYSET_ID, "input", 7n));
@@ -102,7 +169,7 @@ describe("browser durable wallet melt", () => {
       meltBrowserDurableWallet({
         quote,
         mintUrl: MINT,
-        proofs: [input],
+        proofs: [],
         wallet,
         context: meltContext(database),
       }),

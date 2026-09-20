@@ -163,6 +163,14 @@ type MarketOrderBooksLoad = {
 const ORDER_BOOK_REFRESH_DEBOUNCE_MS = 500;
 const MARKET_DETAIL_RECONCILIATION_INTERVAL_MS = 2_000;
 const MARKET_DETAIL_RECOVERY_MAX_ATTEMPTS = 5;
+const MARKET_DETAIL_UNAVAILABLE_RECOVERY_MAX_ATTEMPTS = 45;
+const MARKET_DETAIL_UNAVAILABLE_RECOVERY_WINDOW_MS = 90_000;
+type MarketDetailLoadResult = "success" | "unavailable" | "other" | "stale";
+type MarketDetailRequest = {
+  routeId: string;
+  generation: number;
+  request: Promise<MarketDetailLoadResult>;
+};
 
 function isEngineMarketClosed(state: MarketDetailType["state"]): boolean {
   if (state == null) return false;
@@ -1133,6 +1141,7 @@ export function MarketDetailPage() {
   const activeRouteIdRef = useRef<string | null>(currentRouteId);
   const routeGenerationRef = useRef(0);
   const marketLoadRequestTokenRef = useRef(0);
+  const marketDetailRequestRef = useRef<MarketDetailRequest | null>(null);
   const previewMarketRevisionRef = useRef(0);
   // Update this during render so a promise that resolves between route render
   // and the route effect cannot write the previous condition into state.
@@ -1165,6 +1174,7 @@ export function MarketDetailPage() {
   );
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [detailUnavailable, setDetailUnavailable] = useState(false);
 
   // UI state
   const [chartTimeframe, setChartTimeframe] = useState<ChartTimeframe>("7d");
@@ -1244,23 +1254,34 @@ export function MarketDetailPage() {
 
   // Load market data
   const loadMarket = useCallback(
-    (options: { showLoading?: boolean } = {}) => {
+    (
+      options: { showLoading?: boolean; singleFlight?: boolean } = {},
+    ): Promise<MarketDetailLoadResult> => {
       const routeId = id;
-      if (!routeId) return;
+      if (!routeId) return Promise.resolve("stale");
       const generation = routeGenerationRef.current;
+      if (options.singleFlight) {
+        const inFlight = marketDetailRequestRef.current;
+        if (inFlight?.routeId === routeId && inFlight.generation === generation)
+          return inFlight.request;
+      }
       const requestToken = ++marketLoadRequestTokenRef.current;
       const isCurrentLoad = () =>
         isCurrentRoute(routeId, generation) && marketLoadRequestTokenRef.current === requestToken;
       const showLoading = options.showLoading ?? true;
       if (showLoading) setLoading(true);
-      if (showLoading) setError(null);
+      if (showLoading) {
+        setError(null);
+        setDetailUnavailable(false);
+      }
 
       let succeeded = false;
-      fetchMarketDetail(routeId)
-        .then((detail) => {
-          if (!isCurrentLoad() || detail.id !== routeId) return;
+      const request = fetchMarketDetail(routeId)
+        .then((detail): MarketDetailLoadResult => {
+          if (!isCurrentLoad() || detail.id !== routeId) return "stale";
           succeeded = true;
           setError(null);
+          setDetailUnavailable(false);
           dispatchMarketData({
             type: "marketSnapshotLoaded",
             detail,
@@ -1285,22 +1306,30 @@ export function MarketDetailPage() {
               replaceOutcomeSetIds: books.fetchedOutcomeSetIds,
             });
           });
+          return "success";
         })
-        .catch((error: unknown) => {
-          if (!isCurrentLoad()) return;
+        .catch((error: unknown): MarketDetailLoadResult => {
+          if (!isCurrentLoad()) return "stale";
+          const unavailable = error instanceof MarketDetailUnavailableError;
           // Optional reconciliation must never replace a valid page with a
           // fatal error. Its failure is intentionally best-effort.
           if (showLoading) {
             setError(
-              error instanceof MarketDetailUnavailableError
+              unavailable
                 ? t("market.detailsUnavailable")
                 : "Failed to load market. Please check that the mint is running.",
             );
+            setDetailUnavailable(unavailable);
           }
+          return unavailable ? "unavailable" : "other";
         })
         .finally(() => {
           if (isCurrentLoad() && (showLoading || succeeded)) setLoading(false);
+          if (marketDetailRequestRef.current?.request === request)
+            marketDetailRequestRef.current = null;
         });
+      if (options.singleFlight) marketDetailRequestRef.current = { routeId, generation, request };
+      return request;
     },
     [id, invalidatePreviewForMarket, isCurrentRoute, t],
   );
@@ -1340,6 +1369,7 @@ export function MarketDetailPage() {
 
     setLoading(true);
     setError(null);
+    setDetailUnavailable(false);
     // loadMarket reads the generation set above. Keep this local read to make
     // the intended route token explicit and prevent future refactors from
     // accidentally loading a previous route.
@@ -1360,12 +1390,27 @@ export function MarketDetailPage() {
     let cancelled = false;
     let attempts = 0;
     let timeoutId: number | null = null;
+    const maxAttempts = detailUnavailable
+      ? MARKET_DETAIL_UNAVAILABLE_RECOVERY_MAX_ATTEMPTS
+      : MARKET_DETAIL_RECOVERY_MAX_ATTEMPTS;
+    const deadline = Date.now() + MARKET_DETAIL_UNAVAILABLE_RECOVERY_WINDOW_MS;
 
-    const retry = () => {
+    const retry = async () => {
       if (cancelled || !isCurrentRoute(id, generation)) return;
+      if (detailUnavailable && Date.now() >= deadline) return;
       attempts += 1;
-      loadMarket({ showLoading: false });
-      if (attempts >= MARKET_DETAIL_RECOVERY_MAX_ATTEMPTS) return;
+      const result = await loadMarket({ showLoading: false, singleFlight: true });
+      if (
+        cancelled ||
+        !isCurrentRoute(id, generation) ||
+        result === "success" ||
+        result === "stale"
+      )
+        return;
+      if (detailUnavailable && result !== "unavailable") return;
+      if (attempts >= maxAttempts) return;
+      if (detailUnavailable && Date.now() + MARKET_DETAIL_RECONCILIATION_INTERVAL_MS > deadline)
+        return;
       timeoutId = window.setTimeout(retry, MARKET_DETAIL_RECONCILIATION_INTERVAL_MS);
     };
 
@@ -1374,7 +1419,7 @@ export function MarketDetailPage() {
       cancelled = true;
       if (timeoutId != null) window.clearTimeout(timeoutId);
     };
-  }, [error, id, isCurrentRoute, loadMarket, market, routeTransitioning]);
+  }, [detailUnavailable, error, id, isCurrentRoute, loadMarket, market, routeTransitioning]);
 
   // Secondary live close-detection: subscribe to MarketStatusChanged pushes
   // while this detail page is mounted and joined to at least one per-outcome
@@ -2675,7 +2720,7 @@ export function MarketDetailPage() {
       <div className="flex flex-col items-center justify-center min-h-[50vh] gap-4">
         <div className="text-red-400">{visibleError ?? "Market not found"}</div>
         <button
-          onClick={() => loadMarket()}
+          onClick={() => void loadMarket({ singleFlight: true })}
           className="px-4 py-2 bg-[#f7931a] text-black rounded-lg hover:bg-[#e8850f] transition-colors"
         >
           Retry

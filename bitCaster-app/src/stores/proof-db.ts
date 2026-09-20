@@ -874,6 +874,14 @@ export async function getCanonicalCurrentProofs(
   });
 }
 
+export async function getCanonicalSelectableProofs(
+  scopeId: string,
+  database: BitcasterDB = db,
+): Promise<StoredProof[] | null> {
+  const proofs = await getCanonicalCurrentProofs(scopeId, database);
+  return proofs?.filter((proof) => !proof.reservedBy && !proof.terminalOperationId) ?? null;
+}
+
 /** Converts one verified custody row to the Cashu proof shape used by readers. */
 export function storedProofFromCustodyRow(row: BrowserCustodyProofRow): StoredProof {
   const { proof: material } = decodeDurableCustodyProofMaterialRecord(row);
@@ -893,7 +901,7 @@ export function storedProofFromCustodyRow(row: BrowserCustodyProofRow): StoredPr
 /**
  * Return regular proofs grouped by base asset for UI display only.
  * WARNING: this may combine different Cashu units (for example sat + msat)
- * and is unsafe for spend/settlement operations. Use `getUnitProofs` there.
+ * and is unsafe for spend/settlement operations. Use canonical custody there.
  */
 export async function getBaseProofs(
   mintUrl: string | undefined,

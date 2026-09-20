@@ -319,30 +319,20 @@ describe("useWalletStore", () => {
   });
 
   describe("getExactUnitBalance", () => {
-    it("reads only proofs from the requested Cashu unit", async () => {
+    it("does not count a legacy proof without canonical custody", async () => {
+      useWalletStore.getState().generateMnemonic();
       const mintUrl = "http://exact-unit-balance.test";
-      await db.proofs.bulkPut([
-        {
-          secret: "exact-unit-sat",
-          amount: 7,
-          id: "sat-keyset",
-          C: "sat-C",
-          mintUrl,
-          baseAsset: "sat",
-          unit: "sat",
-        },
-        {
-          secret: "exact-unit-msat",
-          amount: 11,
-          id: "msat-keyset",
-          C: "msat-C",
-          mintUrl,
-          baseAsset: "sat",
-          unit: "msat",
-        },
-      ]);
+      await db.proofs.put({
+        secret: "retired-legacy-msat",
+        amount: 100,
+        id: KEYSET_ID,
+        C: "legacy-C",
+        mintUrl,
+        baseAsset: "sat",
+        unit: "msat",
+      });
 
-      await expect(getExactUnitBalance(mintUrl, "sat")).resolves.toBe(7);
+      await expect(getExactUnitBalance(mintUrl, "msat")).resolves.toBe(0);
     });
   });
 

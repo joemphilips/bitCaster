@@ -31,7 +31,8 @@ import {
   type IngressReceiveCashuTokenResult,
 } from "@/lib/walletOps";
 import { useToastStore } from "@/stores/toast";
-import { getUnitProofs, getProofs, isCtfProof } from "@/stores/proof-db";
+import { getCanonicalSelectableProofs, isCtfProof } from "@/stores/proof-db";
+import { browserWalletScopeIdFromMnemonic } from "@/lib/browserWalletProfile";
 import { usePaymentRequestInbox } from "@/stores/paymentRequestInbox";
 import { safeHostname } from "@/lib/url";
 import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
@@ -39,8 +40,6 @@ import {
   cashuAmountToMarketSubunits,
   defaultCollateralUnit,
   parseSatsToMsat,
-  parseCashuProofUnit,
-  type CashuProofUnit,
   type MarketBaseAsset,
 } from "@bitcaster/client-sdk/marketUnits";
 import { formatBtc } from "@/lib/format";
@@ -138,12 +137,15 @@ export function useDepositWithdrawState(
   const mintUrls = storeMints.map((m) => m.url);
   const balancesByMint = useLiveQuery(
     async () => {
-      const proofs = await getProofs();
+      const scopeId = browserWalletScopeIdFromMnemonic(walletMnemonic);
+      if (scopeId === null) return {};
+      const proofs = await getCanonicalSelectableProofs(scopeId);
+      if (proofs === null) throw new Error("Canonical wallet custody is unavailable");
       const map: Record<string, number> = {};
       for (const p of proofs.filter((proof) => !isCtfProof(proof))) {
-        const unit = requireCashuProofUnit(p.unit);
+        if (p.unit !== "msat") continue;
         map[p.mintUrl] =
-          (map[p.mintUrl] ?? 0) + cashuAmountToMarketSubunits(amountToNumber(p.amount), unit);
+          (map[p.mintUrl] ?? 0) + cashuAmountToMarketSubunits(amountToNumber(p.amount), "msat");
       }
       return map;
     },
@@ -635,8 +637,7 @@ export function useDepositWithdrawState(
     setMeltIsPaying(true);
     setError(null);
     try {
-      const proofs = await getUnitProofs(selectedMintId, { unit: "msat" });
-      const { paid } = await meltProofs(meltQuote, proofs, selectedMintId);
+      const { paid } = await meltProofs(meltQuote, selectedMintId);
 
       if (!paid) {
         setError("Payment failed");
@@ -805,12 +806,6 @@ export function useDepositWithdrawState(
     onBack,
     onClose,
   };
-}
-
-function requireCashuProofUnit(value: string | null | undefined): CashuProofUnit {
-  const unit = parseCashuProofUnit(value);
-  if (!unit) throw new Error(`Unsupported Cashu proof unit '${value ?? ""}'`);
-  return unit;
 }
 
 function parseDisplayAmountSats(value: string): number {
