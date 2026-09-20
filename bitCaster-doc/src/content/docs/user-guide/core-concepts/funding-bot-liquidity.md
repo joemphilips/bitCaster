@@ -67,9 +67,10 @@ the latest confirmed trade. Before the first trade, the app shows
 **No trades yet** or an em dash. The prices of orders available now can differ
 from the last trade price.
 
-**Bot Budget** shows accepted funding, not the money left in the bot or the
-amount you can trade now. Use the current trade preview to check whether your
-whole order can fill.
+**Total funding** shows all confirmed funding after receive fees. Each new
+payment adds to this total. Trading does not reduce it. It is not the money
+left in the bot or the amount you can trade now. Use the current trade preview
+to check whether your whole order can fill.
 
 ## Choose a budget
 

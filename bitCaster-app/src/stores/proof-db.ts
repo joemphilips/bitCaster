@@ -847,6 +847,50 @@ export async function getProofs(
 }
 
 /**
+ * Read the current browser custody proofs for a wallet scope.
+ *
+ * The legacy `proofs` table is a compatibility cache. It can retain a
+ * predecessor after an atomic send, so portfolio readers must use this
+ * canonical source when the custody tables are available. A missing custody
+ * table returns `null` instead of falling back to that cache.
+ */
+export async function getCanonicalCurrentProofs(
+  scopeId: string,
+  database: BitcasterDB = db,
+): Promise<StoredProof[] | null> {
+  if (database.custodyProofs === undefined) return null;
+  return database.transaction("r", [database.custodyProofs], async () => {
+    const [selectable, locked] = await Promise.all([
+      database.custodyProofs
+        .where("[scopeId+selectability]")
+        .equals([scopeId, "selectable"])
+        .toArray(),
+      database.custodyProofs.where("[scopeId+selectability]").equals([scopeId, "locked"]).toArray(),
+    ]);
+    return [...selectable, ...locked]
+      .map(decodeBrowserCustodyProofRow)
+      .filter((row) => row.scopeId === scopeId)
+      .map(storedProofFromCustodyRow);
+  });
+}
+
+/** Converts one verified custody row to the Cashu proof shape used by readers. */
+export function storedProofFromCustodyRow(row: BrowserCustodyProofRow): StoredProof {
+  const { proof: material } = decodeDurableCustodyProofMaterialRecord(row);
+  const proof = deserializeDurableCustodyProofArtifact({ schemaVersion: 1, ...material });
+  return {
+    ...proof,
+    mintUrl: row.normalizedMint,
+    baseAsset: row.baseAsset,
+    unit: row.unit,
+    receivedAt: row.receivedAtMs,
+    ...(row.conditionId === null ? {} : { conditionId: row.conditionId }),
+    ...(row.outcomeCollection === null ? {} : { outcomeCollection: row.outcomeCollection }),
+    ...(row.reservationOperationId === null ? {} : { reservedBy: row.reservationOperationId }),
+  };
+}
+
+/**
  * Return regular proofs grouped by base asset for UI display only.
  * WARNING: this may combine different Cashu units (for example sat + msat)
  * and is unsafe for spend/settlement operations. Use `getUnitProofs` there.

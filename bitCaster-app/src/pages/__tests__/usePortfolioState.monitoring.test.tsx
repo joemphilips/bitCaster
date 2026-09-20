@@ -15,6 +15,7 @@ const mocks = vi.hoisted(() => ({
   getPortfolio: vi.fn(),
   getAssetMonitoringAssets: vi.fn(),
   liveQueryCalls: 0,
+  localFundsState: "available" as "available" | "null" | "undefined",
 }));
 
 const monitoredConditionId = "b".repeat(64);
@@ -53,7 +54,13 @@ const localFund: Fund = {
 vi.mock("dexie-react-hooks", () => ({
   useLiveQuery: vi.fn(() => {
     mocks.liveQueryCalls += 1;
-    return mocks.liveQueryCalls % 2 === 1 ? [localPosition] : [localFund];
+    return mocks.liveQueryCalls % 2 === 1
+      ? [localPosition]
+      : mocks.localFundsState === "null"
+        ? null
+        : mocks.localFundsState === "undefined"
+          ? undefined
+          : [localFund];
   }),
 }));
 
@@ -206,6 +213,7 @@ describe("usePortfolioState monitoring facade", () => {
     mocks.getPortfolio.mockReset();
     mocks.getAssetMonitoringAssets.mockReset();
     mocks.liveQueryCalls = 0;
+    mocks.localFundsState = "available";
   });
 
   it("uses one portfolio request on first paint and no catalogue request", async () => {
@@ -536,6 +544,19 @@ describe("usePortfolioState monitoring facade", () => {
     expect(result.current.positions).toEqual([localPosition]);
     expect(result.current.funds).toEqual([localFund]);
   });
+
+  it.each(["null", "undefined"] as const)(
+    "marks totals unknown when canonical local custody is %s",
+    async (localFundsState) => {
+      mocks.localFundsState = localFundsState;
+      mocks.getPortfolio.mockRejectedValue(new Error("signer unavailable"));
+      const { result } = renderHook(() => usePortfolioState());
+
+      await waitFor(() => expect(result.current.monitoring.error).toBe("unavailable"));
+      expect(result.current.stats.totalValueKnown).toBe(false);
+      expect(result.current.stats.totalValueByUnit).toBeUndefined();
+    },
+  );
 
   it.each([
     ["byte-identical", (response: AssetMonitoringPortfolioResponse) => response.assets.assets[0]!],

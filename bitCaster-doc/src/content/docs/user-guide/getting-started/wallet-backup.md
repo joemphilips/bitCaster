@@ -62,6 +62,12 @@ uses user-approved asset, amount, condition, and activity metadata.
 Its secondary purpose is to help the web app identify an exact missing asset.
 The app can then make one bounded recovery attempt.
 
+The portfolio's Funds tab groups regular funds by mint and asset. It shows
+money in sats. Different mints remain separate. The portfolio refreshes after
+the service accepts a wallet update. An updating or unavailable value does
+not mean that funds are lost. Positions without a known price remain visible.
+Use the wallet's payment or trade flow to check which funds it can spend.
+
 ## Web app restore order
 
 When the web app needs proofs for one asset, it uses this order:

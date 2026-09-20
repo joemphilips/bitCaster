@@ -37,6 +37,8 @@ export interface AssetMonitoringReporterInput {
   readonly remote: AssetMonitoringReporterRemote
   readonly hasPendingSubmittedOrder: () => Promise<boolean>
   readonly isCurrent: () => boolean
+  /** Called after a report is accepted for the current client profile. */
+  readonly onAccepted?: () => void
   readonly createReportId?: () => string
   /** Overrides retry timing for a host that needs a shorter bounded delay. */
   readonly retryDelayMs?: (failureCount: number) => number
@@ -133,8 +135,7 @@ export class AssetMonitoringReporter {
     if (snapshot === this.#lastAcceptedSnapshot) return 'done'
     try {
       await this.#input.remote.submitAssetMonitoringReport(this.#request(canonicalHoldings, false))
-      this.#lastAcceptedSnapshot = snapshot
-      this.#failureCount = 0
+      this.#markAccepted(snapshot)
       return 'done'
     } catch (error) {
       if (!(error instanceof EngineClientError) || error.status !== 409) {
@@ -151,12 +152,17 @@ export class AssetMonitoringReporter {
     if (pendingOrder || !this.#isCurrentRevision(revision)) return 'done'
     try {
       await this.#input.remote.submitAssetMonitoringReport(this.#request(canonicalHoldings, true))
-      this.#lastAcceptedSnapshot = snapshot
-      this.#failureCount = 0
+      this.#markAccepted(snapshot)
     } catch (error) {
       return this.#isCurrentRevision(revision) && isTransientReportError(error) ? 'retry' : 'done'
     }
     return 'done'
+  }
+
+  #markAccepted(snapshot: string): void {
+    this.#lastAcceptedSnapshot = snapshot
+    this.#failureCount = 0
+    if (!this.#stopped && this.#input.isCurrent()) this.#input.onAccepted?.()
   }
 
   #scheduleRetry(): void {

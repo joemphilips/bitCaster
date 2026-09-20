@@ -23,10 +23,6 @@ import {
   deserializeDurableCustodyOutput,
   type DurableCustodyProofOperationInput,
 } from "@bitcaster/client-sdk/durableCustodyProofOperation";
-import {
-  deserializeDurableCustodyProofArtifact,
-  decodeDurableCustodyProofMaterialRecord,
-} from "@bitcaster/client-sdk/durableCustodyProofMaterial";
 import { locateSeedDerivedProofLineage } from "@bitcaster/client-sdk/durableSeedDerivedProofLineage";
 import { assertCanonicalNut02V2KeysetId } from "@bitcaster/client-sdk/durableSeedDerivedOutputs";
 import {
@@ -47,6 +43,7 @@ import {
 } from "../stores/durable-custody-db";
 import {
   db,
+  storedProofFromCustodyRow,
   type BitcasterDB,
   type BrowserOutgoingCashuTransferRow,
   type StoredProof,
@@ -436,7 +433,7 @@ export async function readBrowserCurrentCustodyProofPage(input: {
   input.context.requireCapturedProfile();
   const decoded = rows.map(decodeBrowserCustodyProofRow);
   decoded.forEach(({ unit }) => requireProductMsatUnit(unit));
-  const proofs = decoded.map(toLegacyProofRow);
+  const proofs = decoded.map(storedProofFromCustodyRow);
   const nextCursor = rows.length < RECOVERY_PAGE_LIMIT ? null : decoded.at(-1)!.proofId;
   return { proofs, nextCursor };
 }
@@ -920,21 +917,6 @@ function toLegacyProofs(proofs: readonly Proof[], mintUrl: string, unit: string)
     baseAsset: "sat",
     unit,
   }));
-}
-
-function toLegacyProofRow(row: ReturnType<typeof decodeBrowserCustodyProofRow>): StoredProof {
-  requireProductMsatUnit(row.unit);
-  const { proof: material } = decodeDurableCustodyProofMaterialRecord(row);
-  const proof = deserializeDurableCustodyProofArtifact({ schemaVersion: 1, ...material });
-  return {
-    ...proof,
-    mintUrl: row.normalizedMint,
-    baseAsset: row.baseAsset,
-    unit: row.unit,
-    ...(row.conditionId === null ? {} : { conditionId: row.conditionId }),
-    ...(row.outcomeCollection === null ? {} : { outcomeCollection: row.outcomeCollection }),
-    ...(row.reservationOperationId === null ? {} : { reservedBy: row.reservationOperationId }),
-  };
 }
 
 function requireProductMsatUnit(unit: unknown): asserts unit is "msat" {

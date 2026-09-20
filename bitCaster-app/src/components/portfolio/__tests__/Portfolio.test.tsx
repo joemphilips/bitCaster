@@ -245,11 +245,54 @@ describe("Portfolio", () => {
       expect(screen.getAllByText("Sats")).toHaveLength(2);
     });
 
+    it("renders funds as non-interactive list rows", async () => {
+      renderPortfolio();
+      await userEvent.click(screen.getByRole("tab", { name: /funds/i }));
+
+      expect(screen.getByRole("list", { name: "Funds" })).toBeInTheDocument();
+      const rows = screen.getAllByRole("listitem");
+      expect(rows).toHaveLength(2);
+      expect(rows.every((row) => row.querySelector("button") === null)).toBe(true);
+    });
+
     it("switches to activity tab", async () => {
       renderPortfolio();
       await userEvent.click(screen.getByRole("tab", { name: /activity/i }));
       // "Deposit" appears both as a button label and activity type label
       expect(screen.getAllByText("Deposit").length).toBeGreaterThanOrEqual(2);
+    });
+  });
+
+  describe("Monitoring status", () => {
+    it("shows updating and unavailable states without hiding unpriced positions", () => {
+      renderPortfolio({
+        positions: [
+          ...mockPositions,
+          {
+            ...mockPositions[0],
+            id: "unpriced-position",
+            marketTitle: "Unpriced position",
+            valueKnown: false,
+          },
+        ],
+        monitoring: {
+          stale: true,
+          incomplete: true,
+          building: true,
+          unvaluedAssetCount: 1,
+          hasPendingOutgoing: false,
+          pendingOutgoingValueMsat: null,
+          error: null,
+          assetPageError: null,
+          hasMoreAssets: false,
+          loadingMoreAssets: false,
+        },
+      });
+
+      expect(screen.getByText(/Portfolio monitoring: Updating/)).toBeInTheDocument();
+      expect(screen.getByText(/value\(s\) unavailable/)).toBeInTheDocument();
+      expect(screen.getByText("Unpriced position")).toBeInTheDocument();
+      expect(screen.queryByText(/stale|incomplete|building/)).not.toBeInTheDocument();
     });
   });
 

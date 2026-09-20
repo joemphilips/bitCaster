@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { buildPLChartData, computeStats } from "../usePortfolioState";
+import { Amount } from "@cashu/cashu-ts";
+import { buildLocalFunds, buildPLChartData, computeStats } from "../usePortfolioState";
 import type { ActivityItem, Fund, Position } from "@/types/portfolio";
+import type { StoredProof } from "@/stores/proof-db";
 
 const basePosition: Position = {
   id: "p",
@@ -117,5 +119,82 @@ describe("computeStats", () => {
     expect(stats.positionsValueKnown).toBe(false);
     expect(stats.totalValueKnown).toBe(false);
     expect(stats.biggestWinSats).toBe(0);
+  });
+});
+
+describe("buildLocalFunds", () => {
+  it("groups canonical msat regular proofs and excludes pending or incompatible proofs", () => {
+    const proof = (overrides: Partial<StoredProof> = {}): StoredProof => ({
+      id: "keyset",
+      amount: Amount.from(1_000),
+      secret: "secret",
+      C: "C",
+      mintUrl: "https://mint.example",
+      baseAsset: "sat",
+      unit: "msat",
+      ...overrides,
+    });
+
+    const funds = buildLocalFunds(
+      [
+        proof({ secret: "mint-one-a", amount: Amount.from(1_000) }),
+        proof({ secret: "mint-one-b", amount: Amount.from(2_000) }),
+        proof({
+          secret: "mint-two",
+          amount: Amount.from(4_000),
+          mintUrl: "https://other-mint.example",
+        }),
+        proof({ secret: "sat-proof", amount: Amount.from(5_000), unit: "sat" }),
+        proof({ secret: "reserved-proof", amount: Amount.from(7_000), reservedBy: "pending" }),
+        proof({
+          secret: "ctf-proof",
+          amount: Amount.from(11_000),
+          conditionId: "condition",
+          outcomeCollection: "YES",
+        }),
+        proof({
+          secret: "terminal-proof",
+          amount: Amount.from(13_000),
+          terminalOperationId: "terminal-operation",
+        }),
+      ],
+      [
+        { url: "https://mint.example", info: { name: "Example Mint" } },
+        { url: "https://other-mint.example", info: { name: "Other Mint" } },
+      ],
+    );
+
+    expect(funds).toEqual([
+      {
+        id: "https://mint.example:msat:sat",
+        unit: "sats",
+        amount: 3_000,
+        mintUrl: "https://mint.example",
+        mintName: "Example Mint",
+      },
+      {
+        id: "https://other-mint.example:msat:sat",
+        unit: "sats",
+        amount: 4_000,
+        mintUrl: "https://other-mint.example",
+        mintName: "Other Mint",
+      },
+    ]);
+  });
+
+  it("preserves the unsupported-unit failure for malformed stored proofs", () => {
+    const proof: StoredProof = {
+      id: "keyset",
+      amount: Amount.from(1_000),
+      secret: "malformed",
+      C: "C",
+      mintUrl: "https://mint.example",
+      baseAsset: "sat",
+      unit: "unknown" as never,
+    };
+
+    expect(() => buildLocalFunds([proof], [])).toThrow(
+      "Stored proof has unsupported unit 'unknown'",
+    );
   });
 });

@@ -132,8 +132,9 @@ below it, with the best prices closest to the spread. Each row combines price,
 cumulative depth, and visual thickness. Longer bars mean more cumulative
 liquidity available at that price or better, normalized across both sides so
 you can compare bid and ask depth at a glance. Market cards and detail pages
-show **Bot Budget** for post-creation funded AMM markets; additional accepted
-funding can increase it. It is not a live order-book liquidity number.
+show **Total funding** after receive fees for funded markets. New confirmed
+payments increase it. Trades do not reduce it. It is not current order-book
+liquidity.
 
 Trade comments are optional and public inside bitCaster. A comment is shown only after the attached order produces a settled trade, so the comment feed is limited to verified traders for that market. P20 comments are not published to public Nostr relays.
 

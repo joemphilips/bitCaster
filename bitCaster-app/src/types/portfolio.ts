@@ -283,9 +283,6 @@ export interface PortfolioProps {
   /** Called when user removes a losing closed CTF position from local wallet state */
   onDiscardLostPosition?: (positionId: string) => void;
 
-  /** Called when user clicks to view a fund */
-  onViewFund?: (fundId: string) => void;
-
   /** Called when user opens Settings */
   onOpenSettings?: () => void;
 

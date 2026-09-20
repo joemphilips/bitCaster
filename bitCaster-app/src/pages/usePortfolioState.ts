@@ -1,6 +1,13 @@
 import { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import { useLiveQuery } from "dexie-react-hooks";
-import { getProofs, isCtfProof } from "@/stores/proof-db";
+import {
+  db,
+  getCanonicalCurrentProofs,
+  getProofs,
+  isCtfProof,
+  type BitcasterDB,
+  type StoredProof,
+} from "@/stores/proof-db";
 import { useWalletStore } from "@/stores/wallet";
 import { useSettingsStore } from "@/stores/settings";
 import { useActivityLogStore } from "@/stores/activity-log";
@@ -10,7 +17,11 @@ import {
   type MarketCatalogueEntry,
   type MarketCatalogueResponse,
 } from "@/lib/markets";
-import { browserWalletIdFromMnemonic } from "@/lib/browserWalletProfile";
+import {
+  activeBrowserWalletScopeId,
+  browserWalletIdFromMnemonic,
+  browserWalletScopeIdFromMnemonic,
+} from "@/lib/browserWalletProfile";
 import {
   cashuAmountToMarketSubunits,
   normalizeMarketBaseAsset,
@@ -320,6 +331,66 @@ function monitoringPosition(asset: AssetMonitoringAssetResponse): Position | nul
     acquiredDate: "",
     mintUrl: asset.asset.canonicalMintUrl,
   };
+}
+
+type LocalFundMint = { readonly url: string; readonly info?: Record<string, unknown> };
+
+/** Groups canonical, spendable product proofs for the read-only Funds view. */
+export function buildLocalFunds(
+  proofs: readonly StoredProof[],
+  mints: readonly LocalFundMint[],
+): (Fund & { mintName: string })[] {
+  const balanceByMintAndAsset = new Map<
+    string,
+    { mintUrl: string; baseAsset: MarketBaseAsset; unit: "msat"; amount: number }
+  >();
+  for (const proof of proofs) {
+    const unit = parseCashuProofUnit(proof.unit);
+    if (!unit) {
+      throw new Error(`Stored proof has unsupported unit '${String(proof.unit)}'`);
+    }
+    if (
+      isCtfProof(proof) ||
+      proof.reservedBy !== undefined ||
+      proof.terminalOperationId !== undefined ||
+      unit !== "msat"
+    )
+      continue;
+    // Canonical custody rows carry the normalized mint and product asset
+    // metadata before this helper runs. Product regular assets are msat
+    // displayed as sats.
+    if (proof.baseAsset !== "sat") continue;
+    const key = `${proof.mintUrl}:msat:sat`;
+    const current = balanceByMintAndAsset.get(key);
+    balanceByMintAndAsset.set(key, {
+      mintUrl: proof.mintUrl,
+      baseAsset: "sat",
+      unit: "msat",
+      amount:
+        (current?.amount ?? 0) + cashuAmountToMarketSubunits(amountToNumber(proof.amount), "msat"),
+    });
+  }
+  return [...balanceByMintAndAsset.values()].map(({ mintUrl, baseAsset, unit, amount }) => {
+    const mintInfo = mints.find((mint) => mint.url === mintUrl);
+    const name = mintInfo?.info?.name;
+    return {
+      id: `${mintUrl}:${unit}:${baseAsset}`,
+      unit: "sats" as const,
+      amount,
+      mintUrl,
+      mintName: typeof name === "string" ? name : safeHostname(mintUrl),
+    };
+  });
+}
+
+/** Reads the canonical spendable source used by the local Funds fallback. */
+export async function readCanonicalLocalFunds(
+  scopeId: string,
+  mints: readonly LocalFundMint[],
+  database: BitcasterDB = db,
+): Promise<(Fund & { mintName: string })[] | null> {
+  const proofs = await getCanonicalCurrentProofs(scopeId, database);
+  return proofs === null ? null : buildLocalFunds(proofs, mints);
 }
 
 export function mergeMonitoringPositions(
@@ -774,40 +845,15 @@ export function usePortfolioState(): PortfolioState & {
   const positions: Position[] = positionsFromDb ?? [];
   const fundsFromDb = useLiveQuery(
     async () => {
-      const proofs = await getProofs();
-      const balanceByMintAndUnit: Record<
-        string,
-        { mintUrl: string; baseAsset: MarketBaseAsset; amount: number }
-      > = {};
-      for (const p of proofs.filter((proof) => !isCtfProof(proof))) {
-        const baseAsset = normalizeMarketBaseAsset(p.baseAsset);
-        const unit = parseCashuProofUnit(p.unit);
-        if (!unit) throw new Error(`Stored proof has unsupported unit '${String(p.unit)}'`);
-        const key = `${p.mintUrl}:${baseAsset}`;
-        const current = balanceByMintAndUnit[key];
-        balanceByMintAndUnit[key] = {
-          mintUrl: p.mintUrl,
-          baseAsset,
-          amount:
-            (current?.amount ?? 0) + cashuAmountToMarketSubunits(amountToNumber(p.amount), unit),
-        };
-      }
-      return Object.values(balanceByMintAndUnit).map(({ mintUrl, baseAsset, amount }) => {
-        const mintInfo = storeMints.find((m) => m.url === mintUrl);
-        const name = (mintInfo?.info as Record<string, unknown>)?.name as string | undefined;
-        return {
-          id: `${mintUrl}:${baseAsset}`,
-          unit: "sats" as const,
-          amount,
-          mintUrl,
-          mintName: name ?? safeHostname(mintUrl),
-        };
-      });
+      const scopeId = browserWalletScopeIdFromMnemonic(walletMnemonic);
+      if (scopeId === null || activeBrowserWalletScopeId() !== scopeId) return undefined;
+      return readCanonicalLocalFunds(scopeId, storeMints);
     },
     [storeMints, walletMnemonic],
-    [] as (Fund & { mintName: string })[],
+    undefined as (Fund & { mintName: string })[] | null | undefined,
   );
-  const localFunds: Fund[] = fundsFromDb;
+  const localFunds: Fund[] = fundsFromDb ?? [];
+  const localFundsUnavailable = fundsFromDb == null;
   const localStats = useMemo(() => computeStats(positions, localFunds), [positions, localFunds]);
   const visibleMonitoring =
     monitoringResponse?.key === monitoringKey && visibleAssets
@@ -821,7 +867,11 @@ export function usePortfolioState(): PortfolioState & {
         })
       : null;
   const funds = visibleMonitoring?.funds ?? localFunds;
-  const stats = visibleMonitoring?.stats ?? localStats;
+  const stats = visibleMonitoring?.stats
+    ? visibleMonitoring.stats
+    : localFundsUnavailable
+      ? { ...localStats, totalValueKnown: false, totalValueByUnit: undefined }
+      : localStats;
   const visiblePositions = visibleMonitoring
     ? mergeMonitoringPositions(visibleMonitoring.positions, positions)
     : positions;
@@ -837,7 +887,7 @@ export function usePortfolioState(): PortfolioState & {
     unvaluedAssetCount: visibleMonitoring?.monitoring.unvaluedAssetCount ?? 0,
     hasPendingOutgoing: visibleMonitoring?.monitoring.hasPendingOutgoing ?? false,
     pendingOutgoingValueMsat: visibleMonitoring?.monitoring.pendingOutgoingValueMsat ?? null,
-    error: monitoringError,
+    error: monitoringError ?? (!visibleMonitoring && localFundsUnavailable ? "unavailable" : null),
     assetPageError: visibleAssetPageError ? "unavailable" : null,
     hasMoreAssets: visibleAssets?.nextCursor != null,
     loadingMoreAssets: visibleAssets !== null && loadingMoreAssets,

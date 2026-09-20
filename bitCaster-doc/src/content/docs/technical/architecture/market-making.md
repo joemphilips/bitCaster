@@ -79,9 +79,10 @@ fields remain part of the protocol, but the current product admits only `sat` an
 
 The funding deposit is committed to market-making for that market. It does not
 create a depositor withdrawal claim, residual claim, probability-bearing
-position, or profit-share claim. Market cards and detail pages display accepted
-bot funding as **Bot Budget**. Additional accepted payments can increase this
-total. Bot Budget is not live order-book liquidity or remaining bot inventory.
+position, or profit-share claim. Market cards and detail pages display confirmed
+bot funding after receive fees as **Total funding**. New confirmed payments
+increase this total. Trades do not reduce it. Total funding is not live
+order-book liquidity or remaining bot inventory.
 
 Funding does not establish a public market price. The latest confirmed trade is
 the public price authority. Before the first confirmed trade, the market has no

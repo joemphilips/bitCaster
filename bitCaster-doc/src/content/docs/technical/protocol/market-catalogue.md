@@ -11,12 +11,12 @@ The catalogue exposes lifetime/display metrics for market cards and discovery pa
 
 | Field | Type | Meaning |
 | --- | --- | --- |
-| `ammBotBudgetSubunits` | `int64` | Total confirmed post-creation funding assigned to the automated market-making bot, denominated in msat. This is the value clients display as **Bot Budget**. Additional accepted payments can increase it. It is not live order-book liquidity, remaining bot inventory, a depositor position, or a withdrawable balance. |
+| `ammBotBudgetSubunits` | `int64` | Total confirmed post-creation funding after receive fees, in msat. Clients display it as **Total funding**. New confirmed payments increase it. Trades do not reduce it. It is not current order-book liquidity, remaining bot inventory, a depositor position, or a withdrawable balance. |
 | `liquiditySubunits` | `int64` | Total face amount of currently resting orders across the market's order books, denominated in msat. |
 | `traderCount` | `int32` | Number of distinct traders that have settled a trade in this market. |
 | `volumeLifetimeSubunits` | `int64` | Cumulative settled collateral face amount of all fills in the market's history, in collateral subunits. |
 
-The response also includes `volume24hSubunits` and `volume30dSubunits` for rolling-volume views and sort dimensions. Clients should use `volumeLifetimeSubunits`, `ammBotBudgetSubunits`, and `traderCount` when rendering the visible Volume, Bot Budget, and Traders metrics for a market. `liquiditySubunits` remains a resting-order summary field for clients that need it, but it should not be labeled as the bot budget.
+The response also includes `volume24hSubunits` and `volume30dSubunits` for rolling-volume views and sorting. Use `volumeLifetimeSubunits`, `ammBotBudgetSubunits`, and `traderCount` to show Volume, Total funding, and Traders. `liquiditySubunits` summarizes resting orders. Do not label it as Total funding.
 
 The `latestConfirmedTrades` array is the public market-price authority. It
 contains the bounded latest confirmed execution for each primitive outcome and

@@ -11,12 +11,12 @@ sidebar:
 
 | フィールド | 型 | 意味 |
 | --- | --- | --- |
-| `ammBotBudgetSubunits` | `int64` | 作成後に自動マーケットメイキングBotへ割り当てられた承認済み資金の合計。単位はmsatです。クライアントはこの値を **Bot Budget** として表示します。後続の承認済み入金で増加することがあります。ライブの注文板流動性、Botの残り在庫、入金者のポジション、引き出し可能な残高ではありません。 |
+| `ammBotBudgetSubunits` | `int64` | 受取手数料を差し引いた、作成後の確定済み資金提供の合計。単位はmsatです。クライアントは **資金提供総額** として表示します。新しい支払いが確定すると増えます。取引では減りません。現在の注文板流動性、Botの残り在庫、入金者のポジション、引き出し可能な残高ではありません。 |
 | `liquiditySubunits` | `int64` | そのマーケットの注文板に現在残っている注文の額面合計。単位はmsatです。 |
 | `traderCount` | `int32` | そのマーケットで約定済み取引を決済した重複なしのトレーダー数。 |
 | `volumeLifetimeSubunits` | `int64` | そのマーケットの履歴全体における全約定の決済済み担保額面の累計。単位は担保サブユニット。 |
 
-レスポンスには、ローリング出来高やソート用の `volume24hSubunits` と `volume30dSubunits` も含まれます。クライアントがマーケットの Volume、Bot Budget、Traders 指標を表示する場合は、`volumeLifetimeSubunits`、`ammBotBudgetSubunits`、`traderCount` を使ってください。`liquiditySubunits` は、それを必要とするクライアント向けの残存注文サマリとして残りますが、Bot Budgetとして表示すべきではありません。
+レスポンスには、ローリング出来高やソート用の `volume24hSubunits` と `volume30dSubunits` も含まれます。Volume、資金提供総額、Traders の表示には、`volumeLifetimeSubunits`、`ammBotBudgetSubunits`、`traderCount` を使ってください。`liquiditySubunits` は残存注文のサマリです。資金提供総額として表示しないでください。
 
 `latestConfirmedTrades` 配列が公開マーケット価格の正です。各プリミティブアウトカムの最新の承認済み約定を一定数まで含み、正規のプリミティブアウトカムID順に並びます。取引されていないアウトカムは含まれません。空の配列は承認済み取引がないことを示すため、マーケットに公開価格はありません。クライアントは `No trades yet` または em dash を表示します。登録値、資金提供額、均一な初期値、Bid/Askのミッドポイントをマーケット価格に使わないでください。ミッドポイントは注文入力の参考値にすぎません。
 
