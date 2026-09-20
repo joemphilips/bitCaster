@@ -6,12 +6,23 @@ import {
   createEncryptedWalletBackupV2AssetIdentity,
   decryptEncryptedWalletBackupV2ProofSetBundle,
   encryptedWalletBackupV2LocalAssetKey,
+  issueEncryptedWalletBackupV2TerminalSeal,
   prepareEncryptedWalletBackupV2ProofSetBundle,
   requireEncryptedWalletBackupV2VerifiedProofSet,
   verifyEncryptedWalletBackupV2RestoredProofSet,
   type EncryptedWalletBackupV2RestoreVerificationPort,
   type EncryptedWalletBackupV2ProofSetProof,
 } from '../src/encryptedWalletBackupV2ProofSet.ts'
+import {
+  createDurableCustodyArtifactReference,
+  createDurableProofOperationFacts,
+  deriveDurableCustodyScopeId,
+  deriveDurableCustodyWalletId,
+  prepareDurableCustodyExactArtifact,
+  type DurableCustodyRecord,
+} from '../src/durableCustody.ts'
+import { createDurableCustodyProofOperation } from '../src/durableCustodyProofOperationRecord.ts'
+import { serializeDurableCustodyProofInput } from '../src/durableCustodyProofOperation.ts'
 import {
   prepareEncryptedWalletBackupV2TransportBundle,
   type EncryptedWalletBackupV2BundleRuntime,
@@ -441,6 +452,150 @@ test('v2 restored proof verifier requires an exact all-unspent NUT-07 result', a
   }
 })
 
+test('v2 sealed losing CTF restores complete and non-selectable without mint access', async () => {
+  const entry = proof(0, ctfAsset(), true)
+  const committed = committedTerminalStore(entry, 'redeem:sealed-losing')
+  const seal = await issueEncryptedWalletBackupV2TerminalSeal({
+    seed: SEED,
+    proof: entry,
+    operationId: committed.operationId,
+    store: committed.store,
+  })
+  assert.equal(seal.code, 13015)
+  assert.equal(seal.operationIdDigest.length, 64)
+  assert.equal(seal.requestDigest.length, 64)
+  assert.equal(seal.proofCommitment.length, 64)
+  const input = await restored([{ ...entry, terminalSeal: seal }])
+  const unavailable: EncryptedWalletBackupV2RestoreVerificationPort = {
+    resolveKeyset: async () => {
+      throw new Error('mint unavailable')
+    },
+    verifyProofs: () => {
+      throw new Error('mint unavailable')
+    },
+    checkProofStates: async () => {
+      throw new Error('mint unavailable')
+    },
+  }
+  const verified = await verifyEncryptedWalletBackupV2RestoredProofSet({
+    ...input,
+    port: unavailable,
+  })
+  assert.equal(verified.proofs[0]!.selectionAuthority, 'terminal-sealed-non-selectable')
+  assert.equal(verified.proofs[0]!.proof.secret, entry.proof.secret)
+  assert.equal(verified.proofs[0]!.terminalSeal?.requestDigest, seal.requestDigest)
+  ;(input.unverified.proofs[0]!.terminalSeal as { classifiedAtMs: number }).classifiedAtMs = 1
+  await assert.rejects(
+    () => verifyEncryptedWalletBackupV2RestoredProofSet({ ...input, port: unavailable }),
+    /exact authenticated decrypted material/,
+  )
+  await assert.rejects(
+    () =>
+      verifyEncryptedWalletBackupV2RestoredProofSet({
+        ...input,
+        unverified: { ...input.unverified },
+        port: unavailable,
+      }),
+    /authenticated decrypted material/,
+  )
+})
+
+test('v2 terminal seal rejects forged, missing, and foreign authority', async () => {
+  const entry = proof(0, ctfAsset(), true)
+  const committed = committedTerminalStore(entry, 'redeem:terminal-guards')
+  const seal = await issueEncryptedWalletBackupV2TerminalSeal({
+    seed: SEED,
+    proof: entry,
+    operationId: committed.operationId,
+    store: committed.store,
+  })
+  const keyHandle = await handle()
+  for (const terminalSeal of [
+    { ...seal },
+    { ...seal, code: 13016 as 13015 },
+    { ...seal, requestDigest: '00'.repeat(32) },
+  ]) {
+    await assert.rejects(
+      () => prepareWithRuntime(keyHandle, [{ ...entry, terminalSeal }], [counter(1)], webcrypto),
+      /terminal seal/,
+    )
+  }
+  await assert.rejects(
+    () =>
+      prepareWithRuntime(
+        keyHandle,
+        [{ ...proof(1, ctfAsset(), true), terminalSeal: seal }],
+        [counter(2)],
+        webcrypto,
+      ),
+    /terminal seal proof binding/,
+  )
+  await assert.rejects(
+    () =>
+      issueEncryptedWalletBackupV2TerminalSeal({
+        seed: SEED,
+        proof: proof(1, ctfAsset(), true),
+        operationId: committed.operationId,
+        store: committed.store,
+      }),
+    /terminal seal operation is foreign/,
+  )
+  const active = await restored([entry])
+  await assert.rejects(
+    () =>
+      verifyEncryptedWalletBackupV2RestoredProofSet({
+        ...active,
+        port: {
+          ...active.port,
+          resolveKeyset: async () => {
+            throw new Error('mint unavailable')
+          },
+        },
+      }),
+    /mint unavailable/,
+  )
+})
+
+test('v2 proof-set rejects the old V1 payload instead of silently falling back', async () => {
+  const entry = proof(0, { kind: 'ordinary' })
+  const keyHandle = await handle()
+  const prepared = await prepareEncryptedWalletBackupV2TransportBundle({
+    keyHandle,
+    asset: proofSetAsset(entry),
+    declaredAmount: 1n,
+    custodyRevision: 1n,
+    canonicalPayload: proofSetPayload([entry], [counter(1)], 1),
+    runtime: webcrypto,
+  })
+  await assert.rejects(() => restore(keyHandle, prepared), /proof set CBOR is invalid/)
+})
+
+test('v2 proof-set rejects an unknown terminal seal version in authenticated ciphertext', async () => {
+  const entry = proof(0, ctfAsset(), true)
+  const seal = {
+    schemaVersion: 2 as 1,
+    kind: 'ctf-verified-losing' as const,
+    operationIdDigest: '11'.repeat(32),
+    requestDigest: '22'.repeat(32),
+    code: 13015 as const,
+    classifiedAtMs: 1_700_000_000_000,
+    proofCommitment: '33'.repeat(32),
+  }
+  const keyHandle = await handle()
+  const prepared = await prepareEncryptedWalletBackupV2TransportBundle({
+    keyHandle,
+    asset: proofSetAsset(entry),
+    declaredAmount: 1n,
+    custodyRevision: 1n,
+    canonicalPayload: proofSetPayload([{ ...entry, terminalSeal: seal }], [counter(1)]),
+    runtime: webcrypto,
+  })
+  await assert.rejects(
+    () => restore(keyHandle, prepared, proofSetAsset(entry)),
+    /terminal seal is invalid/,
+  )
+})
+
 async function restored(proofs: readonly EncryptedWalletBackupV2ProofSetProof[]) {
   const keyHandle = await handle()
   const asset = proofSetAsset(proofs[0]!)
@@ -465,6 +620,105 @@ async function restored(proofs: readonly EncryptedWalletBackupV2ProofSetProof[])
       ...prepared,
     }),
     port: verificationPort(),
+  }
+}
+
+function committedTerminalStore(entry: EncryptedWalletBackupV2ProofSetProof, operationId: string) {
+  const scopeInput = { scopeKind: 'wallet' as const, walletId: deriveDurableCustodyWalletId(SEED) }
+  const scope = { ...scopeInput, scopeId: deriveDurableCustodyScopeId(scopeInput) }
+  const operation = {
+    operationId,
+    kind: 'ctf-redeem' as const,
+    mintUrl: MINT,
+    inputs: [serializeDurableCustodyProofInput(entry.proof)],
+    outputs: {},
+    metadata: { unit: 'sat' },
+  }
+  const requestBody = prepareDurableCustodyExactArtifact(operation)
+  const output = prepareDurableCustodyExactArtifact(operation.outputs)
+  const privateMaterial = prepareDurableCustodyExactArtifact(operation)
+  const facts = createDurableProofOperationFacts({
+    unit: 'sat',
+    binding: { kind: 'wallet', activityId: operationId, stage: 'ctf-redeem' },
+    horizon: { notBeforeMs: null, notAfterMs: null, safetyMarginMs: 0 },
+    hasOutputs: false,
+    inputKeysetRequirement: 'required',
+    keysets: [
+      {
+        keysetId: KEYSET,
+        unit: 'sat',
+        curve: 'secp256k1',
+        publicKeys: { '1': '02194603ffa36356f4a56b7df9371fc3192472351453ec7398b8da8117e7c3e104' },
+        keysetExpiryMs: null,
+        requireDleq: true,
+        usedByInputs: true,
+        usedByOutputs: false,
+      },
+    ],
+  })
+  const initial = createDurableCustodyProofOperation({
+    scope,
+    operation,
+    facts,
+    inventoryAccountId: null,
+    exactBoundary: {
+      method: 'POST',
+      path: '/v1/redeem_outcome',
+      idempotencyKey: operationId,
+      requestBody,
+      output,
+      privateMaterial,
+    },
+  })
+  const authority = {
+    schemaVersion: 1,
+    kind: 'authenticated-terminal-mint-rejection',
+    operationId: initial.operation.operationId,
+    semanticKind: 'ctf-redeem',
+    normalizedMint: MINT,
+    requestFingerprint: initial.operation.exactRequest.requestFingerprint,
+    code: 13015,
+    transportProvenance: 'authenticated-mint-transport',
+    transportOperationId: operationId,
+    rejectionBody: { code: 13015 },
+    predecessorDisposition: 'retain',
+    selectedSuccessorProofIds: [],
+  }
+  const exactRejection = prepareDurableCustodyExactArtifact(authority)
+  const record: DurableCustodyRecord = {
+    ...initial,
+    operation: {
+      ...initial.operation,
+      state: 'aborted',
+      terminalMintRejection: {
+        kind: 'authenticated-terminal-mint-rejection',
+        code: 13015,
+        rejectionHandle: `mint-terminal-rejection:${exactRejection.fingerprint}`,
+        rejectionFingerprint: exactRejection.fingerprint,
+        exactRejection: createDurableCustodyArtifactReference(
+          `artifact:${operationId}:terminal-mint-rejection`,
+          exactRejection,
+        ),
+        predecessorDisposition: 'retain',
+        selectedSuccessorProofIds: [],
+      },
+    },
+  }
+  return {
+    operationId: initial.operation.operationId,
+    store: {
+      async withCommittedTerminalRejection<T>(
+        requestedId: string,
+        read: (value: {
+          record: DurableCustodyRecord
+          exactRejection: typeof exactRejection
+          classifiedAtMs: number
+        }) => T,
+      ): Promise<T> {
+        assert.equal(requestedId, initial.operation.operationId)
+        return read({ record, exactRejection, classifiedAtMs: 1_700_000_000_000 })
+      },
+    },
   }
 }
 
@@ -584,9 +838,10 @@ function counter(nextCounter: number) {
 function proofSetPayload(
   proofs: readonly EncryptedWalletBackupV2ProofSetProof[],
   counters: readonly { mintUrl: string; unit: 'sat'; keysetId: string; nextCounter: number }[],
+  version = 2,
 ): Uint8Array {
   return encodeCanonicalBackupCbor([
-    1,
+    version,
     'encrypted-wallet-backup-v2-proof-set',
     proofs.map((entry) => [
       entry.mintUrl,
@@ -603,6 +858,21 @@ function proofSetPayload(
           ],
       serializeDurableCustodyProofArtifact(entry.proof),
       encodeDurableWalletProofDerivationLocatorCbor(entry.locator),
+      ...(version === 1
+        ? []
+        : [
+            entry.terminalSeal === undefined
+              ? null
+              : [
+                  entry.terminalSeal.schemaVersion,
+                  entry.terminalSeal.kind,
+                  entry.terminalSeal.operationIdDigest,
+                  entry.terminalSeal.requestDigest,
+                  entry.terminalSeal.code,
+                  entry.terminalSeal.classifiedAtMs,
+                  entry.terminalSeal.proofCommitment,
+                ],
+          ]),
     ]),
     counters.map((entry) => [entry.mintUrl, entry.unit, entry.keysetId, entry.nextCounter]),
   ])

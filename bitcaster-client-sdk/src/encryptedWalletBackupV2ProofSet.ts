@@ -1,4 +1,6 @@
 import { decode } from 'cborg'
+import { sha256 } from '@noble/hashes/sha2.js'
+import { bytesToHex } from '@noble/hashes/utils.js'
 import type { Proof } from '@cashu/cashu-ts'
 import {
   decryptEncryptedWalletBackupV2TransportBundle,
@@ -11,7 +13,14 @@ import {
 } from './encryptedWalletBackupV2Bundle.ts'
 import { ENCRYPTED_WALLET_BACKUP_V2_UINT64_MAX } from './encryptedWalletBackupV2Descriptor.ts'
 import { encodeCanonicalBackupCbor } from './encryptedWalletBackupCbor.ts'
-import { deriveDurableCustodyScopeId, deriveDurableCustodyWalletId } from './durableCustody.ts'
+import {
+  decodeDurableCustodyRecord,
+  deriveDurableCustodyScopeId,
+  deriveDurableCustodyWalletId,
+  type DurableCustodyExactArtifact,
+  type DurableCustodyRecord,
+} from './durableCustody.ts'
+import { readDurableCustodyAuthenticatedTerminalMintRejection } from './durableCustodyMintResult.ts'
 import {
   createDurableCustodyProofMaterialRecord,
   deserializeDurableCustodyProofArtifact,
@@ -40,7 +49,7 @@ export const ENCRYPTED_WALLET_BACKUP_V2_PROOF_SET_MAX = 512 as const
 export const ENCRYPTED_WALLET_BACKUP_V2_COUNTER_MAX = 512 as const
 export const ENCRYPTED_WALLET_BACKUP_V2_COUNTER_VALUE_MAX = 2_147_483_648 as const
 
-const PAYLOAD_VERSION = 1
+const PAYLOAD_VERSION = 2
 const PAYLOAD_KIND = 'encrypted-wallet-backup-v2-proof-set'
 const PAYLOAD_MAX_BYTES = 3_931_904
 const MINT_MAX_BYTES = 2_048
@@ -64,6 +73,85 @@ export interface EncryptedWalletBackupV2ProofSetProof {
   readonly asset: EncryptedWalletBackupV2ProofSetAsset
   readonly proof: Proof
   readonly locator: DurableWalletProofDerivationLocator
+  readonly terminalSeal?: EncryptedWalletBackupV2TerminalSeal
+}
+
+export interface EncryptedWalletBackupV2TerminalSeal {
+  readonly schemaVersion: 1
+  readonly kind: 'ctf-verified-losing'
+  readonly operationIdDigest: string
+  readonly requestDigest: string
+  readonly code: 13015
+  readonly classifiedAtMs: number
+  readonly proofCommitment: string
+}
+
+export interface EncryptedWalletBackupV2CommittedTerminalSealStore {
+  withCommittedTerminalRejection<T>(
+    operationId: string,
+    read: (value: {
+      readonly record: DurableCustodyRecord
+      readonly exactRejection: DurableCustodyExactArtifact
+      readonly classifiedAtMs: number
+    }) => T,
+  ): Promise<T>
+}
+
+const ISSUED_TERMINAL_SEALS = new WeakMap<object, string>()
+const DECRYPTED_PROOF_SET_DIGESTS = new WeakMap<object, string>()
+
+/** Rebuild seal authority from one committed CTF redeem row and its exact rejection. */
+export async function issueEncryptedWalletBackupV2TerminalSeal(input: {
+  readonly seed: Uint8Array
+  readonly proof: EncryptedWalletBackupV2ProofSetProof
+  readonly operationId: string
+  readonly store: EncryptedWalletBackupV2CommittedTerminalSealStore
+}): Promise<EncryptedWalletBackupV2TerminalSeal> {
+  const proof = decodeProofEntry(input.proof, input.seed, walletScopeId(input.seed))
+  if (proof.asset.kind !== 'ctf' || proof.terminalSeal !== undefined)
+    throw new Error('encrypted backup terminal seal proof is invalid')
+  let open = true
+  let calls = 0
+  let issued: EncryptedWalletBackupV2TerminalSeal | undefined
+  let returned: unknown
+  try {
+    returned = await input.store.withCommittedTerminalRejection(input.operationId, (value) => {
+      if (!open || calls++ !== 0)
+        throw new Error('encrypted backup committed terminal callback is invalid')
+      const record = decodeDurableCustodyRecord(value.record)
+      const rejection = readDurableCustodyAuthenticatedTerminalMintRejection({
+        record,
+        exactRejection: value.exactRejection,
+      })
+      if (
+        record.operation.operationId !== input.operationId ||
+        record.operation.state !== 'aborted' ||
+        record.operation.semanticKind !== 'ctf-redeem' ||
+        record.scope.scopeId !== walletScopeId(input.seed) ||
+        rejection.normalizedMint !== proof.mintUrl ||
+        record.operation.custodyContext.unit !== proof.unit ||
+        record.operation.exactRequest.inputProofIds.filter((id) => id === proof.proofId).length !==
+          1
+      )
+        throw new Error('encrypted backup terminal seal operation is foreign')
+      issued = Object.freeze({
+        schemaVersion: 1,
+        kind: 'ctf-verified-losing',
+        operationIdDigest: digestText(input.operationId),
+        requestDigest: rejection.requestFingerprint,
+        code: 13015,
+        classifiedAtMs: requireUnixTime(value.classifiedAtMs),
+        proofCommitment: proofCommitment(proof),
+      })
+      return issued
+    })
+  } finally {
+    open = false
+  }
+  if (issued === undefined || returned !== issued || calls !== 1)
+    throw new Error('encrypted backup committed terminal read is not exact')
+  ISSUED_TERMINAL_SEALS.set(issued, proof.proofId)
+  return issued
 }
 
 export interface EncryptedWalletBackupV2CounterHighWaterMark {
@@ -109,6 +197,10 @@ export interface EncryptedWalletBackupV2RestoreVerificationPort {
 
 export interface EncryptedWalletBackupV2VerifiedProofSet extends EncryptedWalletBackupV2UnverifiedProofSet {
   readonly verified: true
+  readonly proofs: readonly (EncryptedWalletBackupV2ProofSetProof & {
+    readonly proofId: string
+    readonly selectionAuthority: 'live-verified' | 'terminal-sealed-non-selectable'
+  })[]
 }
 
 const VERIFIED_RESTORED_PROOF_SETS = new WeakMap<object, EncryptedWalletBackupV2VerifiedProofSet>()
@@ -136,9 +228,18 @@ export async function verifyEncryptedWalletBackupV2RestoredProofSet(input: {
     counterHighWaterMarks: input.unverified.counterHighWaterMarks,
   })
   assertProofSetAsset(decoded.proofs, asset)
-  const keysets = await resolveRestoreKeysets(decoded.proofs, input.port)
-  input.port.verifyProofs({ proofs: decoded.proofs.map(({ proof }) => proof), keysets })
-  await requireUnspentRestoreProofs(decoded.proofs, input.port)
+  const sealed = decoded.proofs.filter((proof) => proof.terminalSeal !== undefined)
+  if (
+    sealed.length > 0 &&
+    DECRYPTED_PROOF_SET_DIGESTS.get(input.unverified) !== digestProofSet(decoded)
+  )
+    throw new Error('encrypted backup terminal seal needs exact authenticated decrypted material')
+  const selectable = decoded.proofs.filter((proof) => proof.terminalSeal === undefined)
+  if (selectable.length > 0) {
+    const keysets = await resolveRestoreKeysets(selectable, input.port)
+    input.port.verifyProofs({ proofs: selectable.map(({ proof }) => proof), keysets })
+    await requireUnspentRestoreProofs(selectable, input.port)
+  }
   const verified = freezeVerifiedProofSet(decoded)
   VERIFIED_RESTORED_PROOF_SETS.set(verified, verified)
   return verified
@@ -210,6 +311,7 @@ export async function prepareEncryptedWalletBackupV2ProofSetBundle(input: {
     seed,
     proofs: input.proofs,
     counterHighWaterMarks: input.counterHighWaterMarks,
+    requireIssuedSeal: true,
   })
   const asset = decodeEncryptedWalletBackupV2AssetIdentity(input.asset)
   assertProofSetAsset(decoded.proofs, asset)
@@ -258,13 +360,16 @@ export async function decryptEncryptedWalletBackupV2ProofSetBundle(input: {
   assertProofSetAsset(decoded.proofs, expectedAsset)
   if (sumProofAmounts(decoded.proofs) !== descriptor.declaredAmount)
     throw new Error('encrypted backup proof set declared amount is invalid')
-  return cloneUnverifiedProofSet(decoded)
+  const unverified = cloneUnverifiedProofSet(decoded)
+  DECRYPTED_PROOF_SET_DIGESTS.set(unverified, digestProofSet(decoded))
+  return unverified
 }
 
 function validateProofSet(input: {
   readonly seed: Uint8Array
   readonly proofs: readonly EncryptedWalletBackupV2ProofSetProof[]
   readonly counterHighWaterMarks: readonly EncryptedWalletBackupV2CounterHighWaterMark[]
+  readonly requireIssuedSeal?: boolean
 }): DecodedProofSet {
   if (
     !Array.isArray(input.proofs) ||
@@ -281,6 +386,12 @@ function validateProofSet(input: {
   }
   const scopeId = walletScopeId(input.seed)
   const proofs = input.proofs.map((proof) => decodeProofEntry(proof, input.seed, scopeId))
+  if (input.requireIssuedSeal)
+    for (let index = 0; index < proofs.length; index += 1) {
+      const seal = input.proofs[index]!.terminalSeal
+      if (seal !== undefined && ISSUED_TERMINAL_SEALS.get(seal) !== proofs[index]!.proofId)
+        throw new Error('encrypted backup terminal seal is not SDK-issued')
+    }
   if (new Set(proofs.map((proof) => proof.proofId)).size !== proofs.length) {
     throw new Error('encrypted backup proof set proofs are duplicated')
   }
@@ -299,7 +410,13 @@ function validateProofSet(input: {
 }
 
 function decodeProofEntry(value: unknown, seed: Uint8Array, scopeId: string): DecodedProofEntry {
-  if (!isRecord(value) || !exactKeys(value, ['mintUrl', 'unit', 'asset', 'proof', 'locator'])) {
+  if (
+    !isRecord(value) ||
+    !(
+      exactKeys(value, ['mintUrl', 'unit', 'asset', 'proof', 'locator']) ||
+      exactKeys(value, ['mintUrl', 'unit', 'asset', 'proof', 'locator', 'terminalSeal'])
+    )
+  ) {
     throw new Error('encrypted backup proof set proof is invalid')
   }
   const mintUrl = requireCanonicalMint(value.mintUrl)
@@ -323,13 +440,17 @@ function decodeProofEntry(value: unknown, seed: Uint8Array, scopeId: string): De
   })
   if (proof.secret !== expectedSecret)
     throw new Error('encrypted backup proof provenance is foreign')
+  const terminalSeal =
+    value.terminalSeal === undefined ? undefined : decodeTerminalSeal(value.terminalSeal)
+  const entry = { mintUrl, unit, asset, proof, locator, proofId: material.proofId }
+  if (
+    terminalSeal !== undefined &&
+    (asset.kind !== 'ctf' || terminalSeal.proofCommitment !== proofCommitment(entry))
+  )
+    throw new Error('encrypted backup terminal seal proof binding is invalid')
   return Object.freeze({
-    mintUrl,
-    unit,
-    asset,
-    proof,
-    locator,
-    proofId: material.proofId,
+    ...entry,
+    ...(terminalSeal === undefined ? {} : { terminalSeal }),
     amount: BigInt(material.amount),
   })
 }
@@ -385,6 +506,7 @@ function encodeProofEntry(proof: DecodedProofEntry): readonly unknown[] {
     encodeAsset(proof.asset),
     serializeDurableCustodyProofArtifact(proof.proof),
     encodeDurableWalletProofDerivationLocatorCbor(proof.locator),
+    proof.terminalSeal === undefined ? null : encodeTerminalSeal(proof.terminalSeal),
   ]
 }
 
@@ -420,7 +542,7 @@ function decodeProofSetPayload(bytes: Uint8Array, seed: Uint8Array): DecodedProo
 }
 
 function decodeProofWire(value: unknown): EncryptedWalletBackupV2ProofSetProof {
-  if (!Array.isArray(value) || value.length !== 5)
+  if (!Array.isArray(value) || value.length !== 6)
     throw new Error('encrypted backup proof set proof is invalid')
   return {
     mintUrl: value[0] as string,
@@ -428,6 +550,7 @@ function decodeProofWire(value: unknown): EncryptedWalletBackupV2ProofSetProof {
     asset: decodeAssetWire(value[2]),
     proof: deserializeDurableCustodyProofArtifact(value[3]),
     locator: decodeDurableWalletProofDerivationLocatorCbor(value[4]),
+    ...(value[5] === null ? {} : { terminalSeal: decodeTerminalSealWire(value[5]) }),
   }
 }
 
@@ -440,6 +563,88 @@ function decodeCounterWire(value: unknown): EncryptedWalletBackupV2CounterHighWa
     keysetId: value[2] as string,
     nextCounter: value[3] as number,
   }
+}
+
+function decodeTerminalSeal(value: unknown): EncryptedWalletBackupV2TerminalSeal {
+  if (
+    !isRecord(value) ||
+    !exactKeys(value, [
+      'schemaVersion',
+      'kind',
+      'operationIdDigest',
+      'requestDigest',
+      'code',
+      'classifiedAtMs',
+      'proofCommitment',
+    ]) ||
+    value.schemaVersion !== 1 ||
+    value.kind !== 'ctf-verified-losing' ||
+    value.code !== 13015
+  )
+    throw new Error('encrypted backup terminal seal is invalid')
+  const classifiedAtMs = requireUnixTime(value.classifiedAtMs)
+  return Object.freeze({
+    schemaVersion: 1,
+    kind: 'ctf-verified-losing',
+    operationIdDigest: requireLowerHex(value.operationIdDigest, 32, 'terminal operation digest'),
+    requestDigest: requireLowerHex(value.requestDigest, 32, 'terminal request digest'),
+    code: 13015,
+    classifiedAtMs,
+    proofCommitment: requireLowerHex(value.proofCommitment, 32, 'terminal proof commitment'),
+  })
+}
+
+function encodeTerminalSeal(value: EncryptedWalletBackupV2TerminalSeal): readonly unknown[] {
+  const seal = decodeTerminalSeal(value)
+  return [
+    seal.schemaVersion,
+    seal.kind,
+    seal.operationIdDigest,
+    seal.requestDigest,
+    seal.code,
+    seal.classifiedAtMs,
+    seal.proofCommitment,
+  ]
+}
+
+function decodeTerminalSealWire(value: unknown): EncryptedWalletBackupV2TerminalSeal {
+  if (!Array.isArray(value) || value.length !== 7)
+    throw new Error('encrypted backup terminal seal is invalid')
+  return decodeTerminalSeal({
+    schemaVersion: value[0],
+    kind: value[1],
+    operationIdDigest: value[2],
+    requestDigest: value[3],
+    code: value[4],
+    classifiedAtMs: value[5],
+    proofCommitment: value[6],
+  })
+}
+
+function digestText(value: string): string {
+  return bytesToHex(sha256(new TextEncoder().encode(value)))
+}
+
+function digestProofSet(value: DecodedProofSet): string {
+  return bytesToHex(sha256(encodeProofSetPayload(value)))
+}
+
+function proofCommitment(
+  value: EncryptedWalletBackupV2ProofSetProof & { readonly proofId: string },
+): string {
+  return bytesToHex(
+    sha256(
+      encodeCanonicalBackupCbor([
+        'bitcaster:encrypted-backup-v2-terminal-proof:v1',
+        value.mintUrl,
+        value.unit,
+        encodeAsset(value.asset),
+        serializeDurableCustodyProofArtifact(value.proof),
+        encodeDurableWalletProofDerivationLocatorCbor(value.locator),
+        value.proofId,
+      ]),
+    ),
+  )
 }
 
 function decodeAsset(value: unknown): EncryptedWalletBackupV2ProofSetAsset {
@@ -647,6 +852,9 @@ function cloneUnverifiedProofSet(
           ),
           locator: structuredClone(proof.locator),
           proofId: proof.proofId,
+          ...(proof.terminalSeal === undefined
+            ? {}
+            : { terminalSeal: structuredClone(proof.terminalSeal) }),
         }),
       ),
     ),
@@ -669,6 +877,13 @@ function freezeVerifiedProofSet(value: DecodedProofSet): EncryptedWalletBackupV2
       ),
       locator: structuredClone(proof.locator),
       proofId: proof.proofId,
+      ...(proof.terminalSeal === undefined
+        ? {}
+        : { terminalSeal: structuredClone(proof.terminalSeal) }),
+      selectionAuthority:
+        proof.terminalSeal === undefined
+          ? ('live-verified' as const)
+          : ('terminal-sealed-non-selectable' as const),
     })),
     counterHighWaterMarks: value.counterHighWaterMarks.map((counter) => ({ ...counter })),
   })
@@ -731,7 +946,7 @@ function preflightProofSetPayload(bytes: Uint8Array): void {
     state.offset !== bytes.byteLength ||
     root.major !== 4 ||
     root.value !== 4 ||
-    root.children[0]?.value !== 1 ||
+    root.children[0]?.value !== PAYLOAD_VERSION ||
     root.children[1]?.major !== 3 ||
     root.children[1]?.value !== PAYLOAD_KIND.length
   )
@@ -749,7 +964,7 @@ function preflightProofSetPayload(bytes: Uint8Array): void {
   )
     throw new Error('encrypted backup proof set CBOR is invalid')
   for (const proof of proofs.children)
-    if (proof.major !== 4 || proof.value !== 5)
+    if (proof.major !== 4 || proof.value !== 6)
       throw new Error('encrypted backup proof set CBOR is invalid')
   for (const counter of counters.children)
     if (counter.major !== 4 || counter.value !== 4)
