@@ -190,6 +190,7 @@ export async function readBrowserEncryptedWalletBackupV2ExactLocalProofRows(inpu
     input.database,
     persisted ?? desired,
     route?.first ?? route?.terminalCtfContext ?? null,
+    true,
   );
 }
 
@@ -494,6 +495,7 @@ async function activeRows(
     | ReturnType<typeof decodeBrowserCustodyConditionalKeysetRow>
     | EncryptedWalletBackupV2TerminalCtfContext
     | null,
+  includePendingRemoval = false,
 ) {
   const selector =
     ctf === null
@@ -509,7 +511,9 @@ async function activeRows(
           ctf.conditionId,
           "outcomeCollection" in ctf ? ctf.outcomeCollection : ctf.outcomeLabel,
         ];
-  const states = ["selectable", "locked", "verified-losing"] as const;
+  const states = includePendingRemoval
+    ? (["selectable", "locked", "verified-losing", "pending-removal"] as const)
+    : (["selectable", "locked", "verified-losing"] as const);
   const groups = await Promise.all(
     states.map((state) =>
       database.custodyProofs

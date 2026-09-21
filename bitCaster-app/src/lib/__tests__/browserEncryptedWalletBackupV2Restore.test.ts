@@ -26,9 +26,10 @@ import {
 import { deriveDurableCustodyScopeId } from "@bitcaster/client-sdk/durableCustody";
 import { deriveDurableWalletProofSecret } from "@bitcaster/client-sdk/durableWalletProofDerivationLocator";
 import { afterEach, expect, it, vi } from "vitest";
-import { BitcasterDB } from "../../stores/proof-db";
+import { BitcasterDB, storedProofFromCustodyRow } from "../../stores/proof-db";
 import { createEncryptedWalletBackupV2DesiredAssetRow } from "../../stores/browser-encrypted-wallet-backup-v2-desired-asset";
 import {
+  advanceBrowserProofBackupAuthorityRowToPendingRemoval,
   classifyBrowserProofBackupAuthorityVerifiedLosing,
   createBrowserProofBackupAuthorityRow,
 } from "../../stores/browser-proof-backup-authority";
@@ -482,6 +483,156 @@ it("repairs only selectable legacy cache rows when CTF custody retains losing ev
     }),
   ).resolves.toEqual({ kind: "local-custody" });
   expect(await input.database.proofs.count()).toBe(1);
+});
+
+it("removes a matching pending-removal cache body without projecting it", async () => {
+  const fixture = await backupFixture();
+  const ctfAsset = createEncryptedWalletBackupV2AssetIdentity({
+    mintUrl: fixture.input.asset.mintUrl,
+    unit: "msat",
+    asset: {
+      kind: "ctf",
+      conditionId: CTF_CONDITION_ID,
+      outcomeCollectionId: CTF_OUTCOME_COLLECTION_ID,
+      outcomeLabel: CTF_OUTCOME,
+      registeredAt: 0,
+      finalExpiry: 100,
+    },
+  });
+  const input = { ...fixture.input, asset: ctfAsset };
+  const selectableLocator = {
+    schemaVersion: 1 as const,
+    kind: "nut13" as const,
+    keysetId: CTF_KEYSET,
+    counter: 1,
+  };
+  const pendingLocator = { ...selectableLocator, counter: 2 };
+  const selectable = createBrowserCustodyProofRow({
+    scopeId: input.scopeId,
+    normalizedMint: input.asset.mintUrl,
+    unit: "msat",
+    proof: {
+      id: CTF_KEYSET,
+      amount: Amount.from(1),
+      secret: deriveDurableWalletProofSecret({
+        seed: SEED,
+        locator: selectableLocator,
+        proofKeysetId: CTF_KEYSET,
+        proofAmount: 1,
+      }),
+      C: CTF_PUBLIC_KEY,
+    },
+    asset: {
+      kind: "conditional",
+      conditionId: CTF_CONDITION_ID,
+      outcomeCollection: CTF_OUTCOME,
+    },
+    receivedAtMs: 1,
+  });
+  const pendingPredecessor = createBrowserCustodyProofRow({
+    scopeId: input.scopeId,
+    normalizedMint: input.asset.mintUrl,
+    unit: "msat",
+    proof: {
+      id: CTF_KEYSET,
+      amount: Amount.from(1),
+      secret: deriveDurableWalletProofSecret({
+        seed: SEED,
+        locator: pendingLocator,
+        proofKeysetId: CTF_KEYSET,
+        proofAmount: 1,
+      }),
+      C: CTF_PUBLIC_KEY,
+    },
+    asset: {
+      kind: "conditional",
+      conditionId: CTF_CONDITION_ID,
+      outcomeCollection: CTF_OUTCOME,
+    },
+    receivedAtMs: 1,
+  });
+  const pending = {
+    ...pendingPredecessor,
+    revision: pendingPredecessor.revision + 1,
+    selectability: "pending-removal" as const,
+    reservationOperationId: null,
+  };
+  await input.database.custodyConditionalKeysets.put({
+    schemaVersion: 1,
+    scopeId: input.scopeId,
+    normalizedMint: input.asset.mintUrl,
+    unit: "msat",
+    keysetId: CTF_KEYSET,
+    denominationPublicKeys: { "1": CTF_PUBLIC_KEY },
+    inputFeePpk: 100,
+    conditionId: CTF_CONDITION_ID,
+    outcomeCollection: CTF_OUTCOME,
+    outcomeCollectionId: CTF_OUTCOME_COLLECTION_ID,
+    registeredAtUnixSeconds: 0,
+    finalExpiryUnixSeconds: 100,
+    curve: "secp256k1",
+  });
+  await input.database.custodyProofs.bulkPut([selectable, pending]);
+  await input.database.custodyProofBackupAuthorities.bulkPut([
+    createBrowserProofBackupAuthorityRow(selectable, 2, selectableLocator, "selectable"),
+    advanceBrowserProofBackupAuthorityRowToPendingRemoval(
+      createBrowserProofBackupAuthorityRow(
+        pendingPredecessor,
+        2,
+        pendingLocator,
+        "pending-predecessor",
+      ),
+      pending,
+      3,
+    ),
+  ]);
+  await input.database.walletCounterAssociations.put({
+    scopeId: input.scopeId,
+    normalizedMint: input.asset.mintUrl,
+    unit: "msat",
+    keysetId: CTF_KEYSET,
+    recoveryComplete: true,
+  });
+  await input.database.walletCounterCursors.put({
+    scopeId: input.scopeId,
+    keysetId: CTF_KEYSET,
+    next: 3,
+  });
+  await input.database.encryptedWalletBackupV2DesiredAssets.put(
+    createEncryptedWalletBackupV2DesiredAssetRow({
+      scopeId: input.scopeId,
+      asset: input.asset,
+      custodyRevision: 1n,
+      activeProofCount: 1,
+    }),
+  );
+  const pendingMaterial = storedProofFromCustodyRow(pending);
+  const pendingCached = { ...pendingMaterial, amount: Number(pendingMaterial.amount) };
+  const unrelatedCached = {
+    id: CTF_KEYSET,
+    amount: 1,
+    secret: "unrelated-cache-secret",
+    C: CTF_PUBLIC_KEY,
+    mintUrl: "https://unrelated.example",
+    baseAsset: "sat",
+    unit: "msat" as const,
+  };
+  await input.database.proofs.bulkPut([pendingCached, unrelatedCached]);
+
+  await expect(
+    restoreAndAdmitBrowserEncryptedWalletBackupV2TargetedAsset({
+      ...input,
+      loadWallet: async () => {
+        throw new Error("local repair must not load the mint wallet");
+      },
+      lockManager: immediateLockManager(),
+    }),
+  ).resolves.toEqual({ kind: "local-custody" });
+
+  const cachedSecrets = (await input.database.proofs.toArray()).map(({ secret }) => secret);
+  expect(cachedSecrets).toContain(storedProofFromCustodyRow(selectable).secret);
+  expect(cachedSecrets).toContain(unrelatedCached.secret);
+  expect(cachedSecrets).not.toContain(pendingCached.secret);
 });
 
 it("returns zero local availability for a removal with retained operation proofs", async () => {

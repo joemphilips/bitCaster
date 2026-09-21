@@ -466,10 +466,12 @@ async function repairLegacyProofCache(
     asset: input.asset,
   });
   if (rows.length === 0) throw new Error("browser V2 local custody asset is absent");
-  const selectableRows = rows.filter((row) => row.selectability !== "verified-losing");
-  await removeStaleLosingLegacyProofCacheRows(input.database, rows);
-  if (selectableRows.length === 0) return;
-  const proofs: StoredProof[] = selectableRows.map((row) => {
+  const cacheRows = rows.filter(
+    ({ selectability }) => selectability === "selectable" || selectability === "locked",
+  );
+  await removeStaleNonSelectableLegacyProofCacheRows(input.database, rows);
+  if (cacheRows.length === 0) return;
+  const proofs: StoredProof[] = cacheRows.map((row) => {
     const { proof: material } = decodeDurableCustodyProofMaterialRecord(row);
     const proof = deserializeDurableCustodyProofArtifact({
       schemaVersion: 1,
@@ -490,21 +492,24 @@ async function repairLegacyProofCache(
   requireCurrent(input);
 }
 
-async function removeStaleLosingLegacyProofCacheRows(
+async function removeStaleNonSelectableLegacyProofCacheRows(
   database: BitcasterDB,
   rows: ReadonlyArray<
     Awaited<ReturnType<typeof readBrowserEncryptedWalletBackupV2ExactLocalProofRows>>[number]
   >,
 ): Promise<void> {
-  const losingProofs = rows
-    .filter((row) => row.selectability === "verified-losing")
+  const nonSelectableProofs = rows
+    .filter(
+      ({ selectability }) =>
+        selectability === "verified-losing" || selectability === "pending-removal",
+    )
     .map((row) => storedProofFromCustodyRow(row));
-  if (losingProofs.length === 0) return;
-  const cached = await database.proofs.bulkGet(losingProofs.map(({ secret }) => secret));
+  if (nonSelectableProofs.length === 0) return;
+  const cached = await database.proofs.bulkGet(nonSelectableProofs.map(({ secret }) => secret));
   const removableSecrets = cached.flatMap((row, index) => {
     if (row === undefined) return [];
     const proof = storedProofFromRow(row);
-    const expected = losingProofs[index]!;
+    const expected = nonSelectableProofs[index]!;
     const metadataMatches =
       proof.mintUrl === expected.mintUrl &&
       proof.unit === expected.unit &&

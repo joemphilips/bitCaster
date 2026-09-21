@@ -15,6 +15,7 @@ import { deriveDurableWalletProofSecret } from "@bitcaster/client-sdk/durableWal
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { browserWalletDatabaseName } from "../../lib/browserWalletProfile";
 import {
+  advanceBrowserProofBackupAuthorityRowToPendingRemoval,
   classifyBrowserProofBackupAuthorityVerifiedLosing,
   createBrowserProofBackupAuthorityRow,
   createBrowserRemoteProofBackupAuthorityRow,
@@ -129,6 +130,63 @@ describe("browser V2 asset source", () => {
     });
 
     expect(snapshot.proofs.map(({ proof }) => proof.secret)).toEqual([proofSecret(selectable)]);
+  });
+
+  it("includes pending-removal only in exact reads", async () => {
+    const fixture = await fixtureFor("ctf");
+    database = fixture.database;
+    const selectable = proofRow(fixture.scopeId, CONDITIONAL_KEYSET, 1, "ctf", "selectable");
+    const pendingPredecessor = proofRow(
+      fixture.scopeId,
+      CONDITIONAL_KEYSET,
+      2,
+      "ctf",
+      "selectable",
+    );
+    const pending = {
+      ...pendingPredecessor,
+      revision: pendingPredecessor.revision + 1,
+      selectability: "pending-removal" as const,
+      reservationOperationId: null,
+    };
+    await fixture.database.custodyProofs.bulkPut([selectable, pending]);
+    await fixture.database.custodyProofBackupAuthorities.put(authority(selectable));
+    await fixture.database.custodyProofBackupAuthorities.put(
+      advanceBrowserProofBackupAuthorityRowToPendingRemoval(
+        authority(pendingPredecessor),
+        pending,
+        3,
+      ),
+    );
+    await putConditionalKeyset(fixture.database, fixture.scopeId);
+    await putCounter(fixture.database, fixture.scopeId, CONDITIONAL_KEYSET, 3);
+    const desired = createEncryptedWalletBackupV2DesiredAssetRow({
+      scopeId: fixture.scopeId,
+      asset: fixture.asset,
+      custodyRevision: 7n,
+      activeProofCount: 1,
+    });
+    await fixture.database.encryptedWalletBackupV2DesiredAssets.put(desired);
+
+    const snapshot = await readBrowserEncryptedWalletBackupV2AssetSnapshot({
+      database: fixture.database,
+      scopeId: fixture.scopeId,
+      localAssetKey: desired.localAssetKey,
+    });
+    expect(snapshot.proofs.map(({ proof }) => proof.secret)).toEqual([proofSecret(selectable)]);
+
+    await expect(
+      readBrowserEncryptedWalletBackupV2ExactLocalProofRows({
+        database: fixture.database,
+        scopeId: fixture.scopeId,
+        asset: fixture.asset,
+      }),
+    ).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ proofId: selectable.proofId, selectability: "selectable" }),
+        expect.objectContaining({ proofId: pending.proofId, selectability: "pending-removal" }),
+      ]),
+    );
   });
 
   it("validates retained null-locator proof authority before excluding it", async () => {
@@ -1121,7 +1179,7 @@ function proofRow(
   keysetId: string,
   counter: number,
   kind: "regular" | "ctf",
-  state: "selectable" | "locked" | "spent",
+  state: "selectable" | "locked" | "pending-removal" | "spent",
 ) {
   const row = createBrowserCustodyProofRow({
     scopeId,
