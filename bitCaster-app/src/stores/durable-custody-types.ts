@@ -17,6 +17,7 @@ export type BrowserCustodyProofSelectability =
   | "selectable"
   | "locked"
   | "verified-losing"
+  | "pending-removal"
   | "spent";
 
 export interface BrowserCustodyScopeRow {
@@ -79,6 +80,8 @@ export function decodeBrowserCustodyProofRow(value: unknown): BrowserCustodyProo
   if (
     (selectability === "locked") !== (reservationOperationId !== null) ||
     (selectability === "verified-losing" && asset.assetKind !== "conditional") ||
+    (selectability === "pending-removal" &&
+      (asset.assetKind !== "conditional" || reservationOperationId !== null)) ||
     row.baseAsset !== "sat"
   ) {
     throw new Error("browser custody proof row is invalid");
@@ -142,6 +145,7 @@ function proofSelectability(value: unknown): BrowserCustodyProofSelectability {
     value === "selectable" ||
     value === "locked" ||
     value === "verified-losing" ||
+    value === "pending-removal" ||
     value === "spent"
   )
     return value;

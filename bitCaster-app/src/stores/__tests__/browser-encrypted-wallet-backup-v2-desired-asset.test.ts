@@ -5,11 +5,17 @@ import { deriveDurableCustodyScopeId } from "@bitcaster/client-sdk/durableCustod
 import { deriveRootCtfOutcomeCollectionId } from "@bitcaster/client-sdk/durableCtfRangeOperation";
 import { browserWalletDatabaseName } from "../../lib/browserWalletProfile";
 import { createBrowserCustodyProofRow } from "../durable-custody-db";
+import { decodeBrowserCustodyProofRow } from "../durable-custody-types";
 import {
   advanceBrowserV2DesiredAssetsForCounter,
   advanceBrowserV2DesiredAssetsForProofChanges,
   createEncryptedWalletBackupV2DesiredAssetRow,
+  createEncryptedWalletBackupV2RemovalIntent,
   decodeEncryptedWalletBackupV2DesiredAssetRow,
+  decodeEncryptedWalletBackupV2RemovalIntent,
+  digestEncryptedWalletBackupV2RemovalProofSet,
+  rebaseEncryptedWalletBackupV2RemovalIntent,
+  sameEncryptedWalletBackupV2RemovalIntent,
 } from "../browser-encrypted-wallet-backup-v2-desired-asset";
 import { createEncryptedWalletBackupV2AssetIdentity } from "@bitcaster/client-sdk/encryptedWalletBackupV2ProofSet";
 import {
@@ -199,6 +205,239 @@ describe("browser V2 desired asset eligibility", () => {
     expect(await database.encryptedWalletBackupV2DesiredAssets.toArray()).toMatchObject([
       { custodyRevision: "2", activeProofCount: 0, desiredAction: "remove" },
     ]);
+  });
+});
+
+describe("browser V2 explicit removal foundation", () => {
+  const removalProofs = [
+    {
+      proofId: "11".repeat(32),
+      proofFingerprint: "22".repeat(32),
+      proofRevision: 4,
+      proofCommitment: "33".repeat(32),
+    },
+    {
+      proofId: "44".repeat(32),
+      proofFingerprint: "55".repeat(32),
+      proofRevision: 9,
+      proofCommitment: "66".repeat(32),
+    },
+  ] as const;
+
+  it("round-trips an exact ordered proof set and rebases only supplied head values", () => {
+    const intent = createEncryptedWalletBackupV2RemovalIntent({
+      intentId: "remove-intent-1",
+      createdAtMs: 10,
+      realm: "development",
+      walletId: "77".repeat(32),
+      enrollmentEpoch: 2,
+      expectedHeadVersion: 8,
+      expectedActiveSetDigest: "88".repeat(32),
+      targetCustodyRevision: 12n,
+      proofs: removalProofs,
+    });
+    expect(decodeEncryptedWalletBackupV2RemovalIntent(intent)).toStrictEqual(intent);
+    expect(digestEncryptedWalletBackupV2RemovalProofSet(removalProofs)).toBe(
+      "7beda456d9ee7e50b22a10eaa644a3d2ce86186a2c71e4bac76b7fc0885dd074",
+    );
+    expect(
+      digestEncryptedWalletBackupV2RemovalProofSet([
+        removalProofs[0],
+        { ...removalProofs[1], proofCommitment: "67".repeat(32) },
+      ]),
+    ).not.toBe("7beda456d9ee7e50b22a10eaa644a3d2ce86186a2c71e4bac76b7fc0885dd074");
+    const evidence = {
+      kind: "receipt",
+      headVersion: 9,
+      activeSetDigest: "99".repeat(32),
+      receiptDigest: "aa".repeat(32),
+      bundleId: null,
+      bundleDescriptorDigest: null,
+      supersededBundleIds: ["bb".repeat(16)],
+      acknowledgedAtMs: 20,
+    } as const;
+    const acknowledged = createEncryptedWalletBackupV2RemovalIntent({
+      ...intent,
+      state: "exclusion-acknowledged",
+      acknowledgedExclusionEvidence: evidence,
+    });
+    const rebased = rebaseEncryptedWalletBackupV2RemovalIntent({
+      intent: acknowledged,
+      targetCustodyRevision: 13n,
+      expectedHeadVersion: 10,
+      expectedActiveSetDigest: "cc".repeat(32),
+    });
+    expect(rebased).toMatchObject({
+      targetCustodyRevision: "13",
+      expectedHeadVersion: 10,
+      expectedActiveSetDigest: "cc".repeat(32),
+      proofs: removalProofs,
+      proofSetCommitment: acknowledged.proofSetCommitment,
+      state: "pending",
+      acknowledgedExclusionEvidence: null,
+    });
+    expect(rebased.state).toBe("pending");
+    expect(rebased.acknowledgedExclusionEvidence).toBeNull();
+    expect(sameEncryptedWalletBackupV2RemovalIntent(rebased, rebased)).toBe(true);
+    expect(sameEncryptedWalletBackupV2RemovalIntent(rebased, acknowledged)).toBe(false);
+
+    const currentHead = createEncryptedWalletBackupV2RemovalIntent({
+      ...intent,
+      state: "exclusion-acknowledged",
+      acknowledgedExclusionEvidence: {
+        kind: "current-head",
+        headVersion: 9,
+        activeSetDigest: "99".repeat(32),
+        bundleId: null,
+        bundleDescriptorDigest: null,
+        acknowledgedAtMs: 20,
+      },
+    });
+    expect(decodeEncryptedWalletBackupV2RemovalIntent(currentHead)).toStrictEqual(currentHead);
+    expect(() =>
+      decodeEncryptedWalletBackupV2RemovalIntent({
+        ...currentHead,
+        acknowledgedExclusionEvidence: {
+          ...currentHead.acknowledgedExclusionEvidence!,
+          receiptDigest: "aa".repeat(32),
+        },
+      }),
+    ).toThrow(/exclusion evidence is invalid/);
+    expect(() =>
+      decodeEncryptedWalletBackupV2RemovalIntent({
+        ...currentHead,
+        acknowledgedExclusionEvidence: {
+          ...currentHead.acknowledgedExclusionEvidence!,
+          bundleId: "bb".repeat(16),
+        },
+      }),
+    ).toThrow(/exclusion evidence is invalid/);
+  });
+
+  it("binds the removal intent target revision to the desired row revision", () => {
+    const scopeId = deriveDurableCustodyScopeId({
+      scopeKind: "wallet",
+      walletId: "78".repeat(32),
+    });
+    const asset = createEncryptedWalletBackupV2AssetIdentity({
+      mintUrl: MINT,
+      unit: "msat",
+      asset: {
+        kind: "ctf",
+        conditionId: "aa".repeat(32),
+        outcomeLabel: "YES",
+        outcomeCollectionId: "bb".repeat(32),
+        registeredAt: 1,
+        finalExpiry: 2,
+      },
+    });
+    const intent = createEncryptedWalletBackupV2RemovalIntent({
+      intentId: "remove-intent-revision",
+      createdAtMs: 10,
+      realm: "development",
+      walletId: "78".repeat(32),
+      enrollmentEpoch: 2,
+      expectedHeadVersion: 8,
+      expectedActiveSetDigest: "88".repeat(32),
+      targetCustodyRevision: 12n,
+      proofs: removalProofs,
+    });
+    const row = createEncryptedWalletBackupV2DesiredAssetRow({
+      scopeId,
+      asset,
+      custodyRevision: 12n,
+      activeProofCount: 1,
+      removalIntent: intent,
+    });
+    expect(() =>
+      decodeEncryptedWalletBackupV2DesiredAssetRow({ ...row, custodyRevision: "13" }),
+    ).toThrow(/target revision is stale/);
+    expect(() =>
+      decodeEncryptedWalletBackupV2DesiredAssetRow({
+        ...row,
+        scopeId: deriveDurableCustodyScopeId({
+          scopeKind: "wallet",
+          walletId: "79".repeat(32),
+        }),
+      }),
+    ).toThrow(/wallet scope is foreign/);
+  });
+
+  it("rejects unordered tuples, duplicate tuples, and a forged set commitment", () => {
+    const intent = createEncryptedWalletBackupV2RemovalIntent({
+      intentId: "remove-intent-2",
+      createdAtMs: 10,
+      realm: "development",
+      walletId: "77".repeat(32),
+      enrollmentEpoch: 2,
+      expectedHeadVersion: 8,
+      expectedActiveSetDigest: "88".repeat(32),
+      targetCustodyRevision: 12n,
+      proofs: removalProofs,
+    });
+    expect(() =>
+      decodeEncryptedWalletBackupV2RemovalIntent({
+        ...intent,
+        proofs: [...removalProofs].reverse(),
+      }),
+    ).toThrow(/unordered or duplicated/);
+    expect(() =>
+      decodeEncryptedWalletBackupV2RemovalIntent({
+        ...intent,
+        proofs: [removalProofs[0], removalProofs[0]],
+      }),
+    ).toThrow(/unordered or duplicated/);
+    expect(() =>
+      decodeEncryptedWalletBackupV2RemovalIntent({
+        ...intent,
+        proofSetCommitment: "dd".repeat(32),
+      }),
+    ).toThrow(/proof set commitment is invalid/);
+    expect(() =>
+      decodeEncryptedWalletBackupV2RemovalIntent({ ...intent, enrollmentEpoch: 0 }),
+    ).toThrow(/enrollment epoch is invalid/);
+  });
+
+  it("allows pending-removal only for an unreserved conditional proof", () => {
+    const regular = createBrowserCustodyProofRow({
+      scopeId: deriveDurableCustodyScopeId({
+        scopeKind: "wallet",
+        walletId: "77".repeat(32),
+      }),
+      normalizedMint: MINT,
+      unit: "sat",
+      proof: { id: KEYSET, amount: 1 as never, secret: "31".repeat(32), C: PUBLIC_KEY },
+      asset: { kind: "regular" },
+      receivedAtMs: 1,
+    });
+    expect(() =>
+      decodeBrowserCustodyProofRow({
+        ...regular,
+        selectability: "pending-removal",
+      }),
+    ).toThrow(/browser custody proof row is invalid/);
+    const conditional = createBrowserCustodyProofRow({
+      scopeId: regular.scopeId,
+      normalizedMint: regular.normalizedMint,
+      unit: "msat",
+      proof: { id: KEYSET, amount: 1 as never, secret: "32".repeat(32), C: PUBLIC_KEY },
+      asset: { kind: "conditional", conditionId: "aa".repeat(32), outcomeCollection: "YES" },
+      receivedAtMs: regular.receivedAtMs,
+    });
+    expect(
+      decodeBrowserCustodyProofRow({
+        ...conditional,
+        selectability: "pending-removal",
+        reservationOperationId: null,
+      }).selectability,
+    ).toBe("pending-removal");
+    expect(() =>
+      decodeBrowserCustodyProofRow({
+        ...conditional,
+        selectability: "pending-removal",
+        reservationOperationId: "reserved",
+      }),
+    ).toThrow(/browser custody proof row is invalid/);
   });
 });
 

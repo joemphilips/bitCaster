@@ -338,6 +338,7 @@ async function candidate(
     desiredAction: "replace",
     syncState: "acknowledged",
     terminalCtfContext: null,
+    removalIntent: null,
   });
   return {
     desired: { localAssetKey },

@@ -36,7 +36,7 @@ describe("pre-release browser reset", () => {
     };
     expect(shouldRunPreReleaseBrowserReset(false, productionStorage)).toBe(false);
     expect(productionStorage.getItem).not.toHaveBeenCalled();
-    localStorage.setItem(PRE_RELEASE_BROWSER_RESET_EPOCH_KEY, "phase-9e-5a");
+    localStorage.setItem(PRE_RELEASE_BROWSER_RESET_EPOCH_KEY, "phase-9e-2-explicit-remove");
     expect(shouldRunPreReleaseBrowserReset()).toBe(false);
   });
 

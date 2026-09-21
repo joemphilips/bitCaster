@@ -7,6 +7,7 @@ import {
 import { describe, expect, it } from "vitest";
 import {
   advanceBrowserProofBackupAuthorityRow,
+  advanceBrowserProofBackupAuthorityRowToPendingRemoval,
   advanceBrowserRemoteProofBackupAuthorityRow,
   bindBrowserProofBackupAuthorityTerminalOperation,
   classifyBrowserProofBackupAuthorityVerifiedLosing,
@@ -100,6 +101,103 @@ describe("browser proof backup authority", () => {
     expect(authority).toMatchObject({
       derivationLocator: locator,
       proofRevision: 0,
+    });
+  });
+
+  it("moves a conditional proof to pending-removal without changing its authority origin", () => {
+    const base = createBrowserCustodyProofRow({
+      scopeId: walletScope().scopeId,
+      normalizedMint: MINT,
+      unit: "msat",
+      proof: {
+        id: DERIVATION_KEYSET,
+        amount: 1 as never,
+        secret: "pending-removal-proof",
+        C: `02${"44".repeat(32)}`,
+      },
+      asset: { kind: "conditional", conditionId: "aa".repeat(32), outcomeCollection: "YES" },
+      receivedAtMs: 1,
+    });
+    const losing = {
+      ...base,
+      selectability: "verified-losing" as const,
+      revision: 1,
+    };
+    const locator = nut13(DERIVATION_KEYSET, 9);
+    const lockedAuthority = createBrowserProofBackupAuthorityRow(
+      { ...base, selectability: "locked", reservationOperationId: "redeem", revision: 1 },
+      2,
+      locator,
+      "admission",
+    );
+    expect(() =>
+      advanceBrowserProofBackupAuthorityRowToPendingRemoval(
+        lockedAuthority,
+        { ...base, selectability: "pending-removal", reservationOperationId: null, revision: 2 },
+        4,
+      ),
+    ).toThrow("predecessor is not live");
+    const authority = classifyBrowserProofBackupAuthorityVerifiedLosing(
+      createBrowserProofBackupAuthorityRow(
+        { ...base, selectability: "locked", reservationOperationId: "redeem", revision: 0 },
+        2,
+        locator,
+        "admission",
+      ),
+      { ...losing, reservationOperationId: null },
+      "redeem",
+      3,
+    );
+    const pending = advanceBrowserProofBackupAuthorityRowToPendingRemoval(
+      authority,
+      { ...losing, selectability: "pending-removal", reservationOperationId: null, revision: 2 },
+      4,
+    );
+    expect(pending).toMatchObject({
+      proofState: "pending-removal",
+      proofRevision: 2,
+      derivationLocator: locator,
+      backupState: "local-only",
+      admissionOperationId: "admission",
+      terminalOperationId: "redeem",
+      terminalAuthority: { kind: "local-operation", operationId: "redeem" },
+    });
+    expect(() =>
+      advanceBrowserProofBackupAuthorityRowToPendingRemoval(
+        authority,
+        { ...losing, selectability: "pending-removal", reservationOperationId: null, revision: 3 },
+        4,
+      ),
+    ).toThrow("revision is stale");
+  });
+
+  it("permits a remote seal on pending-removal only from a verified-losing predecessor", () => {
+    const proof = {
+      ...custodyProof(),
+      assetKind: "conditional" as const,
+      conditionId: "aa".repeat(32),
+      outcomeCollection: "YES",
+      selectability: "verified-losing" as const,
+      revision: 1,
+    };
+    const locator = nut13(DERIVATION_KEYSET, 10);
+    const authority = createBrowserRemoteProofBackupAuthorityRow({
+      proof,
+      observedAtMs: 2,
+      derivationLocator: locator,
+      restoreProofId: proof.proofId,
+      restoreProofCommitment: "66".repeat(32),
+    });
+    const pending = advanceBrowserProofBackupAuthorityRowToPendingRemoval(
+      authority,
+      { ...proof, selectability: "pending-removal", reservationOperationId: null, revision: 2 },
+      3,
+    );
+    expect(pending).toMatchObject({
+      proofState: "pending-removal",
+      terminalAuthority: { kind: "remote-seal" },
+      backupState: "remote-backed",
+      backupRecordCommitment: "66".repeat(32),
     });
   });
 

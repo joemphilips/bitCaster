@@ -201,6 +201,40 @@ export function advanceBrowserRemoteProofBackupAuthorityRow(
   }) as BrowserRemoteProofBackupAuthorityRow;
 }
 
+export function advanceBrowserProofBackupAuthorityRowToPendingRemoval(
+  current: BrowserProofBackupAuthorityRow,
+  proof: BrowserCustodyProofRow,
+  observedAtMs: number,
+): BrowserProofBackupAuthorityRow {
+  const authority = requireBrowserProofBackupAuthorityRow(current);
+  requireProofBinding(authority, proof);
+  if (authority.proofState !== "selectable" && authority.proofState !== "verified-losing") {
+    throw new Error("browser proof backup pending-removal predecessor is not live");
+  }
+  if (
+    proof.selectability !== "pending-removal" ||
+    proof.assetKind !== "conditional" ||
+    proof.reservationOperationId !== null
+  ) {
+    throw new Error("browser proof backup pending-removal proof is invalid");
+  }
+  if (authority.proofState !== "verified-losing" && authority.terminalAuthority !== null) {
+    throw new Error("browser proof backup pending-removal terminal authority is invalid");
+  }
+  const time = requireTime(observedAtMs, "proof backup authority time");
+  if (time < proof.receivedAtMs) {
+    throw new Error("browser proof backup authority time is stale");
+  }
+  requireNextProofAuthorityRevision(authority, proof, time);
+  return requireBrowserProofBackupAuthorityRow({
+    ...authority,
+    proofRevision: proof.revision,
+    proofState: proof.selectability,
+    recordUpdatedAtUnixSeconds: Math.floor(time / 1_000),
+    updatedAtMs: time,
+  });
+}
+
 /** Bind one committed terminal operation without changing proof authority. */
 export function bindBrowserProofBackupAuthorityTerminalOperation(
   current: BrowserProofBackupAuthorityRow,
@@ -452,7 +486,7 @@ function requireTerminalAuthority(
       if (
         Object.keys(authority).length !== 1 ||
         terminalOperationId !== null ||
-        proofState !== "verified-losing" ||
+        (proofState !== "verified-losing" && proofState !== "pending-removal") ||
         backupState !== "remote-backed"
       ) {
         throw new Error("browser proof backup terminal authority is invalid");
@@ -544,6 +578,7 @@ function requireProofState(value: unknown): BrowserCustodyProofSelectability {
     value !== "selectable" &&
     value !== "locked" &&
     value !== "verified-losing" &&
+    value !== "pending-removal" &&
     value !== "spent"
   ) {
     throw new Error("browser proof backup authority state is invalid");

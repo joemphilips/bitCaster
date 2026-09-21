@@ -4,13 +4,21 @@ import {
   ENCRYPTED_WALLET_BACKUP_V2_PROOF_SET_MAX,
   encryptedWalletBackupV2LocalAssetKey,
 } from "@bitcaster/client-sdk/encryptedWalletBackupV2ProofSet";
+import { encodeCanonicalBackupCbor } from "@bitcaster/client-sdk/encryptedWalletBackupCbor";
+import { bytesToHex } from "@noble/hashes/utils.js";
+import { sha256 } from "@noble/hashes/sha2.js";
 import type { EncryptedWalletBackupV2ProofSetAsset } from "@bitcaster/client-sdk/encryptedWalletBackupV2ProofSet";
 import type { EncryptedWalletBackupV2AssetIdentity } from "@bitcaster/client-sdk/encryptedWalletBackupV2Bundle";
 import { deriveRootCtfOutcomeCollectionId } from "@bitcaster/client-sdk/durableCtfRangeOperation";
 import {
   decodeCanonicalMintOrigin,
+  decodeDurableCustodyScopeInput,
   decodeDurableCustodyScopeId,
 } from "@bitcaster/client-sdk/durableCustody";
+import {
+  requireRealm,
+  requireUtf8Text as requireBackupUtf8Text,
+} from "@bitcaster/client-sdk/encryptedWalletBackupServerValidation";
 import {
   requireBrowserProofBackupAuthorityRow,
   requireBrowserProofBackupAuthorityForProof,
@@ -23,6 +31,239 @@ import type { BrowserCustodyProofRow, BrowserCustodyProofUnit } from "./durable-
 import type { BitcasterDB } from "./proof-db";
 
 export type EncryptedWalletBackupV2DesiredAction = "replace" | "remove";
+
+export interface EncryptedWalletBackupV2RemovalProofTuple {
+  readonly proofId: string;
+  readonly proofFingerprint: string;
+  readonly proofRevision: number;
+  readonly proofCommitment: string;
+}
+
+export interface EncryptedWalletBackupV2ReceiptRemovalExclusionEvidence {
+  readonly kind: "receipt";
+  readonly headVersion: number;
+  readonly activeSetDigest: string;
+  readonly receiptDigest: string;
+  readonly bundleId: string | null;
+  readonly bundleDescriptorDigest: string | null;
+  readonly supersededBundleIds: readonly string[];
+  readonly acknowledgedAtMs: number;
+}
+
+export interface EncryptedWalletBackupV2CurrentHeadRemovalExclusionEvidence {
+  readonly kind: "current-head";
+  readonly headVersion: number;
+  readonly activeSetDigest: string;
+  readonly bundleId: string | null;
+  readonly bundleDescriptorDigest: string | null;
+  readonly acknowledgedAtMs: number;
+}
+
+export type EncryptedWalletBackupV2RemovalExclusionEvidence =
+  | EncryptedWalletBackupV2ReceiptRemovalExclusionEvidence
+  | EncryptedWalletBackupV2CurrentHeadRemovalExclusionEvidence;
+
+export type EncryptedWalletBackupV2RemovalIntentState = "pending" | "exclusion-acknowledged";
+
+export interface EncryptedWalletBackupV2RemovalIntent {
+  readonly intentId: string;
+  readonly createdAtMs: number;
+  readonly realm: string;
+  readonly walletId: string;
+  readonly enrollmentEpoch: number;
+  readonly expectedHeadVersion: number;
+  readonly expectedActiveSetDigest: string;
+  readonly targetCustodyRevision: string;
+  readonly proofs: readonly EncryptedWalletBackupV2RemovalProofTuple[];
+  readonly proofSetCommitment: string;
+  readonly state: EncryptedWalletBackupV2RemovalIntentState;
+  readonly acknowledgedExclusionEvidence: EncryptedWalletBackupV2RemovalExclusionEvidence | null;
+}
+
+const REMOVAL_SET_COMMITMENT_DOMAIN = "bitcaster/encrypted-wallet-backup-v2-removal-set/v1\0";
+const REMOVAL_INTENT_MAX_TEXT_BYTES = 256;
+const REMOVAL_INTENT_MAX_SUPERSEDED_BUNDLES = 256;
+
+export function digestEncryptedWalletBackupV2RemovalProofSet(
+  proofs: readonly EncryptedWalletBackupV2RemovalProofTuple[],
+): string {
+  const normalized = decodeRemovalProofTuples(proofs);
+  return bytesToHex(
+    sha256
+      .create()
+      .update(new TextEncoder().encode(REMOVAL_SET_COMMITMENT_DOMAIN))
+      .update(
+        encodeCanonicalBackupCbor(
+          normalized.map((proof) => [
+            hexBytes(proof.proofId, 32),
+            hexBytes(proof.proofFingerprint, 32),
+            proof.proofRevision,
+            hexBytes(proof.proofCommitment, 32),
+          ]),
+        ),
+      )
+      .digest(),
+  );
+}
+
+export function createEncryptedWalletBackupV2RemovalIntent(input: {
+  readonly intentId: string;
+  readonly createdAtMs: number;
+  readonly realm: string;
+  readonly walletId: string;
+  readonly enrollmentEpoch: number;
+  readonly expectedHeadVersion: number;
+  readonly expectedActiveSetDigest: string;
+  readonly targetCustodyRevision: bigint | string;
+  readonly proofs: readonly EncryptedWalletBackupV2RemovalProofTuple[];
+  readonly proofSetCommitment?: string;
+  readonly state?: EncryptedWalletBackupV2RemovalIntentState;
+  readonly acknowledgedExclusionEvidence?: EncryptedWalletBackupV2RemovalExclusionEvidence | null;
+}): EncryptedWalletBackupV2RemovalIntent {
+  const normalizedProofs = decodeRemovalProofTuples(input.proofs);
+  const proofSetCommitment = digestEncryptedWalletBackupV2RemovalProofSet(normalizedProofs);
+  if (
+    input.proofSetCommitment !== undefined &&
+    requireRemovalLowerHex(input.proofSetCommitment, "proof set commitment") !== proofSetCommitment
+  ) {
+    throw new Error("browser V2 removal intent proof set commitment is invalid");
+  }
+  const evidence =
+    input.acknowledgedExclusionEvidence === undefined ||
+    input.acknowledgedExclusionEvidence === null
+      ? null
+      : decodeRemovalExclusionEvidence(input.acknowledgedExclusionEvidence);
+  return decodeEncryptedWalletBackupV2RemovalIntent({
+    intentId: input.intentId,
+    createdAtMs: input.createdAtMs,
+    realm: input.realm,
+    walletId: input.walletId,
+    enrollmentEpoch: input.enrollmentEpoch,
+    expectedHeadVersion: input.expectedHeadVersion,
+    expectedActiveSetDigest: input.expectedActiveSetDigest,
+    targetCustodyRevision: decimalUint64(
+      typeof input.targetCustodyRevision === "bigint"
+        ? input.targetCustodyRevision
+        : parseDecimalUint64(input.targetCustodyRevision),
+    ),
+    proofs: normalizedProofs,
+    proofSetCommitment,
+    state: input.state ?? (evidence === null ? "pending" : "exclusion-acknowledged"),
+    acknowledgedExclusionEvidence: evidence,
+  });
+}
+
+export function decodeEncryptedWalletBackupV2RemovalIntent(
+  value: unknown,
+): EncryptedWalletBackupV2RemovalIntent {
+  if (!isRecord(value) || !exactKeys(value, removalIntentFields)) {
+    throw new Error("browser V2 removal intent is invalid");
+  }
+  const proofs = decodeRemovalProofTuples(value.proofs);
+  const proofSetCommitment = requireRemovalLowerHex(
+    value.proofSetCommitment,
+    "proof set commitment",
+  );
+  if (digestEncryptedWalletBackupV2RemovalProofSet(proofs) !== proofSetCommitment) {
+    throw new Error("browser V2 removal intent proof set commitment is invalid");
+  }
+  const state = requireRemovalIntentState(value.state);
+  const evidence =
+    value.acknowledgedExclusionEvidence === null
+      ? null
+      : decodeRemovalExclusionEvidence(value.acknowledgedExclusionEvidence);
+  if ((state === "pending") !== (evidence === null)) {
+    throw new Error("browser V2 removal intent exclusion evidence is inconsistent");
+  }
+  return Object.freeze({
+    intentId: requireBoundedText(value.intentId, "intent id"),
+    createdAtMs: requireNonnegativeSafeInteger(value.createdAtMs, "creation time"),
+    realm: requireRealm(value.realm),
+    walletId: requireRemovalLowerHex(value.walletId, "wallet id"),
+    enrollmentEpoch: requirePositiveSafeInteger(value.enrollmentEpoch, "enrollment epoch"),
+    expectedHeadVersion: requireNonnegativeSafeInteger(
+      value.expectedHeadVersion,
+      "expected head version",
+    ),
+    expectedActiveSetDigest: requireRemovalLowerHex(
+      value.expectedActiveSetDigest,
+      "expected active-set digest",
+    ),
+    targetCustodyRevision: decimalUint64(parseDecimalUint64(value.targetCustodyRevision)),
+    proofs,
+    proofSetCommitment,
+    state,
+    acknowledgedExclusionEvidence: evidence,
+  });
+}
+
+export function sameEncryptedWalletBackupV2RemovalIntent(
+  left: EncryptedWalletBackupV2RemovalIntent | null,
+  right: EncryptedWalletBackupV2RemovalIntent | null,
+): boolean {
+  if (left === right) return true;
+  if (left === null || right === null) return false;
+  if (
+    left.intentId !== right.intentId ||
+    left.createdAtMs !== right.createdAtMs ||
+    left.realm !== right.realm ||
+    left.walletId !== right.walletId ||
+    left.enrollmentEpoch !== right.enrollmentEpoch ||
+    left.expectedHeadVersion !== right.expectedHeadVersion ||
+    left.expectedActiveSetDigest !== right.expectedActiveSetDigest ||
+    left.targetCustodyRevision !== right.targetCustodyRevision ||
+    left.proofSetCommitment !== right.proofSetCommitment ||
+    left.state !== right.state
+  )
+    return false;
+  if (
+    left.proofs.length !== right.proofs.length ||
+    left.proofs.some((proof, index) => !sameRemovalProofTuple(proof, right.proofs[index]!))
+  )
+    return false;
+  return sameRemovalExclusionEvidence(
+    left.acknowledgedExclusionEvidence,
+    right.acknowledgedExclusionEvidence,
+  );
+}
+
+export function rebaseEncryptedWalletBackupV2RemovalIntent(input: {
+  readonly intent: EncryptedWalletBackupV2RemovalIntent;
+  readonly targetCustodyRevision: bigint | string;
+  readonly expectedHeadVersion: number;
+  readonly expectedActiveSetDigest: string;
+}): EncryptedWalletBackupV2RemovalIntent {
+  const intent = decodeEncryptedWalletBackupV2RemovalIntent(input.intent);
+  return createEncryptedWalletBackupV2RemovalIntent({
+    intentId: intent.intentId,
+    createdAtMs: intent.createdAtMs,
+    realm: intent.realm,
+    walletId: intent.walletId,
+    enrollmentEpoch: intent.enrollmentEpoch,
+    expectedHeadVersion: input.expectedHeadVersion,
+    expectedActiveSetDigest: input.expectedActiveSetDigest,
+    targetCustodyRevision: input.targetCustodyRevision,
+    proofs: intent.proofs,
+    proofSetCommitment: intent.proofSetCommitment,
+    state: "pending",
+    acknowledgedExclusionEvidence: null,
+  });
+}
+
+const removalIntentFields = [
+  "intentId",
+  "createdAtMs",
+  "realm",
+  "walletId",
+  "enrollmentEpoch",
+  "expectedHeadVersion",
+  "expectedActiveSetDigest",
+  "targetCustodyRevision",
+  "proofs",
+  "proofSetCommitment",
+  "state",
+  "acknowledgedExclusionEvidence",
+] as const;
 
 /** Structural CTF identity retained when a mint keyset is no longer available. */
 export type EncryptedWalletBackupV2TerminalCtfContext = Omit<
@@ -39,6 +280,7 @@ export interface EncryptedWalletBackupV2DesiredAssetRow extends EncryptedWalletB
   readonly desiredAction: EncryptedWalletBackupV2DesiredAction;
   readonly syncState: "pending" | "acknowledged";
   readonly terminalCtfContext: EncryptedWalletBackupV2TerminalCtfContext | null;
+  readonly removalIntent: EncryptedWalletBackupV2RemovalIntent | null;
 }
 
 export function createEncryptedWalletBackupV2DesiredAssetRow(input: {
@@ -51,6 +293,7 @@ export function createEncryptedWalletBackupV2DesiredAssetRow(input: {
    * CTF rows used only to derive a local asset key may leave this null.
    */
   readonly terminalCtfContext?: EncryptedWalletBackupV2TerminalCtfContext | null;
+  readonly removalIntent?: EncryptedWalletBackupV2RemovalIntent | null;
 }): EncryptedWalletBackupV2DesiredAssetRow {
   const asset = decodeEncryptedWalletBackupV2AssetIdentity(input.asset);
   return decodeEncryptedWalletBackupV2DesiredAssetRow({
@@ -62,6 +305,7 @@ export function createEncryptedWalletBackupV2DesiredAssetRow(input: {
     desiredAction: input.activeProofCount === 0 ? "remove" : "replace",
     syncState: "pending",
     terminalCtfContext: input.terminalCtfContext ?? null,
+    removalIntent: input.removalIntent ?? null,
   });
 }
 
@@ -72,6 +316,10 @@ export function decodeEncryptedWalletBackupV2DesiredAssetRow(
     throw new Error("browser V2 desired asset row is invalid");
   }
   const scopeId = decodeDurableCustodyScopeId(value.scopeId);
+  const custodyScope = decodeDurableCustodyScopeInput(scopeId);
+  if (custodyScope.scopeKind !== "wallet") {
+    throw new Error("browser V2 desired asset scope is not a wallet scope");
+  }
   const asset = decodeEncryptedWalletBackupV2AssetIdentity({
     mintUrl: value.mintUrl,
     unit: value.unit,
@@ -87,6 +335,20 @@ export function decodeEncryptedWalletBackupV2DesiredAssetRow(
     throw new Error("browser V2 desired asset action is inconsistent");
   }
   const terminalCtfContext = decodeTerminalCtfContext(value.terminalCtfContext);
+  const removalIntent =
+    value.removalIntent === null
+      ? null
+      : decodeEncryptedWalletBackupV2RemovalIntent(value.removalIntent);
+  const custodyRevision = decimalUint64(parseDecimalUint64(value.custodyRevision));
+  if (removalIntent !== null && removalIntent.targetCustodyRevision !== custodyRevision) {
+    throw new Error("browser V2 desired asset removal intent target revision is stale");
+  }
+  if (removalIntent !== null && custodyScope.walletId !== removalIntent.walletId) {
+    throw new Error("browser V2 desired asset removal intent wallet scope is foreign");
+  }
+  if (removalIntent !== null && asset.assetIdentity === "cashu:ordinary") {
+    throw new Error("browser V2 desired asset removal intent is foreign");
+  }
   if (asset.assetIdentity === "cashu:ordinary") {
     if (terminalCtfContext !== null) {
       throw new Error("browser V2 desired asset CTF context is foreign");
@@ -102,11 +364,12 @@ export function decodeEncryptedWalletBackupV2DesiredAssetRow(
     scopeId,
     localAssetKey,
     ...asset,
-    custodyRevision: decimalUint64(parseDecimalUint64(value.custodyRevision)),
+    custodyRevision,
     activeProofCount,
     desiredAction,
     syncState: requireSyncState(value.syncState),
     terminalCtfContext,
+    removalIntent,
   };
 }
 
@@ -129,6 +392,7 @@ const rowFields = [
   "desiredAction",
   "syncState",
   "terminalCtfContext",
+  "removalIntent",
 ] as const;
 const UINT64_MAX = (1n << 64n) - 1n;
 
@@ -146,6 +410,226 @@ function parseDecimalUint64(value: unknown): bigint {
   const parsed = BigInt(value);
   if (parsed > UINT64_MAX) throw new Error("browser V2 desired asset revision is invalid");
   return parsed;
+}
+
+function decodeRemovalProofTuples(
+  value: unknown,
+): readonly EncryptedWalletBackupV2RemovalProofTuple[] {
+  if (
+    !Array.isArray(value) ||
+    value.length < 1 ||
+    value.length > ENCRYPTED_WALLET_BACKUP_V2_PROOF_SET_MAX
+  ) {
+    throw new Error("browser V2 removal intent proofs are invalid");
+  }
+  const proofs = Object.freeze(
+    value.map((item) => {
+      if (!isRecord(item) || !exactKeys(item, removalProofTupleFields)) {
+        throw new Error("browser V2 removal intent proof tuple is invalid");
+      }
+      return Object.freeze({
+        proofId: requireRemovalLowerHex(item.proofId, "proof id"),
+        proofFingerprint: requireRemovalLowerHex(item.proofFingerprint, "proof fingerprint"),
+        proofRevision: requireNonnegativeSafeInteger(item.proofRevision, "proof revision"),
+        proofCommitment: requireRemovalLowerHex(item.proofCommitment, "proof commitment"),
+      });
+    }),
+  );
+  for (let index = 1; index < proofs.length; index += 1) {
+    if (proofs[index - 1]!.proofId >= proofs[index]!.proofId) {
+      throw new Error("browser V2 removal intent proofs are unordered or duplicated");
+    }
+  }
+  return proofs;
+}
+
+const removalProofTupleFields = [
+  "proofId",
+  "proofFingerprint",
+  "proofRevision",
+  "proofCommitment",
+] as const;
+
+function decodeRemovalExclusionEvidence(
+  value: unknown,
+): EncryptedWalletBackupV2RemovalExclusionEvidence {
+  if (!isRecord(value) || typeof value.kind !== "string") {
+    throw new Error("browser V2 removal intent exclusion evidence is invalid");
+  }
+  switch (value.kind) {
+    case "receipt": {
+      if (!exactKeys(value, removalReceiptExclusionEvidenceFields)) {
+        throw new Error("browser V2 removal intent exclusion evidence is invalid");
+      }
+      const { bundleId, bundleDescriptorDigest } = decodeExclusionBundle(value);
+      return Object.freeze({
+        kind: "receipt",
+        headVersion: requireNonnegativeSafeInteger(value.headVersion, "exclusion head version"),
+        activeSetDigest: requireRemovalLowerHex(
+          value.activeSetDigest,
+          "exclusion active-set digest",
+        ),
+        receiptDigest: requireRemovalLowerHex(value.receiptDigest, "exclusion receipt digest"),
+        bundleId,
+        bundleDescriptorDigest,
+        supersededBundleIds: decodeSortedBundleIds(value.supersededBundleIds),
+        acknowledgedAtMs: requireNonnegativeSafeInteger(
+          value.acknowledgedAtMs,
+          "exclusion acknowledgement time",
+        ),
+      });
+    }
+    case "current-head": {
+      if (!exactKeys(value, removalCurrentHeadExclusionEvidenceFields)) {
+        throw new Error("browser V2 removal intent exclusion evidence is invalid");
+      }
+      const { bundleId, bundleDescriptorDigest } = decodeExclusionBundle(value);
+      return Object.freeze({
+        kind: "current-head",
+        headVersion: requireNonnegativeSafeInteger(value.headVersion, "exclusion head version"),
+        activeSetDigest: requireRemovalLowerHex(
+          value.activeSetDigest,
+          "exclusion active-set digest",
+        ),
+        bundleId,
+        bundleDescriptorDigest,
+        acknowledgedAtMs: requireNonnegativeSafeInteger(
+          value.acknowledgedAtMs,
+          "exclusion acknowledgement time",
+        ),
+      });
+    }
+    default:
+      throw new Error("browser V2 removal intent exclusion evidence is invalid");
+  }
+}
+
+const removalReceiptExclusionEvidenceFields = [
+  "kind",
+  "headVersion",
+  "activeSetDigest",
+  "receiptDigest",
+  "bundleId",
+  "bundleDescriptorDigest",
+  "supersededBundleIds",
+  "acknowledgedAtMs",
+] as const;
+
+const removalCurrentHeadExclusionEvidenceFields = [
+  "kind",
+  "headVersion",
+  "activeSetDigest",
+  "bundleId",
+  "bundleDescriptorDigest",
+  "acknowledgedAtMs",
+] as const;
+
+function decodeExclusionBundle(value: Record<string, unknown>): {
+  readonly bundleId: string | null;
+  readonly bundleDescriptorDigest: string | null;
+} {
+  const bundleId =
+    value.bundleId === null ? null : requireRemovalLowerHex(value.bundleId, "bundle id", 16);
+  const bundleDescriptorDigest =
+    value.bundleDescriptorDigest === null
+      ? null
+      : requireRemovalLowerHex(value.bundleDescriptorDigest, "bundle descriptor digest");
+  if ((bundleId === null) !== (bundleDescriptorDigest === null)) {
+    throw new Error("browser V2 removal intent exclusion evidence is invalid");
+  }
+  return { bundleId, bundleDescriptorDigest };
+}
+
+function decodeSortedBundleIds(value: unknown): readonly string[] {
+  if (!Array.isArray(value) || value.length > REMOVAL_INTENT_MAX_SUPERSEDED_BUNDLES) {
+    throw new Error("browser V2 removal intent bundle ids are invalid");
+  }
+  const ids = Object.freeze(
+    value.map((item) => requireRemovalLowerHex(item, "superseded bundle id", 16)),
+  );
+  for (let index = 1; index < ids.length; index += 1) {
+    if (ids[index - 1]! >= ids[index]!) {
+      throw new Error("browser V2 removal intent bundle ids are unordered or duplicated");
+    }
+  }
+  return ids;
+}
+
+function sameRemovalProofTuple(
+  left: EncryptedWalletBackupV2RemovalProofTuple,
+  right: EncryptedWalletBackupV2RemovalProofTuple,
+): boolean {
+  return (
+    left.proofId === right.proofId &&
+    left.proofFingerprint === right.proofFingerprint &&
+    left.proofRevision === right.proofRevision &&
+    left.proofCommitment === right.proofCommitment
+  );
+}
+
+function sameRemovalExclusionEvidence(
+  left: EncryptedWalletBackupV2RemovalExclusionEvidence | null,
+  right: EncryptedWalletBackupV2RemovalExclusionEvidence | null,
+): boolean {
+  if (left === right) return true;
+  if (left === null || right === null) return false;
+  if (
+    left.kind !== right.kind ||
+    left.headVersion !== right.headVersion ||
+    left.activeSetDigest !== right.activeSetDigest ||
+    left.bundleId !== right.bundleId ||
+    left.bundleDescriptorDigest !== right.bundleDescriptorDigest ||
+    left.acknowledgedAtMs !== right.acknowledgedAtMs
+  )
+    return false;
+  if (left.kind === "current-head" && right.kind === "current-head") return true;
+  if (left.kind !== "receipt" || right.kind !== "receipt") return false;
+  return (
+    left.receiptDigest === right.receiptDigest &&
+    left.supersededBundleIds.length === right.supersededBundleIds.length &&
+    left.supersededBundleIds.every((id, index) => id === right.supersededBundleIds[index])
+  );
+}
+
+function requireRemovalIntentState(value: unknown): EncryptedWalletBackupV2RemovalIntentState {
+  if (value === "pending" || value === "exclusion-acknowledged") return value;
+  throw new Error("browser V2 removal intent state is invalid");
+}
+
+function requireBoundedText(value: unknown, label: string): string {
+  try {
+    return requireBackupUtf8Text(value, REMOVAL_INTENT_MAX_TEXT_BYTES, label);
+  } catch {
+    throw new Error(`browser V2 removal intent ${label} is invalid`);
+  }
+}
+
+function requireNonnegativeSafeInteger(value: unknown, label: string): number {
+  if (!Number.isSafeInteger(value) || (value as number) < 0) {
+    throw new Error(`browser V2 removal intent ${label} is invalid`);
+  }
+  return value as number;
+}
+
+function requirePositiveSafeInteger(value: unknown, label: string): number {
+  const number = requireNonnegativeSafeInteger(value, label);
+  if (number < 1) throw new Error(`browser V2 removal intent ${label} is invalid`);
+  return number;
+}
+
+function requireRemovalLowerHex(value: unknown, label: string, bytes = 32): string {
+  if (typeof value !== "string" || !new RegExp(`^[0-9a-f]{${bytes * 2}}$`).test(value)) {
+    throw new Error(`browser V2 removal intent ${label} is invalid`);
+  }
+  return value;
+}
+
+function hexBytes(value: string, bytes: number): Uint8Array {
+  const result = new Uint8Array(bytes);
+  for (let index = 0; index < bytes; index += 1) {
+    result[index] = Number.parseInt(value.slice(index * 2, index * 2 + 2), 16);
+  }
+  return result;
 }
 
 function requireAction(value: unknown): EncryptedWalletBackupV2DesiredAction {
@@ -404,6 +888,9 @@ async function persistDesiredAssetUpdates(
     if (current && (current.scopeId !== scopeId || current.localAssetKey !== localAssetKey)) {
       throw new Error("browser V2 desired asset authority is foreign");
     }
+    if (current !== undefined && current.removalIntent !== null) {
+      throw new Error("browser V2 desired asset removal intent requires an explicit head rebase");
+    }
     if (
       current &&
       (current.assetIdentity !== update.asset.assetIdentity ||
@@ -429,6 +916,7 @@ async function persistDesiredAssetUpdates(
             ? 1n
             : incrementEncryptedWalletBackupV2DesiredAssetRevision(BigInt(current.custodyRevision)),
         activeProofCount,
+        removalIntent: null,
       }),
     );
   }
@@ -440,6 +928,8 @@ function isActive(proof: BrowserCustodyProofRow): boolean {
     case "locked":
     case "verified-losing":
       return true;
+    case "pending-removal":
+      return false;
     case "spent":
       return false;
     default:
