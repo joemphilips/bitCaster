@@ -52,6 +52,17 @@ export interface AdmitBrowserReceivedProofsInput {
   } | null;
   /** Exact SDK-restored locators. This is mutually exclusive with a derived range. */
   readonly proofLocators?: ReadonlyMap<string, DurableWalletProofDerivationLocator>;
+  /** Exact SDK-verified CTF tuple for each restored conditional proof. */
+  readonly proofConditionalAssets?: ReadonlyMap<
+    string,
+    {
+      readonly conditionId: string;
+      readonly outcomeLabel: string;
+      readonly outcomeCollectionId: string;
+      readonly registeredAt: number;
+      readonly finalExpiry: number | null;
+    }
+  >;
   readonly database?: BitcasterDB;
   readonly lockManager?: Pick<LockManager, "request">;
   readonly now?: () => number;
@@ -104,6 +115,7 @@ function admitBrowserReceivedProofsInternal(
     input.unit,
     decodeCanonicalMintOrigin(input.mintUrl),
   );
+  requireProofConditionalAssets(input, keysets);
   const derivationLocators = deriveProofLocators(input);
   const proofSetFingerprint = deriveDurableCustodyArtifactFingerprint(
     input.proofs.map(serializeDurableCustodyProofArtifact),
@@ -157,6 +169,32 @@ function admitBrowserReceivedProofsInternal(
   return profileLockHeld
     ? commit()
     : withWalletProfileLock(scope.scopeId, commit, input.lockManager);
+}
+
+function requireProofConditionalAssets(
+  input: AdmitBrowserReceivedProofsInput,
+  keysets: ReturnType<typeof resolveImportKeysets>,
+): void {
+  const expected = input.proofConditionalAssets;
+  if (expected === undefined) return;
+  if (expected.size !== input.proofs.length) {
+    throw new Error("Browser restored conditional proof authority is incomplete");
+  }
+  for (const proof of input.proofs) {
+    const asset = expected.get(proof.secret);
+    const keyset = keysets.get(proof.id)?.conditionalKeyset;
+    if (
+      asset === undefined ||
+      keyset === undefined ||
+      normalizeConditionId(asset.conditionId) !== keyset.conditionId ||
+      asset.outcomeLabel !== keyset.outcomeCollection ||
+      asset.outcomeCollectionId !== keyset.outcomeCollectionId ||
+      asset.registeredAt !== keyset.registeredAtUnixSeconds ||
+      asset.finalExpiry !== keyset.finalExpiryUnixSeconds
+    ) {
+      throw new Error("Browser restored conditional proof authority conflicts with keyset");
+    }
+  }
 }
 
 function requireProductMsatUnit(unit: unknown): asserts unit is "msat" {

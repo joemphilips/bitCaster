@@ -84,6 +84,9 @@ export interface BrowserEncryptedWalletBackupV2SealedAdmissionInput {
   ) => void;
 }
 
+export type BrowserEncryptedWalletBackupV2MixedAdmissionInput =
+  BrowserEncryptedWalletBackupV2AdmissionInput;
+
 /** Admit one verified V2 asset under one profile lock, then repair the legacy cache. */
 export async function admitBrowserEncryptedWalletBackupV2Asset(
   input: BrowserEncryptedWalletBackupV2AdmissionInput,
@@ -118,6 +121,49 @@ export async function admitBrowserEncryptedWalletBackupV2Asset(
       requireCurrent(input);
       input.setTargetedRecoveryAdmissionStage?.("backup-admit-cache");
       await addProofs(proofs, input.database);
+    },
+    input.lockManager,
+  );
+}
+
+/** Admit selectable and sealed CTF siblings in one canonical transaction. */
+export async function admitBrowserEncryptedWalletBackupV2MixedAsset(
+  input: BrowserEncryptedWalletBackupV2MixedAdmissionInput,
+): Promise<void> {
+  requireProductMsatUnit(input.asset.unit);
+  requireCurrent(input);
+  const verified = requireEncryptedWalletBackupV2VerifiedProofSet(input.verified);
+  const selectableEntries = verified.proofs.filter(
+    ({ selectionAuthority }) => selectionAuthority === "live-verified",
+  );
+  const sealedEntries = verified.proofs.filter(
+    ({ selectionAuthority }) => selectionAuthority === "terminal-sealed-non-selectable",
+  );
+  if (selectableEntries.length === 0 || sealedEntries.length === 0) {
+    throw new Error("browser V2 mixed admission requires both proof trust levels");
+  }
+  if (
+    verified.proofs.some(({ unit }) => unit !== "msat") ||
+    verified.counterHighWaterMarks.some(({ unit }) => unit !== "msat")
+  ) {
+    throw new Error("browser V2 product admission proof unit requires msat");
+  }
+  requireAdmissionAuthority(input, verified);
+  if (browserWalletScope(input.seed).scopeId !== input.scopeId) {
+    throw new Error("browser V2 restore scope is foreign");
+  }
+  const selectableProofs = storedProofs(input, verified).filter(
+    (_, index) => verified.proofs[index]!.selectionAuthority === "live-verified",
+  );
+  const sealed = prepareSealedAdmission(input, verified, sealedEntries, verified.proofs.length);
+  requireMixedCtfContext(verified, sealed.desiredRow.terminalCtfContext);
+  input.setTargetedRecoveryAdmissionStage?.("backup-admit-lock");
+  await withWalletProfileLock(
+    input.scopeId,
+    async () => {
+      requireCurrent(input);
+      input.setTargetedRecoveryAdmissionStage?.("backup-admit-authority");
+      await commitMixedAuthority(input, verified, selectableEntries, selectableProofs, sealed);
     },
     input.lockManager,
   );
@@ -200,16 +246,18 @@ interface PreparedSealedAdmission {
 function prepareSealedAdmission(
   input: BrowserEncryptedWalletBackupV2SealedAdmissionInput,
   verified: EncryptedWalletBackupV2VerifiedProofSet,
+  entries: EncryptedWalletBackupV2VerifiedProofSet["proofs"] = verified.proofs,
+  activeProofCount = entries.length,
 ): PreparedSealedAdmission {
   const asset = decodeEncryptedWalletBackupV2AssetIdentity(input.asset);
   if (!asset.assetIdentity.startsWith("ctf:")) {
     throw new Error("browser V2 sealed admission requires a CTF asset");
   }
-  if (verified.proofs.length === 0) {
+  if (entries.length === 0) {
     throw new Error("browser V2 sealed admission proof set is empty");
   }
   if (
-    verified.proofs.some(
+    entries.some(
       (entry) =>
         entry.mintUrl !== asset.mintUrl ||
         entry.unit !== "msat" ||
@@ -220,7 +268,7 @@ function prepareSealedAdmission(
   ) {
     throw new Error("browser V2 sealed admission proof is not sealed CTF");
   }
-  const first = verified.proofs[0]!;
+  const first = entries[0]!;
   if (first.asset.kind !== "ctf") {
     throw new Error("browser V2 sealed admission CTF asset is missing");
   }
@@ -228,7 +276,7 @@ function prepareSealedAdmission(
   if (`ctf:${context.conditionId}:${context.outcomeCollectionId}` !== asset.assetIdentity) {
     throw new Error("browser V2 sealed admission asset is foreign");
   }
-  for (const entry of verified.proofs) {
+  for (const entry of entries) {
     if (
       entry.asset.kind !== "ctf" ||
       !sameTerminalCtfContext(context, terminalCtfContext(entry.asset))
@@ -251,9 +299,9 @@ function prepareSealedAdmission(
     throw new Error("browser V2 restore scope is foreign");
   }
   const receivedAtMs = Math.max(
-    ...verified.proofs.map((entry) => requireSeal(entry.terminalSeal).classifiedAtMs),
+    ...entries.map((entry) => requireSeal(entry.terminalSeal).classifiedAtMs),
   );
-  const proofRows = verified.proofs.map((entry) => {
+  const proofRows = entries.map((entry) => {
     const proof = createBrowserCustodyProofRow({
       scopeId: input.scopeId,
       normalizedMint: asset.mintUrl,
@@ -274,7 +322,7 @@ function prepareSealedAdmission(
   });
   const observedAtMs = receivedAtMs;
   const authorityRows = proofRows.map((proof, index) => {
-    const entry = verified.proofs[index]!;
+    const entry = entries[index]!;
     const seal = requireSeal(entry.terminalSeal);
     return createBrowserRemoteProofBackupAuthorityRow({
       proof,
@@ -288,7 +336,7 @@ function prepareSealedAdmission(
     scopeId: input.scopeId,
     asset,
     custodyRevision: input.custodyRevision,
-    activeProofCount: proofRows.length,
+    activeProofCount,
     terminalCtfContext: context,
   });
   return {
@@ -585,6 +633,179 @@ function requireAdmissionAuthority(
   }
 }
 
+async function commitMixedAuthority(
+  input: BrowserEncryptedWalletBackupV2MixedAdmissionInput,
+  verified: EncryptedWalletBackupV2VerifiedProofSet,
+  selectableEntries: readonly EncryptedWalletBackupV2VerifiedProofSet["proofs"][number][],
+  selectableProofs: readonly StoredProof[],
+  sealed: PreparedSealedAdmission,
+): Promise<void> {
+  requireCurrent(input);
+  input.setTargetedRecoveryAdmissionStage?.("backup-admit-state");
+  const start = await startingState(input, verified, sealed.desiredRow);
+  await requireCompatibleMixedAuthorities(input, verified, sealed);
+  if (start.kind === "idempotent") {
+    input.setTargetedRecoveryAdmissionStage?.("backup-admit-cache");
+    await repairMixedLegacyCache(input.database, selectableProofs, sealed.proofRows);
+    return;
+  }
+  const sourceOperationId =
+    start.kind === "evicted"
+      ? `${input.sourceOperationId}:reimport:${localReimportId(input)}`
+      : input.sourceOperationId;
+  const selectableToAdmit = selectableEntries.flatMap((entry, index) =>
+    start.proofIdsToAdmit.has(entry.proofId)
+      ? [{ verified: entry, stored: selectableProofs[index]! }]
+      : [],
+  );
+  const sealedIndexesToAdmit = sealed.proofRows.flatMap((proof, index) =>
+    start.proofIdsToAdmit.has(proof.proofId) ? [index] : [],
+  );
+  const beforePersist =
+    start.kind === "evicted"
+      ? () =>
+          input.database.encryptedWalletBackupV2DesiredAssets.delete([
+            input.scopeId,
+            sealed.desiredRow.localAssetKey,
+          ])
+      : undefined;
+  const persistExtensions = async () => {
+    if (sealedIndexesToAdmit.length > 0) {
+      input.setTargetedRecoveryAdmissionStage?.("backup-admit-custody");
+      await input.database.custodyProofs.bulkPut(
+        sealedIndexesToAdmit.map((index) => sealed.proofRows[index]!),
+      );
+      await input.database.custodyProofBackupAuthorities.bulkPut(
+        sealedIndexesToAdmit.map((index) => sealed.authorityRows[index]!),
+      );
+    }
+    if (input.fault === "after-authority-before-cache") {
+      throw new Error("browser V2 restore injected cache fault");
+    }
+    input.setTargetedRecoveryAdmissionStage?.("backup-admit-counter");
+    await restoreCountersInOwnedTransaction(input, verified);
+    input.setTargetedRecoveryAdmissionStage?.("backup-admit-desired");
+    input.setTargetedRecoveryAdmissionStage?.("backup-admit-desired-write");
+    await input.database.encryptedWalletBackupV2DesiredAssets.put(sealed.desiredRow);
+    input.setTargetedRecoveryAdmissionStage?.("backup-admit-current-profile");
+    requireCurrent(input);
+    input.setTargetedRecoveryAdmissionStage?.("backup-admit-cache");
+    await removeMatchingStaleLegacyCacheRows(input.database, sealed.proofRows);
+    input.setTargetedRecoveryAdmissionStage?.("backup-admit-transaction-commit");
+    if (input.fault === "before-commit") {
+      throw new Error("browser V2 restore injected commit fault");
+    }
+  };
+  if (selectableToAdmit.length > 0) {
+    input.setTargetedRecoveryAdmissionStage?.("backup-admit-custody");
+    await admitBrowserReceivedProofsWithHeldProfileLock(
+      {
+        seed: input.seed,
+        sourceOperationId,
+        mintUrl: input.asset.mintUrl,
+        unit: "msat",
+        wallet: input.wallet,
+        proofs: selectableToAdmit.map(({ stored }) => stored),
+        derivationAuthority: null,
+        proofLocators: new Map(
+          selectableToAdmit.map(({ verified: entry }) => [entry.proof.secret, entry.locator]),
+        ),
+        ...proofConditionalAssets(selectableToAdmit.map(({ verified: entry }) => entry)),
+        database: input.database,
+      },
+      {
+        beforePersist,
+        afterPersist: persistExtensions,
+        legacyProofCache: {
+          spentSecrets: [],
+          freshProofs: selectableProofs,
+        },
+      },
+    );
+    return;
+  }
+  await new BrowserDurableCustodyAdapter(input.database).ensureScope(
+    browserWalletScope(input.seed),
+    sealed.observedAtMs,
+  );
+  await input.database.transaction(
+    "rw",
+    [
+      input.database.custodyProofs,
+      input.database.custodyProofBackupAuthorities,
+      input.database.walletCounterAssociations,
+      input.database.walletCounterCursors,
+      input.database.encryptedWalletBackupV2DesiredAssets,
+      input.database.proofs,
+    ],
+    async () => {
+      await beforePersist?.();
+      await persistExtensions();
+      await addProofs([...selectableProofs], input.database);
+    },
+  );
+}
+
+function requireMixedCtfContext(
+  verified: EncryptedWalletBackupV2VerifiedProofSet,
+  expected: ReturnType<typeof terminalCtfContext> | null,
+): void {
+  const actual = verifiedTerminalCtfContext(verified);
+  if (expected === null || actual === null || !sameTerminalCtfContext(expected, actual)) {
+    throw new Error("browser V2 mixed admission CTF tuple conflicts");
+  }
+}
+
+async function requireCompatibleMixedAuthorities(
+  input: BrowserEncryptedWalletBackupV2MixedAdmissionInput,
+  verified: EncryptedWalletBackupV2VerifiedProofSet,
+  sealed: PreparedSealedAdmission,
+): Promise<void> {
+  const entriesById = new Map(verified.proofs.map((entry) => [entry.proofId, entry]));
+  const sealedAuthorityById = new Map(
+    sealed.proofRows.map((proof, index) => [proof.proofId, sealed.authorityRows[index]!]),
+  );
+  const rows = await readBrowserEncryptedWalletBackupV2ExactLocalProofRows({
+    database: input.database,
+    scopeId: input.scopeId,
+    asset: input.asset,
+    ctfRoute: verified.proofs[0]!.asset as Extract<
+      EncryptedWalletBackupV2VerifiedProofSet["proofs"][number]["asset"],
+      { readonly kind: "ctf" }
+    >,
+  });
+  const authorities = await input.database.custodyProofBackupAuthorities.bulkGet(
+    rows.map((row) => [input.scopeId, row.proofId]),
+  );
+  rows.forEach((row, index) => {
+    const entry = entriesById.get(row.proofId);
+    if (entry === undefined) throw new Error("browser V2 restore local custody is partial");
+    const authority = requireBrowserProofBackupAuthorityForProof(authorities[index], row);
+    if (entry.selectionAuthority === "terminal-sealed-non-selectable") {
+      const expected = sealedAuthorityById.get(row.proofId);
+      if (expected === undefined || !sameRemoteAuthority(authority, expected)) {
+        throw new Error("browser V2 mixed admission sealed authority conflicts");
+      }
+      return;
+    }
+    if (
+      authority.derivationLocator === null ||
+      JSON.stringify(authority.derivationLocator) !== JSON.stringify(entry.locator)
+    ) {
+      throw new Error("browser V2 mixed admission live authority conflicts");
+    }
+  });
+}
+
+async function repairMixedLegacyCache(
+  database: BitcasterDB,
+  selectableProofs: readonly StoredProof[],
+  sealedProofs: readonly ReturnType<typeof decodeBrowserCustodyProofRow>[],
+): Promise<void> {
+  await removeMatchingStaleLegacyCacheRows(database, sealedProofs);
+  await addProofs([...selectableProofs], database);
+}
+
 async function commitAuthority(
   input: BrowserEncryptedWalletBackupV2AdmissionInput,
   verified: EncryptedWalletBackupV2VerifiedProofSet,
@@ -604,7 +825,7 @@ async function commitAuthority(
   const beforePersist =
     start.kind === "evicted"
       ? async () => {
-          const desired = desiredRow(input, proofs.length);
+          const desired = desiredRow(input, proofs.length, verifiedTerminalCtfContext(verified));
           await input.database.encryptedWalletBackupV2DesiredAssets.delete([
             input.scopeId,
             desired.localAssetKey,
@@ -615,7 +836,7 @@ async function commitAuthority(
     input.setTargetedRecoveryAdmissionStage?.("backup-admit-counter");
     await restoreCountersInOwnedTransaction(input, verified);
     input.setTargetedRecoveryAdmissionStage?.("backup-admit-desired");
-    const desired = desiredRow(input, proofs.length);
+    const desired = desiredRow(input, proofs.length, verifiedTerminalCtfContext(verified));
     input.setTargetedRecoveryAdmissionStage?.("backup-admit-desired-write");
     await input.database.encryptedWalletBackupV2DesiredAssets.put({
       ...desired,
@@ -641,6 +862,7 @@ async function commitAuthority(
         proofLocators: new Map(
           selected.map(({ verified: proof }) => [proof.proof.secret, proof.locator]),
         ),
+        ...proofConditionalAssets(selected.map(({ verified: proof }) => proof)),
         database: input.database,
       },
       {
@@ -704,11 +926,12 @@ async function restoreCountersInOwnedTransaction(
 async function startingState(
   input: BrowserEncryptedWalletBackupV2AdmissionInput,
   verified: EncryptedWalletBackupV2VerifiedProofSet,
+  expectedDesired = desiredRow(input, verified.proofs.length, verifiedTerminalCtfContext(verified)),
 ): Promise<{
   readonly kind: "absent" | "evicted" | "idempotent" | "merge";
   readonly proofIdsToAdmit: ReadonlySet<string>;
 }> {
-  const desired = desiredRow(input, verified.proofs.length);
+  const desired = expectedDesired;
   const allProofIds = new Set(verified.proofs.map(({ proofId }) => proofId));
   const raw = await input.database.encryptedWalletBackupV2DesiredAssets.get([
     input.scopeId,
@@ -729,7 +952,8 @@ async function startingState(
   const currentAuthorityConflicts =
     row.custodyRevision !== desired.custodyRevision ||
     row.activeProofCount !== verified.proofs.length ||
-    row.syncState !== "acknowledged";
+    row.syncState !== "acknowledged" ||
+    !sameOptionalTerminalCtfContext(row.terminalCtfContext, desired.terminalCtfContext);
   if (!currentAuthorityConflicts) {
     if (proofs.length === 0) return { kind: "evicted", proofIdsToAdmit: allProofIds };
     if (sameProofSet(proofs, verified)) {
@@ -741,6 +965,7 @@ async function startingState(
     row.desiredAction !== "replace" ||
     row.syncState !== "acknowledged" ||
     row.activeProofCount !== proofs.length ||
+    !sameOptionalTerminalCtfContext(row.terminalCtfContext, desired.terminalCtfContext) ||
     input.custodyRevision <= BigInt(row.custodyRevision) ||
     !isProofSubset(proofs, verified)
   ) {
@@ -765,7 +990,15 @@ function sameProofSet(
     ]),
   );
   if (expected.size !== verified.proofs.length) return false;
-  return rows.every((row) => expected.get(row.proofId) === row.proofFingerprint);
+  return rows.every((row) => {
+    const entry = verified.proofs.find(({ proofId }) => proofId === row.proofId);
+    return (
+      entry !== undefined &&
+      expected.get(row.proofId) === row.proofFingerprint &&
+      row.selectability === expectedSelectability(entry.selectionAuthority) &&
+      row.reservationOperationId === null
+    );
+  });
 }
 
 function isProofSubset(
@@ -780,16 +1013,98 @@ function isProofSubset(
   );
   return (
     expected.size === verified.proofs.length &&
-    rows.every((row) => expected.get(row.proofId) === row.proofFingerprint)
+    rows.every((row) => {
+      const entry = verified.proofs.find(({ proofId }) => proofId === row.proofId);
+      return (
+        entry !== undefined &&
+        expected.get(row.proofId) === row.proofFingerprint &&
+        row.selectability === expectedSelectability(entry.selectionAuthority) &&
+        row.reservationOperationId === null
+      );
+    })
   );
 }
 
-function desiredRow(input: BrowserEncryptedWalletBackupV2AdmissionInput, proofCount: number) {
+function expectedSelectability(
+  authority: EncryptedWalletBackupV2VerifiedProofSet["proofs"][number]["selectionAuthority"],
+): "selectable" | "verified-losing" {
+  return authority === "live-verified" ? "selectable" : "verified-losing";
+}
+
+function proofConditionalAssets(
+  entries: readonly EncryptedWalletBackupV2VerifiedProofSet["proofs"][number][],
+):
+  | {
+      readonly proofConditionalAssets: ReadonlyMap<
+        string,
+        Omit<
+          Extract<
+            EncryptedWalletBackupV2VerifiedProofSet["proofs"][number]["asset"],
+            { readonly kind: "ctf" }
+          >,
+          "kind"
+        >
+      >;
+    }
+  | Record<string, never> {
+  if (entries.every(({ asset }) => asset.kind === "ordinary")) return {};
+  if (entries.some(({ asset }) => asset.kind !== "ctf")) {
+    throw new Error("browser V2 restored proof asset types conflict");
+  }
+  return {
+    proofConditionalAssets: new Map(
+      entries.map((entry) => {
+        if (entry.asset.kind !== "ctf") {
+          throw new Error("browser V2 restored proof asset types conflict");
+        }
+        const { kind: _kind, ...asset } = entry.asset;
+        return [entry.proof.secret, asset];
+      }),
+    ),
+  };
+}
+
+function sameOptionalTerminalCtfContext(
+  left: ReturnType<typeof terminalCtfContext> | null,
+  right: ReturnType<typeof terminalCtfContext> | null,
+): boolean {
+  return left === null || right === null ? left === right : sameTerminalCtfContext(left, right);
+}
+
+function verifiedTerminalCtfContext(
+  verified: EncryptedWalletBackupV2VerifiedProofSet,
+): ReturnType<typeof terminalCtfContext> | null {
+  const asset = verified.proofs[0]?.asset;
+  if (asset === undefined || asset.kind === "ordinary") {
+    if (verified.proofs.some((entry) => entry.asset.kind !== "ordinary")) {
+      throw new Error("browser V2 restored proof asset types conflict");
+    }
+    return null;
+  }
+  const context = terminalCtfContext(asset);
+  if (
+    verified.proofs.some(
+      (entry) =>
+        entry.asset.kind !== "ctf" ||
+        !sameTerminalCtfContext(context, terminalCtfContext(entry.asset)),
+    )
+  ) {
+    throw new Error("browser V2 restored proof CTF tuple conflicts");
+  }
+  return context;
+}
+
+function desiredRow(
+  input: BrowserEncryptedWalletBackupV2AdmissionInput,
+  proofCount: number,
+  ctfContext: ReturnType<typeof terminalCtfContext> | null = null,
+) {
   return createEncryptedWalletBackupV2DesiredAssetRow({
     scopeId: input.scopeId,
     asset: input.asset,
     custodyRevision: input.custodyRevision,
     activeProofCount: proofCount,
+    terminalCtfContext: ctfContext,
   });
 }
 

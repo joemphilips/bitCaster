@@ -40,7 +40,9 @@ import {
 import { deriveDurableCustodyArtifactFingerprint } from "@bitcaster/client-sdk/durableCustody";
 import {
   admitBrowserEncryptedWalletBackupV2Asset,
+  admitBrowserEncryptedWalletBackupV2MixedAsset,
   admitBrowserEncryptedWalletBackupV2SealedAsset,
+  type BrowserEncryptedWalletBackupV2AdmissionStage,
 } from "./browserEncryptedWalletBackupV2Admission";
 import { retryBrowserEncryptedWalletBackupV2QuotaWrite } from "./browserEncryptedWalletBackupV2QuotaCleanup";
 import { withWalletProfileLock } from "./walletProfileLock";
@@ -298,14 +300,17 @@ export async function restoreAndAdmitBrowserEncryptedWalletBackupV2TargetedAsset
       return { kind: "restored", bundleId: restored.bundleId, headVersion: restored.headVersion };
     }
     const wallet = await loadWallet();
+    const hasSealed = verified.proofs.some(
+      ({ selectionAuthority }) => selectionAuthority === "terminal-sealed-non-selectable",
+    );
     await retryBrowserEncryptedWalletBackupV2QuotaWrite({
       database: input.database,
       scopeId: input.scopeId,
       isCurrentProfile: input.isCurrentProfile,
       protectedLocalAssetKeys: [encryptedWalletBackupV2LocalAssetKey(input.asset)],
       lockManager: input.lockManager,
-      write: () =>
-        admitBrowserEncryptedWalletBackupV2Asset({
+      write: () => {
+        const admission = {
           seed: input.seed,
           verified,
           asset: input.asset,
@@ -316,10 +321,16 @@ export async function restoreAndAdmitBrowserEncryptedWalletBackupV2TargetedAsset
           scopeId: input.scopeId,
           isCurrentProfile: input.isCurrentProfile,
           lockManager: input.lockManager,
-          setTargetedRecoveryAdmissionStage: (stage) => {
+          setTargetedRecoveryAdmissionStage: (
+            stage: BrowserEncryptedWalletBackupV2AdmissionStage,
+          ) => {
             admissionStage = stage;
           },
-        }),
+        };
+        return hasSealed
+          ? admitBrowserEncryptedWalletBackupV2MixedAsset(admission)
+          : admitBrowserEncryptedWalletBackupV2Asset(admission);
+      },
     });
   } catch (error) {
     reportStage(input, admissionStage);

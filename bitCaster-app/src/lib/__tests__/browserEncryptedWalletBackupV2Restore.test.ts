@@ -1,6 +1,17 @@
 // @vitest-environment node
 import "fake-indexeddb/auto";
-import { Amount, deriveConditionalKeysetId, type Wallet as CashuWallet } from "@cashu/cashu-ts";
+import {
+  Amount,
+  createBlindSignature,
+  createDLEQProof,
+  deriveConditionalKeysetId,
+  hashToCurve,
+  Keyset,
+  OutputData,
+  pointFromHex,
+  type Wallet as CashuWallet,
+} from "@cashu/cashu-ts";
+import { bytesToHex } from "@noble/curves/utils.js";
 import {
   createEncryptedWalletBackupV2AssetIdentity,
   createEncryptedWalletBackupV2CurrentHead,
@@ -42,7 +53,8 @@ const CTF_OUTCOME_COLLECTION_ID = deriveRootCtfOutcomeCollectionId({
   conditionId: CTF_CONDITION_ID,
   outcomeCollection: CTF_OUTCOME,
 });
-const CTF_PUBLIC_KEY = `02${"66".repeat(32)}`;
+const CTF_PRIVATE_KEY = Uint8Array.from({ length: 32 }, (_, index) => (index === 31 ? 1 : 0));
+const CTF_PUBLIC_KEY = "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798";
 const CTF_KEYSET = deriveConditionalKeysetId({
   keys: { "1": CTF_PUBLIC_KEY },
   unit: "msat",
@@ -657,6 +669,64 @@ it("admits an all-sealed bundle without loading the mint wallet", async () => {
   );
 });
 
+it("admits mixed CTF siblings through the live mint gate and keeps losing proof out of cache", async () => {
+  const fixture = await sealedBackupFixture(true);
+
+  await expect(
+    restoreAndAdmitBrowserEncryptedWalletBackupV2TargetedAsset({
+      ...fixture.input,
+      loadWallet: async () => ctfRestoreWallet(fixture.input.asset.mintUrl),
+      lockManager: immediateLockManager(),
+    }),
+  ).resolves.toEqual({
+    kind: "restored",
+    bundleId: fixture.bundleId,
+    headVersion: 1,
+  });
+
+  expect(
+    (await fixture.input.database.custodyProofs.toArray())
+      .map(({ selectability }) => selectability)
+      .sort(),
+  ).toEqual(["selectable", "verified-losing"]);
+  expect(await fixture.input.database.proofs.count()).toBe(1);
+  expect(
+    await fixture.input.database.walletCounterAssociations.get([
+      fixture.input.scopeId,
+      fixture.input.asset.mintUrl,
+      "msat",
+      CTF_KEYSET,
+    ]),
+  ).toMatchObject({ recoveryComplete: true });
+  expect(
+    await fixture.input.database.walletCounterCursors.get([fixture.input.scopeId, CTF_KEYSET]),
+  ).toMatchObject({ next: 2 });
+  await expect(readBrowserEncryptedWalletBackupV2LocalAvailableAmount(fixture.input)).resolves.toBe(
+    1n,
+  );
+});
+
+it("does not admit a sealed sibling when its mixed live proof fails the mint gate", async () => {
+  const fixture = await sealedBackupFixture(true);
+  const wallet = ctfRestoreWallet(fixture.input.asset.mintUrl) as unknown as {
+    getKeyset: () => { verify: () => boolean };
+  };
+  wallet.getKeyset = () => ({ verify: () => false });
+
+  await expect(
+    restoreAndAdmitBrowserEncryptedWalletBackupV2TargetedAsset({
+      ...fixture.input,
+      loadWallet: async () => wallet as unknown as CashuWallet,
+      lockManager: immediateLockManager(),
+    }),
+  ).rejects.toThrow(/keyset|verify|invalid/i);
+
+  expect(await fixture.input.database.custodyProofs.count()).toBe(0);
+  expect(await fixture.input.database.custodyProofBackupAuthorities.count()).toBe(0);
+  expect(await fixture.input.database.encryptedWalletBackupV2DesiredAssets.count()).toBe(0);
+  expect(await fixture.input.database.proofs.count()).toBe(0);
+});
+
 it("rejects a corrupt object before returning material", async () => {
   const fixture = await backupFixture();
   const stages: string[] = [];
@@ -839,7 +909,27 @@ it("does not admit a decrypted bundle before mint proof verification", async () 
   expect(await fixture.input.database.encryptedWalletBackupV2DesiredAssets.count()).toBe(0);
 });
 
-async function sealedBackupFixture() {
+function ctfRestoreWallet(mintUrl: string): CashuWallet {
+  const keyset = new Keyset(CTF_KEYSET, "msat", true, 100, 100, {
+    conditionId: CTF_CONDITION_ID,
+    outcomeCollection: CTF_OUTCOME,
+    outcomeCollectionId: CTF_OUTCOME_COLLECTION_ID,
+    registeredAt: 0,
+  });
+  keyset.keys = { 1: CTF_PUBLIC_KEY };
+  return {
+    mint: { mintUrl },
+    getKeyset: () => keyset,
+    checkProofsStates: async (proofs: readonly { readonly secret: string }[]) =>
+      proofs.map(({ secret }) => ({
+        Y: hashToCurve(new TextEncoder().encode(secret)).toHex(true),
+        state: "UNSPENT" as const,
+        witness: null,
+      })),
+  } as unknown as CashuWallet;
+}
+
+async function sealedBackupFixture(includeSelectableSibling = false) {
   const { scopeId, walletId } = browserWalletScope(SEED);
   const database = new BitcasterDB(browserWalletDatabaseName(scopeId));
   openDatabases.push(database);
@@ -947,6 +1037,28 @@ async function sealedBackupFixture() {
         read({ record, exactRejection: committed.rejection, classifiedAtMs: 20 }),
     },
   });
+  const liveOutput = OutputData.createSingleDeterministicData(1, SEED, 1, CTF_KEYSET);
+  const liveBlindSignature = createBlindSignature(
+    pointFromHex(liveOutput.blindedMessage.B_),
+    CTF_PRIVATE_KEY,
+    CTF_KEYSET,
+  );
+  const liveDleq = createDLEQProof(pointFromHex(liveOutput.blindedMessage.B_), CTF_PRIVATE_KEY);
+  const liveProof = liveOutput.toProof(
+    {
+      id: CTF_KEYSET,
+      amount: Amount.from(1),
+      C_: liveBlindSignature.C_.toHex(true),
+      dleq: { e: bytesToHex(liveDleq.e), s: bytesToHex(liveDleq.s) },
+    },
+    { id: CTF_KEYSET, keys: { 1: CTF_PUBLIC_KEY } },
+  );
+  const liveLocator = {
+    schemaVersion: 1 as const,
+    kind: "nut13" as const,
+    keysetId: CTF_KEYSET,
+    counter: 1,
+  };
   await database.custodyProofs.clear();
   await database.custodyProofBackupAuthorities.clear();
   await database.encryptedWalletBackupV2DesiredAssets.clear();
@@ -973,7 +1085,12 @@ async function sealedBackupFixture() {
     asset,
     custodyRevision: 1n,
     counterHighWaterMarks: [
-      { mintUrl: asset.mintUrl, unit: "msat", keysetId: CTF_KEYSET, nextCounter: 1 },
+      {
+        mintUrl: asset.mintUrl,
+        unit: "msat",
+        keysetId: CTF_KEYSET,
+        nextCounter: includeSelectableSibling ? 2 : 1,
+      },
     ],
     proofs: [
       {
@@ -984,6 +1101,17 @@ async function sealedBackupFixture() {
         proof,
         terminalSeal,
       },
+      ...(includeSelectableSibling
+        ? [
+            {
+              mintUrl: asset.mintUrl,
+              unit: "msat" as const,
+              asset: ctfAsset,
+              locator: liveLocator,
+              proof: liveProof,
+            },
+          ]
+        : []),
     ],
     runtime: { subtle: crypto.subtle, getRandomValues: crypto.getRandomValues.bind(crypto) },
   });
