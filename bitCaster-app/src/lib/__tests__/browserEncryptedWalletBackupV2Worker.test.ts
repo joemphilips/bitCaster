@@ -15,6 +15,7 @@ import {
   prepareEncryptedWalletBackupV2TransportBundle,
   deriveRootCtfOutcomeCollectionId,
   type EncryptedWalletBackupV2BundleDescriptor,
+  type EncryptedWalletBackupV2BundleObjectWire,
   type EncryptedWalletBackupV2BundleSupersessionReceipt,
   type EncryptedWalletBackupV2DescriptorPage,
   type EncryptedWalletBackupV2RemotePort,
@@ -28,11 +29,15 @@ import { EncryptedWalletBackupV2HttpTransportError } from "@bitcaster/client-sdk
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createEncryptedWalletBackupV2DesiredAssetRow } from "../../stores/browser-encrypted-wallet-backup-v2-desired-asset";
 import { EncryptedWalletBackupV2DexieAuthorityStore } from "../../stores/encrypted-wallet-backup-v2-db";
-import { createBrowserProofBackupAuthorityRow } from "../../stores/browser-proof-backup-authority";
+import {
+  createBrowserProofBackupAuthorityRow,
+  createBrowserRemoteProofBackupAuthorityRow,
+} from "../../stores/browser-proof-backup-authority";
 import {
   BrowserDurableCustodyAdapter,
   createBrowserCustodyProofRow,
 } from "../../stores/durable-custody-db";
+import { decodeBrowserCustodyProofRow } from "../../stores/durable-custody-types";
 import { BitcasterDB } from "../../stores/proof-db";
 import { browserWalletDatabaseName } from "../browserWalletProfile";
 import {
@@ -106,6 +111,79 @@ describe("browser V2 backup worker", () => {
       1,
     );
     expect(fixture.remote.appliedMutations).toBe(1);
+  });
+
+  it("reuses an authenticated remote seal with the predecessor revision", async () => {
+    const fixture = await terminalWorkerFixture();
+    await expect(runBrowserEncryptedWalletBackupV2WorkerCycle(fixture.input)).resolves.toEqual({
+      kind: "committed",
+    });
+    const desiredRows = await fixture.database.encryptedWalletBackupV2DesiredAssets.toArray();
+    const currentDesired = desiredRows[0];
+    if (currentDesired === undefined) throw new Error("test desired asset is missing");
+    const proofRows = (await fixture.database.custodyProofs.toArray()).map(
+      decodeBrowserCustodyProofRow,
+    );
+    const losing = proofRows.find(({ selectability }) => selectability === "verified-losing");
+    if (losing === undefined) throw new Error("test losing proof is missing");
+    await fixture.database.custodyProofBackupAuthorities.put(
+      createBrowserRemoteProofBackupAuthorityRow({
+        proof: losing,
+        observedAtMs: 30,
+        derivationLocator: { schemaVersion: 1, kind: "nut13", keysetId: CTF_KEYSET, counter: 1 },
+        restoreProofId: losing.proofId,
+        restoreProofCommitment: "11".repeat(32),
+      }),
+    );
+    await fixture.database.encryptedWalletBackupV2DesiredAssets.put({
+      ...createEncryptedWalletBackupV2DesiredAssetRow({
+        scopeId: fixture.scopeId,
+        asset: fixture.asset,
+        custodyRevision: BigInt(currentDesired.custodyRevision) + 1n,
+        activeProofCount: currentDesired.activeProofCount,
+      }),
+      syncState: "pending",
+    });
+
+    fixture.remote.replaceHead(fixture.remote.evidence().bundles);
+    await expect(
+      runBrowserEncryptedWalletBackupV2WorkerCycle({
+        ...fixture.input,
+        remoteOrigin: "https://backup.example",
+      }),
+    ).resolves.toEqual({ kind: "head-accepted" });
+    expect(fixture.remote.mutations).toHaveLength(1);
+
+    await expect(
+      runBrowserEncryptedWalletBackupV2WorkerCycle({
+        ...fixture.input,
+        remoteOrigin: "https://backup.example",
+      }),
+    ).resolves.toEqual({ kind: "committed" });
+    expect(fixture.remote.mutations).toHaveLength(2);
+    const group = decodeEncryptedWalletBackupV2UploadGroup({
+      bytes: fixture.remote.mutations[1]!.bytes,
+      expectedRequestAuthPublicKey: fixture.input.keyHandle.requestAuthPublicKey,
+      expectedContext: {
+        realm: REALM,
+        walletId: fixture.input.keyHandle.walletId,
+        enrollmentEpoch: 1,
+      },
+    });
+    const added = group.mutationEvidence.envelope.mutation.addedBundle;
+    if (added === null) throw new Error("test successor bundle is missing");
+    const restored = await decryptEncryptedWalletBackupV2ProofSetBundle({
+      keyHandle: fixture.input.keyHandle,
+      seed: fixture.seed,
+      expectedAsset: fixture.asset,
+      custodyRevision: BigInt(added.custodyRevision),
+      runtime: { subtle: crypto.subtle, getRandomValues: randomValues },
+      descriptor: added,
+      objects: group.objects,
+    });
+    expect(restored.proofs.filter(({ terminalSeal }) => terminalSeal !== undefined)).toHaveLength(
+      1,
+    );
   });
 
   it("backs up an eligible proof when a transient locked proof has no locator", async () => {
@@ -968,6 +1046,7 @@ class FakeRemote implements EncryptedWalletBackupV2RemotePort {
   #head;
   #bundles: EncryptedWalletBackupV2BundleDescriptor[] = [];
   readonly #receipts = new Map<string, EncryptedWalletBackupV2BundleSupersessionReceipt>();
+  readonly #objects = new Map<string, EncryptedWalletBackupV2BundleObjectWire>();
   readonly #requestAuthPublicKey: string;
 
   constructor(walletId: string, requestAuthPublicKey: string) {
@@ -1043,6 +1122,7 @@ class FakeRemote implements EncryptedWalletBackupV2RemotePort {
     const replay = this.#receipts.get(digest);
     if (replay) return replay;
     const mutation = group.mutationEvidence.envelope.mutation;
+    for (const object of group.objects) this.#objects.set(object.objectId, object);
     const superseded = new Set(mutation.supersededBundleIds);
     this.#bundles = this.#bundles.filter(({ bundleId }) => !superseded.has(bundleId));
     if (mutation.addedBundle) this.#bundles.push(mutation.addedBundle);
@@ -1083,8 +1163,14 @@ class FakeRemote implements EncryptedWalletBackupV2RemotePort {
     throw new Error("not used");
   }
 
-  async readObject(): Promise<never> {
-    throw new Error("not used");
+  async readObject(input: {
+    readonly objectId: string;
+    readonly requestProof: EncryptedWalletBackupV2RequestProof;
+    readonly expectedDescriptor: EncryptedWalletBackupV2BundleDescriptor;
+  }): Promise<EncryptedWalletBackupV2BundleObjectWire> {
+    const object = this.#objects.get(input.objectId);
+    if (object === undefined) throw new Error("test object is absent");
+    return structuredClone(object);
   }
 }
 

@@ -151,6 +151,33 @@ describe("browser encrypted wallet backup V2 admission", () => {
     });
   });
 
+  it("rejects initial CTF admission when an orphan local proof is present", async () => {
+    const fixture = await createFixture(1, CTF_ASSET);
+    database = fixture.database;
+    const verified = fixture.input.verified.proofs[0];
+    if (verified === undefined) throw new Error("test proof is missing");
+    await database.custodyProofs.put(
+      createBrowserCustodyProofRow({
+        scopeId: fixture.scopeId,
+        normalizedMint: MINT,
+        unit: "msat",
+        proof: verified.proof,
+        asset: {
+          kind: "conditional",
+          conditionId: CONDITION_ID,
+          outcomeCollection: "YES",
+        },
+        receivedAtMs: 1,
+      }),
+    );
+
+    await expect(admitBrowserEncryptedWalletBackupV2Asset(fixture.input)).rejects.toThrow(
+      /local custody is untracked/,
+    );
+    expect(await database.custodyProofs.count()).toBe(1);
+    expect(await database.encryptedWalletBackupV2DesiredAssets.count()).toBe(0);
+  });
+
   it("rolls back every authority when the commit boundary fails", async () => {
     const fixture = await createFixture(2);
     database = fixture.database;

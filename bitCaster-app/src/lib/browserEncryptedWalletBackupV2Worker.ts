@@ -1,5 +1,6 @@
 import {
   applyEncryptedWalletBackupV2VerifiedReceipt,
+  authorizeEncryptedWalletBackupV2RemoteTerminalSealReuse,
   collectAllEncryptedWalletBackupV2DescriptorPages,
   decodeEncryptedWalletBackupV2UploadGroup,
   deriveEncryptedWalletBackupV2AssetLocator,
@@ -16,6 +17,7 @@ import {
   enumerateEncryptedWalletBackupV2DescriptorPages,
   type EncryptedWalletBackupV2BundleRuntime,
   type EncryptedWalletBackupV2BundleDescriptor,
+  type EncryptedWalletBackupV2CollectedHeadEvidence,
   type EncryptedWalletBackupV2KeyHandle,
   type EncryptedWalletBackupV2RemotePort,
 } from "@bitcaster/client-sdk";
@@ -50,6 +52,8 @@ export interface BrowserEncryptedWalletBackupV2WorkerInput {
   readonly pinnedReceiptKeys: readonly { readonly keyId: string; readonly publicKey: string }[];
   readonly remote: EncryptedWalletBackupV2RemotePort;
   readonly requestUrl: (kind: "head" | "mutation", afterBundleId: string | null) => string;
+  /** Signed HTTPS origin used for SDK-authenticated remote seal reuse. */
+  readonly remoteOrigin?: string;
   readonly nowUnixSeconds: () => number;
   readonly runtime: EncryptedWalletBackupV2BundleRuntime;
   readonly signal: AbortSignal;
@@ -92,6 +96,7 @@ export async function runBrowserEncryptedWalletBackupV2WorkerCycle(
   if (selected === "locally-committed") return { kind: "committed" };
   if (selected === "service-quota-pending") return { kind: "service-quota-pending" };
   const next = await prepareSelectedMutation(input, store, head, selected);
+  if ("kind" in next) return { kind: "head-accepted" };
   return sendPrepared(input, store, next.bytes, next.mutationId, next.requestDigest, next.binding);
 }
 
@@ -102,17 +107,18 @@ async function prepareSelectedMutation(
   selected: Exclude<Awaited<ReturnType<typeof selectPendingAsset>>, null | string>,
 ) {
   const { desired, assetLocator } = selected;
-  const preparedBundle = await prepareAssetBundle(input, head, desired);
-  const bundle = preparedBundle?.descriptor ?? null;
+  const preparedBundle = await prepareAssetBundle(input, store, head, desired, assetLocator);
+  if (preparedBundle.kind === "head-reconciled") return preparedBundle;
+  const bundle = preparedBundle.bundle?.descriptor ?? null;
   const envelope = await prepareEncryptedWalletBackupV2AssetMutation({
     keyHandle: input.keyHandle,
-    expectedHeadEvidence: head,
+    expectedHeadEvidence: preparedBundle.headEvidence,
     assetLocator,
     desiredAction: desired.desiredAction,
     addedBundle: bundle,
     runtime: input.runtime,
   });
-  const objects = preparedBundle?.objects ?? [];
+  const objects = preparedBundle.bundle?.objects ?? [];
   const bytes = encodeEncryptedWalletBackupV2UploadGroup({ envelope, objects });
   requireCurrent(input);
   const binding = bindingFor(desired, assetLocator, bundle);
@@ -136,17 +142,62 @@ async function prepareSelectedMutation(
 
 async function prepareAssetBundle(
   input: BrowserEncryptedWalletBackupV2WorkerInput,
+  store: EncryptedWalletBackupV2DexieAuthorityStore,
   head: Awaited<ReturnType<typeof collectedHead>>,
   desired: ReturnType<typeof decodeEncryptedWalletBackupV2DesiredAssetRow>,
+  assetLocator: string,
 ) {
-  if (desired.desiredAction === "remove") return null;
+  if (desired.desiredAction === "remove") return { bundle: null, headEvidence: head } as const;
   const source = input.assetSource ?? defaultAssetSource;
   const snapshot = await source.read({
     database: input.database,
     scopeId: input.scopeId,
     localAssetKey: desired.localAssetKey,
   });
-  return source.prepare({
+  const remoteLosers = snapshot.losingProofs.filter(({ origin }) => origin.kind === "remote-seal");
+  let remoteTerminalSealReuse;
+  if (remoteLosers.length > 0) {
+    const currentHead = await collectHead(input);
+    requireCurrent(input);
+    if (!sameCollectedHead(currentHead, head)) {
+      await reconcileHead(input, store, currentHead);
+      return { kind: "head-reconciled" } as const;
+    }
+    const predecessor = currentHead.bundles.find(
+      ({ assetLocator: candidate }) => candidate === assetLocator,
+    );
+    if (predecessor === undefined)
+      throw new Error("browser V2 remote terminal predecessor bundle is missing");
+    if (input.remoteOrigin === undefined)
+      throw new Error("browser V2 remote terminal reuse origin is missing");
+    try {
+      remoteTerminalSealReuse = await authorizeEncryptedWalletBackupV2RemoteTerminalSealReuse({
+        keyHandle: input.keyHandle,
+        seed: input.seed,
+        expectedAsset: snapshot.asset,
+        custodyRevision: predecessor.custodyRevision,
+        expectedEnrollmentEpoch: input.enrollmentEpoch,
+        remote: input.remote,
+        remoteRequest: {
+          origin: input.remoteOrigin,
+          issuedAtUnixSeconds: input.nowUnixSeconds(),
+          expiresAtUnixSeconds: input.nowUnixSeconds() + 60,
+          signal: input.signal,
+          runtime: input.runtime,
+        },
+        runtime: input.runtime,
+      });
+    } catch (error) {
+      await reconcileIfHeadChanged(input, store, head);
+      throw error;
+    }
+    requireCurrent(input);
+    if (!sameCollectedHead(remoteTerminalSealReuse.currentHeadEvidence, head)) {
+      await reconcileHead(input, store, remoteTerminalSealReuse.currentHeadEvidence);
+      return { kind: "head-reconciled" } as const;
+    }
+  }
+  const bundle = await source.prepare({
     snapshot,
     keyHandle: input.keyHandle,
     seed: input.seed,
@@ -156,7 +207,65 @@ async function prepareAssetBundle(
       scopeId: input.scopeId,
     }),
     bundleIdExists: (id) => head.bundles.some((item) => item.bundleId === id),
+    remoteTerminalSealReuse,
   });
+  return {
+    bundle,
+    headEvidence: remoteTerminalSealReuse?.currentHeadEvidence ?? head,
+  } as const;
+}
+
+async function reconcileHead(
+  input: BrowserEncryptedWalletBackupV2WorkerInput,
+  store: EncryptedWalletBackupV2DexieAuthorityStore,
+  evidence: EncryptedWalletBackupV2CollectedHeadEvidence,
+): Promise<void> {
+  requireCurrent(input);
+  await store.acceptCompetingHead({
+    collectedHeadEvidence: evidence,
+    stalePreparedMutation: emptyMatch(),
+  });
+}
+
+async function reconcileIfHeadChanged(
+  input: BrowserEncryptedWalletBackupV2WorkerInput,
+  store: EncryptedWalletBackupV2DexieAuthorityStore,
+  accepted: EncryptedWalletBackupV2CollectedHeadEvidence,
+): Promise<void> {
+  try {
+    const current = await collectHead(input);
+    if (!sameCollectedHead(current, accepted)) await reconcileHead(input, store, current);
+  } catch {
+    // Preserve the original remote seal or transport refusal.
+  }
+}
+
+function sameCollectedHead(
+  left: EncryptedWalletBackupV2CollectedHeadEvidence,
+  right: EncryptedWalletBackupV2CollectedHeadEvidence,
+): boolean {
+  if (
+    left.head.formatVersion !== right.head.formatVersion ||
+    left.head.realm !== right.head.realm ||
+    left.head.walletId !== right.head.walletId ||
+    left.head.enrollmentEpoch !== right.head.enrollmentEpoch ||
+    left.head.headVersion !== right.head.headVersion ||
+    left.head.activeBundleCount !== right.head.activeBundleCount ||
+    left.head.activeObjectCount !== right.head.activeObjectCount ||
+    left.head.activeSetDigest !== right.head.activeSetDigest ||
+    left.bundles.length !== right.bundles.length
+  )
+    return false;
+  const rightBundles = new Map(
+    right.bundles.map((bundle) => [
+      bundle.bundleId,
+      digestEncryptedWalletBackupV2BundleDescriptor(bundle),
+    ]),
+  );
+  return left.bundles.every(
+    (bundle) =>
+      rightBundles.get(bundle.bundleId) === digestEncryptedWalletBackupV2BundleDescriptor(bundle),
+  );
 }
 
 function bindingFor(

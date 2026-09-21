@@ -388,6 +388,7 @@ class BrowserEncryptedWalletBackupV2RuntimeDriverImpl implements BrowserEncrypte
         enrollmentEpoch: requireEnrollmentEpoch(this.#enrollmentEpoch),
         pinnedReceiptKeys: this.#input.configuration.pinnedReceiptKeys,
         remote: this.#remote,
+        remoteOrigin: this.#input.configuration.signedOrigin,
         requestUrl: (kind, afterBundleId) =>
           requestUrl(
             this.#input.configuration,

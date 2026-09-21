@@ -227,10 +227,12 @@ async function startingState(
     input.scopeId,
     desired.localAssetKey,
   ]);
+  const ctfRoute = verified.proofs[0]?.asset;
   const proofs = await readBrowserEncryptedWalletBackupV2ExactLocalProofRows({
     database: input.database,
     scopeId: input.scopeId,
     asset: input.asset,
+    ...(ctfRoute?.kind === "ctf" ? { ctfRoute } : {}),
   });
   if (raw === undefined) {
     if (proofs.length === 0) return { kind: "absent", proofIdsToAdmit: allProofIds };

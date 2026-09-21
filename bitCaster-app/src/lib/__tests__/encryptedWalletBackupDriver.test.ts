@@ -133,6 +133,7 @@ it("serializes wake cycles and immediately follows a head acceptance", async () 
     .mockResolvedValue({ kind: "idle" });
   const driver = createRuntime(fixture, worker);
   await vi.waitFor(() => expect(worker).toHaveBeenCalledTimes(1));
+  expect(worker.mock.calls[0]?.[0].remoteOrigin).toBe(configuration.signedOrigin);
   finishFirst?.();
   await vi.waitFor(() => expect(worker).toHaveBeenCalledTimes(2));
   driver.stop();

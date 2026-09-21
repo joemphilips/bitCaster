@@ -17,6 +17,7 @@ import { browserWalletDatabaseName } from "../../lib/browserWalletProfile";
 import {
   classifyBrowserProofBackupAuthorityVerifiedLosing,
   createBrowserProofBackupAuthorityRow,
+  createBrowserRemoteProofBackupAuthorityRow,
 } from "../browser-proof-backup-authority";
 import { createEncryptedWalletBackupV2DesiredAssetRow } from "../browser-encrypted-wallet-backup-v2-desired-asset";
 import {
@@ -28,7 +29,10 @@ import {
 import { createBrowserCustodyProofRow } from "../durable-custody-db";
 import { BrowserDurableCustodyAdapter } from "../durable-custody-db";
 import { BrowserEncryptedWalletBackupV2TerminalSealStore } from "../browser-encrypted-wallet-backup-v2-terminal-seal-store";
-import type { BrowserCustodyProofRow } from "../durable-custody-types";
+import {
+  decodeBrowserCustodyProofRow,
+  type BrowserCustodyProofRow,
+} from "../durable-custody-types";
 import { BitcasterDB } from "../proof-db";
 import { commitBrowserCtfTerminalOperation } from "../../test/browserEncryptedWalletBackupV2CommittedTerminalFixture";
 
@@ -328,6 +332,186 @@ describe("browser V2 asset source", () => {
         runtime: { subtle: crypto.subtle, getRandomValues: crypto.getRandomValues.bind(crypto) },
       }),
     ).rejects.toThrow(/terminal seal store/);
+  });
+
+  it.each(["ordinary", "ctf"] as const)(
+    "reads exact %s rows when an active proof has no desired row",
+    async (kind) => {
+      const fixture = await fixtureFor(kind);
+      database = fixture.database;
+      if (kind === "ctf") await putConditionalKeyset(fixture.database, fixture.scopeId);
+      const proof = proofRow(
+        fixture.scopeId,
+        kind === "ctf" ? CONDITIONAL_KEYSET : REGULAR_KEYSET,
+        5,
+        kind === "ctf" ? "ctf" : "regular",
+        "selectable",
+      );
+      await fixture.database.custodyProofs.put(proof);
+
+      await expect(
+        readBrowserEncryptedWalletBackupV2ExactLocalProofRows({
+          database: fixture.database,
+          scopeId: fixture.scopeId,
+          asset: fixture.asset,
+        }),
+      ).resolves.toEqual([expect.objectContaining({ proofId: proof.proofId })]);
+    },
+  );
+
+  it.each(["ordinary", "ctf"] as const)(
+    "reads exact %s rows when the desired count is stale at zero",
+    async (kind) => {
+      const fixture = await fixtureFor(kind);
+      database = fixture.database;
+      if (kind === "ctf") await putConditionalKeyset(fixture.database, fixture.scopeId);
+      const proof = proofRow(
+        fixture.scopeId,
+        kind === "ctf" ? CONDITIONAL_KEYSET : REGULAR_KEYSET,
+        6,
+        kind === "ctf" ? "ctf" : "regular",
+        "selectable",
+      );
+      await fixture.database.custodyProofs.put(proof);
+      await fixture.database.encryptedWalletBackupV2DesiredAssets.put(
+        createEncryptedWalletBackupV2DesiredAssetRow({
+          scopeId: fixture.scopeId,
+          asset: fixture.asset,
+          custodyRevision: 1n,
+          activeProofCount: 0,
+        }),
+      );
+
+      await expect(
+        readBrowserEncryptedWalletBackupV2ExactLocalProofRows({
+          database: fixture.database,
+          scopeId: fixture.scopeId,
+          asset: fixture.asset,
+        }),
+      ).resolves.toEqual([expect.objectContaining({ proofId: proof.proofId })]);
+    },
+  );
+
+  it("reads a remote-sealed losing proof from terminal context after keyset eviction", async () => {
+    const fixture = await committedCtfFixture(1);
+    database = fixture.database;
+    const rows = (await fixture.database.custodyProofs.toArray()).map(decodeBrowserCustodyProofRow);
+    const losing = rows.find(({ selectability }) => selectability === "verified-losing");
+    const sibling = rows.find(({ selectability }) => selectability === "selectable");
+    if (losing === undefined || sibling === undefined) throw new Error("test proof is missing");
+    await fixture.database.custodyProofBackupAuthorities.put(
+      createBrowserRemoteProofBackupAuthorityRow({
+        proof: losing,
+        observedAtMs: 30,
+        derivationLocator: {
+          schemaVersion: 1,
+          kind: "nut13",
+          keysetId: CONDITIONAL_KEYSET,
+          counter: 1,
+        },
+        restoreProofId: losing.proofId,
+        restoreProofCommitment: "22".repeat(32),
+      }),
+    );
+    await fixture.database.custodyProofs.delete([fixture.scopeId, sibling.proofId]);
+    await fixture.database.custodyProofBackupAuthorities.delete([fixture.scopeId, sibling.proofId]);
+    await fixture.database.custodyConditionalKeysets.clear();
+    await fixture.database.walletCounterAssociations.clear();
+    await fixture.database.walletCounterCursors.clear();
+    await fixture.database.encryptedWalletBackupV2DesiredAssets.put(
+      createEncryptedWalletBackupV2DesiredAssetRow({
+        scopeId: fixture.scopeId,
+        asset: {
+          mintUrl: fixture.desired.mintUrl,
+          unit: fixture.desired.unit,
+          assetIdentity: fixture.desired.assetIdentity,
+        },
+        custodyRevision: BigInt(fixture.desired.custodyRevision) + 1n,
+        activeProofCount: 1,
+        terminalCtfContext: {
+          conditionId: CONDITION_ID,
+          outcomeLabel: OUTCOME,
+          outcomeCollectionId: OUTCOME_ID,
+          registeredAt: 0,
+          finalExpiry: 100,
+        },
+      }),
+    );
+
+    const snapshot = await readBrowserEncryptedWalletBackupV2AssetSnapshot({
+      database: fixture.database,
+      scopeId: fixture.scopeId,
+      localAssetKey: fixture.desired.localAssetKey,
+    });
+    expect(snapshot.proofs).toHaveLength(1);
+    expect(snapshot.proofs[0]?.proof.secret).toBe(proofSecret(losing));
+    expect(snapshot.losingProofs[0]?.origin).toEqual({ kind: "remote-seal" });
+    expect(snapshot.counterHighWaterMarks).toEqual([]);
+    await expect(
+      readBrowserEncryptedWalletBackupV2ExactLocalProofRows({
+        database: fixture.database,
+        scopeId: fixture.scopeId,
+        asset: snapshot.asset,
+      }),
+    ).resolves.toEqual([expect.objectContaining({ proofId: losing.proofId })]);
+  });
+
+  it("rejects exact CTF reads when persisted keyset-free context is missing", async () => {
+    const fixture = await committedCtfFixture(1);
+    database = fixture.database;
+    await fixture.database.custodyConditionalKeysets.clear();
+    await fixture.database.encryptedWalletBackupV2DesiredAssets.put(
+      createEncryptedWalletBackupV2DesiredAssetRow({
+        scopeId: fixture.scopeId,
+        asset: {
+          mintUrl: fixture.desired.mintUrl,
+          unit: fixture.desired.unit,
+          assetIdentity: fixture.desired.assetIdentity,
+        },
+        custodyRevision: BigInt(fixture.desired.custodyRevision) + 1n,
+        activeProofCount: fixture.desired.activeProofCount,
+        terminalCtfContext: null,
+      }),
+    );
+
+    await expect(
+      readBrowserEncryptedWalletBackupV2ExactLocalProofRows({
+        database: fixture.database,
+        scopeId: fixture.scopeId,
+        asset: {
+          mintUrl: fixture.desired.mintUrl,
+          unit: fixture.desired.unit,
+          assetIdentity: fixture.desired.assetIdentity,
+        },
+      }),
+    ).rejects.toThrow(/exact local proof CTF context is missing/);
+  });
+
+  it("rejects exact CTF reads when persisted context is foreign", async () => {
+    const fixture = await committedCtfFixture(1);
+    database = fixture.database;
+    await fixture.database.encryptedWalletBackupV2DesiredAssets.put({
+      ...fixture.desired,
+      terminalCtfContext: {
+        conditionId: "cd".repeat(32),
+        outcomeLabel: OUTCOME,
+        outcomeCollectionId: OUTCOME_ID,
+        registeredAt: 0,
+        finalExpiry: 100,
+      },
+    });
+
+    await expect(
+      readBrowserEncryptedWalletBackupV2ExactLocalProofRows({
+        database: fixture.database,
+        scopeId: fixture.scopeId,
+        asset: {
+          mintUrl: fixture.desired.mintUrl,
+          unit: fixture.desired.unit,
+          assetIdentity: fixture.desired.assetIdentity,
+        },
+      }),
+    ).rejects.toThrow(/desired asset CTF context is foreign/);
   });
 
   it("issues SDK-authorized local seals for one and several losing proofs", async () => {
