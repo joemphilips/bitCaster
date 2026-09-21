@@ -1910,6 +1910,12 @@ export async function completeManagedConditionRedeemFenced(
     mutation.observedAtMs,
     (database) => {
       const before = requireManagedConditionRedeemOperation(database, operationId)
+      if (before.state === 'completed') {
+        return completedProofOperation(before, completion, mutation.observedAtMs)
+      }
+      if (before.state !== 'prepared') {
+        throw new Error('managed condition redeem is not prepared for completion')
+      }
       const completed = completeProofOperation(
         database,
         operationId,
@@ -1917,34 +1923,32 @@ export async function completeManagedConditionRedeemFenced(
         mutation.observedAtMs,
       )
       const regular = completed.resultProofs?.regular ?? []
-      if (before.state === 'prepared') {
-        const reserved = readDaemonReservedWalletProofsFromDatabase(
-          database,
-          before.mintUrl,
+      const reserved = readDaemonReservedWalletProofsFromDatabase(
+        database,
+        before.mintUrl,
+        requireText(before.metadata.reservationId, 'retirement reservation id'),
+      )
+      assertExactReservedProofRows(reserved, {
+        operationId: before.operationId,
+        kind: before.kind,
+        mintUrl: before.mintUrl,
+        inputs: before.inputs,
+        outputs: before.outputs,
+        metadata: before.metadata,
+        reservationId: requireText(before.metadata.reservationId, 'retirement reservation id'),
+        asset: reserved[0]?.asset ?? retirementOutcomeAsset(before),
+      })
+      const removed = database
+        .prepare(
+          `DELETE FROM target_wallet_proofs
+           WHERE scope_id = ? AND state = 'reserved' AND reserved_by = ?`,
+        )
+        .run(
+          readScopeId(database),
           requireText(before.metadata.reservationId, 'retirement reservation id'),
         )
-        assertExactReservedProofRows(reserved, {
-          operationId: before.operationId,
-          kind: before.kind,
-          mintUrl: before.mintUrl,
-          inputs: before.inputs,
-          outputs: before.outputs,
-          metadata: before.metadata,
-          reservationId: requireText(before.metadata.reservationId, 'retirement reservation id'),
-          asset: reserved[0]?.asset ?? retirementOutcomeAsset(before),
-        })
-        const removed = database
-          .prepare(
-            `DELETE FROM target_wallet_proofs
-             WHERE scope_id = ? AND state = 'reserved' AND reserved_by = ?`,
-          )
-          .run(
-            readScopeId(database),
-            requireText(before.metadata.reservationId, 'retirement reservation id'),
-          )
-        if (removed.changes !== before.inputs.length) {
-          throw new Error('managed condition redeem inputs changed before completion')
-        }
+      if (removed.changes !== before.inputs.length) {
+        throw new Error('managed condition redeem inputs changed before completion')
       }
       admitExactAvailableWalletProofsFromDatabase(database, {
         mintUrl: completed.mintUrl,
