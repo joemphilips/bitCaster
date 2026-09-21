@@ -458,6 +458,18 @@ export interface EncryptedWalletBackupV2VerifiedProofSet extends EncryptedWallet
 }
 
 const VERIFIED_RESTORED_PROOF_SETS = new WeakMap<object, EncryptedWalletBackupV2VerifiedProofSet>()
+const VERIFIED_RESTORED_PROOF_SET_SOURCES = new WeakMap<
+  object,
+  EncryptedWalletBackupV2VerifiedProofSetSource
+>()
+
+/** Authenticated bundle identity retained by one SDK-verified restore result. */
+export interface EncryptedWalletBackupV2VerifiedProofSetSource {
+  readonly bundleId: string
+  readonly descriptorDigest: string
+  readonly assetLocator: string
+  readonly custodyRevision: bigint
+}
 
 export function requireEncryptedWalletBackupV2VerifiedProofSet(
   value: unknown,
@@ -465,6 +477,55 @@ export function requireEncryptedWalletBackupV2VerifiedProofSet(
   if (typeof value !== 'object' || value === null || !VERIFIED_RESTORED_PROOF_SETS.has(value))
     throw new Error('encrypted backup V2 verified proof set is invalid')
   return VERIFIED_RESTORED_PROOF_SETS.get(value)!
+}
+
+/** Requires decrypted proof material produced by the SDK bundle decryptor. */
+export function requireEncryptedWalletBackupV2DecryptedProofSet(
+  value: unknown,
+): EncryptedWalletBackupV2UnverifiedProofSet {
+  if (typeof value !== 'object' || value === null || !DECRYPTED_PROOF_SET_AUTHORITY.has(value))
+    throw new Error('encrypted backup V2 decrypted proof set is invalid')
+  const proofSet = value as EncryptedWalletBackupV2UnverifiedProofSet
+  const authority = DECRYPTED_PROOF_SET_AUTHORITY.get(value)!
+  try {
+    const digest = digestProofSet({
+      proofs: proofSet.proofs.map(withoutProofId) as unknown as readonly DecodedProofEntry[],
+      counterHighWaterMarks: proofSet.counterHighWaterMarks,
+    })
+    if (digest !== authority.proofSetDigest)
+      throw new Error('encrypted backup V2 decrypted proof set digest is invalid')
+  } catch {
+    throw new Error('encrypted backup V2 decrypted proof set is invalid')
+  }
+  return proofSet
+}
+
+/** Requires the authenticated descriptor that produced one verified proof set. */
+export function requireEncryptedWalletBackupV2VerifiedProofSetSource(
+  value: unknown,
+): EncryptedWalletBackupV2VerifiedProofSetSource {
+  requireEncryptedWalletBackupV2VerifiedProofSet(value)
+  if (typeof value !== 'object' || value === null) {
+    throw new Error('encrypted backup V2 verified proof set source is invalid')
+  }
+  const source = VERIFIED_RESTORED_PROOF_SET_SOURCES.get(value)
+  if (source === undefined)
+    throw new Error('encrypted backup V2 verified proof set source is unavailable')
+  return source
+}
+
+/** Requires the authenticated descriptor that produced decrypted proof material. */
+export function requireEncryptedWalletBackupV2DecryptedProofSetSource(
+  value: unknown,
+): EncryptedWalletBackupV2VerifiedProofSetSource {
+  requireEncryptedWalletBackupV2DecryptedProofSet(value)
+  if (typeof value !== 'object' || value === null) {
+    throw new Error('encrypted backup V2 decrypted proof set source is invalid')
+  }
+  const source = DECRYPTED_PROOF_SET_AUTHORITY.get(value)
+  if (source === undefined)
+    throw new Error('encrypted backup V2 decrypted proof set source is unavailable')
+  return source
 }
 
 /** Verify detached V2 material before a client can persist it as custody. */
@@ -496,6 +557,18 @@ export async function verifyEncryptedWalletBackupV2RestoredProofSet(input: {
   }
   const verified = freezeVerifiedProofSet(decoded)
   VERIFIED_RESTORED_PROOF_SETS.set(verified, verified)
+  const source = DECRYPTED_PROOF_SET_AUTHORITY.get(input.unverified)
+  if (source !== undefined) {
+    VERIFIED_RESTORED_PROOF_SET_SOURCES.set(
+      verified,
+      Object.freeze({
+        bundleId: source.bundleId,
+        descriptorDigest: source.descriptorDigest,
+        assetLocator: source.assetLocator,
+        custodyRevision: source.custodyRevision,
+      }),
+    )
+  }
   return verified
 }
 
@@ -745,13 +818,16 @@ export async function decryptEncryptedWalletBackupV2ProofSetBundle(input: {
   if (sumProofAmounts(decoded.proofs) !== descriptor.declaredAmount)
     throw new Error('encrypted backup proof set declared amount is invalid')
   const unverified = cloneUnverifiedProofSet(decoded)
-  DECRYPTED_PROOF_SET_AUTHORITY.set(unverified, {
-    proofSetDigest: digestProofSet(decoded),
-    descriptorDigest: digestEncryptedWalletBackupV2BundleDescriptor(descriptor),
-    bundleId: descriptor.bundleId,
-    assetLocator: descriptor.assetLocator,
-    custodyRevision: descriptor.custodyRevision,
-  })
+  DECRYPTED_PROOF_SET_AUTHORITY.set(
+    unverified,
+    Object.freeze({
+      proofSetDigest: digestProofSet(decoded),
+      descriptorDigest: digestEncryptedWalletBackupV2BundleDescriptor(descriptor),
+      bundleId: descriptor.bundleId,
+      assetLocator: descriptor.assetLocator,
+      custodyRevision: descriptor.custodyRevision,
+    }),
+  )
   return unverified
 }
 
@@ -1030,6 +1106,13 @@ function proofCommitment(
   )
 }
 
+/** Derives the commitment used by an SDK-issued terminal seal. */
+export function digestEncryptedWalletBackupV2TerminalProofCommitment(
+  value: EncryptedWalletBackupV2ProofSetProof & { readonly proofId: string },
+): string {
+  return proofCommitment(value)
+}
+
 function sameTerminalSeal(
   left: EncryptedWalletBackupV2TerminalSeal | undefined,
   right: EncryptedWalletBackupV2TerminalSeal | undefined,
@@ -1256,27 +1339,21 @@ function counterTuple(value: { mintUrl: string; unit: string; keysetId: string }
 function cloneUnverifiedProofSet(
   value: DecodedProofSet,
 ): EncryptedWalletBackupV2UnverifiedProofSet {
-  return Object.freeze({
-    proofs: Object.freeze(
-      value.proofs.map((proof) =>
-        Object.freeze({
-          mintUrl: proof.mintUrl,
-          unit: proof.unit,
-          asset: structuredClone(proof.asset),
-          proof: deserializeDurableCustodyProofArtifact(
-            serializeDurableCustodyProofArtifact(proof.proof),
-          ),
-          locator: structuredClone(proof.locator),
-          proofId: proof.proofId,
-          ...(proof.terminalSeal === undefined
-            ? {}
-            : { terminalSeal: structuredClone(proof.terminalSeal) }),
-        }),
+  return deepFreeze({
+    proofs: value.proofs.map((proof) => ({
+      mintUrl: proof.mintUrl,
+      unit: proof.unit,
+      asset: structuredClone(proof.asset),
+      proof: deserializeDurableCustodyProofArtifact(
+        serializeDurableCustodyProofArtifact(proof.proof),
       ),
-    ),
-    counterHighWaterMarks: Object.freeze(
-      value.counterHighWaterMarks.map((counter) => Object.freeze({ ...counter })),
-    ),
+      locator: structuredClone(proof.locator),
+      proofId: proof.proofId,
+      ...(proof.terminalSeal === undefined
+        ? {}
+        : { terminalSeal: structuredClone(proof.terminalSeal) }),
+    })),
+    counterHighWaterMarks: value.counterHighWaterMarks.map((counter) => ({ ...counter })),
   })
 }
 

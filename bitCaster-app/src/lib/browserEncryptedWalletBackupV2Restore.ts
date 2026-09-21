@@ -8,6 +8,7 @@ import {
   verifyEncryptedWalletBackupV2RestoredProofSet,
   type EncryptedWalletBackupV2AssetIdentity,
   type EncryptedWalletBackupV2BundleRuntime,
+  type EncryptedWalletBackupV2CollectedHeadEvidence,
   type EncryptedWalletBackupV2KeyHandle,
   type EncryptedWalletBackupV2RemotePort,
   type EncryptedWalletBackupV2RestoreVerificationPort,
@@ -41,6 +42,7 @@ export type BrowserEncryptedWalletBackupV2TargetedRestoreResult =
       readonly bundleId: string;
       readonly custodyRevision: bigint;
       readonly headVersion: number;
+      readonly collectedHeadEvidence: EncryptedWalletBackupV2CollectedHeadEvidence;
       readonly unverified: EncryptedWalletBackupV2UnverifiedProofSet;
     };
 
@@ -205,6 +207,7 @@ export async function restoreBrowserEncryptedWalletBackupV2TargetedAsset(
     bundleId: descriptor.bundleId,
     custodyRevision: descriptor.custodyRevision,
     headVersion: head.head.headVersion,
+    collectedHeadEvidence: head,
     unverified,
   };
 }

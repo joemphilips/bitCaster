@@ -12,6 +12,7 @@ import {
   deriveDurableCustodyWalletId,
   enumerateEncryptedWalletBackupV2DescriptorPages,
   issueEncryptedWalletBackupV2BundleSupersessionReceipt,
+  prepareEncryptedWalletBackupV2ProofSetBundle,
   prepareEncryptedWalletBackupV2TransportBundle,
   deriveRootCtfOutcomeCollectionId,
   type EncryptedWalletBackupV2BundleDescriptor,
@@ -115,44 +116,7 @@ describe("browser V2 backup worker", () => {
 
   it("reuses an authenticated remote seal with the predecessor revision", async () => {
     const fixture = await terminalWorkerFixture();
-    await expect(runBrowserEncryptedWalletBackupV2WorkerCycle(fixture.input)).resolves.toEqual({
-      kind: "committed",
-    });
-    const desiredRows = await fixture.database.encryptedWalletBackupV2DesiredAssets.toArray();
-    const currentDesired = desiredRows[0];
-    if (currentDesired === undefined) throw new Error("test desired asset is missing");
-    const proofRows = (await fixture.database.custodyProofs.toArray()).map(
-      decodeBrowserCustodyProofRow,
-    );
-    const losing = proofRows.find(({ selectability }) => selectability === "verified-losing");
-    if (losing === undefined) throw new Error("test losing proof is missing");
-    await fixture.database.custodyProofBackupAuthorities.put(
-      createBrowserRemoteProofBackupAuthorityRow({
-        proof: losing,
-        observedAtMs: 30,
-        derivationLocator: { schemaVersion: 1, kind: "nut13", keysetId: CTF_KEYSET, counter: 1 },
-        restoreProofId: losing.proofId,
-        restoreProofCommitment: "11".repeat(32),
-      }),
-    );
-    await fixture.database.encryptedWalletBackupV2DesiredAssets.put({
-      ...createEncryptedWalletBackupV2DesiredAssetRow({
-        scopeId: fixture.scopeId,
-        asset: fixture.asset,
-        custodyRevision: BigInt(currentDesired.custodyRevision) + 1n,
-        activeProofCount: currentDesired.activeProofCount,
-      }),
-      syncState: "pending",
-    });
-
-    fixture.remote.replaceHead(fixture.remote.evidence().bundles);
-    await expect(
-      runBrowserEncryptedWalletBackupV2WorkerCycle({
-        ...fixture.input,
-        remoteOrigin: "https://backup.example",
-      }),
-    ).resolves.toEqual({ kind: "head-accepted" });
-    expect(fixture.remote.mutations).toHaveLength(1);
+    await prepareRemoteSealReuse(fixture);
 
     await expect(
       runBrowserEncryptedWalletBackupV2WorkerCycle({
@@ -184,6 +148,283 @@ describe("browser V2 backup worker", () => {
     expect(restored.proofs.filter(({ terminalSeal }) => terminalSeal !== undefined)).toHaveLength(
       1,
     );
+  });
+
+  it("reuses the exact losing seal when a sibling became spent locally", async () => {
+    const fixture = await terminalWorkerFixture();
+    await prepareRemoteSealReuse(fixture);
+    const rows = (await fixture.database.custodyProofs.toArray()).map(decodeBrowserCustodyProofRow);
+    const sibling = rows.find(({ selectability }) => selectability === "selectable");
+    if (sibling === undefined) throw new Error("test sibling is missing");
+    await fixture.database.custodyProofs.put({
+      ...sibling,
+      selectability: "spent",
+      reservationOperationId: null,
+    });
+    const desired = (await fixture.database.encryptedWalletBackupV2DesiredAssets.toArray())[0];
+    if (desired === undefined) throw new Error("test desired asset is missing");
+    await fixture.database.encryptedWalletBackupV2DesiredAssets.put({
+      ...desired,
+      custodyRevision: (BigInt(desired.custodyRevision) + 1n).toString(),
+      activeProofCount: 1,
+      syncState: "pending",
+    });
+
+    await expect(
+      runBrowserEncryptedWalletBackupV2WorkerCycle({
+        ...fixture.input,
+        remoteOrigin: "https://backup.example",
+      }),
+    ).resolves.toEqual({ kind: "committed" });
+    expect(fixture.remote.mutations).toHaveLength(2);
+    const group = decodeEncryptedWalletBackupV2UploadGroup({
+      bytes: fixture.remote.mutations[1]!.bytes,
+      expectedRequestAuthPublicKey: fixture.input.keyHandle.requestAuthPublicKey,
+      expectedContext: {
+        realm: REALM,
+        walletId: fixture.input.keyHandle.walletId,
+        enrollmentEpoch: 1,
+      },
+    });
+    const added = group.mutationEvidence.envelope.mutation.addedBundle;
+    if (added === null) throw new Error("test successor bundle is missing");
+    const restored = await decryptEncryptedWalletBackupV2ProofSetBundle({
+      keyHandle: fixture.input.keyHandle,
+      seed: fixture.seed,
+      expectedAsset: fixture.asset,
+      custodyRevision: BigInt(added.custodyRevision),
+      runtime: { subtle: crypto.subtle, getRandomValues: randomValues },
+      descriptor: added,
+      objects: group.objects,
+    });
+    expect(restored.proofs).toHaveLength(1);
+    expect(restored.proofs.filter(({ terminalSeal }) => terminalSeal !== undefined)).toHaveLength(
+      1,
+    );
+  });
+
+  it("reuses remote and local terminal origins in one successor bundle", async () => {
+    const fixture = await terminalWorkerFixture(2);
+    await prepareRemoteSealReuse(fixture, 0);
+
+    await expect(
+      runBrowserEncryptedWalletBackupV2WorkerCycle({
+        ...fixture.input,
+        remoteOrigin: "https://backup.example",
+      }),
+    ).resolves.toEqual({ kind: "committed" });
+    const mutation = decodeEncryptedWalletBackupV2UploadGroup({
+      bytes: fixture.remote.mutations[1]!.bytes,
+      expectedRequestAuthPublicKey: fixture.input.keyHandle.requestAuthPublicKey,
+      expectedContext: {
+        realm: REALM,
+        walletId: fixture.input.keyHandle.walletId,
+        enrollmentEpoch: 1,
+      },
+    });
+    const added = mutation.mutationEvidence.envelope.mutation.addedBundle;
+    if (added === null) throw new Error("test mixed-origin bundle is missing");
+    const restored = await decryptEncryptedWalletBackupV2ProofSetBundle({
+      keyHandle: fixture.input.keyHandle,
+      seed: fixture.seed,
+      expectedAsset: fixture.asset,
+      custodyRevision: BigInt(added.custodyRevision),
+      runtime: { subtle: crypto.subtle, getRandomValues: randomValues },
+      descriptor: added,
+      objects: mutation.objects,
+    });
+    expect(restored.proofs).toHaveLength(3);
+    expect(restored.proofs.filter(({ terminalSeal }) => terminalSeal !== undefined)).toHaveLength(
+      2,
+    );
+  });
+
+  it("requeues without mutation when the sealed predecessor is missing", async () => {
+    const fixture = await terminalWorkerFixture();
+    await prepareRemoteSealReuse(fixture);
+    fixture.remote.replaceHead([]);
+    await expect(
+      runBrowserEncryptedWalletBackupV2WorkerCycle({
+        ...fixture.input,
+        remoteOrigin: "https://backup.example",
+      }),
+    ).resolves.toEqual({ kind: "head-accepted" });
+
+    await expect(
+      runBrowserEncryptedWalletBackupV2WorkerCycle({
+        ...fixture.input,
+        remoteOrigin: "https://backup.example",
+      }),
+    ).rejects.toThrow(/remote terminal predecessor bundle is missing/);
+    expect(fixture.remote.mutations).toHaveLength(1);
+    expect(await fixture.store.readPreparedMutation()).toBeNull();
+    expect(await fixture.database.custodyProofs.count()).toBe(2);
+    expect(
+      (await fixture.database.encryptedWalletBackupV2DesiredAssets.toArray())[0]?.syncState,
+    ).toBe("pending");
+  });
+
+  it("requeues without mutation when the predecessor seal was removed", async () => {
+    const fixture = await terminalWorkerFixture();
+    await prepareRemoteSealReuse(fixture);
+    const predecessor = fixture.remote.evidence().bundles[0];
+    if (predecessor === undefined) throw new Error("test predecessor is missing");
+    const restored = await decryptEncryptedWalletBackupV2ProofSetBundle({
+      keyHandle: fixture.input.keyHandle,
+      seed: fixture.seed,
+      expectedAsset: fixture.asset,
+      custodyRevision: BigInt(predecessor.custodyRevision),
+      runtime: { subtle: crypto.subtle, getRandomValues: randomValues },
+      descriptor: predecessor,
+      objects: fixture.remote.storedObjects(predecessor),
+    });
+    const withoutSeals = await prepareEncryptedWalletBackupV2ProofSetBundle({
+      keyHandle: fixture.input.keyHandle,
+      seed: fixture.seed,
+      asset: fixture.asset,
+      proofs: restored.proofs.map(({ terminalSeal: _terminalSeal, ...proof }) => proof),
+      custodyRevision: BigInt(predecessor.custodyRevision),
+      counterHighWaterMarks: restored.counterHighWaterMarks,
+      runtime: { subtle: crypto.subtle, getRandomValues: randomValues },
+    });
+    fixture.remote.replaceHead([withoutSeals.descriptor], withoutSeals.objects);
+    await expect(
+      runBrowserEncryptedWalletBackupV2WorkerCycle({
+        ...fixture.input,
+        remoteOrigin: "https://backup.example",
+      }),
+    ).resolves.toEqual({ kind: "head-accepted" });
+
+    await expect(
+      runBrowserEncryptedWalletBackupV2WorkerCycle({
+        ...fixture.input,
+        remoteOrigin: "https://backup.example",
+      }),
+    ).rejects.toThrow(/remote terminal seal is missing/);
+    expect(fixture.remote.mutations).toHaveLength(1);
+    expect(await fixture.store.readPreparedMutation()).toBeNull();
+    expect(await fixture.database.custodyProofs.count()).toBe(2);
+  });
+
+  it("requeues when the authenticated head changes before remote reuse", async () => {
+    const fixture = await terminalWorkerFixture();
+    await prepareRemoteSealReuse(fixture);
+    fixture.remote.beforeDescriptorPage = () => {
+      fixture.remote.replaceHead(fixture.remote.evidence().bundles);
+    };
+
+    await expect(
+      runBrowserEncryptedWalletBackupV2WorkerCycle({
+        ...fixture.input,
+        remoteOrigin: "https://backup.example",
+      }),
+    ).resolves.toEqual({ kind: "head-accepted" });
+    expect(fixture.remote.mutations).toHaveLength(1);
+    expect(await fixture.store.readPreparedMutation()).toBeNull();
+    expect(
+      (await fixture.database.encryptedWalletBackupV2DesiredAssets.toArray())[0]?.syncState,
+    ).toBe("pending");
+  });
+
+  it("replays the prepared remote-seal successor after restart", async () => {
+    const fixture = await terminalWorkerFixture();
+    await prepareRemoteSealReuse(fixture);
+    fixture.remote.failures.push("transport-failure");
+    await expect(
+      runBrowserEncryptedWalletBackupV2WorkerCycle({
+        ...fixture.input,
+        remoteOrigin: "https://backup.example",
+      }),
+    ).resolves.toEqual({ kind: "retry-pending", minimumRetryDelayMilliseconds: 5_000 });
+    const prepared = await fixture.store.readPreparedMutation();
+    if (prepared === null) throw new Error("test prepared mutation is missing");
+    const firstBytes = prepared.canonicalUploadGroup;
+    fixture.database.close();
+    const reopened = new BitcasterDB(browserWalletDatabaseName(fixture.scopeId));
+    openDatabases.push(reopened);
+
+    await expect(
+      runBrowserEncryptedWalletBackupV2WorkerCycle({ ...fixture.input, database: reopened }),
+    ).resolves.toEqual({ kind: "committed" });
+    expect(fixture.remote.mutations).toHaveLength(3);
+    expect(sameBytes(fixture.remote.mutations[2]?.bytes, firstBytes)).toBe(true);
+    expect(await reopened.encryptedWalletBackupV2PreparedMutations.count()).toBe(0);
+  });
+
+  it("re-fetches the remote seal after restart before successor preparation", async () => {
+    const fixture = await terminalWorkerFixture();
+    await prepareRemoteSealReuse(fixture);
+    await fixture.database.custodyOperations.clear();
+    await fixture.database.custodyArtifacts.clear();
+    expect(await fixture.database.custodyOperations.count()).toBe(0);
+    fixture.database.close();
+    const reopened = new BitcasterDB(browserWalletDatabaseName(fixture.scopeId));
+    openDatabases.push(reopened);
+
+    await expect(
+      runBrowserEncryptedWalletBackupV2WorkerCycle({
+        ...fixture.input,
+        database: reopened,
+        remoteOrigin: "https://backup.example",
+      }),
+    ).resolves.toEqual({ kind: "committed" });
+    expect(fixture.remote.mutations).toHaveLength(2);
+    expect(await reopened.custodyOperations.count()).toBe(0);
+    const group = decodeEncryptedWalletBackupV2UploadGroup({
+      bytes: fixture.remote.mutations[1]!.bytes,
+      expectedRequestAuthPublicKey: fixture.input.keyHandle.requestAuthPublicKey,
+      expectedContext: {
+        realm: REALM,
+        walletId: fixture.input.keyHandle.walletId,
+        enrollmentEpoch: 1,
+      },
+    });
+    const added = group.mutationEvidence.envelope.mutation.addedBundle;
+    if (added === null) throw new Error("test successor bundle is missing");
+    const restored = await decryptEncryptedWalletBackupV2ProofSetBundle({
+      keyHandle: fixture.input.keyHandle,
+      seed: fixture.seed,
+      expectedAsset: fixture.asset,
+      custodyRevision: BigInt(added.custodyRevision),
+      runtime: { subtle: crypto.subtle, getRandomValues: randomValues },
+      descriptor: added,
+      objects: group.objects,
+    });
+    expect(restored.proofs).toHaveLength(2);
+    expect(restored.proofs.filter(({ terminalSeal }) => terminalSeal !== undefined)).toHaveLength(
+      1,
+    );
+  });
+
+  it("refuses a wrong enrollment epoch without custody mutation", async () => {
+    const wrongEpoch = await terminalWorkerFixture();
+    await prepareRemoteSealReuse(wrongEpoch);
+    wrongEpoch.remote.replaceHead(wrongEpoch.remote.evidence().bundles, [], 2);
+    await expect(
+      runBrowserEncryptedWalletBackupV2WorkerCycle({
+        ...wrongEpoch.input,
+        remoteOrigin: "https://backup.example",
+      }),
+    ).rejects.toThrow(/accepted head is stale|authority artifact is foreign/);
+    expect(wrongEpoch.remote.mutations).toHaveLength(1);
+    expect(await wrongEpoch.database.custodyProofs.count()).toBe(2);
+  });
+
+  it("refuses a backup outage without custody mutation", async () => {
+    const outage = await terminalWorkerFixture();
+    await prepareRemoteSealReuse(outage);
+    outage.remote.readObjectFailure = new EncryptedWalletBackupV2HttpTransportError(
+      "transport-failure",
+    );
+    await expect(
+      runBrowserEncryptedWalletBackupV2WorkerCycle({
+        ...outage.input,
+        remoteOrigin: "https://backup.example",
+      }),
+    ).rejects.toThrow(/transport-failure/);
+    expect(outage.remote.mutations).toHaveLength(1);
+    expect(await outage.store.readPreparedMutation()).toBeNull();
+    expect(await outage.database.custodyProofs.count()).toBe(2);
   });
 
   it("backs up an eligible proof when a transient locked proof has no locator", async () => {
@@ -787,7 +1028,7 @@ async function workerFixture(assetCount: number) {
   };
 }
 
-async function terminalWorkerFixture() {
+async function terminalWorkerFixture(losingCount = 1) {
   const seed = new Uint8Array(64).fill(19);
   const keyHandle = await createEncryptedWalletBackupV2KeyHandle({
     seed,
@@ -822,33 +1063,46 @@ async function terminalWorkerFixture() {
     observedAtMs: 10,
     leaseExpiresAtMs: 10_000,
   });
-  const locator = {
+  const locators = Array.from({ length: losingCount }, (_value, index) => ({
     schemaVersion: 1 as const,
     kind: "nut13" as const,
     keysetId: CTF_KEYSET,
-    counter: 1,
-  };
-  const predecessor = createBrowserCustodyProofRow({
-    scopeId: scope.scopeId,
-    normalizedMint: "https://mint.example",
-    unit: "msat",
-    proof: {
-      id: CTF_KEYSET,
-      amount: 1 as never,
-      secret: deriveDurableWalletProofSecret({
-        seed,
-        locator,
-        proofKeysetId: CTF_KEYSET,
-        proofAmount: 1,
-      }),
-      C: CTF_PUBLIC_KEY,
-    },
-    asset: { kind: "conditional", conditionId: CTF_CONDITION_ID, outcomeCollection: CTF_OUTCOME },
-    receivedAtMs: 1,
-  });
-  await database.custodyProofs.put(predecessor);
-  await database.custodyProofBackupAuthorities.put(
-    createBrowserProofBackupAuthorityRow(predecessor, 10, locator, "admission:worker"),
+    counter: index + 1,
+  }));
+  const predecessors = locators.map((locator) =>
+    createBrowserCustodyProofRow({
+      scopeId: scope.scopeId,
+      normalizedMint: "https://mint.example",
+      unit: "msat",
+      proof: {
+        id: CTF_KEYSET,
+        amount: 1 as never,
+        secret: deriveDurableWalletProofSecret({
+          seed,
+          locator,
+          proofKeysetId: CTF_KEYSET,
+          proofAmount: 1,
+        }),
+        C: CTF_PUBLIC_KEY,
+      },
+      asset: {
+        kind: "conditional",
+        conditionId: CTF_CONDITION_ID,
+        outcomeCollection: CTF_OUTCOME,
+      },
+      receivedAtMs: 1,
+    }),
+  );
+  await database.custodyProofs.bulkPut(predecessors);
+  await database.custodyProofBackupAuthorities.bulkPut(
+    predecessors.map((predecessor, index) =>
+      createBrowserProofBackupAuthorityRow(
+        predecessor,
+        10,
+        locators[index]!,
+        `admission:worker-${index}`,
+      ),
+    ),
   );
   await database.custodyConditionalKeysets.put({
     schemaVersion: 1,
@@ -881,20 +1135,22 @@ async function terminalWorkerFixture() {
     scopeId: scope.scopeId,
     asset,
     custodyRevision: 1n,
-    activeProofCount: 1,
+    activeProofCount: losingCount,
   });
   await database.encryptedWalletBackupV2DesiredAssets.put(initialDesired);
-  await commitBrowserCtfTerminalOperation({
-    adapter: custody,
-    scope,
-    owner,
-    operationId: "ctf-redeem-worker",
-    mintUrl: "https://mint.example",
-    proofs: [proofFromWorkerRow(predecessor)],
-    predecessorProofs: [predecessor],
-    publicKey: CTF_PUBLIC_KEY,
-  });
-  const siblingLocator = { ...locator, counter: 2 };
+  for (const [index, predecessor] of predecessors.entries()) {
+    await commitBrowserCtfTerminalOperation({
+      adapter: custody,
+      scope,
+      owner: { ...owner, observedAtMs: 10 + index * 10 },
+      operationId: `ctf-redeem-worker-${index}`,
+      mintUrl: "https://mint.example",
+      proofs: [proofFromWorkerRow(predecessor)],
+      predecessorProofs: [predecessor],
+      publicKey: CTF_PUBLIC_KEY,
+    });
+  }
+  const siblingLocator = { ...locators[locators.length - 1]!, counter: losingCount + 1 };
   const sibling = createBrowserCustodyProofRow({
     scopeId: scope.scopeId,
     normalizedMint: "https://mint.example",
@@ -927,7 +1183,7 @@ async function terminalWorkerFixture() {
   await database.walletCounterCursors.put({
     scopeId: scope.scopeId,
     keysetId: CTF_KEYSET,
-    next: 3,
+    next: losingCount + 2,
   });
   const currentDesired = await database.encryptedWalletBackupV2DesiredAssets.get([
     scope.scopeId,
@@ -939,7 +1195,7 @@ async function terminalWorkerFixture() {
       scopeId: scope.scopeId,
       asset,
       custodyRevision: BigInt(currentDesired.custodyRevision) + 1n,
-      activeProofCount: 2,
+      activeProofCount: losingCount + 1,
     }),
     syncState: "pending",
   });
@@ -959,7 +1215,61 @@ async function terminalWorkerFixture() {
     signal: new AbortController().signal,
     isCurrentProfile: () => current,
   };
-  return { database, scopeId: scope.scopeId, seed, input, asset, remote };
+  return { database, store, scopeId: scope.scopeId, seed, input, asset, remote };
+}
+
+async function prepareRemoteSealReuse(
+  fixture: Awaited<ReturnType<typeof terminalWorkerFixture>>,
+  losingIndex = 0,
+): Promise<void> {
+  await expect(runBrowserEncryptedWalletBackupV2WorkerCycle(fixture.input)).resolves.toEqual({
+    kind: "committed",
+  });
+  const currentDesired = (await fixture.database.encryptedWalletBackupV2DesiredAssets.toArray())[0];
+  if (currentDesired === undefined) throw new Error("test desired asset is missing");
+  const expectedLocator = {
+    schemaVersion: 1 as const,
+    kind: "nut13" as const,
+    keysetId: CTF_KEYSET,
+    counter: losingIndex + 1,
+  };
+  const expectedSecret = deriveDurableWalletProofSecret({
+    seed: fixture.seed,
+    locator: expectedLocator,
+    proofKeysetId: CTF_KEYSET,
+    proofAmount: 1,
+  });
+  const losing = (await fixture.database.custodyProofs.toArray())
+    .map(decodeBrowserCustodyProofRow)
+    .filter(({ selectability }) => selectability === "verified-losing")
+    .find((candidate) => proofFromWorkerRow(candidate).secret === expectedSecret);
+  if (losing === undefined) throw new Error("test losing proof is missing");
+  await fixture.database.custodyProofBackupAuthorities.put(
+    createBrowserRemoteProofBackupAuthorityRow({
+      proof: losing,
+      observedAtMs: 30,
+      derivationLocator: expectedLocator,
+      restoreProofId: losing.proofId,
+      restoreProofCommitment: `${(losingIndex + 11).toString(16).padStart(2, "0")}`.repeat(32),
+    }),
+  );
+  await fixture.database.encryptedWalletBackupV2DesiredAssets.put({
+    ...createEncryptedWalletBackupV2DesiredAssetRow({
+      scopeId: fixture.scopeId,
+      asset: fixture.asset,
+      custodyRevision: BigInt(currentDesired.custodyRevision) + 1n,
+      activeProofCount: currentDesired.activeProofCount,
+    }),
+    syncState: "pending",
+  });
+
+  fixture.remote.replaceHead(fixture.remote.evidence().bundles);
+  await expect(
+    runBrowserEncryptedWalletBackupV2WorkerCycle({
+      ...fixture.input,
+      remoteOrigin: "https://backup.example",
+    }),
+  ).resolves.toEqual({ kind: "head-accepted" });
 }
 
 function proofFromWorkerRow(row: ReturnType<typeof createBrowserCustodyProofRow>): Proof {
@@ -1040,9 +1350,12 @@ class FakeRemote implements EncryptedWalletBackupV2RemotePort {
   > = [];
   readonly mutations: Array<{ bytes: Uint8Array; replayNonce: string }> = [];
   afterCommit: (() => void | Promise<void>) | null = null;
+  beforeDescriptorPage: (() => void | Promise<void>) | null = null;
+  readObjectFailure: EncryptedWalletBackupV2HttpTransportError | null = null;
   failAfterCommit = false;
   tamperNextReceipt = false;
   appliedMutations = 0;
+  #enrollmentEpoch = 1;
   #head;
   #bundles: EncryptedWalletBackupV2BundleDescriptor[] = [];
   readonly #receipts = new Map<string, EncryptedWalletBackupV2BundleSupersessionReceipt>();
@@ -1069,12 +1382,18 @@ class FakeRemote implements EncryptedWalletBackupV2RemotePort {
     );
   }
 
-  replaceHead(bundles: readonly EncryptedWalletBackupV2BundleDescriptor[]): void {
+  replaceHead(
+    bundles: readonly EncryptedWalletBackupV2BundleDescriptor[],
+    objects: readonly EncryptedWalletBackupV2BundleObjectWire[] = [],
+    enrollmentEpoch = this.#enrollmentEpoch,
+  ): void {
+    this.#enrollmentEpoch = enrollmentEpoch;
+    for (const object of objects) this.#objects.set(object.objectId, object);
     this.#bundles = [...bundles].sort((left, right) => left.bundleId.localeCompare(right.bundleId));
     this.#head = createEncryptedWalletBackupV2CurrentHead({
       realm: REALM,
       walletId: this.#head.walletId,
-      enrollmentEpoch: 1,
+      enrollmentEpoch: this.#enrollmentEpoch,
       headVersion: this.#head.headVersion + 1,
       bundles: this.#bundles,
     });
@@ -1089,6 +1408,9 @@ class FakeRemote implements EncryptedWalletBackupV2RemotePort {
       bundles: this.#bundles,
     }).find(({ afterBundleId }) => afterBundleId === input.afterBundleId);
     if (!page) throw new Error("test page is absent");
+    const beforeRead = this.beforeDescriptorPage;
+    this.beforeDescriptorPage = null;
+    await beforeRead?.();
     return page;
   }
 
@@ -1105,7 +1427,7 @@ class FakeRemote implements EncryptedWalletBackupV2RemotePort {
       this.#head = createEncryptedWalletBackupV2CurrentHead({
         realm: REALM,
         walletId: this.#head.walletId,
-        enrollmentEpoch: 1,
+        enrollmentEpoch: this.#enrollmentEpoch,
         headVersion: this.#head.headVersion + 1,
         bundles: this.#bundles,
       });
@@ -1116,7 +1438,11 @@ class FakeRemote implements EncryptedWalletBackupV2RemotePort {
     const group = decodeEncryptedWalletBackupV2UploadGroup({
       bytes: input.canonicalUploadGroup,
       expectedRequestAuthPublicKey: this.#requestAuthPublicKey,
-      expectedContext: { realm: REALM, walletId: this.#head.walletId, enrollmentEpoch: 1 },
+      expectedContext: {
+        realm: REALM,
+        walletId: this.#head.walletId,
+        enrollmentEpoch: this.#enrollmentEpoch,
+      },
     });
     const digest = group.mutationEvidence.envelope.requestDigest;
     const replay = this.#receipts.get(digest);
@@ -1130,7 +1456,7 @@ class FakeRemote implements EncryptedWalletBackupV2RemotePort {
     this.#head = createEncryptedWalletBackupV2CurrentHead({
       realm: REALM,
       walletId: this.#head.walletId,
-      enrollmentEpoch: 1,
+      enrollmentEpoch: this.#enrollmentEpoch,
       headVersion: this.#head.headVersion + 1,
       bundles: this.#bundles,
     });
@@ -1163,11 +1489,24 @@ class FakeRemote implements EncryptedWalletBackupV2RemotePort {
     throw new Error("not used");
   }
 
+  storedObjects(
+    descriptor: EncryptedWalletBackupV2BundleDescriptor,
+  ): readonly EncryptedWalletBackupV2BundleObjectWire[] {
+    return descriptor.objects.map((reference) => {
+      const object = this.#objects.get(reference.objectId);
+      if (object === undefined) throw new Error("test object is absent");
+      return structuredClone(object);
+    });
+  }
+
   async readObject(input: {
     readonly objectId: string;
     readonly requestProof: EncryptedWalletBackupV2RequestProof;
     readonly expectedDescriptor: EncryptedWalletBackupV2BundleDescriptor;
   }): Promise<EncryptedWalletBackupV2BundleObjectWire> {
+    const failure = this.readObjectFailure;
+    this.readObjectFailure = null;
+    if (failure) throw failure;
     const object = this.#objects.get(input.objectId);
     if (object === undefined) throw new Error("test object is absent");
     return structuredClone(object);
@@ -1176,6 +1515,14 @@ class FakeRemote implements EncryptedWalletBackupV2RemotePort {
 
 function randomValues(target: Uint8Array): Uint8Array {
   return crypto.getRandomValues(target);
+}
+
+function sameBytes(left: Uint8Array | undefined, right: Uint8Array): boolean {
+  return (
+    left !== undefined &&
+    left.length === right.length &&
+    left.every((value, index) => value === right[index])
+  );
 }
 
 function fromHex(value: string): Uint8Array {

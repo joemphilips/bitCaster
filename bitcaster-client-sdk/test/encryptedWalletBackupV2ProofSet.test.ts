@@ -146,8 +146,11 @@ test('v2 proof set restores one asset proof material', async () => {
   assert.equal(restored.proofs.length, 2)
   assert.equal(restored.proofs[1]!.asset.kind, 'ordinary')
   assert.equal(restored.counterHighWaterMarks[0]!.nextCounter, 2)
-  restored.proofs[0]!.proof.secret = '00'.repeat(32)
-  assert.notEqual(restored.proofs[0]!.proof.secret, proof(0, { kind: 'ordinary' }).proof.secret)
+  assert.equal(Object.isFrozen(restored.proofs[0]!.proof), true)
+  assert.throws(() => {
+    restored.proofs[0]!.proof.secret = '00'.repeat(32)
+  }, TypeError)
+  assert.equal(restored.proofs[0]!.proof.secret, proof(0, { kind: 'ordinary' }).proof.secret)
 })
 
 test('v2 proof set derives the declared amount from every retained proof', async () => {
@@ -501,10 +504,11 @@ test('v2 sealed losing CTF restores complete and non-selectable without mint acc
   assert.equal(verified.proofs[0]!.selectionAuthority, 'terminal-sealed-non-selectable')
   assert.equal(verified.proofs[0]!.proof.secret, entry.proof.secret)
   assert.equal(verified.proofs[0]!.terminalSeal?.requestDigest, seal.requestDigest)
-  ;(input.unverified.proofs[0]!.terminalSeal as { classifiedAtMs: number }).classifiedAtMs = 1
-  await assert.rejects(
-    () => verifyEncryptedWalletBackupV2RestoredProofSet({ ...input, port: unavailable }),
-    /exact authenticated decrypted material/,
+  assert.throws(() => {
+    ;(input.unverified.proofs[0]!.terminalSeal as { classifiedAtMs: number }).classifiedAtMs = 1
+  }, TypeError)
+  await assert.doesNotReject(() =>
+    verifyEncryptedWalletBackupV2RestoredProofSet({ ...input, port: unavailable }),
   )
   await assert.rejects(
     () =>

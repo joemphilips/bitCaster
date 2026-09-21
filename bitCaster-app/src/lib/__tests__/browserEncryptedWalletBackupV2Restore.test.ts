@@ -7,6 +7,7 @@ import {
   createEncryptedWalletBackupV2KeyHandle,
   enumerateEncryptedWalletBackupV2DescriptorPages,
   prepareEncryptedWalletBackupV2ProofSetBundle,
+  requireEncryptedWalletBackupV2CollectedHeadEvidence,
   deriveRootCtfOutcomeCollectionId,
   type EncryptedWalletBackupV2RemotePort,
 } from "@bitcaster/client-sdk";
@@ -65,6 +66,12 @@ it("restores one current bundle with fresh sequential object proofs", async () =
     custodyRevision: 1n,
     headVersion: 1,
   });
+  if (result.kind !== "backup") throw new Error("test backup result is missing");
+  const head = requireEncryptedWalletBackupV2CollectedHeadEvidence(result.collectedHeadEvidence);
+  expect(head.head.headVersion).toBe(1);
+  expect(head.bundles.map(({ bundleId }) => bundleId)).toEqual([
+    fixture.bundle.descriptor.bundleId,
+  ]);
   expect(fixture.remote.readObject).toHaveBeenCalledTimes(fixture.bundle.descriptor.objects.length);
   expect(fixture.remote.readObject.mock.calls.map(([call]) => call.objectId)).toEqual(
     fixture.bundle.descriptor.objects.map(({ objectId }) => objectId),

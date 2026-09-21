@@ -19,6 +19,18 @@ import {
   requireEncryptedWalletBackupV2VerifiedBundleSupersessionMutation,
 } from './encryptedWalletBackupV2Mutation.ts'
 import {
+  digestEncryptedWalletBackupV2TerminalProofCommitment,
+  requireEncryptedWalletBackupV2DecryptedProofSet,
+  requireEncryptedWalletBackupV2DecryptedProofSetSource,
+  requireEncryptedWalletBackupV2RemoteTerminalSealReuseAuthority,
+  requireEncryptedWalletBackupV2VerifiedProofSet,
+  requireEncryptedWalletBackupV2VerifiedProofSetSource,
+  type EncryptedWalletBackupV2ProofSetProof,
+  type EncryptedWalletBackupV2UnverifiedProofSet,
+  type EncryptedWalletBackupV2VerifiedProofSet,
+  type EncryptedWalletBackupV2RemoteTerminalSealReuseAuthority,
+} from './encryptedWalletBackupV2ProofSet.ts'
+import {
   hexToBytesStrict,
   equalBytes,
   requireBytes,
@@ -55,9 +67,17 @@ export interface EncryptedWalletBackupV2BackupReachabilityEvidence {
   readonly bundle: EncryptedWalletBackupV2BundleDescriptor
 }
 
+export interface EncryptedWalletBackupV2ReceiptCorrelatedTerminalProof {
+  readonly kind: 'ctf-terminal-restore'
+  readonly proof: EncryptedWalletBackupV2VerifiedProofSet['proofs'][number]
+  readonly receipt: EncryptedWalletBackupV2BundleSupersessionReceipt
+  readonly bundle: EncryptedWalletBackupV2BundleDescriptor
+}
+
 const RECEIPT_DOMAIN = 'bitcaster/encrypted-wallet-backup-v2-receipt/v1\0'
 const VERIFIED_RECEIPTS = new WeakSet<object>()
 const REACHABILITY_EVIDENCES = new WeakSet<object>()
+const CORRELATED_TERMINAL_PROOFS = new WeakSet<object>()
 
 export function verifyEncryptedWalletBackupV2BundleSupersessionReceipt(input: {
   readonly receipt: unknown
@@ -134,6 +154,81 @@ export function requireEncryptedWalletBackupV2BackupReachabilityEvidence(
   if (typeof value !== 'object' || value === null || !REACHABILITY_EVIDENCES.has(value))
     throw new Error('encrypted backup reachability evidence is invalid')
   return value as EncryptedWalletBackupV2BackupReachabilityEvidence
+}
+
+/**
+ * Correlates one signed replacement receipt with a local active CTF proof.
+ *
+ * The returned authority is valid only for the exact SDK-verified sealed
+ * proof. It does not run a mint check and cannot make the proof selectable.
+ * The caller must bind the local proof and accepted predecessor to local
+ * custody in its transaction. This gate does not prove local database
+ * provenance.
+ */
+export function authorizeEncryptedWalletBackupV2ReceiptCorrelatedTerminalProof(input: {
+  readonly mutationEvidence: unknown
+  readonly receiptEvidence: unknown
+  readonly locallyAcceptedPredecessorEvidence: unknown
+  readonly authenticatedCurrentHeadEvidence: unknown
+  readonly predecessorProofSet: unknown
+  readonly candidateProofSet: unknown
+  readonly remoteTerminalSealReuseAuthority: unknown
+  readonly localActiveProof: unknown
+}): EncryptedWalletBackupV2ReceiptCorrelatedTerminalProof {
+  const mutation = requireEncryptedWalletBackupV2VerifiedBundleSupersessionMutation(
+    input.mutationEvidence,
+  ).envelope
+  const receipt = requireEncryptedWalletBackupV2VerifiedBundleSupersessionReceipt(
+    input.receiptEvidence,
+  ).receipt
+  const predecessor = requireEncryptedWalletBackupV2CollectedHeadEvidence(
+    input.locallyAcceptedPredecessorEvidence,
+  )
+  const current = requireEncryptedWalletBackupV2CollectedHeadEvidence(
+    input.authenticatedCurrentHeadEvidence,
+  )
+  const predecessorProofSet = requireEncryptedWalletBackupV2DecryptedProofSet(
+    input.predecessorProofSet,
+  )
+  const predecessorSource = requireEncryptedWalletBackupV2DecryptedProofSetSource(
+    input.predecessorProofSet,
+  )
+  const candidateSet = requireEncryptedWalletBackupV2VerifiedProofSet(input.candidateProofSet)
+  const source = requireEncryptedWalletBackupV2VerifiedProofSetSource(input.candidateProofSet)
+  const remoteAuthority = requireEncryptedWalletBackupV2RemoteTerminalSealReuseAuthority(
+    input.remoteTerminalSealReuseAuthority,
+  )
+  const local = requireLocalActiveProof(input.localActiveProof)
+
+  requireTerminalReceiptHeads({ mutation, receipt, predecessor, current, remoteAuthority })
+  const added = requireTerminalReplacementBundle({
+    receipt,
+    predecessor,
+    predecessorProofSet,
+    predecessorSource,
+    current,
+    source,
+    remoteAuthority,
+    local,
+  })
+  const proof = requireTerminalProofCorrelation(candidateSet, local, remoteAuthority)
+
+  const authority = Object.freeze({
+    kind: 'ctf-terminal-restore' as const,
+    proof,
+    receipt,
+    bundle: cloneEncryptedWalletBackupV2BundleDescriptor(added),
+  })
+  CORRELATED_TERMINAL_PROOFS.add(authority)
+  return authority
+}
+
+export function requireEncryptedWalletBackupV2ReceiptCorrelatedTerminalProof(
+  value: unknown,
+): EncryptedWalletBackupV2ReceiptCorrelatedTerminalProof {
+  if (typeof value !== 'object' || value === null || !CORRELATED_TERMINAL_PROOFS.has(value))
+    throw new Error('encrypted backup terminal proof correlation is invalid')
+  return value as EncryptedWalletBackupV2ReceiptCorrelatedTerminalProof
 }
 
 export function digestEncryptedWalletBackupV2BundleSupersessionReceipt(value: unknown): string {
@@ -305,6 +400,162 @@ function bindReceipt(
     throw new Error('encrypted backup addition receipt is invalid')
 }
 
+function requireHeadScope(
+  head: EncryptedWalletBackupV2CurrentHead,
+  receipt: EncryptedWalletBackupV2BundleSupersessionReceipt,
+): void {
+  if (
+    head.realm !== receipt.realm ||
+    head.walletId !== receipt.walletId ||
+    head.enrollmentEpoch !== receipt.enrollmentEpoch
+  )
+    throw new Error('encrypted backup terminal receipt head scope is invalid')
+}
+
+function requireTerminalReceiptHeads(input: {
+  readonly mutation: ReturnType<
+    typeof requireEncryptedWalletBackupV2VerifiedBundleSupersessionMutation
+  >['envelope']
+  readonly receipt: EncryptedWalletBackupV2BundleSupersessionReceipt
+  readonly predecessor: ReturnType<typeof requireEncryptedWalletBackupV2CollectedHeadEvidence>
+  readonly current: ReturnType<typeof requireEncryptedWalletBackupV2CollectedHeadEvidence>
+  readonly remoteAuthority: EncryptedWalletBackupV2RemoteTerminalSealReuseAuthority
+}): void {
+  bindReceipt(input.receipt, input.mutation)
+  requireHeadScope(input.predecessor.head, input.receipt)
+  requireHeadScope(input.current.head, input.receipt)
+  if (
+    input.receipt.previousHeadVersion !== input.predecessor.head.headVersion ||
+    input.receipt.previousActiveSetDigest !== input.predecessor.head.activeSetDigest
+  )
+    throw new Error('encrypted backup terminal receipt predecessor is invalid')
+  if (
+    !equalBytes(
+      encodeEncryptedWalletBackupV2CurrentHead(input.receipt.resultHead),
+      encodeEncryptedWalletBackupV2CurrentHead(input.current.head),
+    )
+  )
+    throw new Error('encrypted backup terminal receipt current head is invalid')
+  if (!sameCurrentHead(input.remoteAuthority.head, input.current.head))
+    throw new Error('encrypted backup terminal remote head is invalid')
+}
+
+function requireTerminalReplacementBundle(input: {
+  readonly receipt: EncryptedWalletBackupV2BundleSupersessionReceipt
+  readonly predecessor: ReturnType<typeof requireEncryptedWalletBackupV2CollectedHeadEvidence>
+  readonly predecessorProofSet: EncryptedWalletBackupV2UnverifiedProofSet
+  readonly predecessorSource: ReturnType<
+    typeof requireEncryptedWalletBackupV2DecryptedProofSetSource
+  >
+  readonly current: ReturnType<typeof requireEncryptedWalletBackupV2CollectedHeadEvidence>
+  readonly source: ReturnType<typeof requireEncryptedWalletBackupV2VerifiedProofSetSource>
+  readonly remoteAuthority: EncryptedWalletBackupV2RemoteTerminalSealReuseAuthority
+  readonly local: EncryptedWalletBackupV2ProofSetProof & { readonly proofId: string }
+}): EncryptedWalletBackupV2BundleDescriptor {
+  const added = requireAddedReceiptBundle(input.receipt, input.current.bundles)
+  if (input.receipt.supersededBundleIds.length !== 1)
+    throw new Error('encrypted backup terminal receipt predecessor set is invalid')
+  const supersededId = input.receipt.supersededBundleIds[0]!
+  const predecessorBundle = input.predecessor.bundles.find(
+    (bundle) => bundle.bundleId === supersededId,
+  )
+  if (predecessorBundle === undefined || predecessorBundle.assetLocator !== added.assetLocator)
+    throw new Error('encrypted backup terminal receipt predecessor asset is invalid')
+  if (
+    input.predecessorSource.bundleId !== predecessorBundle.bundleId ||
+    input.predecessorSource.descriptorDigest !==
+      digestEncryptedWalletBackupV2BundleDescriptor(predecessorBundle) ||
+    input.predecessorSource.assetLocator !== predecessorBundle.assetLocator ||
+    input.predecessorSource.custodyRevision !== predecessorBundle.custodyRevision
+  )
+    throw new Error('encrypted backup terminal predecessor proof bundle binding is invalid')
+  const localProof = input.predecessorProofSet.proofs.find(
+    (proof) => proof.proofId === input.local.proofId,
+  )
+  if (
+    localProof === undefined ||
+    localProof.terminalSeal !== undefined ||
+    localProof.asset.kind !== 'ctf' ||
+    digestEncryptedWalletBackupV2TerminalProofCommitment(localProof) !==
+      digestEncryptedWalletBackupV2TerminalProofCommitment(input.local)
+  )
+    throw new Error('encrypted backup terminal predecessor proof is invalid')
+  if (
+    input.source.bundleId !== added.bundleId ||
+    input.source.descriptorDigest !== digestEncryptedWalletBackupV2BundleDescriptor(added) ||
+    input.source.assetLocator !== added.assetLocator ||
+    input.source.custodyRevision !== added.custodyRevision
+  )
+    throw new Error('encrypted backup terminal proof bundle binding is invalid')
+  if (
+    input.remoteAuthority.bundleId !== added.bundleId ||
+    input.remoteAuthority.descriptorDigest !==
+      digestEncryptedWalletBackupV2BundleDescriptor(added) ||
+    input.remoteAuthority.assetLocator !== added.assetLocator ||
+    input.remoteAuthority.custodyRevision !== added.custodyRevision
+  )
+    throw new Error('encrypted backup terminal remote bundle binding is invalid')
+  return added
+}
+
+function requireTerminalProofCorrelation(
+  candidateSet: EncryptedWalletBackupV2VerifiedProofSet,
+  local: EncryptedWalletBackupV2ProofSetProof & { readonly proofId: string },
+  remoteAuthority: EncryptedWalletBackupV2RemoteTerminalSealReuseAuthority,
+): EncryptedWalletBackupV2VerifiedProofSet['proofs'][number] {
+  const localCommitment = digestEncryptedWalletBackupV2TerminalProofCommitment(local)
+  const matches = candidateSet.proofs.filter(
+    (proof) =>
+      proof.asset.kind === 'ctf' &&
+      proof.selectionAuthority === 'terminal-sealed-non-selectable' &&
+      proof.terminalSeal !== undefined &&
+      proof.proofId === local.proofId &&
+      proof.terminalSeal.proofCommitment === localCommitment &&
+      proof.proofId === remoteAuthority.proofId &&
+      proof.terminalSeal.proofCommitment === remoteAuthority.proofCommitment &&
+      sameTerminalSeal(proof.terminalSeal, remoteAuthority.terminalSeal),
+  )
+  if (
+    local.asset.kind !== 'ctf' ||
+    local.terminalSeal !== undefined ||
+    remoteAuthority.proofCommitment !== localCommitment ||
+    matches.length !== 1
+  )
+    throw new Error('encrypted backup terminal proof correlation is invalid')
+  return matches[0]!
+}
+
+function requireAddedReceiptBundle(
+  receipt: EncryptedWalletBackupV2BundleSupersessionReceipt,
+  bundles: readonly EncryptedWalletBackupV2BundleDescriptor[],
+): EncryptedWalletBackupV2BundleDescriptor {
+  if (receipt.bundleId === null || receipt.bundleDescriptorDigest === null)
+    throw new Error('encrypted backup terminal receipt bundle is missing')
+  const bundle = bundles.find((item) => item.bundleId === receipt.bundleId)
+  if (
+    bundle === undefined ||
+    digestEncryptedWalletBackupV2BundleDescriptor(bundle) !== receipt.bundleDescriptorDigest
+  )
+    throw new Error('encrypted backup terminal receipt bundle is invalid')
+  return bundle
+}
+
+function requireLocalActiveProof(
+  value: unknown,
+): EncryptedWalletBackupV2ProofSetProof & { readonly proofId: string } {
+  if (typeof value !== 'object' || value === null || Array.isArray(value))
+    throw new Error('encrypted backup local active proof is invalid')
+  const record = value as Record<string, unknown>
+  if (
+    typeof record.proofId !== 'string' ||
+    Object.hasOwn(record, 'selectionAuthority') ||
+    record.terminalSeal !== undefined
+  )
+    throw new Error('encrypted backup local active proof is invalid')
+  requireLowerHex(record.proofId, 32, 'local proof id')
+  return value as EncryptedWalletBackupV2ProofSetProof & { readonly proofId: string }
+}
+
 function receiptDigest(receipt: EncryptedWalletBackupV2BundleSupersessionReceipt): string {
   return toHex(
     sha256
@@ -400,6 +651,30 @@ function sameObjects(
 }
 function sameIds(left: readonly string[], right: readonly string[]): boolean {
   return left.length === right.length && left.every((item, index) => item === right[index])
+}
+function sameCurrentHead(
+  left: EncryptedWalletBackupV2CurrentHead,
+  right: EncryptedWalletBackupV2CurrentHead,
+): boolean {
+  return equalBytes(
+    encodeEncryptedWalletBackupV2CurrentHead(left),
+    encodeEncryptedWalletBackupV2CurrentHead(right),
+  )
+}
+function sameTerminalSeal(
+  left: EncryptedWalletBackupV2VerifiedProofSet['proofs'][number]['terminalSeal'],
+  right: EncryptedWalletBackupV2RemoteTerminalSealReuseAuthority['terminalSeal'],
+): boolean {
+  return (
+    left !== undefined &&
+    left.schemaVersion === right.schemaVersion &&
+    left.kind === right.kind &&
+    left.operationIdDigest === right.operationIdDigest &&
+    left.requestDigest === right.requestDigest &&
+    left.code === right.code &&
+    left.classifiedAtMs === right.classifiedAtMs &&
+    left.proofCommitment === right.proofCommitment
+  )
 }
 function requirePublicKey(value: unknown): string {
   const key = requireLowerHex(value, 32, 'receipt public key')
