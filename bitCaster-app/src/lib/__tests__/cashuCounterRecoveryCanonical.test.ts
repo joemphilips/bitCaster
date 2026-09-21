@@ -15,12 +15,22 @@ import {
 import { bytesToHex } from "@noble/curves/utils.js";
 import { secp256k1 } from "@noble/curves/secp256k1.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  createEncryptedWalletBackupV2AssetIdentity,
+  encryptedWalletBackupV2LocalAssetKey,
+} from "@bitcaster/client-sdk/encryptedWalletBackupV2ProofSet";
+import { deriveDurableCustodyWalletId } from "@bitcaster/client-sdk/durableCustody";
 import { toSeed } from "../bip39";
 import { activateBrowserWalletDatabase, db, type BitcasterDB } from "../../stores/proof-db";
 import {
   browserWalletScopeIdFromMnemonic,
   setActiveBrowserWalletProfile,
 } from "../browserWalletProfile";
+import { createBrowserCustodyProofRow } from "../../stores/durable-custody-db";
+import {
+  createBrowserCompletedProofRemovalMarkerRow,
+  requireBrowserLiveProofBackupAuthorityTableRow,
+} from "../../stores/browser-proof-backup-authority";
 
 const MNEMONIC =
   "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
@@ -128,7 +138,11 @@ describe("recoverKeysetCountersForMint — canonical custody", () => {
       selectability: "spent",
       reservationOperationId: null,
     });
-    const [authority] = await database!.custodyProofBackupAuthorities.toArray();
+    const [rawAuthority] = await database!.custodyProofBackupAuthorities.toArray();
+    const authority = requireBrowserLiveProofBackupAuthorityTableRow(rawAuthority, [
+      scopeId(),
+      existing.proofId,
+    ]);
     if (authority === undefined) throw new Error("recovered backup authority is missing");
     await database!.custodyProofBackupAuthorities.put({
       ...authority,
@@ -144,7 +158,11 @@ describe("recoverKeysetCountersForMint — canonical custody", () => {
     expect(await database!.proofs.count()).toBe(0);
 
     const spent = await database!.custodyProofs.get([scopeId(), existing.proofId]);
-    const spentAuthority = await database!.custodyProofBackupAuthorities.get([
+    const spentAuthorityRow = await database!.custodyProofBackupAuthorities.get([
+      scopeId(),
+      existing.proofId,
+    ]);
+    const spentAuthority = requireBrowserLiveProofBackupAuthorityTableRow(spentAuthorityRow, [
       scopeId(),
       existing.proofId,
     ]);
@@ -255,7 +273,13 @@ describe("recoverKeysetCountersForMint — canonical custody", () => {
       complete: true,
     });
 
-    const [authority] = await database!.custodyProofBackupAuthorities.toArray();
+    const [existing] = await database!.custodyProofs.toArray();
+    if (existing === undefined) throw new Error("recovered custody proof is missing");
+    const [rawAuthority] = await database!.custodyProofBackupAuthorities.toArray();
+    const authority = requireBrowserLiveProofBackupAuthorityTableRow(rawAuthority, [
+      scopeId(),
+      existing.proofId,
+    ]);
     if (authority === undefined || authority.derivationLocator === null) {
       throw new Error("recovered backup authority is missing");
     }
@@ -276,6 +300,70 @@ describe("recoverKeysetCountersForMint — canonical custody", () => {
     expect(await database!.walletCounterCursors.get([scopeId(), KEYSET_ID])).toMatchObject({
       next: 1,
     });
+  });
+
+  it("fences an exact completed-removal marker from counter recovery", async () => {
+    const proof = restoredProof(0);
+    const asset = createEncryptedWalletBackupV2AssetIdentity({
+      mintUrl: MINT_URL,
+      unit: "msat",
+      asset: {
+        kind: "ctf",
+        conditionId: "aa".repeat(32),
+        outcomeLabel: "YES",
+        outcomeCollectionId: "bb".repeat(32),
+        registeredAt: 1,
+        finalExpiry: 2,
+      },
+    });
+    const proofRow = createBrowserCustodyProofRow({
+      scopeId: scopeId(),
+      normalizedMint: MINT_URL,
+      unit: "msat",
+      proof,
+      asset: { kind: "regular" },
+      receivedAtMs: 0,
+    });
+    const marker = createBrowserCompletedProofRemovalMarkerRow({
+      scopeId: scopeId(),
+      proofId: proofRow.proofId,
+      proofFingerprint: proofRow.proofFingerprint,
+      proofRevision: proofRow.revision,
+      proofCommitment: "11".repeat(32),
+      localAssetKey: encryptedWalletBackupV2LocalAssetKey(asset),
+      removalIntentId: "counter-recovery-marker",
+      proofSetCommitment: "22".repeat(32),
+      completionCustodyRevision: "1",
+      realm: "development",
+      walletId: deriveDurableCustodyWalletId(SEED),
+      enrollmentEpoch: 1,
+      acknowledgedHeadVersion: 1,
+      acknowledgedActiveSetDigest: "33".repeat(32),
+      acknowledgementKind: "current-head",
+      receiptDigest: null,
+      acknowledgedAtMs: 1,
+      completedAtMs: 2,
+    });
+    await database!.custodyProofBackupAuthorities.put(marker);
+    wallet.batchRestore.mockResolvedValue({
+      proofs: [proof],
+      lastCounterWithSignature: 0,
+    });
+    wallet.groupProofsByState.mockResolvedValue({
+      unspent: [proof],
+      pending: [],
+      spent: [],
+    });
+
+    await expect(recoverKeysetCountersForMint(MINT_URL, { force: true })).resolves.toEqual({
+      scannedKeysets: [],
+      complete: false,
+    });
+    expect(await database!.custodyProofs.count()).toBe(0);
+    expect(await database!.proofs.count()).toBe(0);
+    expect(
+      await database!.custodyProofBackupAuthorities.get([scopeId(), proofRow.proofId]),
+    ).toEqual(marker);
   });
 });
 

@@ -22,7 +22,10 @@ import {
   type DurableOutgoingCashuTransfer,
 } from "@bitcaster/client-sdk/durableOutgoingCashuTransfer";
 import { serializeDurableWalletSendOperation } from "@bitcaster/client-sdk/durableWalletOperation";
-import { createEncryptedWalletBackupV2AssetIdentity } from "@bitcaster/client-sdk/encryptedWalletBackupV2ProofSet";
+import {
+  createEncryptedWalletBackupV2AssetIdentity,
+  encryptedWalletBackupV2LocalAssetKey,
+} from "@bitcaster/client-sdk/encryptedWalletBackupV2ProofSet";
 import {
   bindDurableCustodyProofOperation,
   createDurableCustodyProofOperation,
@@ -35,6 +38,7 @@ import {
 } from "../durable-custody-db";
 import {
   bindBrowserProofBackupAuthorityTerminalOperation,
+  createBrowserCompletedProofRemovalMarkerRow,
   createBrowserRemoteProofBackupAuthorityRow,
   createBrowserProofBackupAuthorityRow,
 } from "../browser-proof-backup-authority";
@@ -79,6 +83,149 @@ afterEach(async () => {
 });
 
 describe("browser durable custody adapter", () => {
+  it("treats a bodyless completed-removal marker as removed and rejects a body beside it", async () => {
+    const database = createDatabase();
+    const adapter = new BrowserDurableCustodyAdapter(database);
+    const scope = walletScope();
+    const proofRow = createBrowserCustodyProofRow({
+      scopeId: scope.scopeId,
+      normalizedMint: MINT,
+      unit: "msat",
+      proof: proof("completed-removal-read"),
+      asset: { kind: "conditional", conditionId: TERMINAL_CONDITION, outcomeCollection: "YES" },
+      receivedAtMs: 1,
+    });
+    const marker = completedRemovalMarker(scope, proofRow);
+    await database.custodyProofBackupAuthorities.put(marker);
+
+    await expect(adapter.readProof(scope.scopeId, proofRow.proofId)).resolves.toBeNull();
+    await database.custodyProofs.put(proofRow);
+    await expect(adapter.readProof(scope.scopeId, proofRow.proofId)).rejects.toThrow(
+      "completed-removal authority",
+    );
+    await expect(
+      database.custodyProofBackupAuthorities.get([scope.scopeId, proofRow.proofId]),
+    ).resolves.toEqual(marker);
+  });
+
+  it("refuses admission beside a completed-removal marker without writing or replacing it", async () => {
+    const database = createDatabase();
+    const adapter = new BrowserDurableCustodyAdapter(database);
+    const scope = walletScope();
+    const owner = await claim(adapter, scope, 10);
+    const source = operationBinding(
+      scope,
+      "completed-removal-admission",
+      proof("admission-input"),
+      "output",
+    );
+    const predecessor = createBrowserCustodyProofRow({
+      scopeId: scope.scopeId,
+      normalizedMint: MINT,
+      unit: "msat",
+      proof: source.operation.inputs[0] as Proof,
+      asset: { kind: "regular" },
+      receivedAtMs: 1,
+    });
+    const successor = createBrowserCustodyProofRow({
+      scopeId: scope.scopeId,
+      normalizedMint: MINT,
+      unit: "msat",
+      proof: proof("admission-successor"),
+      asset: { kind: "conditional", conditionId: TERMINAL_CONDITION, outcomeCollection: "YES" },
+      receivedAtMs: 2,
+    });
+    const marker = completedRemovalMarker(scope, successor);
+    await database.custodyProofBackupAuthorities.put(marker);
+
+    await expect(
+      adapter.transact(
+        selection(scope, owner, source.record.operation.operationId, null),
+        (transaction) =>
+          bindDurableCustodyProofOperation(transaction, source.record, source.artifacts),
+        {
+          predecessorProofs: { [source.record.operation.operationId]: [predecessor] },
+          successorProofs: {
+            [source.record.operation.operationId]: [
+              { proof: successor, expectedRevision: null, derivationLocator: null },
+            ],
+          },
+        },
+      ),
+    ).rejects.toThrow("completed-removal");
+    expect(await database.custodyOperations.count()).toBe(0);
+    expect(await database.custodyProofs.count()).toBe(0);
+    await expect(
+      database.custodyProofBackupAuthorities.get([scope.scopeId, successor.proofId]),
+    ).resolves.toEqual(marker);
+  });
+
+  it("preserves a completed-removal marker when a body would otherwise be advanced", async () => {
+    const database = createDatabase();
+    const adapter = new BrowserDurableCustodyAdapter(database);
+    const scope = walletScope();
+    const owner = await claim(adapter, scope, 10);
+    const source = operationBinding(
+      scope,
+      "completed-removal-advance",
+      proof("advance-input"),
+      "output",
+    );
+    const predecessor = createBrowserCustodyProofRow({
+      scopeId: scope.scopeId,
+      normalizedMint: MINT,
+      unit: "msat",
+      proof: source.operation.inputs[0] as Proof,
+      asset: { kind: "regular" },
+      receivedAtMs: 1,
+    });
+    await adapter.transact(
+      selection(scope, owner, source.record.operation.operationId, null),
+      (transaction) =>
+        bindDurableCustodyProofOperation(transaction, source.record, source.artifacts),
+      { predecessorProofs: { [source.record.operation.operationId]: [predecessor] } },
+    );
+    await adapter.transact(
+      selection(scope, observedOwner(owner, 11), source.record.operation.operationId, 0),
+      (transaction) =>
+        transaction.transitionOperation({
+          operationId: source.record.operation.operationId,
+          expectedRevision: 0,
+          transition: {
+            kind: "abort",
+            authorization: observedOwner(owner, 11),
+            expectedRevision: 0,
+          },
+        }),
+    );
+    const locked = await database.custodyProofs.get([scope.scopeId, predecessor.proofId]);
+    expect(locked).toBeDefined();
+    const marker = completedRemovalMarker(scope, locked!);
+    await database.custodyProofBackupAuthorities.put(marker);
+    const refund = createBrowserCustodyProofRow({
+      scopeId: scope.scopeId,
+      normalizedMint: MINT,
+      unit: "msat",
+      proof: proof("advance-refund"),
+      asset: { kind: "regular" },
+      receivedAtMs: 12,
+    });
+
+    await expect(
+      adapter.retireAbortedInputsAndAdmitRefunds({
+        scopeId: scope.scopeId,
+        operationId: source.record.operation.operationId,
+        refundProofs: [{ proof: refund, expectedRevision: null, derivationLocator: null }],
+        observedAtMs: 12,
+      }),
+    ).rejects.toThrow("completed-removal");
+    expect(await database.custodyProofs.get([scope.scopeId, predecessor.proofId])).toEqual(locked);
+    expect(
+      await database.custodyProofBackupAuthorities.get([scope.scopeId, predecessor.proofId]),
+    ).toEqual(marker);
+    expect(await database.custodyProofs.get([scope.scopeId, refund.proofId])).toBeUndefined();
+  });
+
   it("commits authenticated losing CTF evidence with retained proof, cache, and backup revision", async () => {
     const { database, adapter, scope, owner, source, predecessor } =
       await terminalFixture("losing");
@@ -1722,6 +1869,44 @@ async function rewriteOutgoing(
     const transaction = Dexie.currentTransaction;
     if (transaction === undefined) throw new Error("missing test transaction");
     await persistBrowserOutgoingCashuTransferRewrite(database, transaction, row);
+  });
+}
+
+function completedRemovalMarker(
+  scope: Extract<DurableCustodyScope, { scopeKind: "wallet" }>,
+  proofRow: ReturnType<typeof createBrowserCustodyProofRow>,
+) {
+  const asset = createEncryptedWalletBackupV2AssetIdentity({
+    mintUrl: MINT,
+    unit: "msat",
+    asset: {
+      kind: "ctf",
+      conditionId: TERMINAL_CONDITION,
+      outcomeLabel: "YES",
+      outcomeCollectionId: TERMINAL_OUTCOME_ID,
+      registeredAt: 1,
+      finalExpiry: 2,
+    },
+  });
+  return createBrowserCompletedProofRemovalMarkerRow({
+    scopeId: scope.scopeId,
+    proofId: proofRow.proofId,
+    proofFingerprint: proofRow.proofFingerprint,
+    proofRevision: proofRow.revision,
+    proofCommitment: "66".repeat(32),
+    localAssetKey: encryptedWalletBackupV2LocalAssetKey(asset),
+    removalIntentId: "completed-removal-test",
+    proofSetCommitment: "77".repeat(32),
+    completionCustodyRevision: "3",
+    realm: "development",
+    walletId: scope.walletId,
+    enrollmentEpoch: 1,
+    acknowledgedHeadVersion: 0,
+    acknowledgedActiveSetDigest: "88".repeat(32),
+    acknowledgementKind: "current-head",
+    receiptDigest: null,
+    acknowledgedAtMs: 2,
+    completedAtMs: 3,
   });
 }
 

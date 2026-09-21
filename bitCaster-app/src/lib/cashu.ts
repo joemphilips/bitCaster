@@ -117,7 +117,10 @@ import {
   decodeBrowserCustodyProofRow,
   type BrowserCustodyProofRow,
 } from "@/stores/durable-custody-types";
-import type { BrowserProofBackupAuthorityRow } from "@/stores/browser-proof-backup-authority";
+import {
+  requireBrowserLiveProofBackupAuthorityTableRow,
+  type BrowserProofBackupAuthorityRow,
+} from "@/stores/browser-proof-backup-authority";
 
 // ---------------------------------------------------------------------------
 // Default mint (can be overridden at runtime)
@@ -1180,12 +1183,10 @@ export async function recoverKeysetCountersForMint(
                 pageStart,
                 pageStart + DURABLE_CUSTODY_PROOF_IMPORT_PAGE_PROOF_LIMIT_MAX,
               );
-              const existingRows = await db.custodyProofs.bulkGet(
-                page.map((proof) => [scopeId, recoveryProofId(scopeId, url, unit, proof)]),
-              );
-              const backupAuthorities = await db.custodyProofBackupAuthorities.bulkGet(
-                page.map((proof) => [scopeId, recoveryProofId(scopeId, url, unit, proof)]),
-              );
+              const proofIds = page.map((proof) => recoveryProofId(scopeId, url, unit, proof));
+              const keys = proofIds.map((proofId) => [scopeId, proofId] as [string, string]);
+              const existingRows = await db.custodyProofs.bulkGet(keys);
+              const backupAuthorities = await db.custodyProofBackupAuthorities.bulkGet(keys);
               const freshPage: StoredProof[] = [];
               const freshLocators = new Map<string, DurableWalletProofDerivationLocator>();
               for (const [index, proof] of page.entries()) {
@@ -1193,9 +1194,14 @@ export async function recoverKeysetCountersForMint(
                 if (locator === undefined) {
                   throw new Error("counter recovery proof locator is missing");
                 }
+                const proofId = proofIds[index]!;
                 const existingRow = existingRows[index];
+                const backupAuthority = requireBrowserLiveProofBackupAuthorityTableRow(
+                  backupAuthorities[index],
+                  [scopeId, proofId],
+                );
                 if (existingRow === undefined) {
-                  if (backupAuthorities[index] !== undefined) {
+                  if (backupAuthority !== undefined) {
                     throw new Error("counter recovery canonical backup authority is orphaned");
                   }
                   freshPage.push(proof);
@@ -1215,7 +1221,7 @@ export async function recoverKeysetCountersForMint(
                 );
                 requireMatchingCounterRecoveryBackupAuthority(
                   canonicalRow,
-                  backupAuthorities[index],
+                  backupAuthority,
                   locator,
                 );
               }

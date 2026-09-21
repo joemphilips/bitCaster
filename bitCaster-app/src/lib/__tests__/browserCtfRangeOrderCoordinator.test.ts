@@ -1,5 +1,6 @@
 // @vitest-environment node
 import "fake-indexeddb/auto";
+import Dexie from "dexie";
 import { afterEach, describe, expect, it } from "vitest";
 import { secp256k1 } from "@noble/curves/secp256k1.js";
 import { bytesToHex } from "@noble/curves/utils.js";
@@ -101,6 +102,11 @@ import {
   getBoundedCanonicalRangeProofsForKeyset,
   type StoredProof,
 } from "../../stores/proof-db";
+import type { BrowserProofBackupAuthorityRow } from "../../stores/browser-proof-backup-authority";
+import {
+  createBrowserCompletedProofRemovalMarkerRow,
+  requireBrowserLiveProofBackupAuthorityTableRow,
+} from "../../stores/browser-proof-backup-authority";
 
 const CONDITION_ID = "ab".repeat(32);
 const OUTCOME_COLLECTION = "YES";
@@ -114,6 +120,16 @@ const KEYS = Object.fromEntries(
 const INPUT_FEE_PPK = 100;
 const FINAL_EXPIRY = 1_000;
 const MINT_URL = "https://mint.example";
+
+function requireLiveProofBackupAuthority(
+  value: unknown,
+  key: readonly [string, string],
+): BrowserProofBackupAuthorityRow {
+  const authority = requireBrowserLiveProofBackupAuthorityTableRow(value, key);
+  if (authority === undefined) throw new Error("test live proof backup authority is missing");
+  return authority;
+}
+
 const OUTCOME_COLLECTION_ID = deriveRootCtfOutcomeCollectionId({
   conditionId: CONDITION_ID,
   outcomeCollection: OUTCOME_COLLECTION,
@@ -234,12 +250,61 @@ describe("browser CTF range order coordinator", () => {
     const backupAuthorities = await database.custodyProofBackupAuthorities.toArray();
     expect(
       backupAuthorities
+        .map((row) => requireLiveProofBackupAuthority(row, [row.scopeId, row.proofId]))
         .filter(({ proofState }) => proofState === "selectable")
         .every(({ derivationLocator }) => derivationLocator?.kind === "nut13"),
     ).toBe(true);
     expect(contexts).toEqual([
       [walletScopeId(), preparation.mintUrl, preparation.offerKeyset.unit],
     ]);
+  });
+
+  it("fails closed and preserves a completed-removal marker before consolidation commit", async () => {
+    const preparation = persistedPreparation("range-consolidation-completed-removal");
+    const inputs = [
+      sourceProof(preparation.offerKeyset.id, 2, "fragment-a"),
+      sourceProof(preparation.offerKeyset.id, 2, "fragment-b"),
+      sourceProof(preparation.offerKeyset.id, 2, "fragment-c"),
+    ];
+    const database = createDatabase(inputs.map((proof) => storedSourceProof(proof)));
+    let marker: ReturnType<typeof createBrowserCompletedProofRemovalMarkerRow> | undefined;
+    let bulkGetCalls = 0;
+    const authorityTable = database.custodyProofBackupAuthorities;
+    const originalBulkGet = authorityTable.bulkGet.bind(authorityTable);
+    vi.spyOn(authorityTable, "bulkGet").mockImplementation((keys) => {
+      bulkGetCalls += 1;
+      if (bulkGetCalls !== 5) return originalBulkGet(keys);
+      return Dexie.Promise.resolve(database.custodyProofs.toArray()).then((rows) => {
+        const target = rows.find(({ selectability }) => selectability === "locked");
+        if (target === undefined) throw new Error("test locked consolidation proof is missing");
+        marker = completedRemovalMarkerForProof(target);
+        return Dexie.Promise.resolve(authorityTable.put(marker)).then(() => originalBulkGet(keys));
+      });
+    });
+    const coordinator = createCoordinator(database, sourceWallet(), engineMock());
+
+    await expect(
+      coordinator.consolidateRound({
+        seed: SEED,
+        preparation,
+        round: 0,
+        inputs,
+        plannedRound: { inputs: ["2", "2", "2"], outputs: ["4", "1"], fee: "1" },
+      }),
+    ).rejects.toThrow("browser CTF consolidation encountered a completed-removal marker");
+
+    expect(marker).toBeDefined();
+    expect(await authorityTable.get([marker!.scopeId, marker!.proofId])).toEqual(marker);
+    expect(
+      (await database.custodyOperations.toArray()).some(
+        ({ record }) => record.operation.result.state === "verified-staged",
+      ),
+    ).toBe(true);
+    expect(
+      (await database.custodyProofs.toArray()).every(
+        ({ selectability }) => selectability === "locked",
+      ),
+    ).toBe(true);
   });
 
   it("uses canonical successors as the exact inputs of the next consolidation round", async () => {
@@ -737,7 +802,10 @@ describe("browser CTF range order coordinator", () => {
       custodyProofs
         .filter(({ selectability }) => selectability === "locked")
         .every(({ proofId }) => {
-          const authority = backupAuthorities.get(proofId);
+          const authority = requireLiveProofBackupAuthority(backupAuthorities.get(proofId), [
+            walletScopeId(),
+            proofId,
+          ]);
           return authority?.derivationLocator === null;
         }),
     ).toBe(true);
@@ -745,7 +813,10 @@ describe("browser CTF range order coordinator", () => {
       custodyProofs
         .filter(({ selectability }) => selectability === "selectable")
         .every(({ proofId }) => {
-          const authority = backupAuthorities.get(proofId);
+          const authority = requireLiveProofBackupAuthority(backupAuthorities.get(proofId), [
+            walletScopeId(),
+            proofId,
+          ]);
           return (
             authority?.derivationLocator?.kind === "nut13" &&
             authority.derivationLocator.keysetId === preparation.offerKeyset.id &&
@@ -797,17 +868,27 @@ describe("browser CTF range order coordinator", () => {
             activeRows: activeRows.length,
             lockedNullLocator: activeRows.filter(
               ({ proofId, selectability }) =>
-                selectability === "locked" && authorities.get(proofId)?.derivationLocator === null,
+                selectability === "locked" &&
+                requireLiveProofBackupAuthority(authorities.get(proofId), [
+                  walletScopeId(),
+                  proofId,
+                ]).derivationLocator === null,
             ).length,
             selectableLocatored: activeRows.filter(
               ({ proofId, selectability }) =>
                 selectability === "selectable" &&
-                authorities.get(proofId)?.derivationLocator !== null,
+                requireLiveProofBackupAuthority(authorities.get(proofId), [
+                  walletScopeId(),
+                  proofId,
+                ]).derivationLocator !== null,
             ).length,
             selectableNullLocator: activeRows.filter(
               ({ proofId, selectability }) =>
                 selectability === "selectable" &&
-                authorities.get(proofId)?.derivationLocator === null,
+                requireLiveProofBackupAuthority(authorities.get(proofId), [
+                  walletScopeId(),
+                  proofId,
+                ]).derivationLocator === null,
             ).length,
           };
           expect(aggregate).toEqual({
@@ -2880,6 +2961,46 @@ function storedSourceProof(
           marketId: `${conditional.conditionId}-${conditional.outcomeCollection}`,
         }),
   };
+}
+
+function completedRemovalMarkerForProof(row: {
+  readonly scopeId: string;
+  readonly proofId: string;
+  readonly proofFingerprint: string;
+  readonly revision: number;
+}) {
+  const asset = createEncryptedWalletBackupV2AssetIdentity({
+    mintUrl: MINT_URL,
+    unit: "msat",
+    asset: {
+      kind: "ctf",
+      conditionId: CONDITION_ID,
+      outcomeLabel: OUTCOME_COLLECTION,
+      outcomeCollectionId: OUTCOME_COLLECTION_ID,
+      registeredAt: 10,
+      finalExpiry: FINAL_EXPIRY,
+    },
+  });
+  return createBrowserCompletedProofRemovalMarkerRow({
+    scopeId: row.scopeId,
+    proofId: row.proofId,
+    proofFingerprint: row.proofFingerprint,
+    proofRevision: row.revision,
+    proofCommitment: "66".repeat(32),
+    localAssetKey: encryptedWalletBackupV2LocalAssetKey(asset),
+    removalIntentId: "range-consolidation-completed-removal",
+    proofSetCommitment: "77".repeat(32),
+    completionCustodyRevision: "3",
+    realm: "development",
+    walletId: walletScope().walletId,
+    enrollmentEpoch: 1,
+    acknowledgedHeadVersion: 0,
+    acknowledgedActiveSetDigest: "88".repeat(32),
+    acknowledgementKind: "current-head",
+    receiptDigest: null,
+    acknowledgedAtMs: 2,
+    completedAtMs: 3,
+  });
 }
 
 function signOutput(output: OutputData): Proof {

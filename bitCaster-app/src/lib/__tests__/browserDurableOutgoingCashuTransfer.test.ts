@@ -55,6 +55,7 @@ import { createBrowserCustodyProofRow } from "../../stores/durable-custody-db";
 import {
   advanceBrowserProofBackupAuthorityRow,
   createBrowserProofBackupAuthorityRow,
+  requireBrowserLiveProofBackupAuthorityTableRow,
 } from "../../stores/browser-proof-backup-authority";
 import { claimBrowserParticipationScoreDeliveryPointer } from "../browserParticipationScoreDeliveryPointer";
 
@@ -1868,10 +1869,15 @@ async function feeAwarePassthroughFixture() {
     passthroughProofId,
   ]);
   if (!originalAuthority) throw new Error("fee-aware passthrough authority is missing");
+  const liveAuthority = requireBrowserLiveProofBackupAuthorityTableRow(originalAuthority, [
+    scope.scopeId,
+    passthroughProofId,
+  ]);
+  if (!liveAuthority) throw new Error("fee-aware passthrough live authority is missing");
   await database.custodyProofs.put(revisedPassthrough);
   await database.custodyProofBackupAuthorities.put(
     advanceBrowserProofBackupAuthorityRow(
-      originalAuthority,
+      liveAuthority,
       revisedPassthrough,
       1,
       null,

@@ -32,6 +32,7 @@ import {
   advanceBrowserProofBackupAuthorityRowToPendingRemoval,
   classifyBrowserProofBackupAuthorityVerifiedLosing,
   createBrowserProofBackupAuthorityRow,
+  requireBrowserLiveProofBackupAuthorityTableRow,
 } from "../../stores/browser-proof-backup-authority";
 import {
   BrowserDurableCustodyAdapter,
@@ -809,7 +810,16 @@ it("admits an all-sealed bundle without loading the mint wallet", async () => {
     selectability: "verified-losing",
     reservationOperationId: null,
   });
-  const authorityRows = await fixture.input.database.custodyProofBackupAuthorities.toArray();
+  const authorityRows = (await fixture.input.database.custodyProofBackupAuthorities.toArray()).map(
+    (row) => {
+      const authority = requireBrowserLiveProofBackupAuthorityTableRow(row, [
+        row.scopeId,
+        row.proofId,
+      ]);
+      if (!authority) throw new Error("test authority is missing");
+      return authority;
+    },
+  );
   expect(authorityRows).toHaveLength(1);
   expect(authorityRows[0]?.terminalAuthority).toEqual({ kind: "remote-seal" });
   expect(await fixture.input.database.encryptedWalletBackupV2DesiredAssets.count()).toBe(1);

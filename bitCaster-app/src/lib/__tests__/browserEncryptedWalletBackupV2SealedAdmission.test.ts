@@ -28,6 +28,7 @@ import {
   getProofs,
   storedProofRow,
 } from "../../stores/proof-db";
+import { requireBrowserLiveProofBackupAuthorityTableRow } from "../../stores/browser-proof-backup-authority";
 import { admitBrowserEncryptedWalletBackupV2SealedAsset } from "../browserEncryptedWalletBackupV2Admission";
 import { browserWalletScope } from "../browserCtfRangeOrderSource";
 import { browserWalletDatabaseName } from "../browserWalletProfile";
@@ -79,7 +80,14 @@ describe("browser V2 sealed proof admission", () => {
     await admitBrowserEncryptedWalletBackupV2SealedAsset(fixture.input);
 
     const proofRows = await database.custodyProofs.toArray();
-    const authorityRows = await database.custodyProofBackupAuthorities.toArray();
+    const authorityRows = (await database.custodyProofBackupAuthorities.toArray()).map((row) => {
+      const authority = requireBrowserLiveProofBackupAuthorityTableRow(row, [
+        row.scopeId,
+        row.proofId,
+      ]);
+      if (!authority) throw new Error("test authority is missing");
+      return authority;
+    });
     expect(proofRows).toHaveLength(2);
     expect(proofRows.every((row) => row.selectability === "verified-losing")).toBe(true);
     expect(authorityRows).toHaveLength(2);

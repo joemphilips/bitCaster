@@ -39,7 +39,7 @@ import type {
   BrowserCustodyScopeRow,
 } from "./durable-custody-types";
 import { decodeBrowserCustodyProofRow } from "./durable-custody-types";
-import type { BrowserProofBackupAuthorityRow } from "./browser-proof-backup-authority";
+import type { BrowserProofBackupAuthorityTableRow } from "./browser-proof-backup-authority";
 import type { EncryptedWalletBackupAccountOperationResultRecord } from "@bitcaster/client-sdk/encryptedWalletBackupEnrollment";
 import {
   BrowserWalletCounterDexieStore,
@@ -584,7 +584,7 @@ export class BitcasterDB extends Dexie {
   custodyProofs!: Table<BrowserCustodyProofRow, [string, string]>;
   custodyReservations!: Table<BrowserCustodyReservationRow, [string, string]>;
   custodyActiveWork!: Table<BrowserCustodyActiveWorkRow, [string, string]>;
-  custodyProofBackupAuthorities!: Table<BrowserProofBackupAuthorityRow, [string, string]>;
+  custodyProofBackupAuthorities!: Table<BrowserProofBackupAuthorityTableRow, [string, string]>;
   custodyConditionalKeysets!: Table<
     import("./durable-custody-types").BrowserCustodyConditionalKeysetRow,
     [string, string, string, string]

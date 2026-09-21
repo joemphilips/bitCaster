@@ -5,6 +5,7 @@ import { deriveRootCtfOutcomeCollectionId } from "@bitcaster/client-sdk/durableC
 import { DURABLE_CUSTODY_PROOF_IMPORT_PAGE_PROOF_LIMIT_MAX } from "@bitcaster/client-sdk/durableCustodyProofImport";
 import { afterEach, describe, expect, it } from "vitest";
 import { BitcasterDB, type StoredProof } from "../../stores/proof-db";
+import { requireBrowserLiveProofBackupAuthorityTableRow } from "../../stores/browser-proof-backup-authority";
 import {
   admitBrowserReceivedProofs,
   admitBrowserReceivedProofsWithHeldProfileLock,
@@ -162,9 +163,15 @@ describe("browser custody proof receive", () => {
 
     expect(
       (await database.custodyProofBackupAuthorities.toArray())
-        .map((row) =>
-          row.derivationLocator?.kind === "nut13" ? row.derivationLocator.counter : null,
-        )
+        .map((row) => {
+          const authority = requireBrowserLiveProofBackupAuthorityTableRow(row, [
+            row.scopeId,
+            row.proofId,
+          ]);
+          return authority?.derivationLocator?.kind === "nut13"
+            ? authority.derivationLocator.counter
+            : null;
+        })
         .sort(),
     ).toEqual([0, 2]);
   });

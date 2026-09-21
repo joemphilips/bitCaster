@@ -116,6 +116,7 @@ import type { CtfRangeOrderPreparationPageCursor } from "@bitcaster/client-sdk/c
 import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
 import { withWalletProfileLock } from "./walletProfileLock";
 import { BrowserDurableCustodyAdapter } from "../stores/durable-custody-db";
+import { decodeBrowserProofBackupAuthorityTableRow } from "../stores/browser-proof-backup-authority";
 import {
   browserCustodyOperationId,
   browserSourceCustodyOperationId,
@@ -1115,10 +1116,19 @@ export class BrowserCtfRangeOrderCoordinator {
       this.#database.custodyProofs.bulkGet(keys),
       this.#database.custodyProofBackupAuthorities.bulkGet(keys),
     ]);
+    const decodedAuthorities = authorities.map((authority) =>
+      authority === undefined ? undefined : decodeBrowserProofBackupAuthorityTableRow(authority),
+    );
     return Math.max(
       observedAtMs,
       ...rows.map((row) => row?.receivedAtMs ?? 0),
-      ...authorities.map((authority) => authority?.updatedAtMs ?? 0),
+      ...decodedAuthorities.map((authority) => {
+        if (authority === undefined) return 0;
+        if (!("updatedAtMs" in authority)) {
+          throw new Error("browser CTF consolidation encountered a completed-removal marker");
+        }
+        return authority.updatedAtMs;
+      }),
     );
   }
 

@@ -53,8 +53,10 @@ import {
 import {
   advanceBrowserProofBackupAuthorityRow,
   advanceBrowserRemoteProofBackupAuthorityRow,
+  BrowserCompletedProofRemovalError,
   classifyBrowserProofBackupAuthorityVerifiedLosing,
   createBrowserProofBackupAuthorityRow,
+  requireBrowserLiveProofBackupAuthorityTableRow,
   requireBrowserProofDerivationLocator,
   requireBrowserProofBackupAuthorityForProof,
   sameBrowserProofDerivationLocator,
@@ -593,12 +595,25 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
           this.#database.custodyProofs.get([scopeId, proofId]),
           this.#database.custodyProofBackupAuthorities.get([scopeId, proofId]),
         ]);
+        let liveAuthority;
+        try {
+          liveAuthority = requireBrowserLiveProofBackupAuthorityTableRow(authority, [
+            scopeId,
+            proofId,
+          ]);
+        } catch (error) {
+          if (error instanceof BrowserCompletedProofRemovalError) {
+            if (!row) return null;
+            throw new Error("browser proof body has a completed-removal authority");
+          }
+          throw error;
+        }
         if (!row) {
-          if (authority) throw new Error("browser proof backup authority has no proof body");
+          if (liveAuthority) throw new Error("browser proof backup authority has no proof body");
           return null;
         }
         const proof = decodeBrowserCustodyProofRow(row);
-        requireBrowserProofBackupAuthorityForProof(authority, proof);
+        requireBrowserProofBackupAuthorityForProof(liveAuthority, proof);
         return proof;
       },
     );
@@ -831,16 +846,18 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
     const reservations = new Map<string, BrowserCustodyReservationRow>();
     const terminalProofIds = new Set<string>();
     proofRows.forEach((row, index) => {
+      const proofId = keys[index]![1];
+      const liveAuthority = requireBrowserLiveProofBackupAuthorityTableRow(
+        backupAuthorities[index],
+        [scopeId, proofId],
+      );
       if (row) {
         const decoded = decodeBrowserCustodyProofRow(row);
-        const authority = requireBrowserProofBackupAuthorityForProof(
-          backupAuthorities[index],
-          decoded,
-        );
+        const authority = requireBrowserProofBackupAuthorityForProof(liveAuthority, decoded);
         proofs.set(decoded.proofId, decoded);
         authorities.set(decoded.proofId, authority);
         if (authority.terminalOperationId !== null) terminalProofIds.add(decoded.proofId);
-      } else if (backupAuthorities[index]) {
+      } else if (liveAuthority) {
         throw new Error("browser proof backup authority has no proof body");
       }
     });
@@ -1177,15 +1194,19 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
     requests.forEach((request, index) => {
       const proofRow = proofRows[index];
       const authorityRow = authorityRows[index];
-      if ((proofRow === undefined) !== (authorityRow === undefined)) {
+      const liveAuthority = requireBrowserLiveProofBackupAuthorityTableRow(
+        authorityRow,
+        request.key,
+      );
+      if ((proofRow === undefined) !== (liveAuthority === undefined)) {
         throw new Error("browser proof and backup authority are incomplete");
       }
       authorities.set(
         proofIdentity(request.key),
-        authorityRow === undefined
+        liveAuthority === undefined
           ? null
           : requireBrowserProofBackupAuthorityForProof(
-              authorityRow,
+              liveAuthority,
               decodeBrowserCustodyProofRow(proofRow),
             ),
       );

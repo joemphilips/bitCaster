@@ -13,7 +13,10 @@ import { browserWalletDatabaseName } from "../../lib/browserWalletProfile";
 import { commitBrowserCtfTerminalOperation } from "../../test/browserEncryptedWalletBackupV2CommittedTerminalFixture";
 import { BrowserEncryptedWalletBackupV2TerminalSealStore } from "../browser-encrypted-wallet-backup-v2-terminal-seal-store";
 import { BrowserDurableCustodyAdapter, createBrowserCustodyProofRow } from "../durable-custody-db";
-import { createBrowserProofBackupAuthorityRow } from "../browser-proof-backup-authority";
+import {
+  createBrowserProofBackupAuthorityRow,
+  requireBrowserLiveProofBackupAuthorityTableRow,
+} from "../browser-proof-backup-authority";
 import { BitcasterDB } from "../proof-db";
 
 const MINT = "https://mint.example";
@@ -62,11 +65,16 @@ describe("browser V2 terminal seal store", () => {
     );
     expect(callback).toHaveBeenCalledOnce();
 
-    const secondAuthority = await fixture.database.custodyProofBackupAuthorities.get([
+    const secondAuthorityRow = await fixture.database.custodyProofBackupAuthorities.get([
       fixture.scope.scopeId,
       fixture.proofIds[1]!,
     ]);
-    if (!secondAuthority) throw new Error("test second authority is missing");
+    if (!secondAuthorityRow) throw new Error("test second authority is missing");
+    const secondAuthority = requireBrowserLiveProofBackupAuthorityTableRow(secondAuthorityRow, [
+      fixture.scope.scopeId,
+      fixture.proofIds[1]!,
+    ]);
+    if (!secondAuthority) throw new Error("test second live authority is missing");
     await fixture.database.custodyProofBackupAuthorities.put({
       ...secondAuthority,
       updatedAtMs: 21,
@@ -97,11 +105,16 @@ describe("browser V2 terminal seal store", () => {
 
   it("fails closed when the exact input is not bound to the terminal operation", async () => {
     const fixture = await terminalFixture(20);
-    const authority = await fixture.database.custodyProofBackupAuthorities.get([
+    const authorityRow = await fixture.database.custodyProofBackupAuthorities.get([
       fixture.scope.scopeId,
       fixture.proofId,
     ]);
-    if (!authority) throw new Error("test authority is missing");
+    if (!authorityRow) throw new Error("test authority is missing");
+    const authority = requireBrowserLiveProofBackupAuthorityTableRow(authorityRow, [
+      fixture.scope.scopeId,
+      fixture.proofId,
+    ]);
+    if (!authority) throw new Error("test live authority is missing");
     await fixture.database.custodyProofBackupAuthorities.put({
       ...authority,
       terminalOperationId: "foreign-terminal-operation",
