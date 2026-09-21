@@ -90,6 +90,7 @@ it("short-circuits exact local custody without backup or mint I/O", async () => 
   await expect(recoverBrowserTargetedAsset(input)).resolves.toEqual({ kind: "local" });
 
   expect(input.remote.readCurrentInventory).not.toHaveBeenCalled();
+  expect(input.loadWallet).not.toHaveBeenCalled();
   expect(input.wallet.restore).not.toHaveBeenCalled();
 });
 
@@ -121,6 +122,7 @@ it.each([1n, 2n])(
     });
 
     expect(mocks.restoreBackup).toHaveBeenCalledOnce();
+    expect(input.loadWallet).not.toHaveBeenCalled();
     expect(input.readExactMonitoringRecovery).not.toHaveBeenCalled();
     expect(input.wallet.restore).not.toHaveBeenCalled();
   },
@@ -148,6 +150,7 @@ it("uses a higher local amount and merges a sufficient backup with a lower local
     expect.objectContaining({ minimumAvailableAmount: 1n }),
   );
   expect(lowerLocal.wallet.restore).not.toHaveBeenCalled();
+  expect(lowerLocal.loadWallet).not.toHaveBeenCalled();
 });
 
 it("falls through a lower backup amount when no local copy exists", async () => {
@@ -160,6 +163,7 @@ it("falls through a lower backup amount when no local copy exists", async () => 
   await expect(recoverBrowserTargetedAsset(input)).resolves.toEqual({ kind: "unavailable" });
 
   expect(mocks.restoreBackup).not.toHaveBeenCalled();
+  expect(input.loadWallet).toHaveBeenCalledOnce();
   expect(input.wallet.restore).toHaveBeenCalledOnce();
 });
 

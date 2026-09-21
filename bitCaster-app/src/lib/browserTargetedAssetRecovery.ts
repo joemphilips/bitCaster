@@ -213,16 +213,9 @@ function recoveryPorts(
     readAuthenticatedCurrentBackupInventory: (recovery: TargetedAssetRecoveryInput) =>
       readCurrentInventory(input, recovery, report, reportDiagnostic),
     restoreAndAdmitBackup: async () => {
-      let loadedWallet: CashuWallet;
-      try {
-        loadedWallet = await wallet();
-      } catch {
-        report("backup-verify");
-        throw new Error("targeted asset recovery wallet load failed");
-      }
       await restoreAndAdmitBrowserEncryptedWalletBackupV2TargetedAsset({
         ...input,
-        wallet: loadedWallet,
+        loadWallet: wallet,
         minimumAvailableAmount: input.requiredAmount,
         reportTargetedRecoveryStage: report,
         reportTargetedRecoveryFailureClass: reportFailure,

@@ -22,14 +22,26 @@ import {
   type Wallet as CashuWallet,
 } from "@cashu/cashu-ts";
 import type { BitcasterDB } from "../stores/proof-db";
-import { addProofs, type StoredProof } from "../stores/proof-db";
+import {
+  addProofs,
+  storedProofFromCustodyRow,
+  storedProofFromRow,
+  type StoredProof,
+} from "../stores/proof-db";
 import {
   BrowserEncryptedWalletBackupV2LocalAssetReadError,
   readBrowserEncryptedWalletBackupV2LocalAssetRead,
   readBrowserEncryptedWalletBackupV2ExactLocalProofRows,
 } from "../stores/browser-encrypted-wallet-backup-v2-asset-source";
-import { decodeDurableCustodyProofMaterialRecord } from "@bitcaster/client-sdk/durableCustodyProofMaterial";
-import { admitBrowserEncryptedWalletBackupV2Asset } from "./browserEncryptedWalletBackupV2Admission";
+import {
+  decodeDurableCustodyProofMaterialRecord,
+  serializeDurableCustodyProofArtifact,
+} from "@bitcaster/client-sdk/durableCustodyProofMaterial";
+import { deriveDurableCustodyArtifactFingerprint } from "@bitcaster/client-sdk/durableCustody";
+import {
+  admitBrowserEncryptedWalletBackupV2Asset,
+  admitBrowserEncryptedWalletBackupV2SealedAsset,
+} from "./browserEncryptedWalletBackupV2Admission";
 import { retryBrowserEncryptedWalletBackupV2QuotaWrite } from "./browserEncryptedWalletBackupV2QuotaCleanup";
 import { withWalletProfileLock } from "./walletProfileLock";
 import { normalizeUrl } from "./url";
@@ -114,7 +126,8 @@ export class BrowserEncryptedWalletBackupV2LocalCustodyError extends Error {
 }
 
 export interface BrowserEncryptedWalletBackupV2RestoreAndAdmitInput extends BrowserEncryptedWalletBackupV2TargetedRestoreInput {
-  readonly wallet: CashuWallet;
+  /** Loads the mint wallet only when live proof verification or admission needs it. */
+  readonly loadWallet: () => Promise<CashuWallet>;
   readonly lockManager?: Pick<LockManager, "request">;
 }
 
@@ -217,10 +230,7 @@ export async function restoreAndAdmitBrowserEncryptedWalletBackupV2TargetedAsset
   input: BrowserEncryptedWalletBackupV2RestoreAndAdmitInput,
 ): Promise<BrowserEncryptedWalletBackupV2RestoreAndAdmitResult> {
   requireProductMsatUnit(input.asset.unit);
-  if (normalizeUrl(input.wallet.mint.mintUrl) !== normalizeUrl(input.asset.mintUrl)) {
-    reportStage(input, "backup-verify");
-    throw new Error("browser V2 restore mint is foreign");
-  }
+  const loadWallet = lazyWallet(input);
   const restored = await restoreBrowserEncryptedWalletBackupV2TargetedAsset(input);
   requireCurrent(input);
   if (restored.kind === "local-custody") {
@@ -239,11 +249,17 @@ export async function restoreAndAdmitBrowserEncryptedWalletBackupV2TargetedAsset
   let verified: Awaited<ReturnType<typeof verifyEncryptedWalletBackupV2RestoredProofSet>>;
   let admissionStage: BrowserEncryptedWalletBackupV2RestoreStage = "backup-admit-lock";
   try {
+    if (restored.unverified.proofs.some(({ terminalSeal }) => terminalSeal === undefined)) {
+      const wallet = await loadWallet();
+      if (normalizeUrl(wallet.mint.mintUrl) !== normalizeUrl(input.asset.mintUrl)) {
+        throw new Error("browser V2 restore mint is foreign");
+      }
+    }
     verified = await verifyEncryptedWalletBackupV2RestoredProofSet({
       seed: input.seed,
       expectedAsset: input.asset,
       unverified: restored.unverified,
-      port: restoreVerificationPort(input),
+      port: restoreVerificationPort(input, loadWallet),
     });
     requireCurrent(input);
   } catch (error) {
@@ -251,6 +267,37 @@ export async function restoreAndAdmitBrowserEncryptedWalletBackupV2TargetedAsset
     throw error;
   }
   try {
+    const allSealed =
+      verified.proofs.length > 0 &&
+      verified.proofs.every(
+        ({ selectionAuthority }) => selectionAuthority === "terminal-sealed-non-selectable",
+      );
+    if (allSealed) {
+      await retryBrowserEncryptedWalletBackupV2QuotaWrite({
+        database: input.database,
+        scopeId: input.scopeId,
+        isCurrentProfile: input.isCurrentProfile,
+        protectedLocalAssetKeys: [encryptedWalletBackupV2LocalAssetKey(input.asset)],
+        lockManager: input.lockManager,
+        write: () =>
+          admitBrowserEncryptedWalletBackupV2SealedAsset({
+            seed: input.seed,
+            verified,
+            asset: input.asset,
+            custodyRevision: restored.custodyRevision,
+            sourceOperationId: `backup-v2-restore:${restored.bundleId}`,
+            database: input.database,
+            scopeId: input.scopeId,
+            isCurrentProfile: input.isCurrentProfile,
+            lockManager: input.lockManager,
+            setTargetedRecoveryAdmissionStage: (stage) => {
+              admissionStage = stage;
+            },
+          }),
+      });
+      return { kind: "restored", bundleId: restored.bundleId, headVersion: restored.headVersion };
+    }
+    const wallet = await loadWallet();
     await retryBrowserEncryptedWalletBackupV2QuotaWrite({
       database: input.database,
       scopeId: input.scopeId,
@@ -264,7 +311,7 @@ export async function restoreAndAdmitBrowserEncryptedWalletBackupV2TargetedAsset
           asset: input.asset,
           custodyRevision: restored.custodyRevision,
           sourceOperationId: `backup-v2-restore:${restored.bundleId}`,
-          wallet: input.wallet,
+          wallet,
           database: input.database,
           scopeId: input.scopeId,
           isCurrentProfile: input.isCurrentProfile,
@@ -319,12 +366,14 @@ function classifyFailure(error: unknown): BrowserEncryptedWalletBackupV2FailureC
 
 function restoreVerificationPort(
   input: BrowserEncryptedWalletBackupV2RestoreAndAdmitInput,
+  loadWallet: () => Promise<CashuWallet>,
 ): EncryptedWalletBackupV2RestoreVerificationPort {
   return {
     async resolveKeyset({ mintUrl, unit, keysetId }) {
       requireCurrent(input);
       if (isBlsKeyset(keysetId)) throw new Error("browser V2 restore BLS keyset is unsupported");
-      const keyset = input.wallet.getKeyset(keysetId);
+      const wallet = await loadWallet();
+      const keyset = wallet.getKeyset(keysetId);
       return {
         mintUrl,
         unit,
@@ -344,7 +393,8 @@ function restoreVerificationPort(
     async checkProofStates({ proofs }) {
       requireCurrent(input);
       const expectedByY = expectedProofIdsByY(proofs);
-      const states = await input.wallet.checkProofsStates(
+      const wallet = await loadWallet();
+      const states = await wallet.checkProofsStates(
         proofs.map(({ id, secret }) => ({ id, secret })),
       );
       requireCurrent(input);
@@ -406,6 +456,7 @@ async function repairLegacyProofCache(
   });
   if (rows.length === 0) throw new Error("browser V2 local custody asset is absent");
   const selectableRows = rows.filter((row) => row.selectability !== "verified-losing");
+  await removeStaleLosingLegacyProofCacheRows(input.database, rows);
   if (selectableRows.length === 0) return;
   const proofs: StoredProof[] = selectableRows.map((row) => {
     const { proof: material } = decodeDurableCustodyProofMaterialRecord(row);
@@ -426,6 +477,50 @@ async function repairLegacyProofCache(
   requireCurrent(input);
   await addProofs(proofs, input.database);
   requireCurrent(input);
+}
+
+async function removeStaleLosingLegacyProofCacheRows(
+  database: BitcasterDB,
+  rows: ReadonlyArray<
+    Awaited<ReturnType<typeof readBrowserEncryptedWalletBackupV2ExactLocalProofRows>>[number]
+  >,
+): Promise<void> {
+  const losingProofs = rows
+    .filter((row) => row.selectability === "verified-losing")
+    .map((row) => storedProofFromCustodyRow(row));
+  if (losingProofs.length === 0) return;
+  const cached = await database.proofs.bulkGet(losingProofs.map(({ secret }) => secret));
+  const removableSecrets = cached.flatMap((row, index) => {
+    if (row === undefined) return [];
+    const proof = storedProofFromRow(row);
+    const expected = losingProofs[index]!;
+    const metadataMatches =
+      proof.mintUrl === expected.mintUrl &&
+      proof.unit === expected.unit &&
+      proof.conditionId === expected.conditionId &&
+      proof.outcomeCollection === expected.outcomeCollection &&
+      (proof.baseAsset === undefined || proof.baseAsset === expected.baseAsset) &&
+      (proof.marketId === undefined ||
+        proof.marketId === `${expected.conditionId}-${expected.outcomeCollection}`);
+    const bodyMatches =
+      deriveDurableCustodyArtifactFingerprint(serializeDurableCustodyProofArtifact(proof)) ===
+      deriveDurableCustodyArtifactFingerprint(serializeDurableCustodyProofArtifact(expected));
+    if (!metadataMatches || !bodyMatches) {
+      // Preserve only rows that the legacy spend selectors definitely hide.
+      if (isDefinitelyNonSpendableLegacyProof(proof)) return [];
+      throw new Error("browser V2 losing legacy proof cache conflicts");
+    }
+    if (isDefinitelyNonSpendableLegacyProof(proof)) return [];
+    return [row.secret];
+  });
+  if (removableSecrets.length > 0) await database.proofs.bulkDelete(removableSecrets);
+}
+
+function isDefinitelyNonSpendableLegacyProof(proof: StoredProof): boolean {
+  return (
+    (typeof proof.reservedBy === "string" && proof.reservedBy.length > 0) ||
+    proof.terminalOperationId !== undefined
+  );
 }
 
 /** Returns one complete local asset's exact currently available amount. */
@@ -515,4 +610,17 @@ async function requestProof(
 function requireCurrent(input: BrowserEncryptedWalletBackupV2TargetedRestoreInput): void {
   if (!input.isCurrentProfile() || input.signal.aborted)
     throw new Error("browser V2 targeted restore profile is stale");
+}
+
+function lazyWallet(input: BrowserEncryptedWalletBackupV2RestoreAndAdmitInput) {
+  let pending: Promise<CashuWallet> | undefined;
+  return async (): Promise<CashuWallet> => {
+    if (pending === undefined) {
+      requireCurrent(input);
+      pending = input.loadWallet();
+    }
+    const wallet = await pending;
+    requireCurrent(input);
+    return wallet;
+  };
 }

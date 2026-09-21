@@ -6,6 +6,7 @@ import {
   createEncryptedWalletBackupV2CurrentHead,
   createEncryptedWalletBackupV2KeyHandle,
   enumerateEncryptedWalletBackupV2DescriptorPages,
+  issueEncryptedWalletBackupV2TerminalSeal,
   prepareEncryptedWalletBackupV2ProofSetBundle,
   requireEncryptedWalletBackupV2CollectedHeadEvidence,
   deriveRootCtfOutcomeCollectionId,
@@ -20,8 +21,13 @@ import {
   classifyBrowserProofBackupAuthorityVerifiedLosing,
   createBrowserProofBackupAuthorityRow,
 } from "../../stores/browser-proof-backup-authority";
-import { createBrowserCustodyProofRow } from "../../stores/durable-custody-db";
+import {
+  BrowserDurableCustodyAdapter,
+  createBrowserCustodyProofRow,
+} from "../../stores/durable-custody-db";
 import { browserWalletDatabaseName } from "../browserWalletProfile";
+import { browserWalletScope } from "../browserCtfRangeOrderSource";
+import { commitBrowserCtfTerminalOperation } from "../../test/browserEncryptedWalletBackupV2CommittedTerminalFixture";
 import {
   readBrowserEncryptedWalletBackupV2LocalAvailableAmount,
   restoreAndAdmitBrowserEncryptedWalletBackupV2TargetedAsset,
@@ -101,7 +107,7 @@ it("rejects sat before backup network or local admission I/O", async () => {
     restoreAndAdmitBrowserEncryptedWalletBackupV2TargetedAsset({
       ...fixture.input,
       asset: satAsset,
-      wallet: { mint: { mintUrl: fixture.input.asset.mintUrl } } as CashuWallet,
+      loadWallet: async () => ({ mint: { mintUrl: fixture.input.asset.mintUrl } }) as CashuWallet,
       lockManager: immediateLockManager(),
     }),
   ).rejects.toThrow(/requires msat/);
@@ -174,7 +180,7 @@ it("uses complete current local custody without backup network I/O", async () =>
   await expect(
     restoreAndAdmitBrowserEncryptedWalletBackupV2TargetedAsset({
       ...fixture.input,
-      wallet: { mint: { mintUrl: fixture.input.asset.mintUrl } } as CashuWallet,
+      loadWallet: async () => ({ mint: { mintUrl: fixture.input.asset.mintUrl } }) as CashuWallet,
       lockManager: immediateLockManager(),
     }),
   ).resolves.toEqual({ kind: "local-custody" });
@@ -325,7 +331,7 @@ it("repairs only selectable legacy cache rows when CTF custody retains losing ev
   await expect(
     restoreAndAdmitBrowserEncryptedWalletBackupV2TargetedAsset({
       ...input,
-      wallet: { mint: { mintUrl: input.asset.mintUrl } } as CashuWallet,
+      loadWallet: async () => ({ mint: { mintUrl: input.asset.mintUrl } }) as CashuWallet,
       lockManager: immediateLockManager(),
     }),
   ).resolves.toEqual({ kind: "local-custody" });
@@ -349,9 +355,38 @@ it("repairs only selectable legacy cache rows when CTF custody retains losing ev
     }),
   );
 
+  const losingSecret = deriveDurableWalletProofSecret({
+    seed: SEED,
+    locator: losingLocator,
+    proofKeysetId: CTF_KEYSET,
+    proofAmount: 1,
+  });
+  await input.database.proofs.delete(legacyProofs[0]!.secret);
+  await input.database.proofs.put({
+    ...legacyProofs[0]!,
+    secret: losingSecret,
+    conditionId: CTF_CONDITION_ID,
+    outcomeCollection: CTF_OUTCOME,
+  });
+  await expect(
+    restoreAndAdmitBrowserEncryptedWalletBackupV2TargetedAsset({
+      ...input,
+      loadWallet: async () => ({ mint: { mintUrl: input.asset.mintUrl } }) as CashuWallet,
+      lockManager: immediateLockManager(),
+    }),
+  ).resolves.toEqual({ kind: "local-custody" });
+  expect(await input.database.proofs.count()).toBe(1);
+  expect((await input.database.proofs.toArray())[0]?.secret).toBe(legacyProofs[0]?.secret);
+
   await input.database.custodyProofs.delete([input.scopeId, selectable.proofId]);
   await input.database.custodyProofBackupAuthorities.delete([input.scopeId, selectable.proofId]);
   await input.database.proofs.clear();
+  await input.database.proofs.put({
+    ...legacyProofs[0]!,
+    secret: losingSecret,
+    conditionId: CTF_CONDITION_ID,
+    outcomeCollection: CTF_OUTCOME,
+  });
   await input.database.encryptedWalletBackupV2DesiredAssets.put({
     ...createEncryptedWalletBackupV2DesiredAssetRow({
       scopeId: input.scopeId,
@@ -365,12 +400,76 @@ it("repairs only selectable legacy cache rows when CTF custody retains losing ev
   await expect(
     restoreAndAdmitBrowserEncryptedWalletBackupV2TargetedAsset({
       ...input,
-      wallet: { mint: { mintUrl: input.asset.mintUrl } } as CashuWallet,
+      loadWallet: async () => ({ mint: { mintUrl: input.asset.mintUrl } }) as CashuWallet,
       lockManager: immediateLockManager(),
     }),
   ).resolves.toEqual({ kind: "local-custody" });
   expect(await input.database.proofs.count()).toBe(0);
   expect(input.remote.readDescriptorPage).not.toHaveBeenCalled();
+
+  await input.database.proofs.put({
+    ...legacyProofs[0]!,
+    secret: losingSecret,
+    conditionId: CTF_CONDITION_ID,
+    outcomeCollection: "OTHER",
+  });
+  await expect(
+    restoreAndAdmitBrowserEncryptedWalletBackupV2TargetedAsset({
+      ...input,
+      loadWallet: async () => ({ mint: { mintUrl: input.asset.mintUrl } }) as CashuWallet,
+      lockManager: immediateLockManager(),
+    }),
+  ).rejects.toThrow("browser V2 losing legacy proof cache conflicts");
+  expect(await input.database.proofs.count()).toBe(1);
+
+  await input.database.proofs.put({
+    ...legacyProofs[0]!,
+    secret: losingSecret,
+    conditionId: CTF_CONDITION_ID,
+    outcomeCollection: "OTHER",
+    reservedBy: "",
+  });
+  await expect(
+    restoreAndAdmitBrowserEncryptedWalletBackupV2TargetedAsset({
+      ...input,
+      loadWallet: async () => ({ mint: { mintUrl: input.asset.mintUrl } }) as CashuWallet,
+      lockManager: immediateLockManager(),
+    }),
+  ).rejects.toThrow("browser V2 losing legacy proof cache conflicts");
+  expect(await input.database.proofs.count()).toBe(1);
+
+  await input.database.proofs.put({
+    ...legacyProofs[0]!,
+    secret: losingSecret,
+    conditionId: CTF_CONDITION_ID,
+    outcomeCollection: "OTHER",
+    reservedBy: "operation:reserved",
+  });
+  await expect(
+    restoreAndAdmitBrowserEncryptedWalletBackupV2TargetedAsset({
+      ...input,
+      loadWallet: async () => ({ mint: { mintUrl: input.asset.mintUrl } }) as CashuWallet,
+      lockManager: immediateLockManager(),
+    }),
+  ).resolves.toEqual({ kind: "local-custody" });
+  expect(await input.database.proofs.count()).toBe(1);
+
+  await input.database.proofs.put({
+    ...legacyProofs[0]!,
+    secret: losingSecret,
+    conditionId: CTF_CONDITION_ID,
+    outcomeCollection: "OTHER",
+    reservedBy: undefined,
+    terminalOperationId: "operation:terminal",
+  });
+  await expect(
+    restoreAndAdmitBrowserEncryptedWalletBackupV2TargetedAsset({
+      ...input,
+      loadWallet: async () => ({ mint: { mintUrl: input.asset.mintUrl } }) as CashuWallet,
+      lockManager: immediateLockManager(),
+    }),
+  ).resolves.toEqual({ kind: "local-custody" });
+  expect(await input.database.proofs.count()).toBe(1);
 });
 
 it("returns zero local availability for a removal with retained operation proofs", async () => {
@@ -506,19 +605,56 @@ it("falls through from an acknowledged evicted cache to its current bundle", asy
   });
 });
 
-it("rejects a foreign wallet mint before backup or mint I/O", async () => {
+it("rejects a foreign wallet mint after backup object but before mint I/O", async () => {
   const fixture = await backupFixture();
 
   await expect(
     restoreAndAdmitBrowserEncryptedWalletBackupV2TargetedAsset({
       ...fixture.input,
-      wallet: { mint: { mintUrl: "https://other-mint.example" } } as CashuWallet,
+      loadWallet: async () => ({ mint: { mintUrl: "https://other-mint.example" } }) as CashuWallet,
       lockManager: immediateLockManager(),
     }),
   ).rejects.toThrow(/restore mint is foreign/);
 
-  expect(fixture.remote.readDescriptorPage).not.toHaveBeenCalled();
-  expect(fixture.remote.readObject).not.toHaveBeenCalled();
+  expect(fixture.remote.readDescriptorPage).toHaveBeenCalledOnce();
+  expect(fixture.remote.readObject).toHaveBeenCalledOnce();
+});
+
+it("admits an all-sealed bundle without loading the mint wallet", async () => {
+  const fixture = await sealedBackupFixture();
+  const loadWallet = vi.fn(async () => {
+    throw new Error("mint is unavailable");
+  });
+
+  await expect(
+    restoreAndAdmitBrowserEncryptedWalletBackupV2TargetedAsset({
+      ...fixture.input,
+      loadWallet,
+      lockManager: immediateLockManager(),
+    }),
+  ).resolves.toEqual({
+    kind: "restored",
+    bundleId: fixture.bundleId,
+    headVersion: 1,
+  });
+
+  expect(loadWallet).not.toHaveBeenCalled();
+  expect(fixture.remote.readObject).toHaveBeenCalledOnce();
+  const proofRows = await fixture.input.database.custodyProofs.toArray();
+  expect(proofRows).toHaveLength(1);
+  expect(proofRows[0]).toMatchObject({
+    selectability: "verified-losing",
+    reservationOperationId: null,
+  });
+  const authorityRows = await fixture.input.database.custodyProofBackupAuthorities.toArray();
+  expect(authorityRows).toHaveLength(1);
+  expect(authorityRows[0]?.terminalAuthority).toEqual({ kind: "remote-seal" });
+  expect(await fixture.input.database.encryptedWalletBackupV2DesiredAssets.count()).toBe(1);
+  expect(await fixture.input.database.proofs.count()).toBe(0);
+  expect(await fixture.input.database.custodyConditionalKeysets.count()).toBe(0);
+  await expect(readBrowserEncryptedWalletBackupV2LocalAvailableAmount(fixture.input)).resolves.toBe(
+    0n,
+  );
 });
 
 it("rejects a corrupt object before returning material", async () => {
@@ -562,7 +698,7 @@ it("reports fixed object and verification stages without error detail", async ()
   await expect(
     restoreAndAdmitBrowserEncryptedWalletBackupV2TargetedAsset({
       ...verificationFailure.input,
-      wallet: { mint: { mintUrl: "https://other-mint.example" } } as CashuWallet,
+      loadWallet: async () => ({ mint: { mintUrl: "https://other-mint.example" } }) as CashuWallet,
       lockManager: immediateLockManager(),
       reportTargetedRecoveryStage: (stage) => verificationStages.push(stage),
     }),
@@ -688,18 +824,216 @@ it("does not admit a decrypted bundle before mint proof verification", async () 
     }),
     checkProofsStates,
   } as unknown as CashuWallet;
+  const loadWallet = vi.fn(async () => wallet);
 
   await expect(
     restoreAndAdmitBrowserEncryptedWalletBackupV2TargetedAsset({
       ...fixture.input,
-      wallet,
+      loadWallet,
       lockManager: immediateLockManager(),
     }),
   ).rejects.toThrow(/DLEQ|proof|signature/i);
+  expect(loadWallet).toHaveBeenCalledOnce();
   expect(checkProofsStates).not.toHaveBeenCalled();
   expect(await fixture.input.database.custodyProofs.count()).toBe(0);
   expect(await fixture.input.database.encryptedWalletBackupV2DesiredAssets.count()).toBe(0);
 });
+
+async function sealedBackupFixture() {
+  const { scopeId, walletId } = browserWalletScope(SEED);
+  const database = new BitcasterDB(browserWalletDatabaseName(scopeId));
+  openDatabases.push(database);
+  await database.open();
+  const scope = { scopeKind: "wallet" as const, walletId, scopeId };
+  const custody = new BrowserDurableCustodyAdapter(database);
+  const owner = await custody.claimScope(scope, {
+    incarnationId: "sealed-restore",
+    observedAtMs: 10,
+    leaseExpiresAtMs: 10_000,
+  });
+  const ctfAsset = {
+    kind: "ctf" as const,
+    conditionId: CTF_CONDITION_ID,
+    outcomeCollectionId: CTF_OUTCOME_COLLECTION_ID,
+    outcomeLabel: CTF_OUTCOME,
+    registeredAt: 0,
+    finalExpiry: 100,
+  };
+  const asset = createEncryptedWalletBackupV2AssetIdentity({
+    mintUrl: "https://mint.example",
+    unit: "msat",
+    asset: ctfAsset,
+  });
+  const locator = {
+    schemaVersion: 1 as const,
+    kind: "nut13" as const,
+    keysetId: CTF_KEYSET,
+    counter: 0,
+  };
+  const proof = {
+    id: CTF_KEYSET,
+    amount: 1 as never,
+    secret: deriveDurableWalletProofSecret({
+      seed: SEED,
+      locator,
+      proofKeysetId: CTF_KEYSET,
+      proofAmount: 1,
+    }),
+    C: CTF_PUBLIC_KEY,
+  };
+  const predecessor = createBrowserCustodyProofRow({
+    scopeId,
+    normalizedMint: asset.mintUrl,
+    unit: "msat",
+    proof,
+    asset: {
+      kind: "conditional",
+      conditionId: CTF_CONDITION_ID,
+      outcomeCollection: CTF_OUTCOME,
+    },
+    receivedAtMs: 1,
+  });
+  await database.custodyProofs.put(predecessor);
+  await database.custodyProofBackupAuthorities.put(
+    createBrowserProofBackupAuthorityRow(predecessor, 10, locator, "admission:sealed"),
+  );
+  await database.custodyConditionalKeysets.put({
+    schemaVersion: 1,
+    scopeId,
+    normalizedMint: asset.mintUrl,
+    unit: "msat",
+    keysetId: CTF_KEYSET,
+    denominationPublicKeys: { "1": CTF_PUBLIC_KEY },
+    inputFeePpk: 100,
+    conditionId: CTF_CONDITION_ID,
+    outcomeCollection: CTF_OUTCOME,
+    outcomeCollectionId: CTF_OUTCOME_COLLECTION_ID,
+    registeredAtUnixSeconds: 0,
+    finalExpiryUnixSeconds: 100,
+    curve: "secp256k1",
+  });
+  await database.encryptedWalletBackupV2DesiredAssets.put(
+    createEncryptedWalletBackupV2DesiredAssetRow({
+      scopeId,
+      asset,
+      custodyRevision: 1n,
+      activeProofCount: 1,
+    }),
+  );
+  const committed = await commitBrowserCtfTerminalOperation({
+    adapter: custody,
+    scope,
+    owner,
+    operationId: "ctf-redeem-sealed-restore",
+    mintUrl: asset.mintUrl,
+    proofs: [proof],
+    predecessorProofs: [predecessor],
+    publicKey: CTF_PUBLIC_KEY,
+  });
+  const record = await custody.readOperation(scope, committed.operationId);
+  if (record === null) throw new Error("test terminal operation is absent");
+  const terminalSeal = await issueEncryptedWalletBackupV2TerminalSeal({
+    seed: SEED,
+    proof: {
+      mintUrl: asset.mintUrl,
+      unit: "msat",
+      asset: ctfAsset,
+      locator,
+      proof,
+    },
+    operationId: committed.operationId,
+    store: {
+      withCommittedTerminalRejection: async (_operationId, read) =>
+        read({ record, exactRejection: committed.rejection, classifiedAtMs: 20 }),
+    },
+  });
+  await database.custodyProofs.clear();
+  await database.custodyProofBackupAuthorities.clear();
+  await database.encryptedWalletBackupV2DesiredAssets.clear();
+  await database.custodyConditionalKeysets.clear();
+  await database.custodyOperations.clear();
+  await database.custodyArtifacts.clear();
+  await database.custodyReservations.clear();
+  await database.custodyActiveWork.clear();
+  await database.custodyScopes.clear();
+  await database.walletCounterCursors.clear();
+  await database.walletCounterAssociations.clear();
+  await database.proofs.clear();
+  expect(await database.custodyConditionalKeysets.count()).toBe(0);
+  expect(await database.custodyOperations.count()).toBe(0);
+  expect(await database.custodyScopes.count()).toBe(0);
+  const keyHandle = await createEncryptedWalletBackupV2KeyHandle({
+    seed: SEED,
+    realm: "backup.example",
+    runtime: { subtle: crypto.subtle },
+  });
+  const bundle = await prepareEncryptedWalletBackupV2ProofSetBundle({
+    keyHandle,
+    seed: SEED,
+    asset,
+    custodyRevision: 1n,
+    counterHighWaterMarks: [
+      { mintUrl: asset.mintUrl, unit: "msat", keysetId: CTF_KEYSET, nextCounter: 1 },
+    ],
+    proofs: [
+      {
+        mintUrl: asset.mintUrl,
+        unit: "msat",
+        asset: ctfAsset,
+        locator,
+        proof,
+        terminalSeal,
+      },
+    ],
+    runtime: { subtle: crypto.subtle, getRandomValues: crypto.getRandomValues.bind(crypto) },
+  });
+  const head = createEncryptedWalletBackupV2CurrentHead({
+    realm: keyHandle.realm,
+    walletId: keyHandle.walletId,
+    enrollmentEpoch: 1,
+    headVersion: 1,
+    bundles: [bundle.descriptor],
+  });
+  const pages = enumerateEncryptedWalletBackupV2DescriptorPages({
+    head,
+    bundles: [bundle.descriptor],
+  });
+  const objects = new Map(bundle.objects.map((object) => [object.objectId, object]));
+  const remote = {
+    discoverEnrollmentEpoch: vi.fn(),
+    mutateHeadOnce: vi.fn(),
+    readCurrentInventory: vi.fn(),
+    readDescriptorPage: vi.fn(async ({ afterBundleId }) => {
+      const page = pages.find((candidate) => candidate.afterBundleId === afterBundleId);
+      if (!page) throw new Error("test head page is absent");
+      return page;
+    }),
+    readObject: vi.fn(async ({ objectId }) => {
+      const object = objects.get(objectId);
+      if (!object) throw new Error("test object is absent");
+      return object;
+    }),
+  } satisfies EncryptedWalletBackupV2RemotePort;
+  return {
+    remote,
+    bundleId: bundle.descriptor.bundleId,
+    input: {
+      database,
+      scopeId,
+      seed: SEED,
+      keyHandle,
+      enrollmentEpoch: 1,
+      asset,
+      remote,
+      requestUrl: (kind: "head" | "object", value: string | null) =>
+        `https://backup.example/${kind}/${value ?? "current"}`,
+      nowUnixSeconds: () => 1_000,
+      runtime: { subtle: crypto.subtle, getRandomValues: crypto.getRandomValues.bind(crypto) },
+      signal: new AbortController().signal,
+      isCurrentProfile: () => true,
+    },
+  };
+}
 
 async function backupFixture() {
   fixtureSequence += 1;
