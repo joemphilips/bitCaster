@@ -2,10 +2,13 @@ import { isBlsKeyset, type Wallet as CashuWallet } from "@cashu/cashu-ts";
 import {
   createEncryptedWalletBackupV2DesiredAssetRow,
   decodeEncryptedWalletBackupV2DesiredAssetRow,
+  incrementEncryptedWalletBackupV2DesiredAssetRevision,
+  sameEncryptedWalletBackupV2RemovalIntent,
 } from "../stores/browser-encrypted-wallet-backup-v2-desired-asset";
 import {
   createBrowserRemoteProofBackupAuthorityRow,
   requireBrowserProofBackupAuthorityForProof,
+  requireBrowserLiveProofBackupAuthorityTableRow,
 } from "../stores/browser-proof-backup-authority";
 import { BrowserWalletCounterDexieStore } from "../stores/browser-wallet-counter-db";
 import {
@@ -31,10 +34,17 @@ import type {
   EncryptedWalletBackupV2VerifiedProofSet,
 } from "@bitcaster/client-sdk";
 import {
+  digestEncryptedWalletBackupV2BundleDescriptor,
   decodeEncryptedWalletBackupV2AssetIdentity,
+  requireEncryptedWalletBackupV2CollectedHeadEvidence,
+  requireEncryptedWalletBackupV2VerifiedProofSetSource,
   requireEncryptedWalletBackupV2VerifiedProofSet,
 } from "@bitcaster/client-sdk";
-import { deriveDurableCustodyArtifactFingerprint } from "@bitcaster/client-sdk/durableCustody";
+import {
+  classifyDurableCustodyActiveWork,
+  decodeDurableCustodyRecord,
+  deriveDurableCustodyArtifactFingerprint,
+} from "@bitcaster/client-sdk/durableCustody";
 import { serializeDurableCustodyProofArtifact } from "@bitcaster/client-sdk/durableCustodyProofMaterial";
 
 export interface BrowserEncryptedWalletBackupV2AdmissionInput {
@@ -43,6 +53,9 @@ export interface BrowserEncryptedWalletBackupV2AdmissionInput {
   readonly asset: EncryptedWalletBackupV2AssetIdentity;
   readonly custodyRevision: bigint;
   readonly sourceOperationId: string;
+  readonly collectedHeadEvidence?: import("@bitcaster/client-sdk").EncryptedWalletBackupV2CollectedHeadEvidence;
+  readonly realm?: string;
+  readonly enrollmentEpoch?: number;
   readonly wallet: CashuWallet;
   readonly database: BitcasterDB;
   readonly scopeId: string;
@@ -74,6 +87,9 @@ export interface BrowserEncryptedWalletBackupV2SealedAdmissionInput {
   readonly asset: EncryptedWalletBackupV2AssetIdentity;
   readonly custodyRevision: bigint;
   readonly sourceOperationId: string;
+  readonly collectedHeadEvidence?: import("@bitcaster/client-sdk").EncryptedWalletBackupV2CollectedHeadEvidence;
+  readonly realm?: string;
+  readonly enrollmentEpoch?: number;
   readonly database: BitcasterDB;
   readonly scopeId: string;
   readonly isCurrentProfile: () => boolean;
@@ -94,6 +110,7 @@ export async function admitBrowserEncryptedWalletBackupV2Asset(
   requireProductMsatUnit(input.asset.unit);
   requireCurrent(input);
   const verified = requireEncryptedWalletBackupV2VerifiedProofSet(input.verified);
+  requireAdmissionHeadBinding(input, verified);
   if (
     verified.proofs.some((proof) => proof.selectionAuthority === "terminal-sealed-non-selectable")
   ) {
@@ -120,7 +137,14 @@ export async function admitBrowserEncryptedWalletBackupV2Asset(
         throw new Error("browser V2 restore injected cache fault");
       requireCurrent(input);
       input.setTargetedRecoveryAdmissionStage?.("backup-admit-cache");
-      await addProofs(proofs, input.database);
+      await input.database.transaction(
+        "rw",
+        [input.database.custodyProofBackupAuthorities, input.database.proofs],
+        async () => {
+          await requireIncomingLiveAuthorities(input.database, input.scopeId, verified);
+          await addProofs(proofs, input.database);
+        },
+      );
     },
     input.lockManager,
   );
@@ -142,6 +166,7 @@ export async function admitBrowserEncryptedWalletBackupV2MixedAsset(
   if (selectableEntries.length === 0 || sealedEntries.length === 0) {
     throw new Error("browser V2 mixed admission requires both proof trust levels");
   }
+  requireAdmissionHeadBinding(input, verified, sealedEntries.length > 0);
   if (
     verified.proofs.some(({ unit }) => unit !== "msat") ||
     verified.counterHighWaterMarks.some(({ unit }) => unit !== "msat")
@@ -176,6 +201,7 @@ export async function admitBrowserEncryptedWalletBackupV2SealedAsset(
   requireProductMsatUnit(input.asset.unit);
   requireCurrent(input);
   const verified = requireEncryptedWalletBackupV2VerifiedProofSet(input.verified);
+  requireAdmissionHeadBinding(input, verified, true);
   const prepared = prepareSealedAdmission(input, verified);
   input.setTargetedRecoveryAdmissionStage?.("backup-admit-lock");
   await withWalletProfileLock(
@@ -193,15 +219,24 @@ export async function admitBrowserEncryptedWalletBackupV2SealedAsset(
           input.database.walletCounterCursors,
           input.database.encryptedWalletBackupV2DesiredAssets,
           input.database.proofs,
+          input.database.custodyReservations,
+          input.database.custodyOperations,
+          input.database.custodyActiveWork,
           input.database.custodyScopes,
         ],
         async () => {
+          const authorities = await requireIncomingLiveAuthorities(
+            input.database,
+            input.scopeId,
+            verified,
+          );
           await new BrowserDurableCustodyAdapter(input.database).ensureScope(
             browserWalletScope(input.seed),
             prepared.observedAtMs,
           );
           input.setTargetedRecoveryAdmissionStage?.("backup-admit-state");
-          const state = await inspectSealedAdmissionState(input, prepared);
+          if (await reconcileSealedActiveProofs(input, prepared)) return;
+          const state = await inspectSealedAdmissionState(input, prepared, authorities);
           if (!state.idempotent) {
             input.setTargetedRecoveryAdmissionStage?.("backup-admit-custody");
             await input.database.custodyProofs.bulkPut(prepared.proofRows);
@@ -232,6 +267,327 @@ export async function admitBrowserEncryptedWalletBackupV2SealedAsset(
     },
     input.lockManager,
   );
+}
+
+async function reconcileSealedActiveProofs(
+  input: BrowserEncryptedWalletBackupV2SealedAdmissionInput,
+  prepared: PreparedSealedAdmission,
+  localRevisionOverride?: bigint,
+): Promise<boolean> {
+  const state = await loadSealedReconciliationState(input, prepared);
+  if (state === null) return false;
+  const unionRows = await applySealedReconciliationUnion(input, prepared, state);
+  return persistSealedReconciliation(input, prepared, state, unionRows, localRevisionOverride);
+}
+
+interface SealedReconciliationState {
+  readonly currentDesired: ReturnType<typeof decodeEncryptedWalletBackupV2DesiredAssetRow>;
+  readonly localRows: readonly ReturnType<typeof decodeBrowserCustodyProofRow>[];
+  readonly localById: ReadonlyMap<string, ReturnType<typeof decodeBrowserCustodyProofRow>>;
+  readonly authorityById: ReadonlyMap<
+    string,
+    ReturnType<typeof requireBrowserProofBackupAuthorityForProof>
+  >;
+  readonly incomingAuthorityById: ReadonlyMap<
+    string,
+    ReturnType<typeof requireBrowserProofBackupAuthorityForProof>
+  >;
+  readonly changed: boolean;
+}
+
+async function loadSealedReconciliationState(
+  input: BrowserEncryptedWalletBackupV2SealedAdmissionInput,
+  prepared: PreparedSealedAdmission,
+): Promise<SealedReconciliationState | null> {
+  const first = input.verified.proofs[0]?.asset;
+  if (first?.kind !== "ctf") return null;
+  const localRows = await readBrowserEncryptedWalletBackupV2ExactLocalProofRows({
+    database: input.database,
+    scopeId: input.scopeId,
+    asset: input.asset,
+    ctfRoute: first,
+  });
+  if (localRows.length === 0) return null;
+  const desired = await input.database.encryptedWalletBackupV2DesiredAssets.get([
+    input.scopeId,
+    prepared.desiredRow.localAssetKey,
+  ]);
+  if (desired === undefined) return null;
+  const currentDesired = decodeEncryptedWalletBackupV2DesiredAssetRow(desired);
+  if (currentDesired.desiredAction !== "replace") {
+    throw new Error("browser V2 restore desired removal authority conflicts");
+  }
+  if (currentDesired.removalIntent !== null) {
+    throw new Error("browser V2 sealed admission desired authority conflicts: removal intent");
+  }
+  if (currentDesired.activeProofCount !== localRows.length) {
+    throw new Error("browser V2 restore desired authority conflicts");
+  }
+  if (
+    currentDesired.terminalCtfContext !== null &&
+    !sameTerminalCtfContext(
+      currentDesired.terminalCtfContext,
+      prepared.desiredRow.terminalCtfContext,
+    )
+  ) {
+    throw new Error("browser V2 restore desired CTF tuple conflicts");
+  }
+  const localAuthorities = await input.database.custodyProofBackupAuthorities.bulkGet(
+    localRows.map(({ proofId }) => [input.scopeId, proofId] as [string, string]),
+  );
+  const authorityById = new Map<
+    string,
+    ReturnType<typeof requireBrowserProofBackupAuthorityForProof>
+  >();
+  for (const [index, row] of localRows.entries()) {
+    const authorityRow = requireBrowserLiveProofBackupAuthorityTableRow(localAuthorities[index], [
+      input.scopeId,
+      row.proofId,
+    ]);
+    if (authorityRow === undefined) {
+      throw new Error("browser V2 sealed admission authority is incomplete");
+    }
+    authorityById.set(row.proofId, requireBrowserProofBackupAuthorityForProof(authorityRow, row));
+  }
+  const localById = new Map(localRows.map((row) => [row.proofId, row]));
+  if (
+    localRows.some(
+      ({ selectability }) => selectability !== "selectable" && selectability !== "verified-losing",
+    )
+  ) {
+    throw new Error("browser V2 restore local custody conflicts: locked or pending proof");
+  }
+  for (const local of localRows) {
+    if (local.selectability === "selectable") {
+      await requireProofReconciliationFences(
+        input.database,
+        input.scopeId,
+        local,
+        authorityById.get(local.proofId),
+      );
+    }
+  }
+  let changed = false;
+  for (const incoming of prepared.proofRows) {
+    const local = localById.get(incoming.proofId);
+    if (local === undefined) {
+      changed = true;
+      continue;
+    }
+    if (!sameProofMaterial(local, incoming)) {
+      throw new Error("browser V2 restore proof material conflicts");
+    }
+    if (local.selectability === "selectable") changed = true;
+    else if (local.selectability === "verified-losing") {
+      if (local.reservationOperationId !== null)
+        throw new Error("browser V2 restore losing proof is reserved");
+    } else throw new Error("browser V2 restore proof is locked or pending removal");
+  }
+  return {
+    currentDesired,
+    localRows,
+    localById,
+    authorityById,
+    incomingAuthorityById: new Map(prepared.authorityRows.map((row) => [row.proofId, row])),
+    changed,
+  };
+}
+
+async function applySealedReconciliationUnion(
+  input: BrowserEncryptedWalletBackupV2SealedAdmissionInput,
+  prepared: PreparedSealedAdmission,
+  state: SealedReconciliationState,
+): Promise<readonly ReturnType<typeof decodeBrowserCustodyProofRow>[]> {
+  const unionRows = [...state.localRows];
+  for (const incoming of prepared.proofRows) {
+    const local = state.localById.get(incoming.proofId);
+    if (local === undefined) {
+      unionRows.push(incoming);
+      await input.database.custodyProofs.put(incoming);
+      await input.database.custodyProofBackupAuthorities.put(
+        state.incomingAuthorityById.get(incoming.proofId)!,
+      );
+      continue;
+    }
+    if (local.selectability !== "selectable") continue;
+    const losing = decodeBrowserCustodyProofRow({
+      ...local,
+      revision: nextProofRevision(local.revision),
+      selectability: "verified-losing",
+      reservationOperationId: null,
+    });
+    unionRows[unionRows.findIndex(({ proofId }) => proofId === losing.proofId)] = losing;
+    await input.database.custodyProofs.put(losing);
+    await input.database.custodyProofBackupAuthorities.put(
+      createBrowserRemoteProofBackupAuthorityRow({
+        proof: losing,
+        observedAtMs: Math.max(prepared.observedAtMs, local.receivedAtMs),
+        derivationLocator: state.authorityById.get(local.proofId)!.derivationLocator,
+        restoreProofId: incoming.proofId,
+        restoreProofCommitment: requireSeal(
+          input.verified.proofs.find(({ proofId }) => proofId === incoming.proofId)?.terminalSeal,
+        ).proofCommitment,
+      }),
+    );
+  }
+  return unionRows;
+}
+
+async function persistSealedReconciliation(
+  input: BrowserEncryptedWalletBackupV2SealedAdmissionInput,
+  prepared: PreparedSealedAdmission,
+  state: SealedReconciliationState,
+  unionRows: readonly ReturnType<typeof decodeBrowserCustodyProofRow>[],
+  localRevisionOverride: bigint | undefined,
+): Promise<boolean> {
+  if (!state.changed) {
+    await removeMatchingStaleLegacyCacheRows(
+      input.database,
+      unionRows.filter(({ selectability }) => selectability === "verified-losing"),
+    );
+    await addProofs(
+      unionRows
+        .filter(({ selectability }) => selectability === "selectable" || selectability === "locked")
+        .map(storedProofFromCustodyRow),
+      input.database,
+    );
+    return true;
+  }
+  if (state.currentDesired.terminalCtfContext === null) {
+    await input.database.encryptedWalletBackupV2DesiredAssets.put(
+      createEncryptedWalletBackupV2DesiredAssetRow({
+        scopeId: input.scopeId,
+        asset: input.asset,
+        custodyRevision: BigInt(state.currentDesired.custodyRevision),
+        activeProofCount: state.currentDesired.activeProofCount,
+        terminalCtfContext: prepared.desiredRow.terminalCtfContext,
+        removalIntent: null,
+      }),
+    );
+  }
+  await restoreCountersInOwnedTransaction(input, input.verified);
+  const latestDesiredRaw = await input.database.encryptedWalletBackupV2DesiredAssets.get([
+    input.scopeId,
+    prepared.desiredRow.localAssetKey,
+  ]);
+  if (latestDesiredRaw === undefined)
+    throw new Error("browser V2 restore desired authority is missing");
+  const latestDesired = decodeEncryptedWalletBackupV2DesiredAssetRow(latestDesiredRaw);
+  if (latestDesired.removalIntent !== null) {
+    throw new Error("browser V2 sealed admission desired authority conflicts: removal intent");
+  }
+  const latestRevision = BigInt(latestDesired.custodyRevision);
+  if (localRevisionOverride !== undefined && latestRevision < localRevisionOverride) {
+    throw new Error("browser V2 restore desired authority conflicts");
+  }
+  const localRevision =
+    localRevisionOverride === undefined || latestRevision > localRevisionOverride
+      ? latestRevision
+      : localRevisionOverride;
+  const nextRevision = incrementEncryptedWalletBackupV2DesiredAssetRevision(
+    localRevision > input.custodyRevision ? localRevision : input.custodyRevision,
+  );
+  await input.database.encryptedWalletBackupV2DesiredAssets.put(
+    createEncryptedWalletBackupV2DesiredAssetRow({
+      scopeId: input.scopeId,
+      asset: input.asset,
+      custodyRevision: nextRevision,
+      activeProofCount: unionRows.length,
+      terminalCtfContext: prepared.desiredRow.terminalCtfContext,
+      removalIntent: null,
+    }),
+  );
+  if (input.fault === "after-authority-before-cache") {
+    throw new Error("browser V2 restore injected cache fault");
+  }
+  await removeMatchingStaleLegacyCacheRows(
+    input.database,
+    unionRows.filter(({ selectability }) => selectability === "verified-losing"),
+  );
+  await addProofs(
+    unionRows
+      .filter(({ selectability }) => selectability === "selectable" || selectability === "locked")
+      .map(storedProofFromCustodyRow),
+    input.database,
+  );
+  requireCurrent(input);
+  if (input.fault === "before-commit") {
+    throw new Error("browser V2 restore injected commit fault");
+  }
+  return true;
+}
+
+async function requireProofReconciliationFences(
+  database: BitcasterDB,
+  scopeId: string,
+  proof: ReturnType<typeof decodeBrowserCustodyProofRow>,
+  authority: ReturnType<typeof requireBrowserProofBackupAuthorityForProof> | undefined,
+): Promise<void> {
+  if (proof.selectability !== "selectable" || proof.reservationOperationId !== null) {
+    throw new Error("browser V2 restore proof is locked or reserved");
+  }
+  const reservation = await database.custodyReservations.get([scopeId, proof.proofId]);
+  if (reservation !== undefined) throw new Error("browser V2 restore proof reservation conflicts");
+  const admissionOperationId = authority?.admissionOperationId;
+  if (admissionOperationId === null || admissionOperationId === undefined) return;
+  const [operationRow, activeWork] = await Promise.all([
+    database.custodyOperations.get([scopeId, admissionOperationId]),
+    database.custodyActiveWork.get([scopeId, admissionOperationId]),
+  ]);
+  if (activeWork !== undefined) {
+    throw new Error("browser V2 restore local custody conflicts: unfinished custody work");
+  }
+  if (operationRow === undefined) return;
+  if (operationRow.scopeId !== scopeId || operationRow.operationId !== admissionOperationId) {
+    throw new Error("browser V2 restore local custody conflicts: creator operation is foreign");
+  }
+  const record = decodeDurableCustodyRecord(operationRow.record);
+  if (
+    record.scope.scopeId !== scopeId ||
+    record.operation.operationId !== admissionOperationId ||
+    operationRow.revision !== record.revision ||
+    operationRow.operationState !== record.operation.state ||
+    operationRow.nextAttemptAtMs !== record.operation.retry.nextAttemptAtMs ||
+    !record.operation.proofStorage.lineage.successorProofIds.includes(proof.proofId) ||
+    (record.operation.proofStorage.lineage.successorAdmission !== null &&
+      !record.operation.proofStorage.lineage.successorAdmission.proofRows.some(
+        ({ proofId }) => proofId === proof.proofId,
+      ))
+  ) {
+    throw new Error("browser V2 restore local custody conflicts: creator operation is foreign");
+  }
+  if (classifyDurableCustodyActiveWork(record) !== "none") {
+    throw new Error("browser V2 restore local custody conflicts: unfinished custody work");
+  }
+}
+
+function sameProofMaterial(
+  left: ReturnType<typeof decodeBrowserCustodyProofRow>,
+  right: ReturnType<typeof decodeBrowserCustodyProofRow>,
+): boolean {
+  return (
+    left.scopeId === right.scopeId &&
+    left.normalizedMint === right.normalizedMint &&
+    left.unit === right.unit &&
+    left.proofId === right.proofId &&
+    left.proofFingerprint === right.proofFingerprint &&
+    left.keysetId === right.keysetId &&
+    left.amount === right.amount &&
+    left.assetKind === right.assetKind &&
+    left.conditionId === right.conditionId &&
+    left.outcomeCollection === right.outcomeCollection &&
+    left.curve === right.curve &&
+    left.dleqPresence === right.dleqPresence &&
+    left.proofBody.length === right.proofBody.length &&
+    left.proofBody.every((byte, index) => byte === right.proofBody[index])
+  );
+}
+
+function nextProofRevision(value: number): number {
+  if (!Number.isSafeInteger(value) || value >= Number.MAX_SAFE_INTEGER) {
+    throw new Error("browser V2 proof revision exceeds safe integer");
+  }
+  return value + 1;
 }
 
 interface PreparedSealedAdmission {
@@ -350,6 +706,7 @@ function prepareSealedAdmission(
 async function inspectSealedAdmissionState(
   input: BrowserEncryptedWalletBackupV2SealedAdmissionInput,
   prepared: PreparedSealedAdmission,
+  authorities: readonly ReturnType<typeof requireBrowserLiveProofBackupAuthorityTableRow>[],
 ): Promise<{ readonly idempotent: boolean }> {
   const expectedById = new Map(prepared.proofRows.map((proof) => [proof.proofId, proof]));
   const existingById = new Map<string, ReturnType<typeof decodeBrowserCustodyProofRow>>();
@@ -408,12 +765,11 @@ async function inspectSealedAdmissionState(
   ]);
   const desired =
     desiredRaw === undefined ? null : decodeEncryptedWalletBackupV2DesiredAssetRow(desiredRaw);
-  if (desired !== null && !sameDesiredRow(desired, prepared.desiredRow)) {
-    throw new Error("browser V2 sealed admission desired authority conflicts");
+  if (desired !== null) {
+    if (desired.removalIntent !== null || !sameDesiredRow(desired, prepared.desiredRow)) {
+      throw new Error("browser V2 sealed admission desired authority conflicts");
+    }
   }
-  const authorities = await input.database.custodyProofBackupAuthorities.bulkGet(
-    prepared.proofRows.map((proof) => [input.scopeId, proof.proofId]),
-  );
   let authorityCount = 0;
   for (const [index, raw] of authorities.entries()) {
     if (raw === undefined) continue;
@@ -535,9 +891,7 @@ function sameCanonicalProof(
 
 function sameDesiredRow(
   left: ReturnType<typeof decodeEncryptedWalletBackupV2DesiredAssetRow>,
-  right: ReturnType<typeof createEncryptedWalletBackupV2DesiredAssetRow> & {
-    readonly syncState: "acknowledged";
-  },
+  right: ReturnType<typeof decodeEncryptedWalletBackupV2DesiredAssetRow>,
 ): boolean {
   return (
     left.scopeId === right.scopeId &&
@@ -549,6 +903,7 @@ function sameDesiredRow(
     left.activeProofCount === right.activeProofCount &&
     left.desiredAction === right.desiredAction &&
     left.syncState === right.syncState &&
+    sameEncryptedWalletBackupV2RemovalIntent(left.removalIntent, right.removalIntent) &&
     sameTerminalCtfContext(left.terminalCtfContext, right.terminalCtfContext)
   );
 }
@@ -633,6 +988,58 @@ function requireAdmissionAuthority(
   }
 }
 
+function requireAdmissionHeadBinding(
+  input: Pick<
+    | BrowserEncryptedWalletBackupV2AdmissionInput
+    | BrowserEncryptedWalletBackupV2SealedAdmissionInput,
+    "seed" | "custodyRevision" | "collectedHeadEvidence" | "realm" | "enrollmentEpoch"
+  >,
+  verified: EncryptedWalletBackupV2VerifiedProofSet,
+  requireEvidence = false,
+): void {
+  if (input.collectedHeadEvidence === undefined) {
+    if (requireEvidence) {
+      throw new Error("browser V2 restore current head evidence is required");
+    }
+    return;
+  }
+  if (input.realm === undefined || input.enrollmentEpoch === undefined) {
+    throw new Error("browser V2 restore current head scope is incomplete");
+  }
+  const collected = requireEncryptedWalletBackupV2CollectedHeadEvidence(
+    input.collectedHeadEvidence,
+  );
+  const source = requireEncryptedWalletBackupV2VerifiedProofSetSource(verified);
+  const scope = browserWalletScope(input.seed);
+  if (
+    collected.head.walletId !== scope.walletId ||
+    collected.head.realm !== input.realm ||
+    collected.head.enrollmentEpoch !== input.enrollmentEpoch ||
+    source.custodyRevision !== input.custodyRevision ||
+    collected.bundles.filter(
+      (bundle) =>
+        bundle.bundleId === source.bundleId &&
+        bundle.assetLocator === source.assetLocator &&
+        bundle.custodyRevision === source.custodyRevision &&
+        digestEncryptedWalletBackupV2BundleDescriptor(bundle) === source.descriptorDigest,
+    ).length !== 1
+  ) {
+    throw new Error("browser V2 restore proof source is not the exact current descriptor");
+  }
+}
+
+async function requireIncomingLiveAuthorities(
+  database: BitcasterDB,
+  scopeId: string,
+  verified: EncryptedWalletBackupV2VerifiedProofSet,
+): Promise<readonly ReturnType<typeof requireBrowserLiveProofBackupAuthorityTableRow>[]> {
+  const keys = verified.proofs.map(({ proofId }) => [scopeId, proofId] as [string, string]);
+  const rows = await database.custodyProofBackupAuthorities.bulkGet(keys);
+  return rows.map((row, index) =>
+    requireBrowserLiveProofBackupAuthorityTableRow(row, keys[index]!),
+  );
+}
+
 async function commitMixedAuthority(
   input: BrowserEncryptedWalletBackupV2MixedAdmissionInput,
   verified: EncryptedWalletBackupV2VerifiedProofSet,
@@ -641,62 +1048,140 @@ async function commitMixedAuthority(
   sealed: PreparedSealedAdmission,
 ): Promise<void> {
   requireCurrent(input);
-  input.setTargetedRecoveryAdmissionStage?.("backup-admit-state");
-  const start = await startingState(input, verified, sealed.desiredRow);
-  await requireCompatibleMixedAuthorities(input, verified, sealed);
-  if (start.kind === "idempotent") {
-    input.setTargetedRecoveryAdmissionStage?.("backup-admit-cache");
-    await repairMixedLegacyCache(input.database, selectableProofs, sealed.proofRows);
-    return;
-  }
+  const first = verified.proofs[0]?.asset;
+  if (first?.kind !== "ctf") throw new Error("browser V2 mixed admission CTF asset is missing");
+  const classification = await classifyMixedAdmissionState(input, sealed, first);
+  const hadExistingLocal = classification.kind === "active";
   const sourceOperationId =
-    start.kind === "evicted"
+    classification.kind === "evicted"
       ? `${input.sourceOperationId}:reimport:${localReimportId(input)}`
       : input.sourceOperationId;
-  const selectableToAdmit = selectableEntries.flatMap((entry, index) =>
-    start.proofIdsToAdmit.has(entry.proofId)
-      ? [{ verified: entry, stored: selectableProofs[index]! }]
-      : [],
-  );
-  const sealedIndexesToAdmit = sealed.proofRows.flatMap((proof, index) =>
-    start.proofIdsToAdmit.has(proof.proofId) ? [index] : [],
-  );
-  const beforePersist =
-    start.kind === "evicted"
-      ? () =>
-          input.database.encryptedWalletBackupV2DesiredAssets.delete([
-            input.scopeId,
-            sealed.desiredRow.localAssetKey,
-          ])
-      : undefined;
-  const persistExtensions = async () => {
-    if (sealedIndexesToAdmit.length > 0) {
-      input.setTargetedRecoveryAdmissionStage?.("backup-admit-custody");
-      await input.database.custodyProofs.bulkPut(
-        sealedIndexesToAdmit.map((index) => sealed.proofRows[index]!),
-      );
-      await input.database.custodyProofBackupAuthorities.bulkPut(
-        sealedIndexesToAdmit.map((index) => sealed.authorityRows[index]!),
-      );
+  const initialDesiredRaw = await input.database.encryptedWalletBackupV2DesiredAssets.get([
+    input.scopeId,
+    sealed.desiredRow.localAssetKey,
+  ]);
+  const initialDesiredRevision =
+    classification.kind !== "active" || initialDesiredRaw === undefined
+      ? undefined
+      : BigInt(decodeEncryptedWalletBackupV2DesiredAssetRow(initialDesiredRaw).custodyRevision);
+  const localById = new Map(classification.localRows.map((row) => [row.proofId, row]));
+  const liveCandidates = selectableEntries.map((entry, index) => ({
+    entry,
+    stored: selectableProofs[index]!,
+  }));
+  const liveToAdmit = [] as typeof liveCandidates;
+  for (const candidate of liveCandidates) {
+    const local = localById.get(candidate.entry.proofId);
+    if (local === undefined) {
+      liveToAdmit.push(candidate);
+      continue;
     }
+    const expected = decodeBrowserCustodyProofRow(
+      createBrowserCustodyProofRow({
+        scopeId: input.scopeId,
+        normalizedMint: input.asset.mintUrl,
+        unit: "msat",
+        proof: candidate.stored,
+        asset: {
+          kind: "conditional",
+          conditionId:
+            candidate.entry.asset.kind === "ctf" ? candidate.entry.asset.conditionId : "",
+          outcomeCollection:
+            candidate.entry.asset.kind === "ctf" ? candidate.entry.asset.outcomeLabel : "",
+        },
+        receivedAtMs: local.receivedAtMs,
+      }),
+    );
+    if (!sameProofMaterial(local, expected)) {
+      throw new Error("browser V2 mixed admission live proof material conflicts");
+    }
+    if (local.selectability !== "selectable" && local.selectability !== "verified-losing") {
+      throw new Error("browser V2 mixed admission live proof is locked or pending");
+    }
+    const authorityRow = await input.database.custodyProofBackupAuthorities.get([
+      input.scopeId,
+      local.proofId,
+    ]);
+    const authority = requireBrowserProofBackupAuthorityForProof(
+      requireBrowserLiveProofBackupAuthorityTableRow(authorityRow, [input.scopeId, local.proofId]),
+      local,
+    );
+    if (
+      authority.derivationLocator === null ||
+      JSON.stringify(authority.derivationLocator) !== JSON.stringify(candidate.entry.locator)
+    ) {
+      throw new Error("browser V2 mixed admission live authority conflicts");
+    }
+  }
+  const reconcile = async () => {
+    input.setTargetedRecoveryAdmissionStage?.("backup-admit-state");
+    await requireLiveDesiredSuccessor();
+    if (!(await reconcileSealedActiveProofs(input, sealed, initialDesiredRevision))) {
+      throw new Error("browser V2 mixed admission local reconciliation is incomplete");
+    }
+  };
+  const recheckClassification = async () => {
+    const current = await classifyMixedAdmissionState(input, sealed, first);
+    if (
+      current.kind !== classification.kind ||
+      (classification.desired !== null &&
+        (current.desired === null || !sameDesiredRow(current.desired, classification.desired)))
+    ) {
+      throw new Error("browser V2 mixed admission desired authority conflicts");
+    }
+    if (current.kind === "evicted") {
+      await input.database.encryptedWalletBackupV2DesiredAssets.delete([
+        input.scopeId,
+        sealed.desiredRow.localAssetKey,
+      ]);
+    }
+  };
+  const requireLiveDesiredSuccessor = async () => {
+    if (classification.kind !== "active" || classification.desired === null) return;
+    if (liveToAdmit.length === 0) return;
+    const expected = createEncryptedWalletBackupV2DesiredAssetRow({
+      scopeId: input.scopeId,
+      asset: input.asset,
+      custodyRevision: incrementEncryptedWalletBackupV2DesiredAssetRevision(
+        BigInt(classification.desired.custodyRevision),
+      ),
+      activeProofCount: classification.desired.activeProofCount + liveToAdmit.length,
+      terminalCtfContext: sealed.desiredRow.terminalCtfContext,
+      removalIntent: null,
+    });
+    const raw = await input.database.encryptedWalletBackupV2DesiredAssets.get([
+      input.scopeId,
+      sealed.desiredRow.localAssetKey,
+    ]);
+    if (
+      raw === undefined ||
+      !sameDesiredRow(decodeEncryptedWalletBackupV2DesiredAssetRow(raw), expected)
+    ) {
+      throw new Error("browser V2 mixed admission desired successor conflicts");
+    }
+  };
+  const persistFreshMixed = async () => {
+    input.setTargetedRecoveryAdmissionStage?.("backup-admit-authority");
+    await input.database.custodyProofs.bulkPut(sealed.proofRows);
+    await input.database.custodyProofBackupAuthorities.bulkPut(sealed.authorityRows);
     if (input.fault === "after-authority-before-cache") {
       throw new Error("browser V2 restore injected cache fault");
     }
     input.setTargetedRecoveryAdmissionStage?.("backup-admit-counter");
     await restoreCountersInOwnedTransaction(input, verified);
-    input.setTargetedRecoveryAdmissionStage?.("backup-admit-desired");
     input.setTargetedRecoveryAdmissionStage?.("backup-admit-desired-write");
     await input.database.encryptedWalletBackupV2DesiredAssets.put(sealed.desiredRow);
-    input.setTargetedRecoveryAdmissionStage?.("backup-admit-current-profile");
-    requireCurrent(input);
     input.setTargetedRecoveryAdmissionStage?.("backup-admit-cache");
     await removeMatchingStaleLegacyCacheRows(input.database, sealed.proofRows);
+    await addProofs([...selectableProofs], input.database);
+    requireCurrent(input);
     input.setTargetedRecoveryAdmissionStage?.("backup-admit-transaction-commit");
     if (input.fault === "before-commit") {
       throw new Error("browser V2 restore injected commit fault");
     }
   };
-  if (selectableToAdmit.length > 0) {
+  if (liveToAdmit.length > 0) {
+    const liveEntries = liveToAdmit.map(({ entry }) => entry);
     input.setTargetedRecoveryAdmissionStage?.("backup-admit-custody");
     await admitBrowserReceivedProofsWithHeldProfileLock(
       {
@@ -705,25 +1190,27 @@ async function commitMixedAuthority(
         mintUrl: input.asset.mintUrl,
         unit: "msat",
         wallet: input.wallet,
-        proofs: selectableToAdmit.map(({ stored }) => stored),
+        proofs: liveToAdmit.map(({ stored }) => stored),
         derivationAuthority: null,
-        proofLocators: new Map(
-          selectableToAdmit.map(({ verified: entry }) => [entry.proof.secret, entry.locator]),
-        ),
-        ...proofConditionalAssets(selectableToAdmit.map(({ verified: entry }) => entry)),
+        proofLocators: new Map(liveToAdmit.map(({ entry }) => [entry.proof.secret, entry.locator])),
+        ...proofConditionalAssets(liveEntries),
         database: input.database,
       },
       {
-        beforePersist,
-        afterPersist: persistExtensions,
+        beforePersist: async () => {
+          await requireIncomingLiveAuthorities(input.database, input.scopeId, verified);
+          await recheckClassification();
+        },
+        afterPersist: hadExistingLocal ? reconcile : persistFreshMixed,
         legacyProofCache: {
           spentSecrets: [],
-          freshProofs: selectableProofs,
+          freshProofs: liveToAdmit.map(({ stored }) => stored),
         },
       },
     );
     return;
   }
+  input.setTargetedRecoveryAdmissionStage?.("backup-admit-authority");
   await new BrowserDurableCustodyAdapter(input.database).ensureScope(
     browserWalletScope(input.seed),
     sealed.observedAtMs,
@@ -733,17 +1220,75 @@ async function commitMixedAuthority(
     [
       input.database.custodyProofs,
       input.database.custodyProofBackupAuthorities,
+      input.database.custodyConditionalKeysets,
       input.database.walletCounterAssociations,
       input.database.walletCounterCursors,
       input.database.encryptedWalletBackupV2DesiredAssets,
       input.database.proofs,
+      input.database.custodyReservations,
+      input.database.custodyOperations,
+      input.database.custodyActiveWork,
+      input.database.custodyScopes,
     ],
     async () => {
-      await beforePersist?.();
-      await persistExtensions();
-      await addProofs([...selectableProofs], input.database);
+      await recheckClassification();
+      await reconcile();
     },
   );
+}
+
+type MixedAdmissionStateKind = "fresh" | "evicted" | "active";
+
+interface MixedAdmissionState {
+  readonly kind: MixedAdmissionStateKind;
+  readonly localRows: Awaited<
+    ReturnType<typeof readBrowserEncryptedWalletBackupV2ExactLocalProofRows>
+  >;
+  readonly desired: ReturnType<typeof decodeEncryptedWalletBackupV2DesiredAssetRow> | null;
+}
+
+async function classifyMixedAdmissionState(
+  input: BrowserEncryptedWalletBackupV2MixedAdmissionInput,
+  sealed: PreparedSealedAdmission,
+  ctfRoute: Extract<
+    EncryptedWalletBackupV2VerifiedProofSet["proofs"][number]["asset"],
+    { readonly kind: "ctf" }
+  >,
+): Promise<MixedAdmissionState> {
+  const localRows = await readBrowserEncryptedWalletBackupV2ExactLocalProofRows({
+    database: input.database,
+    scopeId: input.scopeId,
+    asset: input.asset,
+    ctfRoute,
+  });
+  const rawDesired = await input.database.encryptedWalletBackupV2DesiredAssets.get([
+    input.scopeId,
+    sealed.desiredRow.localAssetKey,
+  ]);
+  if (rawDesired === undefined) {
+    if (localRows.length === 0) return { kind: "fresh", localRows, desired: null };
+    throw new Error("browser V2 restore local custody is untracked");
+  }
+  const desired = decodeEncryptedWalletBackupV2DesiredAssetRow(rawDesired);
+  if (desired.removalIntent !== null || desired.desiredAction !== "replace") {
+    throw new Error("browser V2 restore desired removal intent is active");
+  }
+  if (localRows.length === 0) {
+    if (desired.syncState === "acknowledged" && sameDesiredRow(desired, sealed.desiredRow)) {
+      return { kind: "evicted", localRows, desired };
+    }
+    throw new Error("browser V2 restore desired authority conflicts");
+  }
+  if (desired.activeProofCount !== localRows.length) {
+    throw new Error("browser V2 restore desired authority conflicts");
+  }
+  if (
+    desired.terminalCtfContext !== null &&
+    !sameTerminalCtfContext(desired.terminalCtfContext, sealed.desiredRow.terminalCtfContext)
+  ) {
+    throw new Error("browser V2 restore desired CTF tuple conflicts");
+  }
+  return { kind: "active", localRows, desired };
 }
 
 function requireMixedCtfContext(
@@ -754,56 +1299,6 @@ function requireMixedCtfContext(
   if (expected === null || actual === null || !sameTerminalCtfContext(expected, actual)) {
     throw new Error("browser V2 mixed admission CTF tuple conflicts");
   }
-}
-
-async function requireCompatibleMixedAuthorities(
-  input: BrowserEncryptedWalletBackupV2MixedAdmissionInput,
-  verified: EncryptedWalletBackupV2VerifiedProofSet,
-  sealed: PreparedSealedAdmission,
-): Promise<void> {
-  const entriesById = new Map(verified.proofs.map((entry) => [entry.proofId, entry]));
-  const sealedAuthorityById = new Map(
-    sealed.proofRows.map((proof, index) => [proof.proofId, sealed.authorityRows[index]!]),
-  );
-  const rows = await readBrowserEncryptedWalletBackupV2ExactLocalProofRows({
-    database: input.database,
-    scopeId: input.scopeId,
-    asset: input.asset,
-    ctfRoute: verified.proofs[0]!.asset as Extract<
-      EncryptedWalletBackupV2VerifiedProofSet["proofs"][number]["asset"],
-      { readonly kind: "ctf" }
-    >,
-  });
-  const authorities = await input.database.custodyProofBackupAuthorities.bulkGet(
-    rows.map((row) => [input.scopeId, row.proofId]),
-  );
-  rows.forEach((row, index) => {
-    const entry = entriesById.get(row.proofId);
-    if (entry === undefined) throw new Error("browser V2 restore local custody is partial");
-    const authority = requireBrowserProofBackupAuthorityForProof(authorities[index], row);
-    if (entry.selectionAuthority === "terminal-sealed-non-selectable") {
-      const expected = sealedAuthorityById.get(row.proofId);
-      if (expected === undefined || !sameRemoteAuthority(authority, expected)) {
-        throw new Error("browser V2 mixed admission sealed authority conflicts");
-      }
-      return;
-    }
-    if (
-      authority.derivationLocator === null ||
-      JSON.stringify(authority.derivationLocator) !== JSON.stringify(entry.locator)
-    ) {
-      throw new Error("browser V2 mixed admission live authority conflicts");
-    }
-  });
-}
-
-async function repairMixedLegacyCache(
-  database: BitcasterDB,
-  selectableProofs: readonly StoredProof[],
-  sealedProofs: readonly ReturnType<typeof decodeBrowserCustodyProofRow>[],
-): Promise<void> {
-  await removeMatchingStaleLegacyCacheRows(database, sealedProofs);
-  await addProofs([...selectableProofs], database);
 }
 
 async function commitAuthority(
@@ -822,16 +1317,16 @@ async function commitAuthority(
   const selected = verified.proofs.flatMap((proof, index) =>
     start.proofIdsToAdmit.has(proof.proofId) ? [{ verified: proof, stored: proofs[index]! }] : [],
   );
-  const beforePersist =
-    start.kind === "evicted"
-      ? async () => {
-          const desired = desiredRow(input, proofs.length, verifiedTerminalCtfContext(verified));
-          await input.database.encryptedWalletBackupV2DesiredAssets.delete([
-            input.scopeId,
-            desired.localAssetKey,
-          ]);
-        }
-      : undefined;
+  const beforePersist = async () => {
+    await requireIncomingLiveAuthorities(input.database, input.scopeId, verified);
+    if (start.kind === "evicted") {
+      const desired = desiredRow(input, proofs.length, verifiedTerminalCtfContext(verified));
+      await input.database.encryptedWalletBackupV2DesiredAssets.delete([
+        input.scopeId,
+        desired.localAssetKey,
+      ]);
+    }
+  };
   const afterPersist = async () => {
     input.setTargetedRecoveryAdmissionStage?.("backup-admit-counter");
     await restoreCountersInOwnedTransaction(input, verified);
@@ -883,7 +1378,7 @@ async function commitAuthority(
       input.database.encryptedWalletBackupV2DesiredAssets,
     ],
     async () => {
-      await beforePersist?.();
+      await beforePersist();
       await afterPersist();
       if (input.fault === "before-commit")
         throw new Error("browser V2 restore injected commit fault");
@@ -931,6 +1426,7 @@ async function startingState(
   readonly kind: "absent" | "evicted" | "idempotent" | "merge";
   readonly proofIdsToAdmit: ReadonlySet<string>;
 }> {
+  await requireIncomingLiveAuthorities(input.database, input.scopeId, verified);
   const desired = expectedDesired;
   const allProofIds = new Set(verified.proofs.map(({ proofId }) => proofId));
   const raw = await input.database.encryptedWalletBackupV2DesiredAssets.get([
@@ -949,6 +1445,9 @@ async function startingState(
     throw new Error("browser V2 restore local custody is untracked");
   }
   const row = decodeEncryptedWalletBackupV2DesiredAssetRow(raw);
+  if (row.removalIntent !== null) {
+    throw new Error("browser V2 restore desired removal intent is active");
+  }
   const currentAuthorityConflicts =
     row.custodyRevision !== desired.custodyRevision ||
     row.activeProofCount !== verified.proofs.length ||

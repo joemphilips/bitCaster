@@ -177,7 +177,7 @@ export async function readBrowserEncryptedWalletBackupV2ExactLocalProofRows(inpu
   let route = desired.assetIdentity.startsWith("ctf:")
     ? await ctfContext(input.database, persisted ?? desired, true)
     : null;
-  if (route === null && persisted === null && input.ctfRoute !== undefined) {
+  if (route === null && input.ctfRoute !== undefined) {
     route = {
       first: null,
       keysets: Object.freeze([]),

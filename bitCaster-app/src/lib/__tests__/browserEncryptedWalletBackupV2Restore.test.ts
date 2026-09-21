@@ -867,6 +867,92 @@ it("admits mixed CTF siblings through the live mint gate and keeps losing proof 
   );
 });
 
+it("reconciles an existing active sibling through the production mixed restore path", async () => {
+  const fixture = await sealedBackupFixture(true);
+  const active = createBrowserCustodyProofRow({
+    scopeId: fixture.input.scopeId,
+    normalizedMint: fixture.input.asset.mintUrl,
+    unit: "msat",
+    proof: fixture.proof,
+    asset: {
+      kind: "conditional",
+      conditionId: CTF_CONDITION_ID,
+      outcomeCollection: CTF_OUTCOME,
+    },
+    receivedAtMs: 1,
+  });
+  await fixture.input.database.custodyProofs.put(active);
+  await fixture.input.database.custodyProofBackupAuthorities.put(
+    createBrowserProofBackupAuthorityRow(active, 2, fixture.locator, "local-admission"),
+  );
+  await fixture.input.database.custodyConditionalKeysets.put({
+    schemaVersion: 1,
+    scopeId: fixture.input.scopeId,
+    normalizedMint: fixture.input.asset.mintUrl,
+    unit: "msat",
+    keysetId: CTF_KEYSET,
+    denominationPublicKeys: { "1": CTF_PUBLIC_KEY },
+    inputFeePpk: 100,
+    conditionId: CTF_CONDITION_ID,
+    outcomeCollection: CTF_OUTCOME,
+    outcomeCollectionId: CTF_OUTCOME_COLLECTION_ID,
+    registeredAtUnixSeconds: 0,
+    finalExpiryUnixSeconds: 100,
+    curve: "secp256k1",
+  });
+  await fixture.input.database.walletCounterAssociations.put({
+    scopeId: fixture.input.scopeId,
+    normalizedMint: fixture.input.asset.mintUrl,
+    unit: "msat",
+    keysetId: CTF_KEYSET,
+    recoveryComplete: true,
+  });
+  await fixture.input.database.walletCounterCursors.put({
+    scopeId: fixture.input.scopeId,
+    keysetId: CTF_KEYSET,
+    next: 1,
+  });
+  await fixture.input.database.encryptedWalletBackupV2DesiredAssets.put(
+    createEncryptedWalletBackupV2DesiredAssetRow({
+      scopeId: fixture.input.scopeId,
+      asset: fixture.input.asset,
+      custodyRevision: 3n,
+      activeProofCount: 1,
+      terminalCtfContext: {
+        conditionId: CTF_CONDITION_ID,
+        outcomeLabel: CTF_OUTCOME,
+        outcomeCollectionId: CTF_OUTCOME_COLLECTION_ID,
+        registeredAt: 0,
+        finalExpiry: 100,
+      },
+    }),
+  );
+
+  await expect(
+    restoreAndAdmitBrowserEncryptedWalletBackupV2TargetedAsset({
+      ...fixture.input,
+      minimumAvailableAmount: 2n,
+      loadWallet: async () => ctfRestoreWallet(fixture.input.asset.mintUrl),
+      lockManager: immediateLockManager(),
+    }),
+  ).resolves.toMatchObject({ kind: "restored" });
+
+  await expect(
+    fixture.input.database.custodyProofs.get([fixture.input.scopeId, fixture.proofId]),
+  ).resolves.toMatchObject({ selectability: "verified-losing" });
+  expect(
+    (await fixture.input.database.custodyProofs.toArray()).filter(
+      ({ selectability }) => selectability === "selectable",
+    ),
+  ).toHaveLength(1);
+  await expect(
+    fixture.input.database.encryptedWalletBackupV2DesiredAssets.toArray(),
+  ).resolves.toMatchObject([
+    { custodyRevision: "6", activeProofCount: 2, syncState: "pending", removalIntent: null },
+  ]);
+  expect(await fixture.input.database.proofs.count()).toBe(1);
+});
+
 it("does not admit a sealed sibling when its mixed live proof fails the mint gate", async () => {
   const fixture = await sealedBackupFixture(true);
   const wallet = ctfRestoreWallet(fixture.input.asset.mintUrl) as unknown as {
@@ -1306,6 +1392,9 @@ async function sealedBackupFixture(includeSelectableSibling = false) {
   return {
     remote,
     bundleId: bundle.descriptor.bundleId,
+    proof,
+    proofId: predecessor.proofId,
+    locator,
     input: {
       database,
       scopeId,

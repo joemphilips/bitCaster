@@ -3,6 +3,7 @@ import "fake-indexeddb/auto";
 import { Amount, deriveKeysetId, Keyset, type Wallet as CashuWallet } from "@cashu/cashu-ts";
 import {
   createEncryptedWalletBackupV2AssetIdentity,
+  encryptedWalletBackupV2LocalAssetKey,
   verifyEncryptedWalletBackupV2RestoredProofSet,
 } from "@bitcaster/client-sdk";
 import { deriveDurableWalletProofSecret } from "@bitcaster/client-sdk/durableWalletProofDerivationLocator";
@@ -14,6 +15,7 @@ import { browserWalletScope } from "../browserCtfRangeOrderSource";
 import { browserWalletDatabaseName } from "../browserWalletProfile";
 import { retryBrowserEncryptedWalletBackupV2QuotaWrite } from "../browserEncryptedWalletBackupV2QuotaCleanup";
 import { admitBrowserEncryptedWalletBackupV2Asset } from "../browserEncryptedWalletBackupV2Admission";
+import { createBrowserCompletedProofRemovalMarkerRow } from "../../stores/browser-proof-backup-authority";
 
 const scopeId = browserWalletScope(new Uint8Array(64).fill(9)).scopeId;
 const SEED = new Uint8Array(64).fill(9);
@@ -112,6 +114,28 @@ describe("browser encrypted wallet backup V2 quota cleanup", () => {
     expect(
       await database.encryptedWalletBackupV2DesiredAssets.get([scopeId, "largest"]),
     ).toBeDefined();
+  });
+
+  it("preserves completed-removal markers while evicting an eligible cache", async () => {
+    database = new BitcasterDB(browserWalletDatabaseName(scopeId));
+    const victim = await candidate(database, "victim", "66", 6);
+    const marker = completedRemovalMarker();
+    await database.custodyProofBackupAuthorities.put(marker);
+    eligible.mockResolvedValue([victim]);
+
+    await expect(
+      retryBrowserEncryptedWalletBackupV2QuotaWrite({
+        database,
+        scopeId,
+        isCurrentProfile: () => true,
+        write: vi.fn().mockRejectedValueOnce(quotaError()).mockResolvedValueOnce("written"),
+        lockManager: immediateLockManager(),
+      }),
+    ).resolves.toEqual({ result: "written", evictedLocalAssetKey: "victim" });
+    expect(await database.custodyProofBackupAuthorities.get([scopeId, marker.proofId])).toEqual(
+      marker,
+    );
+    expect(await database.custodyProofs.get([scopeId, victim.proofs[0]!.proofId])).toBeUndefined();
   });
 
   it("fails stale profiles before cache deletion", async () => {
@@ -348,6 +372,41 @@ async function candidate(
 
 function quotaError(): Error {
   return Object.assign(new Error("quota"), { name: "QuotaExceededError" });
+}
+
+function completedRemovalMarker() {
+  const asset = createEncryptedWalletBackupV2AssetIdentity({
+    mintUrl: "https://mint.example",
+    unit: "msat",
+    asset: {
+      kind: "ctf",
+      conditionId: "aa".repeat(32),
+      outcomeLabel: "YES",
+      outcomeCollectionId: "bb".repeat(32),
+      registeredAt: 1,
+      finalExpiry: 2,
+    },
+  });
+  return createBrowserCompletedProofRemovalMarkerRow({
+    scopeId,
+    proofId: "ff".repeat(32),
+    proofFingerprint: "ee".repeat(32),
+    proofRevision: 0,
+    proofCommitment: "dd".repeat(32),
+    localAssetKey: encryptedWalletBackupV2LocalAssetKey(asset),
+    removalIntentId: "quota-cleanup-marker",
+    proofSetCommitment: "cc".repeat(32),
+    completionCustodyRevision: "1",
+    realm: "development",
+    walletId: browserWalletScope(SEED).walletId,
+    enrollmentEpoch: 1,
+    acknowledgedHeadVersion: 0,
+    acknowledgedActiveSetDigest: "ab".repeat(32),
+    acknowledgementKind: "current-head",
+    receiptDigest: null,
+    acknowledgedAtMs: 1,
+    completedAtMs: 2,
+  });
 }
 
 function immediateLockManager(): Pick<LockManager, "request"> {

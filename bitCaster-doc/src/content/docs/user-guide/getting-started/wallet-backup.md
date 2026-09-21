@@ -111,6 +111,13 @@ The service retains one current head and the current per-asset bundles for each
 wallet id. It does not provide old wallet states as recoverable versions. Old
 versions could contain proofs that have since been spent.
 
+Browsers that use the same recovery phrase belong to the same wallet. The
+latest authenticated backup can tell another browser that an exact conditional
+proof belongs to a losing outcome, even if that browser missed intermediate
+backup updates. The browser keeps that proof complete and visible, but does not
+select it for spending. Synchronization does not silently delete the proof or
+overwrite an unfinished local wallet operation.
+
 The initial 64 MiB encrypted-storage allowance is shared by all wallet ids under
 the same authenticated account. An account may create at most 256 distinct
 seed-derived wallet ids over its lifetime. Reopening a previously used seed
