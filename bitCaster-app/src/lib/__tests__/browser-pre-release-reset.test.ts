@@ -9,7 +9,6 @@ import {
   shouldRunPreReleaseBrowserReset,
   type BrowserPreReleaseResetDependencies,
 } from "../browserPreReleaseReset";
-import { reconcileAcceptedLocalWalletPayments } from "../pendingLocalWalletPayments";
 import { browserWalletDatabaseName } from "../browserWalletProfile";
 import { activateBrowserWalletDatabase, db } from "../../stores/proof-db";
 
@@ -41,7 +40,7 @@ describe("pre-release browser reset", () => {
     expect(shouldRunPreReleaseBrowserReset()).toBe(false);
   });
 
-  it("clears v16 Dexie, the accepted payment journal, Kormir, and persisted seed and Nostr authority before reconciliation", async () => {
+  it("clears v16 Dexie, legacy browser storage, Kormir, and persisted seed and Nostr authority", async () => {
     const legacy = new Dexie(databaseName);
     legacy.version(16).stores({ proofs: "&secret" });
     await legacy.open();
@@ -65,28 +64,7 @@ describe("pre-release browser reset", () => {
       "bitcaster-settings",
       JSON.stringify({ state: { nsecSecret: "legacy-nsec" } }),
     );
-    localStorage.setItem(
-      "bitcaster.pendingLocalWalletPayments.v1",
-      JSON.stringify([
-        {
-          id: "accepted-incomplete",
-          status: "accepted-but-not-completed",
-          sendProofs: [],
-          keepProofs: [{ id: "keyset", amount: 1, secret: "journal-proof", C: "point" }],
-          spentSecrets: ["spent-proof"],
-          target: {
-            mintUrl: "https://mint.example",
-            amountSubunits: 1,
-            baseAsset: "sat",
-            unit: "msat",
-            reservationPurpose: "test",
-          },
-          createdAt: 1,
-          updatedAt: 1,
-        },
-      ]),
-    );
-
+    localStorage.setItem("bitcaster.pendingLocalWalletPayments.v1", "legacy-journal");
     expect(await resetPreReleaseBrowserState()).toBe(true);
 
     expect(localStorage.getItem("bitcaster-wallet")).toBeNull();
@@ -98,7 +76,6 @@ describe("pre-release browser reset", () => {
 
     activateBrowserWalletDatabase(scopeId);
     await db.open();
-    await reconcileAcceptedLocalWalletPayments();
     expect(await db.proofs.count()).toBe(0);
   });
 

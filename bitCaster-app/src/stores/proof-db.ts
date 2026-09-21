@@ -963,38 +963,6 @@ export function storedProofFromCustodyRow(row: BrowserCustodyProofRow): StoredPr
   };
 }
 
-/**
- * Return regular proofs grouped by base asset for UI display only.
- * WARNING: this may combine different Cashu units (for example sat + msat)
- * and is unsafe for spend/settlement operations. Use canonical custody there.
- */
-export async function getBaseProofs(
-  mintUrl: string | undefined,
-  options: { includeReserved?: boolean; baseAsset: string },
-): Promise<StoredProof[]> {
-  const proofs = await getProofs(mintUrl, {
-    includeReserved: options.includeReserved,
-  });
-  const baseAsset = normalizeMarketBaseAsset(options.baseAsset);
-  return proofs.filter((p) => !isCtfProof(p) && normalizeStoredProofBaseAsset(p) === baseAsset);
-}
-
-/**
- * Return regular proofs by exact Cashu unit for spend/settlement operations.
- * Legacy rows without an explicit `unit` are intentionally excluded fail-closed.
- */
-export async function getUnitProofs(
-  mintUrl: string | undefined,
-  options: { includeReserved?: boolean; unit: CashuProofUnit | string },
-): Promise<StoredProof[]> {
-  const unit = parseCashuProofUnit(options.unit);
-  if (!unit) throw new Error(`Unsupported Cashu proof unit '${options.unit}'`);
-  const proofs = await getProofs(mintUrl, {
-    includeReserved: options.includeReserved,
-  });
-  return proofs.filter((p) => !isCtfProof(p) && normalizeStoredProofUnit(p) === unit);
-}
-
 export const BOUNDED_CANONICAL_REGULAR_PROOF_LIMIT_MAX = 512;
 export const MARKET_FUNDING_INPUT_PROOF_LIMIT_MAX = BOUNDED_CANONICAL_REGULAR_PROOF_LIMIT_MAX;
 export const PARTICIPATION_SCORE_INPUT_PROOF_LIMIT_MAX = BOUNDED_CANONICAL_REGULAR_PROOF_LIMIT_MAX;
@@ -1205,59 +1173,6 @@ async function getBoundedCanonicalV2Proofs(
     );
 }
 
-export async function selectAndReserveUnitProofs(
-  mintUrl: string | undefined,
-  options: { unit: CashuProofUnit | string; minimumAmount?: number },
-  reservedBy: string,
-): Promise<StoredProof[]> {
-  const unit = parseCashuProofUnit(options.unit);
-  if (!unit) throw new Error(`Unsupported Cashu proof unit '${options.unit}'`);
-  const normalizedMintUrl = mintUrl ? normalizeUrl(mintUrl) : undefined;
-  const minimumAmount = options.minimumAmount ?? 0;
-  let selected: StoredProof[] = [];
-
-  await db.transaction("rw", db.proofs, async () => {
-    const rows = normalizedMintUrl
-      ? await db.proofs.where("mintUrl").equals(normalizedMintUrl).toArray()
-      : await db.proofs.toArray();
-    const spendable = rows
-      .map(normalizeStoredProof)
-      .filter(
-        (proof) =>
-          isSpendableStoredProof(proof) &&
-          !isCtfProof(proof) &&
-          normalizeStoredProofUnit(proof) === unit,
-      );
-
-    const picked: StoredProof[] = [];
-    let pickedAmount = 0;
-    for (const proof of spendable) {
-      picked.push(proof);
-      pickedAmount += amountToNumber(proof.amount);
-      if (minimumAmount > 0 && pickedAmount >= minimumAmount) break;
-    }
-    if (minimumAmount > 0 && pickedAmount < minimumAmount) {
-      throw new Error("Insufficient spendable proofs for requested amount");
-    }
-
-    const currentRows = await db.proofs.bulkGet(picked.map((proof) => proof.secret));
-    if (currentRows.length !== picked.length) {
-      throw new Error("Selected proof reservation failed: proof set changed");
-    }
-    const current = currentRows.map((row) => (row ? normalizeStoredProof(row) : undefined));
-    if (current.some((row) => !row || !isSpendableStoredProof(row))) {
-      throw new Error("Selected proof reservation failed: proof is unavailable or missing");
-    }
-
-    selected = current.filter((row): row is StoredProof => !!row);
-    if (selected.length > 0) {
-      await db.proofs.bulkPut(selected.map((proof) => storedProofRow({ ...proof, reservedBy })));
-    }
-  });
-
-  return selected;
-}
-
 export async function getOutcomeProofs(
   mintUrl: string,
   conditionId: string,
@@ -1448,63 +1363,6 @@ export async function removeProofs(secrets: string[]): Promise<void> {
   await db.proofs.bulkDelete(secrets);
 }
 
-export async function replaceProofs(
-  spentSecrets: string[],
-  freshProofs: StoredProof[],
-): Promise<void> {
-  const uniqueSpentSecrets = [...new Set(spentSecrets)];
-  const now = Date.now();
-  const stamped = freshProofs.map((p) =>
-    normalizeAndValidateStoredProof({
-      ...p,
-      receivedAt: p.receivedAt ?? now,
-    }),
-  );
-  await db.transaction("rw", db.proofs, async () => {
-    if (uniqueSpentSecrets.length > 0) {
-      await db.proofs.bulkDelete(uniqueSpentSecrets);
-    }
-    if (stamped.length > 0) {
-      await db.proofs.bulkPut(stamped.map(storedProofRow));
-    }
-  });
-}
-
-export async function reserveProofs(secrets: string[], reservedBy: string): Promise<void> {
-  const secretSet = new Set(secrets);
-  await db.transaction("rw", db.proofs, async () => {
-    const rows = await db.proofs.bulkGet(secrets);
-    if (rows.some((row) => row && normalizeStoredProof(row).terminalOperationId !== undefined)) {
-      throw new Error("Terminal proof cannot be reserved");
-    }
-    await db.proofs.bulkPut(
-      rows
-        .filter((row): row is StoredProofRow => !!row && secretSet.has(row.secret))
-        .map((row) => ({ ...row, reservedBy })),
-    );
-  });
-}
-
-export async function releaseProofReservation(reservedBy: string): Promise<void> {
-  const rows = await db.proofs.filter((proof) => proof.reservedBy === reservedBy).toArray();
-  if (rows.length === 0) return;
-  await db.proofs.bulkPut(rows.map(({ reservedBy: _reservedBy, ...row }) => row));
-}
-
-export async function releaseProofReservationsBySecret(secrets: string[]): Promise<void> {
-  const rows = await db.proofs.bulkGet(secrets);
-  const changed = rows
-    .filter((row): row is StoredProofRow => !!row)
-    .map(({ reservedBy: _reservedBy, ...row }) => row);
-  if (changed.length === 0) return;
-  await db.proofs.bulkPut(changed);
-}
-
-export async function getReservedProofs(reservedBy: string): Promise<StoredProof[]> {
-  const rows = await db.proofs.filter((proof) => proof.reservedBy === reservedBy).toArray();
-  return rows.map(normalizeStoredProof);
-}
-
 // One-shot migration: existing rows may have un-normalized mintUrl values
 // stored before addProofs normalized on write. Callers should gate this on
 // a persisted flag so it runs once per device.
@@ -1613,10 +1471,6 @@ function isReadableStoredProof(
     (options.includeReserved || !proof.reservedBy) &&
     (options.includeTerminal || proof.terminalOperationId === undefined)
   );
-}
-
-function isSpendableStoredProof(proof: StoredProof): boolean {
-  return !proof.reservedBy && proof.terminalOperationId === undefined;
 }
 
 function normalizeStoredProofBaseAsset(proof: StoredProof | StoredProofRow): string {

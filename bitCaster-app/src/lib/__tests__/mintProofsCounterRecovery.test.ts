@@ -172,7 +172,6 @@ vi.mock("@/stores/proof-db", () => ({
   markProofOperationCompleted: mocks.markProofOperationCompleted,
   markProofOperationFailed: mocks.markProofOperationFailed,
   removeProofs: vi.fn(),
-  getUnitProofs: vi.fn(),
 }));
 
 // `getWallet` is also defined in cashu.ts, but the mintProofs helper uses
