@@ -74,7 +74,10 @@ import type {
 import { decodeBrowserCustodyConditionalKeysetAuthority } from "./durable-custody-types";
 import { decodeBrowserCustodyConditionalKeysetRow } from "./durable-custody-types";
 import { decodeBrowserCustodyProofRow } from "./durable-custody-types";
-import { advanceBrowserV2DesiredAssetsForProofChanges } from "./browser-encrypted-wallet-backup-v2-desired-asset";
+import {
+  advanceBrowserV2DesiredAssetsForProofChanges,
+  requireBrowserV2KeysetFreeTerminalContextForProof,
+} from "./browser-encrypted-wallet-backup-v2-desired-asset";
 
 export { decodeBrowserCustodyProofRow } from "./durable-custody-types";
 
@@ -1207,11 +1210,29 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
     );
     const additions: BrowserCustodyConditionalKeysetRow[] = [];
     const authorities = new Map<string, BrowserCustodyConditionalKeysetRow>();
-    plans.forEach((plan, index) => {
+    for (const [index, plan] of plans.entries()) {
+      if (
+        persisted[index] === undefined &&
+        plan.requested === undefined &&
+        keysetFreeTerminalPlan(plan, current.authorities)
+      ) {
+        for (const request of plan.proofs) {
+          const authority = current.authorities.get(proofIdentity(request.key));
+          if (authority === undefined || authority === null) {
+            throw new Error("browser custody proof authority is missing");
+          }
+          await requireBrowserV2KeysetFreeTerminalContextForProof({
+            database: this.#database,
+            proof: request.proof,
+            authority,
+          });
+        }
+        continue;
+      }
       const result = validateConditionalKeysetWritePlan(plan, persisted[index]);
       if (result.add) additions.push(result.authority);
       authorities.set(conditionalKeysetIdentity(plan.key), result.authority);
-    });
+    }
     return { additions, authorities };
   }
 
@@ -1413,6 +1434,25 @@ function conditionalKeysetWritePlans(
     });
   }
   return [...plans.values()];
+}
+
+function keysetFreeTerminalPlan(
+  plan: ConditionalKeysetWritePlan,
+  authorities: ReadonlyMap<
+    string,
+    ReturnType<typeof requireBrowserProofBackupAuthorityForProof> | null
+  >,
+): boolean {
+  return plan.proofs.every((request) => {
+    const authority = authorities.get(proofIdentity(request.key));
+    return (
+      request.proof.selectability === "verified-losing" &&
+      authority !== undefined &&
+      authority !== null &&
+      authority.backupState === "remote-backed" &&
+      authority.terminalAuthority?.kind === "remote-seal"
+    );
+  });
 }
 
 function validateConditionalKeysetWritePlan(
@@ -2060,7 +2100,10 @@ function stagedConditionalKeysets(
     for (const staged of proofs) {
       if (staged.proof.assetKind === "conditional") {
         if (!staged.conditionalKeyset) {
-          throw new Error("conditional proof keyset authority is missing");
+          if (staged.proof.selectability !== "verified-losing") {
+            throw new Error("conditional proof keyset authority is missing");
+          }
+          continue;
         }
         const current = keysets.get(staged.proof.proofId);
         if (current && !sameConditionalKeyset(current, staged.conditionalKeyset)) {

@@ -337,6 +337,7 @@ async function candidate(
     activeProofCount: proofs.length,
     desiredAction: "replace",
     syncState: "acknowledged",
+    terminalCtfContext: null,
   });
   return {
     desired: { localAssetKey },

@@ -35,6 +35,7 @@ import {
 } from "../durable-custody-db";
 import {
   bindBrowserProofBackupAuthorityTerminalOperation,
+  createBrowserRemoteProofBackupAuthorityRow,
   createBrowserProofBackupAuthorityRow,
 } from "../browser-proof-backup-authority";
 import { createEncryptedWalletBackupV2DesiredAssetRow } from "../browser-encrypted-wallet-backup-v2-desired-asset";
@@ -62,6 +63,12 @@ const TERMINAL_KEYSET = deriveConditionalKeysetId({
   conditionId: TERMINAL_CONDITION,
   outcomeCollectionId: TERMINAL_OUTCOME_ID,
 });
+const REMOTE_REPLAY_LOCATOR = {
+  schemaVersion: 1 as const,
+  kind: "nut13" as const,
+  keysetId: TERMINAL_KEYSET,
+  counter: 7,
+};
 const openDatabases: BitcasterDB[] = [];
 
 afterEach(async () => {
@@ -133,6 +140,113 @@ describe("browser durable custody adapter", () => {
       "verified-losing",
     );
   });
+
+  it("replays a remote-sealed losing CTF proof without a local keyset", async () => {
+    const fixture = await keysetFreeSuccessorReplayFixture("verified-losing", "remote-terminal");
+    await stageSuccessorReplay(fixture);
+
+    await applySuccessorReplay(fixture);
+
+    expect(
+      await fixture.database.custodyConditionalKeysets.get([
+        fixture.scope.scopeId,
+        MINT,
+        "msat",
+        TERMINAL_KEYSET,
+      ]),
+    ).toBeUndefined();
+    expect(
+      await fixture.adapter.readProof(fixture.scope.scopeId, fixture.successor.proofId),
+    ).toEqual(
+      expect.objectContaining({
+        selectability: "verified-losing",
+        revision: 0,
+      }),
+    );
+    expect(
+      await fixture.database.custodyProofBackupAuthorities.get([
+        fixture.scope.scopeId,
+        fixture.successor.proofId,
+      ]),
+    ).toEqual(
+      expect.objectContaining({
+        backupState: "remote-backed",
+        proofState: "verified-losing",
+        terminalAuthority: { kind: "remote-seal" },
+        derivationLocator: REMOTE_REPLAY_LOCATOR,
+      }),
+    );
+    expect(await fixture.database.encryptedWalletBackupV2DesiredAssets.toArray()).toEqual([
+      expect.objectContaining({
+        custodyRevision: "1",
+        terminalCtfContext: {
+          conditionId: TERMINAL_CONDITION,
+          outcomeLabel: "YES",
+          outcomeCollectionId: TERMINAL_OUTCOME_ID,
+          registeredAt: 1,
+          finalExpiry: 2,
+        },
+      }),
+    ]);
+    expect(
+      (
+        await fixture.adapter.readOperation(
+          fixture.scope,
+          fixture.source.record.operation.operationId,
+        )
+      )?.operation.state,
+    ).toBe("reconciled");
+  });
+
+  it("rejects a keyset-free losing replay without exact remote authority", async () => {
+    const missing = await keysetFreeSuccessorReplayFixture("verified-losing", "missing");
+    await expect(stageSuccessorReplay(missing)).rejects.toThrow(
+      /proof backup authority is (missing|invalid)/,
+    );
+
+    const wrong = await keysetFreeSuccessorReplayFixture("verified-losing", "wrong");
+    await expect(stageSuccessorReplay(wrong)).rejects.toThrow(
+      /proof backup authority is (invalid|foreign)/,
+    );
+  });
+
+  it.each(["missing", "foreign"] as const)(
+    "rolls back a keyset-free replay with %s terminal context",
+    async (contextKind) => {
+      const fixture = await keysetFreeSuccessorReplayFixture(
+        "verified-losing",
+        "remote-terminal",
+        contextKind,
+      );
+      await stageSuccessorReplay(fixture);
+
+      await expect(applySuccessorReplay(fixture)).rejects.toThrow(
+        contextKind === "missing" ? /terminal context is missing/ : /terminal context is foreign/,
+      );
+      expect(
+        (
+          await fixture.adapter.readOperation(
+            fixture.scope,
+            fixture.source.record.operation.operationId,
+          )
+        )?.operation.state,
+      ).toBe("dispatch-intent");
+      expect(
+        (await fixture.adapter.readProof(fixture.scope.scopeId, fixture.successor.proofId))
+          ?.revision,
+      ).toBe(0);
+    },
+  );
+
+  it.each(["selectable", "locked"] as const)(
+    "requires a real keyset for a %s conditional replay",
+    async (selectability) => {
+      const fixture = await keysetFreeSuccessorReplayFixture(selectability, "remote-terminal");
+      await expect(stageSuccessorReplay(fixture)).rejects.toThrow(
+        /conditional proof keyset authority is missing/,
+      );
+    },
+  );
 
   it("rejects terminal reconciliation in a current transaction without legacy cache authority", async () => {
     const { database, adapter, scope, owner, source, predecessor } =
@@ -988,6 +1102,209 @@ describe("browser durable custody adapter", () => {
     );
   });
 });
+
+async function keysetFreeSuccessorReplayFixture(
+  selectability: "verified-losing" | "selectable" | "locked",
+  authorityKind: "remote-terminal" | "missing" | "wrong",
+  contextKind: "valid" | "missing" | "foreign" = "valid",
+) {
+  const database = createDatabase();
+  const adapter = new BrowserDurableCustodyAdapter(database);
+  const scope = walletScope();
+  const owner = await claim(adapter, scope, 10);
+  const inputProof = { ...proof(`replay-input-${selectability}`), id: TERMINAL_KEYSET };
+  const source = operationBinding(
+    scope,
+    `replay-${selectability}-${authorityKind}`,
+    inputProof,
+    `replay-output-${selectability}-${authorityKind}`,
+  );
+  const predecessor = createBrowserCustodyProofRow({
+    scopeId: scope.scopeId,
+    normalizedMint: MINT,
+    unit: "msat",
+    proof: inputProof,
+    asset: { kind: "regular" },
+    receivedAtMs: 1,
+  });
+  await adapter.transact(
+    selection(scope, owner, source.record.operation.operationId, null),
+    (transaction) => bindDurableCustodyProofOperation(transaction, source.record, source.artifacts),
+    { predecessorProofs: { [source.record.operation.operationId]: [predecessor] } },
+  );
+
+  const outputProof = {
+    ...proof(`replay-output-${selectability}-${authorityKind}`),
+    id: TERMINAL_KEYSET,
+  };
+  const successor = createBrowserCustodyProofRow({
+    scopeId: scope.scopeId,
+    normalizedMint: MINT,
+    unit: "msat",
+    proof: outputProof,
+    asset: { kind: "conditional", conditionId: TERMINAL_CONDITION, outcomeCollection: "YES" },
+    receivedAtMs: 2,
+  });
+  expect(source.record.operation.proofStorage.lineage.successorProofIds).toEqual([
+    successor.proofId,
+  ]);
+  const persistedSuccessor = {
+    ...successor,
+    selectability,
+    reservationOperationId: selectability === "locked" ? "foreign-replay" : null,
+  };
+  await database.custodyProofs.put(persistedSuccessor);
+
+  if (authorityKind === "remote-terminal") {
+    await database.custodyProofBackupAuthorities.put(
+      createBrowserRemoteProofBackupAuthorityRow({
+        proof: persistedSuccessor,
+        observedAtMs: 10,
+        derivationLocator: REMOTE_REPLAY_LOCATOR,
+        restoreProofId: persistedSuccessor.proofId,
+        restoreProofCommitment: "cc".repeat(32),
+      }),
+    );
+  } else if (authorityKind === "wrong") {
+    const foreignProof = createBrowserCustodyProofRow({
+      scopeId: scope.scopeId,
+      normalizedMint: MINT,
+      unit: "msat",
+      proof: { ...proof("foreign-replay-authority"), id: TERMINAL_KEYSET },
+      asset: { kind: "conditional", conditionId: TERMINAL_CONDITION, outcomeCollection: "YES" },
+      receivedAtMs: 2,
+    });
+    const foreignAuthority = createBrowserRemoteProofBackupAuthorityRow({
+      proof: foreignProof,
+      observedAtMs: 10,
+      derivationLocator: REMOTE_REPLAY_LOCATOR,
+      restoreProofId: foreignProof.proofId,
+      restoreProofCommitment: "ee".repeat(32),
+    });
+    await database.custodyProofBackupAuthorities.put({
+      ...foreignAuthority,
+      proofId: persistedSuccessor.proofId,
+    });
+  }
+
+  if (selectability === "verified-losing" && authorityKind === "remote-terminal") {
+    const asset = createEncryptedWalletBackupV2AssetIdentity({
+      mintUrl: MINT,
+      unit: "msat",
+      asset: {
+        kind: "ctf",
+        conditionId: TERMINAL_CONDITION,
+        outcomeLabel: "YES",
+        outcomeCollectionId: TERMINAL_OUTCOME_ID,
+        registeredAt: 1,
+        finalExpiry: 2,
+      },
+    });
+    await database.encryptedWalletBackupV2DesiredAssets.put(
+      createEncryptedWalletBackupV2DesiredAssetRow({
+        scopeId: scope.scopeId,
+        asset,
+        custodyRevision: 1n,
+        activeProofCount: 1,
+        terminalCtfContext:
+          contextKind === "missing"
+            ? null
+            : {
+                conditionId: TERMINAL_CONDITION,
+                outcomeLabel: contextKind === "foreign" ? "NO" : "YES",
+                outcomeCollectionId: TERMINAL_OUTCOME_ID,
+                registeredAt: 1,
+                finalExpiry: 2,
+              },
+      }),
+    );
+  }
+
+  const exactResult = prepareDurableCustodyExactArtifact({
+    authorization: [outputProof],
+    keep: [],
+  });
+  const resultFingerprint = deriveDurableCustodyProofResultFingerprint({
+    authorization: [outputProof],
+    keep: [],
+  });
+  return {
+    database,
+    adapter,
+    scope,
+    owner,
+    source,
+    successor: persistedSuccessor,
+    exactResult,
+    resultFingerprint,
+  };
+}
+
+type SuccessorReplayFixture = Awaited<ReturnType<typeof keysetFreeSuccessorReplayFixture>>;
+
+async function stageSuccessorReplay(fixture: SuccessorReplayFixture): Promise<void> {
+  const stageOwner = observedOwner(fixture.owner, 20);
+  await fixture.adapter.transact(
+    selection(fixture.scope, stageOwner, fixture.source.record.operation.operationId, 0),
+    (transaction) =>
+      transaction.stageVerifiedResult({
+        operationId: fixture.source.record.operation.operationId,
+        expectedRevision: 0,
+        authorization: stageOwner,
+        outputPlanFingerprint: fixture.source.record.operation.outputPlan.outputPlanFingerprint,
+        resultHandle: `replay-result:${fixture.resultFingerprint}`,
+        resultFingerprint: fixture.resultFingerprint,
+        exactResult: fixture.exactResult,
+        selectedSuccessorProofIds: [fixture.successor.proofId],
+      }),
+    {
+      successorProofs: {
+        [fixture.source.record.operation.operationId]: [
+          {
+            proof: fixture.successor,
+            expectedRevision: 0,
+            derivationLocator: REMOTE_REPLAY_LOCATOR,
+          },
+        ],
+      },
+    },
+  );
+}
+
+async function applySuccessorReplay(fixture: SuccessorReplayFixture): Promise<void> {
+  const applyOwner = observedOwner(fixture.owner, 21);
+  await fixture.adapter.transact(
+    selection(fixture.scope, applyOwner, fixture.source.record.operation.operationId, 1),
+    (transaction) =>
+      transaction.applyVerifiedResult({
+        operationId: fixture.source.record.operation.operationId,
+        expectedRevision: 1,
+        authorization: applyOwner,
+        outputPlanFingerprint: fixture.source.record.operation.outputPlan.outputPlanFingerprint,
+        resultHandle: `replay-result:${fixture.resultFingerprint}`,
+        resultFingerprint: fixture.resultFingerprint,
+        successorAdmission: {
+          scopeId: fixture.scope.scopeId,
+          operationId: fixture.source.record.operation.operationId,
+          admissionId: `replay-admission:${fixture.resultFingerprint}`,
+          proofRows: [
+            { proofId: fixture.successor.proofId, expectedRevision: 0, admittedRevision: 0 },
+          ],
+        },
+      }),
+    {
+      successorProofs: {
+        [fixture.source.record.operation.operationId]: [
+          {
+            proof: fixture.successor,
+            expectedRevision: 0,
+            derivationLocator: REMOTE_REPLAY_LOCATOR,
+          },
+        ],
+      },
+    },
+  );
+}
 
 async function stageSourceResult(
   adapter: BrowserDurableCustodyAdapter,

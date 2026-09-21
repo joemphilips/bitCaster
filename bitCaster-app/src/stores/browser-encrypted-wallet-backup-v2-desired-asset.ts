@@ -4,14 +4,18 @@ import {
   ENCRYPTED_WALLET_BACKUP_V2_PROOF_SET_MAX,
   encryptedWalletBackupV2LocalAssetKey,
 } from "@bitcaster/client-sdk/encryptedWalletBackupV2ProofSet";
+import type { EncryptedWalletBackupV2ProofSetAsset } from "@bitcaster/client-sdk/encryptedWalletBackupV2ProofSet";
 import type { EncryptedWalletBackupV2AssetIdentity } from "@bitcaster/client-sdk/encryptedWalletBackupV2Bundle";
+import { deriveRootCtfOutcomeCollectionId } from "@bitcaster/client-sdk/durableCtfRangeOperation";
 import {
   decodeCanonicalMintOrigin,
   decodeDurableCustodyScopeId,
 } from "@bitcaster/client-sdk/durableCustody";
 import {
+  requireBrowserProofBackupAuthorityRow,
   requireBrowserProofBackupAuthorityForProof,
   type BrowserProofDerivationLocatorAuthority,
+  type BrowserProofBackupAuthorityRow,
 } from "./browser-proof-backup-authority";
 import { decodeBrowserCustodyConditionalKeysetRow } from "./durable-custody-types";
 import { decodeBrowserCustodyProofRow } from "./durable-custody-types";
@@ -19,6 +23,12 @@ import type { BrowserCustodyProofRow, BrowserCustodyProofUnit } from "./durable-
 import type { BitcasterDB } from "./proof-db";
 
 export type EncryptedWalletBackupV2DesiredAction = "replace" | "remove";
+
+/** Structural CTF identity retained when a mint keyset is no longer available. */
+export type EncryptedWalletBackupV2TerminalCtfContext = Omit<
+  Extract<EncryptedWalletBackupV2ProofSetAsset, { readonly kind: "ctf" }>,
+  "kind"
+>;
 
 /** The latest V2 replacement or removal intent for one local asset. */
 export interface EncryptedWalletBackupV2DesiredAssetRow extends EncryptedWalletBackupV2AssetIdentity {
@@ -28,6 +38,7 @@ export interface EncryptedWalletBackupV2DesiredAssetRow extends EncryptedWalletB
   readonly activeProofCount: number;
   readonly desiredAction: EncryptedWalletBackupV2DesiredAction;
   readonly syncState: "pending" | "acknowledged";
+  readonly terminalCtfContext: EncryptedWalletBackupV2TerminalCtfContext | null;
 }
 
 export function createEncryptedWalletBackupV2DesiredAssetRow(input: {
@@ -35,6 +46,11 @@ export function createEncryptedWalletBackupV2DesiredAssetRow(input: {
   readonly asset: EncryptedWalletBackupV2AssetIdentity;
   readonly custodyRevision: bigint;
   readonly activeProofCount: number;
+  /**
+   * Pass the complete CTF tuple from an SDK-verified proof or local keyset.
+   * CTF rows used only to derive a local asset key may leave this null.
+   */
+  readonly terminalCtfContext?: EncryptedWalletBackupV2TerminalCtfContext | null;
 }): EncryptedWalletBackupV2DesiredAssetRow {
   const asset = decodeEncryptedWalletBackupV2AssetIdentity(input.asset);
   return decodeEncryptedWalletBackupV2DesiredAssetRow({
@@ -45,6 +61,7 @@ export function createEncryptedWalletBackupV2DesiredAssetRow(input: {
     activeProofCount: requireActiveProofCount(input.activeProofCount),
     desiredAction: input.activeProofCount === 0 ? "remove" : "replace",
     syncState: "pending",
+    terminalCtfContext: input.terminalCtfContext ?? null,
   });
 }
 
@@ -69,6 +86,18 @@ export function decodeEncryptedWalletBackupV2DesiredAssetRow(
   if ((activeProofCount === 0 ? "remove" : "replace") !== desiredAction) {
     throw new Error("browser V2 desired asset action is inconsistent");
   }
+  const terminalCtfContext = decodeTerminalCtfContext(value.terminalCtfContext);
+  if (asset.assetIdentity === "cashu:ordinary") {
+    if (terminalCtfContext !== null) {
+      throw new Error("browser V2 desired asset CTF context is foreign");
+    }
+  } else if (
+    terminalCtfContext !== null &&
+    `ctf:${terminalCtfContext.conditionId}:${terminalCtfContext.outcomeCollectionId}` !==
+      asset.assetIdentity
+  ) {
+    throw new Error("browser V2 desired asset CTF context is foreign");
+  }
   return {
     scopeId,
     localAssetKey,
@@ -77,6 +106,7 @@ export function decodeEncryptedWalletBackupV2DesiredAssetRow(
     activeProofCount,
     desiredAction,
     syncState: requireSyncState(value.syncState),
+    terminalCtfContext,
   };
 }
 
@@ -98,6 +128,7 @@ const rowFields = [
   "activeProofCount",
   "desiredAction",
   "syncState",
+  "terminalCtfContext",
 ] as const;
 const UINT64_MAX = (1n << 64n) - 1n;
 
@@ -136,6 +167,96 @@ function requireActiveProofCount(value: unknown): number {
     throw new Error("browser V2 desired asset active proof count is invalid");
   }
   return value as number;
+}
+
+function decodeTerminalCtfContext(
+  value: unknown,
+): EncryptedWalletBackupV2TerminalCtfContext | null {
+  if (value === null) return null;
+  if (!isRecord(value) || !exactKeys(value, terminalCtfContextFields)) {
+    throw new Error("browser V2 desired asset CTF context is invalid");
+  }
+  const conditionId = requireLowerHex(value.conditionId, "condition id");
+  const outcomeCollectionId = requireLowerHex(value.outcomeCollectionId, "outcome collection id");
+  const outcomeLabel = requireUtf8Text(value.outcomeLabel, "outcome label");
+  const registeredAt = requireUnixTime(value.registeredAt, "registered time");
+  const finalExpiry =
+    value.finalExpiry === null ? null : requirePositiveUnixTime(value.finalExpiry, "final expiry");
+  if (finalExpiry !== null && finalExpiry <= registeredAt) {
+    throw new Error("browser V2 desired asset CTF context is invalid");
+  }
+  return Object.freeze({
+    conditionId,
+    outcomeLabel,
+    outcomeCollectionId,
+    registeredAt,
+    finalExpiry,
+  });
+}
+
+const terminalCtfContextFields = [
+  "conditionId",
+  "outcomeLabel",
+  "outcomeCollectionId",
+  "registeredAt",
+  "finalExpiry",
+] as const;
+
+function requireLowerHex(value: unknown, label: string): string {
+  if (typeof value !== "string" || !/^[0-9a-f]{64}$/.test(value)) {
+    throw new Error(`browser V2 desired asset CTF context ${label} is invalid`);
+  }
+  return value;
+}
+
+function requireUtf8Text(value: unknown, label: string): string {
+  if (
+    typeof value !== "string" ||
+    value.length < 1 ||
+    new TextEncoder().encode(value).byteLength > 256
+  ) {
+    throw new Error(`browser V2 desired asset CTF context ${label} is invalid`);
+  }
+  return value;
+}
+
+function requireUnixTime(value: unknown, label: string): number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
+    throw new Error(`browser V2 desired asset CTF context ${label} is invalid`);
+  }
+  return value;
+}
+
+function requirePositiveUnixTime(value: unknown, label: string): number {
+  const timestamp = requireUnixTime(value, label);
+  if (timestamp < 1) throw new Error(`browser V2 desired asset CTF context ${label} is invalid`);
+  return timestamp;
+}
+
+function sameTerminalCtfContext(
+  left: EncryptedWalletBackupV2TerminalCtfContext | null,
+  right: EncryptedWalletBackupV2TerminalCtfContext | null,
+): boolean {
+  return (
+    left === right ||
+    (left !== null &&
+      right !== null &&
+      left.conditionId === right.conditionId &&
+      left.outcomeLabel === right.outcomeLabel &&
+      left.outcomeCollectionId === right.outcomeCollectionId &&
+      left.registeredAt === right.registeredAt &&
+      left.finalExpiry === right.finalExpiry)
+  );
+}
+
+function mergeTerminalCtfContext(
+  current: EncryptedWalletBackupV2TerminalCtfContext | null,
+  update: EncryptedWalletBackupV2TerminalCtfContext | null,
+): EncryptedWalletBackupV2TerminalCtfContext | null {
+  if (current !== null && update !== null && !sameTerminalCtfContext(current, update)) {
+    throw new Error("browser V2 desired asset CTF context conflicts");
+  }
+  return current ?? update;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -242,21 +363,30 @@ async function firstActiveProof(
 
 interface DesiredAssetUpdate {
   readonly asset: EncryptedWalletBackupV2AssetIdentity;
+  readonly terminalCtfContext: EncryptedWalletBackupV2TerminalCtfContext | null;
   delta: number;
+}
+
+interface DesiredAssetMaterial {
+  readonly asset: EncryptedWalletBackupV2AssetIdentity;
+  readonly terminalCtfContext: EncryptedWalletBackupV2TerminalCtfContext | null;
 }
 
 function addDesiredAssetUpdate(
   updates: Map<string, DesiredAssetUpdate>,
-  asset: EncryptedWalletBackupV2AssetIdentity,
+  material: DesiredAssetMaterial,
   delta: number,
 ): void {
-  const key = encryptedWalletBackupV2LocalAssetKey(asset);
+  const key = encryptedWalletBackupV2LocalAssetKey(material.asset);
   const current = updates.get(key);
   if (current) {
+    if (!sameTerminalCtfContext(current.terminalCtfContext, material.terminalCtfContext)) {
+      throw new Error("browser V2 desired asset CTF context conflicts");
+    }
     current.delta += delta;
     return;
   }
-  updates.set(key, { asset, delta });
+  updates.set(key, { ...material, delta });
 }
 
 async function persistDesiredAssetUpdates(
@@ -274,11 +404,26 @@ async function persistDesiredAssetUpdates(
     if (current && (current.scopeId !== scopeId || current.localAssetKey !== localAssetKey)) {
       throw new Error("browser V2 desired asset authority is foreign");
     }
+    if (
+      current &&
+      (current.assetIdentity !== update.asset.assetIdentity ||
+        current.mintUrl !== update.asset.mintUrl ||
+        current.unit !== update.asset.unit)
+    ) {
+      throw new Error("browser V2 desired asset authority is foreign");
+    }
+    if (update.asset.assetIdentity.startsWith("ctf:") && update.terminalCtfContext === null) {
+      throw new Error("browser V2 desired asset conditional context is missing");
+    }
+    const terminalCtfContext = current
+      ? mergeTerminalCtfContext(current.terminalCtfContext, update.terminalCtfContext)
+      : update.terminalCtfContext;
     const activeProofCount = (current?.activeProofCount ?? 0) + update.delta;
     await database.encryptedWalletBackupV2DesiredAssets.put(
       createEncryptedWalletBackupV2DesiredAssetRow({
         scopeId,
         asset: update.asset,
+        terminalCtfContext,
         custodyRevision:
           current === undefined
             ? 1n
@@ -314,25 +459,30 @@ function knownAssetForProof(
   conditionalKeysetForProof?: (
     proof: BrowserCustodyProofRow,
   ) => ReturnType<typeof decodeBrowserCustodyConditionalKeysetRow> | undefined,
-): EncryptedWalletBackupV2AssetIdentity | undefined {
+): DesiredAssetMaterial | undefined {
   if (proof.assetKind === "regular") {
-    return createEncryptedWalletBackupV2AssetIdentity({
-      mintUrl: proof.normalizedMint,
-      unit: proof.unit,
-      asset: { kind: "ordinary" },
-    });
+    return {
+      asset: createEncryptedWalletBackupV2AssetIdentity({
+        mintUrl: proof.normalizedMint,
+        unit: proof.unit,
+        asset: { kind: "ordinary" },
+      }),
+      terminalCtfContext: null,
+    };
   }
   if (conditionalKeysetForProof === undefined) return undefined;
   const keyset = conditionalKeysetForProof(proof);
-  if (keyset === undefined)
+  if (keyset === undefined && proof.selectability !== "verified-losing") {
     throw new Error("browser V2 desired asset conditional authority is missing");
+  }
+  if (keyset === undefined) return undefined;
   return conditionalAssetForProof(proof, keyset);
 }
 
 async function loadConditionalAssetForProof(
   database: BitcasterDB,
   proof: BrowserCustodyProofRow,
-): Promise<EncryptedWalletBackupV2AssetIdentity> {
+): Promise<DesiredAssetMaterial> {
   if (proof.assetKind !== "conditional") {
     throw new Error("browser V2 desired asset conditional proof is required");
   }
@@ -342,15 +492,113 @@ async function loadConditionalAssetForProof(
     proof.unit,
     proof.keysetId,
   ]);
-  if (raw === undefined)
+  if (raw === undefined && proof.selectability === "verified-losing") {
+    return loadRemoteTerminalAssetForProof(database, proof);
+  }
+  if (raw === undefined) {
     throw new Error("browser V2 desired asset conditional authority is missing");
+  }
   return conditionalAssetForProof(proof, decodeBrowserCustodyConditionalKeysetRow(raw));
+}
+
+async function loadRemoteTerminalAssetForProof(
+  database: BitcasterDB,
+  proof: BrowserCustodyProofRow,
+  suppliedAuthority?: BrowserProofBackupAuthorityRow,
+): Promise<DesiredAssetMaterial> {
+  if (
+    proof.assetKind !== "conditional" ||
+    proof.conditionId === null ||
+    proof.outcomeCollection === null
+  ) {
+    throw new Error("browser V2 desired asset conditional proof is required");
+  }
+  let authority: BrowserProofBackupAuthorityRow;
+  if (suppliedAuthority === undefined) {
+    const authorityRaw = await database.custodyProofBackupAuthorities.get([
+      proof.scopeId,
+      proof.proofId,
+    ]);
+    if (authorityRaw === undefined) {
+      throw new Error("browser V2 desired asset remote terminal authority is missing");
+    }
+    authority = requireBrowserProofBackupAuthorityForProof(authorityRaw, proof);
+  } else {
+    authority = requireBrowserProofBackupAuthorityRow(suppliedAuthority);
+    if (
+      authority.scopeId !== proof.scopeId ||
+      authority.proofId !== proof.proofId ||
+      authority.proofFingerprint !== proof.proofFingerprint ||
+      authority.proofState !== proof.selectability
+    ) {
+      throw new Error("browser V2 desired asset remote terminal authority is foreign");
+    }
+  }
+  if (
+    authority.backupState !== "remote-backed" ||
+    authority.terminalAuthority?.kind !== "remote-seal"
+  ) {
+    throw new Error("browser V2 desired asset remote terminal authority is foreign");
+  }
+  const outcomeCollectionId = deriveRootCtfOutcomeCollectionId({
+    conditionId: proof.conditionId,
+    outcomeCollection: proof.outcomeCollection,
+  });
+  const asset = decodeEncryptedWalletBackupV2AssetIdentity({
+    mintUrl: proof.normalizedMint,
+    unit: proof.unit,
+    assetIdentity: `ctf:${proof.conditionId}:${outcomeCollectionId}`,
+  });
+  const desiredRaw = await database.encryptedWalletBackupV2DesiredAssets.get([
+    proof.scopeId,
+    encryptedWalletBackupV2LocalAssetKey(asset),
+  ]);
+  if (desiredRaw === undefined) {
+    throw new Error("browser V2 desired asset terminal context is missing");
+  }
+  const desired = decodeEncryptedWalletBackupV2DesiredAssetRow(desiredRaw);
+  const context = desired.terminalCtfContext;
+  if (
+    desired.scopeId !== proof.scopeId ||
+    desired.mintUrl !== proof.normalizedMint ||
+    desired.unit !== proof.unit ||
+    desired.assetIdentity !== asset.assetIdentity
+  ) {
+    throw new Error("browser V2 desired asset terminal context is foreign");
+  }
+  if (context === null) {
+    throw new Error("browser V2 desired asset terminal context is missing");
+  }
+  if (
+    context.conditionId !== proof.conditionId ||
+    context.outcomeLabel !== proof.outcomeCollection ||
+    context.outcomeCollectionId !== outcomeCollectionId
+  ) {
+    throw new Error("browser V2 desired asset terminal context is foreign");
+  }
+  return { asset, terminalCtfContext: context };
+}
+
+/** Validate a persisted remote-sealed proof before a keyset-free custody write. */
+export async function requireBrowserV2KeysetFreeTerminalContextForProof(input: {
+  readonly database: BitcasterDB;
+  readonly proof: BrowserCustodyProofRow;
+  readonly authority: unknown;
+}): Promise<void> {
+  if (input.proof.selectability !== "verified-losing") {
+    throw new Error("browser V2 desired asset terminal proof state is invalid");
+  }
+  await loadRemoteTerminalAssetForProof(
+    input.database,
+    input.proof,
+    requireBrowserProofBackupAuthorityRow(input.authority),
+  );
 }
 
 function conditionalAssetForProof(
   proof: BrowserCustodyProofRow,
   keyset: ReturnType<typeof decodeBrowserCustodyConditionalKeysetRow>,
-): EncryptedWalletBackupV2AssetIdentity {
+): DesiredAssetMaterial {
   if (
     keyset.scopeId !== proof.scopeId ||
     keyset.normalizedMint !== proof.normalizedMint ||
@@ -361,18 +609,27 @@ function conditionalAssetForProof(
   ) {
     throw new Error("browser V2 desired asset conditional authority is foreign");
   }
-  return createEncryptedWalletBackupV2AssetIdentity({
-    mintUrl: proof.normalizedMint,
-    unit: proof.unit,
-    asset: {
-      kind: "ctf",
+  return {
+    asset: createEncryptedWalletBackupV2AssetIdentity({
+      mintUrl: proof.normalizedMint,
+      unit: proof.unit,
+      asset: {
+        kind: "ctf",
+        conditionId: keyset.conditionId,
+        outcomeLabel: keyset.outcomeCollection,
+        outcomeCollectionId: keyset.outcomeCollectionId,
+        registeredAt: keyset.registeredAtUnixSeconds,
+        finalExpiry: keyset.finalExpiryUnixSeconds,
+      },
+    }),
+    terminalCtfContext: {
       conditionId: keyset.conditionId,
       outcomeLabel: keyset.outcomeCollection,
       outcomeCollectionId: keyset.outcomeCollectionId,
       registeredAt: keyset.registeredAtUnixSeconds,
       finalExpiry: keyset.finalExpiryUnixSeconds,
     },
-  });
+  };
 }
 
 function decodeActiveProofReference(
