@@ -55,13 +55,32 @@ refund amount. Read that policy before committing funds.
 ## Claiming winnings
 
 Redemption exchanges winning conditional tokens for regular ecash from the
-same mint. This is not a Bitcoin withdrawal. The first release returns
-sat-denominated ecash. To withdraw bitcoin, use the mint's supported BOLT11
+same mint. This is not a Bitcoin withdrawal. The wallet shows the payout in
+sats. To withdraw bitcoin, use the mint's supported BOLT11
 Lightning withdrawal flow.
 
 Keep your wallet records until the redemption result is known. If a request
 loses its connection, check the existing operation rather than assuming that
 the tokens were not spent. See [settlement and recovery](/user-guide/core-concepts/atomic-swap/).
+
+### Using the browser
+
+Open Portfolio and select Claim for a winning position. A claim can finish
+in parts. Each completed payout stays in your wallet if another part fails.
+
+If the claim is pending, keep the wallet data and retry Claim. The pending
+status remains visible after a reload. Retrying recovers the unfinished part;
+it does not credit a completed payout again. A lost connection does not mean
+that the mint rejected the payment.
+
+To remove a losing position, select Remove and confirm. The wallet checks
+that the tokens cannot receive a payout before it deletes them. If the result
+is uncertain, it keeps the tokens. If the mint returns a payout instead, the
+wallet keeps that payment and stops removal.
+
+Removal can take time when encrypted backup is enabled. The position stays
+visible while removal is pending. Keep your wallet data until it finishes.
+Removal does not erase copies that you exported or kept in another browser.
 
 ### Using the CLI
 

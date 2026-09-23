@@ -158,13 +158,14 @@ export function MarketHeader({ market, onShare }: MarketHeaderProps) {
     return () => window.clearInterval(intervalId);
   }, [market.closingDate, isClosed]);
 
-  const resolvedDate = isResolved
-    ? new Date(market.resolution.resolutionDate).toLocaleDateString(i18n.language, {
-        month: "long",
-        day: "numeric",
-        year: "numeric",
-      })
-    : null;
+  const resolvedDate =
+    isResolved && market.resolution.resolutionDate !== null
+      ? new Date(market.resolution.resolutionDate).toLocaleDateString(i18n.language, {
+          month: "long",
+          day: "numeric",
+          year: "numeric",
+        })
+      : null;
 
   return (
     <div className="relative">
@@ -226,7 +227,11 @@ export function MarketHeader({ market, onShare }: MarketHeaderProps) {
             >
               {isClosed ? <CheckCircle2 className="w-4 h-4" /> : <Clock className="w-4 h-4" />}
               <span className="text-sm font-medium">
-                {isResolved ? t("market.resolvedOn", { date: resolvedDate }) : timeRemaining}
+                {isResolved
+                  ? resolvedDate
+                    ? t("market.resolvedOn", { date: resolvedDate })
+                    : t("marketStatus.resolved")
+                  : timeRemaining}
               </span>
             </div>
           )}

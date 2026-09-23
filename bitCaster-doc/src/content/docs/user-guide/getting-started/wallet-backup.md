@@ -126,6 +126,31 @@ its slot. If a recovery phrase is permanently lost, its encrypted data cannot
 be identified or deleted in this release. It continues to use part of the
 storage allowance. Keep every phrase for a wallet you may want to reopen.
 
+## Use the same wallet in another browser
+
+A fresh browser restores and checks the wallet's current encrypted backup
+before it enables wallet actions or uploads new backup data. You can read the
+app while recovery runs. If recovery cannot finish, wallet actions stay paused.
+
+Use one browser at a time for wallet actions. Another open browser can still
+run background work. When another browser changes the wallet backup, this
+browser can stop new wallet actions and automatic backup uploads.
+
+The app keeps local proofs and unresolved operations. It does not
+automatically merge different browser states. Reload starts recovery. It does
+not delete local data or guarantee that wallet actions can resume.
+
+The recovery message explains what remains unresolved. Use its retry action
+to check recovery again. Keep browser storage while recovery is incomplete.
+The app resumes new wallet actions only after it has checked the current
+backup and resolved the local state that blocks recovery.
+
+An unpaid invoice can still block recovery if the wallet has already prepared
+its ecash outputs. This can happen even if you no longer intend to pay the
+invoice. The app keeps the invoice and its prepared outputs. It does not
+replace them automatically. Reloading or retrying does not guarantee that this
+browser can resume wallet actions.
+
 ## CLI privacy and emergency recovery
 
 The command-line wallet can use complete-local privacy mode. This mode can

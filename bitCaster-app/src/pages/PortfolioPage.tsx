@@ -8,12 +8,10 @@ import { usePortfolioState } from "./usePortfolioState";
 import { useSettingsStore } from "@/stores/settings";
 import { useActivityLogStore } from "@/stores/activity-log";
 import { useWalletStore } from "@/stores/wallet";
-import { getConditionCtfProofs, getOutcomeProofs, removeProofs } from "@/stores/proof-db";
-import { settleCtfPosition } from "@/lib/cashu";
-import { isWinningCollection } from "@/lib/positionWinner";
+import { claimPortfolioPosition } from "@/lib/browserPortfolioClaim";
+import { removePortfolioPosition } from "@/lib/browserPortfolioRemove";
 import type { PLTimeSelector } from "@/types/portfolio";
 import type { DepositWithdrawMode } from "@/types/deposit-withdraw";
-import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
 
 export function toPortfolioMarketDetailId(marketId: string, outcomeId?: string | null): string {
   const suffix = outcomeId ? `-${outcomeId}` : "";
@@ -29,6 +27,7 @@ export function PortfolioPage() {
   const state = usePortfolioState();
   const [overlayMode, setOverlayMode] = useState<DepositWithdrawMode | null>(null);
   const [claimingPositionId, setClaimingPositionId] = useState<string | null>(null);
+  const [removingPositionId, setRemovingPositionId] = useState<string | null>(null);
   const [showWalletSetup, setShowWalletSetup] = useState(false);
   const [walletSetupCreating, setWalletSetupCreating] = useState(false);
   const [walletSetupError, setWalletSetupError] = useState<string | null>(null);
@@ -125,12 +124,12 @@ export function PortfolioPage() {
 
   const handleClaimPayout = useCallback(
     async (positionId: string) => {
-      if (claimingPositionId) return;
+      if (claimingPositionId || removingPositionId) return;
       const position = state.positions.find((p) => p.id === positionId);
       if (
         !position ||
         position.status !== "closed" ||
-        !position.isWinner ||
+        (!position.isWinner && !position.claimRecoveryPending) ||
         position.canClaimPayout !== true
       ) {
         return;
@@ -140,87 +139,81 @@ export function PortfolioPage() {
       try {
         const conditionId = toPortfolioMarketDetailId(position.marketId, position.outcomeId);
         const outcomeCollection = position.outcomeLabel ?? position.outcomeId;
-        // Gather ALL of the condition's CTF proofs (every keyset leg),
-        // independent of how each leg was labelled when persisted. A composite
-        // "A|B" position spans multiple keysets and `settleCtfPosition` buckets
-        // them by keyset id, redeeming the winning leg and removing the losing
-        // one — so the claim resolves the whole position, leaving no leftover
-        // composite-tagged proof to keep the row alive or look like a winner.
-        const proofs = await getConditionCtfProofs(position.mintUrl, conditionId, {
-          baseAsset: position.baseAsset,
-        });
-        if (proofs.length === 0) throw new Error("Position has no redeemable proofs");
-        const regularProofs = await settleCtfPosition({
+        if (!outcomeCollection) throw new Error("Position outcome is unavailable");
+        const result = await claimPortfolioPosition({
           conditionId,
-          amountSats: proofs.reduce((sum, proof) => sum + amountToNumber(proof.amount), 0),
-          proofs,
           mintUrl: position.mintUrl,
           outcomeCollection,
-          baseAsset: position.baseAsset,
+          onCommittedLeg: ({ payoutAmount }) => {
+            addActivity({
+              type: "payout_claimed",
+              baseAsset: position.baseAsset,
+              amountSats: payoutAmount,
+              status: "completed",
+              marketId: position.marketId,
+              marketTitle: position.marketTitle,
+            });
+          },
         });
-        addActivity({
-          type: "payout_claimed",
-          baseAsset: position.baseAsset,
-          amountSats: regularProofs.reduce((sum, proof) => sum + amountToNumber(proof.amount), 0),
-          status: "completed",
-          marketId: position.marketId,
-          marketTitle: position.marketTitle,
-        });
-      } catch (error) {
-        console.error("[portfolio] failed to claim payout", error);
-        window.alert(error instanceof Error ? error.message : "Failed to claim payout");
+        if (result.kind === "pending") window.alert(t("portfolio.claimPending"));
+        if (result.kind === "error") window.alert(t("portfolio.claimFailed"));
+      } catch {
+        window.alert(t("portfolio.claimFailed"));
       } finally {
         setClaimingPositionId(null);
       }
     },
-    [addActivity, claimingPositionId, state.positions],
+    [addActivity, claimingPositionId, removingPositionId, state.positions, t],
   );
 
   const handleDiscardLostPosition = useCallback(
     async (positionId: string) => {
+      if (removingPositionId || claimingPositionId) return;
       const position = state.positions.find((p) => p.id === positionId);
-      // Gate on the SAME single source-of-truth as the "Lost" badge and the
-      // Remove button (P22 F2/F3). These are bearer proofs: destroying a
-      // mislabelled winner — or a closed-but-unattested (pending) position whose
-      // win/loss is NOT YET DECIDED — is permanent loss, so we never remove a
-      // position the derivation does not consider an attested loser, even if a
-      // stale callback fired. Only an attested loser (isLoser, not isWinner, not
-      // isPending) may have its proofs destroyed.
       if (!position || !position.isLoser || position.isWinner || position.isPending) return;
       if (!window.confirm(t("portfolio.discardLostPositionConfirm"))) return;
+      setRemovingPositionId(positionId);
       try {
         const conditionId = toPortfolioMarketDetailId(position.marketId, position.outcomeId);
         const outcomeCollection = position.outcomeLabel ?? position.outcomeId;
-        // Delete only this lost position's proofs (its outcome-collection
-        // leg(s)), not the whole condition — a condition can hold several
-        // positions. No mint redeem: a losing leg has nothing to claim.
-        const proofs = outcomeCollection
-          ? await getOutcomeProofs(position.mintUrl, conditionId, outcomeCollection, {
-              includeReserved: true,
+        if (!outcomeCollection) throw new Error("Position outcome is unavailable");
+        // The catalogue label cannot authorize deletion. The coordinator verifies mint evidence.
+        const result = await removePortfolioPosition({
+          mintUrl: position.mintUrl,
+          conditionId,
+          outcomeCollection,
+          onCommittedLeg: ({ payoutAmount }) => {
+            addActivity({
+              type: "payout_claimed",
               baseAsset: position.baseAsset,
-            })
-          : [];
-        // F2 defense-in-depth (P22 Link F): destroying a proof on a WINNING
-        // keyset is permanent value loss. Even though `isLoser` already gates
-        // this handler, never delete a proof whose own keyset outcome-collection
-        // contains the attested final outcome — if the row classification were
-        // ever off, this filter still refuses to touch redeemable proofs.
-        const safeToDelete = proofs.filter((proof) => {
-          const candidate = proof as typeof proof & {
-            outcome_collection?: string;
-          };
-          const proofCollection = candidate.outcomeCollection ?? candidate.outcome_collection;
-          return !(proofCollection && isWinningCollection(proofCollection, position.finalOutcome));
+              amountSats: payoutAmount,
+              status: "completed",
+              marketId: position.marketId,
+              marketTitle: position.marketTitle,
+            });
+          },
         });
-        if (safeToDelete.length > 0) {
-          await removeProofs(safeToDelete.map((proof) => proof.secret));
+        switch (result.kind) {
+          case "completed":
+            break;
+          case "pending":
+            window.alert(t("portfolio.removePending"));
+            break;
+          case "stopped":
+            window.alert(t("portfolio.removePayout"));
+            break;
+          case "partial":
+          case "error":
+            window.alert(t("portfolio.removeFailed"));
+            break;
         }
-      } catch (error) {
-        console.error("[portfolio] failed to remove lost position", error);
-        window.alert(error instanceof Error ? error.message : "Failed to remove losing position");
+      } catch {
+        window.alert(t("portfolio.removeFailed"));
+      } finally {
+        setRemovingPositionId(null);
       }
     },
-    [state.positions, t],
+    [addActivity, claimingPositionId, removingPositionId, state.positions, t],
   );
 
   const handlePositionsTabChange = useCallback(

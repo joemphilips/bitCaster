@@ -1,17 +1,12 @@
 import {
   deriveDurableCustodyWalletId,
-  deserializeDurableCustodyProofArtifact,
   encryptedWalletBackupV2AssetMatchesMonitoringAsset,
   type EncryptedWalletBackupV2AssetIdentity,
   type TargetedAssetRecoveryOutcome,
 } from "@bitcaster/client-sdk";
-import { type BitcasterDB, type StoredProof, addProofs } from "@/stores/proof-db";
-import { decodeDurableCustodyProofMaterialRecord } from "@bitcaster/client-sdk/durableCustodyProofMaterial";
-import { readBrowserEncryptedWalletBackupV2ExactLocalProofRows } from "@/stores/browser-encrypted-wallet-backup-v2-asset-source";
 import { getWalletForMnemonicUnit } from "@/stores/wallet";
 import { activeBrowserEncryptedWalletBackupV2RuntimeDriver } from "./encryptedWalletBackupDriver";
 import { createAuthenticatedBrowserEngineClient } from "./markets";
-import { withWalletProfileLock } from "./walletProfileLock";
 
 type FundedPlan = { readonly kind: "ready" | "insufficient" | "not-reducible" | "round-limit" };
 
@@ -23,7 +18,6 @@ const ASSET_MONITORING_RECOVERY_PAGES_MAX = 64;
 
 type BrowserFundedAssetRecoveryDiagnostic =
   | "local-plan"
-  | "canonical-repair"
   | "driver-absent"
   | "driver-outcome"
   | "profile-or-lock";
@@ -36,7 +30,6 @@ export type BrowserFundedAssetRecoveryOutcome<TPlan extends FundedPlan> =
   | { readonly kind: "persistent-error" };
 
 export interface BrowserFundedAssetRecoveryInput<TPlan extends FundedPlan> {
-  readonly database: BitcasterDB;
   readonly scopeId: string;
   readonly seed: Uint8Array;
   readonly mnemonic: string;
@@ -62,47 +55,12 @@ export async function recoverBrowserFundedAsset<TPlan extends FundedPlan>(
     requireCurrent(input);
     if (initial.kind === "ready") return { kind: "ready", plan: initial };
     if (initial.kind !== "insufficient") return { kind: "not-recoverable", plan: initial };
-    failureStage = "canonical-repair";
-    if (await repairSelectableCanonicalRows(input)) {
-      failureStage = "local-plan";
-      const repaired = await input.loadPlan();
-      failureStage = "profile-or-lock";
-      requireCurrent(input);
-      if (repaired.kind === "ready") return { kind: "ready", plan: repaired };
-      if (repaired.kind !== "insufficient") return { kind: "not-recoverable", plan: repaired };
-    }
     failureStage = "driver-outcome";
     return await recoverBackupFirst(input);
   } catch {
     reportFundedRecoveryDiagnostic(failureStage);
     return { kind: "persistent-error" };
   }
-}
-
-/** Repairs only selectable canonical rows when they can satisfy this exact action. */
-export async function repairSelectableCanonicalRows(
-  input: Pick<
-    BrowserFundedAssetRecoveryInput<FundedPlan>,
-    "database" | "scopeId" | "asset" | "requiredAmount" | "isCurrentProfile" | "lockManager"
-  >,
-): Promise<boolean> {
-  requireMsatAsset(input.asset);
-  requireCurrent(input);
-  const rows = await readBrowserEncryptedWalletBackupV2ExactLocalProofRows(input);
-  requireCurrent(input);
-  const selectable = rows.filter((row) => row.selectability === "selectable");
-  const amount = selectable.reduce((total, row) => total + BigInt(row.amount), 0n);
-  if (amount < input.requiredAmount) return false;
-  await withWalletProfileLock(
-    input.scopeId,
-    async () => {
-      requireCurrent(input);
-      await addProofs(selectable.map(toLegacyProof), input.database);
-      requireCurrent(input);
-    },
-    input.lockManager,
-  );
-  return true;
 }
 
 async function recoverBackupFirst<TPlan extends FundedPlan>(
@@ -233,21 +191,6 @@ function recoveryOutcome<TPlan extends FundedPlan>(
     default:
       throw new Error("browser funded recovery outcome is invalid");
   }
-}
-
-function toLegacyProof(
-  row: Awaited<ReturnType<typeof readBrowserEncryptedWalletBackupV2ExactLocalProofRows>>[number],
-): StoredProof {
-  const { proof: material } = decodeDurableCustodyProofMaterialRecord(row);
-  const proof = deserializeDurableCustodyProofArtifact({ schemaVersion: 1, ...material });
-  return {
-    ...proof,
-    mintUrl: row.normalizedMint,
-    baseAsset: row.baseAsset,
-    unit: row.unit,
-    ...(row.conditionId === null ? {} : { conditionId: row.conditionId }),
-    ...(row.outcomeCollection === null ? {} : { outcomeCollection: row.outcomeCollection }),
-  };
 }
 
 function requireCurrent(

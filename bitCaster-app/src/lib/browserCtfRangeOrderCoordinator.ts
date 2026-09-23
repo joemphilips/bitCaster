@@ -114,6 +114,7 @@ import { decodeSubmitOrderResponse } from "@bitcaster/client-sdk/engineClient";
 import type { WalletId } from "@bitcaster/client-sdk/durableCustody";
 import type { CtfRangeOrderPreparationPageCursor } from "@bitcaster/client-sdk/ctfRangeOrderJournal";
 import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
+import { requireBrowserWalletNewWritePermission } from "./browserWalletNewWritePermission";
 import { withWalletProfileLock } from "./walletProfileLock";
 import { BrowserDurableCustodyAdapter } from "../stores/durable-custody-db";
 import { decodeBrowserProofBackupAuthorityTableRow } from "../stores/browser-proof-backup-authority";
@@ -418,6 +419,10 @@ export class BrowserCtfRangeOrderCoordinator {
       scope.scopeId,
       () =>
         this.#withScopeOwner(scope, async (owner) => {
+          await requireBrowserWalletNewWritePermission({
+            database: this.#database,
+            scopeId: scope.scopeId,
+          });
           const source = await this.#prepareAndPersistSource(
             {
               ...input,
@@ -446,15 +451,19 @@ export class BrowserCtfRangeOrderCoordinator {
     return withWalletProfileLock(
       scope.scopeId,
       () =>
-        this.#withScopeOwner(scope, () =>
-          this.#createCapabilityAndSubmit(
+        this.#withScopeOwner(scope, async () => {
+          await requireBrowserWalletNewWritePermission({
+            database: this.#database,
+            scopeId: scope.scopeId,
+          });
+          return this.#createCapabilityAndSubmit(
             scope,
             input.preparation,
             completed.operation,
             completed.capabilityRequest,
             input.comment ?? null,
-          ),
-        ),
+          );
+        }),
       this.#lockManager,
     );
   }
@@ -471,6 +480,10 @@ export class BrowserCtfRangeOrderCoordinator {
       scope.scopeId,
       () =>
         this.#withScopeOwner(scope, async (owner) => {
+          await requireBrowserWalletNewWritePermission({
+            database: this.#database,
+            scopeId: scope.scopeId,
+          });
           const binding = await this.#prepareAndPersistConsolidation(input, scope, owner);
           await this.#completeAndCommitConsolidation(
             scope,

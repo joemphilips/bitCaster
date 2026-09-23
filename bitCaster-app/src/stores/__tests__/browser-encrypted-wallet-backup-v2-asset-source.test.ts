@@ -1,15 +1,21 @@
 // @vitest-environment node
 import "fake-indexeddb/auto";
-import { deriveConditionalKeysetId, type Proof } from "@cashu/cashu-ts";
+import { Amount, deriveConditionalKeysetId, type Proof } from "@cashu/cashu-ts";
 import {
+  authorizeEncryptedWalletBackupV2RemoteTerminalSealReuse,
   createEncryptedWalletBackupV2AssetIdentity,
+  createEncryptedWalletBackupV2CurrentHead,
   createEncryptedWalletBackupV2KeyHandle,
   decryptEncryptedWalletBackupV2ProofSetBundle,
   deriveDurableCustodyScopeId,
   deriveDurableCustodyWalletId,
+  enumerateEncryptedWalletBackupV2DescriptorPages,
   deriveRootCtfOutcomeCollectionId,
   deserializeDurableCustodyProofArtifact,
   type DurableCustodyScope,
+  type EncryptedWalletBackupV2BundleRuntime,
+  type EncryptedWalletBackupV2PreparedTransportBundle,
+  type EncryptedWalletBackupV2RemotePort,
 } from "@bitcaster/client-sdk";
 import { deriveDurableWalletProofSecret } from "@bitcaster/client-sdk/durableWalletProofDerivationLocator";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -72,6 +78,66 @@ afterEach(async () => {
 });
 
 describe("browser V2 asset source", () => {
+  it.each(["ordinary", "ctf"] as const)(
+    "backs up %s range outputs without inventing NUT-13 counters",
+    async (kind) => {
+      const fixture = await fixtureFor(kind);
+      database = fixture.database;
+      const keysetId = kind === "ctf" ? CONDITIONAL_KEYSET : REGULAR_KEYSET;
+      const locator = {
+        schemaVersion: 1,
+        kind: "ctf-range-manifest",
+        rangeOperationId: "range:backup",
+        manifestIndex: 0,
+      } as const;
+      const row = createBrowserCustodyProofRow({
+        scopeId: fixture.scopeId,
+        normalizedMint: MINT,
+        unit: "msat",
+        proof: {
+          id: keysetId,
+          amount: Amount.from(1),
+          secret: deriveDurableWalletProofSecret({
+            seed: SEED,
+            locator,
+            proofKeysetId: keysetId,
+            proofAmount: 1,
+          }),
+          C: PUBLIC_KEY,
+        },
+        asset:
+          kind === "ctf"
+            ? { kind: "conditional", conditionId: CONDITION_ID, outcomeCollection: OUTCOME }
+            : { kind: "regular" },
+        receivedAtMs: 1,
+      });
+      await database.custodyProofs.put(row);
+      await database.custodyProofBackupAuthorities.put(
+        createBrowserProofBackupAuthorityRow(row, 2, locator, "range:backup"),
+      );
+      if (kind === "ctf") await putConditionalKeyset(database, fixture.scopeId);
+      const desired = createEncryptedWalletBackupV2DesiredAssetRow({
+        scopeId: fixture.scopeId,
+        asset: fixture.asset,
+        custodyRevision: 1n,
+        activeProofCount: 1,
+      });
+      await database.encryptedWalletBackupV2DesiredAssets.put(desired);
+      const input = { database, scopeId: fixture.scopeId, localAssetKey: desired.localAssetKey };
+
+      const withoutCounter = await readBrowserEncryptedWalletBackupV2AssetSnapshot(input);
+      expect(withoutCounter.proofs).toHaveLength(1);
+      expect(withoutCounter.proofs[0]?.locator.kind).toBe("ctf-range-manifest");
+      expect(withoutCounter.counterHighWaterMarks).toEqual([]);
+
+      await putCounter(database, fixture.scopeId, keysetId, 7);
+      const withCounter = await readBrowserEncryptedWalletBackupV2AssetSnapshot(input);
+      expect(withCounter.counterHighWaterMarks).toEqual([
+        { mintUrl: MINT, unit: "msat", keysetId, nextCounter: 7 },
+      ]);
+    },
+  );
+
   it("includes selectable and locked ordinary proofs but excludes spent and CTF proofs", async () => {
     const fixture = await fixtureFor("ordinary");
     database = fixture.database;
@@ -512,6 +578,203 @@ describe("browser V2 asset source", () => {
         asset: snapshot.asset,
       }),
     ).resolves.toEqual([expect.objectContaining({ proofId: losing.proofId })]);
+  });
+
+  it("retains valid NUT-13 counters in an evicted mixed-keyset losing asset", async () => {
+    const fixture = await committedCtfFixture(1);
+    database = fixture.database;
+    await putConditionalKeyset(
+      fixture.database,
+      fixture.scopeId,
+      CONDITIONAL_KEYSET_WITHOUT_FINAL_EXPIRY,
+      null,
+    );
+    const rangeLocator = {
+      schemaVersion: 1 as const,
+      kind: "ctf-range-manifest" as const,
+      rangeOperationId: "range:losing-keyset",
+      manifestIndex: 0,
+    };
+    const rangePredecessor = createBrowserCustodyProofRow({
+      scopeId: fixture.scopeId,
+      normalizedMint: MINT,
+      unit: "msat",
+      proof: {
+        id: CONDITIONAL_KEYSET_WITHOUT_FINAL_EXPIRY,
+        amount: Amount.from(1),
+        secret: deriveDurableWalletProofSecret({
+          seed: SEED,
+          locator: rangeLocator,
+          proofKeysetId: CONDITIONAL_KEYSET_WITHOUT_FINAL_EXPIRY,
+          proofAmount: 1,
+        }),
+        C: PUBLIC_KEY,
+      },
+      asset: { kind: "conditional", conditionId: CONDITION_ID, outcomeCollection: OUTCOME },
+      receivedAtMs: 1,
+    });
+    await fixture.database.custodyProofs.put(rangePredecessor);
+    await fixture.database.custodyProofBackupAuthorities.put(
+      createBrowserProofBackupAuthorityRow(rangePredecessor, 20, rangeLocator, "range:losing"),
+    );
+    await commitBrowserCtfTerminalOperation({
+      adapter: fixture.adapter,
+      scope: fixture.scope,
+      owner: { ...fixture.owner, observedAtMs: 20 },
+      operationId: "ctf-redeem-range-losing-keyset",
+      mintUrl: MINT,
+      proofs: [proofFromRow(rangePredecessor)],
+      predecessorProofs: [rangePredecessor],
+      publicKey: PUBLIC_KEY,
+      classifiedAtMs: 30,
+    });
+
+    const sibling = (await fixture.database.custodyProofs.toArray())
+      .map(decodeBrowserCustodyProofRow)
+      .find(({ selectability }) => selectability === "selectable");
+    if (sibling === undefined) throw new Error("test sibling proof is missing");
+    await fixture.database.custodyProofs.delete([fixture.scopeId, sibling.proofId]);
+    await fixture.database.custodyProofBackupAuthorities.delete([fixture.scopeId, sibling.proofId]);
+    const desired = createEncryptedWalletBackupV2DesiredAssetRow({
+      scopeId: fixture.scopeId,
+      asset: {
+        mintUrl: fixture.desired.mintUrl,
+        unit: fixture.desired.unit,
+        assetIdentity: fixture.desired.assetIdentity,
+      },
+      custodyRevision: BigInt(fixture.desired.custodyRevision) + 1n,
+      activeProofCount: 2,
+      terminalCtfContext: {
+        conditionId: CONDITION_ID,
+        outcomeLabel: OUTCOME,
+        outcomeCollectionId: OUTCOME_ID,
+        registeredAt: 0,
+        finalExpiry: 100,
+      },
+    });
+    await fixture.database.encryptedWalletBackupV2DesiredAssets.put(desired);
+    await fixture.database.walletCounterAssociations.put({
+      scopeId: fixture.scopeId,
+      normalizedMint: MINT,
+      unit: "msat",
+      keysetId: CONDITIONAL_KEYSET_WITHOUT_FINAL_EXPIRY,
+      recoveryComplete: true,
+    });
+    await fixture.database.custodyConditionalKeysets.clear();
+
+    const snapshot = await readBrowserEncryptedWalletBackupV2AssetSnapshot({
+      database: fixture.database,
+      scopeId: fixture.scopeId,
+      localAssetKey: desired.localAssetKey,
+    });
+    expect(snapshot.proofs).toHaveLength(2);
+    expect(snapshot.losingProofs).toHaveLength(2);
+    expect(snapshot.proofs.map(({ locator }) => locator.kind).sort()).toEqual([
+      "ctf-range-manifest",
+      "nut13",
+    ]);
+    expect(snapshot.counterHighWaterMarks).toEqual([
+      { mintUrl: MINT, unit: "msat", keysetId: CONDITIONAL_KEYSET, nextCounter: 3 },
+    ]);
+
+    const keyHandle = await createEncryptedWalletBackupV2KeyHandle({
+      seed: SEED,
+      realm: "backup.example",
+      runtime: { subtle: crypto.subtle },
+    });
+    const runtime = {
+      subtle: crypto.subtle,
+      getRandomValues: crypto.getRandomValues.bind(crypto),
+    };
+    const prepared = await prepareBrowserEncryptedWalletBackupV2AssetBundle({
+      snapshot,
+      keyHandle,
+      seed: SEED,
+      terminalSealStore: fixture.terminalSealStore,
+      runtime,
+    });
+    const restored = await decryptEncryptedWalletBackupV2ProofSetBundle({
+      keyHandle,
+      seed: SEED,
+      expectedAsset: snapshot.asset,
+      custodyRevision: BigInt(snapshot.desired.custodyRevision),
+      runtime,
+      ...prepared,
+    });
+    expect(restored.proofs).toHaveLength(2);
+    expect(restored.counterHighWaterMarks).toEqual(snapshot.counterHighWaterMarks);
+  });
+
+  it("merges local and authenticated remote marks by identity and keeps the higher cursor", async () => {
+    const fixture = await committedCtfFixture(1);
+    database = fixture.database;
+    const snapshot = await readBrowserEncryptedWalletBackupV2AssetSnapshot({
+      database: fixture.database,
+      scopeId: fixture.scopeId,
+      localAssetKey: fixture.desired.localAssetKey,
+    });
+    const keyHandle = await createEncryptedWalletBackupV2KeyHandle({
+      seed: SEED,
+      realm: "backup.example",
+      runtime: { subtle: crypto.subtle },
+    });
+    const runtime = {
+      subtle: crypto.subtle,
+      getRandomValues: crypto.getRandomValues.bind(crypto),
+    };
+    const remoteSnapshot = {
+      ...snapshot,
+      counterHighWaterMarks: [
+        { mintUrl: MINT, unit: "msat" as const, keysetId: CONDITIONAL_KEYSET, nextCounter: 12 },
+        {
+          mintUrl: MINT,
+          unit: "msat" as const,
+          keysetId: CONDITIONAL_KEYSET_WITHOUT_FINAL_EXPIRY,
+          nextCounter: 5,
+        },
+      ],
+    };
+    const remoteBundle = await prepareBrowserEncryptedWalletBackupV2AssetBundle({
+      snapshot: remoteSnapshot,
+      keyHandle,
+      seed: SEED,
+      terminalSealStore: fixture.terminalSealStore,
+      runtime,
+    });
+    const remoteTerminalSealReuse = await authorizeRemoteSealReuse({
+      prepared: remoteBundle,
+      keyHandle,
+      asset: snapshot.asset,
+      custodyRevision: BigInt(snapshot.desired.custodyRevision),
+      runtime,
+    });
+
+    const prepared = await prepareBrowserEncryptedWalletBackupV2AssetBundle({
+      snapshot,
+      keyHandle,
+      seed: SEED,
+      terminalSealStore: fixture.terminalSealStore,
+      remoteTerminalSealReuse,
+      runtime,
+    });
+    const restored = await decryptEncryptedWalletBackupV2ProofSetBundle({
+      keyHandle,
+      seed: SEED,
+      expectedAsset: snapshot.asset,
+      custodyRevision: BigInt(snapshot.desired.custodyRevision),
+      runtime,
+      ...prepared,
+    });
+
+    expect(restored.counterHighWaterMarks).toEqual([
+      { mintUrl: MINT, unit: "msat", keysetId: CONDITIONAL_KEYSET, nextCounter: 12 },
+      {
+        mintUrl: MINT,
+        unit: "msat",
+        keysetId: CONDITIONAL_KEYSET_WITHOUT_FINAL_EXPIRY,
+        nextCounter: 5,
+      },
+    ]);
   });
 
   it("rejects exact CTF reads when persisted keyset-free context is missing", async () => {
@@ -974,6 +1237,54 @@ describe("browser V2 asset source", () => {
   });
 });
 
+async function authorizeRemoteSealReuse(input: {
+  readonly prepared: EncryptedWalletBackupV2PreparedTransportBundle;
+  readonly keyHandle: Awaited<ReturnType<typeof createEncryptedWalletBackupV2KeyHandle>>;
+  readonly asset: ReturnType<typeof createEncryptedWalletBackupV2AssetIdentity>;
+  readonly custodyRevision: bigint;
+  readonly runtime: EncryptedWalletBackupV2BundleRuntime;
+}) {
+  const head = createEncryptedWalletBackupV2CurrentHead({
+    realm: input.prepared.descriptor.realm,
+    walletId: input.prepared.descriptor.walletId,
+    enrollmentEpoch: 1,
+    headVersion: 7,
+    bundles: [input.prepared.descriptor],
+  });
+  const pages = enumerateEncryptedWalletBackupV2DescriptorPages({
+    head,
+    bundles: [input.prepared.descriptor],
+  });
+  const remote: Pick<EncryptedWalletBackupV2RemotePort, "readDescriptorPage" | "readObject"> = {
+    readDescriptorPage: async ({ afterBundleId }) => {
+      const page = pages.find((candidate) => candidate.afterBundleId === afterBundleId);
+      if (page === undefined) throw new Error("test backup descriptor page is missing");
+      return page;
+    },
+    readObject: async ({ objectId }) => {
+      const object = input.prepared.objects.find((candidate) => candidate.objectId === objectId);
+      if (object === undefined) throw new Error("test backup object is missing");
+      return object;
+    },
+  };
+  return authorizeEncryptedWalletBackupV2RemoteTerminalSealReuse({
+    keyHandle: input.keyHandle,
+    seed: SEED,
+    expectedAsset: input.asset,
+    custodyRevision: input.custodyRevision,
+    expectedEnrollmentEpoch: 1,
+    remote,
+    remoteRequest: {
+      origin: "https://backup.example",
+      issuedAtUnixSeconds: 100,
+      expiresAtUnixSeconds: 130,
+      signal: new AbortController().signal,
+      runtime: input.runtime,
+    },
+    runtime: input.runtime,
+  });
+}
+
 async function committedCtfFixture(losingCount: number) {
   const scope = walletScopeForSeed(SEED);
   const database = new BitcasterDB(browserWalletDatabaseName(scope.scopeId));
@@ -1117,6 +1428,9 @@ async function committedCtfFixture(losingCount: number) {
   return {
     database,
     scopeId: scope.scopeId,
+    scope,
+    adapter,
+    owner,
     desired,
     terminalSealStore: new BrowserEncryptedWalletBackupV2TerminalSealStore({
       database,

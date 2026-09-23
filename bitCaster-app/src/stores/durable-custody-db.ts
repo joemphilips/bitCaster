@@ -3,6 +3,7 @@ import Dexie, { type Table, type Transaction } from "dexie";
 import {
   applyDurableCustodyTransaction,
   assertDurableCustodyArtifactMatchesReference,
+  classifyDurableCustodyActiveWork,
   claimDurableCustodyScope,
   createDurableCustodyArtifactReference,
   decodeCanonicalMintOrigin,
@@ -56,10 +57,12 @@ import {
   BrowserCompletedProofRemovalError,
   classifyBrowserProofBackupAuthorityVerifiedLosing,
   createBrowserProofBackupAuthorityRow,
+  retireBrowserProofBackupAuthorityRowAsMintSpent,
   requireBrowserLiveProofBackupAuthorityTableRow,
   requireBrowserProofDerivationLocator,
   requireBrowserProofBackupAuthorityForProof,
   sameBrowserProofDerivationLocator,
+  type BrowserProofBackupAuthorityRow,
   type BrowserProofDerivationLocatorAuthority,
 } from "./browser-proof-backup-authority";
 import type {
@@ -78,7 +81,13 @@ import { decodeBrowserCustodyConditionalKeysetRow } from "./durable-custody-type
 import { decodeBrowserCustodyProofRow } from "./durable-custody-types";
 import {
   advanceBrowserV2DesiredAssetsForProofChanges,
+  createEncryptedWalletBackupV2DesiredAssetRow,
+  decodeEncryptedWalletBackupV2DesiredAssetRow,
+  incrementEncryptedWalletBackupV2DesiredAssetRevision,
+  requireBrowserV2DesiredAssetForProof,
   requireBrowserV2KeysetFreeTerminalContextForProof,
+  sameEncryptedWalletBackupV2RemovalIntent,
+  type EncryptedWalletBackupV2DesiredAssetRow,
 } from "./browser-encrypted-wallet-backup-v2-desired-asset";
 
 export { decodeBrowserCustodyProofRow } from "./durable-custody-types";
@@ -197,6 +206,19 @@ export type BrowserCustodyCurrentTransactionOptions = Omit<
 > & {
   readonly injectFault?: "before-commit";
 };
+
+export interface BrowserMintSpentProofRetirementCandidate {
+  readonly proof: BrowserCustodyProofRow;
+  readonly authority: BrowserProofBackupAuthorityRow;
+}
+
+export interface BrowserMintSpentProofRetirementInput {
+  readonly scopeId: string;
+  readonly candidates: readonly BrowserMintSpentProofRetirementCandidate[];
+  readonly expectedDesiredAsset: EncryptedWalletBackupV2DesiredAssetRow;
+  readonly observedAtMs: number;
+  readonly injectFault?: "before-commit" | "after-commit";
+}
 
 type ApplyVerifiedResultInput = Parameters<DurableCustodyTransaction["applyVerifiedResult"]>[0];
 
@@ -578,6 +600,201 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
     }
   }
 
+  /** Retire a bounded exact batch only after its caller obtains exact mint-SPENT evidence. */
+  async retireExactMintSpentProofs(
+    input: BrowserMintSpentProofRetirementInput,
+  ): Promise<EncryptedWalletBackupV2DesiredAssetRow> {
+    const result = await this.#database.transaction(
+      "rw",
+      this.#mintSpentRetirementTransactionTables(),
+      async () => this.#retireExactMintSpentProofs(input),
+    );
+    if (input.injectFault === "after-commit") {
+      throw new Error("injected browser mint-spent retirement fault after commit");
+    }
+    return result;
+  }
+
+  /** Use only inside an explicit active Dexie readwrite transaction. */
+  async retireExactMintSpentProofsInCurrentTransaction(
+    dexieTransaction: Transaction,
+    input: Omit<BrowserMintSpentProofRetirementInput, "injectFault"> & {
+      readonly injectFault?: "before-commit";
+    },
+  ): Promise<EncryptedWalletBackupV2DesiredAssetRow> {
+    assertCurrentReadwriteTransaction(
+      dexieTransaction,
+      this.#database,
+      this.#mintSpentRetirementTransactionTables(),
+      "browser mint-spent retirement",
+    );
+    try {
+      return await this.#retireExactMintSpentProofs(input);
+    } catch (error) {
+      abortActiveTransaction(dexieTransaction);
+      throw error;
+    }
+  }
+
+  async #retireExactMintSpentProofs(
+    input: BrowserMintSpentProofRetirementInput,
+  ): Promise<EncryptedWalletBackupV2DesiredAssetRow> {
+    const scopeId = decodeDurableCustodyScopeId(input.scopeId);
+    const observedAtMs = requireTime(input.observedAtMs, "mint-spent retirement time");
+    if (
+      input.candidates.length < 1 ||
+      input.candidates.length > DURABLE_CUSTODY_RESULT_PROOF_LIMIT_MAX
+    ) {
+      throw new Error("browser mint-spent retirement proof limit is invalid");
+    }
+    const expectedDesired = decodeEncryptedWalletBackupV2DesiredAssetRow(
+      input.expectedDesiredAsset,
+    );
+    if (expectedDesired.scopeId !== scopeId || expectedDesired.removalIntent !== null) {
+      throw new Error("browser mint-spent retirement desired asset is invalid");
+    }
+    const candidates = input.candidates.map((candidate) => {
+      const proof = decodeBrowserCustodyProofRow(candidate.proof);
+      if (
+        proof.scopeId !== scopeId ||
+        (proof.selectability !== "selectable" && proof.selectability !== "verified-losing") ||
+        proof.reservationOperationId !== null
+      ) {
+        throw new Error("browser mint-spent retirement predecessor is invalid");
+      }
+      return {
+        proof,
+        authority: requireBrowserProofBackupAuthorityForProof(candidate.authority, proof),
+      };
+    });
+    const identities = new Set(candidates.map(({ proof }) => proof.proofId));
+    if (identities.size !== candidates.length) {
+      throw new Error("browser mint-spent retirement duplicates a proof");
+    }
+    const keys = candidates.map(({ proof }) => [scopeId, proof.proofId] as [string, string]);
+    const [rawProofs, rawAuthorities, reservations] = await Promise.all([
+      this.#database.custodyProofs.bulkGet(keys),
+      this.#database.custodyProofBackupAuthorities.bulkGet(keys),
+      this.#database.custodyReservations.bulkGet(keys),
+    ]);
+    const currentAuthorities: BrowserProofBackupAuthorityRow[] = [];
+    for (const [index, candidate] of candidates.entries()) {
+      const rawProof = rawProofs[index];
+      if (rawProof === undefined) throw new Error("browser mint-spent retirement proof is missing");
+      const currentProof = decodeBrowserCustodyProofRow(rawProof);
+      if (!sameProofRow(currentProof, candidate.proof)) {
+        throw new Error("browser mint-spent retirement proof CAS is stale");
+      }
+      const currentAuthority = requireBrowserProofBackupAuthorityForProof(
+        requireBrowserLiveProofBackupAuthorityTableRow(rawAuthorities[index], keys[index]!),
+        currentProof,
+      );
+      if (!sameProofBackupAuthority(currentAuthority, candidate.authority)) {
+        throw new Error("browser mint-spent retirement authority CAS is stale");
+      }
+      if (reservations[index] !== undefined) {
+        throw new Error("browser mint-spent retirement proof is reserved");
+      }
+      currentAuthorities.push(currentAuthority);
+    }
+    await this.#requireMintSpentRetirementOperationsResolved(scopeId, currentAuthorities);
+
+    let currentDesired: EncryptedWalletBackupV2DesiredAssetRow | undefined;
+    for (const [index, candidate] of candidates.entries()) {
+      const desired = await requireBrowserV2DesiredAssetForProof({
+        database: this.#database,
+        proof: candidate.proof,
+        authority: currentAuthorities[index]!,
+      });
+      if (currentDesired === undefined) currentDesired = desired;
+      else if (!sameDesiredAssetRow(currentDesired, desired)) {
+        throw new Error("browser mint-spent retirement spans multiple assets");
+      }
+    }
+    if (
+      currentDesired === undefined ||
+      !sameDesiredAssetRow(currentDesired, expectedDesired) ||
+      currentDesired.removalIntent !== null
+    ) {
+      throw new Error("browser mint-spent retirement desired asset CAS is stale");
+    }
+    if (currentDesired.activeProofCount < candidates.length) {
+      throw new Error("browser mint-spent retirement proof count is stale");
+    }
+
+    const spentProofs = candidates.map(({ proof }) =>
+      decodeBrowserCustodyProofRow({
+        ...proof,
+        revision: proof.revision + 1,
+        selectability: "spent",
+        reservationOperationId: null,
+      }),
+    );
+    const nextAuthorities = spentProofs.map((proof, index) =>
+      retireBrowserProofBackupAuthorityRowAsMintSpent(
+        currentAuthorities[index]!,
+        candidates[index]!.proof,
+        proof,
+        observedAtMs,
+      ),
+    );
+    const nextDesired = createEncryptedWalletBackupV2DesiredAssetRow({
+      scopeId,
+      asset: {
+        mintUrl: currentDesired.mintUrl,
+        unit: currentDesired.unit,
+        assetIdentity: currentDesired.assetIdentity,
+      },
+      terminalCtfContext: currentDesired.terminalCtfContext,
+      custodyRevision: incrementEncryptedWalletBackupV2DesiredAssetRevision(
+        BigInt(currentDesired.custodyRevision),
+      ),
+      activeProofCount: currentDesired.activeProofCount - candidates.length,
+      removalIntent: null,
+    });
+    await Promise.all([
+      this.#database.custodyProofs.bulkPut(spentProofs),
+      this.#database.custodyProofBackupAuthorities.bulkPut(nextAuthorities),
+      this.#database.encryptedWalletBackupV2DesiredAssets.put(nextDesired),
+    ]);
+    if (input.injectFault === "before-commit") {
+      throw new Error("injected browser mint-spent retirement fault before commit");
+    }
+    return nextDesired;
+  }
+
+  async #requireMintSpentRetirementOperationsResolved(
+    scopeId: string,
+    authorities: readonly BrowserProofBackupAuthorityRow[],
+  ): Promise<void> {
+    const operationIds = [
+      ...new Set(
+        authorities.flatMap((authority) => [
+          ...(authority.admissionOperationId === null ? [] : [authority.admissionOperationId]),
+          ...(authority.terminalAuthority?.kind === "local-operation"
+            ? [authority.terminalAuthority.operationId]
+            : []),
+        ]),
+      ),
+    ];
+    const keys = operationIds.map((operationId) => [scopeId, operationId] as [string, string]);
+    const [operations, activeWork] = await Promise.all([
+      this.#database.custodyOperations.bulkGet(keys),
+      this.#database.custodyActiveWork.bulkGet(keys),
+    ]);
+    for (const [index, row] of operations.entries()) {
+      if (activeWork[index] !== undefined) {
+        throw new Error("browser mint-spent retirement has active custody work");
+      }
+      if (
+        row !== undefined &&
+        classifyDurableCustodyActiveWork(decodeOperationRow(row).record) !== "none"
+      ) {
+        throw new Error("browser mint-spent retirement has an unresolved custody operation");
+      }
+    }
+  }
+
   async readOperation(
     scope: DurableCustodyScope,
     operationId: string,
@@ -768,6 +985,18 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
       this.#database.custodyOperations,
       this.#database.custodyProofs,
       this.#database.custodyReservations,
+      this.#database.custodyProofBackupAuthorities,
+      this.#database.custodyConditionalKeysets,
+      this.#database.encryptedWalletBackupV2DesiredAssets,
+    ];
+  }
+
+  #mintSpentRetirementTransactionTables(): readonly Table[] {
+    return [
+      this.#database.custodyOperations,
+      this.#database.custodyProofs,
+      this.#database.custodyReservations,
+      this.#database.custodyActiveWork,
       this.#database.custodyProofBackupAuthorities,
       this.#database.custodyConditionalKeysets,
       this.#database.encryptedWalletBackupV2DesiredAssets,
@@ -2512,6 +2741,75 @@ function sameProofRow(
     left.selectability === right.selectability &&
     left.reservationOperationId === right.reservationOperationId &&
     left.receivedAtMs === right.receivedAtMs
+  );
+}
+
+function sameProofBackupAuthority(
+  left: BrowserProofBackupAuthorityRow,
+  right: BrowserProofBackupAuthorityRow,
+): boolean {
+  return (
+    left.schemaVersion === right.schemaVersion &&
+    left.scopeId === right.scopeId &&
+    left.proofId === right.proofId &&
+    left.proofFingerprint === right.proofFingerprint &&
+    left.proofRevision === right.proofRevision &&
+    left.proofState === right.proofState &&
+    left.admissionOperationId === right.admissionOperationId &&
+    left.terminalOperationId === right.terminalOperationId &&
+    sameTerminalAuthority(left.terminalAuthority, right.terminalAuthority) &&
+    left.recordCreatedAtUnixSeconds === right.recordCreatedAtUnixSeconds &&
+    left.recordUpdatedAtUnixSeconds === right.recordUpdatedAtUnixSeconds &&
+    left.backupState === right.backupState &&
+    sameBrowserProofDerivationLocator(authorityLocator(left), authorityLocator(right)) &&
+    left.backupRecordId === right.backupRecordId &&
+    left.backupRecordCommitment === right.backupRecordCommitment &&
+    left.updatedAtMs === right.updatedAtMs
+  );
+}
+
+function sameTerminalAuthority(
+  left: BrowserProofBackupAuthorityRow["terminalAuthority"],
+  right: BrowserProofBackupAuthorityRow["terminalAuthority"],
+): boolean {
+  if (left === null || right === null) return left === right;
+  if (left.kind !== right.kind) return false;
+  if (left.kind === "remote-seal") return right.kind === "remote-seal";
+  return right.kind === "local-operation" && left.operationId === right.operationId;
+}
+
+function sameDesiredAssetRow(
+  left: EncryptedWalletBackupV2DesiredAssetRow,
+  right: EncryptedWalletBackupV2DesiredAssetRow,
+): boolean {
+  return (
+    left.scopeId === right.scopeId &&
+    left.localAssetKey === right.localAssetKey &&
+    left.mintUrl === right.mintUrl &&
+    left.unit === right.unit &&
+    left.assetIdentity === right.assetIdentity &&
+    left.custodyRevision === right.custodyRevision &&
+    left.activeProofCount === right.activeProofCount &&
+    left.desiredAction === right.desiredAction &&
+    left.syncState === right.syncState &&
+    sameTerminalCtfContext(left.terminalCtfContext, right.terminalCtfContext) &&
+    sameEncryptedWalletBackupV2RemovalIntent(left.removalIntent, right.removalIntent)
+  );
+}
+
+function sameTerminalCtfContext(
+  left: EncryptedWalletBackupV2DesiredAssetRow["terminalCtfContext"],
+  right: EncryptedWalletBackupV2DesiredAssetRow["terminalCtfContext"],
+): boolean {
+  return (
+    left === right ||
+    (left !== null &&
+      right !== null &&
+      left.conditionId === right.conditionId &&
+      left.outcomeLabel === right.outcomeLabel &&
+      left.outcomeCollectionId === right.outcomeCollectionId &&
+      left.registeredAt === right.registeredAt &&
+      left.finalExpiry === right.finalExpiry)
   );
 }
 

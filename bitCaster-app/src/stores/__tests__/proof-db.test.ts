@@ -129,10 +129,7 @@ vi.mock("dexie", () => {
 import {
   addProofs,
   addProofsIfMissing,
-  getConditionCtfProofs,
-  getOutcomeProofs,
   getProofs,
-  normalizeStoredMintUrls,
   getProofOperation,
   markProofOperationCompleted,
   markProofOperationFailed,
@@ -205,39 +202,6 @@ describe("proof-db normalization", () => {
     expect(rows).toHaveLength(1);
   });
 
-  it("migration rewrites pre-existing un-normalized rows", async () => {
-    // Seed directly so we bypass the write-time normalizer.
-    store.set("legacy", {
-      secret: "legacy",
-      amount: Amount.from(500),
-      id: "idL",
-      C: "CL",
-      mintUrl: "https://mint.staging//",
-      baseAsset: "sat",
-      unit: "sat",
-    });
-    const changed = await normalizeStoredMintUrls();
-    expect(changed).toBe(1);
-    const rows = await getProofs("https://mint.staging");
-    expect(rows).toHaveLength(1);
-  });
-
-  it("migration is a no-op when all rows are already normalized", async () => {
-    await addProofs([
-      {
-        secret: "s1",
-        amount: Amount.from(100),
-        id: "id1",
-        C: "C1",
-        mintUrl: "http://m",
-        baseAsset: "sat",
-        unit: "sat",
-      },
-    ]);
-    const changed = await normalizeStoredMintUrls();
-    expect(changed).toBe(0);
-  });
-
   it("requires an exact unit on every new proof write", async () => {
     await expect(
       addProofs([
@@ -253,7 +217,7 @@ describe("proof-db normalization", () => {
     ).rejects.toThrow("Stored proof unit is required");
   });
 
-  it("rejects sat-unit CTF writes and excludes malformed legacy CTF rows", async () => {
+  it("rejects sat-unit CTF writes", async () => {
     const malformed = {
       secret: "legacy-ctf-sat",
       amount: Amount.from(100),
@@ -268,14 +232,6 @@ describe("proof-db normalization", () => {
     await expect(addProofs([malformed])).rejects.toThrow(
       "CTF proofs require exact Cashu unit 'msat'",
     );
-
-    store.set(malformed.secret, malformed);
-    await expect(getConditionCtfProofs("http://m", "cond", { baseAsset: "sat" })).resolves.toEqual(
-      [],
-    );
-    await expect(
-      getOutcomeProofs("http://m", "cond", "YES", { baseAsset: "sat" }),
-    ).resolves.toEqual([]);
   });
 
   it("rejects mismatched base asset and unit on write", async () => {
@@ -309,114 +265,6 @@ describe("proof-db normalization", () => {
     ).rejects.toThrow(/unsupported Cashu proof unit/i);
   });
 
-  it("getOutcomeProofs returns only the requested condition outcome", async () => {
-    await addProofs([
-      {
-        secret: "yes",
-        amount: Amount.from(100),
-        id: "id1",
-        C: "C1",
-        mintUrl: "http://m",
-        conditionId: "cond",
-        outcomeCollection: "YES",
-        baseAsset: "sat",
-        unit: "msat",
-      },
-      {
-        secret: "no",
-        amount: Amount.from(100),
-        id: "id2",
-        C: "C2",
-        mintUrl: "http://m",
-        condition_id: "cond",
-        outcome_collection: "NO",
-        baseAsset: "sat",
-        unit: "msat",
-      } as never,
-      {
-        secret: "base",
-        amount: Amount.from(100),
-        id: "id3",
-        C: "C3",
-        mintUrl: "http://m",
-        baseAsset: "sat",
-        unit: "sat",
-      },
-    ]);
-
-    const rows = await getOutcomeProofs("http://m", "cond", "YES", { baseAsset: "sat" });
-
-    expect(rows.map((r) => r.secret)).toEqual(["yes"]);
-  });
-
-  it("getConditionCtfProofs gathers every keyset leg regardless of label storage", async () => {
-    await addProofs([
-      // composite-label storage: both keysets tagged "A|B"
-      {
-        secret: "compA",
-        amount: Amount.from(100),
-        id: "keyset-A",
-        C: "C1",
-        mintUrl: "http://m",
-        conditionId: "cond",
-        outcomeCollection: "A|B",
-        baseAsset: "sat",
-        unit: "msat",
-      },
-      {
-        secret: "compB",
-        amount: Amount.from(100),
-        id: "keyset-B",
-        C: "C2",
-        mintUrl: "http://m",
-        conditionId: "cond",
-        outcomeCollection: "A|B",
-        baseAsset: "sat",
-        unit: "msat",
-      },
-      // per-primitive storage variant under condition_id snake-case key
-      {
-        secret: "primC",
-        amount: Amount.from(100),
-        id: "keyset-C",
-        C: "C3",
-        mintUrl: "http://m",
-        condition_id: "cond",
-        outcome_collection: "C",
-        baseAsset: "sat",
-        unit: "msat",
-      } as never,
-      // different condition — must be excluded
-      {
-        secret: "other",
-        amount: Amount.from(100),
-        id: "keyset-A",
-        C: "C4",
-        mintUrl: "http://m",
-        conditionId: "cond2",
-        outcomeCollection: "A",
-        baseAsset: "sat",
-        unit: "msat",
-      },
-      // base (non-CTF) proof — must be excluded
-      {
-        secret: "base",
-        amount: Amount.from(100),
-        id: "id5",
-        C: "C5",
-        mintUrl: "http://m",
-        baseAsset: "sat",
-        unit: "sat",
-      },
-    ]);
-
-    const rows = await getConditionCtfProofs("http://m", "cond", { baseAsset: "sat" });
-
-    expect(rows.map((r) => r.secret).sort()).toEqual(["compA", "compB", "primC"]);
-    // Bucketing by real keyset id recovers all three legs.
-    expect(new Set(rows.map((r) => r.id))).toEqual(new Set(["keyset-A", "keyset-B", "keyset-C"]));
-  });
-
   it("preserves terminal authority when a losing CTF proof is re-imported", async () => {
     const proof = {
       secret: "terminal",
@@ -432,9 +280,7 @@ describe("proof-db normalization", () => {
     await addProofs([{ ...proof, terminalOperationId: "ctf-redeem:terminal" }]);
     await addProofs([proof]);
 
-    await expect(
-      getOutcomeProofs("http://m", "cond", "YES", { baseAsset: "sat" }),
-    ).resolves.toEqual([]);
+    await expect(getProofs("http://m")).resolves.toEqual([]);
     expect(store.get(proof.secret)?.terminalOperationId).toBe("ctf-redeem:terminal");
   });
 

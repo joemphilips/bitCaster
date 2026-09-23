@@ -134,7 +134,7 @@ describe("DepositStep", () => {
   it("retries a failed head read without creating a payment", async () => {
     readBrowserMarketFundingHeadId.mockRejectedValueOnce(new Error("wallet read unavailable"));
     renderStep({ presentation: "detail" });
-    await screen.findByRole("alert");
+    expect(await screen.findByRole("alert")).toBe(screen.getByTestId("amm-funding-error"));
     expect(screen.getByTestId("confirm-amm-funding")).toBeDisabled();
     await userEvent.setup().click(screen.getByRole("button", { name: "Retry wallet payment" }));
     await waitFor(() => expect(readBrowserMarketFundingHeadId).toHaveBeenCalledTimes(2));

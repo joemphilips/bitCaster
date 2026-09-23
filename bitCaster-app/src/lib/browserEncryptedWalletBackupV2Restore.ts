@@ -1,18 +1,26 @@
 import {
   collectAllEncryptedWalletBackupV2DescriptorPages,
   deserializeDurableCustodyProofArtifact,
+  discoverEncryptedWalletBackupV2ProofSetBundle,
   decryptEncryptedWalletBackupV2ProofSetBundle,
+  digestEncryptedWalletBackupV2BundleDescriptor,
   deriveEncryptedWalletBackupV2AssetLocator,
   encryptedWalletBackupV2LocalAssetKey,
   prepareEncryptedWalletBackupV2RequestProof,
+  requireEncryptedWalletBackupV2CollectedHeadEvidence,
+  requireEncryptedWalletBackupV2VerifiedProofSetSource,
   verifyEncryptedWalletBackupV2RestoredProofSet,
   type EncryptedWalletBackupV2AssetIdentity,
+  type EncryptedWalletBackupV2BundleDescriptor,
   type EncryptedWalletBackupV2BundleRuntime,
   type EncryptedWalletBackupV2CollectedHeadEvidence,
+  type EncryptedWalletBackupV2DiscoveredProofSetBundle,
   type EncryptedWalletBackupV2KeyHandle,
   type EncryptedWalletBackupV2RemotePort,
   type EncryptedWalletBackupV2RestoreVerificationPort,
   type EncryptedWalletBackupV2UnverifiedProofSet,
+  type EncryptedWalletBackupV2VerifiedProofSet,
+  type EncryptedWalletBackupV2VerifiedProofSetSource,
 } from "@bitcaster/client-sdk";
 import {
   hashToCurve,
@@ -133,6 +141,52 @@ export interface BrowserEncryptedWalletBackupV2RestoreAndAdmitInput extends Brow
   readonly lockManager?: Pick<LockManager, "request">;
 }
 
+interface BrowserEncryptedWalletBackupV2RemoteInput {
+  readonly seed: Uint8Array;
+  readonly keyHandle: EncryptedWalletBackupV2KeyHandle;
+  readonly enrollmentEpoch: number;
+  readonly remote: EncryptedWalletBackupV2RemotePort;
+  readonly requestUrl: (kind: "head" | "object", value: string | null) => string;
+  readonly nowUnixSeconds: () => number;
+  readonly runtime: EncryptedWalletBackupV2BundleRuntime;
+  readonly signal: AbortSignal;
+  readonly isCurrentProfile: () => boolean;
+  readonly reportTargetedRecoveryStage?: (
+    stage: BrowserEncryptedWalletBackupV2RestoreStage,
+  ) => void;
+}
+
+interface BrowserEncryptedWalletBackupV2RemoteAssetInput extends BrowserEncryptedWalletBackupV2RemoteInput {
+  readonly asset: EncryptedWalletBackupV2AssetIdentity;
+}
+
+interface BrowserEncryptedWalletBackupV2RemoteVerificationInput extends BrowserEncryptedWalletBackupV2RemoteAssetInput {
+  readonly loadWallet: () => Promise<CashuWallet>;
+}
+
+export interface BrowserEncryptedWalletBackupV2ForcedRemoteRestoreInput extends BrowserEncryptedWalletBackupV2RemoteVerificationInput {
+  readonly collectedHeadEvidence?: EncryptedWalletBackupV2CollectedHeadEvidence;
+}
+
+export interface BrowserEncryptedWalletBackupV2ForcedRemoteRestoreResult {
+  readonly collectedHeadEvidence: EncryptedWalletBackupV2CollectedHeadEvidence;
+  readonly descriptorIdentity: EncryptedWalletBackupV2VerifiedProofSetSource;
+  readonly verified: EncryptedWalletBackupV2VerifiedProofSet;
+}
+
+export interface BrowserEncryptedWalletBackupV2DiscoveredDescriptorRestoreInput extends BrowserEncryptedWalletBackupV2RemoteInput {
+  readonly collectedHeadEvidence: EncryptedWalletBackupV2CollectedHeadEvidence;
+  readonly descriptor: EncryptedWalletBackupV2BundleDescriptor;
+  readonly loadWallet: (mintUrl: string) => Promise<CashuWallet>;
+}
+
+export interface BrowserEncryptedWalletBackupV2DiscoveredDescriptorRestoreResult {
+  readonly asset: EncryptedWalletBackupV2AssetIdentity;
+  readonly collectedHeadEvidence: EncryptedWalletBackupV2CollectedHeadEvidence;
+  readonly descriptorIdentity: EncryptedWalletBackupV2VerifiedProofSetSource;
+  readonly verified: EncryptedWalletBackupV2VerifiedProofSet;
+}
+
 export type BrowserEncryptedWalletBackupV2RestoreAndAdmitResult =
   | { readonly kind: "local-custody" }
   | { readonly kind: "restored"; readonly bundleId: string; readonly headVersion: number };
@@ -152,6 +206,89 @@ export async function restoreBrowserEncryptedWalletBackupV2TargetedAsset(
     (input.minimumAvailableAmount === undefined || localAmount >= input.minimumAvailableAmount)
   )
     return { kind: "local-custody" };
+  return readBrowserEncryptedWalletBackupV2RemoteAsset(input);
+}
+
+export async function restoreAndVerifyBrowserEncryptedWalletBackupV2ForcedRemoteAsset(
+  input: BrowserEncryptedWalletBackupV2ForcedRemoteRestoreInput,
+): Promise<BrowserEncryptedWalletBackupV2ForcedRemoteRestoreResult> {
+  requireProductMsatUnit(input.asset.unit);
+  requireCurrent(input);
+  const restored = await readBrowserEncryptedWalletBackupV2RemoteAsset(
+    input,
+    input.collectedHeadEvidence,
+    true,
+  );
+  const verified = await verifyBrowserEncryptedWalletBackupV2RestoredProofSet(
+    input,
+    input.asset,
+    restored,
+    lazyWallet(input),
+  );
+  requireCurrent(input);
+  const descriptorIdentity = requireEncryptedWalletBackupV2VerifiedProofSetSource(verified);
+  requireVerifiedDescriptorSourceMatches(descriptorIdentity, restored);
+  return {
+    collectedHeadEvidence: restored.collectedHeadEvidence,
+    descriptorIdentity,
+    verified,
+  };
+}
+
+/** Discover and verify one descriptor from an already authenticated current head. */
+export async function discoverAndVerifyBrowserEncryptedWalletBackupV2Descriptor(
+  input: BrowserEncryptedWalletBackupV2DiscoveredDescriptorRestoreInput,
+): Promise<BrowserEncryptedWalletBackupV2DiscoveredDescriptorRestoreResult> {
+  requireCurrent(input);
+  const head = requireEncryptedWalletBackupV2CollectedHeadEvidence(input.collectedHeadEvidence);
+  requireCurrentHeadIdentity(input, head);
+  let fetched: Awaited<ReturnType<typeof readBrowserEncryptedWalletBackupV2DescriptorObjects>>;
+  try {
+    fetched = await readBrowserEncryptedWalletBackupV2DescriptorObjects(
+      input,
+      head,
+      input.descriptor,
+    );
+  } catch (error) {
+    reportStage(input, "backup-object");
+    throw error;
+  }
+  const { descriptor, objects } = fetched;
+  let discovered: EncryptedWalletBackupV2DiscoveredProofSetBundle;
+  try {
+    discovered = await decryptBrowserEncryptedWalletBackupV2Descriptor(input, descriptor, objects);
+  } catch (error) {
+    reportStage(input, "backup-decrypt");
+    throw error;
+  }
+  requireCurrent(input);
+  requireProductMsatUnit(discovered.asset.unit);
+  const restored = remoteRestoreBundle(head, descriptor, discovered.unverified);
+  const loadWallet = lazyWallet({
+    ...input,
+    loadWallet: () => input.loadWallet(discovered.asset.mintUrl),
+  });
+  const verified = await verifyBrowserEncryptedWalletBackupV2RestoredProofSet(
+    input,
+    discovered.asset,
+    restored,
+    loadWallet,
+  );
+  const descriptorIdentity = requireEncryptedWalletBackupV2VerifiedProofSetSource(verified);
+  requireVerifiedDescriptorSourceMatches(descriptorIdentity, restored);
+  return {
+    asset: discovered.asset,
+    collectedHeadEvidence: head,
+    descriptorIdentity,
+    verified,
+  };
+}
+
+async function readBrowserEncryptedWalletBackupV2RemoteAsset(
+  input: BrowserEncryptedWalletBackupV2RemoteAssetInput,
+  collectedHeadEvidence?: EncryptedWalletBackupV2CollectedHeadEvidence,
+  requireUniqueDescriptor = false,
+): Promise<Extract<BrowserEncryptedWalletBackupV2TargetedRestoreResult, { kind: "backup" }>> {
   let assetLocator: string;
   let head: Awaited<ReturnType<typeof collectAllEncryptedWalletBackupV2DescriptorPages>>;
   let descriptor: (typeof head.bundles)[number];
@@ -161,70 +298,181 @@ export async function restoreBrowserEncryptedWalletBackupV2TargetedAsset(
       keyHandle: input.keyHandle,
       ...input.asset,
     });
-    head = await collectAllEncryptedWalletBackupV2DescriptorPages({
-      issueRequestProof: (cursor) => requestProof(input, "head", cursor, new Uint8Array()),
-      readDescriptorPage: ({ requestProof, afterBundleId }) => {
-        requireCurrent(input);
-        return input.remote.readDescriptorPage({
-          requestProof,
-          afterBundleId,
-          signal: input.signal,
-        });
-      },
-    });
+    head =
+      collectedHeadEvidence === undefined
+        ? await collectAllEncryptedWalletBackupV2DescriptorPages({
+            issueRequestProof: (cursor) => requestProof(input, "head", cursor, new Uint8Array()),
+            readDescriptorPage: ({ requestProof, afterBundleId }) => {
+              requireCurrent(input);
+              return input.remote.readDescriptorPage({
+                requestProof,
+                afterBundleId,
+                signal: input.signal,
+              });
+            },
+          })
+        : requireEncryptedWalletBackupV2CollectedHeadEvidence(collectedHeadEvidence);
     requireCurrent(input);
-    if (
-      head.head.realm !== input.keyHandle.realm ||
-      head.head.walletId !== input.keyHandle.walletId ||
-      head.head.enrollmentEpoch !== input.enrollmentEpoch
-    ) {
-      throw new Error("encrypted backup V2 current head is foreign");
-    }
-    descriptor = head.bundles.find((candidate) => candidate.assetLocator === assetLocator)!;
-    if (descriptor === undefined) throw new Error("encrypted backup V2 current asset is absent");
-    objects = [];
-    for (const { objectId } of descriptor.objects) {
-      const auth = await requestProof(input, "object", objectId, new Uint8Array());
-      requireCurrent(input);
-      objects.push(
-        await input.remote.readObject({
-          requestProof: auth,
-          objectId,
-          expectedDescriptor: descriptor,
-          signal: input.signal,
-        }),
-      );
-    }
-    requireCurrent(input);
+    requireCurrentHeadIdentity(input, head);
+    const descriptors = head.bundles.filter((candidate) => candidate.assetLocator === assetLocator);
+    if (descriptors.length === 0) throw new Error("encrypted backup V2 current asset is absent");
+    if (requireUniqueDescriptor && descriptors.length !== 1)
+      throw new Error("encrypted backup V2 current asset is ambiguous");
+    descriptor = descriptors[0]!;
+    const fetched = await readBrowserEncryptedWalletBackupV2DescriptorObjects(
+      input,
+      head,
+      descriptor,
+    );
+    descriptor = fetched.descriptor;
+    objects = fetched.objects;
   } catch (error) {
     reportStage(input, "backup-object");
     throw error;
   }
-  let unverified: Awaited<ReturnType<typeof decryptEncryptedWalletBackupV2ProofSetBundle>>;
+  let discovered: EncryptedWalletBackupV2DiscoveredProofSetBundle;
   try {
-    unverified = await decryptEncryptedWalletBackupV2ProofSetBundle({
-      keyHandle: input.keyHandle,
-      seed: input.seed,
-      expectedAsset: input.asset,
-      custodyRevision: descriptor.custodyRevision,
+    discovered = await decryptBrowserEncryptedWalletBackupV2Descriptor(
+      input,
       descriptor,
       objects,
-      runtime: input.runtime,
-    });
+      input.asset,
+    );
     requireCurrent(input);
   } catch (error) {
     reportStage(input, "backup-decrypt");
     throw error;
   }
+  return remoteRestoreBundle(head, descriptor, discovered.unverified);
+}
+
+async function readBrowserEncryptedWalletBackupV2DescriptorObjects(
+  input: BrowserEncryptedWalletBackupV2RemoteInput,
+  head: EncryptedWalletBackupV2CollectedHeadEvidence,
+  selectedDescriptor: EncryptedWalletBackupV2BundleDescriptor,
+): Promise<{
+  readonly descriptor: EncryptedWalletBackupV2BundleDescriptor;
+  readonly objects: Awaited<ReturnType<EncryptedWalletBackupV2RemotePort["readObject"]>>[];
+}> {
+  const descriptor = requireDescriptorInCollectedHead(input, head, selectedDescriptor);
+  const objects: Awaited<ReturnType<EncryptedWalletBackupV2RemotePort["readObject"]>>[] = [];
+  for (const { objectId } of descriptor.objects) {
+    const auth = await requestProof(input, "object", objectId, new Uint8Array());
+    requireCurrent(input);
+    objects.push(
+      await input.remote.readObject({
+        requestProof: auth,
+        objectId,
+        expectedDescriptor: descriptor,
+        signal: input.signal,
+      }),
+    );
+  }
+  requireCurrent(input);
+  return { descriptor, objects };
+}
+
+async function decryptBrowserEncryptedWalletBackupV2Descriptor(
+  input: BrowserEncryptedWalletBackupV2RemoteInput,
+  descriptor: EncryptedWalletBackupV2BundleDescriptor,
+  objects: Awaited<ReturnType<EncryptedWalletBackupV2RemotePort["readObject"]>>[],
+  expectedAsset?: EncryptedWalletBackupV2AssetIdentity,
+): Promise<EncryptedWalletBackupV2DiscoveredProofSetBundle> {
+  const discovered =
+    expectedAsset === undefined
+      ? await discoverEncryptedWalletBackupV2ProofSetBundle({
+          keyHandle: input.keyHandle,
+          seed: input.seed,
+          custodyRevision: descriptor.custodyRevision,
+          descriptor,
+          objects,
+          runtime: input.runtime,
+        })
+      : {
+          asset: expectedAsset,
+          unverified: await decryptEncryptedWalletBackupV2ProofSetBundle({
+            keyHandle: input.keyHandle,
+            seed: input.seed,
+            expectedAsset,
+            custodyRevision: descriptor.custodyRevision,
+            descriptor,
+            objects,
+            runtime: input.runtime,
+          }),
+        };
+  requireCurrent(input);
+  return discovered;
+}
+
+function requireCurrentHeadIdentity(
+  input: BrowserEncryptedWalletBackupV2RemoteInput,
+  head: EncryptedWalletBackupV2CollectedHeadEvidence,
+): void {
+  requireCurrent(input);
+  if (
+    head.head.realm !== input.keyHandle.realm ||
+    head.head.walletId !== input.keyHandle.walletId ||
+    head.head.enrollmentEpoch !== input.enrollmentEpoch
+  ) {
+    throw new Error("encrypted backup V2 current head is foreign");
+  }
+}
+
+function requireDescriptorInCollectedHead(
+  input: BrowserEncryptedWalletBackupV2RemoteInput,
+  head: EncryptedWalletBackupV2CollectedHeadEvidence,
+  selectedDescriptor: EncryptedWalletBackupV2BundleDescriptor,
+): EncryptedWalletBackupV2BundleDescriptor {
+  requireCurrent(input);
+  const selectedDigest = digestEncryptedWalletBackupV2BundleDescriptor(selectedDescriptor);
+  const matches = head.bundles.filter(({ bundleId }) => bundleId === selectedDescriptor.bundleId);
+  if (
+    matches.length !== 1 ||
+    digestEncryptedWalletBackupV2BundleDescriptor(matches[0]!) !== selectedDigest
+  ) {
+    throw new Error("encrypted backup V2 descriptor is not bound to the current head");
+  }
+  return matches[0]!;
+}
+
+function remoteRestoreBundle(
+  head: EncryptedWalletBackupV2CollectedHeadEvidence,
+  descriptor: EncryptedWalletBackupV2BundleDescriptor,
+  unverified: EncryptedWalletBackupV2UnverifiedProofSet,
+): Extract<BrowserEncryptedWalletBackupV2TargetedRestoreResult, { kind: "backup" }> {
   return {
     kind: "backup",
-    assetLocator,
+    assetLocator: descriptor.assetLocator,
     bundleId: descriptor.bundleId,
     custodyRevision: descriptor.custodyRevision,
     headVersion: head.head.headVersion,
     collectedHeadEvidence: head,
     unverified,
   };
+}
+
+function requireVerifiedDescriptorSourceMatches(
+  source: EncryptedWalletBackupV2VerifiedProofSetSource,
+  restored: Extract<BrowserEncryptedWalletBackupV2TargetedRestoreResult, { kind: "backup" }>,
+): void {
+  const descriptors = restored.collectedHeadEvidence.bundles.filter(
+    ({ bundleId }) => bundleId === restored.bundleId,
+  );
+  if (descriptors.length !== 1) {
+    throw new Error("browser V2 restore descriptor identity is invalid");
+  }
+  const descriptor = descriptors[0]!;
+  if (
+    source.bundleId !== descriptor.bundleId ||
+    source.descriptorDigest !== digestEncryptedWalletBackupV2BundleDescriptor(descriptor) ||
+    source.assetLocator !== descriptor.assetLocator ||
+    source.custodyRevision !== descriptor.custodyRevision ||
+    source.bundleId !== restored.bundleId ||
+    source.assetLocator !== restored.assetLocator ||
+    source.custodyRevision !== restored.custodyRevision
+  ) {
+    throw new Error("browser V2 restore descriptor identity is invalid");
+  }
 }
 
 /** Verify and atomically admit one requested V2 asset, or repair its local cache. */
@@ -248,26 +496,13 @@ export async function restoreAndAdmitBrowserEncryptedWalletBackupV2TargetedAsset
     }
     return restored;
   }
-  let verified: Awaited<ReturnType<typeof verifyEncryptedWalletBackupV2RestoredProofSet>>;
+  const verified = await verifyBrowserEncryptedWalletBackupV2RestoredProofSet(
+    input,
+    input.asset,
+    restored,
+    loadWallet,
+  );
   let admissionStage: BrowserEncryptedWalletBackupV2RestoreStage = "backup-admit-lock";
-  try {
-    if (restored.unverified.proofs.some(({ terminalSeal }) => terminalSeal === undefined)) {
-      const wallet = await loadWallet();
-      if (normalizeUrl(wallet.mint.mintUrl) !== normalizeUrl(input.asset.mintUrl)) {
-        throw new Error("browser V2 restore mint is foreign");
-      }
-    }
-    verified = await verifyEncryptedWalletBackupV2RestoredProofSet({
-      seed: input.seed,
-      expectedAsset: input.asset,
-      unverified: restored.unverified,
-      port: restoreVerificationPort(input, loadWallet),
-    });
-    requireCurrent(input);
-  } catch (error) {
-    reportStage(input, "backup-verify");
-    throw error;
-  }
   try {
     const allSealed =
       verified.proofs.length > 0 &&
@@ -346,12 +581,39 @@ export async function restoreAndAdmitBrowserEncryptedWalletBackupV2TargetedAsset
   return { kind: "restored", bundleId: restored.bundleId, headVersion: restored.headVersion };
 }
 
+async function verifyBrowserEncryptedWalletBackupV2RestoredProofSet(
+  input: BrowserEncryptedWalletBackupV2RemoteInput,
+  asset: EncryptedWalletBackupV2AssetIdentity,
+  restored: Extract<BrowserEncryptedWalletBackupV2TargetedRestoreResult, { kind: "backup" }>,
+  loadWallet: () => Promise<CashuWallet>,
+): Promise<EncryptedWalletBackupV2VerifiedProofSet> {
+  try {
+    if (restored.unverified.proofs.some(({ terminalSeal }) => terminalSeal === undefined)) {
+      const wallet = await loadWallet();
+      if (normalizeUrl(wallet.mint.mintUrl) !== normalizeUrl(asset.mintUrl)) {
+        throw new Error("browser V2 restore mint is foreign");
+      }
+    }
+    const verified = await verifyEncryptedWalletBackupV2RestoredProofSet({
+      seed: input.seed,
+      expectedAsset: asset,
+      unverified: restored.unverified,
+      port: restoreVerificationPort(input, loadWallet),
+    });
+    requireCurrent(input);
+    return verified;
+  } catch (error) {
+    reportStage(input, "backup-verify");
+    throw error;
+  }
+}
+
 function requireProductMsatUnit(unit: unknown): asserts unit is "msat" {
   if (unit !== "msat") throw new Error("browser V2 product restore requires msat");
 }
 
 function reportStage(
-  input: BrowserEncryptedWalletBackupV2TargetedRestoreInput,
+  input: BrowserEncryptedWalletBackupV2RemoteInput,
   stage: BrowserEncryptedWalletBackupV2RestoreStage,
 ): void {
   input.reportTargetedRecoveryStage?.(stage);
@@ -382,7 +644,7 @@ function classifyFailure(error: unknown): BrowserEncryptedWalletBackupV2FailureC
 }
 
 function restoreVerificationPort(
-  input: BrowserEncryptedWalletBackupV2RestoreAndAdmitInput,
+  input: BrowserEncryptedWalletBackupV2RemoteInput,
   loadWallet: () => Promise<CashuWallet>,
 ): EncryptedWalletBackupV2RestoreVerificationPort {
   return {
@@ -609,7 +871,7 @@ function requireCurrentForLocalCustody(
 }
 
 async function requestProof(
-  input: BrowserEncryptedWalletBackupV2TargetedRestoreInput,
+  input: BrowserEncryptedWalletBackupV2RemoteInput,
   kind: "head" | "object",
   value: string | null,
   payload: Uint8Array,
@@ -629,12 +891,16 @@ async function requestProof(
   });
 }
 
-function requireCurrent(input: BrowserEncryptedWalletBackupV2TargetedRestoreInput): void {
+function requireCurrent(input: BrowserEncryptedWalletBackupV2RemoteInput): void {
   if (!input.isCurrentProfile() || input.signal.aborted)
     throw new Error("browser V2 targeted restore profile is stale");
 }
 
-function lazyWallet(input: BrowserEncryptedWalletBackupV2RestoreAndAdmitInput) {
+function lazyWallet(
+  input: BrowserEncryptedWalletBackupV2RemoteInput & {
+    readonly loadWallet: () => Promise<CashuWallet>;
+  },
+) {
   let pending: Promise<CashuWallet> | undefined;
   return async (): Promise<CashuWallet> => {
     if (pending === undefined) {

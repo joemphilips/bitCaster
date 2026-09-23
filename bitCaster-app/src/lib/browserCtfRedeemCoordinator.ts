@@ -34,9 +34,11 @@ import {
   createBrowserCustodyProofRow,
   type BrowserDurableCustodyAdapter,
 } from "../stores/durable-custody-db";
-import { storedProofFromCustodyRow } from "../stores/proof-db";
+import { storedProofFromCustodyRow, type BitcasterDB } from "../stores/proof-db";
 import { browserWalletScope } from "./browserCtfRangeOrderSource";
 import type { BrowserCtfRedeemLeg } from "./browserCtfRedeemSelection";
+import { requireBrowserWalletNewWritePermission } from "./browserWalletNewWritePermission";
+import { withWalletProfileLock } from "./walletProfileLock";
 import { normalizeUrl } from "./url";
 
 export type BrowserCanonicalCtfRedeemRecoveryResult =
@@ -180,8 +182,10 @@ export interface BrowserCanonicalCtfRedeemBindingInput {
   readonly leg: BrowserCtfRedeemLeg;
   readonly regularKeyset: MintKeys;
   readonly counterSource: CounterSource;
+  readonly database: BitcasterDB;
   readonly adapter: BrowserDurableCustodyAdapter;
   readonly owner: DurableCustodyOwnerAuthorization;
+  readonly lockManager?: Pick<LockManager, "request">;
 }
 
 export async function bindBrowserCanonicalCtfRedeemLeg(
@@ -203,67 +207,77 @@ export async function bindBrowserCanonicalCtfRedeemLeg(
     retainedOperationKey: operationId,
     binding: { kind: "wallet", activityId: operationId, stage: "ctf-redeem" },
   });
-  if ((await input.adapter.readOperation(scope, custodyOperationId)) !== null) {
-    throw new Error("browser CTF redeem operation requires persisted recovery");
-  }
-  const prepared = await prepareDurableCtfRedeemOperation({
-    operationId,
-    mintUrl: normalizedMint,
-    conditionId: input.conditionId,
-    outcomeCollection: input.outcomeCollection,
-    inputKeyset: {
-      id: keyset.keysetId,
-      unit: keyset.unit,
-      input_fee_ppk: keyset.inputFeePpk,
+  return withWalletProfileLock(
+    scope.scopeId,
+    async () => {
+      if ((await input.adapter.readOperation(scope, custodyOperationId)) !== null) {
+        throw new Error("browser CTF redeem operation requires persisted recovery");
+      }
+      await requireBrowserWalletNewWritePermission({
+        database: input.database,
+        scopeId: scope.scopeId,
+      });
+      const prepared = await prepareDurableCtfRedeemOperation({
+        operationId,
+        mintUrl: normalizedMint,
+        conditionId: input.conditionId,
+        outcomeCollection: input.outcomeCollection,
+        inputKeyset: {
+          id: keyset.keysetId,
+          unit: keyset.unit,
+          input_fee_ppk: keyset.inputFeePpk,
+        },
+        regularKeyset: input.regularKeyset,
+        inputs: proofs,
+        oracleWitness: input.oracleWitness,
+        seed: input.seed,
+        counterSource: input.counterSource,
+      });
+      const authority = prepareDurableCustodyMintOperationAuthority({
+        operation: prepared.operation,
+        keysets: [
+          conditionalKeysetAuthority(normalizedMint, keyset),
+          regularKeysetAuthority(normalizedMint, input.regularKeyset),
+        ],
+      });
+      const record = createDurableCustodyProofOperation({
+        scope,
+        operation: prepared.operation,
+        facts: authority.facts,
+        inventoryAccountId: null,
+        exactBoundary: {
+          method: "POST",
+          path: "/v1/redeem_outcome",
+          idempotencyKey: operationId,
+          requestBody: authority.exactRequest,
+          output: authority.exactOutput,
+          privateMaterial: authority.exactAuthority,
+        },
+      });
+      if (record.operation.operationId !== custodyOperationId) {
+        throw new Error("browser CTF redeem operation identity is invalid");
+      }
+      await input.adapter.transact(
+        {
+          scope,
+          owner: input.owner,
+          operationRows: [{ operationId: custodyOperationId, expectedRevision: null }],
+        },
+        (transaction) =>
+          bindDurableCustodyProofOperation(transaction, record, {
+            requestBody: authority.exactRequest,
+            output: authority.exactOutput,
+            privateMaterial: authority.exactAuthority,
+          }),
+        {
+          predecessorProofs: { [custodyOperationId]: input.leg.rows },
+          requirePersistedPredecessors: true,
+        },
+      );
+      return record;
     },
-    regularKeyset: input.regularKeyset,
-    inputs: proofs,
-    oracleWitness: input.oracleWitness,
-    seed: input.seed,
-    counterSource: input.counterSource,
-  });
-  const authority = prepareDurableCustodyMintOperationAuthority({
-    operation: prepared.operation,
-    keysets: [
-      conditionalKeysetAuthority(normalizedMint, keyset),
-      regularKeysetAuthority(normalizedMint, input.regularKeyset),
-    ],
-  });
-  const record = createDurableCustodyProofOperation({
-    scope,
-    operation: prepared.operation,
-    facts: authority.facts,
-    inventoryAccountId: null,
-    exactBoundary: {
-      method: "POST",
-      path: "/v1/redeem_outcome",
-      idempotencyKey: operationId,
-      requestBody: authority.exactRequest,
-      output: authority.exactOutput,
-      privateMaterial: authority.exactAuthority,
-    },
-  });
-  if (record.operation.operationId !== custodyOperationId) {
-    throw new Error("browser CTF redeem operation identity is invalid");
-  }
-  await input.adapter.transact(
-    {
-      scope,
-      owner: input.owner,
-      operationRows: [{ operationId: custodyOperationId, expectedRevision: null }],
-    },
-    (transaction) =>
-      bindDurableCustodyProofOperation(transaction, record, {
-        requestBody: authority.exactRequest,
-        output: authority.exactOutput,
-        privateMaterial: authority.exactAuthority,
-      }),
-    {
-      predecessorProofs: { [custodyOperationId]: input.leg.rows },
-      requirePersistedPredecessors: true,
-    },
+    input.lockManager,
   );
-  return record;
 }
 
 function requireRedeemLegAuthority(

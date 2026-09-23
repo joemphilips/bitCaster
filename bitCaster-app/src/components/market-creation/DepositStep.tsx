@@ -368,7 +368,9 @@ export function DepositStep({
 
       {error && (
         <div className="mt-3 rounded-lg border border-red-400/30 bg-red-500/10 p-3 text-sm text-red-100">
-          <p role="alert">{error}</p>
+          <p role="alert" data-testid="amm-funding-error">
+            {error}
+          </p>
           {!headReady && !fundingBusy && (
             <button
               type="button"

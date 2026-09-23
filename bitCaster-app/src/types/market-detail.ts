@@ -26,7 +26,7 @@ export interface ResolutionDetails {
   criteria: string;
   source: ResolutionSource;
   sourceDescription?: string;
-  resolutionDate: string;
+  resolutionDate: string | null;
   status: ResolutionStatus;
   finalOutcome?: string; // Only set when resolved
   disputeDeadline?: string; // For disputed markets

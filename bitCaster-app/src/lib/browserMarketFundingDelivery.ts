@@ -139,7 +139,7 @@ export async function executeBrowserMarketFundingDelivery(
       context,
     });
     if (persisted === null) throw new Error("market funding transfer is not persisted");
-    return reconcileOrRecoverPersistedMarketFunding({
+    return await reconcileOrRecoverPersistedMarketFunding({
       transfer: persisted,
       input,
       context,
@@ -152,7 +152,7 @@ export async function executeBrowserMarketFundingDelivery(
     context,
   });
   if (indexedSuccessor !== null && indexedSuccessor.token !== null) {
-    return reconcileBrowserMarketFundingDelivery({
+    return await reconcileBrowserMarketFundingDelivery({
       transfer: indexedSuccessor,
       metadata: persistedMarketFundingMetadata(input, indexedSuccessor),
       readStatus: getDurableCashuDeliveryStatus,
@@ -196,14 +196,15 @@ export async function executeBrowserMarketFundingDelivery(
         tokenBytesLimit: deriveDurableRecipientTokenAllowance(durableMetadata),
       }),
     },
-    preflightFundedAsset: () =>
-      preflightMarketFundingAsset({
+    preflightFundedAsset: async () => {
+      await preflightMarketFundingAsset({
         context,
         asset,
         requiredAmount: durableMetadata.requestedAmount,
         mintUrl: durableMetadata.mintUrl,
         unit: durableMetadata.unit,
-      }),
+      });
+    },
     prepareWalletSendOperation: async () => {
       context.requireCapturedProfile();
       const proofs = await readMarketFundingCandidates({
@@ -261,7 +262,7 @@ export async function executeBrowserMarketFundingDelivery(
       }),
     context,
   });
-  return reconcileBrowserMarketFundingDelivery({
+  return await reconcileBrowserMarketFundingDelivery({
     transfer,
     metadata: persistedMarketFundingMetadata(input, transfer),
     readStatus: getDurableCashuDeliveryStatus,
@@ -375,7 +376,6 @@ async function preflightMarketFundingAsset(input: {
   readonly unit: "sat" | "msat";
 }): Promise<void> {
   const recovery = await recoverBrowserFundedAsset({
-    database: input.context.database,
     scopeId: input.context.scopeId,
     seed: input.context.seed,
     mnemonic: input.context.mnemonic,

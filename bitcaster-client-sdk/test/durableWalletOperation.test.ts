@@ -295,7 +295,7 @@ test('wallet mint restart replays only the persisted preview', async () => {
   )
 })
 
-test('wallet mint duplicate-output recovery restores only persisted outputs', async () => {
+test('wallet mint duplicate-output recovery requires an exact ISSUED quote', async () => {
   const operation = mintOperation('restore')
   const result = mintResult(operation)
   const harness = mintHarness({
@@ -314,9 +314,76 @@ test('wallet mint duplicate-output recovery restores only persisted outputs', as
   })
 
   assert.equal(harness.calls.completes, 1)
+  assert.equal(harness.calls.quoteChecks, 1)
+  assert.deepEqual(harness.calls.quoteIds, [operation.preview.payload.quote])
   assert.equal(harness.calls.restores, 1)
   assert.equal(harness.calls.persists, 1)
   assert.equal(harness.restoredOutputs![0]!.secret, operation.preview.outputData[0]!.secret)
+})
+
+test('wallet mint duplicate-output recovery keeps the exact plan for unresolved quote evidence', async () => {
+  for (const quoteResponse of [
+    { quote: 'quote-unrelated', state: 'ISSUED' },
+    { quote: 'quote-blocked', state: 'UNPAID' },
+    { quote: 'quote-blocked', state: 'PAID' },
+    { state: 'ISSUED' },
+  ]) {
+    const operation = mintOperation('blocked')
+    const harness = mintHarness({
+      operation,
+      result: mintResult(operation),
+      completeError: duplicateMintOutputError(),
+      quoteResponse,
+    })
+
+    const result = await runDurableWalletMintOperation({
+      mode: 'recover',
+      operationId: operation.operationId,
+      store: harness.store,
+      wallet: harness.wallet,
+      restoreExactOutputs: harness.restoreExactOutputs,
+    })
+
+    assert.equal(result.state, 'nonterminal')
+    assert.equal(harness.calls.restores, 0)
+    assert.equal(harness.calls.persists, 0)
+  }
+
+  const foreignMint = mintOperation('foreign-mint')
+  const foreignMintHarness = mintHarness({
+    operation: foreignMint,
+    result: mintResult(foreignMint),
+    completeError: duplicateMintOutputError(),
+    walletMintUrl: 'https://other.example',
+  })
+  const foreignMintResult = await runDurableWalletMintOperation({
+    mode: 'recover',
+    operationId: foreignMint.operationId,
+    store: foreignMintHarness.store,
+    wallet: foreignMintHarness.wallet,
+    restoreExactOutputs: foreignMintHarness.restoreExactOutputs,
+  })
+  assert.equal(foreignMintResult.state, 'nonterminal')
+  assert.equal(foreignMintHarness.calls.restores, 0)
+  assert.equal(foreignMintHarness.calls.persists, 0)
+
+  const operation = mintOperation('lookup-failed')
+  const harness = mintHarness({
+    operation,
+    result: mintResult(operation),
+    completeError: duplicateMintOutputError(),
+    quoteError: new Error('mint unavailable'),
+  })
+  const result = await runDurableWalletMintOperation({
+    mode: 'recover',
+    operationId: operation.operationId,
+    store: harness.store,
+    wallet: harness.wallet,
+    restoreExactOutputs: harness.restoreExactOutputs,
+  })
+  assert.equal(result.state, 'nonterminal')
+  assert.equal(harness.calls.restores, 0)
+  assert.equal(harness.calls.persists, 0)
 })
 
 function mintOperation(suffix: string) {
@@ -356,8 +423,18 @@ function mintHarness(input: {
   result: Proof[]
   completeError?: Error
   restore?: Proof[]
+  quoteResponse?: unknown
+  quoteError?: Error
+  walletMintUrl?: string
 }) {
-  const calls = { loads: 0, completes: 0, restores: 0, persists: 0 }
+  const calls = {
+    loads: 0,
+    completes: 0,
+    quoteChecks: 0,
+    quoteIds: [] as string[],
+    restores: 0,
+    persists: 0,
+  }
   let completedPreview: MintPreview<{ quote: string; expiry?: number | null }> | null = null
   let restoredOutputs: readonly { secret: string }[] | null = null
   const snapshot: DurableWalletMintOperationSnapshot = {
@@ -379,6 +456,14 @@ function mintHarness(input: {
     calls,
     store,
     wallet: {
+      mint: { mintUrl: input.walletMintUrl ?? input.operation.mintUrl },
+      checkMintQuote: async (quoteId: string) => {
+        calls.quoteChecks += 1
+        calls.quoteIds.push(quoteId)
+        if (input.quoteError) throw input.quoteError
+        if (input.quoteResponse !== undefined) return input.quoteResponse as never
+        return { quote: input.operation.preview.payload.quote, state: 'ISSUED' } as never
+      },
       completeMint: async (preview: MintPreview<{ quote: string; expiry?: number | null }>) => {
         calls.completes += 1
         completedPreview = preview

@@ -49,6 +49,12 @@ import {
 } from "../../stores/durable-custody-db";
 import { browserWalletScope } from "../browserCtfRangeOrderSource";
 
+const requireNewWritePermission = vi.hoisted(() => vi.fn(async () => undefined));
+
+vi.mock("../browserWalletNewWritePermission", () => ({
+  requireBrowserWalletNewWritePermission: requireNewWritePermission,
+}));
+
 const MINT = "https://mint.example";
 const PRIVATE_KEY = Uint8Array.from([...new Uint8Array(31), 7]);
 const KEYS = { "1": bytesToHex(secp256k1.getPublicKey(PRIVATE_KEY, true)) };
@@ -57,6 +63,8 @@ const seed = new Uint8Array(64).fill(1);
 const databases: BitcasterDB[] = [];
 
 afterEach(async () => {
+  requireNewWritePermission.mockClear();
+  requireNewWritePermission.mockResolvedValue(undefined);
   for (const database of databases.splice(0)) {
     database.close();
     await database.delete();
@@ -138,6 +146,31 @@ describe("browser durable ordinary receive", () => {
     expect(await database.proofs.count()).toBe(0);
   });
 
+  it("refuses a new receive before deterministic output preparation", async () => {
+    const database = createDatabase();
+    const preview = receivePreview();
+    const receiveWallet = wallet(preview, proofForOutput(preview.keepOutputs![0]!));
+    requireNewWritePermission.mockRejectedValueOnce(
+      new Error(
+        "Another browser changed this wallet. Reload to start recovery before making a new wallet change.",
+      ),
+    );
+
+    await expect(
+      receiveBrowserDurableWalletToken({
+        token: "cashuB-token",
+        mintUrl: MINT,
+        unit: "msat",
+        wallet: receiveWallet,
+        context: receiveContext(database),
+      }),
+    ).rejects.toThrow("Another browser changed this wallet");
+
+    expect(receiveWallet.prepareSwapToReceive).not.toHaveBeenCalled();
+    expect(await database.custodyScopes.count()).toBe(0);
+    expect(await database.custodyOperations.count()).toBe(0);
+  });
+
   it("persists the exact preview before mint completion and replays it after an all-UNSPENT restart", async () => {
     const database = createDatabase();
     const preview = receivePreview();
@@ -163,12 +196,19 @@ describe("browser durable ordinary receive", () => {
     vi.mocked(restarted.checkProofsStates).mockResolvedValue(
       statesFor(preview, CheckStateEnum.UNSPENT) as never,
     );
+    requireNewWritePermission.mockClear();
+    requireNewWritePermission.mockRejectedValue(
+      new Error(
+        "Another browser changed this wallet. Reload to start recovery before making a new wallet change.",
+      ),
+    );
     const recovered = await recoverBrowserDurableWalletReceives({
       context,
       walletForMint: async () => restarted,
     });
 
     expect(recovered.pending).toBe(0);
+    expect(requireNewWritePermission).not.toHaveBeenCalled();
     expect(first.prepareSwapToReceive).toHaveBeenCalledOnce();
     expect(restarted.prepareSwapToReceive).not.toHaveBeenCalled();
     expect(restarted.completeSwap).toHaveBeenCalledWith(
@@ -178,6 +218,79 @@ describe("browser durable ordinary receive", () => {
         ]),
       }),
     );
+  });
+
+  it("recovers a receive in its bound database after the active profile changes during mint execution", async () => {
+    const originalDatabase = createDatabase();
+    const replacementDatabase = createDatabase();
+    const scopeId = browserWalletScope(seed).scopeId;
+    let activeProfile = "original";
+    const context: BrowserDurableWalletReceiveContext = {
+      ...receiveContext(originalDatabase),
+      requireCapturedProfile: () => {
+        if (activeProfile !== "original") {
+          throw new Error("The wallet profile changed during mint recovery.");
+        }
+      },
+    };
+    const preview = receivePreview();
+    const output = proofForOutput(preview.keepOutputs![0]!);
+    const receivingWallet = wallet(preview, output);
+    let exactAuthorityBoundBeforeMint = false;
+    vi.mocked(receivingWallet.completeSwap).mockImplementation(async () => {
+      const operation = (await originalDatabase.custodyOperations.toArray())[0];
+      if (operation) {
+        const privateArtifactId =
+          operation.record.operation.privateMaterial.exactPrivateMaterial.artifactId;
+        const authority = await originalDatabase.custodyArtifacts.get([
+          scopeId,
+          operation.operationId,
+          privateArtifactId,
+        ]);
+        exactAuthorityBoundBeforeMint =
+          operation.record.operation.result.state === "none" && authority !== undefined;
+      }
+      activeProfile = "replacement";
+      return { keep: [output], send: [] };
+    });
+
+    await expect(
+      receiveBrowserDurableWalletToken({
+        token: "cashuB-token",
+        mintUrl: MINT,
+        unit: "msat",
+        wallet: receivingWallet,
+        context,
+      }),
+    ).rejects.toThrow("The wallet profile changed during mint recovery.");
+
+    expect(exactAuthorityBoundBeforeMint).toBe(true);
+    expect(await originalDatabase.custodyOperations.count()).toBe(1);
+    expect(
+      (await originalDatabase.custodyOperations.toArray())[0]?.record.operation.result.state,
+    ).toBe("none");
+    expect(await originalDatabase.custodyProofs.count()).toBe(0);
+    expect(await replacementDatabase.custodyOperations.count()).toBe(0);
+    expect(await replacementDatabase.custodyProofs.count()).toBe(0);
+
+    activeProfile = "original";
+    const restartedWallet = wallet(preview, output);
+    vi.mocked(restartedWallet.checkProofsStates).mockResolvedValue(
+      statesFor(preview, CheckStateEnum.SPENT) as never,
+    );
+    const recovered = await recoverBrowserDurableWalletReceives({
+      context,
+      walletForMint: async () => restartedWallet,
+    });
+
+    expect(recovered).toMatchObject({
+      pending: 0,
+      repaired: [expect.objectContaining({ secret: outputSecret(preview) })],
+    });
+    expect(restartedWallet.completeSwap).not.toHaveBeenCalled();
+    expect(await originalDatabase.custodyProofs.count()).toBe(1);
+    expect(await replacementDatabase.custodyOperations.count()).toBe(0);
+    expect(await replacementDatabase.custodyProofs.count()).toBe(0);
   });
 
   it("does not mask a receive failure when scope release also fails", async () => {

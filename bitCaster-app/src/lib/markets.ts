@@ -361,7 +361,7 @@ export function mapCatalogueEntryToMarket(entry: MarketCatalogueEntry): Market {
   const outcomes = orderAtomicOutcomes(registeredPrimitiveOutcomeIds);
   const isYesNo = isYesNoUniverse(outcomes);
 
-  const closingDate = entry.deadline ?? entry.createdAt;
+  const closingDate = entry.deadline ?? null;
   const title = entry.title ?? "Untitled Market";
   const imageUrl = entry.thumbnailUrl ?? "";
   const baseAsset = normalizeMarketBaseAsset(entry.baseAsset);
@@ -380,7 +380,7 @@ export function mapCatalogueEntryToMarket(entry: MarketCatalogueEntry): Market {
   const base = {
     id: entry.conditionId,
     title,
-    state: normalizeEngineMarketState(entry.state) ?? "open",
+    state: decodeEngineMarketState(entry.state),
     imageUrl,
     categoryTags: entry.categoryTags ?? [],
     metaTags: [],
@@ -483,7 +483,9 @@ export function filterMarkets(markets: Market[], filter: FilterState): Market[] 
     const days = filter.closingInDays;
     const cutoff = new Date();
     cutoff.setDate(cutoff.getDate() + days);
-    result = result.filter((m) => new Date(m.closingDate) <= cutoff);
+    result = result.filter(
+      (market) => market.closingDate !== null && new Date(market.closingDate) <= cutoff,
+    );
   }
 
   return result;
@@ -506,9 +508,8 @@ function mapCatalogueEntryToMarketDetail(entry: MarketCatalogueEntry): MarketDet
   const title = entry.title?.trim() || "Untitled Market";
   const description = entry.description?.trim();
   const creatorPubkey = entry.creatorPubkey?.trim();
-  const normalisedState = normalizeEngineMarketState(entry.state);
   const finalOutcome = entry.finalOutcome?.trim() || undefined;
-  const resolutionDate = entry.closedAt ?? entry.deadline ?? createdAt;
+  const resolutionDate = entry.closedAt ?? entry.deadline ?? null;
   const isYesNo = isYesNoUniverse(outcomes);
   const baseAsset = normalizeMarketBaseAsset(entry.baseAsset);
   const divisibility = normalizeMarketDivisibility(entry.divisibility, baseAsset);
@@ -531,7 +532,7 @@ function mapCatalogueEntryToMarketDetail(entry: MarketCatalogueEntry): MarketDet
   const base = {
     id: entry.conditionId,
     title,
-    state: normalisedState ?? undefined,
+    state: decodeEngineMarketState(entry.state),
     imageUrl: entry.thumbnailUrl ?? undefined,
     categoryTags: (entry.categoryTags ?? []).map((id) => ({
       id,
@@ -646,24 +647,18 @@ export class MarketDetailUnavailableError extends Error {
 }
 
 /**
- * Normalise the engine `state` field at the boundary. Per the OpenAPI spec
- * (and `bitcaster-coding-guideline` Rule 1) the engine MUST emit `"open"` /
- * `"closed"` (camelCase). Some engine builds ship with NSwag-generated DTOs
- * whose property-level `[JsonConverter(typeof(JsonStringEnumConverter<T>))]`
- * attribute overrides the global naming policy and emits the bare enum
- * NAME — i.e. `"Open"` / `"Closed"` (PascalCase). Until the producer is
- * fixed upstream (track via the engine repo's TODO), normalise once here so
- * the detail page's exhaustive switch over `'open' | 'closed'` does not
- * fall through to `assertNever` on every load.
- *
- * This is the SOLE place this normalisation lives — Rule 2 forbids paving
- * over the case mismatch at every call site.
+ * Decode the engine state exactly as defined by the OpenAPI wire contract.
+ * Reject unknown values so callers cannot render an unsupported state as open.
  */
-function normalizeEngineMarketState(raw: unknown): MarketCatalogueEntry["state"] | null {
-  if (raw == null) return null;
-  const s = String(raw).toLowerCase().trim();
-  if (s === "open" || s === "closed") return s;
-  return null;
+function decodeEngineMarketState(raw: unknown): MarketCatalogueEntry["state"] {
+  switch (raw) {
+    case "open":
+      return "open";
+    case "closed":
+      return "closed";
+    default:
+      throw new Error("Unsupported engine market state");
+  }
 }
 
 /**
@@ -671,9 +666,8 @@ function normalizeEngineMarketState(raw: unknown): MarketCatalogueEntry["state"]
  * request so the route shell renders immediately without any retry delay.
  *
  * Newly registered markets that have not yet been indexed by the engine will
- * cause this to throw "Market not found". The page's post-paint
- * `needsEngineDetailRefresh` polling loop (activated whenever `closingDate` or
- * `state` is missing) handles the catch-up without blocking initial render.
+ * cause this to throw "Market not found". The page's post-paint missing-entry
+ * recovery handles that case without blocking initial render.
  */
 export async function fetchMarketDetail(conditionId: string): Promise<MarketDetail> {
   // First render is engine-first and intentionally narrow: the route shell

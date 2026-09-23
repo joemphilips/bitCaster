@@ -34,6 +34,7 @@ import {
 } from "@bitcaster/client-sdk/durableWalletOperation";
 import { bindDurableCustodyProofOperation } from "@bitcaster/client-sdk/durableCustodyProofOperationRecord";
 import { decodeDurableOutgoingCashuTransfer } from "@bitcaster/client-sdk/durableOutgoingCashuTransfer";
+import { requireBrowserWalletNewWritePermission } from "./browserWalletNewWritePermission";
 import { withWalletProfileLock } from "./walletProfileLock";
 import { browserWalletScope } from "./browserCtfRangeOrderSource";
 import {
@@ -142,6 +143,12 @@ export async function receiveBrowserDurableWalletToken(
   return withWalletProfileLock(
     scope.scopeId,
     async () => {
+      if (input.preparedOperation === undefined) {
+        await requireBrowserWalletNewWritePermission({
+          database: context.database ?? db,
+          scopeId: scope.scopeId,
+        });
+      }
       const owner = await claimOwner(adapter, scope, now, randomId);
       return withReceiveScope(adapter, scope, owner, now, async () => {
         const operation =

@@ -1,7 +1,7 @@
 // @vitest-environment node
 import "fake-indexeddb/auto";
 import Dexie from "dexie";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { secp256k1 } from "@noble/curves/secp256k1.js";
 import { bytesToHex } from "@noble/curves/utils.js";
 import {
@@ -154,6 +154,18 @@ const COMPLEMENT_KEYSET_ID = deriveConditionalKeysetId({
 });
 const SEED = new Uint8Array(64).fill(7);
 const openDatabases: BitcasterDB[] = [];
+const mocks = vi.hoisted(() => ({
+  requireNewWritePermission: vi.fn(),
+}));
+
+vi.mock("../browserWalletNewWritePermission", () => ({
+  requireBrowserWalletNewWritePermission: mocks.requireNewWritePermission,
+}));
+
+beforeEach(() => {
+  mocks.requireNewWritePermission.mockReset();
+  mocks.requireNewWritePermission.mockResolvedValue(undefined);
+});
 
 afterEach(async () => {
   for (const database of openDatabases.splice(0)) {
@@ -163,6 +175,82 @@ afterEach(async () => {
 });
 
 describe("browser CTF range order coordinator", () => {
+  it("refuses a new range source before preparation", async () => {
+    const preparation = persistedPreparation("range-write-refused-source");
+    const database = createDatabase();
+    let prepareCalls = 0;
+    const engine = engineMock();
+    const coordinator = createCoordinator(
+      database,
+      sourceWallet({ onPrepare: () => void (prepareCalls += 1) }),
+      engine,
+    );
+    mocks.requireNewWritePermission.mockRejectedValueOnce(
+      new Error(
+        "Another browser changed this wallet. Reload to start recovery before making a new wallet change.",
+      ),
+    );
+
+    await expect(
+      coordinator.prepareAndSubmit({
+        seed: SEED,
+        preparation,
+        candidates: [sourceProof(preparation.offerKeyset.id)],
+      }),
+    ).rejects.toThrow("Another browser changed this wallet");
+
+    expect(prepareCalls).toBe(0);
+    expect(engine.createCalls).toBe(0);
+    expect(await database.custodyOperations.count()).toBe(0);
+  });
+
+  it("refuses a new consolidation before preparation", async () => {
+    const preparation = persistedPreparation("range-write-refused-consolidation");
+    const proof = sourceProof(preparation.offerKeyset.id, 2);
+    const database = createDatabase([storedSourceProof(proof)]);
+    let prepareCalls = 0;
+    const coordinator = createCoordinator(
+      database,
+      sourceWallet({ onPrepare: () => void (prepareCalls += 1) }),
+      engineMock(),
+    );
+    mocks.requireNewWritePermission.mockRejectedValueOnce(new Error("new writes are refused"));
+
+    await expect(
+      coordinator.consolidateRound({
+        seed: SEED,
+        preparation,
+        round: 0,
+        inputs: [proof],
+        plannedRound: { inputs: ["2"], outputs: ["1"], fee: "1" },
+      }),
+    ).rejects.toThrow("new writes are refused");
+
+    expect(prepareCalls).toBe(0);
+    expect(await database.custodyOperations.count()).toBe(0);
+  });
+
+  it("rechecks permission before capability and order submission", async () => {
+    const preparation = persistedPreparation("range-write-refused-submission");
+    const engine = engineMock();
+    const coordinator = createCoordinator(createDatabase(), sourceWallet(), engine);
+    mocks.requireNewWritePermission
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error("new writes are refused"));
+
+    await expect(
+      coordinator.prepareAndSubmit({
+        seed: SEED,
+        preparation,
+        candidates: [sourceProof(preparation.offerKeyset.id)],
+      }),
+    ).rejects.toThrow("new writes are refused");
+
+    expect(mocks.requireNewWritePermission).toHaveBeenCalledTimes(2);
+    expect(engine.createCalls).toBe(0);
+    expect(engine.submitCalls).toBe(0);
+  });
+
   it("accepts a conditional keyset without final expiry", async () => {
     const preparation = persistedPreparation(
       "range-missing-final-expiry",
@@ -1696,6 +1784,7 @@ describe("browser CTF range order coordinator", () => {
     };
     await bindJournalCapability(database, target, "44444444-4444-4444-8444-444444444444");
     await bindJournalCapability(database, other, "55555555-5555-4555-8555-555555555555");
+    mocks.requireNewWritePermission.mockRejectedValue(new Error("new writes are refused"));
 
     await expect(
       coordinator.recoverClientOrder({
@@ -1710,6 +1799,7 @@ describe("browser CTF range order coordinator", () => {
     expect(
       await readCtfRangePreparation(walletScopeId(), other.operationId, database),
     ).toMatchObject({ lifecycleState: "capability-bound" });
+    expect(mocks.requireNewWritePermission).not.toHaveBeenCalled();
   });
 
   it("does nothing when no active preparation has the pending client order ID", async () => {

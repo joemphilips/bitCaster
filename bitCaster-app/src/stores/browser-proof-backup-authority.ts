@@ -95,9 +95,22 @@ export interface BrowserCompletedProofRemovalMarkerRow {
   completedAtMs: number;
 }
 
+export interface BrowserCompletedLocalProofRemovalMarkerRow {
+  schemaVersion: 1;
+  recordKind: "completed-local-removal";
+  scopeId: string;
+  proofId: string;
+  proofFingerprint: string;
+  proofRevision: number;
+  localAssetKey: string;
+  terminalOperationId: string;
+  completedAtMs: number;
+}
+
 export type BrowserProofBackupAuthorityTableRow =
   | BrowserProofBackupAuthorityRow
-  | BrowserCompletedProofRemovalMarkerRow;
+  | BrowserCompletedProofRemovalMarkerRow
+  | BrowserCompletedLocalProofRemovalMarkerRow;
 
 export class BrowserCompletedProofRemovalError extends Error {
   constructor() {
@@ -126,6 +139,18 @@ const completedProofRemovalMarkerFields = [
   "acknowledgementKind",
   "receiptDigest",
   "acknowledgedAtMs",
+  "completedAtMs",
+] as const;
+
+const completedLocalProofRemovalMarkerFields = [
+  "schemaVersion",
+  "recordKind",
+  "scopeId",
+  "proofId",
+  "proofFingerprint",
+  "proofRevision",
+  "localAssetKey",
+  "terminalOperationId",
   "completedAtMs",
 ] as const;
 
@@ -232,11 +257,64 @@ export function decodeBrowserCompletedProofRemovalMarkerRow(
   });
 }
 
+export function createBrowserCompletedLocalProofRemovalMarkerRow(input: {
+  readonly scopeId: string;
+  readonly proofId: string;
+  readonly proofFingerprint: string;
+  readonly proofRevision: number;
+  readonly localAssetKey: string;
+  readonly terminalOperationId: string;
+  readonly completedAtMs: number;
+}): BrowserCompletedLocalProofRemovalMarkerRow {
+  return decodeBrowserCompletedLocalProofRemovalMarkerRow({
+    schemaVersion: 1,
+    recordKind: "completed-local-removal",
+    ...input,
+    localAssetKey: canonicalLocalAssetKey(input.localAssetKey),
+  });
+}
+
+export function decodeBrowserCompletedLocalProofRemovalMarkerRow(
+  value: unknown,
+): BrowserCompletedLocalProofRemovalMarkerRow {
+  if (!isExactRecord(value, completedLocalProofRemovalMarkerFields)) {
+    throw new Error("browser completed local proof removal marker is invalid");
+  }
+  const scopeId = decodeDurableCustodyScopeId(value.scopeId);
+  if (decodeDurableCustodyScopeInput(scopeId).scopeKind !== "wallet") {
+    throw new Error("browser completed local proof removal marker wallet scope is invalid");
+  }
+  const localAssetKey = canonicalLocalAssetKey(value.localAssetKey);
+  if (localAssetKey !== value.localAssetKey) {
+    throw new Error("browser completed local proof removal marker asset key is not canonical");
+  }
+  return Object.freeze({
+    schemaVersion: 1,
+    recordKind: "completed-local-removal",
+    scopeId,
+    proofId: requireFingerprint(value.proofId, "completed local proof id"),
+    proofFingerprint: requireFingerprint(
+      value.proofFingerprint,
+      "completed local proof fingerprint",
+    ),
+    proofRevision: requireRevision(value.proofRevision),
+    localAssetKey,
+    terminalOperationId: requireOperationId(
+      value.terminalOperationId,
+      "completed local terminal operation",
+    ),
+    completedAtMs: requireTime(value.completedAtMs, "completed local removal time"),
+  });
+}
+
 export function decodeBrowserProofBackupAuthorityTableRow(
   value: unknown,
 ): BrowserProofBackupAuthorityTableRow {
   if (isRecord(value) && value.recordKind === "completed-removal") {
     return decodeBrowserCompletedProofRemovalMarkerRow(value);
+  }
+  if (isRecord(value) && value.recordKind === "completed-local-removal") {
+    return decodeBrowserCompletedLocalProofRemovalMarkerRow(value);
   }
   return requireBrowserProofBackupAuthorityRow(value);
 }
@@ -341,6 +419,9 @@ export function advanceBrowserProofBackupAuthorityRow(
   const authority = requireBrowserProofBackupAuthorityRow(current);
   requireLiveProofStateForAuthority(authority.proofState);
   requireLiveProofStateForAuthority(proof.selectability);
+  if (authority.proofState === "spent") {
+    throw new Error("browser proof backup spent authority is terminal");
+  }
   if (authority.backupState !== "local-only") {
     throw new Error("browser proof backup authority is remote-backed");
   }
@@ -385,6 +466,9 @@ export function advanceBrowserRemoteProofBackupAuthorityRow(
   const authority = requireBrowserProofBackupAuthorityRow(current);
   requireLiveProofStateForAuthority(authority.proofState);
   requireLiveProofStateForAuthority(proof.selectability);
+  if (authority.proofState === "spent") {
+    throw new Error("browser proof backup spent authority is terminal");
+  }
   if (authority.backupState !== "remote-backed") {
     throw new Error("browser proof backup authority is local-only");
   }
@@ -438,6 +522,74 @@ export function advanceBrowserProofBackupAuthorityRowToPendingRemoval(
     ...authority,
     proofRevision: proof.revision,
     proofState: proof.selectability,
+    recordUpdatedAtUnixSeconds: Math.floor(time / 1_000),
+    updatedAtMs: time,
+  });
+}
+
+/** Cancel one rejected removal without changing its terminal-classification origin. */
+export function restoreBrowserProofBackupAuthorityRowFromPendingRemoval(
+  current: BrowserProofBackupAuthorityRow,
+  proof: BrowserCustodyProofRow,
+  observedAtMs: number,
+): BrowserProofBackupAuthorityRow {
+  const authority = requireBrowserProofBackupAuthorityRow(current);
+  requireProofBinding(authority, proof);
+  if (authority.proofState !== "pending-removal" || authority.terminalAuthority === null) {
+    throw new Error("browser proof backup rejected-removal predecessor is invalid");
+  }
+  if (
+    proof.selectability !== "verified-losing" ||
+    proof.assetKind !== "conditional" ||
+    proof.reservationOperationId !== null
+  ) {
+    throw new Error("browser proof backup rejected-removal proof is invalid");
+  }
+  const time = requireTime(observedAtMs, "proof backup authority time");
+  if (time < proof.receivedAtMs) {
+    throw new Error("browser proof backup authority time is stale");
+  }
+  requireNextProofAuthorityRevision(authority, proof, time);
+  return requireBrowserProofBackupAuthorityRow({
+    ...authority,
+    proofRevision: proof.revision,
+    proofState: proof.selectability,
+    recordUpdatedAtUnixSeconds: Math.floor(time / 1_000),
+    updatedAtMs: time,
+  });
+}
+
+/** Retire exact mint-spent proof state without replacing its historical terminal origin. */
+export function retireBrowserProofBackupAuthorityRowAsMintSpent(
+  current: BrowserProofBackupAuthorityRow,
+  predecessorProof: BrowserCustodyProofRow,
+  spentProof: BrowserCustodyProofRow,
+  observedAtMs: number,
+): BrowserProofBackupAuthorityRow {
+  const authority = requireBrowserProofBackupAuthorityForProof(current, predecessorProof);
+  if (
+    predecessorProof.selectability !== "selectable" &&
+    predecessorProof.selectability !== "verified-losing"
+  ) {
+    throw new Error("browser proof backup mint-spent predecessor is not active");
+  }
+  requireProofBinding(authority, spentProof);
+  if (
+    spentProof.selectability !== "spent" ||
+    spentProof.reservationOperationId !== null ||
+    spentProof.proofFingerprint !== predecessorProof.proofFingerprint
+  ) {
+    throw new Error("browser proof backup mint-spent proof is invalid");
+  }
+  const time = requireTime(observedAtMs, "proof backup authority time");
+  if (time < spentProof.receivedAtMs) {
+    throw new Error("browser proof backup authority time is stale");
+  }
+  requireNextProofAuthorityRevision(authority, spentProof, time);
+  return requireBrowserProofBackupAuthorityRow({
+    ...authority,
+    proofRevision: spentProof.revision,
+    proofState: spentProof.selectability,
     recordUpdatedAtUnixSeconds: Math.floor(time / 1_000),
     updatedAtMs: time,
   });
@@ -695,7 +847,9 @@ function requireTerminalAuthority(
       if (
         Object.keys(authority).length !== 1 ||
         terminalOperationId !== null ||
-        (proofState !== "verified-losing" && proofState !== "pending-removal") ||
+        (proofState !== "verified-losing" &&
+          proofState !== "pending-removal" &&
+          proofState !== "spent") ||
         backupState !== "remote-backed"
       ) {
         throw new Error("browser proof backup terminal authority is invalid");
@@ -905,8 +1059,11 @@ function isExactRecord(
 
 function isCompletedProofRemovalMarker(
   value: BrowserProofBackupAuthorityTableRow,
-): value is BrowserCompletedProofRemovalMarkerRow {
-  return "recordKind" in value && value.recordKind === "completed-removal";
+): value is BrowserCompletedProofRemovalMarkerRow | BrowserCompletedLocalProofRemovalMarkerRow {
+  return (
+    "recordKind" in value &&
+    (value.recordKind === "completed-removal" || value.recordKind === "completed-local-removal")
+  );
 }
 
 const UINT64_MAX = (1n << 64n) - 1n;

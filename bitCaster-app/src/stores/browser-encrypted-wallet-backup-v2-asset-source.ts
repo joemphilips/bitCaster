@@ -405,16 +405,17 @@ export async function prepareBrowserEncryptedWalletBackupV2AssetBundle(input: {
       (losing) => losing.origin.kind === "remote-seal" && losing.proofId === authority.proofId,
     ),
   );
+  const counterHighWaterMarks = mergeCounterHighWaterMarks(
+    input.snapshot.counterHighWaterMarks,
+    input.remoteTerminalSealReuse?.decrypted.counterHighWaterMarks ?? [],
+  );
   return prepareEncryptedWalletBackupV2ProofSetBundle({
     keyHandle: input.keyHandle,
     seed: input.seed,
     asset: input.snapshot.asset,
     proofs,
     custodyRevision: BigInt(input.snapshot.desired.custodyRevision),
-    counterHighWaterMarks:
-      input.snapshot.counterHighWaterMarks.length > 0
-        ? input.snapshot.counterHighWaterMarks
-        : (input.remoteTerminalSealReuse?.decrypted.counterHighWaterMarks ?? []),
+    counterHighWaterMarks,
     runtime: input.runtime,
     bundleIdExists: input.bundleIdExists,
     remoteTerminalSealReuses: remoteAuthorities,
@@ -729,28 +730,14 @@ function counterMarks(
   }
   const sealedOnly =
     rows.length > 0 && rows.every(({ selectability }) => selectability === "verified-losing");
-  if (
-    allowKeysetFreeSealed &&
-    sealedOnly &&
-    keysetIds.some((keysetId, index) => {
-      const association = associations[index];
-      const cursor = cursors[index];
-      return (
-        association === undefined ||
-        cursor === undefined ||
-        association.scopeId !== desired.scopeId ||
-        association.normalizedMint !== desired.mintUrl ||
-        association.unit !== desired.unit ||
-        association.keysetId !== keysetId ||
-        cursor.scopeId !== desired.scopeId ||
-        cursor.keysetId !== keysetId
-      );
-    })
-  )
-    return [];
-  return keysetIds.map((keysetId, index) => {
+  const allowMissingPair = allowKeysetFreeSealed && sealedOnly;
+  return keysetIds.flatMap((keysetId, index) => {
     const association = associations[index];
     const cursor = cursors[index];
+    // Range locators do not allocate NUT-13 counters. Do not invent a cursor
+    // for them, but retain existing cursor authority for future NUT-13 use.
+    if (!highestNut13Counter.has(keysetId) && association === undefined && cursor === undefined)
+      return [];
     if (
       association === undefined ||
       cursor === undefined ||
@@ -759,21 +746,39 @@ function counterMarks(
       association.unit !== desired.unit ||
       association.keysetId !== keysetId ||
       cursor.scopeId !== desired.scopeId ||
-      cursor.keysetId !== keysetId ||
-      association.recoveryComplete !== true ||
-      cursor.next < 0 ||
-      cursor.next > 2_147_483_648
-    )
+      cursor.keysetId !== keysetId
+    ) {
+      if (allowMissingPair) return [];
+      throw new Error("browser V2 counter authority is missing");
+    }
+    if (association.recoveryComplete !== true || cursor.next < 0 || cursor.next > 2_147_483_648)
       throw new Error("browser V2 counter authority is missing");
     if ((highestNut13Counter.get(keysetId) ?? -1) >= cursor.next)
       throw new Error("browser V2 NUT-13 locator is ahead of its cursor");
-    return Object.freeze({
-      mintUrl: desired.mintUrl,
-      unit: backupUnit(desired.unit),
-      keysetId,
-      nextCounter: cursor.next,
-    });
+    return [
+      Object.freeze({
+        mintUrl: desired.mintUrl,
+        unit: backupUnit(desired.unit),
+        keysetId,
+        nextCounter: cursor.next,
+      }),
+    ];
   });
+}
+
+function mergeCounterHighWaterMarks(
+  local: readonly EncryptedWalletBackupV2CounterHighWaterMark[],
+  remote: readonly EncryptedWalletBackupV2CounterHighWaterMark[],
+): readonly EncryptedWalletBackupV2CounterHighWaterMark[] {
+  const marks = new Map<string, EncryptedWalletBackupV2CounterHighWaterMark>();
+  for (const mark of [...local, ...remote]) {
+    const identity = JSON.stringify([mark.mintUrl, mark.unit, mark.keysetId]);
+    const current = marks.get(identity);
+    if (current === undefined || mark.nextCounter > current.nextCounter) {
+      marks.set(identity, mark);
+    }
+  }
+  return [...marks.values()];
 }
 
 function backupUnit(value: string): "sat" | "msat" {

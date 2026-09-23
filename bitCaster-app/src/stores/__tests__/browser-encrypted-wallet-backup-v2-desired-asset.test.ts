@@ -14,7 +14,6 @@ import {
   decodeEncryptedWalletBackupV2DesiredAssetRow,
   decodeEncryptedWalletBackupV2RemovalIntent,
   digestEncryptedWalletBackupV2RemovalProofSet,
-  rebaseEncryptedWalletBackupV2RemovalIntent,
   sameEncryptedWalletBackupV2RemovalIntent,
 } from "../browser-encrypted-wallet-backup-v2-desired-asset";
 import { createEncryptedWalletBackupV2AssetIdentity } from "@bitcaster/client-sdk/encryptedWalletBackupV2ProofSet";
@@ -224,7 +223,7 @@ describe("browser V2 explicit removal foundation", () => {
     },
   ] as const;
 
-  it("round-trips an exact ordered proof set and rebases only supplied head values", () => {
+  it("round-trips an exact ordered proof set and its exclusion evidence", () => {
     const intent = createEncryptedWalletBackupV2RemovalIntent({
       intentId: "remove-intent-1",
       createdAtMs: 10,
@@ -261,25 +260,8 @@ describe("browser V2 explicit removal foundation", () => {
       state: "exclusion-acknowledged",
       acknowledgedExclusionEvidence: evidence,
     });
-    const rebased = rebaseEncryptedWalletBackupV2RemovalIntent({
-      intent: acknowledged,
-      targetCustodyRevision: 13n,
-      expectedHeadVersion: 10,
-      expectedActiveSetDigest: "cc".repeat(32),
-    });
-    expect(rebased).toMatchObject({
-      targetCustodyRevision: "13",
-      expectedHeadVersion: 10,
-      expectedActiveSetDigest: "cc".repeat(32),
-      proofs: removalProofs,
-      proofSetCommitment: acknowledged.proofSetCommitment,
-      state: "pending",
-      acknowledgedExclusionEvidence: null,
-    });
-    expect(rebased.state).toBe("pending");
-    expect(rebased.acknowledgedExclusionEvidence).toBeNull();
-    expect(sameEncryptedWalletBackupV2RemovalIntent(rebased, rebased)).toBe(true);
-    expect(sameEncryptedWalletBackupV2RemovalIntent(rebased, acknowledged)).toBe(false);
+    expect(sameEncryptedWalletBackupV2RemovalIntent(acknowledged, acknowledged)).toBe(true);
+    expect(sameEncryptedWalletBackupV2RemovalIntent(intent, acknowledged)).toBe(false);
 
     const currentHead = createEncryptedWalletBackupV2RemovalIntent({
       ...intent,

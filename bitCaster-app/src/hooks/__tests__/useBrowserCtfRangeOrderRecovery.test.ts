@@ -13,6 +13,7 @@ const mocks = vi.hoisted(() => ({
   recoverKeysetCountersForMint: vi.fn(),
   recoverPendingTokenReceives: vi.fn(),
   recoverPendingWalletMints: vi.fn(),
+  resumeBackupAfterRecovery: vi.fn(),
 }));
 
 vi.mock("@/lib/cashu", () => ({
@@ -25,6 +26,10 @@ vi.mock("@/lib/cashu", () => ({
 
 vi.mock("@/lib/browserCtfRangeOrderSubmission", () => ({
   recoverBrowserCtfRangeOrders: mocks.recoverBrowserCtfRangeOrders,
+}));
+
+vi.mock("@/lib/encryptedWalletBackupDriver", () => ({
+  resumeBrowserEncryptedWalletBackupV2AfterRecovery: mocks.resumeBackupAfterRecovery,
 }));
 
 vi.mock("@/lib/browserWalletProfile", () => ({
@@ -76,6 +81,7 @@ describe("useBrowserCtfRangeOrderRecovery", () => {
 
     await completeInitialPass();
     expect(mocks.recoverBrowserCtfRangeOrders).not.toHaveBeenCalled();
+    expect(mocks.resumeBackupAfterRecovery).toHaveBeenCalledWith("wallet-scope-a");
 
     const recoveryResolvers: Array<(value: { recovered: number; pending: never[] }) => void> = [];
     mocks.recoverBrowserCtfRangeOrders.mockImplementation(
@@ -124,6 +130,7 @@ describe("useBrowserCtfRangeOrderRecovery", () => {
     unmount = mounted.unmount;
     await completeInitialPass();
     expect(mocks.recoverBrowserCtfRangeOrders).not.toHaveBeenCalled();
+    expect(mocks.resumeBackupAfterRecovery).toHaveBeenCalledWith("wallet-scope-a");
 
     endBrowserCtfRangeOrderAttempt({
       scopeId: "wallet-scope-a",

@@ -71,6 +71,19 @@
     "invalidSeedphraseWord": "無効な単語: {{word}}",
     "seedphraseChecksumError": "このシードフレーズは無効です。単語と順序を確認してください。"
   },
+  "walletBackupRecovery": {
+    "title": "ウォレット操作は一時停止しています",
+    "description": "復旧が完了するまで、新しいウォレット操作は一時停止します。",
+    "retry": "復旧を再試行",
+    "reasons": {
+      "remote-unavailable": "バックアップサービスまたはミントを利用できません。",
+      "remote-head-changed": "別のブラウザーがバックアップを再び変更しました。再試行して最新の状態を確認してください。",
+      "local-predecessor-unspent": "このブラウザーに保存された資金の一部は未使用です。復旧が完了するまで、このブラウザーに保持します。",
+      "local-predecessor-unknown": "ミントがこのブラウザーに保存された資金の状態を確認していません。",
+      "submitted-work-unresolved": "以前のウォレット操作が未解決です。未払いの請求書も復旧を妨げる場合があります。再試行しても解決するとは限りません。",
+      "local-state-changed": "復旧中にウォレット状態が変更されました。"
+    }
+  },
   "auth": {
     "nostrRequiredTitle": "認証が必要です",
     "nostrRequiredDesc": "実際にトレードする前に認証が必要です。現在はNostrのみ対応しています。注文を送信する前に設定してください。",
@@ -353,6 +366,11 @@
     "claimFees": "手数料を受け取る",
     "sellPosition": "{{title}} を売る",
     "claimPayout": "{{title}} のペイアウトを受け取る",
+    "claimPending": "受け取りはまだ完了していません。完了した分はウォレットにあります。残りの支払いを復旧するには、受け取りを再試行してください。",
+    "claimFailed": "受け取りを完了できませんでした。完了した分はウォレットにあります。残りのポジションは保持されています。受け取りを再試行してください。",
+    "removePending": "削除はまだ完了していません。完了するまで、ポジションはウォレットに保持されます。",
+    "removeFailed": "削除を完了できませんでした。未削除のポジションはウォレットに保持されています。再試行してください。",
+    "removePayout": "このポジションには支払いがありました。受け取った分はウォレットにあります。削除を停止しました。更新後のポジションを確認してください。",
     "discardLostPosition": "{{title}} の負けポジションを削除",
     "discardLostPositionConfirm": "この負けポジションをウォレットから削除しますか？ローカルの CTF プルーフは削除され、元に戻せません。",
     "viewMarket": "{{title}} を表示",

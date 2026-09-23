@@ -244,9 +244,9 @@ describe("mapCatalogueEntryToMarket", () => {
     expect(market.categoryTags).toEqual(["crypto"]);
   });
 
-  it("uses createdAt as closingDate when deadline is null", () => {
+  it("preserves a null deadline", () => {
     const market = mapCatalogueEntryToMarket({ ...yesNoEntry, deadline: null });
-    expect(market.closingDate).toBe("2026-01-01T00:00:00Z");
+    expect(market.closingDate).toBeNull();
   });
 });
 
@@ -337,6 +337,36 @@ describe("filterMarkets (client-side stop-gap)", () => {
     expect(result).toHaveLength(1);
     expect(result[0].type).toBe("categorical");
   });
+
+  it("excludes markets without a deadline from a closing-window filter", () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+      const noDeadline = mapCatalogueEntryToMarket({
+        ...yesNoEntry,
+        deadline: null,
+      });
+      const closingSoon = mapCatalogueEntryToMarket({
+        ...yesNoEntry,
+        conditionId: "closing-soon",
+        deadline: "2026-01-02T00:00:00Z",
+      });
+      const closingLater = mapCatalogueEntryToMarket({
+        ...yesNoEntry,
+        conditionId: "closing-later",
+        deadline: "2026-01-10T00:00:00Z",
+      });
+
+      const result = filterMarkets([noDeadline, closingSoon, closingLater], {
+        ...baseFilter,
+        closingInDays: 3,
+      });
+
+      expect(result.map((market) => market.id)).toEqual(["closing-soon"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe("getMarketThumbnail (T4.3.c)", () => {
@@ -365,9 +395,9 @@ describe("getMarkets (engine catalogue proxy wiring)", () => {
   let fetchMock: ReturnType<typeof vi.fn>;
   let originalFetch: typeof globalThis.fetch;
 
-  function makeResponse(): Response {
+  function makeResponse(market: unknown = yesNoEntry): Response {
     const body = {
-      markets: [yesNoEntry],
+      markets: [market],
       nextCursor: null,
       lastSuccessfulRefreshAt: yesNoEntry.lastSuccessfulRefreshAt,
     };
@@ -442,6 +472,28 @@ describe("getMarkets (engine catalogue proxy wiring)", () => {
     expect(result.markets[0].liquiditySubunits).toBe(88_000);
     expect(result.nextCursor).toBeNull();
     expect(result.lastSuccessfulRefreshAt).toBe(yesNoEntry.lastSuccessfulRefreshAt);
+  });
+
+  it.each(["open", "closed"] as const)("accepts exact engine state %s", async (state) => {
+    fetchMock.mockResolvedValueOnce(makeResponse({ ...yesNoEntry, state }));
+
+    const result = await getMarkets();
+
+    expect(result.markets[0]?.state).toBe(state);
+  });
+
+  it.each([
+    ["PascalCase", "Open"],
+    ["uppercase", "CLOSED"],
+    ["leading whitespace", " open"],
+    ["trailing whitespace", "closed "],
+    ["unknown value", "settling"],
+    ["null", null],
+    ["missing", undefined],
+  ] as const)("rejects %s engine state at list ingress", async (_label, state) => {
+    fetchMock.mockResolvedValueOnce(makeResponse({ ...yesNoEntry, state }));
+
+    await expect(getMarkets()).rejects.toThrow("Unsupported engine market state");
   });
 
   it("throws on non-2xx so the page can render an error/retry affordance", async () => {
@@ -578,7 +630,7 @@ describe("fetchMarketDetail (engine merge — ADR-009 Amendment 2026-05-04)", ()
   }
 
   function engineQueryResponse(
-    state: "open" | "closed",
+    state: unknown,
     thumbnailUrl: string | null,
     creatorPubkey: string | null = null,
     outcomes: string[] = ["Yes", "No"],
@@ -638,10 +690,19 @@ describe("fetchMarketDetail (engine merge — ADR-009 Amendment 2026-05-04)", ()
     vi.restoreAllMocks();
   });
 
-  it("merges engine state into the detail (Phase 2 lifecycle authority)", async () => {
-    const detail = await fetchMarketDetail("abc123");
-    expect(detail.state).toBe("open");
-  });
+  it.each(["open", "closed"] as const)(
+    "accepts exact engine state %s at detail ingress",
+    async (state) => {
+      fetchMock.mockImplementation(async (url: string) => {
+        if (url.includes("/api/v1/markets/query")) return engineQueryResponse(state, null);
+        return emptyMetadataResponse();
+      });
+
+      const detail = await fetchMarketDetail("abc123");
+
+      expect(detail.state).toBe(state);
+    },
+  );
 
   it("preserves exact REST primitive IDs for order-book routes and live trade deltas", async () => {
     fetchMock.mockImplementation(async (url: string) => {
@@ -763,7 +824,7 @@ describe("fetchMarketDetail (engine merge — ADR-009 Amendment 2026-05-04)", ()
     // fetchMarketDetail is a single-shot: no retry loop, no delay. A newly
     // registered market that the engine has not indexed yet surfaces as "not
     // found" so the page renders without any timer blocking. The page's
-    // post-paint needsEngineDetailRefresh polling loop handles the catch-up.
+    // post-paint missing-entry recovery handles the catch-up.
     fetchMock.mockImplementation(async (url: string) => {
       if (url.includes("/api/v1/markets/query")) {
         return new Response(
@@ -1001,42 +1062,21 @@ describe("fetchMarketDetail (engine merge — ADR-009 Amendment 2026-05-04)", ()
     expect(queryCall!).toContain("ids=abc123");
   });
 
-  it("normalises engine state casing — defensive against the NSwag PascalCase emit", async () => {
-    // Producer bug: NSwag-generated DTOs ship `[JsonConverter(typeof(
-    // JsonStringEnumConverter<T>))]` per-property which overrides the global
-    // naming policy and emits "Open" / "Closed" instead of the spec's "open"
-    // / "closed". Until the producer is fixed upstream, the frontend
-    // normalises at the boundary so the detail page's exhaustive switch
-    // does not fall through to assertNever on every staging load.
+  it.each([
+    ["PascalCase", "Open"],
+    ["uppercase", "CLOSED"],
+    ["leading whitespace", " open"],
+    ["trailing whitespace", "closed "],
+    ["unknown value", "settling"],
+    ["null", null],
+    ["missing", undefined],
+  ] as const)("rejects %s engine state at detail ingress", async (_label, state) => {
     fetchMock.mockImplementation(async (url: string) => {
-      if (url.includes("/v1/conditions")) return mintdConditionsResponse();
-      if (url.includes("/api/v1/markets/query")) {
-        // Mimic the production engine wire form (capitalised).
-        const body = await engineQueryResponse("open", null).json();
-        body.markets[0].state = "Open";
-        return new Response(JSON.stringify(body), { status: 200 });
-      }
+      if (url.includes("/api/v1/markets/query")) return engineQueryResponse(state, null);
       return emptyMetadataResponse();
     });
-    const detail = await fetchMarketDetail("abc123");
-    // Normalised to lowercase so useMarketState's switch matches.
-    expect(detail.state).toBe("open");
-  });
 
-  it("falls back when engine state is an unrecognised value (logs a soft fail)", async () => {
-    fetchMock.mockImplementation(async (url: string) => {
-      if (url.includes("/v1/conditions")) return mintdConditionsResponse();
-      if (url.includes("/api/v1/markets/query")) {
-        const body = await engineQueryResponse("open", null).json();
-        body.markets[0].state = "Settling";
-        return new Response(JSON.stringify(body), { status: 200 });
-      }
-      return emptyMetadataResponse();
-    });
-    const detail = await fetchMarketDetail("abc123");
-    // Unrecognised value → undefined → useMarketState renders Open (safe
-    // pre-fetch default). Better than throwing on every page load.
-    expect(detail.state).toBeUndefined();
+    await expect(fetchMarketDetail("abc123")).rejects.toThrow("Unsupported engine market state");
   });
 
   it('promotes engine.deadline into closingDate so MarketHeader stops rendering "Closed" against the mintd-only "now" placeholder', async () => {
@@ -1051,12 +1091,14 @@ describe("fetchMarketDetail (engine merge — ADR-009 Amendment 2026-05-04)", ()
     });
     const detail = await fetchMarketDetail("abc123");
     expect(detail.closingDate).toBe("2030-12-31T23:59:59Z");
+    expect(detail.resolution.resolutionDate).toBe("2030-12-31T23:59:59Z");
   });
 
-  it("keeps closingDate null when engine.deadline is null so unknown deadlines never decay into Closed", async () => {
+  it("keeps absent engine dates null instead of using the market creation date", async () => {
     // Default engineQueryResponse already has deadline: null
     const detail = await fetchMarketDetail("abc123");
     expect(detail.closingDate).toBeNull();
+    expect(detail.resolution.resolutionDate).toBeNull();
   });
 
   it("uses engine.closedAt as the closed-market resolution date", async () => {

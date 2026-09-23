@@ -1,6 +1,6 @@
 ---
-title: "Creating Markets"
-description: "Create a prediction market, report its result, and optionally fund its market maker."
+title: 'Creating Markets'
+description: 'Create a prediction market, report its result, and optionally fund its market maker.'
 sidebar:
   order: 4
 ---
@@ -81,7 +81,10 @@ Disclosure shown before confirming funding:
 
 ## Market Lifecycle
 
-A market stays open until either of two events arrives. The first is the oracle's announced deadline — the time the oracle has committed to attesting an outcome. The second is the attestation itself, which can arrive earlier if the event resolves before the deadline. Whichever comes first closes the market.
+A market closes when an oracle attestation is accepted or its announced deadline
+arrives, whichever comes first. A market can have no deadline. In that case,
+no deadline-based close is scheduled. An accepted attestation can still close
+the market.
 
 After a market closes, trading ends. No new orders or bot funding are accepted.
 Closure at the deadline does not identify winning tokens or guarantee a refund.

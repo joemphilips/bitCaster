@@ -57,7 +57,7 @@ describe("browser wallet databases", () => {
     activateBrowserWalletDatabase(scopes[1]!);
     await db.open();
 
-    expect(db.verno).toBe(18);
+    expect(db.verno).toBe(19);
     expect(db.tables.map(({ name }) => name).sort()).toEqual(currentTableNames);
     expect(db.custodyProofs.schema.primKey.keyPath).toEqual(["scopeId", "proofId"]);
     expect(db.custodyProofs.schema.idxByName["[scopeId+selectability+proofId]"]).toBeDefined();

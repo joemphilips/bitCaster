@@ -2,7 +2,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { Amount, getEncodedToken, type Token } from "@cashu/cashu-ts";
 import { useSettingsStore } from "@/stores/settings";
 import { useWalletStore } from "@/stores/wallet";
+import { usePaymentRequestInbox } from "@/stores/paymentRequestInbox";
 import * as cashu from "@/lib/cashu";
+import { browserWalletScopeIdFromMnemonic } from "@/lib/browserWalletProfile";
 import {
   getKnownMints,
   getRelayUrlValidationError,
@@ -19,11 +21,15 @@ import {
   userSwitchActiveMint,
 } from "../walletOps";
 
-const { mockResolveTokenImportKeysets } = vi.hoisted(() => ({
-  mockResolveTokenImportKeysets: vi.fn(),
-}));
+const { mockResolveTokenImportKeysets, mockCaptureBrowserMintPersistenceContext } = vi.hoisted(
+  () => ({
+    mockResolveTokenImportKeysets: vi.fn(),
+    mockCaptureBrowserMintPersistenceContext: vi.fn(),
+  }),
+);
 
 vi.mock("@/lib/cashu", () => ({
+  captureBrowserMintPersistenceContext: mockCaptureBrowserMintPersistenceContext,
   receiveAndStoreTokenRecoverably: vi.fn(),
 }));
 
@@ -55,6 +61,14 @@ function encodedToken(mint: string, unit: string, proofs = [decodedProof()]): st
   return getEncodedToken({ mint, unit, proofs } as Token);
 }
 
+function deferred<T>() {
+  let resolve: (value: T) => void;
+  const promise = new Promise<T>((complete) => {
+    resolve = complete;
+  });
+  return { promise, resolve: resolve! };
+}
+
 describe("walletOps facade", () => {
   let addMint: ReturnType<typeof vi.fn>;
   let addMintWithoutActivating: ReturnType<typeof vi.fn>;
@@ -63,6 +77,7 @@ describe("walletOps facade", () => {
   let fetchMock: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
+    usePaymentRequestInbox.setState({ entries: {}, pending: {} });
     fetchMock = vi.fn().mockResolvedValue({ ok: false, status: 404 });
     vi.stubGlobal("fetch", fetchMock);
     addMint = vi.fn().mockResolvedValue(undefined);
@@ -74,6 +89,22 @@ describe("walletOps facade", () => {
       { secret: "s1", amount: 21, id: "kid", C: "C1" },
       { secret: "s2", amount: 34, id: "kid", C: "C2" },
     ] as never);
+    mockCaptureBrowserMintPersistenceContext.mockReset();
+    mockCaptureBrowserMintPersistenceContext.mockImplementation(() => {
+      const { activeMintUrl, mnemonic } = useWalletStore.getState();
+      return {
+        activeMintUrl,
+        database: {} as never,
+        mnemonic,
+        seed: new Uint8Array(64),
+        scopeId: mnemonic,
+        requireCapturedProfile: () => {
+          if (useWalletStore.getState().mnemonic !== mnemonic) {
+            throw new Error("The wallet profile changed during mint recovery.");
+          }
+        },
+      };
+    });
     mockResolveTokenImportKeysets.mockReset();
     mockResolveTokenImportKeysets.mockResolvedValue({
       freshness: "fresh",
@@ -140,6 +171,7 @@ describe("walletOps facade", () => {
       "sat",
       "msat",
       "ctf-collateral-msat",
+      mockCaptureBrowserMintPersistenceContext.mock.results[0]?.value,
     );
     expect(addMintWithoutActivating).toHaveBeenCalledWith("https://unknown.mint");
     expect(result).toMatchObject({
@@ -205,6 +237,7 @@ describe("walletOps facade", () => {
       "sat",
       "msat",
       "ctf-position-msat",
+      mockCaptureBrowserMintPersistenceContext.mock.results[0]?.value,
     );
 
     expect(result.proofs).toEqual([
@@ -222,6 +255,66 @@ describe("walletOps facade", () => {
       }),
     ]);
   });
+
+  it.each(["collateral", "conditional"] as const)(
+    "stops %s ingress when the profile changes during keyset validation",
+    async (kind) => {
+      const lookup = deferred<{
+        freshness: "fresh";
+        regularKeysets: Array<{ keysetId: string; unit: string; active: boolean }>;
+        conditionalKeysets: Array<{
+          keysetId: string;
+          unit: string;
+          active: boolean;
+          conditionId?: string;
+          outcomeCollection?: string;
+          outcomeCollectionId?: string;
+        }>;
+      }>();
+      const resolverStarted = deferred<void>();
+      let contextCapturedBeforeResolver = false;
+      mockResolveTokenImportKeysets.mockImplementationOnce(() => {
+        contextCapturedBeforeResolver =
+          mockCaptureBrowserMintPersistenceContext.mock.calls.length === 1;
+        resolverStarted.resolve(undefined);
+        return lookup.promise;
+      });
+      const pendingReceive = ingressReceiveCashuToken(
+        encodedToken("https://new.mint/", "msat"),
+        "paste",
+      );
+      await resolverStarted.promise;
+      useWalletStore.setState({
+        mnemonic: "zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo zoo wrong",
+      });
+      lookup.resolve({
+        freshness: "fresh",
+        regularKeysets:
+          kind === "collateral" ? [{ keysetId: VALID_KEYSET_ID, unit: "msat", active: true }] : [],
+        conditionalKeysets:
+          kind === "conditional"
+            ? [
+                {
+                  keysetId: VALID_KEYSET_ID,
+                  unit: "msat",
+                  active: true,
+                  conditionId: "a".repeat(64),
+                  outcomeCollection: "YES",
+                  outcomeCollectionId: "collection-yes",
+                },
+              ]
+            : [],
+      });
+
+      await expect(pendingReceive).rejects.toThrow(
+        "The wallet profile changed during mint recovery.",
+      );
+      expect(contextCapturedBeforeResolver).toBe(true);
+      expect(mockCaptureBrowserMintPersistenceContext).toHaveBeenCalledOnce();
+      expect(addMintWithoutActivating).not.toHaveBeenCalled();
+      expect(cashu.receiveAndStoreTokenRecoverably).not.toHaveBeenCalled();
+    },
+  );
 
   it("rejects sat tokens before mint resolution or mutation", async () => {
     const token = encodedToken("https://sat.mint/", "sat");
@@ -251,6 +344,7 @@ describe("walletOps facade", () => {
       "sat",
       "msat",
       "ctf-collateral-msat",
+      mockCaptureBrowserMintPersistenceContext.mock.results[0]?.value,
     );
   });
 
@@ -339,6 +433,11 @@ describe("walletOps facade", () => {
     expect(result.request.unit).toBe("msat");
     expect(result.encoded).toMatch(/^creq/);
     expect(nip17.getNostrNprofile).toHaveBeenCalledWith("1".repeat(64), ["ws://localhost:7777"]);
+    expect(usePaymentRequestInbox.getState().pending[result.id]).toMatchObject({
+      id: result.id,
+      mintUrl: "https://active.mint",
+      walletScopeId: browserWalletScopeIdFromMnemonic(useWalletStore.getState().mnemonic),
+    });
   });
 
   it("fails payment request creation when the wallet has no mnemonic", () => {

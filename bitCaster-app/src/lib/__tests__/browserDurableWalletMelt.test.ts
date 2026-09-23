@@ -29,6 +29,12 @@ import { createBrowserCustodyProofRow } from "../../stores/durable-custody-db";
 import { createBrowserProofBackupAuthorityRow } from "../../stores/browser-proof-backup-authority";
 import { browserWalletScope } from "../browserCtfRangeOrderSource";
 
+const requireNewWritePermission = vi.hoisted(() => vi.fn(async () => undefined));
+
+vi.mock("../browserWalletNewWritePermission", () => ({
+  requireBrowserWalletNewWritePermission: requireNewWritePermission,
+}));
+
 const MINT = "https://mint.example";
 const PRIVATE_KEY = Uint8Array.from([...new Uint8Array(31), 7]);
 const KEYS = { "1": bytesToHex(secp256k1.getPublicKey(PRIVATE_KEY, true)) };
@@ -38,6 +44,8 @@ const databases: BitcasterDB[] = [];
 let testClock = Date.now();
 
 afterEach(async () => {
+  requireNewWritePermission.mockClear();
+  requireNewWritePermission.mockResolvedValue(undefined);
   for (const database of databases.splice(0)) {
     database.close();
     await database.delete();
@@ -144,6 +152,32 @@ describe("browser durable wallet melt", () => {
     expect(wallet.completeMelt).toHaveBeenCalledOnce();
   });
 
+  it("refuses a new melt before output preparation", async () => {
+    const database = createDatabase();
+    const input = proofForOutput(OutputData.createSingleData(1, KEYSET_ID, "blocked-input", 7n));
+    await seedInput(database, input);
+    const quote = meltQuote("quote-blocked");
+    const wallet = meltWallet(meltPreview(quote, input), { state: "PAID", change: [] });
+    requireNewWritePermission.mockRejectedValueOnce(
+      new Error(
+        "Another browser changed this wallet. Reload to start recovery before making a new wallet change.",
+      ),
+    );
+
+    await expect(
+      meltBrowserDurableWallet({
+        quote,
+        mintUrl: MINT,
+        proofs: [input],
+        wallet,
+        context: meltContext(database),
+      }),
+    ).rejects.toThrow("Another browser changed this wallet");
+
+    expect(wallet.prepareMelt).not.toHaveBeenCalled();
+    expect(await database.custodyOperations.count()).toBe(0);
+  });
+
   it("keeps a lost-response reservation and retries the exact persisted preview", async () => {
     const database = createDatabase();
     const input = proofForOutput(OutputData.createSingleData(1, KEYSET_ID, "retry-input", 7n));
@@ -165,6 +199,12 @@ describe("browser durable wallet melt", () => {
     ).rejects.toThrow("lost melt response");
     expect((await database.custodyProofs.toArray())[0]?.selectability).toBe("locked");
 
+    requireNewWritePermission.mockClear();
+    requireNewWritePermission.mockRejectedValue(
+      new Error(
+        "Another browser changed this wallet. Reload to start recovery before making a new wallet change.",
+      ),
+    );
     await expect(
       meltBrowserDurableWallet({
         quote,
@@ -174,6 +214,7 @@ describe("browser durable wallet melt", () => {
         context: meltContext(database),
       }),
     ).resolves.toMatchObject({ paid: true, change: [change] });
+    expect(requireNewWritePermission).not.toHaveBeenCalled();
     expect(wallet.prepareMelt).toHaveBeenCalledOnce();
     expect(wallet.completeMelt).toHaveBeenCalledOnce();
     expect(wallet.checkMeltQuote).toHaveBeenCalledOnce();

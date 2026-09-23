@@ -9,6 +9,8 @@ import {
   createBrowserRemoteProofBackupAuthorityRow,
   requireBrowserProofBackupAuthorityForProof,
   requireBrowserLiveProofBackupAuthorityTableRow,
+  sameBrowserProofDerivationLocator,
+  type BrowserProofBackupAuthorityRow,
 } from "../stores/browser-proof-backup-authority";
 import { BrowserWalletCounterDexieStore } from "../stores/browser-wallet-counter-db";
 import {
@@ -34,6 +36,7 @@ import type {
   EncryptedWalletBackupV2VerifiedProofSet,
 } from "@bitcaster/client-sdk";
 import {
+  createEncryptedWalletBackupV2AssetIdentity,
   digestEncryptedWalletBackupV2BundleDescriptor,
   decodeEncryptedWalletBackupV2AssetIdentity,
   requireEncryptedWalletBackupV2CollectedHeadEvidence,
@@ -102,6 +105,516 @@ export interface BrowserEncryptedWalletBackupV2SealedAdmissionInput {
 
 export type BrowserEncryptedWalletBackupV2MixedAdmissionInput =
   BrowserEncryptedWalletBackupV2AdmissionInput;
+
+export interface BrowserEncryptedWalletBackupV2AcceptedRemoteAdmissionInput extends Omit<
+  BrowserEncryptedWalletBackupV2AdmissionInput,
+  "collectedHeadEvidence" | "realm" | "enrollmentEpoch" | "wallet"
+> {
+  readonly collectedHeadEvidence: import("@bitcaster/client-sdk").EncryptedWalletBackupV2CollectedHeadEvidence;
+  readonly realm: string;
+  readonly enrollmentEpoch: number;
+  readonly wallet?: CashuWallet;
+}
+
+/** Replace one local active set with one authenticated accepted-remote set. */
+export async function admitBrowserEncryptedWalletBackupV2AcceptedRemoteAsset(
+  input: BrowserEncryptedWalletBackupV2AcceptedRemoteAdmissionInput,
+): Promise<void> {
+  requireProductMsatUnit(input.asset.unit);
+  requireCurrent(input);
+  const verified = requireEncryptedWalletBackupV2VerifiedProofSet(input.verified);
+  requireAdmissionHeadBinding(input, verified, true);
+  requireAcceptedRemoteAssetBinding(input, verified);
+  requireAdmissionAuthority(input, verified);
+  if (browserWalletScope(input.seed).scopeId !== input.scopeId) {
+    throw new Error("browser V2 accepted-remote scope is foreign");
+  }
+  const prepared = prepareAcceptedRemoteAdmission(input, verified);
+
+  input.setTargetedRecoveryAdmissionStage?.("backup-admit-lock");
+  await withWalletProfileLock(
+    input.scopeId,
+    async () => {
+      requireCurrent(input);
+      const initial = await inspectAcceptedRemoteAdmission(input, prepared);
+      if (initial.missingSelectable.length > 0) {
+        let transactional: AcceptedRemoteAdmissionState | null = null;
+        await admitBrowserReceivedProofsWithHeldProfileLock(
+          {
+            seed: input.seed,
+            sourceOperationId: `${input.sourceOperationId}:accepted-remote`,
+            mintUrl: input.asset.mintUrl,
+            unit: "msat",
+            wallet: requireAcceptedRemoteAdmissionWallet(input.wallet),
+            proofs: initial.missingSelectable.map(({ stored }) => stored),
+            derivationAuthority: null,
+            proofLocators: new Map(
+              initial.missingSelectable.map(({ entry }) => [entry.proof.secret, entry.locator]),
+            ),
+            ...proofConditionalAssets(initial.missingSelectable.map(({ entry }) => entry)),
+            database: input.database,
+          },
+          {
+            beforePersist: async () => {
+              transactional = await inspectAcceptedRemoteAdmission(input, prepared);
+              requireSameAcceptedRemoteAdmissionPlan(initial, transactional);
+            },
+            afterPersist: async () => {
+              if (transactional === null) {
+                throw new Error("browser V2 accepted-remote transaction preflight is missing");
+              }
+              await finishAcceptedRemoteAdmission(input, prepared, transactional);
+            },
+          },
+        );
+        return;
+      }
+
+      await new BrowserDurableCustodyAdapter(input.database).ensureScope(
+        browserWalletScope(input.seed),
+        prepared.observedAtMs,
+      );
+      await input.database.transaction(
+        "rw",
+        [
+          input.database.custodyProofs,
+          input.database.custodyProofBackupAuthorities,
+          input.database.custodyConditionalKeysets,
+          input.database.walletCounterAssociations,
+          input.database.walletCounterCursors,
+          input.database.encryptedWalletBackupV2DesiredAssets,
+          input.database.proofs,
+          input.database.custodyReservations,
+          input.database.custodyOperations,
+          input.database.custodyActiveWork,
+          input.database.custodyScopes,
+        ],
+        async () => {
+          const transactional = await inspectAcceptedRemoteAdmission(input, prepared);
+          requireSameAcceptedRemoteAdmissionPlan(initial, transactional);
+          await finishAcceptedRemoteAdmission(input, prepared, transactional);
+        },
+      );
+    },
+    input.lockManager,
+  );
+}
+
+type AcceptedRemoteEntry = EncryptedWalletBackupV2VerifiedProofSet["proofs"][number];
+
+interface PreparedAcceptedRemoteEntry {
+  readonly entry: AcceptedRemoteEntry;
+  readonly stored: StoredProof;
+  readonly expectedProof: ReturnType<typeof decodeBrowserCustodyProofRow>;
+  readonly sealedAuthority: BrowserProofBackupAuthorityRow | null;
+}
+
+interface PreparedAcceptedRemoteAdmission {
+  readonly entries: readonly PreparedAcceptedRemoteEntry[];
+  readonly desiredRow: ReturnType<typeof createEncryptedWalletBackupV2DesiredAssetRow> & {
+    readonly syncState: "acknowledged";
+  };
+  readonly observedAtMs: number;
+}
+
+interface AcceptedRemoteAdmissionState {
+  readonly desired: ReturnType<typeof decodeEncryptedWalletBackupV2DesiredAssetRow> | null;
+  readonly localProofs: readonly ReturnType<typeof decodeBrowserCustodyProofRow>[];
+  readonly localAuthorities: readonly BrowserProofBackupAuthorityRow[];
+  readonly missingSelectable: readonly PreparedAcceptedRemoteEntry[];
+  readonly missingSealed: readonly PreparedAcceptedRemoteEntry[];
+  readonly sealedPromotions: readonly {
+    readonly proof: ReturnType<typeof decodeBrowserCustodyProofRow>;
+    readonly authority: BrowserProofBackupAuthorityRow;
+  }[];
+}
+
+function requireAcceptedRemoteAssetBinding(
+  input: BrowserEncryptedWalletBackupV2AcceptedRemoteAdmissionInput,
+  verified: EncryptedWalletBackupV2VerifiedProofSet,
+): void {
+  if (verified.proofs.length === 0) {
+    throw new Error("browser V2 accepted-remote proof set is empty");
+  }
+  if (
+    verified.proofs.some(
+      (entry) =>
+        entry.mintUrl !== input.asset.mintUrl ||
+        entry.unit !== "msat" ||
+        createEncryptedWalletBackupV2AssetIdentity({
+          mintUrl: entry.mintUrl,
+          unit: entry.unit,
+          asset: entry.asset,
+        }).assetIdentity !== input.asset.assetIdentity,
+    ) ||
+    verified.counterHighWaterMarks.some(
+      (mark) => mark.mintUrl !== input.asset.mintUrl || mark.unit !== "msat",
+    )
+  ) {
+    throw new Error("browser V2 accepted-remote asset is foreign");
+  }
+}
+
+function prepareAcceptedRemoteAdmission(
+  input: BrowserEncryptedWalletBackupV2AcceptedRemoteAdmissionInput,
+  verified: EncryptedWalletBackupV2VerifiedProofSet,
+): PreparedAcceptedRemoteAdmission {
+  const stored = storedProofs(input, verified);
+  const sealedEntries = verified.proofs.filter(
+    ({ selectionAuthority }) => selectionAuthority === "terminal-sealed-non-selectable",
+  );
+  const sealed =
+    sealedEntries.length === 0
+      ? null
+      : prepareSealedAdmission(input, verified, sealedEntries, verified.proofs.length);
+  const sealedById = new Map(
+    sealed?.proofRows.map((proof, index) => [
+      proof.proofId,
+      { proof, authority: sealed.authorityRows[index]! },
+    ]) ?? [],
+  );
+  const entries = verified.proofs.map((entry, index) => {
+    const preparedSealed = sealedById.get(entry.proofId);
+    const expectedProof =
+      preparedSealed?.proof ??
+      createBrowserCustodyProofRow({
+        scopeId: input.scopeId,
+        normalizedMint: input.asset.mintUrl,
+        unit: "msat",
+        proof: stored[index]!,
+        asset: proofAssetForAcceptedRemoteEntry(entry),
+        receivedAtMs: 0,
+      });
+    return {
+      entry,
+      stored: stored[index]!,
+      expectedProof,
+      sealedAuthority: preparedSealed?.authority ?? null,
+    };
+  });
+  const desired = createEncryptedWalletBackupV2DesiredAssetRow({
+    scopeId: input.scopeId,
+    asset: input.asset,
+    custodyRevision: input.custodyRevision,
+    activeProofCount: entries.length,
+    terminalCtfContext: verifiedTerminalCtfContext(verified),
+    removalIntent: null,
+  });
+  return {
+    entries,
+    desiredRow: { ...desired, syncState: "acknowledged" },
+    observedAtMs: Math.max(
+      0,
+      ...verified.proofs.map(({ terminalSeal }) => terminalSeal?.classifiedAtMs ?? 0),
+    ),
+  };
+}
+
+function proofAssetForAcceptedRemoteEntry(entry: AcceptedRemoteEntry) {
+  return entry.asset.kind === "ordinary"
+    ? ({ kind: "regular" } as const)
+    : ({
+        kind: "conditional",
+        conditionId: entry.asset.conditionId,
+        outcomeCollection: entry.asset.outcomeLabel,
+      } as const);
+}
+
+async function inspectAcceptedRemoteAdmission(
+  input: BrowserEncryptedWalletBackupV2AcceptedRemoteAdmissionInput,
+  prepared: PreparedAcceptedRemoteAdmission,
+): Promise<AcceptedRemoteAdmissionState> {
+  const first = input.verified.proofs[0]!.asset;
+  const localProofs = await readBrowserEncryptedWalletBackupV2ExactLocalProofRows({
+    database: input.database,
+    scopeId: input.scopeId,
+    asset: input.asset,
+    ...(first.kind === "ctf" ? { ctfRoute: first } : {}),
+  });
+  const incomingById = new Map(prepared.entries.map((entry) => [entry.entry.proofId, entry]));
+  if (incomingById.size !== prepared.entries.length) {
+    throw new Error("browser V2 accepted-remote proof set is duplicated");
+  }
+  if (localProofs.some((proof) => !incomingById.has(proof.proofId))) {
+    throw new Error("browser V2 accepted-remote local active proof is absent remotely");
+  }
+  if (
+    localProofs.some(
+      (proof) =>
+        proof.selectability === "locked" ||
+        proof.selectability === "pending-removal" ||
+        proof.reservationOperationId !== null,
+    )
+  ) {
+    throw new Error("browser V2 accepted-remote local proof is locked or pending");
+  }
+
+  const incomingKeys = prepared.entries.map(
+    ({ entry }) => [input.scopeId, entry.proofId] as [string, string],
+  );
+  const [rawIncomingProofs, rawAuthorities, reservations, rawDesired] = await Promise.all([
+    input.database.custodyProofs.bulkGet(incomingKeys),
+    input.database.custodyProofBackupAuthorities.bulkGet(incomingKeys),
+    input.database.custodyReservations.bulkGet(incomingKeys),
+    input.database.encryptedWalletBackupV2DesiredAssets.get([
+      input.scopeId,
+      prepared.desiredRow.localAssetKey,
+    ]),
+  ]);
+  if (reservations.some((reservation) => reservation !== undefined)) {
+    throw new Error("browser V2 accepted-remote local proof is reserved");
+  }
+  const localById = new Map(localProofs.map((proof) => [proof.proofId, proof]));
+  const localAuthorities: BrowserProofBackupAuthorityRow[] = [];
+  const missingSelectable: PreparedAcceptedRemoteEntry[] = [];
+  const missingSealed: PreparedAcceptedRemoteEntry[] = [];
+  const sealedPromotions: AcceptedRemoteAdmissionState["sealedPromotions"][number][] = [];
+
+  for (const [index, incoming] of prepared.entries.entries()) {
+    const rawProof = rawIncomingProofs[index];
+    const local = localById.get(incoming.entry.proofId);
+    if (rawProof !== undefined) {
+      const collision = decodeBrowserCustodyProofRow(rawProof);
+      if (collision.selectability === "spent") {
+        throw new Error("browser V2 accepted-remote proof collides with spent history");
+      }
+      if (local === undefined) {
+        throw new Error("browser V2 accepted-remote proof collides with another local asset");
+      }
+      if (!sameExactAcceptedRemoteProof(local, collision)) {
+        throw new Error("browser V2 accepted-remote local proof changed during inspection");
+      }
+    } else if (local !== undefined) {
+      throw new Error("browser V2 accepted-remote local proof body is missing");
+    }
+
+    if (local === undefined) {
+      if (rawAuthorities[index] !== undefined) {
+        requireBrowserLiveProofBackupAuthorityTableRow(rawAuthorities[index], incomingKeys[index]!);
+        throw new Error("browser V2 accepted-remote authority has no proof body");
+      }
+      if (incoming.entry.selectionAuthority === "live-verified") {
+        missingSelectable.push(incoming);
+      } else {
+        missingSealed.push(incoming);
+      }
+      continue;
+    }
+
+    if (!sameProofMaterial(local, incoming.expectedProof)) {
+      throw new Error("browser V2 accepted-remote proof material conflicts");
+    }
+    const authority = requireBrowserProofBackupAuthorityForProof(
+      requireBrowserLiveProofBackupAuthorityTableRow(rawAuthorities[index], incomingKeys[index]!),
+      local,
+    );
+    if (!sameBrowserProofDerivationLocator(authority.derivationLocator, incoming.entry.locator)) {
+      throw new Error("browser V2 accepted-remote derivation locator conflicts");
+    }
+    await requireAcceptedRemoteAuthorityWorkResolved(input.database, input.scopeId, authority);
+    localAuthorities.push(authority);
+    if (incoming.entry.selectionAuthority === "live-verified") {
+      if (local.selectability !== "selectable" || authority.terminalAuthority !== null) {
+        throw new Error("browser V2 accepted-remote cannot resurrect a terminal proof");
+      }
+      continue;
+    }
+
+    const seal = requireSeal(incoming.entry.terminalSeal);
+    if (local.selectability === "verified-losing") {
+      if (authority.terminalAuthority === null) {
+        throw new Error("browser V2 accepted-remote terminal authority is missing");
+      }
+      if (
+        authority.terminalAuthority.kind === "remote-seal" &&
+        authority.backupRecordCommitment !== seal.proofCommitment
+      ) {
+        throw new Error("browser V2 accepted-remote terminal commitment conflicts");
+      }
+      continue;
+    }
+    if (local.selectability !== "selectable" || authority.terminalAuthority !== null) {
+      throw new Error("browser V2 accepted-remote terminal promotion conflicts");
+    }
+    const promoted = decodeBrowserCustodyProofRow({
+      ...local,
+      revision: nextProofRevision(local.revision),
+      selectability: "verified-losing",
+      reservationOperationId: null,
+    });
+    sealedPromotions.push({
+      proof: promoted,
+      authority: createBrowserRemoteProofBackupAuthorityRow({
+        proof: promoted,
+        observedAtMs: Math.max(prepared.observedAtMs, promoted.receivedAtMs),
+        derivationLocator: incoming.entry.locator,
+        restoreProofId: incoming.entry.proofId,
+        restoreProofCommitment: seal.proofCommitment,
+      }),
+    });
+  }
+
+  if (localAuthorities.length !== localProofs.length) {
+    throw new Error("browser V2 accepted-remote local authority set is incomplete");
+  }
+  const desired =
+    rawDesired === undefined ? null : decodeEncryptedWalletBackupV2DesiredAssetRow(rawDesired);
+  if (desired !== null && desired.removalIntent !== null) {
+    throw new Error("browser V2 accepted-remote removal intent is unresolved");
+  }
+  return {
+    desired,
+    localProofs,
+    localAuthorities,
+    missingSelectable,
+    missingSealed,
+    sealedPromotions,
+  };
+}
+
+async function requireAcceptedRemoteAuthorityWorkResolved(
+  database: BitcasterDB,
+  scopeId: string,
+  authority: BrowserProofBackupAuthorityRow,
+): Promise<void> {
+  const operationIds = [
+    ...(authority.admissionOperationId === null ? [] : [authority.admissionOperationId]),
+    ...(authority.terminalAuthority?.kind === "local-operation"
+      ? [authority.terminalAuthority.operationId]
+      : []),
+  ];
+  for (const operationId of new Set(operationIds)) {
+    const [operation, activeWork] = await Promise.all([
+      database.custodyOperations.get([scopeId, operationId]),
+      database.custodyActiveWork.get([scopeId, operationId]),
+    ]);
+    if (activeWork !== undefined) {
+      throw new Error("browser V2 accepted-remote custody work is unfinished");
+    }
+    if (operation !== undefined) {
+      const record = decodeDurableCustodyRecord(operation.record);
+      if (
+        record.scope.scopeId !== scopeId ||
+        record.operation.operationId !== operationId ||
+        classifyDurableCustodyActiveWork(record) !== "none"
+      ) {
+        throw new Error("browser V2 accepted-remote custody work is unfinished");
+      }
+    }
+  }
+}
+
+function requireSameAcceptedRemoteAdmissionPlan(
+  expected: AcceptedRemoteAdmissionState,
+  actual: AcceptedRemoteAdmissionState,
+): void {
+  if (
+    !sameAcceptedRemoteDesired(expected.desired, actual.desired) ||
+    expected.localProofs.length !== actual.localProofs.length ||
+    expected.localAuthorities.length !== actual.localAuthorities.length ||
+    expected.localProofs.some(
+      (proof, index) => !sameExactAcceptedRemoteProof(proof, actual.localProofs[index]!),
+    ) ||
+    expected.localAuthorities.some(
+      (authority, index) =>
+        JSON.stringify(authority) !== JSON.stringify(actual.localAuthorities[index]),
+    ) ||
+    acceptedRemoteEntryIds(expected.missingSelectable) !==
+      acceptedRemoteEntryIds(actual.missingSelectable) ||
+    acceptedRemoteEntryIds(expected.missingSealed) !== acceptedRemoteEntryIds(actual.missingSealed)
+  ) {
+    throw new Error("browser V2 accepted-remote local state changed before commit");
+  }
+}
+
+function sameAcceptedRemoteDesired(
+  left: AcceptedRemoteAdmissionState["desired"],
+  right: AcceptedRemoteAdmissionState["desired"],
+): boolean {
+  return left === null || right === null
+    ? left === right
+    : JSON.stringify(left) === JSON.stringify(right);
+}
+
+function acceptedRemoteEntryIds(entries: readonly PreparedAcceptedRemoteEntry[]): string {
+  return entries.map(({ entry }) => entry.proofId).join(",");
+}
+
+function sameExactAcceptedRemoteProof(
+  left: ReturnType<typeof decodeBrowserCustodyProofRow>,
+  right: ReturnType<typeof decodeBrowserCustodyProofRow>,
+): boolean {
+  return (
+    sameProofMaterial(left, right) &&
+    left.revision === right.revision &&
+    left.selectability === right.selectability &&
+    left.reservationOperationId === right.reservationOperationId &&
+    left.receivedAtMs === right.receivedAtMs
+  );
+}
+
+async function finishAcceptedRemoteAdmission(
+  input: BrowserEncryptedWalletBackupV2AcceptedRemoteAdmissionInput,
+  prepared: PreparedAcceptedRemoteAdmission,
+  state: AcceptedRemoteAdmissionState,
+): Promise<void> {
+  input.setTargetedRecoveryAdmissionStage?.("backup-admit-custody");
+  const sealedProofs = state.missingSealed.map(({ expectedProof }) => expectedProof);
+  const sealedAuthorities = state.missingSealed.map(({ sealedAuthority }) => {
+    if (sealedAuthority === null) {
+      throw new Error("browser V2 accepted-remote sealed authority is missing");
+    }
+    return sealedAuthority;
+  });
+  await Promise.all([
+    input.database.custodyProofs.bulkPut([
+      ...sealedProofs,
+      ...state.sealedPromotions.map(({ proof }) => proof),
+    ]),
+    input.database.custodyProofBackupAuthorities.bulkPut([
+      ...sealedAuthorities,
+      ...state.sealedPromotions.map(({ authority }) => authority),
+    ]),
+  ]);
+  if (input.fault === "after-authority-before-cache") {
+    throw new Error("browser V2 restore injected cache fault");
+  }
+  input.setTargetedRecoveryAdmissionStage?.("backup-admit-desired");
+  input.setTargetedRecoveryAdmissionStage?.("backup-admit-desired-write");
+  await input.database.encryptedWalletBackupV2DesiredAssets.put(prepared.desiredRow);
+  input.setTargetedRecoveryAdmissionStage?.("backup-admit-counter");
+  await restoreCountersInOwnedTransaction(input, input.verified);
+  input.setTargetedRecoveryAdmissionStage?.("backup-admit-desired-write");
+  await input.database.encryptedWalletBackupV2DesiredAssets.put(prepared.desiredRow);
+  input.setTargetedRecoveryAdmissionStage?.("backup-admit-cache");
+  const sealedIds = new Set(
+    prepared.entries
+      .filter(({ entry }) => entry.selectionAuthority === "terminal-sealed-non-selectable")
+      .map(({ entry }) => entry.proofId),
+  );
+  const finalProofs = await input.database.custodyProofs.bulkGet(
+    prepared.entries.map(({ entry }) => [input.scopeId, entry.proofId] as [string, string]),
+  );
+  const decoded = finalProofs.map((proof) => {
+    if (proof === undefined) throw new Error("browser V2 accepted-remote proof is missing");
+    return decodeBrowserCustodyProofRow(proof);
+  });
+  await removeMatchingStaleLegacyCacheRows(
+    input.database,
+    decoded.filter(({ proofId }) => sealedIds.has(proofId)),
+  );
+  await addProofs(
+    prepared.entries
+      .filter(({ entry }) => entry.selectionAuthority === "live-verified")
+      .map(({ stored }) => stored),
+    input.database,
+  );
+  requireCurrent(input);
+  input.setTargetedRecoveryAdmissionStage?.("backup-admit-transaction-commit");
+  if (input.fault === "before-commit") {
+    throw new Error("browser V2 restore injected commit fault");
+  }
+}
 
 /** Admit one verified V2 asset under one profile lock, then repair the legacy cache. */
 export async function admitBrowserEncryptedWalletBackupV2Asset(
@@ -977,15 +1490,33 @@ function requireProductMsatUnit(unit: unknown): asserts unit is "msat" {
 }
 
 function requireAdmissionAuthority(
-  input: BrowserEncryptedWalletBackupV2AdmissionInput,
+  input: Pick<BrowserEncryptedWalletBackupV2AdmissionInput, "asset"> & {
+    readonly wallet?: CashuWallet;
+  },
   verified: EncryptedWalletBackupV2VerifiedProofSet,
 ): void {
-  if (normalizeUrl(input.wallet.mint.mintUrl) !== normalizeUrl(input.asset.mintUrl)) {
-    throw new Error("browser V2 restore mint is foreign");
-  }
   if (verified.counterHighWaterMarks.some(({ keysetId }) => isBlsKeyset(keysetId))) {
     throw new Error("browser V2 restore BLS keyset is unsupported");
   }
+  if (
+    verified.proofs.some(({ selectionAuthority }) => selectionAuthority === "live-verified") &&
+    input.wallet === undefined
+  ) {
+    throw new Error("browser V2 restore wallet is required for live proofs");
+  }
+  if (
+    input.wallet !== undefined &&
+    normalizeUrl(input.wallet.mint.mintUrl) !== normalizeUrl(input.asset.mintUrl)
+  ) {
+    throw new Error("browser V2 restore mint is foreign");
+  }
+}
+
+function requireAcceptedRemoteAdmissionWallet(wallet: CashuWallet | undefined): CashuWallet {
+  if (wallet === undefined) {
+    throw new Error("browser V2 restore wallet is required for live proofs");
+  }
+  return wallet;
 }
 
 function requireAdmissionHeadBinding(
@@ -1608,7 +2139,7 @@ function desiredRow(
 }
 
 function storedProofs(
-  input: BrowserEncryptedWalletBackupV2AdmissionInput,
+  input: Pick<BrowserEncryptedWalletBackupV2AdmissionInput, "asset">,
   verified: EncryptedWalletBackupV2VerifiedProofSet,
 ): StoredProof[] {
   return verified.proofs.map(({ proof, asset }) => {

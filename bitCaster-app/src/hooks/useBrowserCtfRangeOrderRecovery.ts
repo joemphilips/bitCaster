@@ -11,6 +11,7 @@ import {
   hasActiveBrowserCtfRangeOrderAttempt,
   listenForBrowserCtfRangeRecoveryWake,
 } from "@/lib/browserCtfRangeOrderRecoveryWake";
+import { resumeBrowserEncryptedWalletBackupV2AfterRecovery } from "@/lib/encryptedWalletBackupDriver";
 
 const RANGE_RECOVERY_RETRY_MS = 15_000;
 
@@ -113,6 +114,7 @@ export function useBrowserCtfRangeOrderRecovery(input: {
         }
       } finally {
         running = false;
+        resumeBrowserEncryptedWalletBackupV2AfterRecovery(scopeId);
         if (retryRequired) schedule();
         if (rerunRequested && !cancelled) {
           rerunRequested = false;

@@ -8,6 +8,7 @@ import {
 import { readDurableCustodyAuthenticatedTerminalMintRejection } from "@bitcaster/client-sdk/durableCustodyMintResult";
 import type { EncryptedWalletBackupV2CommittedTerminalSealStore } from "@bitcaster/client-sdk/encryptedWalletBackupV2ProofSet";
 import {
+  decodeBrowserProofBackupAuthorityTableRow,
   requireBrowserProofBackupAuthorityForProof,
   type BrowserProofBackupAuthorityRow,
 } from "./browser-proof-backup-authority";
@@ -100,11 +101,28 @@ export class BrowserEncryptedWalletBackupV2TerminalSealStore implements Encrypte
     for (const [index, proofId] of proofIds.entries()) {
       const rawProof = rawProofs[index];
       const rawAuthority = rawAuthorities[index];
-      if (!rawProof || !rawAuthority) {
+      if (!rawAuthority) {
+        throw new Error("browser terminal seal input proof authority is incomplete");
+      }
+      const tableRow = decodeBrowserProofBackupAuthorityTableRow(rawAuthority);
+      if ("recordKind" in tableRow) {
+        if (
+          rawProof !== undefined ||
+          tableRow.scopeId !== this.#scope.scopeId ||
+          tableRow.proofId !== proofId ||
+          (tableRow.recordKind === "completed-local-removal" &&
+            tableRow.terminalOperationId !== operation.operationId)
+        ) {
+          throw new Error("browser terminal seal removed predecessor authority is invalid");
+        }
+        // A completed sibling no longer has a body. It cannot classify the retained inputs.
+        continue;
+      }
+      if (!rawProof) {
         throw new Error("browser terminal seal input proof authority is incomplete");
       }
       const proof = decodeBrowserCustodyProofRow(rawProof);
-      const authority = requireBrowserProofBackupAuthorityForProof(rawAuthority, proof);
+      const authority = requireBrowserProofBackupAuthorityForProof(tableRow, proof);
       requireTerminalProof(proof, authority, this.#scope.scopeId, proofId, operation);
       if (classifiedAtMs === undefined) {
         classifiedAtMs = authority.updatedAtMs;

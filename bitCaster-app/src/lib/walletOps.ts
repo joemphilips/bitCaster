@@ -1,7 +1,8 @@
 import { PaymentRequest, PaymentRequestTransportType, type Proof } from "@cashu/cashu-ts";
-import { receiveAndStoreTokenRecoverably } from "@/lib/cashu";
+import { captureBrowserMintPersistenceContext, receiveAndStoreTokenRecoverably } from "@/lib/cashu";
 import { deriveNostrKeyPair, getNostrNprofile } from "@/lib/nip17";
 import { normalizeUrl } from "@/lib/url";
+import { browserWalletScopeIdFromMnemonic } from "@/lib/browserWalletProfile";
 import { useSettingsStore } from "@/stores/settings";
 import { useWalletStore, type StoredMint } from "@/stores/wallet";
 import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
@@ -138,12 +139,14 @@ export async function ingressReceiveCashuToken(
   source: WalletIngressSource,
   options?: { mintUrl?: string },
 ): Promise<IngressReceiveCashuTokenResult> {
+  const context = captureBrowserMintPersistenceContext();
   const validated = await validateProductWalletTokenImport({
     encodedToken: token,
     resolveKeysets: resolveTokenImportKeysets,
     bounds: { maxProofs: BROWSER_TOKEN_IMPORT_MAX_PROOFS },
     allowInsecureLoopbackHttp: isLocalDevelopmentOrigin(),
   });
+  context.requireCapturedProfile();
   if (validated.canonicalMintUrls.length !== 1) {
     throw new Error("Wallet receive supports exactly one mint per Cashu token");
   }
@@ -153,13 +156,16 @@ export async function ingressReceiveCashuToken(
   if (mintUrl !== validatedMintUrl) throw new Error("Cashu token mint does not match the request");
   const unit = validated.unit;
   const baseAsset = COLLATERAL_UNIT_REGISTRY[unit].baseAsset;
+  context.requireCapturedProfile();
   const registration = await ingressRegisterMint(mintUrl, source);
+  context.requireCapturedProfile();
   const proofs = await receiveAndStoreTokenRecoverably(
     validated.encodedToken,
     mintUrl,
     baseAsset,
     unit,
     validated.context,
+    context,
   );
   return {
     ...registration,
@@ -208,6 +214,8 @@ export function userCreatePaymentRequest(mintUrl: string): CreatedWalletPaymentR
   if (!mnemonic) {
     throw new Error("Wallet not set up");
   }
+  const walletScopeId = browserWalletScopeIdFromMnemonic(mnemonic);
+  if (walletScopeId === null) throw new Error("Wallet not set up");
 
   const keyPair = deriveNostrKeyPair(mnemonic);
   const configuredRelays = effectiveRelayUrls(useSettingsStore.getState().relays);
@@ -234,7 +242,7 @@ export function userCreatePaymentRequest(mintUrl: string): CreatedWalletPaymentR
     [canonicalMintUrl],
     undefined,
   );
-  usePaymentRequestInbox.getState().registerPending(id, canonicalMintUrl);
+  usePaymentRequestInbox.getState().registerPending(id, canonicalMintUrl, walletScopeId);
 
   return {
     encoded: request.toEncodedRequest(),

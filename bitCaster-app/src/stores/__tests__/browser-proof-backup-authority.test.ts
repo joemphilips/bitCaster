@@ -16,13 +16,17 @@ import {
   advanceBrowserRemoteProofBackupAuthorityRow,
   bindBrowserProofBackupAuthorityTerminalOperation,
   classifyBrowserProofBackupAuthorityVerifiedLosing,
+  createBrowserCompletedLocalProofRemovalMarkerRow,
   createBrowserCompletedProofRemovalMarkerRow,
   createBrowserProofBackupAuthorityRow,
   createBrowserRemoteProofBackupAuthorityRow,
   decodeBrowserCompletedProofRemovalMarkerRow,
+  decodeBrowserCompletedLocalProofRemovalMarkerRow,
   decodeBrowserProofBackupAuthorityTableRow,
   requireBrowserLiveProofBackupAuthorityTableRow,
   requireBrowserProofBackupAuthorityRow,
+  retireBrowserProofBackupAuthorityRowAsMintSpent,
+  restoreBrowserProofBackupAuthorityRowFromPendingRemoval,
 } from "../browser-proof-backup-authority";
 import { createBrowserCustodyProofRow } from "../durable-custody-db";
 
@@ -37,6 +41,34 @@ const nut13 = (keysetId: string, counter: number) => ({
 });
 
 describe("browser proof backup authority", () => {
+  it("retains a remote-seal origin after mint-spent retirement and refuses reactivation", () => {
+    const proof = { ...conditionalProof(), selectability: "verified-losing" as const };
+    const authority = createBrowserRemoteProofBackupAuthorityRow({
+      proof,
+      observedAtMs: 2,
+      derivationLocator: nut13(DERIVATION_KEYSET, 6),
+      restoreProofId: proof.proofId,
+      restoreProofCommitment: "44".repeat(32),
+    });
+    const spent = { ...proof, revision: 1, selectability: "spent" as const };
+
+    const retired = retireBrowserProofBackupAuthorityRowAsMintSpent(authority, proof, spent, 3);
+
+    expect(retired).toMatchObject({
+      proofRevision: 1,
+      proofState: "spent",
+      terminalAuthority: { kind: "remote-seal" },
+    });
+    expect(() =>
+      advanceBrowserRemoteProofBackupAuthorityRow(
+        retired as Extract<typeof retired, { backupState: "remote-backed" }>,
+        { ...proof, revision: 2 },
+        4,
+        nut13(DERIVATION_KEYSET, 6),
+      ),
+    ).toThrow(/spent authority is terminal/);
+  });
+
   it("requires a committed terminal operation for a verified-losing authority", () => {
     const base = createBrowserCustodyProofRow({
       scopeId: walletScope().scopeId,
@@ -171,6 +203,25 @@ describe("browser proof backup authority", () => {
       terminalOperationId: "redeem",
       terminalAuthority: { kind: "local-operation", operationId: "redeem" },
     });
+    expect(
+      restoreBrowserProofBackupAuthorityRowFromPendingRemoval(
+        pending,
+        {
+          ...losing,
+          selectability: "verified-losing",
+          reservationOperationId: null,
+          revision: 3,
+        },
+        5,
+      ),
+    ).toMatchObject({
+      proofState: "verified-losing",
+      proofRevision: 3,
+      backupState: "local-only",
+      admissionOperationId: "admission",
+      terminalOperationId: "redeem",
+      terminalAuthority: { kind: "local-operation", operationId: "redeem" },
+    });
     expect(() =>
       advanceBrowserProofBackupAuthorityRowToPendingRemoval(
         authority,
@@ -204,6 +255,18 @@ describe("browser proof backup authority", () => {
     );
     expect(pending).toMatchObject({
       proofState: "pending-removal",
+      terminalAuthority: { kind: "remote-seal" },
+      backupState: "remote-backed",
+      backupRecordCommitment: "66".repeat(32),
+    });
+    const restored = restoreBrowserProofBackupAuthorityRowFromPendingRemoval(
+      pending,
+      { ...proof, selectability: "verified-losing", reservationOperationId: null, revision: 3 },
+      4,
+    );
+    expect(restored).toMatchObject({
+      proofState: "verified-losing",
+      proofRevision: 3,
       terminalAuthority: { kind: "remote-seal" },
       backupState: "remote-backed",
       backupRecordCommitment: "66".repeat(32),
@@ -336,6 +399,41 @@ describe("browser proof backup authority", () => {
         localAssetKey: ordinaryMarkerLocalAssetKey(),
       }),
     ).toThrow("asset key is invalid");
+  });
+
+  it("decodes a strict local completed-removal marker without backup evidence", () => {
+    const marker = createBrowserCompletedLocalProofRemovalMarkerRow({
+      scopeId: walletScope().scopeId,
+      proofId: "33".repeat(32),
+      proofFingerprint: "44".repeat(32),
+      proofRevision: 2,
+      localAssetKey: markerLocalAssetKey(),
+      terminalOperationId: "ctf-redeem-local",
+      completedAtMs: 21,
+    });
+
+    expect(decodeBrowserCompletedLocalProofRemovalMarkerRow(marker)).toStrictEqual(marker);
+    expect(decodeBrowserProofBackupAuthorityTableRow(marker)).toStrictEqual(marker);
+    expect(Object.keys(marker).sort()).toStrictEqual([
+      "completedAtMs",
+      "localAssetKey",
+      "proofFingerprint",
+      "proofId",
+      "proofRevision",
+      "recordKind",
+      "schemaVersion",
+      "scopeId",
+      "terminalOperationId",
+    ]);
+    expect(() =>
+      decodeBrowserCompletedLocalProofRemovalMarkerRow({ ...marker, realm: "backup.example" }),
+    ).toThrow("marker is invalid");
+    expect(() =>
+      decodeBrowserCompletedLocalProofRemovalMarkerRow({
+        ...marker,
+        localAssetKey: markerLocalAssetKey().replace("[", "[ "),
+      }),
+    ).toThrow("asset key is not canonical");
   });
 
   it("returns live authority or absence and fences completed markers by primary key", () => {

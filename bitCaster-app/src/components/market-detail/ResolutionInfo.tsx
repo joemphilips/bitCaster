@@ -52,16 +52,18 @@ export function ResolutionInfo({ resolution }: ResolutionInfoProps) {
         </p>
       </div>
 
-      <div className="pt-4 border-t border-slate-200 dark:border-slate-700">
-        <div>
-          <p className="text-xs text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1">
-            {t("market.resolutionDate")}
-          </p>
-          <p className="text-sm font-medium text-slate-900 dark:text-white">
-            {formatDate(resolution.resolutionDate)}
-          </p>
+      {resolution.resolutionDate !== null && (
+        <div className="pt-4 border-t border-slate-200 dark:border-slate-700">
+          <div>
+            <p className="text-xs text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1">
+              {t("market.resolutionDate")}
+            </p>
+            <p className="text-sm font-medium text-slate-900 dark:text-white">
+              {formatDate(resolution.resolutionDate)}
+            </p>
+          </div>
         </div>
-      </div>
+      )}
 
       {/* Dispute Deadline (if disputed) */}
       {resolution.status === "disputed" && resolution.disputeDeadline && (

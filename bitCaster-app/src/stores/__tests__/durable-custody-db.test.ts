@@ -37,12 +37,19 @@ import {
   persistBrowserOutgoingCashuTransferRewrite,
 } from "../durable-custody-db";
 import {
+  advanceBrowserProofBackupAuthorityRow,
   bindBrowserProofBackupAuthorityTerminalOperation,
+  classifyBrowserProofBackupAuthorityVerifiedLosing,
   createBrowserCompletedProofRemovalMarkerRow,
   createBrowserRemoteProofBackupAuthorityRow,
   createBrowserProofBackupAuthorityRow,
+  type BrowserProofBackupAuthorityRow,
 } from "../browser-proof-backup-authority";
-import { createEncryptedWalletBackupV2DesiredAssetRow } from "../browser-encrypted-wallet-backup-v2-desired-asset";
+import type { BrowserCustodyProofRow } from "../durable-custody-types";
+import {
+  createEncryptedWalletBackupV2DesiredAssetRow,
+  createEncryptedWalletBackupV2RemovalIntent,
+} from "../browser-encrypted-wallet-backup-v2-desired-asset";
 import {
   BitcasterDB,
   browserOutgoingPredecessorKey,
@@ -83,6 +90,372 @@ afterEach(async () => {
 });
 
 describe("browser durable custody adapter", () => {
+  it.each(["remote-terminal", "local-terminal", "selectable"] as const)(
+    "retires exact mint-spent %s proof authority and retains its body",
+    async (kind) => {
+      const fixture = await mintSpentRetirementFixture(kind);
+      const beforeBody = fixture.candidates[0]!.proof.proofBody.slice();
+
+      const result = await fixture.adapter.retireExactMintSpentProofs({
+        scopeId: fixture.scope.scopeId,
+        candidates: fixture.candidates,
+        expectedDesiredAsset: fixture.desired,
+        observedAtMs: 20,
+      });
+
+      const retired = await fixture.adapter.readProof(
+        fixture.scope.scopeId,
+        fixture.candidates[0]!.proof.proofId,
+      );
+      expect(retired).toMatchObject({
+        revision: fixture.candidates[0]!.proof.revision + 1,
+        selectability: "spent",
+        reservationOperationId: null,
+      });
+      expect(
+        retired !== null &&
+          retired.proofBody.byteLength === beforeBody.byteLength &&
+          retired.proofBody.every((byte, index) => byte === beforeBody[index]),
+      ).toBe(true);
+      const authority = await fixture.database.custodyProofBackupAuthorities.get([
+        fixture.scope.scopeId,
+        fixture.candidates[0]!.proof.proofId,
+      ]);
+      expect(authority).toMatchObject({
+        proofState: "spent",
+        proofRevision: fixture.candidates[0]!.proof.revision + 1,
+        terminalAuthority: fixture.candidates[0]!.authority.terminalAuthority,
+      });
+      expect(result).toMatchObject({
+        custodyRevision: "2",
+        activeProofCount: 0,
+        desiredAction: "remove",
+        syncState: "pending",
+      });
+      await expect(
+        fixture.database.encryptedWalletBackupV2DesiredAssets.get([
+          fixture.scope.scopeId,
+          result.localAssetKey,
+        ]),
+      ).resolves.toEqual(result);
+    },
+  );
+
+  it("retires one exact batch with one desired-asset revision advance", async () => {
+    const fixture = await mintSpentRetirementFixture("selectable", 2, 3);
+
+    const result = await fixture.adapter.retireExactMintSpentProofs({
+      scopeId: fixture.scope.scopeId,
+      candidates: fixture.candidates,
+      expectedDesiredAsset: fixture.desired,
+      observedAtMs: 20,
+    });
+
+    expect(result).toMatchObject({ custodyRevision: "2", activeProofCount: 1 });
+    const retired = await fixture.database.custodyProofs.bulkGet(
+      fixture.candidates.map(({ proof }) => [fixture.scope.scopeId, proof.proofId]),
+    );
+    expect(retired.map((proofRow) => proofRow?.selectability)).toEqual(["spent", "spent"]);
+  });
+
+  it("joins one caller-owned transaction for exact mint-spent retirement", async () => {
+    const fixture = await mintSpentRetirementFixture("selectable");
+
+    const result = await fixture.database.transaction(
+      "rw",
+      [
+        fixture.database.custodyOperations,
+        fixture.database.custodyProofs,
+        fixture.database.custodyReservations,
+        fixture.database.custodyActiveWork,
+        fixture.database.custodyProofBackupAuthorities,
+        fixture.database.custodyConditionalKeysets,
+        fixture.database.encryptedWalletBackupV2DesiredAssets,
+      ],
+      async () => {
+        const transaction = Dexie.currentTransaction;
+        if (transaction === undefined) throw new Error("test transaction is missing");
+        return fixture.adapter.retireExactMintSpentProofsInCurrentTransaction(transaction, {
+          scopeId: fixture.scope.scopeId,
+          candidates: fixture.candidates,
+          expectedDesiredAsset: fixture.desired,
+          observedAtMs: 20,
+        });
+      },
+    );
+
+    expect(result).toMatchObject({ custodyRevision: "2", activeProofCount: 0 });
+  });
+
+  it.each(["locked", "pending-removal"] as const)(
+    "refuses a %s predecessor before exact mint-spent retirement",
+    async (selectability) => {
+      const fixture = await mintSpentRetirementFixture(
+        selectability === "locked" ? "selectable" : "local-terminal",
+      );
+      const candidate = fixture.candidates[0]!;
+      await expect(
+        fixture.adapter.retireExactMintSpentProofs({
+          scopeId: fixture.scope.scopeId,
+          candidates: [
+            {
+              ...candidate,
+              proof: {
+                ...candidate.proof,
+                selectability,
+                reservationOperationId: selectability === "locked" ? "reservation" : null,
+              },
+            },
+          ],
+          expectedDesiredAsset: fixture.desired,
+          observedAtMs: 20,
+        }),
+      ).rejects.toThrow(/predecessor is invalid/);
+    },
+  );
+
+  it("rolls back proof, authority, and desired state on reservation and injected faults", async () => {
+    const reserved = await mintSpentRetirementFixture("selectable");
+    const candidate = reserved.candidates[0]!;
+    await reserved.database.custodyReservations.put({
+      scopeId: reserved.scope.scopeId,
+      proofId: candidate.proof.proofId,
+      operationId: "foreign-reservation",
+      reservationId: "foreign-reservation:0",
+      inputPosition: 0,
+    });
+    await expect(
+      reserved.adapter.retireExactMintSpentProofs({
+        scopeId: reserved.scope.scopeId,
+        candidates: reserved.candidates,
+        expectedDesiredAsset: reserved.desired,
+        observedAtMs: 20,
+      }),
+    ).rejects.toThrow(/proof is reserved/);
+    expect(
+      (await reserved.adapter.readProof(reserved.scope.scopeId, candidate.proof.proofId))
+        ?.selectability,
+    ).toBe("selectable");
+
+    const fault = await mintSpentRetirementFixture("remote-terminal");
+    await expect(
+      fault.adapter.retireExactMintSpentProofs({
+        scopeId: fault.scope.scopeId,
+        candidates: fault.candidates,
+        expectedDesiredAsset: fault.desired,
+        observedAtMs: 20,
+        injectFault: "before-commit",
+      }),
+    ).rejects.toThrow(/injected browser mint-spent retirement fault/);
+    expect(
+      (await fault.adapter.readProof(fault.scope.scopeId, fault.candidates[0]!.proof.proofId))
+        ?.selectability,
+    ).toBe("verified-losing");
+    await expect(
+      fault.database.encryptedWalletBackupV2DesiredAssets.get([
+        fault.scope.scopeId,
+        fault.desired.localAssetKey,
+      ]),
+    ).resolves.toEqual(fault.desired);
+  });
+
+  it("rejects active and unresolved creator work before mint-spent retirement", async () => {
+    const fixture = await mintSpentRetirementFixture("selectable");
+    const candidate = fixture.candidates[0]!;
+    const source = operationBinding(
+      fixture.scope,
+      candidate.authority.admissionOperationId!,
+      proof("mint-spent-active-input"),
+      candidate.proof.proofId,
+    );
+    if (candidate.authority.backupState !== "local-only") {
+      throw new Error("test mint-spent authority is not local");
+    }
+    const activeAuthority = {
+      ...candidate.authority,
+      admissionOperationId: source.record.operation.operationId,
+    };
+    fixture.candidates[0] = { proof: candidate.proof, authority: activeAuthority };
+    await fixture.database.custodyProofBackupAuthorities.put(activeAuthority);
+    const owner = await claim(fixture.adapter, fixture.scope, 10);
+    const predecessor = createBrowserCustodyProofRow({
+      scopeId: fixture.scope.scopeId,
+      normalizedMint: MINT,
+      unit: "msat",
+      proof: source.operation.inputs[0] as Proof,
+      asset: { kind: "regular" },
+      receivedAtMs: 1,
+    });
+    await fixture.adapter.transact(
+      selection(fixture.scope, owner, source.record.operation.operationId, null),
+      (transaction) =>
+        bindDurableCustodyProofOperation(transaction, source.record, source.artifacts),
+      { predecessorProofs: { [source.record.operation.operationId]: [predecessor] } },
+    );
+    expect(source.record.operation.operationId).toBe(activeAuthority.admissionOperationId);
+    expect(
+      await fixture.database.custodyActiveWork.get([
+        fixture.scope.scopeId,
+        source.record.operation.operationId,
+      ]),
+    ).toBeDefined();
+    const retirement = {
+      scopeId: fixture.scope.scopeId,
+      candidates: fixture.candidates,
+      expectedDesiredAsset: fixture.desired,
+      observedAtMs: 20,
+    } as const;
+    await expect(fixture.adapter.retireExactMintSpentProofs(retirement)).rejects.toThrow(
+      /active custody work/,
+    );
+
+    await fixture.database.custodyActiveWork.delete([
+      fixture.scope.scopeId,
+      source.record.operation.operationId,
+    ]);
+    await expect(fixture.adapter.retireExactMintSpentProofs(retirement)).rejects.toThrow(
+      /unresolved custody operation/,
+    );
+  });
+
+  it("rejects removal intent and exact proof or desired CAS changes", async () => {
+    const intentFixture = await mintSpentRetirementFixture("remote-terminal");
+    const candidate = intentFixture.candidates[0]!;
+    const intent = createEncryptedWalletBackupV2RemovalIntent({
+      intentId: "mint-spent-conflicting-removal",
+      createdAtMs: 5,
+      realm: "development",
+      walletId: intentFixture.scope.walletId,
+      enrollmentEpoch: 1,
+      expectedHeadVersion: 0,
+      expectedActiveSetDigest: "11".repeat(32),
+      targetCustodyRevision: intentFixture.desired.custodyRevision,
+      proofs: [
+        {
+          proofId: candidate.proof.proofId,
+          proofFingerprint: candidate.proof.proofFingerprint,
+          proofRevision: candidate.proof.revision,
+          proofCommitment: "22".repeat(32),
+        },
+      ],
+    });
+    const desiredWithIntent = createEncryptedWalletBackupV2DesiredAssetRow({
+      scopeId: intentFixture.scope.scopeId,
+      asset: {
+        mintUrl: intentFixture.desired.mintUrl,
+        unit: intentFixture.desired.unit,
+        assetIdentity: intentFixture.desired.assetIdentity,
+      },
+      custodyRevision: BigInt(intentFixture.desired.custodyRevision),
+      activeProofCount: intentFixture.desired.activeProofCount,
+      terminalCtfContext: intentFixture.desired.terminalCtfContext,
+      removalIntent: intent,
+    });
+    await intentFixture.database.encryptedWalletBackupV2DesiredAssets.put(desiredWithIntent);
+    await expect(
+      intentFixture.adapter.retireExactMintSpentProofs({
+        scopeId: intentFixture.scope.scopeId,
+        candidates: intentFixture.candidates,
+        expectedDesiredAsset: desiredWithIntent,
+        observedAtMs: 20,
+      }),
+    ).rejects.toThrow(/desired asset is invalid/);
+
+    const stale = await mintSpentRetirementFixture("selectable");
+    const staleCandidate = stale.candidates[0]!;
+    if (staleCandidate.authority.backupState !== "local-only") {
+      throw new Error("test mint-spent authority is not local");
+    }
+    const advancedProof = { ...staleCandidate.proof, revision: 1 };
+    const advancedAuthority = advanceBrowserProofBackupAuthorityRow(
+      staleCandidate.authority,
+      advancedProof,
+      3,
+      staleCandidate.authority.derivationLocator,
+      staleCandidate.authority.admissionOperationId,
+    );
+    await Promise.all([
+      stale.database.custodyProofs.put(advancedProof),
+      stale.database.custodyProofBackupAuthorities.put(advancedAuthority),
+    ]);
+    await expect(
+      stale.adapter.retireExactMintSpentProofs({
+        scopeId: stale.scope.scopeId,
+        candidates: stale.candidates,
+        expectedDesiredAsset: stale.desired,
+        observedAtMs: 20,
+      }),
+    ).rejects.toThrow(/proof CAS is stale/);
+    await expect(
+      stale.database.encryptedWalletBackupV2DesiredAssets.get([
+        stale.scope.scopeId,
+        stale.desired.localAssetKey,
+      ]),
+    ).resolves.toEqual(stale.desired);
+
+    const staleDesired = await mintSpentRetirementFixture("selectable");
+    await staleDesired.database.encryptedWalletBackupV2DesiredAssets.put({
+      ...staleDesired.desired,
+      custodyRevision: "2",
+    });
+    await expect(
+      staleDesired.adapter.retireExactMintSpentProofs({
+        scopeId: staleDesired.scope.scopeId,
+        candidates: staleDesired.candidates,
+        expectedDesiredAsset: staleDesired.desired,
+        observedAtMs: 20,
+      }),
+    ).rejects.toThrow(/desired asset CAS is stale/);
+  });
+
+  it("CASes the exact derivation locator and terminal origin", async () => {
+    const locator = await mintSpentRetirementFixture("selectable");
+    const locatorCandidate = locator.candidates[0]!;
+    await expect(
+      locator.adapter.retireExactMintSpentProofs({
+        scopeId: locator.scope.scopeId,
+        candidates: [
+          {
+            ...locatorCandidate,
+            authority: {
+              ...locatorCandidate.authority,
+              derivationLocator: {
+                ...REMOTE_REPLAY_LOCATOR,
+                keysetId: locatorCandidate.proof.keysetId,
+                counter: 99,
+              },
+            },
+          },
+        ],
+        expectedDesiredAsset: locator.desired,
+        observedAtMs: 20,
+      }),
+    ).rejects.toThrow(/authority CAS is stale/);
+
+    const terminal = await mintSpentRetirementFixture("local-terminal");
+    const terminalCandidate = terminal.candidates[0]!;
+    await expect(
+      terminal.adapter.retireExactMintSpentProofs({
+        scopeId: terminal.scope.scopeId,
+        candidates: [
+          {
+            ...terminalCandidate,
+            authority: {
+              ...terminalCandidate.authority,
+              terminalOperationId: "foreign-terminal-operation",
+              terminalAuthority: {
+                kind: "local-operation",
+                operationId: "foreign-terminal-operation",
+              },
+            },
+          },
+        ],
+        expectedDesiredAsset: terminal.desired,
+        observedAtMs: 20,
+      }),
+    ).rejects.toThrow(/authority CAS is stale/);
+  });
+
   it("treats a bodyless completed-removal marker as removed and rejects a body beside it", async () => {
     const database = createDatabase();
     const adapter = new BrowserDurableCustodyAdapter(database);
@@ -1249,6 +1622,147 @@ describe("browser durable custody adapter", () => {
     );
   });
 });
+
+async function mintSpentRetirementFixture(
+  kind: "remote-terminal" | "local-terminal" | "selectable",
+  proofCount = 1,
+  activeProofCount = proofCount,
+) {
+  const database = createDatabase();
+  const adapter = new BrowserDurableCustodyAdapter(database);
+  const scope = walletScope();
+  const candidates: Array<{
+    proof: BrowserCustodyProofRow;
+    authority: BrowserProofBackupAuthorityRow;
+  }> = [];
+  for (let index = 0; index < proofCount; index += 1) {
+    const base = createBrowserCustodyProofRow({
+      scopeId: scope.scopeId,
+      normalizedMint: MINT,
+      unit: "msat",
+      proof: {
+        ...proof(`mint-spent-${kind}-${index}`),
+        id: kind === "selectable" ? KEYSET : TERMINAL_KEYSET,
+      },
+      asset:
+        kind === "selectable"
+          ? { kind: "regular" }
+          : {
+              kind: "conditional",
+              conditionId: TERMINAL_CONDITION,
+              outcomeCollection: "YES",
+            },
+      receivedAtMs: 1,
+    });
+    if (kind === "remote-terminal") {
+      const losing = { ...base, selectability: "verified-losing" as const };
+      candidates.push({
+        proof: losing,
+        authority: createBrowserRemoteProofBackupAuthorityRow({
+          proof: losing,
+          observedAtMs: 2,
+          derivationLocator: { ...REMOTE_REPLAY_LOCATOR, counter: 20 + index },
+          restoreProofId: losing.proofId,
+          restoreProofCommitment: "33".repeat(32),
+        }),
+      });
+      continue;
+    }
+    const locator = {
+      schemaVersion: 1 as const,
+      kind: "nut13" as const,
+      keysetId: base.keysetId,
+      counter: 20 + index,
+    };
+    if (kind === "local-terminal") {
+      const operationId = `mint-spent-terminal-${index}`;
+      const locked = {
+        ...base,
+        selectability: "locked" as const,
+        reservationOperationId: operationId,
+      };
+      const losing = {
+        ...base,
+        revision: 1,
+        selectability: "verified-losing" as const,
+        reservationOperationId: null,
+      };
+      candidates.push({
+        proof: losing,
+        authority: classifyBrowserProofBackupAuthorityVerifiedLosing(
+          createBrowserProofBackupAuthorityRow(locked, 2, locator, `mint-spent-admission-${index}`),
+          losing,
+          operationId,
+          3,
+        ),
+      });
+      continue;
+    }
+    candidates.push({
+      proof: base,
+      authority: createBrowserProofBackupAuthorityRow(
+        base,
+        2,
+        locator,
+        `mint-spent-admission-${index}`,
+      ),
+    });
+  }
+  await Promise.all([
+    database.custodyProofs.bulkPut(candidates.map(({ proof: proofRow }) => proofRow)),
+    database.custodyProofBackupAuthorities.bulkPut(candidates.map(({ authority }) => authority)),
+  ]);
+  if (kind === "local-terminal") {
+    await database.custodyConditionalKeysets.put({
+      schemaVersion: 1,
+      scopeId: scope.scopeId,
+      normalizedMint: MINT,
+      unit: "msat",
+      keysetId: TERMINAL_KEYSET,
+      denominationPublicKeys: { "1": PUBLIC_KEY },
+      inputFeePpk: 0,
+      conditionId: TERMINAL_CONDITION,
+      outcomeCollection: "YES",
+      outcomeCollectionId: TERMINAL_OUTCOME_ID,
+      registeredAtUnixSeconds: 1,
+      finalExpiryUnixSeconds: 2,
+      curve: "secp256k1",
+    });
+  }
+  const asset = createEncryptedWalletBackupV2AssetIdentity({
+    mintUrl: MINT,
+    unit: "msat",
+    asset:
+      kind === "selectable"
+        ? { kind: "ordinary" }
+        : {
+            kind: "ctf",
+            conditionId: TERMINAL_CONDITION,
+            outcomeLabel: "YES",
+            outcomeCollectionId: TERMINAL_OUTCOME_ID,
+            registeredAt: 1,
+            finalExpiry: 2,
+          },
+  });
+  const desired = createEncryptedWalletBackupV2DesiredAssetRow({
+    scopeId: scope.scopeId,
+    asset,
+    custodyRevision: 1n,
+    activeProofCount,
+    terminalCtfContext:
+      kind === "selectable"
+        ? null
+        : {
+            conditionId: TERMINAL_CONDITION,
+            outcomeLabel: "YES",
+            outcomeCollectionId: TERMINAL_OUTCOME_ID,
+            registeredAt: 1,
+            finalExpiry: 2,
+          },
+  });
+  await database.encryptedWalletBackupV2DesiredAssets.put(desired);
+  return { database, adapter, scope, candidates, desired };
+}
 
 async function keysetFreeSuccessorReplayFixture(
   selectability: "verified-losing" | "selectable" | "locked",

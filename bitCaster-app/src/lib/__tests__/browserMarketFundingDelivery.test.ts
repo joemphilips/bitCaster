@@ -131,6 +131,21 @@ describe("browser market funding delivery", () => {
     readBrowserMarketFundingHead.mockReset();
   });
 
+  it("rethrows the original wallet-load failure", async () => {
+    const failure = new Error("wallet-private-marker");
+    captureBrowserMintPersistenceContext.mockReturnValue({
+      ...context(),
+      activeMintUrl: input.mintUrl,
+      scopeId: "scope-1",
+      database: {} as never,
+    });
+    getWalletForUnit.mockRejectedValue(failure);
+
+    await expect(executeBrowserMarketFundingDelivery({ ...common, attempt: begin() })).rejects.toBe(
+      failure,
+    );
+  });
+
   it("recovers a lost POST response from status without a new token plan", async () => {
     const received = status("received");
     const readStatus = vi.fn().mockResolvedValueOnce(null).mockResolvedValueOnce(received);
@@ -251,17 +266,23 @@ describe("browser market funding delivery", () => {
     });
     readBrowserDurableOutgoingCashuTransfer.mockResolvedValue(transfer());
     getDurableCashuDeliveryStatus.mockResolvedValue(status("credited"));
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
 
-    const result = await executeBrowserMarketFundingDelivery({
-      ...common,
-      attempt: resume(),
-    });
+    try {
+      const result = await executeBrowserMarketFundingDelivery({
+        ...common,
+        attempt: resume(),
+      });
 
-    expect(result.progress).toBe("credited");
-    expect(getDurableCashuDeliveryStatus).toHaveBeenCalledWith(input.deliveryId);
-    expect(getWalletForUnit).not.toHaveBeenCalled();
-    expect(recoverBrowserDurableOutgoingCashuTransfer).not.toHaveBeenCalled();
-    expect(executeBrowserDurableOutgoingCashuTransfer).not.toHaveBeenCalled();
+      expect(result.progress).toBe("credited");
+      expect(getDurableCashuDeliveryStatus).toHaveBeenCalledWith(input.deliveryId);
+      expect(getWalletForUnit).not.toHaveBeenCalled();
+      expect(recoverBrowserDurableOutgoingCashuTransfer).not.toHaveBeenCalled();
+      expect(executeBrowserDurableOutgoingCashuTransfer).not.toHaveBeenCalled();
+      expect(warning).not.toHaveBeenCalled();
+    } finally {
+      warning.mockRestore();
+    }
   });
 
   it("resumes the stored amount when a begin proposal has a different amount", async () => {
@@ -575,6 +596,51 @@ describe("browser market funding delivery", () => {
       prepareWalletSendOperation: () => Promise<unknown>;
     };
     await expect(outgoingInput.prepareWalletSendOperation()).rejects.toBe(preparationError);
+  });
+
+  it("rethrows the original outgoing-transfer failure after both funding callbacks succeed", async () => {
+    const failure = new Error("coordinator-private-marker");
+    const keysetId = `01${"11".repeat(32)}`;
+    const operation = {
+      preview: {
+        amount: input.requestedAmount,
+        keysetId,
+        sendOutputs: [{ blindedMessage: { id: keysetId } }],
+      },
+    };
+    const prepare = vi
+      .spyOn(deterministicSend, "prepareBrowserDeterministicOutgoingCashuSend")
+      .mockResolvedValue(operation as never);
+    captureBrowserMintPersistenceContext.mockReturnValue({
+      ...context(),
+      activeMintUrl: input.mintUrl,
+      scopeId: "scope-1",
+      database: {} as never,
+    });
+    getWalletForUnit.mockResolvedValue({
+      getKeyset: () => ({
+        id: keysetId,
+        unit: "msat",
+        conditional: false,
+        fee: 0,
+        verify: () => true,
+      }),
+    });
+    getBoundedCanonicalRegularProofs.mockResolvedValue([{ amount: input.requestedAmount }]);
+    recoverBrowserFundedAsset.mockResolvedValue({ kind: "ready", plan: { kind: "ready" } });
+    executeBrowserDurableOutgoingCashuTransfer.mockImplementation(async (request) => {
+      await request.preflightFundedAsset();
+      await request.prepareWalletSendOperation();
+      throw failure;
+    });
+
+    try {
+      await expect(
+        executeBrowserMarketFundingDelivery({ ...common, attempt: begin() }),
+      ).rejects.toBe(failure);
+    } finally {
+      prepare.mockRestore();
+    }
   });
 });
 

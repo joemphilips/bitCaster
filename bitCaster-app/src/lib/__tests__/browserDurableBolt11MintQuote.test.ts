@@ -7,9 +7,17 @@ import {
 } from "@bitcaster/client-sdk/durableBolt11MintQuote";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { BitcasterDB, getProofOperation, prepareProofOperation } from "@/stores/proof-db";
+import { browserWalletScope } from "../browserCtfRangeOrderSource";
+
+const requireNewWritePermission = vi.hoisted(() => vi.fn(async () => undefined));
+
+vi.mock("../browserWalletNewWritePermission", () => ({
+  requireBrowserWalletNewWritePermission: requireNewWritePermission,
+}));
 
 const mocks = vi.hoisted(() => {
   const wallet = {
+    mint: { mintUrl: "https://mint.test" },
     createMintQuote: vi.fn(),
     prepareMint: vi.fn(),
     checkMintQuote: vi.fn(),
@@ -69,7 +77,7 @@ import {
   subscribeActiveBrowserDurableBolt11MintQuote,
 } from "../browserDurableBolt11MintQuote";
 
-const SCOPE = "scope-browser-bolt11";
+const SCOPE = browserWalletScope(new Uint8Array(64)).scopeId;
 const MINT_URL = "https://mint.test";
 const UNIT = "sat";
 const KEYSET_ID = `01${"11".repeat(32)}`;
@@ -78,6 +86,8 @@ const PROOFS = [{ id: KEYSET_ID, amount: 100, secret: "output-1", C: "proof-C" }
 const databases: BitcasterDB[] = [];
 
 beforeEach(() => {
+  requireNewWritePermission.mockReset();
+  requireNewWritePermission.mockResolvedValue(undefined);
   mocks.wallet.createMintQuote.mockReset();
   mocks.wallet.prepareMint.mockReset();
   mocks.wallet.checkMintQuote.mockReset();
@@ -107,6 +117,10 @@ beforeEach(() => {
     mnemonic: "seed words",
     scopeId: SCOPE,
     seed: new Uint8Array(32),
+    lockManager: {
+      request: async (_name: string, _options: LockOptions, action: () => Promise<unknown>) =>
+        action(),
+    },
     requireCapturedProfile: () => {
       if (activeScope !== SCOPE)
         throw new Error("The wallet profile changed during mint recovery.");
@@ -127,6 +141,22 @@ afterEach(async () => {
 });
 
 describe("browser durable BOLT11 mint quote coordinator", () => {
+  it("refuses a new quote before invoice or output preparation", async () => {
+    requireNewWritePermission.mockRejectedValueOnce(
+      new Error(
+        "Another browser changed this wallet. Reload to start recovery before making a new wallet change.",
+      ),
+    );
+
+    await expect(
+      createBrowserDurableBolt11MintQuote({ amount: 100, mintUrl: MINT_URL, unit: UNIT }),
+    ).rejects.toThrow("Another browser changed this wallet");
+
+    expect(mocks.wallet.createMintQuote).not.toHaveBeenCalled();
+    expect(mocks.wallet.prepareMint).not.toHaveBeenCalled();
+    expect(await mocks.context().database.mintQuotes.count()).toBe(0);
+  });
+
   it("commits the quote and its exact wallet operation before returning the invoice", async () => {
     const result = await createBrowserDurableBolt11MintQuote({
       amount: 100,
@@ -186,8 +216,15 @@ describe("browser durable BOLT11 mint quote coordinator", () => {
       unit: UNIT,
     });
     mocks.wallet.checkMintQuote.mockResolvedValueOnce({ state: "PAID" });
+    requireNewWritePermission.mockClear();
+    requireNewWritePermission.mockRejectedValue(
+      new Error(
+        "Another browser changed this wallet. Reload to start recovery before making a new wallet change.",
+      ),
+    );
 
     expect(await recoverBrowserDurableBolt11MintQuotes()).toEqual({ pending: 0, hasMore: false });
+    expect(requireNewWritePermission).not.toHaveBeenCalled();
     expect(mocks.wallet.completeMint).toHaveBeenCalledOnce();
     const replayed = mocks.wallet.completeMint.mock.calls[0]?.[0];
     const persisted = await getProofOperation(
@@ -213,7 +250,9 @@ describe("browser durable BOLT11 mint quote coordinator", () => {
       mintUrl: MINT_URL,
       unit: UNIT,
     });
-    mocks.wallet.checkMintQuote.mockResolvedValueOnce({ state: "ISSUED" });
+    mocks.wallet.checkMintQuote
+      .mockResolvedValueOnce({ quote: "quote-1", state: "ISSUED" })
+      .mockResolvedValueOnce({ quote: "quote-1", state: "ISSUED" });
     mocks.wallet.completeMint.mockRejectedValueOnce(duplicateOutputError());
 
     expect(await recoverBrowserDurableBolt11MintQuotes()).toEqual({ pending: 0, hasMore: false });

@@ -112,6 +112,9 @@ export interface EncryptedWalletBackupV2AcceptedHeadRow {
   activeObjectCount: number;
   activeSetDigest: string;
   canonicalCurrentHead: Uint8Array;
+  localRecoveryStatus: "ready" | "recovery-required";
+  localRecoveryReason: "none" | "genuine-conflict";
+  localRecoveryVersion: number;
 }
 
 /** One current verified V2 receipt for one opaque local asset. */
@@ -803,6 +806,20 @@ export class BitcasterDB extends Dexie {
       custodyProofs:
         "&[scopeId+proofId], [scopeId+selectability], [scopeId+selectability+proofId], [scopeId+normalizedMint+unit+selectability], [scopeId+conditionId+outcomeCollection+selectability], [scopeId+normalizedMint+unit+keysetId+selectability], [scopeId+normalizedMint+unit+assetKind+selectability], [scopeId+normalizedMint+unit+conditionId+outcomeCollection+selectability], [scopeId+normalizedMint+unit+assetKind+selectability+curve+amount+proofId], [scopeId+normalizedMint+unit+keysetId+assetKind+selectability+curve+amount+proofId], [scopeId+normalizedMint+unit+keysetId+conditionId+outcomeCollection+selectability+curve+amount+proofId], [scopeId+normalizedMint+unit+conditionId+selectability+proofId]",
     });
+    this.version(19)
+      .stores({
+        encryptedWalletBackupV2WalletAcceptedHeads: "&[scopeId+realm+walletId+enrollmentEpoch]",
+      })
+      .upgrade(async (transaction) => {
+        await transaction
+          .table("encryptedWalletBackupV2WalletAcceptedHeads")
+          .toCollection()
+          .modify((row) => {
+            row.localRecoveryStatus = "ready";
+            row.localRecoveryReason = "none";
+            row.localRecoveryVersion = 0;
+          });
+      });
     this.encryptedWalletBackupEnrollmentResults = this.table(
       "encryptedWalletBackupWalletEnrollmentResults",
     );
@@ -1173,82 +1190,6 @@ async function getBoundedCanonicalV2Proofs(
     );
 }
 
-export async function getOutcomeProofs(
-  mintUrl: string,
-  conditionId: string,
-  outcomeCollection: string,
-  options: { includeReserved?: boolean; includeTerminal?: boolean; baseAsset: string },
-): Promise<StoredProof[]> {
-  const normalizedMintUrl = normalizeUrl(mintUrl);
-  const baseAsset = normalizeMarketBaseAsset(options.baseAsset);
-  const indexed = await db.proofs
-    .where("[mintUrl+conditionId+outcomeCollection]")
-    .equals([normalizedMintUrl, conditionId, outcomeCollection])
-    .toArray();
-  if (indexed.length > 0) {
-    const normalized = indexed
-      .map(normalizeStoredProof)
-      .filter(
-        (proof) =>
-          normalizeStoredProofBaseAsset(proof) === baseAsset &&
-          normalizeStoredProofUnit(proof) === "msat",
-      );
-    return normalized.filter((proof) => isReadableStoredProof(proof, options));
-  }
-
-  const proofs = await getProofs(normalizedMintUrl, options);
-  return proofs.filter((p) => {
-    const candidate = p as StoredProof & {
-      condition_id?: string;
-      outcome_collection?: string;
-    };
-    const proofConditionId = candidate.conditionId ?? candidate.condition_id;
-    const proofOutcome = candidate.outcomeCollection ?? candidate.outcome_collection;
-    return (
-      proofConditionId === conditionId &&
-      proofOutcome === outcomeCollection &&
-      normalizeStoredProofBaseAsset(p) === baseAsset &&
-      normalizeStoredProofUnit(p) === "msat"
-    );
-  });
-}
-
-/**
- * Return ALL of a condition's CTF proofs at a mint, regardless of how the
- * outcome was labelled when persisted.
- *
- * A composite ("A|B") position lives as proofs spanning MULTIPLE primitive
- * keysets, and settlement persists them inconsistently: sometimes under the
- * composite `outcomeCollection="A|B"` label, sometimes per-primitive
- * (`outcomeCollection="A"` / `"B"`). A label-scoped query (`getOutcomeProofs`)
- * therefore misses proofs. The redeem path must bucket by the proof's real
- * `keyset_id` (`Proof.id`), so it needs every CTF proof of the condition —
- * not a label slice. This query gathers them by `conditionId` only.
- */
-export async function getConditionCtfProofs(
-  mintUrl: string,
-  conditionId: string,
-  options: { includeReserved?: boolean; baseAsset: string },
-): Promise<StoredProof[]> {
-  const normalizedMintUrl = normalizeUrl(mintUrl);
-  const proofs = await db.proofs
-    .where("[mintUrl+conditionId+outcomeCollection]")
-    .between(
-      [normalizedMintUrl, conditionId, Dexie.minKey],
-      [normalizedMintUrl, conditionId, Dexie.maxKey],
-    )
-    .toArray();
-  const baseAsset = normalizeMarketBaseAsset(options.baseAsset);
-  return proofs.map(normalizeStoredProof).filter((p) => {
-    if (!isCtfProof(p)) return false;
-    return (
-      normalizeStoredProofBaseAsset(p) === baseAsset &&
-      normalizeStoredProofUnit(p) === "msat" &&
-      isReadableStoredProof(p, { ...options, includeTerminal: true })
-    );
-  });
-}
-
 // Central normalization point — proofs arrive from many receive paths
 // (deposit, atomic-swap change, NIP-17 payload) where `mintUrl` may come
 // from a decoded token or a raw wallet config. Normalizing on write means
@@ -1361,24 +1302,6 @@ function preserveStoredProofTerminalBinding(
 
 export async function removeProofs(secrets: string[]): Promise<void> {
   await db.proofs.bulkDelete(secrets);
-}
-
-// One-shot migration: existing rows may have un-normalized mintUrl values
-// stored before addProofs normalized on write. Callers should gate this on
-// a persisted flag so it runs once per device.
-export async function normalizeStoredMintUrls(): Promise<number> {
-  const rows = await db.proofs.toArray();
-  let changed = 0;
-  await db.transaction("rw", db.proofs, async () => {
-    for (const row of rows) {
-      const normalized = normalizeUrl(row.mintUrl);
-      if (normalized !== row.mintUrl) {
-        await db.proofs.put({ ...row, mintUrl: normalized });
-        changed++;
-      }
-    }
-  });
-  return changed;
 }
 
 export function normalizeAndValidateStoredProof(proof: StoredProof): StoredProof {

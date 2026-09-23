@@ -5,6 +5,7 @@ import {
   createBlindSignature,
   createDLEQProof,
   deriveConditionalKeysetId,
+  deriveKeysetId,
   hashToCurve,
   Keyset,
   OutputData,
@@ -16,6 +17,8 @@ import {
   createEncryptedWalletBackupV2AssetIdentity,
   createEncryptedWalletBackupV2CurrentHead,
   createEncryptedWalletBackupV2KeyHandle,
+  collectEncryptedWalletBackupV2DescriptorPages,
+  digestEncryptedWalletBackupV2BundleDescriptor,
   enumerateEncryptedWalletBackupV2DescriptorPages,
   issueEncryptedWalletBackupV2TerminalSeal,
   prepareEncryptedWalletBackupV2ProofSetBundle,
@@ -43,12 +46,18 @@ import { browserWalletScope } from "../browserCtfRangeOrderSource";
 import { commitBrowserCtfTerminalOperation } from "../../test/browserEncryptedWalletBackupV2CommittedTerminalFixture";
 import {
   readBrowserEncryptedWalletBackupV2LocalAvailableAmount,
+  discoverAndVerifyBrowserEncryptedWalletBackupV2Descriptor,
   restoreAndAdmitBrowserEncryptedWalletBackupV2TargetedAsset,
+  restoreAndVerifyBrowserEncryptedWalletBackupV2ForcedRemoteAsset,
   restoreBrowserEncryptedWalletBackupV2TargetedAsset,
 } from "../browserEncryptedWalletBackupV2Restore";
 
 const SEED = new Uint8Array(64).fill(7);
 const KEYSET = `01${"22".repeat(32)}`;
+const ORDINARY_RESTORE_KEYSET = deriveKeysetId(
+  { "1": "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798" },
+  { unit: "msat", versionByte: 1 },
+);
 const CTF_CONDITION_ID = "aa".repeat(32);
 const CTF_OUTCOME = "YES";
 const CTF_OUTCOME_COLLECTION_ID = deriveRootCtfOutcomeCollectionId({
@@ -101,6 +110,309 @@ it("restores one current bundle with fresh sequential object proofs", async () =
     ...fixture.remote.readObject.mock.calls.map(([call]) => call.requestProof.replayNonce),
   ];
   expect(new Set(proofs).size).toBe(proofs.length);
+});
+
+it("forces authenticated remote verification when local custody is sufficient", async () => {
+  const fixture = await sealedBackupFixture(true);
+  const local = createBrowserCustodyProofRow({
+    scopeId: fixture.input.scopeId,
+    normalizedMint: fixture.input.asset.mintUrl,
+    unit: "msat",
+    proof: fixture.proof,
+    asset: {
+      kind: "conditional",
+      conditionId: CTF_CONDITION_ID,
+      outcomeCollection: CTF_OUTCOME,
+    },
+    receivedAtMs: 1,
+  });
+  await fixture.input.database.custodyProofs.put(local);
+  await fixture.input.database.custodyProofBackupAuthorities.put(
+    createBrowserProofBackupAuthorityRow(local, 1, fixture.locator, "local"),
+  );
+  await fixture.input.database.custodyConditionalKeysets.put({
+    schemaVersion: 1,
+    scopeId: fixture.input.scopeId,
+    normalizedMint: fixture.input.asset.mintUrl,
+    unit: "msat",
+    keysetId: CTF_KEYSET,
+    denominationPublicKeys: { "1": CTF_PUBLIC_KEY },
+    inputFeePpk: 100,
+    conditionId: CTF_CONDITION_ID,
+    outcomeCollection: CTF_OUTCOME,
+    outcomeCollectionId: CTF_OUTCOME_COLLECTION_ID,
+    registeredAtUnixSeconds: 0,
+    finalExpiryUnixSeconds: 100,
+    curve: "secp256k1",
+  });
+  await fixture.input.database.walletCounterAssociations.put({
+    scopeId: fixture.input.scopeId,
+    normalizedMint: fixture.input.asset.mintUrl,
+    unit: "msat",
+    keysetId: CTF_KEYSET,
+    recoveryComplete: true,
+  });
+  await fixture.input.database.walletCounterCursors.put({
+    scopeId: fixture.input.scopeId,
+    keysetId: CTF_KEYSET,
+    next: 1,
+  });
+  await fixture.input.database.encryptedWalletBackupV2DesiredAssets.put(
+    createEncryptedWalletBackupV2DesiredAssetRow({
+      scopeId: fixture.input.scopeId,
+      asset: fixture.input.asset,
+      custodyRevision: 1n,
+      activeProofCount: 1,
+    }),
+  );
+  await expect(readBrowserEncryptedWalletBackupV2LocalAvailableAmount(fixture.input)).resolves.toBe(
+    1n,
+  );
+
+  const result = await restoreAndVerifyBrowserEncryptedWalletBackupV2ForcedRemoteAsset({
+    ...fixture.input,
+    loadWallet: async () => ctfRestoreWallet(fixture.input.asset.mintUrl),
+  });
+
+  expect(result.verified.proofs).toHaveLength(2);
+  expect(fixture.remote.readDescriptorPage).toHaveBeenCalledOnce();
+  expect(fixture.remote.readObject).toHaveBeenCalledOnce();
+  expect(await fixture.input.database.custodyProofs.count()).toBe(1);
+});
+
+it("reuses one collected head and returns its exact descriptor evidence", async () => {
+  const fixture = await sealedBackupFixture();
+  const collected = await restoreBrowserEncryptedWalletBackupV2TargetedAsset(fixture.input);
+  if (collected.kind !== "backup") throw new Error("test collected head is missing");
+  fixture.remote.readDescriptorPage.mockClear();
+  fixture.remote.readObject.mockClear();
+  const loadWallet = vi.fn(async (): Promise<CashuWallet> => {
+    throw new Error("sealed restore must not load the mint");
+  });
+
+  const result = await restoreAndVerifyBrowserEncryptedWalletBackupV2ForcedRemoteAsset({
+    ...fixture.input,
+    collectedHeadEvidence: collected.collectedHeadEvidence,
+    loadWallet,
+  });
+
+  expect(fixture.remote.readDescriptorPage).not.toHaveBeenCalled();
+  expect(fixture.remote.readObject).toHaveBeenCalledOnce();
+  expect(loadWallet).not.toHaveBeenCalled();
+  expect(result.collectedHeadEvidence).toBe(collected.collectedHeadEvidence);
+  expect(result.descriptorIdentity).toEqual({
+    bundleId: fixture.bundle.descriptor.bundleId,
+    descriptorDigest: digestEncryptedWalletBackupV2BundleDescriptor(fixture.bundle.descriptor),
+    assetLocator: fixture.bundle.descriptor.assetLocator,
+    custodyRevision: fixture.bundle.descriptor.custodyRevision,
+  });
+  expect(result.verified.proofs).toHaveLength(1);
+});
+
+it("discovers and verifies one ordinary descriptor without local asset identity", async () => {
+  const fixture = await backupFixture(true);
+  const { asset: _asset, database: _database, scopeId: _scopeId, ...remoteInput } = fixture.input;
+  const loadWallet = vi.fn(async (mintUrl: string) => ordinaryRestoreWallet(mintUrl));
+
+  const result = await discoverAndVerifyBrowserEncryptedWalletBackupV2Descriptor({
+    ...remoteInput,
+    collectedHeadEvidence: fixture.headEvidence,
+    descriptor: fixture.bundle.descriptor,
+    loadWallet,
+  });
+
+  expect(result.asset).toEqual(fixture.input.asset);
+  expect(result.collectedHeadEvidence).toBe(fixture.headEvidence);
+  expect(result.descriptorIdentity).toEqual({
+    bundleId: fixture.bundle.descriptor.bundleId,
+    descriptorDigest: digestEncryptedWalletBackupV2BundleDescriptor(fixture.bundle.descriptor),
+    assetLocator: fixture.bundle.descriptor.assetLocator,
+    custodyRevision: fixture.bundle.descriptor.custodyRevision,
+  });
+  expect(result.verified.proofs.map(({ selectionAuthority }) => selectionAuthority)).toEqual([
+    "live-verified",
+  ]);
+  expect(fixture.remote.readDescriptorPage).not.toHaveBeenCalled();
+  expect(fixture.remote.readObject).toHaveBeenCalledTimes(fixture.bundle.objects.length);
+  expect(loadWallet).toHaveBeenCalledOnce();
+  expect(loadWallet).toHaveBeenCalledWith(fixture.input.asset.mintUrl);
+  expect(await fixture.input.database.custodyProofs.count()).toBe(0);
+});
+
+it("discovers a remote-only CTF descriptor without local CTF context", async () => {
+  const fixture = await sealedBackupFixture(true);
+  const { asset: _asset, database: _database, scopeId: _scopeId, ...remoteInput } = fixture.input;
+
+  const result = await discoverAndVerifyBrowserEncryptedWalletBackupV2Descriptor({
+    ...remoteInput,
+    collectedHeadEvidence: fixture.headEvidence,
+    descriptor: fixture.bundle.descriptor,
+    loadWallet: async (mintUrl: string) => ctfRestoreWallet(mintUrl),
+  });
+
+  expect(result.asset).toEqual(fixture.input.asset);
+  expect(result.verified.proofs.map(({ selectionAuthority }) => selectionAuthority)).toEqual([
+    "terminal-sealed-non-selectable",
+    "live-verified",
+  ]);
+  expect(fixture.remote.readDescriptorPage).not.toHaveBeenCalled();
+  expect(fixture.remote.readObject).toHaveBeenCalledTimes(fixture.bundle.objects.length);
+  expect(await fixture.input.database.custodyProofs.count()).toBe(0);
+  expect(await fixture.input.database.custodyConditionalKeysets.count()).toBe(0);
+});
+
+it("rejects a descriptor that is not in the supplied authenticated head", async () => {
+  const fixture = await backupFixture(true);
+  const other = await backupFixture(true);
+  const { asset: _asset, database: _database, scopeId: _scopeId, ...remoteInput } = fixture.input;
+
+  await expect(
+    discoverAndVerifyBrowserEncryptedWalletBackupV2Descriptor({
+      ...remoteInput,
+      collectedHeadEvidence: fixture.headEvidence,
+      descriptor: other.bundle.descriptor,
+      loadWallet: async (mintUrl: string) => ordinaryRestoreWallet(mintUrl),
+    }),
+  ).rejects.toThrow(/descriptor is not bound to the current head/);
+  expect(fixture.remote.readObject).not.toHaveBeenCalled();
+});
+
+it("rejects a foreign collected head before reading its descriptor", async () => {
+  const fixture = await backupFixture(true);
+  const foreign = await backupFixture(true, "other-backup.example");
+  const { asset: _asset, database: _database, scopeId: _scopeId, ...remoteInput } = fixture.input;
+
+  await expect(
+    discoverAndVerifyBrowserEncryptedWalletBackupV2Descriptor({
+      ...remoteInput,
+      collectedHeadEvidence: foreign.headEvidence,
+      descriptor: foreign.bundle.descriptor,
+      loadWallet: async (mintUrl: string) => ordinaryRestoreWallet(mintUrl),
+    }),
+  ).rejects.toThrow(/current head is foreign/);
+  expect(fixture.remote.readObject).not.toHaveBeenCalled();
+});
+
+it("does not return a selectable result when the mint is unavailable or foreign", async () => {
+  const unavailable = await backupFixture(true);
+  const unavailableInput = withoutLocalRestoreIdentity(unavailable.input);
+  const unavailableWallet = vi.fn(async (_mintUrl: string): Promise<CashuWallet> => {
+    throw new Error("test mint is unavailable");
+  });
+  await expect(
+    discoverAndVerifyBrowserEncryptedWalletBackupV2Descriptor({
+      ...unavailableInput,
+      collectedHeadEvidence: unavailable.headEvidence,
+      descriptor: unavailable.bundle.descriptor,
+      loadWallet: unavailableWallet,
+    }),
+  ).rejects.toThrow(/mint is unavailable/);
+  expect(unavailable.remote.readObject).toHaveBeenCalledOnce();
+  expect(await unavailable.input.database.custodyProofs.count()).toBe(0);
+
+  const foreignMint = await backupFixture(true);
+  await expect(
+    discoverAndVerifyBrowserEncryptedWalletBackupV2Descriptor({
+      ...withoutLocalRestoreIdentity(foreignMint.input),
+      collectedHeadEvidence: foreignMint.headEvidence,
+      descriptor: foreignMint.bundle.descriptor,
+      loadWallet: async (_mintUrl: string) => ordinaryRestoreWallet("https://foreign-mint.example"),
+    }),
+  ).rejects.toThrow(/restore mint is foreign/);
+  expect(foreignMint.remote.readObject).toHaveBeenCalledOnce();
+  expect(await foreignMint.input.database.custodyProofs.count()).toBe(0);
+});
+
+it("rejects a foreign forced-remote head", async () => {
+  const fixture = await sealedBackupFixture();
+  const pages = enumerateEncryptedWalletBackupV2DescriptorPages({
+    head: createEncryptedWalletBackupV2CurrentHead({
+      realm: fixture.input.keyHandle.realm,
+      walletId: fixture.input.keyHandle.walletId,
+      enrollmentEpoch: 2,
+      headVersion: 1,
+      bundles: [fixture.bundle.descriptor],
+    }),
+    bundles: [fixture.bundle.descriptor],
+  });
+  fixture.remote.readDescriptorPage.mockImplementation(async ({ afterBundleId }) => {
+    const page = pages.find((candidate) => candidate.afterBundleId === afterBundleId);
+    if (!page) throw new Error("test head page is absent");
+    return page;
+  });
+
+  await expect(
+    restoreAndVerifyBrowserEncryptedWalletBackupV2ForcedRemoteAsset({
+      ...fixture.input,
+      loadWallet: async () => ctfRestoreWallet(fixture.input.asset.mintUrl),
+    }),
+  ).rejects.toThrow(/descriptor|head|foreign|epoch/i);
+  expect(fixture.remote.readObject).not.toHaveBeenCalled();
+});
+
+it("rejects an absent forced-remote descriptor", async () => {
+  const fixture = await sealedBackupFixture();
+  const absent = createEncryptedWalletBackupV2AssetIdentity({
+    mintUrl: "https://absent.example",
+    unit: "msat",
+    asset: { kind: "ordinary" },
+  });
+
+  await expect(
+    restoreAndVerifyBrowserEncryptedWalletBackupV2ForcedRemoteAsset({
+      ...fixture.input,
+      asset: absent,
+      loadWallet: async () => ctfRestoreWallet(fixture.input.asset.mintUrl),
+    }),
+  ).rejects.toThrow(/current asset is absent/);
+  expect(fixture.remote.readObject).not.toHaveBeenCalled();
+});
+
+it("rejects a forced-remote object read failure", async () => {
+  const fixture = await sealedBackupFixture();
+  fixture.remote.readObject.mockRejectedValueOnce(new Error("test object read failed"));
+  await expect(
+    restoreAndVerifyBrowserEncryptedWalletBackupV2ForcedRemoteAsset({
+      ...fixture.input,
+      loadWallet: async () => ctfRestoreWallet(fixture.input.asset.mintUrl),
+    }),
+  ).rejects.toThrow(/object read failed/);
+});
+
+it("rejects a forced-remote decryption failure", async () => {
+  const fixture = await sealedBackupFixture();
+  const object = fixture.bundle.objects[0]!;
+  fixture.remote.readObject.mockResolvedValueOnce({
+    ...object,
+    body: object.body.slice().reverse(),
+  });
+  await expect(
+    restoreAndVerifyBrowserEncryptedWalletBackupV2ForcedRemoteAsset({
+      ...fixture.input,
+      loadWallet: async () => ctfRestoreWallet(fixture.input.asset.mintUrl),
+    }),
+  ).rejects.toThrow(/bundle|authentication|corrupt/i);
+});
+
+it("rejects a forced-remote proof-verification failure without admission", async () => {
+  const fixture = await backupFixture();
+  await expect(
+    restoreAndVerifyBrowserEncryptedWalletBackupV2ForcedRemoteAsset({
+      ...fixture.input,
+      loadWallet: async () =>
+        ({
+          mint: { mintUrl: fixture.input.asset.mintUrl },
+          getKeyset: () => ({
+            id: KEYSET,
+            unit: "msat",
+            keys: { 1: `02${"44".repeat(32)}` },
+            verify: () => true,
+          }),
+          checkProofsStates: vi.fn(),
+        }) as unknown as CashuWallet,
+    }),
+  ).rejects.toThrow(/DLEQ|proof|signature/i);
+  expect(await fixture.input.database.custodyProofs.count()).toBe(0);
 });
 
 it("rejects sat before backup network or local admission I/O", async () => {
@@ -1373,6 +1685,7 @@ async function sealedBackupFixture(includeSelectableSibling = false) {
     head,
     bundles: [bundle.descriptor],
   });
+  const headEvidence = collectEncryptedWalletBackupV2DescriptorPages(pages);
   const objects = new Map(bundle.objects.map((object) => [object.objectId, object]));
   const remote = {
     discoverEnrollmentEpoch: vi.fn(),
@@ -1391,6 +1704,8 @@ async function sealedBackupFixture(includeSelectableSibling = false) {
   } satisfies EncryptedWalletBackupV2RemotePort;
   return {
     remote,
+    bundle,
+    headEvidence,
     bundleId: bundle.descriptor.bundleId,
     proof,
     proofId: predecessor.proofId,
@@ -1413,7 +1728,7 @@ async function sealedBackupFixture(includeSelectableSibling = false) {
   };
 }
 
-async function backupFixture() {
+async function backupFixture(withValidOrdinaryProof = false, realm = "backup.example") {
   fixtureSequence += 1;
   const scopeId = deriveDurableCustodyScopeId({
     scopeKind: "wallet",
@@ -1423,7 +1738,7 @@ async function backupFixture() {
   openDatabases.push(database);
   const keyHandle = await createEncryptedWalletBackupV2KeyHandle({
     seed: SEED,
-    realm: "backup.example",
+    realm,
     runtime: { subtle: crypto.subtle },
   });
   const asset = createEncryptedWalletBackupV2AssetIdentity({
@@ -1434,16 +1749,34 @@ async function backupFixture() {
   const locator = {
     schemaVersion: 1 as const,
     kind: "nut13" as const,
-    keysetId: KEYSET,
+    keysetId: withValidOrdinaryProof ? ORDINARY_RESTORE_KEYSET : KEYSET,
     counter: 0,
   };
+  const proof = withValidOrdinaryProof
+    ? ordinaryRestoreProof(locator.counter)
+    : {
+        id: KEYSET,
+        amount: Amount.from(1),
+        secret: deriveDurableWalletProofSecret({
+          seed: SEED,
+          locator,
+          proofKeysetId: KEYSET,
+          proofAmount: 1,
+        }),
+        C: `02${"33".repeat(32)}`,
+      };
   const bundle = await prepareEncryptedWalletBackupV2ProofSetBundle({
     keyHandle,
     seed: SEED,
     asset,
     custodyRevision: 1n,
     counterHighWaterMarks: [
-      { mintUrl: asset.mintUrl, unit: "msat", keysetId: KEYSET, nextCounter: 1 },
+      {
+        mintUrl: asset.mintUrl,
+        unit: "msat",
+        keysetId: locator.keysetId,
+        nextCounter: 1,
+      },
     ],
     proofs: [
       {
@@ -1451,17 +1784,7 @@ async function backupFixture() {
         unit: "msat",
         asset: { kind: "ordinary" },
         locator,
-        proof: {
-          id: KEYSET,
-          amount: Amount.from(1),
-          secret: deriveDurableWalletProofSecret({
-            seed: SEED,
-            locator,
-            proofKeysetId: KEYSET,
-            proofAmount: 1,
-          }),
-          C: `02${"33".repeat(32)}`,
-        },
+        proof,
       },
     ],
     runtime: { subtle: crypto.subtle, getRandomValues: crypto.getRandomValues.bind(crypto) },
@@ -1477,6 +1800,7 @@ async function backupFixture() {
     head,
     bundles: [bundle.descriptor],
   });
+  const headEvidence = collectEncryptedWalletBackupV2DescriptorPages(pages);
   const objects = new Map(bundle.objects.map((object) => [object.objectId, object]));
   const remote = {
     discoverEnrollmentEpoch: vi.fn(),
@@ -1499,6 +1823,7 @@ async function backupFixture() {
     bundle,
     objects,
     remote,
+    headEvidence,
     input: {
       database,
       scopeId,
@@ -1515,6 +1840,49 @@ async function backupFixture() {
       isCurrentProfile: () => true,
     },
   };
+}
+
+function ordinaryRestoreProof(counter: number) {
+  const output = OutputData.createSingleDeterministicData(
+    1,
+    SEED,
+    counter,
+    ORDINARY_RESTORE_KEYSET,
+  );
+  const blindedMessage = pointFromHex(output.blindedMessage.B_);
+  const signature = createBlindSignature(blindedMessage, CTF_PRIVATE_KEY, ORDINARY_RESTORE_KEYSET);
+  const dleq = createDLEQProof(blindedMessage, CTF_PRIVATE_KEY);
+  return output.toProof(
+    {
+      id: ORDINARY_RESTORE_KEYSET,
+      amount: Amount.from(1),
+      C_: signature.C_.toHex(true),
+      dleq: { e: bytesToHex(dleq.e), s: bytesToHex(dleq.s) },
+    },
+    { id: ORDINARY_RESTORE_KEYSET, keys: { 1: CTF_PUBLIC_KEY } },
+  );
+}
+
+function ordinaryRestoreWallet(mintUrl: string): CashuWallet {
+  const keyset = new Keyset(ORDINARY_RESTORE_KEYSET, "msat", true, 0, 0);
+  keyset.keys = { 1: CTF_PUBLIC_KEY };
+  return {
+    mint: { mintUrl },
+    getKeyset: () => keyset,
+    checkProofsStates: async (proofs: readonly { readonly secret: string }[]) =>
+      proofs.map(({ secret }) => ({
+        Y: hashToCurve(new TextEncoder().encode(secret)).toHex(true),
+        state: "UNSPENT" as const,
+        witness: null,
+      })),
+  } as unknown as CashuWallet;
+}
+
+function withoutLocalRestoreIdentity<
+  T extends { database: unknown; scopeId: unknown; asset: unknown },
+>(input: T): Omit<T, "database" | "scopeId" | "asset"> {
+  const { database: _database, scopeId: _scopeId, asset: _asset, ...remoteInput } = input;
+  return remoteInput;
 }
 
 async function putLocalProofWithoutAuthority(fixture: Awaited<ReturnType<typeof backupFixture>>) {

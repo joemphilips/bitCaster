@@ -2,6 +2,7 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, it, expect, vi } from "vitest";
 import { Portfolio } from "../Portfolio";
+import { PositionRow } from "../PositionRow";
 import type {
   PortfolioProps,
   UserProfile,
@@ -191,6 +192,108 @@ function renderPortfolio(overrides: Partial<PortfolioProps> = {}) {
   return render(<Portfolio {...defaultProps} />);
 }
 
+describe("PositionRow", () => {
+  it.each([
+    {
+      profitLossSats: 1_000,
+      profitLossPercent: -8.5,
+      expected: "+1 sats (-8.5%)",
+      color: "text-emerald-500",
+    },
+    {
+      profitLossSats: 0,
+      profitLossPercent: -100,
+      expected: "0 sats (-100.0%)",
+      color: "text-rose-500",
+    },
+    {
+      profitLossSats: -1_000,
+      profitLossPercent: 8.5,
+      expected: "-1 sats (+8.5%)",
+      color: "text-rose-500",
+    },
+    {
+      profitLossSats: 0,
+      profitLossPercent: 0,
+      expected: "0 sats (0.0%)",
+      color: "text-emerald-500",
+    },
+  ])(
+    "formats amount and percentage signs independently: $expected",
+    ({ profitLossSats, profitLossPercent, expected, color }) => {
+      const { container } = render(
+        <PositionRow
+          position={{
+            ...mockPositions[0],
+            profitLossSats,
+            profitLossPercent,
+          }}
+        />,
+      );
+
+      const profitLoss = container.querySelector(".text-xs.font-mono");
+      expect(profitLoss).toHaveTextContent(expected);
+      expect(profitLoss).toHaveClass(color);
+    },
+  );
+
+  const actionScenarios = [
+    {
+      action: "Sell",
+      kind: "sell",
+      position: mockPositions[0],
+      buttonName: /sell.*bitcoin/i,
+    },
+    {
+      action: "Claim",
+      kind: "claim",
+      position: mockPositions[1],
+      buttonName: /claim payout.*ethereum/i,
+    },
+    {
+      action: "Remove",
+      kind: "discard",
+      position: mockPositions[2],
+      buttonName: /remove losing position.*fed/i,
+    },
+  ] as const;
+
+  const actionInteractions = actionScenarios.flatMap((scenario) => [
+    { ...scenario, interaction: "click" as const },
+    { ...scenario, interaction: "Enter" as const },
+    { ...scenario, interaction: "Space" as const },
+  ]);
+
+  it.each(actionInteractions)(
+    "$action $interaction activates without navigating the parent row",
+    async ({ kind, position, buttonName, interaction }) => {
+      const onView = vi.fn();
+      const onAction = vi.fn();
+      const actionProps =
+        kind === "sell"
+          ? { onSell: onAction }
+          : kind === "claim"
+            ? { onClaim: onAction }
+            : { onDiscard: onAction };
+      const user = userEvent.setup();
+
+      render(<PositionRow position={position} onView={onView} {...actionProps} />);
+      const button = screen.getByRole("button", { name: buttonName });
+
+      if (interaction === "click") {
+        await user.click(button);
+      } else {
+        button.focus();
+        await user.keyboard(interaction === "Enter" ? "{Enter}" : " ");
+      }
+
+      expect(onAction).toHaveBeenCalledOnce();
+      expect(onAction).toHaveBeenCalledWith(position.id);
+      expect(onView).not.toHaveBeenCalled();
+    },
+  );
+});
+
 describe("Portfolio", () => {
   describe("No Wallet State", () => {
     it("shows Get Started CTA when walletState is none", () => {
@@ -297,6 +400,43 @@ describe("Portfolio", () => {
   });
 
   describe("Positions", () => {
+    it("keeps pending removal visible after a remount", () => {
+      const position: Position = {
+        ...mockPositions[0],
+        status: "closed",
+        isWinner: false,
+        isLoser: true,
+        removalPending: true,
+      };
+      const props = { positions: [position], positionsTab: "closed" as const };
+      const view = renderPortfolio(props);
+      expect(screen.getByText(/Removal is not finished/)).toBeInTheDocument();
+      view.unmount();
+      renderPortfolio(props);
+      expect(screen.getByText(/Removal is not finished/)).toBeInTheDocument();
+      expect(screen.getByText(position.marketTitle)).toBeInTheDocument();
+    });
+
+    it("keeps pending Claim visible and retryable after a remount", async () => {
+      const position: Position = {
+        ...mockPositions[0],
+        status: "closed",
+        isWinner: false,
+        isLoser: false,
+        isPending: true,
+        canClaimPayout: true,
+        claimRecoveryPending: true,
+      };
+      const onClaimPayout = vi.fn();
+      const props = { positions: [position], positionsTab: "closed" as const, onClaimPayout };
+      const view = renderPortfolio(props);
+      expect(screen.getByText(/The claim is not finished/)).toBeInTheDocument();
+      view.unmount();
+      renderPortfolio(props);
+      expect(screen.getByText(/The claim is not finished/)).toBeInTheDocument();
+      await userEvent.click(screen.getByRole("button", { name: /claim payout/i }));
+      expect(onClaimPayout).toHaveBeenCalledWith(position.id);
+    });
     it("shows active positions by default", () => {
       renderPortfolio();
       expect(screen.getByText("Will Bitcoin reach $100K?")).toBeInTheDocument();

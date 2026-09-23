@@ -78,6 +78,8 @@ export interface Position {
   outcomeId?: string;
   outcomeLabel?: string;
   canClaimPayout?: boolean;
+  claimRecoveryPending?: boolean;
+  removalPending?: boolean;
   canDiscard?: boolean;
   /** False for server monitoring rows. Local proofs authorize all wallet actions. */
   canSell?: boolean;

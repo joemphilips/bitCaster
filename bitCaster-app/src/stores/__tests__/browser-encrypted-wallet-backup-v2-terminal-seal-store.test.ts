@@ -8,12 +8,18 @@ import {
   type DurableCustodyScope,
 } from "@bitcaster/client-sdk/durableCustody";
 import { deriveRootCtfOutcomeCollectionId } from "@bitcaster/client-sdk/durableCtfRangeOperation";
+import {
+  createEncryptedWalletBackupV2AssetIdentity,
+  encryptedWalletBackupV2LocalAssetKey,
+} from "@bitcaster/client-sdk/encryptedWalletBackupV2ProofSet";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { browserWalletDatabaseName } from "../../lib/browserWalletProfile";
 import { commitBrowserCtfTerminalOperation } from "../../test/browserEncryptedWalletBackupV2CommittedTerminalFixture";
 import { BrowserEncryptedWalletBackupV2TerminalSealStore } from "../browser-encrypted-wallet-backup-v2-terminal-seal-store";
 import { BrowserDurableCustodyAdapter, createBrowserCustodyProofRow } from "../durable-custody-db";
 import {
+  createBrowserCompletedLocalProofRemovalMarkerRow,
+  createBrowserCompletedProofRemovalMarkerRow,
   createBrowserProofBackupAuthorityRow,
   requireBrowserLiveProofBackupAuthorityTableRow,
 } from "../browser-proof-backup-authority";
@@ -85,6 +91,95 @@ describe("browser V2 terminal seal store", () => {
       store.withCommittedTerminalRejection(fixture.operationId, rejected),
     ).rejects.toThrow("classification time is unstable");
     expect(rejected).not.toHaveBeenCalled();
+  });
+
+  it.each(["managed", "local"] as const)(
+    "accepts a bodyless completed %s marker beside a retained live proof",
+    async (markerKind) => {
+      const fixture = await terminalFixture(23, 2);
+      await prepareRemovedTerminalInput(fixture, markerKind);
+
+      const store = new BrowserEncryptedWalletBackupV2TerminalSealStore({
+        database: fixture.database,
+        scopeId: fixture.scope.scopeId,
+      });
+      const callback = vi.fn(({ classifiedAtMs }) => classifiedAtMs);
+
+      await expect(
+        store.withCommittedTerminalRejection(fixture.operationId, callback),
+      ).resolves.toBe(20);
+      expect(callback).toHaveBeenCalledWith(expect.objectContaining({ classifiedAtMs: 20 }));
+    },
+  );
+
+  it.each([
+    { markerKind: "managed", expected: "removed predecessor authority is invalid" },
+    { markerKind: "local", expected: "removed predecessor authority is invalid" },
+  ] as const)(
+    "rejects a live proof body beside a completed $markerKind removal marker",
+    async ({ markerKind, expected }) => {
+      const fixture = await terminalFixture(24, 2);
+      await prepareRemovedTerminalInput(fixture, markerKind, { keepBody: true });
+
+      const store = new BrowserEncryptedWalletBackupV2TerminalSealStore({
+        database: fixture.database,
+        scopeId: fixture.scope.scopeId,
+      });
+      await expect(
+        store.withCommittedTerminalRejection(fixture.operationId, () => true),
+      ).rejects.toThrow(expected);
+    },
+  );
+
+  it.each([
+    {
+      name: "scope",
+      mutate: (marker: ReturnType<typeof completedLocalRemovalMarker>) => ({
+        ...marker,
+        scopeId: walletScope(25).scopeId,
+      }),
+      expected: "input proof authority is incomplete",
+    },
+    {
+      name: "proof",
+      mutate: (marker: ReturnType<typeof completedLocalRemovalMarker>) => ({
+        ...marker,
+        proofId: "ff".repeat(32),
+      }),
+      expected: "input proof authority is incomplete",
+    },
+    {
+      name: "local operation",
+      mutate: (marker: ReturnType<typeof completedLocalRemovalMarker>) => ({
+        ...marker,
+        terminalOperationId: "foreign-terminal-operation",
+      }),
+      expected: "removed predecessor authority is invalid",
+    },
+  ] as const)("rejects a foreign completed $name marker binding", async ({ mutate, expected }) => {
+    const fixture = await terminalFixture(26, 2);
+    await prepareRemovedTerminalInput(fixture, "local", { mutate });
+
+    const store = new BrowserEncryptedWalletBackupV2TerminalSealStore({
+      database: fixture.database,
+      scopeId: fixture.scope.scopeId,
+    });
+    await expect(
+      store.withCommittedTerminalRejection(fixture.operationId, () => true),
+    ).rejects.toThrow(expected);
+  });
+
+  it("refuses a completed marker when every terminal input was removed", async () => {
+    const fixture = await terminalFixture(27);
+    await prepareRemovedTerminalInput(fixture, "local");
+
+    const store = new BrowserEncryptedWalletBackupV2TerminalSealStore({
+      database: fixture.database,
+      scopeId: fixture.scope.scopeId,
+    });
+    await expect(
+      store.withCommittedTerminalRejection(fixture.operationId, () => true),
+    ).rejects.toThrow("classification time is missing");
   });
 
   it("fails closed when the committed rejection artifact is missing", async () => {
@@ -221,6 +316,107 @@ async function terminalFixture(seedByte: number, inputCount = 1) {
     rejection: committed.rejection,
     rejectionReferenceArtifactId: committed.rejectionReferenceArtifactId,
   };
+}
+
+type TerminalMarkerKind = "managed" | "local";
+type TerminalMarker =
+  | ReturnType<typeof completedManagedRemovalMarker>
+  | ReturnType<typeof completedLocalRemovalMarker>;
+
+async function prepareRemovedTerminalInput(
+  fixture: Awaited<ReturnType<typeof terminalFixture>>,
+  markerKind: TerminalMarkerKind,
+  options: {
+    readonly keepBody?: boolean;
+    readonly mutate?: (
+      marker: ReturnType<typeof completedLocalRemovalMarker>,
+    ) => ReturnType<typeof completedLocalRemovalMarker>;
+  } = {},
+): Promise<void> {
+  const removedProof = await fixture.database.custodyProofs.get([
+    fixture.scope.scopeId,
+    fixture.proofIds[0]!,
+  ]);
+  if (removedProof === undefined) throw new Error("test removed proof is missing");
+
+  let marker: TerminalMarker;
+  if (markerKind === "local") {
+    const localMarker = completedLocalRemovalMarker(fixture, removedProof);
+    marker = options.mutate?.(localMarker) ?? localMarker;
+  } else {
+    marker = completedManagedRemovalMarker(fixture, removedProof);
+  }
+
+  const markerUsesOriginalKey =
+    marker.scopeId === fixture.scope.scopeId && marker.proofId === removedProof.proofId;
+  if (!markerUsesOriginalKey) {
+    await fixture.database.custodyProofBackupAuthorities.delete([
+      fixture.scope.scopeId,
+      removedProof.proofId,
+    ]);
+  }
+  await fixture.database.custodyProofBackupAuthorities.put(marker);
+  if (options.keepBody !== true) {
+    await fixture.database.custodyProofs.delete([fixture.scope.scopeId, removedProof.proofId]);
+  }
+}
+
+function terminalMarkerAssetKey(): string {
+  return encryptedWalletBackupV2LocalAssetKey(
+    createEncryptedWalletBackupV2AssetIdentity({
+      mintUrl: MINT,
+      unit: "msat",
+      asset: {
+        kind: "ctf",
+        conditionId: CONDITION_ID,
+        outcomeLabel: "YES",
+        outcomeCollectionId: OUTCOME_ID,
+        registeredAt: 1,
+        finalExpiry: 2,
+      },
+    }),
+  );
+}
+
+function completedLocalRemovalMarker(
+  fixture: Awaited<ReturnType<typeof terminalFixture>>,
+  proof: { proofId: string; proofFingerprint: string; revision: number },
+): ReturnType<typeof createBrowserCompletedLocalProofRemovalMarkerRow> {
+  return createBrowserCompletedLocalProofRemovalMarkerRow({
+    scopeId: fixture.scope.scopeId,
+    proofId: proof.proofId,
+    proofFingerprint: proof.proofFingerprint,
+    proofRevision: proof.revision,
+    localAssetKey: terminalMarkerAssetKey(),
+    terminalOperationId: fixture.operationId,
+    completedAtMs: 21,
+  });
+}
+
+function completedManagedRemovalMarker(
+  fixture: Awaited<ReturnType<typeof terminalFixture>>,
+  proof: { proofId: string; proofFingerprint: string; revision: number },
+): ReturnType<typeof createBrowserCompletedProofRemovalMarkerRow> {
+  return createBrowserCompletedProofRemovalMarkerRow({
+    scopeId: fixture.scope.scopeId,
+    proofId: proof.proofId,
+    proofFingerprint: proof.proofFingerprint,
+    proofRevision: proof.revision,
+    proofCommitment: fixture.rejection.fingerprint,
+    localAssetKey: terminalMarkerAssetKey(),
+    removalIntentId: "remove:" + fixture.operationId,
+    proofSetCommitment: fixture.rejection.fingerprint,
+    completionCustodyRevision: "1",
+    realm: "development",
+    walletId: fixture.scope.walletId,
+    enrollmentEpoch: 1,
+    acknowledgedHeadVersion: 1,
+    acknowledgedActiveSetDigest: "88".repeat(32),
+    acknowledgementKind: "current-head",
+    receiptDigest: null,
+    acknowledgedAtMs: 20,
+    completedAtMs: 21,
+  });
 }
 
 function proof(secret: string): Proof {

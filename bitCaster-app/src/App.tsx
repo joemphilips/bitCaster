@@ -1,6 +1,10 @@
 import { BrowserRouter, Routes, Route, useNavigate, useLocation } from "react-router";
 import { useTranslation } from "react-i18next";
-import { AppShell, DurableWalletErrors } from "@/components/shell";
+import {
+  AppShell,
+  DurableWalletErrors,
+  EncryptedWalletBackupRecoveryStatus,
+} from "@/components/shell";
 import { SettlementProgress } from "@/components/shell/SettlementProgress";
 import { MarketsPage } from "@/pages/MarketsPage";
 import { MarketDetailPage } from "@/pages/MarketDetailPage";
@@ -24,19 +28,23 @@ import {
   DEFAULT_MINT_URL,
 } from "@/stores/wallet";
 import { ToastContainer } from "@/components/ui/Toast";
-import { normalizeStoredMintUrls } from "@/stores/proof-db";
 import { captureBrowserMintPersistenceContext } from "@/lib/cashu";
 import { recoverBrowserDurableBolt11MintQuotesInPass } from "@/lib/browserDurableBolt11MintQuote";
 import { recoverBrowserDurableWalletMeltsInPass } from "@/lib/browserDurableWalletMelt";
-import { startNip17Listener } from "@/lib/nip17-listener";
+import { startNip17Listener, stopNip17Listener } from "@/lib/nip17-listener";
 import { effectiveRelayUrls } from "@/lib/relayDefaults";
 import { refreshMintInfoWithoutActivating, userAddAndSelectMint } from "@/lib/walletOps";
 import { rehydratePersistedNostrIdentity } from "@/lib/identityOps";
 import { BrowserPreReleaseResetGate } from "@/lib/BrowserPreReleaseResetGate";
-import { useEncryptedWalletBackupDriver } from "@/hooks/useEncryptedWalletBackupDriver";
+import {
+  useEncryptedWalletBackupDriver,
+  type EncryptedWalletBackupDriverState,
+} from "@/hooks/useEncryptedWalletBackupDriver";
 import { useAssetMonitoringReporter } from "@/hooks/useAssetMonitoringReporter";
 import { useBrowserCtfRangeOrderRecovery } from "@/hooks/useBrowserCtfRangeOrderRecovery";
 import { DEFAULT_MARKET_BASE_ASSET } from "@bitcaster/client-sdk/marketUnits";
+import { browserWalletScopeIdFromMnemonic } from "@/lib/browserWalletProfile";
+import { resumeBrowserEncryptedWalletBackupV2AfterRecovery } from "@/lib/encryptedWalletBackupDriver";
 
 const RANGE_RECOVERY_RETRY_MS = 15_000;
 
@@ -62,7 +70,13 @@ function WizardRoutes() {
   );
 }
 
-export function ShellRoutes({ canReadOrderStatus }: { canReadOrderStatus: boolean }) {
+export function ShellRoutes({
+  canReadOrderStatus,
+  walletBackupRecovery,
+}: {
+  canReadOrderStatus: boolean;
+  walletBackupRecovery?: EncryptedWalletBackupDriverState;
+}) {
   const navigate = useNavigate();
   const location = useLocation();
   const { t } = useTranslation();
@@ -101,6 +115,7 @@ export function ShellRoutes({ canReadOrderStatus }: { canReadOrderStatus: boolea
       }}
       onCreateClick={() => navigate("/creator")}
     >
+      {walletBackupRecovery && <EncryptedWalletBackupRecoveryStatus {...walletBackupRecovery} />}
       <DurableWalletErrors />
       <SettlementProgress canReadStatus={canReadOrderStatus} />
       <Routes>
@@ -143,7 +158,9 @@ function AppRoutes() {
     mnemonic: walletMnemonic,
     mintUrls: walletMintUrls.split("\n").filter(Boolean),
   });
-  useEncryptedWalletBackupDriver(nostrSignerReady && nostrSignerMode !== "none");
+  const walletBackupRecovery = useEncryptedWalletBackupDriver(
+    nostrSignerReady && nostrSignerMode !== "none",
+  );
   useAssetMonitoringReporter(nostrSignerReady && nostrSignerMode !== "none");
 
   useEffect(() => {
@@ -158,18 +175,6 @@ function AppRoutes() {
       .finally(() => setNostrSignerReady(true));
   }, []);
 
-  // One-shot migration: pre-fix proofs stored their mintUrl verbatim from
-  // the decoded token / NIP-17 payload, which could differ from the
-  // normalized `activeMintUrl` by a trailing slash. That mismatch made
-  // `getBalance(activeMintUrl)` return 0 even with proofs in IndexedDB —
-  // breaking the buy gate on market detail.
-  const proofMigrationAttempted = useRef(false);
-  useEffect(() => {
-    if (!walletMnemonic || proofMigrationAttempted.current) return;
-    proofMigrationAttempted.current = true;
-    normalizeStoredMintUrls().catch(() => {});
-  }, [walletMnemonic]);
-
   useBrowserCtfRangeOrderRecovery({
     nostrSignerReady,
     walletMnemonic,
@@ -180,6 +185,8 @@ function AppRoutes() {
   // checks each pending quote at most once. An online event starts a new pass.
   useEffect(() => {
     if (!walletMnemonic || !nostrSignerReady) return;
+    const scopeId = browserWalletScopeIdFromMnemonic(walletMnemonic);
+    if (scopeId === null) return;
     let cancelled = false;
     let running = false;
     let rerunRequested = false;
@@ -205,6 +212,7 @@ function AppRoutes() {
         } while (!cancelled && rerunRequested);
       } finally {
         running = false;
+        resumeBrowserEncryptedWalletBackupV2AfterRecovery(scopeId);
       }
     };
     const onOnline = () => void runPass();
@@ -220,6 +228,8 @@ function AppRoutes() {
   // work after startup and when connectivity returns.
   useEffect(() => {
     if (!walletMnemonic || !nostrSignerReady) return;
+    const scopeId = browserWalletScopeIdFromMnemonic(walletMnemonic);
+    if (scopeId === null) return;
     let cancelled = false;
     let running = false;
     let rerunRequested = false;
@@ -265,6 +275,7 @@ function AppRoutes() {
         retryRequired = true;
       } finally {
         running = false;
+        resumeBrowserEncryptedWalletBackupV2AfterRecovery(scopeId);
         if (retryRequired) schedule();
         if (rerunRequested && !cancelled) {
           rerunRequested = false;
@@ -295,8 +306,9 @@ function AppRoutes() {
     startNip17Listener(mnemonic, relays).catch((e) => {
       console.warn("[app] startNip17Listener failed:", e);
     });
-    // No cleanup — the listener is module-scoped and intentionally
-    // outlives React's mount/unmount dance (StrictMode, HMR).
+    return () => {
+      stopNip17Listener();
+    };
   }, [mnemonic, relayUrlsKey]);
 
   // Ensure stored mints have full info (CTF badge, NUTs, contact) and that
@@ -356,7 +368,10 @@ function AppRoutes() {
       {isWizard ? (
         <WizardRoutes />
       ) : (
-        <ShellRoutes canReadOrderStatus={nostrSignerReady && nostrSignerMode !== "none"} />
+        <ShellRoutes
+          canReadOrderStatus={nostrSignerReady && nostrSignerMode !== "none"}
+          walletBackupRecovery={walletBackupRecovery}
+        />
       )}
     </>
   );

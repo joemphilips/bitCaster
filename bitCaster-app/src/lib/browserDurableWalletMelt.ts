@@ -42,6 +42,7 @@ import {
   deserializeDurableCustodyProofArtifact,
 } from "@bitcaster/client-sdk/durableCustodyProofMaterial";
 import { browserCustodyOperationId, browserWalletScope } from "./browserCtfRangeOrderSource";
+import { requireBrowserWalletNewWritePermission } from "./browserWalletNewWritePermission";
 import { withWalletProfileLock } from "./walletProfileLock";
 import {
   BrowserDurableCustodyAdapter,
@@ -237,6 +238,10 @@ async function runMeltWithOwner(
   const wasPersistedBeforeCall = snapshot !== null;
 
   if (snapshot === null) {
+    await requireBrowserWalletNewWritePermission({
+      database: input.context.database ?? db,
+      scopeId: scope.scopeId,
+    });
     const canonicalProofs = await canonicalMeltProofs(adapter, scope, input);
     const preview = await input.wallet.prepareMelt("bolt11", input.quote, canonicalProofs);
     input.context.requireCapturedProfile();

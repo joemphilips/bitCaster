@@ -227,29 +227,6 @@ export function sameEncryptedWalletBackupV2RemovalIntent(
   );
 }
 
-export function rebaseEncryptedWalletBackupV2RemovalIntent(input: {
-  readonly intent: EncryptedWalletBackupV2RemovalIntent;
-  readonly targetCustodyRevision: bigint | string;
-  readonly expectedHeadVersion: number;
-  readonly expectedActiveSetDigest: string;
-}): EncryptedWalletBackupV2RemovalIntent {
-  const intent = decodeEncryptedWalletBackupV2RemovalIntent(input.intent);
-  return createEncryptedWalletBackupV2RemovalIntent({
-    intentId: intent.intentId,
-    createdAtMs: intent.createdAtMs,
-    realm: intent.realm,
-    walletId: intent.walletId,
-    enrollmentEpoch: intent.enrollmentEpoch,
-    expectedHeadVersion: input.expectedHeadVersion,
-    expectedActiveSetDigest: input.expectedActiveSetDigest,
-    targetCustodyRevision: input.targetCustodyRevision,
-    proofs: intent.proofs,
-    proofSetCommitment: intent.proofSetCommitment,
-    state: "pending",
-    acknowledgedExclusionEvidence: null,
-  });
-}
-
 const removalIntentFields = [
   "intentId",
   "createdAtMs",
@@ -818,6 +795,40 @@ export async function advanceBrowserV2DesiredAssetsForCounter(input: {
   await persistDesiredAssetUpdates(input.database, scopeId, updates);
 }
 
+/** Read the exact desired asset while the proof still has its predecessor authority. */
+export async function requireBrowserV2DesiredAssetForProof(input: {
+  readonly database: BitcasterDB;
+  readonly proof: BrowserCustodyProofRow;
+  readonly authority: BrowserProofBackupAuthorityRow;
+}): Promise<EncryptedWalletBackupV2DesiredAssetRow> {
+  const proof = decodeBrowserCustodyProofRow(input.proof);
+  const authority = requireBrowserProofBackupAuthorityForProof(input.authority, proof);
+  if (!isBackupEligible(proof, authority.derivationLocator)) {
+    throw new Error("browser V2 desired asset proof is not active backup material");
+  }
+  const material =
+    knownAssetForProof(proof) ??
+    (await loadConditionalAssetForProof(input.database, proof, authority));
+  const localAssetKey = encryptedWalletBackupV2LocalAssetKey(material.asset);
+  const raw = await input.database.encryptedWalletBackupV2DesiredAssets.get([
+    proof.scopeId,
+    localAssetKey,
+  ]);
+  if (raw === undefined) throw new Error("browser V2 desired asset authority is missing");
+  const desired = decodeEncryptedWalletBackupV2DesiredAssetRow(raw);
+  if (
+    desired.scopeId !== proof.scopeId ||
+    desired.localAssetKey !== localAssetKey ||
+    desired.mintUrl !== material.asset.mintUrl ||
+    desired.unit !== material.asset.unit ||
+    desired.assetIdentity !== material.asset.assetIdentity ||
+    !sameTerminalCtfContext(desired.terminalCtfContext, material.terminalCtfContext)
+  ) {
+    throw new Error("browser V2 desired asset authority is foreign");
+  }
+  return desired;
+}
+
 async function firstActiveProof(
   database: BitcasterDB,
   expected: {
@@ -972,6 +983,7 @@ function knownAssetForProof(
 async function loadConditionalAssetForProof(
   database: BitcasterDB,
   proof: BrowserCustodyProofRow,
+  suppliedAuthority?: BrowserProofBackupAuthorityRow,
 ): Promise<DesiredAssetMaterial> {
   if (proof.assetKind !== "conditional") {
     throw new Error("browser V2 desired asset conditional proof is required");
@@ -983,7 +995,7 @@ async function loadConditionalAssetForProof(
     proof.keysetId,
   ]);
   if (raw === undefined && proof.selectability === "verified-losing") {
-    return loadRemoteTerminalAssetForProof(database, proof);
+    return loadRemoteTerminalAssetForProof(database, proof, suppliedAuthority);
   }
   if (raw === undefined) {
     throw new Error("browser V2 desired asset conditional authority is missing");

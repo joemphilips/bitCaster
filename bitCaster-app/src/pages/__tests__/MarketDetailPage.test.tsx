@@ -543,6 +543,39 @@ describe("MarketDetailPage live market status", () => {
     expect(screen.queryByTestId("confirm-amm-funding")).not.toBeInTheDocument();
   });
 
+  it("does not repeat detail or order-book requests when the deadline is null", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.mocked(fetchMarketDetail).mockResolvedValue(
+        yesNoMarket({ state: "open", closingDate: null }),
+      );
+      vi.mocked(fetchOrderBook).mockResolvedValue(emptyBook);
+
+      render(<MarketDetailPage />);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(screen.getByRole("heading", { name: "Will it happen?" })).toBeInTheDocument();
+      expect(fetchMarketDetail).toHaveBeenCalledOnce();
+      expect(fetchOrderBook).toHaveBeenCalledTimes(2);
+      expect(fetchOrderBook).toHaveBeenNthCalledWith(1, "condition-yesno-Yes");
+      expect(fetchOrderBook).toHaveBeenNthCalledWith(2, "condition-yesno-No");
+      const detailCalls = vi.mocked(fetchMarketDetail).mock.calls.length;
+      const orderBookCalls = vi.mocked(fetchOrderBook).mock.calls.length;
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(20_000);
+      });
+
+      expect(fetchMarketDetail).toHaveBeenCalledTimes(detailCalls);
+      expect(fetchOrderBook).toHaveBeenCalledTimes(orderBookCalls);
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
   it("reloads chart history for a new confirmed trade but not its duplicate", async () => {
     const market = categoricalMarket() as CategoricalMarketDetail;
     market.registeredPrimitiveOutcomeIds = ["outcome-0", "outcome-1", "outcome-2"];

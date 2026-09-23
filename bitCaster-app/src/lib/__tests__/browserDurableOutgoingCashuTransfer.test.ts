@@ -31,6 +31,7 @@ import {
 } from "@bitcaster/client-sdk/durableWalletOperation";
 import { deriveDurableCustodyArtifactFingerprint } from "@bitcaster/client-sdk/durableCustody";
 import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
+import { BrowserWalletRecoveryRequiredError } from "../browserWalletNewWritePermission";
 import {
   listBrowserDurableOutgoingCashuDue,
   listBrowserDurableOutgoingCashuDueMints,
@@ -59,6 +60,16 @@ import {
 } from "../../stores/browser-proof-backup-authority";
 import { claimBrowserParticipationScoreDeliveryPointer } from "../browserParticipationScoreDeliveryPointer";
 
+const requireNewWritePermission = vi.hoisted(() => vi.fn(async () => undefined));
+
+vi.mock("../browserWalletNewWritePermission", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../browserWalletNewWritePermission")>();
+  return {
+    ...actual,
+    requireBrowserWalletNewWritePermission: requireNewWritePermission,
+  };
+});
+
 const MINT = "https://mint.example";
 const SCOPE = "wallet-scope";
 const PRIVATE_KEY = Uint8Array.from([...new Uint8Array(31), 7]);
@@ -79,6 +90,8 @@ const MARKET_BINDING = deriveMarketFundingProductBinding({
 const databases: BitcasterDB[] = [];
 
 afterEach(async () => {
+  requireNewWritePermission.mockClear();
+  requireNewWritePermission.mockResolvedValue(undefined);
   for (const database of databases.splice(0)) {
     database.close();
     await database.delete();
@@ -818,6 +831,33 @@ describe("browser durable outgoing Cashu store", () => {
     expect(await fixture.database.outgoingCashuTransferAdmissions.count()).toBe(0);
   });
 
+  it("refuses a new transfer before wallet-send preparation", async () => {
+    const fixture = await executionFixture();
+    const permissionError = new Error("permission-refusal-sentinel");
+    requireNewWritePermission.mockRejectedValueOnce(permissionError);
+
+    await expect(executeBrowserDurableOutgoingCashuTransfer(fixture.input)).rejects.toBe(
+      permissionError,
+    );
+
+    expect(fixture.prepareWalletSendOperation).not.toHaveBeenCalled();
+    expect(await fixture.database.outgoingCashuTransfers.count()).toBe(0);
+    expect(await fixture.database.custodyOperations.count()).toBe(0);
+  });
+
+  it("refuses market funding before wallet-send preparation", async () => {
+    const fixture = marketFundingFixture();
+    const input = await marketFundingInput(fixture, "permission-refused", null, 1_000);
+    const permissionError = new BrowserWalletRecoveryRequiredError("genuine-conflict");
+    requireNewWritePermission.mockRejectedValueOnce(permissionError);
+
+    await expect(executeBrowserDurableOutgoingCashuTransfer(input)).rejects.toBe(permissionError);
+
+    expect(input.prepareWalletSendOperation).not.toHaveBeenCalled();
+    expect(await fixture.database.outgoingCashuTransfers.count()).toBe(0);
+    expect(await fixture.database.custodyOperations.count()).toBe(0);
+  });
+
   it("uses one fresh post-mint time for successor admission and backup revision", async () => {
     const fixture = await executionFixture(undefined, true);
     let nowMs = 1_000;
@@ -1123,6 +1163,12 @@ describe("browser durable outgoing Cashu store", () => {
     );
     const preparedCalls = fixture.prepareWalletSendOperation.mock.calls.length;
     const mintCalls = fixture.wallet.completeSwap.mock.calls.length;
+    requireNewWritePermission.mockClear();
+    requireNewWritePermission.mockRejectedValue(
+      new Error(
+        "Another browser changed this wallet. Reload to start recovery before making a new wallet change.",
+      ),
+    );
     const recovered = await recoverBrowserDurableOutgoingCashuTransfer({
       transferId: "execute",
       wallet: fixture.wallet,
@@ -1131,6 +1177,7 @@ describe("browser durable outgoing Cashu store", () => {
     });
 
     expect(recovered?.deliveryState).toBe("delivery-pending");
+    expect(requireNewWritePermission).not.toHaveBeenCalled();
     expect(fixture.prepareWalletSendOperation).toHaveBeenCalledTimes(preparedCalls);
     expect(fixture.wallet.completeSwap).toHaveBeenCalledTimes(mintCalls);
     expect(

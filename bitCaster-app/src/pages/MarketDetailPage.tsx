@@ -288,10 +288,6 @@ export function resolveTradeOrderBooks(
   };
 }
 
-function needsEngineDetailRefresh(market: MarketDetailType): boolean {
-  return market.closingDate == null || market.state == null;
-}
-
 function categoryTagIds(market: MarketDetailType): string[] {
   return market.categoryTags.map((tag) => tag.id).sort();
 }
@@ -1549,68 +1545,6 @@ export function MarketDetailPage() {
       }
     };
   }, [id, invalidatePreviewForMarket, isCurrentRoute, loadMarket, market?.id]);
-
-  useEffect(() => {
-    if (!id || !market || !needsEngineDetailRefresh(market)) return;
-    const generation = routeGenerationRef.current;
-    if (!isCurrentRoute(id, generation)) return;
-
-    let cancelled = false;
-    let attempts = 0;
-    const maxAttempts = 10;
-    let timeoutId: number | null = null;
-
-    const refresh = async () => {
-      attempts += 1;
-      try {
-        const latestDetail = await fetchMarketDetail(id);
-        const books = await fetchMarketOrderBooks(id, latestDetail);
-        const latest = {
-          ...latestDetail,
-          orderBook: books.orderBook,
-          outcomeOrderBooks: books.outcomeOrderBooks,
-        };
-        if (cancelled || !isCurrentRoute(id, generation) || latest.id !== id) return;
-        if (!marketShapeMatches(market, latest)) return;
-        const unchangedPartialSnapshot =
-          market.closingDate === latest.closingDate &&
-          market.state === latest.state &&
-          needsEngineDetailRefresh(latest);
-        if (!unchangedPartialSnapshot) {
-          invalidatePreviewForMarket();
-          dispatchMarketData({
-            type: "marketSubmitRefreshLoaded",
-            detail: latest,
-            expectedRouteId: id,
-            booksByOutcomeSetId: booksByOutcomeSetFromDetail(latest, books.fetchedOutcomeSetIds),
-            replaceOutcomeSetIds: books.fetchedOutcomeSetIds,
-          });
-        }
-        if (!needsEngineDetailRefresh(latest) || attempts >= maxAttempts) {
-          return;
-        }
-      } catch {
-        if (attempts >= maxAttempts) return;
-      }
-
-      if (!cancelled && isCurrentRoute(id, generation)) {
-        timeoutId = window.setTimeout(refresh, MARKET_DETAIL_RECONCILIATION_INTERVAL_MS);
-      }
-    };
-
-    timeoutId = window.setTimeout(refresh, MARKET_DETAIL_RECONCILIATION_INTERVAL_MS);
-    return () => {
-      cancelled = true;
-      if (timeoutId != null) window.clearTimeout(timeoutId);
-    };
-  }, [
-    id,
-    invalidatePreviewForMarket,
-    isCurrentRoute,
-    market?.id,
-    market?.closingDate,
-    market?.state,
-  ]);
 
   // Only changed confirmed facts invalidate history. Quotes, rerenders, and
   // duplicate trade messages must not trigger another request.

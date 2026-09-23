@@ -3,15 +3,16 @@ import { useLiveQuery } from "dexie-react-hooks";
 import {
   db,
   getCanonicalCurrentProofs,
-  getProofs,
   isCtfProof,
   type BitcasterDB,
   type StoredProof,
 } from "@/stores/proof-db";
+import { readCanonicalPortfolioCustody } from "@/stores/portfolio-custody";
 import { useWalletStore } from "@/stores/wallet";
 import { useSettingsStore } from "@/stores/settings";
 import { useActivityLogStore } from "@/stores/activity-log";
-import { normalizeUrl, safeHostname } from "@/lib/url";
+import { safeHostname } from "@/lib/url";
+import { canonicalizeOutcomeSet } from "@bitcaster/client-sdk/outcomeSets";
 import {
   createAuthenticatedBrowserEngineClient,
   type MarketCatalogueEntry,
@@ -52,7 +53,10 @@ import type {
   AssetMonitoringConditionalAssetReference,
   AssetMonitoringPortfolioResponse,
 } from "@bitcaster/client-sdk/assetMonitoring";
-import { decodeAssetMonitoringWalletId } from "@bitcaster/client-sdk/assetMonitoring";
+import {
+  computeAssetMonitoringOutcomeUniverseDigest,
+  decodeAssetMonitoringWalletId,
+} from "@bitcaster/client-sdk/assetMonitoring";
 import {
   listenForPortfolioInvalidation,
   type PortfolioInvalidation,
@@ -185,21 +189,30 @@ async function loadMarketCatalogue(
   conditionIds: string[],
 ): Promise<Map<string, MarketCatalogueEntry>> {
   if (conditionIds.length === 0) return new Map();
-  try {
-    const search = new URLSearchParams({
-      ids: conditionIds.join(","),
-      state: "All",
-      page_size: String(Math.min(Math.max(conditionIds.length, 1), 50)),
-    });
-    const response = await fetch(`/api/v1/markets/query?${search}`, {
-      headers: { Accept: "application/json" },
-    });
-    if (!response.ok) return new Map();
-    const body = (await response.json()) as MarketCatalogueResponse;
-    return new Map((body.markets ?? []).map((market) => [market.conditionId, market]));
-  } catch {
-    return new Map();
+  const uniqueConditionIds = [...new Set(conditionIds)];
+  const catalogue = new Map<string, MarketCatalogueEntry>();
+  for (let offset = 0; offset < uniqueConditionIds.length; offset += 50) {
+    const batch = uniqueConditionIds.slice(offset, offset + 50);
+    try {
+      const search = new URLSearchParams({
+        ids: batch.join(","),
+        state: "All",
+        page_size: String(batch.length),
+      });
+      const response = await fetch(`/api/v1/markets/query?${search}`, {
+        headers: { Accept: "application/json" },
+      });
+      if (!response.ok) continue;
+      const body = (await response.json()) as MarketCatalogueResponse;
+      const requestedIds = new Set(batch);
+      for (const market of body.markets ?? []) {
+        if (requestedIds.has(market.conditionId)) catalogue.set(market.conditionId, market);
+      }
+    } catch {
+      // Keep successful sibling batches when one catalogue page is unavailable.
+    }
   }
+  return catalogue;
 }
 
 function monitoringAssetValue(asset: AssetMonitoringAssetResponse): number {
@@ -207,7 +220,19 @@ function monitoringAssetValue(asset: AssetMonitoringAssetResponse): number {
 }
 
 export function canonicalMonitoringAssetIdentity(asset: AssetMonitoringAssetReference): string {
-  return JSON.stringify(asset);
+  const common = [asset.kind, asset.canonicalMintUrl, asset.cashuUnit, asset.displayBaseAsset];
+  switch (asset.kind) {
+    case "collateral":
+      return JSON.stringify(common);
+    case "conditional":
+      return JSON.stringify([
+        ...common,
+        asset.conditionId,
+        asset.parentConditionId,
+        asset.outcomeUniverseDigest,
+        asset.internalOutcomeSetId,
+      ]);
+  }
 }
 
 function sameMonitoringAsset(
@@ -244,56 +269,39 @@ export function appendMonitoringAssets(
 }
 
 function localMonitoringAssetIdentity(
-  proof: object,
-  conditionId: string,
-  outcomeCollection: string,
+  position: {
+    mintUrl: string;
+    conditionId: string;
+    outcomeCollection: string;
+    baseAsset: MarketBaseAsset;
+    unit: string;
+  },
+  market: MarketCatalogueEntry | undefined,
 ): string | null {
-  const metadata = proof as Record<string, unknown>;
-  const mintUrl = metadata.canonicalMintUrl ?? metadata.mintUrl;
-  if (typeof mintUrl !== "string") return null;
-  let canonicalMintUrl: string;
+  if (!market || position.baseAsset !== "sat" || position.unit !== "msat") return null;
+  const selected = position.outcomeCollection.split("|");
   try {
-    canonicalMintUrl = normalizeUrl(mintUrl);
+    if (
+      selected.length >= market.outcomes.length ||
+      canonicalizeOutcomeSet(selected) !== position.outcomeCollection ||
+      !selected.every((outcome) => market.outcomes.includes(outcome))
+    )
+      return null;
+    const asset: AssetMonitoringConditionalAssetReference = {
+      canonicalMintUrl: position.mintUrl,
+      kind: "conditional",
+      cashuUnit: "msat",
+      displayBaseAsset: position.baseAsset,
+      conditionId: position.conditionId,
+      parentConditionId: "0".repeat(64),
+      outcomeUniverseDigest: computeAssetMonitoringOutcomeUniverseDigest(market.outcomes),
+      internalOutcomeSetId: position.outcomeCollection,
+    };
+    return canonicalMonitoringAssetIdentity(asset);
   } catch {
+    // Missing or invalid display metadata must not hide local custody or its actions.
     return null;
   }
-  const asset = {
-    canonicalMintUrl,
-    kind: "conditional" as const,
-    cashuUnit: metadata.cashuUnit ?? metadata.unit,
-    displayBaseAsset: metadata.displayBaseAsset ?? metadata.baseAsset,
-    conditionId,
-    parentConditionId: metadata.parentConditionId,
-    outcomeUniverseDigest: metadata.outcomeUniverseDigest,
-    internalOutcomeSetId: metadata.internalOutcomeSetId ?? outcomeCollection,
-  };
-  if (
-    asset.cashuUnit !== "msat" ||
-    asset.displayBaseAsset !== "sat" ||
-    typeof asset.parentConditionId !== "string" ||
-    typeof asset.outcomeUniverseDigest !== "string" ||
-    asset.internalOutcomeSetId !== outcomeCollection
-  )
-    return null;
-  const completeAsset: AssetMonitoringConditionalAssetReference = {
-    canonicalMintUrl: asset.canonicalMintUrl,
-    kind: "conditional",
-    cashuUnit: asset.cashuUnit,
-    displayBaseAsset: asset.displayBaseAsset,
-    conditionId: asset.conditionId,
-    parentConditionId: asset.parentConditionId,
-    outcomeUniverseDigest: asset.outcomeUniverseDigest,
-    internalOutcomeSetId: asset.internalOutcomeSetId,
-  };
-  return canonicalMonitoringAssetIdentity(completeAsset);
-}
-
-function mergeLocalMonitoringIdentity(
-  current: string | null | undefined,
-  candidate: string | null,
-): string | null {
-  if (current === undefined) return candidate;
-  return current === candidate ? current : null;
 }
 
 function monitoringPosition(asset: AssetMonitoringAssetResponse): Position | null {
@@ -719,101 +727,104 @@ export function usePortfolioState(): PortfolioState & {
 
   const positionsFromDb = useLiveQuery(
     async () => {
-      const proofs = await getProofs();
+      const scopeId = browserWalletScopeIdFromMnemonic(walletMnemonic);
+      if (scopeId === null || activeBrowserWalletScopeId() !== scopeId) return undefined;
+      const proofs = await readCanonicalPortfolioCustody(scopeId);
+      if (proofs === null) return undefined;
       const byOutcome = new Map<
         string,
         {
           conditionId: string;
           outcomeCollection: string;
           baseAsset: MarketBaseAsset;
+          unit: string;
           amount: number;
           mintUrl: string;
           firstReceivedAt: number;
-          monitoringAssetIdentity: string | null;
+          allVerifiedLosing: boolean;
+          claimRecoveryPending: boolean;
+          removalPending: boolean;
         }
       >();
-      for (const proof of proofs.filter(isCtfProof)) {
-        const candidate = proof as typeof proof & {
-          conditionId?: string;
-          condition_id?: string;
-          outcomeCollection?: string;
-          outcome_collection?: string;
-        };
-        const conditionId = candidate.conditionId ?? candidate.condition_id;
-        const outcomeCollection = candidate.outcomeCollection ?? candidate.outcome_collection;
+      for (const proof of proofs) {
+        if (proof.assetKind !== "conditional") continue;
+        const { conditionId, outcomeCollection } = proof;
         if (!conditionId || !outcomeCollection) continue;
         const baseAsset = normalizeMarketBaseAsset(proof.baseAsset);
-        const proofMonitoringIdentity = localMonitoringAssetIdentity(
-          proof,
+        const key = JSON.stringify([
+          proof.normalizedMint,
+          proof.unit,
           conditionId,
           outcomeCollection,
-        );
-        const key = `${conditionId}:${outcomeCollection}:${baseAsset}`;
+          baseAsset,
+        ]);
         const current = byOutcome.get(key);
         byOutcome.set(key, {
           conditionId,
           outcomeCollection,
           baseAsset,
-          amount: (current?.amount ?? 0) + amountToNumber(proof.amount),
-          mintUrl: current?.mintUrl ?? proof.mintUrl,
-          monitoringAssetIdentity: mergeLocalMonitoringIdentity(
-            current?.monitoringAssetIdentity,
-            proofMonitoringIdentity,
-          ),
+          amount: (current?.amount ?? 0) + proof.amount,
+          unit: proof.unit,
+          mintUrl: proof.normalizedMint,
+          claimRecoveryPending:
+            (current?.claimRecoveryPending ?? false) || proof.claimRecoveryPending,
+          removalPending:
+            (current?.removalPending ?? false) || proof.selectability === "pending-removal",
+          allVerifiedLosing:
+            (current?.allVerifiedLosing ?? true) &&
+            (proof.selectability === "verified-losing" ||
+              proof.selectability === "pending-removal"),
           firstReceivedAt: Math.min(
             current?.firstReceivedAt ?? Number.POSITIVE_INFINITY,
-            proof.receivedAt ?? Date.now(),
+            proof.receivedAtMs,
           ),
         });
       }
       const entries = Array.from(byOutcome.values());
       const catalogue =
         monitoringUnavailable || monitoringReady
-          ? await loadMarketCatalogue([...new Set(entries.map((entry) => entry.conditionId))])
+          ? await loadMarketCatalogue(entries.map((entry) => entry.conditionId))
           : new Map<string, MarketCatalogueEntry>();
       return entries.map((entry): Position => {
         const market = catalogue.get(entry.conditionId);
         const divisibility = parseMarketDivisibility(market?.divisibility);
         const finalOutcome = market?.finalOutcome?.trim();
-        const isClosed = String(market?.state ?? "").toLowerCase() === "closed";
-        // Single source-of-truth winner/value derivation (P22 Link F HIGH).
-        // A keyset is a WINNING keyset iff the attested final outcome is a member
-        // of that keyset's outcome-collection (the mint redeems a collection's
-        // proofs iff the collection contains the attested outcome). A position is
-        // a WINNER iff it holds >= 1 proof on a winning keyset — the existence
-        // ("some winning leg") rule, NOT "every leg wins". An UNCLAIMED composite
-        // "A|B" position (final "A") therefore correctly counts as a winner and
-        // stays claimable; the old `.every` rule mis-classified it as a loser and
-        // offered only the destructive Remove, destroying the winning A-leg.
-        // Claimable value sums WINNING keysets only (losing-keyset proofs = 0).
-        // Each position group shares one outcome-collection label by construction
-        // (the group key includes it), so it is a single leg here.
-        const { status: winnerStatus, claimableValue } = deriveWinner({
-          isClosed,
-          finalOutcome,
-          legs: [{ outcomeCollection: entry.outcomeCollection, amount: entry.amount }],
-        });
+        const isClosed =
+          entry.allVerifiedLosing ||
+          entry.claimRecoveryPending ||
+          String(market?.state ?? "").toLowerCase() === "closed";
+        // Closure alone does not prove a loss. Only mint classification or an
+        // attested outcome can classify this display row.
+        const { status: winnerStatus, claimableValue } = entry.allVerifiedLosing
+          ? { status: "loser" as const, claimableValue: 0 }
+          : deriveWinner({
+              isClosed,
+              finalOutcome,
+              legs: [{ outcomeCollection: entry.outcomeCollection, amount: entry.amount }],
+            });
         const isWinner = winnerStatus === "winner";
         const isLoser = winnerStatus === "loser";
-        // Closed but NOT YET ATTESTED (P22 Link F): win/loss undecided. The row
-        // must offer NEITHER Claim NOR Remove (destroying not-yet-decided proofs
-        // is permanent loss) and show an "awaiting resolution" indicator. It stays
-        // visible in the Closed tab (status 'closed'), but its current value is
-        // unknown until an attestation supplies authoritative valuation.
         const isPending = winnerStatus === "pending";
         const status = isClosed ? "closed" : "active";
         const currentValueSats = isClosed && isWinner ? claimableValue : 0;
         return {
-          id: `${entry.conditionId}-${entry.outcomeCollection}`,
+          id: JSON.stringify([
+            entry.mintUrl,
+            entry.conditionId,
+            entry.outcomeCollection,
+            entry.baseAsset,
+          ]),
           marketId: `${entry.conditionId}-${entry.outcomeCollection}`,
           marketTitle: market?.title ?? conditionLabel(entry.conditionId),
           marketImageUrl: market?.thumbnailUrl ?? "",
           side: positionSide(entry.outcomeCollection),
           outcomeId: entry.outcomeCollection,
           outcomeLabel: entry.outcomeCollection,
-          canClaimPayout: isWinner,
+          canClaimPayout: isWinner || entry.claimRecoveryPending,
+          claimRecoveryPending: entry.claimRecoveryPending,
+          removalPending: entry.removalPending,
           canDiscard: isLoser,
-          monitoringAssetIdentity: entry.monitoringAssetIdentity ?? undefined,
+          monitoringAssetIdentity: localMonitoringAssetIdentity(entry, market) ?? undefined,
           baseAsset: entry.baseAsset,
           divisibility: divisibility ?? undefined,
           shares: divisibility === null ? undefined : entry.amount / divisibility,
@@ -840,9 +851,10 @@ export function usePortfolioState(): PortfolioState & {
       });
     },
     [monitoringReady, monitoringUnavailable, walletMnemonic],
-    [] as Position[],
+    undefined as Position[] | undefined,
   );
   const positions: Position[] = positionsFromDb ?? [];
+  const localPositionsUnavailable = positionsFromDb === undefined;
   const fundsFromDb = useLiveQuery(
     async () => {
       const scopeId = browserWalletScopeIdFromMnemonic(walletMnemonic);
@@ -869,8 +881,13 @@ export function usePortfolioState(): PortfolioState & {
   const funds = visibleMonitoring?.funds ?? localFunds;
   const stats = visibleMonitoring?.stats
     ? visibleMonitoring.stats
-    : localFundsUnavailable
-      ? { ...localStats, totalValueKnown: false, totalValueByUnit: undefined }
+    : localFundsUnavailable || localPositionsUnavailable
+      ? {
+          ...localStats,
+          totalValueKnown: false,
+          totalValueByUnit: undefined,
+          positionsValueKnown: !localPositionsUnavailable && localStats.positionsValueKnown,
+        }
       : localStats;
   const visiblePositions = visibleMonitoring
     ? mergeMonitoringPositions(visibleMonitoring.positions, positions)
@@ -887,7 +904,11 @@ export function usePortfolioState(): PortfolioState & {
     unvaluedAssetCount: visibleMonitoring?.monitoring.unvaluedAssetCount ?? 0,
     hasPendingOutgoing: visibleMonitoring?.monitoring.hasPendingOutgoing ?? false,
     pendingOutgoingValueMsat: visibleMonitoring?.monitoring.pendingOutgoingValueMsat ?? null,
-    error: monitoringError ?? (!visibleMonitoring && localFundsUnavailable ? "unavailable" : null),
+    error:
+      monitoringError ??
+      (!visibleMonitoring && (localFundsUnavailable || localPositionsUnavailable)
+        ? "unavailable"
+        : null),
     assetPageError: visibleAssetPageError ? "unavailable" : null,
     hasMoreAssets: visibleAssets?.nextCursor != null,
     loadingMoreAssets: visibleAssets !== null && loadingMoreAssets,

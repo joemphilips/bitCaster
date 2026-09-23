@@ -71,6 +71,19 @@
     "invalidSeedphraseWord": "Invalid word: {{word}}",
     "seedphraseChecksumError": "This seedphrase is not valid. Check the words and their order."
   },
+  "walletBackupRecovery": {
+    "title": "Wallet actions are paused",
+    "description": "New wallet actions stay paused until recovery completes.",
+    "retry": "Retry recovery",
+    "reasons": {
+      "remote-unavailable": "The backup service or mint is unavailable.",
+      "remote-head-changed": "Another browser changed the backup again. Retry to check its latest state.",
+      "local-predecessor-unspent": "Some funds stored in this browser remain unspent. This browser keeps them while recovery is incomplete.",
+      "local-predecessor-unknown": "The mint has not confirmed the state of funds stored in this browser.",
+      "submitted-work-unresolved": "An earlier wallet operation is unresolved. An unpaid invoice can also block recovery. Retrying may not clear it.",
+      "local-state-changed": "Wallet state changed during recovery."
+    }
+  },
   "auth": {
     "nostrRequiredTitle": "Authentication required",
     "nostrRequiredDesc": "You must authenticate before actual trading. Right now Nostr is the only way we offer. Please configure it before submitting an order.",
@@ -353,6 +366,11 @@
     "claimFees": "Claim Fees",
     "sellPosition": "Sell {{title}}",
     "claimPayout": "Claim payout for {{title}}",
+    "claimPending": "The claim is not finished. Any completed payout is in your wallet. You can retry Claim to recover the remaining payment.",
+    "claimFailed": "The claim could not finish. Any completed payout is in your wallet. Your remaining position is retained. Please retry Claim.",
+    "removePending": "Removal is not finished. Your position remains in your wallet until removal completes.",
+    "removeFailed": "Removal could not finish. Any positions not yet removed remain in your wallet. Please try again.",
+    "removePayout": "This position had a payout. The payment is in your wallet. Removal stopped. Please review your updated positions.",
     "discardLostPosition": "Remove losing position for {{title}}",
     "discardLostPositionConfirm": "Remove this losing position from your wallet? This deletes the local CTF proofs and cannot be undone.",
     "viewMarket": "View {{title}}",

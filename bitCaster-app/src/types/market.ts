@@ -54,7 +54,7 @@ interface BaseMarket {
   liquiditySubunits: number;
   ammBotBudgetSubunits: number;
   volumeLifetimeSubunits: number;
-  closingDate: string;
+  closingDate: string | null;
   createdDate: string;
   activeSince: string;
   baseAsset: "sat";

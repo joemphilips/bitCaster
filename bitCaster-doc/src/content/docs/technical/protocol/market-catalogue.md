@@ -1,6 +1,6 @@
 ---
 title: Market Catalogue API
-description: "Public fields returned by the /api/v1/markets/query market catalogue endpoint."
+description: 'Public fields returned by the /api/v1/markets/query market catalogue endpoint.'
 sidebar:
   order: 4
 ---
@@ -9,12 +9,12 @@ The `/api/v1/markets/query` endpoint returns the public market catalogue used by
 
 The catalogue exposes lifetime/display metrics for market cards and discovery pages:
 
-| Field | Type | Meaning |
-| --- | --- | --- |
-| `ammBotBudgetSubunits` | `int64` | Total confirmed post-creation funding after receive fees, in msat. Clients display it as **Total funding**. New confirmed payments increase it. Trades do not reduce it. It is not current order-book liquidity, remaining bot inventory, a depositor position, or a withdrawable balance. |
-| `liquiditySubunits` | `int64` | Total face amount of currently resting orders across the market's order books, denominated in msat. |
-| `traderCount` | `int32` | Number of distinct traders that have settled a trade in this market. |
-| `volumeLifetimeSubunits` | `int64` | Cumulative settled collateral face amount of all fills in the market's history, in collateral subunits. |
+| Field                    | Type    | Meaning                                                                                                                                                                                                                                                                                    |
+| ------------------------ | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `ammBotBudgetSubunits`   | `int64` | Total confirmed post-creation funding after receive fees, in msat. Clients display it as **Total funding**. New confirmed payments increase it. Trades do not reduce it. It is not current order-book liquidity, remaining bot inventory, a depositor position, or a withdrawable balance. |
+| `liquiditySubunits`      | `int64` | Total face amount of currently resting orders across the market's order books, denominated in msat.                                                                                                                                                                                        |
+| `traderCount`            | `int32` | Number of distinct traders that have settled a trade in this market.                                                                                                                                                                                                                       |
+| `volumeLifetimeSubunits` | `int64` | Cumulative settled collateral face amount of all fills in the market's history, in collateral subunits.                                                                                                                                                                                    |
 
 The response also includes `volume24hSubunits` and `volume30dSubunits` for rolling-volume views and sorting. Use `volumeLifetimeSubunits`, `ammBotBudgetSubunits`, and `traderCount` to show Volume, Total funding, and Traders. `liquiditySubunits` summarizes resting orders. Do not label it as Total funding.
 
@@ -37,6 +37,10 @@ separate approval. You can fund the same market more than once. Funding does
 not create a public market price. Use `latestConfirmedTrades` for that price.
 
 ## Real-time lifecycle updates
+
+The catalogue's `deadline` can be omitted or null. This means that no deadline
+is available. Do not substitute `createdAt` or treat the response as incomplete.
+Use `state` as the lifecycle authority, including when no deadline is available.
 
 A market's lifecycle state can change while a client is viewing it. A client subscribed to a market over the real-time feed receives a `MarketStatusChanged` push when the condition transitions state — for example from `open` to `closed` once an oracle attestation lands or the resolution deadline passes. The message carries the `conditionId`, the new `state` (`open` or `closed`), the `closedAt` timestamp once the market has closed, and the winning `finalOutcome` when one has been attested. The push reaches any client joined to one of the condition's per-outcome markets.
 

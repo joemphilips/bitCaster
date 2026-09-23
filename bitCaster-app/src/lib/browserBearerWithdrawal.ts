@@ -115,7 +115,6 @@ async function preflightBearerAsset(input: {
     asset: { kind: "ordinary" },
   });
   const recovery = await recoverBrowserFundedAsset({
-    database: input.context.database,
     scopeId: input.context.scopeId,
     seed: input.context.seed,
     mnemonic: input.context.mnemonic,

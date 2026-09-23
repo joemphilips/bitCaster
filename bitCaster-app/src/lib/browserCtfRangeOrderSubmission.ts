@@ -23,7 +23,7 @@ import { createEncryptedWalletBackupV2AssetIdentity } from "@bitcaster/client-sd
 import { toSeed } from "@/lib/bip39";
 import { browserWalletScopeIdFromMnemonic } from "@/lib/browserWalletProfile";
 import type { MarketDetail } from "@/types/market-detail";
-import { getBoundedCanonicalRangeProofsForKeyset, db } from "@/stores/proof-db";
+import { getBoundedCanonicalRangeProofsForKeyset } from "@/stores/proof-db";
 import { getWalletForMnemonicUnit } from "@/stores/wallet";
 import {
   BrowserCtfRangeOrderCoordinator,
@@ -244,7 +244,6 @@ async function recoverRangeSourcePlan(input: {
   scopeId: string;
 }): Promise<ReadyRangeSourcePlan> {
   const recovery = await recoverBrowserFundedAsset({
-    database: db,
     scopeId: input.scopeId,
     seed: input.seed,
     mnemonic: input.mnemonic,

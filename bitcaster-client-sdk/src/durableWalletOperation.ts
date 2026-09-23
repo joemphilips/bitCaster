@@ -7,6 +7,7 @@ import {
   type OutputDataLike,
   type OutputData,
   type MintPreview,
+  type MintQuoteBolt11Response,
   type Proof,
   type ProofState,
   type SwapPreview,
@@ -204,6 +205,8 @@ interface DurableWalletMintExecutionInput {
   readonly operationId: string
   readonly store: DurableWalletMintOperationStore
   readonly wallet: {
+    readonly mint: { readonly mintUrl: string }
+    checkMintQuote(quoteId: string): Promise<Pick<MintQuoteBolt11Response, 'quote' | 'state'>>
     completeMint(preview: MintPreview<{ quote: string; expiry?: number | null }>): Promise<Proof[]>
   }
   /** Restore and verify only the persisted blinded-output plan. */
@@ -585,12 +588,40 @@ export async function runDurableWalletMintOperation(
     return persistExactMintResult(input.store, snapshot.operation, proofs)
   } catch (error) {
     if (input.mode !== 'recover' || !isDurableWalletMintDuplicateOutputsError(error)) throw error
+    const quote = await readExactIssuedMintQuote(input.wallet, snapshot.operation)
+    if (quote === null) return { state: 'nonterminal', proofs: [] }
     const proofs = await input.restoreExactOutputs({
       mintUrl: snapshot.operation.mintUrl,
       unit: snapshot.operation.unit,
       outputs: snapshot.operation.preview.outputData.map((output) => structuredClone(output)),
     })
     return persistExactMintResult(input.store, snapshot.operation, proofs)
+  }
+}
+
+async function readExactIssuedMintQuote(
+  wallet: DurableWalletMintExecutionInput['wallet'],
+  operation: DurableWalletMintOperation,
+): Promise<Pick<MintQuoteBolt11Response, 'quote' | 'state'> | null> {
+  let mintUrl: string
+  try {
+    mintUrl = decodeCanonicalMintOrigin(wallet.mint.mintUrl)
+  } catch {
+    return null
+  }
+  if (mintUrl !== operation.mintUrl) return null
+  try {
+    const response = await wallet.checkMintQuote(operation.preview.payload.quote)
+    if (
+      !isRecord(response) ||
+      response.quote !== operation.preview.payload.quote ||
+      response.state !== 'ISSUED'
+    ) {
+      return null
+    }
+    return response as Pick<MintQuoteBolt11Response, 'quote' | 'state'>
+  } catch {
+    return null
   }
 }
 
