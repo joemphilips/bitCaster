@@ -290,17 +290,44 @@ describe("MarketsPage", () => {
   });
 
   it("does not append a stale pagination response after a new query starts", async () => {
-    let paginationCallback: IntersectionObserverCallback | undefined;
+    class TestIntersectionObserver {
+      observedTarget: Element | undefined;
+
+      constructor(private readonly callback: IntersectionObserverCallback) {}
+
+      observe(target: Element) {
+        this.observedTarget = target;
+        paginationObserver = this;
+      }
+
+      unobserve(target: Element) {
+        if (this.observedTarget === target) {
+          this.observedTarget = undefined;
+          if (paginationObserver === this) paginationObserver = undefined;
+        }
+      }
+
+      disconnect() {
+        this.observedTarget = undefined;
+        if (paginationObserver === this) paginationObserver = undefined;
+      }
+
+      intersectObservedTarget() {
+        const target = this.observedTarget;
+        if (!target || !document.contains(target)) {
+          throw new Error("IntersectionObserver must be observing the mounted pagination sentinel");
+        }
+        this.callback(
+          [{ target, isIntersecting: true } as IntersectionObserverEntry],
+          this as unknown as IntersectionObserver,
+        );
+      }
+    }
+    let paginationObserver: TestIntersectionObserver | undefined;
+
     vi.stubGlobal(
       "IntersectionObserver",
-      class TestIntersectionObserver {
-        constructor(callback: IntersectionObserverCallback) {
-          paginationCallback = callback;
-        }
-        observe() {}
-        unobserve() {}
-        disconnect() {}
-      } as unknown as typeof IntersectionObserver,
+      TestIntersectionObserver as unknown as typeof IntersectionObserver,
     );
 
     const initial = Promise.resolve<MarketsResult>({
@@ -323,11 +350,17 @@ describe("MarketsPage", () => {
     );
 
     await screen.findByText("Initial market");
+    const paginationSentinelText = await screen.findByText("Loading more markets...");
+    const paginationSentinel = paginationSentinelText.parentElement;
+    expect(paginationSentinel).not.toBeNull();
+    await waitFor(() => {
+      expect(paginationObserver?.observedTarget).toBe(paginationSentinel);
+    });
+
+    const attachedPaginationObserver = paginationObserver;
+    expect(attachedPaginationObserver?.observedTarget).toBe(paginationSentinel);
     await act(async () => {
-      paginationCallback?.(
-        [{ isIntersecting: true } as IntersectionObserverEntry],
-        {} as IntersectionObserver,
-      );
+      attachedPaginationObserver?.intersectObservedTarget();
     });
     await waitFor(() => expect(mockedGetMarkets).toHaveBeenCalledTimes(2));
 
