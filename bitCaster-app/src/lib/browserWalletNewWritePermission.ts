@@ -2,6 +2,7 @@ import { decodeDurableCustodyScopeInput } from "@bitcaster/client-sdk/durableCus
 import type { BitcasterDB } from "../stores/proof-db";
 import { EncryptedWalletBackupEnrollmentDexieStore } from "../stores/encrypted-wallet-backup-enrollment-db";
 import { EncryptedWalletBackupV2DexieAuthorityStore } from "../stores/encrypted-wallet-backup-v2-db";
+import { assertNever } from "./enumDiscipline";
 import { resolveEncryptedWalletBackupConfiguration } from "./encryptedWalletBackupConfig";
 
 const RECOVERY_REQUIRED_MESSAGE =
@@ -157,8 +158,13 @@ async function requireAuthenticatedSessionPermission(input: {
   readonly walletId: string;
   readonly session: BrowserWalletBackupAuthenticationState;
 }): Promise<void> {
-  if (input.session.status === "pending") {
-    throw new BrowserWalletRecoveryRequiredError("startup-authentication-pending");
+  switch (input.session.status) {
+    case "pending":
+      throw new BrowserWalletRecoveryRequiredError("startup-authentication-pending");
+    case "authenticated":
+      break;
+    default:
+      assertNever(input.session);
   }
   const authority = new EncryptedWalletBackupV2DexieAuthorityStore({
     database: input.database,
@@ -170,13 +176,23 @@ async function requireAuthenticatedSessionPermission(input: {
   });
   const acceptedHead = await authority.readAcceptedHead();
   const current = readAuthenticationSession(input.database, input.scopeId, input.realm);
-  if (
-    current?.status !== "authenticated" ||
-    current.token !== input.session.token ||
-    current.enrollmentEpoch !== input.session.enrollmentEpoch ||
-    current.requestAuthPublicKey !== input.session.requestAuthPublicKey
-  ) {
+  if (current === undefined) {
     throw new BrowserWalletRecoveryRequiredError("startup-authentication-pending");
+  }
+  switch (current.status) {
+    case "pending":
+      throw new BrowserWalletRecoveryRequiredError("startup-authentication-pending");
+    case "authenticated":
+      if (
+        current.token !== input.session.token ||
+        current.enrollmentEpoch !== input.session.enrollmentEpoch ||
+        current.requestAuthPublicKey !== input.session.requestAuthPublicKey
+      ) {
+        throw new BrowserWalletRecoveryRequiredError("startup-authentication-pending");
+      }
+      break;
+    default:
+      assertNever(current);
   }
   if (acceptedHead === null) {
     throw new BrowserWalletRecoveryRequiredError("startup-authentication-pending");
