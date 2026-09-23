@@ -10,7 +10,7 @@ const trade = {
   orderId: "11111111-1111-4111-8111-111111111111",
   marketId: "condition-YES",
   baseAsset: "sat" as const,
-  divisibility: 10_000 as const,
+  divisibility: 1_000 as const,
   amountSubunits: 10,
 };
 
@@ -42,12 +42,6 @@ describe("order lifecycle notifications", () => {
       ]);
     },
   );
-
-  it("retains a GTC residual that awaits authorization", () => {
-    expect(buildOrderStatusNotifications(status("awaiting_authorization", 4, 6), trade, 1)).toEqual(
-      [],
-    );
-  });
 
   it("derives filled amount from a lifecycle delta", () => {
     expect(buildOrderLifecycleNotifications("partially_filled", 6, trade, 1)).toEqual([

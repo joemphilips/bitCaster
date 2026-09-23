@@ -6,7 +6,7 @@ import {
 import { parseOrderRouteId } from './orderRoute.ts'
 
 export type SupportedOrderSide = 'Buy' | 'Sell'
-export type SupportedTimeInForce = 'FAK' | 'FOK' | 'GTC'
+export type SupportedTimeInForce = 'FOK'
 
 export interface OrderIntentForValidation {
   marketId?: unknown
@@ -36,7 +36,7 @@ export function validateOrderIntent(request: unknown): OrderIntentValidation {
   if (divisibility === null) {
     return {
       valid: false,
-      message: 'Order rejected: divisibility must be 10000 or 1000000.',
+      message: 'Order rejected: divisibility must be 1000 or 1000000.',
     }
   }
   const price = intent.price
@@ -108,14 +108,10 @@ export function validateOrderRoutingIdentity(request: unknown): OrderIntentValid
       message: 'Order rejected: side must be Buy or Sell.',
     }
   }
-  if (
-    intent.timeInForce !== 'FAK' &&
-    intent.timeInForce !== 'FOK' &&
-    intent.timeInForce !== 'GTC'
-  ) {
+  if (intent.timeInForce !== 'FOK') {
     return {
       valid: false,
-      message: 'Order rejected: timeInForce must be FAK, FOK, or GTC.',
+      message: 'Order rejected: timeInForce must be FOK.',
     }
   }
 

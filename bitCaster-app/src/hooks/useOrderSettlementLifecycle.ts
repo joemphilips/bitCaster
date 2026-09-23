@@ -6,6 +6,7 @@ import type {
 import { recoverBrowserCtfRangeOrder } from "@/lib/browserCtfRangeOrderSubmission";
 import { browserWalletIdFromMnemonic } from "@/lib/browserWalletProfile";
 import { publishPortfolioInvalidation } from "@/lib/portfolioInvalidation";
+import { publishSettlementProgressHint } from "@/lib/settlementProgressHints";
 import {
   buildOrderLifecycleNotifications,
   buildOrderStatusNotifications,
@@ -44,8 +45,12 @@ export function useOrderSettlementLifecycle(
 
   const enabled = canAuthenticateOrderHub && pendingOrders.length > 0;
   const { joinOrder } = useOrderHub(enabled, {
-    onReconnected: () => setConnectionRevision((revision) => revision + 1),
+    onReconnected: () => {
+      setConnectionRevision((revision) => revision + 1);
+      publishSettlementProgressHint(null);
+    },
     onOrderLifecycleChanged: (delta) => {
+      publishSettlementProgressHint({ orderId: delta.orderId, marketId: delta.marketId });
       const order = usePendingTradesStore.getState().byOrderId[delta.orderId];
       if (!order) return;
       const notifications = buildOrderLifecycleNotifications(
@@ -67,6 +72,7 @@ export function useOrderSettlementLifecycle(
       }
     },
     onSettlementGroupStateChanged: (delta) => {
+      publishSettlementProgressHint({ orderId: delta.orderId, marketId: delta.marketId });
       if (requiresStatusReconciliation(delta.settlementGroup.status)) {
         void reconcileOrderStatus(delta.orderId);
       }
@@ -129,7 +135,6 @@ function isDiscardableTerminalStatus(status: OrderLifecycleStatus): boolean {
     case "resting":
     case "matched":
     case "partially_filled":
-    case "awaiting_authorization":
     case "filled":
       return false;
     default:
@@ -143,6 +148,7 @@ function requiresStatusReconciliation(status: SettlementGroupStatus): boolean {
     case "DefinitivelyRejected":
     case "Refundable":
     case "ExpiredBeforeSubmission":
+    case "RejectedBeforeSubmission":
       return true;
     case "Prepared":
     case "SubmissionPending":

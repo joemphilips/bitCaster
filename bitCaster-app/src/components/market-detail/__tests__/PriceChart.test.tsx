@@ -77,6 +77,44 @@ describe("PriceChart", () => {
     expect(options.axes[1].values?.({}, [0, 50, 100])).toEqual(["0.00%", "50.00%", "100.00%"]);
   });
 
+  it("renders no synthetic numeric chart when numeric authority is disabled", () => {
+    render(
+      <PriceChart
+        priceHistory={{
+          timeframe: "7d",
+          data: [{ timestamp: "2026-05-20T10:00:00Z", price: 75 }],
+        }}
+        chartTimeframe="7d"
+        currentDisplay="market.priceUnavailable"
+        disabledNumeric
+      />,
+    );
+
+    expect(screen.getByText("market.priceUnavailable")).toBeInTheDocument();
+    expect(screen.queryByTestId("price-chart-uplot")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("latest-price-pill")).not.toBeInTheDocument();
+    expect(screen.queryByText("75.00%")).not.toBeInTheDocument();
+    expect(plotInstances).toHaveLength(0);
+  });
+
+  it.each([undefined, "No trades yet"])(
+    "uses the supplied empty state without inventing a price (%s)",
+    (emptyDisplay) => {
+      render(
+        <PriceChart
+          priceHistory={{ timeframe: "7d", data: [] }}
+          chartTimeframe="7d"
+          emptyDisplay={emptyDisplay}
+        />,
+      );
+
+      expect(screen.getByText(emptyDisplay ?? "No data available")).toBeInTheDocument();
+      expect(screen.queryByTestId("price-chart-uplot")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("latest-price-pill")).not.toBeInTheDocument();
+      expect(plotInstances).toHaveLength(0);
+    },
+  );
+
   it("updates the existing plot data when history changes", () => {
     const { rerender } = render(
       <PriceChart
@@ -89,6 +127,8 @@ describe("PriceChart", () => {
     );
 
     const instance = plotInstances[0];
+    const options = instance.options as { series: Array<{ points?: { show?: boolean } }> };
+    expect(options.series[1].points?.show).toBe(true);
     rerender(
       <PriceChart
         priceHistory={{
@@ -275,24 +315,6 @@ describe("PriceChart", () => {
     expect(instance.setScale).toHaveBeenLastCalledWith("x", {
       min: Date.parse("2026-01-01T00:00:00Z") / 1000,
       max: latest,
-    });
-  });
-
-  it("uses an initial-only timeframe anchor as the left edge", () => {
-    render(
-      <PriceChart
-        priceHistory={{
-          timeframe: "1h",
-          data: [{ timestamp: "2026-05-25T09:00:00Z", price: 50, source: "initial" }],
-        }}
-        chartTimeframe="1h"
-      />,
-    );
-
-    const anchor = Date.parse("2026-05-25T09:00:00Z") / 1000;
-    expect(plotInstances[0].options.scales?.x).toMatchObject({
-      min: anchor,
-      max: anchor + 60 * 60,
     });
   });
 

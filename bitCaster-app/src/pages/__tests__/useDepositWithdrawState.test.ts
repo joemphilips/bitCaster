@@ -45,7 +45,7 @@ vi.mock("@/lib/walletOps", () => ({
     added: false,
     mintUrl: "http://localhost:8085",
     source: "paste",
-    unit: "sat",
+    unit: "msat",
     amountSubunits: 0,
     baseAsset: "sat",
     proofs: [],
@@ -66,12 +66,7 @@ vi.mock("@/stores/proof-db", () => ({
       equals: vi.fn().mockReturnThis(),
     },
   },
-  getProofs: vi
-    .fn()
-    .mockResolvedValue([
-      { secret: "s1", amount: 100, mintUrl: "http://localhost:8085", id: "id1", C: "C1" },
-    ]),
-  getUnitProofs: vi
+  getCanonicalSelectableProofs: vi
     .fn()
     .mockResolvedValue([
       { secret: "s1", amount: 100, mintUrl: "http://localhost:8085", id: "id1", C: "C1" },
@@ -209,6 +204,38 @@ describe("useDepositWithdrawState", () => {
       act(() => result.current.onNumpadPress("0"));
       expect(result.current.amountSats).toBe(0);
       act(() => result.current.onNumpadPress("0"));
+      expect(result.current.amountSats).toBe(0);
+    });
+
+    it("accepts up to three fractional sat digits and ignores further digits", () => {
+      const { result } = renderHook(() => useDepositWithdrawState("deposit", onDismiss));
+      for (const key of ["1", ".", "0", "0", "1", "9"]) {
+        act(() => result.current.onNumpadPress(key));
+      }
+      expect(result.current.amountSats).toBe(1.001);
+    });
+
+    it("accepts a leading decimal as zero point zero zero one sat", () => {
+      const { result } = renderHook(() => useDepositWithdrawState("deposit", onDismiss));
+      for (const key of [".", "0", "0", "1"]) {
+        act(() => result.current.onNumpadPress(key));
+      }
+      expect(result.current.amountSats).toBe(0.001);
+    });
+
+    it("ignores a repeated decimal key", () => {
+      const { result } = renderHook(() => useDepositWithdrawState("deposit", onDismiss));
+      for (const key of ["1", ".", ".", "0"]) {
+        act(() => result.current.onNumpadPress(key));
+      }
+      expect(result.current.amountSats).toBe(1);
+    });
+
+    it("does not expose an incomplete decimal as a sendable amount", () => {
+      const { result } = renderHook(() => useDepositWithdrawState("deposit", onDismiss));
+      for (const key of ["1", "."]) {
+        act(() => result.current.onNumpadPress(key));
+      }
       expect(result.current.amountSats).toBe(0);
     });
   });
@@ -421,13 +448,13 @@ describe("useDepositWithdrawState", () => {
         added: true,
         mintUrl: "https://testnut.cashu.space",
         source: "paste",
-        unit: "sat",
+        unit: "msat",
         amountSubunits: 50_000,
         baseAsset: "sat",
         proofs: [
           {
             secret: "s-new",
-            amount: 50,
+            amount: 50_000,
             id: "kid-B",
             C: "C",
             conditionId: "condition-1",
@@ -455,7 +482,7 @@ describe("useDepositWithdrawState", () => {
         "paste",
       );
       expect(result.current.currentView).toBe("success");
-      expect(result.current.successAmount).toBe(50_000);
+      expect(result.current.successAmountMsat).toBe(50_000);
       expect(result.current.error).toBeNull();
       expect(useActivityLogStore.getState().items[0]).toMatchObject({
         amountSats: 50_000,
@@ -485,7 +512,7 @@ describe("useDepositWithdrawState", () => {
         await result.current.onPaste();
       });
 
-      expect(result.current.successUnit).toBe("sat");
+      expect(result.current.successBaseAsset).toBe("sat");
       expect(useActivityLogStore.getState().items[0]).toMatchObject({
         amountSats: 23,
         baseAsset: "sat",
@@ -547,27 +574,34 @@ describe("useDepositWithdrawState", () => {
     });
   });
 
-  describe("sat-only withdraw paths", () => {
-    it("creates a durable bearer token only after Send", async () => {
+  describe("msat withdrawal with sats display", () => {
+    it.each([
+      ["50", 50_000],
+      ["1.001", 1_001],
+    ])("sends %s sats as exactly %s msat only after Send", async (input, amountMsat) => {
       const { result } = renderHook(() => useDepositWithdrawState("withdraw", onDismiss));
       act(() => result.current.onSelectMethod("ecash"));
-      act(() => result.current.onNumpadPress("5"));
-      act(() => result.current.onNumpadPress("0"));
+      act(() => {
+        for (const key of input) result.current.onNumpadPress(key);
+      });
 
       await act(async () => {
         await result.current.onSendEcash();
       });
 
       expect(executeBrowserBearerWithdrawal).toHaveBeenCalledWith({
-        amount: 50,
+        amountMsat,
         mintUrl: "http://localhost:8085",
       });
       expect(result.current.ecashToken).toBe("cashuAtoken123");
       expect(result.current.currentView).toBe("token-display");
     });
 
-    it("resumes an explicitly reopened persisted token without a new send", async () => {
-      const transfer = bearerTransfer();
+    it.each([
+      ["50000", 50],
+      ["1001", 1.001],
+    ])("resumes %s msat as %s sats without a new send", async (requestedAmount, amountSats) => {
+      const transfer = { ...bearerTransfer(), requestedAmount };
       resumeBrowserBearerWithdrawal.mockResolvedValueOnce(transfer);
       classifyBrowserBearerWithdrawal.mockResolvedValueOnce({
         ...transfer,
@@ -577,6 +611,7 @@ describe("useDepositWithdrawState", () => {
       act(() => result.current.onSelectMethod("ecash"));
       await act(async () => undefined);
       expect(result.current.ecashToken).toBe("cashuAtoken123");
+      expect(result.current.amountSats).toBe(amountSats);
       expect(executeBrowserBearerWithdrawal).not.toHaveBeenCalled();
     });
 
@@ -613,10 +648,9 @@ describe("useDepositWithdrawState", () => {
       expect(result.current.currentView).toBe("send-ecash");
     });
 
-    it("selects sat base proofs when paying lightning", async () => {
+    it("lets the melt boundary select canonical msat proofs when paying lightning", async () => {
       const proofDb = await import("@/stores/proof-db");
       const cashu = await import("@/lib/cashu");
-      vi.mocked(proofDb.getUnitProofs).mockClear();
       vi.mocked(cashu.createMeltQuote).mockResolvedValueOnce({
         quote: "q1",
         amount: 1000,
@@ -625,7 +659,10 @@ describe("useDepositWithdrawState", () => {
         expiry: 0,
         payment_preimage: null,
       } as never);
-      vi.mocked(cashu.meltProofs).mockResolvedValueOnce({ paid: true, change: [] } as never);
+      vi.mocked(cashu.meltProofs).mockResolvedValueOnce({
+        paid: true,
+        change: [{ amount: 100, secret: "melt-change", id: "keyset", C: "point" }],
+      } as never);
 
       const { result } = renderHook(() => useDepositWithdrawState("withdraw", onDismiss));
       act(() => result.current.onSelectMethod("lightning"));
@@ -636,12 +673,18 @@ describe("useDepositWithdrawState", () => {
         await result.current.onConfirmMelt();
       });
 
-      expect(proofDb.getUnitProofs).toHaveBeenCalledWith("http://localhost:8085", { unit: "sat" });
-      expect(cashu.meltProofs).toHaveBeenCalledWith(
-        expect.any(Object),
-        expect.any(Array),
-        "http://localhost:8085",
-      );
+      expect(proofDb.getCanonicalSelectableProofs).not.toHaveBeenCalled();
+      expect(proofDb.addProofs).not.toHaveBeenCalled();
+      expect(proofDb.removeProofs).not.toHaveBeenCalled();
+      expect(result.current.currentView).toBe("success");
+      expect(result.current.successAmountMsat).toBe(1_000);
+      expect(result.current.successBaseAsset).toBe("sat");
+      expect(useActivityLogStore.getState().items[0]).toMatchObject({
+        type: "withdrawal",
+        amountSats: 1_000,
+        baseAsset: "sat",
+      });
+      expect(cashu.meltProofs).toHaveBeenCalledWith(expect.any(Object), "http://localhost:8085");
     });
   });
 });
@@ -652,8 +695,8 @@ function bearerTransfer(): {
   return {
     transferId: "bearer-withdrawal:test",
     mintUrl: "http://localhost:8085",
-    unit: "sat",
-    requestedAmount: "50",
+    unit: "msat",
+    requestedAmount: "50000",
     deliveryState: "delivery-pending",
     token: { encodedToken: "cashuAtoken123", unspentProofs: null, proofs: [] },
   };

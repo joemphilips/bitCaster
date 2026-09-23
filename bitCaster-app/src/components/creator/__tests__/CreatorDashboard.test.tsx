@@ -151,7 +151,7 @@ describe("CreatorDashboard", () => {
         creatorFeesEarned: 0,
         creatorFeePercent: 0.02,
         baseAsset: "sat",
-        divisibility: 10_000,
+        divisibility: 1_000,
       },
     ];
     mockUseCreatorDashboardState.mockReturnValue({
@@ -207,7 +207,7 @@ describe("CreatorDashboard", () => {
           creatorFeesEarned: 0,
           creatorFeePercent: 0,
           baseAsset: "sat",
-          divisibility: 10_000,
+          divisibility: 1_000,
         },
       ] as CreatedMarket[],
       isLoading: false,
@@ -268,7 +268,7 @@ describe("CreatorDashboard", () => {
         creatorFeesEarned: 0,
         creatorFeePercent: 0,
         baseAsset: "sat",
-        divisibility: 10_000,
+        divisibility: 1_000,
         oracle: {
           type: "self",
           eventId: "will_btc_hit_150k_abcd",
@@ -292,7 +292,7 @@ describe("CreatorDashboard", () => {
           createdAt: "2026-04-10T00:00:00.000Z",
           creatorFeePercent: 0,
           baseAsset: "sat",
-          divisibility: 10_000,
+          divisibility: 1_000,
           oracle: {
             type: "self",
             eventId: "will_btc_hit_150k_abcd",

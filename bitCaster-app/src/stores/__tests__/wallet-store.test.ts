@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import "fake-indexeddb/auto";
-import { createBrowserWalletCounterSource, useWalletStore } from "../wallet";
+import { createBrowserWalletCounterSource, getExactUnitBalance, useWalletStore } from "../wallet";
 import * as bip39 from "@/lib/bip39";
 import {
   activeBrowserWalletScopeId,
@@ -60,7 +60,12 @@ vi.mock("@cashu/cashu-ts", () => {
     return wallet;
   });
 
-  return { Mint: MockMint, Wallet: MockWallet, setGlobalRequestOptions: vi.fn() };
+  return {
+    Amount: { from: (value: number) => value },
+    Mint: MockMint,
+    Wallet: MockWallet,
+    setGlobalRequestOptions: vi.fn(),
+  };
 });
 
 const initialAddMint = useWalletStore.getState()._addMint;
@@ -310,6 +315,24 @@ describe("useWalletStore", () => {
       await expect(oldCounterSource.reserve(KEYSET_ID, 1)).rejects.toThrow(
         /wallet profile changed/,
       );
+    });
+  });
+
+  describe("getExactUnitBalance", () => {
+    it("does not count a legacy proof without canonical custody", async () => {
+      useWalletStore.getState().generateMnemonic();
+      const mintUrl = "http://exact-unit-balance.test";
+      await db.proofs.put({
+        secret: "retired-legacy-msat",
+        amount: 100,
+        id: KEYSET_ID,
+        C: "legacy-C",
+        mintUrl,
+        baseAsset: "sat",
+        unit: "msat",
+      });
+
+      await expect(getExactUnitBalance(mintUrl, "msat")).resolves.toBe(0);
     });
   });
 

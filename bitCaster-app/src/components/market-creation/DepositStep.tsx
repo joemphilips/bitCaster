@@ -1,33 +1,42 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router";
-import { AlertTriangle, Check, Info, Loader2 } from "lucide-react";
+import { Check, Info, Loader2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import {
   BrowserMarketFundingInsufficientBalanceError,
   executeBrowserMarketFundingDelivery,
+  readBrowserMarketFundingHeadId,
+  type BrowserMarketFundingDeliveryResult,
   type MarketFundingDeliveryProgress,
 } from "@/lib/browserMarketFundingDelivery";
 import { InsufficientBalanceModal } from "@/components/shared/InsufficientBalanceModal";
 import { TopUpOverlay } from "@/components/market-detail/TopUpOverlay";
 import { resolveCreatorPubkey } from "@/lib/identityOps";
-import {
-  BINARY_AMM_FUNDING_TIERS,
-  formatFundingBudget,
-  fundingTierBudget,
-  type AmmFundingTierId,
-} from "@/lib/marketMakerFunding";
 import { useSettingsStore } from "@/stores/settings";
 import { useBalance, useWalletStore } from "@/stores/wallet";
 import type { MarketBaseAsset } from "@/types/market-creation";
-import { estimateDepthPreview } from "@bitcaster/client-sdk/lmsrDomain";
 import {
-  DEFAULT_SAT_MARKET_DIVISIBILITY,
   defaultCollateralUnit,
   formatMarketSubunits,
+  normalizeMarketDivisibility,
+  parseSatsToMsat,
+  type MarketDivisibility,
 } from "@bitcaster/client-sdk/marketUnits";
 
-function customBudgetInputToSubunits(customBudgetInput: number): number {
-  return Math.max(0, Math.floor(customBudgetInput * 1_000));
+function parseFundingAmount(value: string): number | null {
+  if (value.trim() === "") return null;
+  try {
+    return parseSatsToMsat(value.trim());
+  } catch {
+    return null;
+  }
+}
+
+function formatFundingInput(amountMsat: number): string {
+  const wholeSats = Math.floor(amountMsat / 1_000);
+  const fractionalMsat = amountMsat % 1_000;
+  if (fractionalMsat === 0) return String(wholeSats);
+  return `${wholeSats}.${String(fractionalMsat).padStart(3, "0").replace(/0+$/, "")}`;
 }
 
 interface DepositStepProps {
@@ -39,74 +48,174 @@ interface DepositStepProps {
   outcomeCount?: number;
   /** Market collateral unit. Legacy `*Sats` fields below are base subunits. */
   baseAsset?: MarketBaseAsset;
+  /** Controls whether this component is the creation handoff or an embedded detail view. */
+  presentation?: "creation" | "detail";
+  /** Registered market divisibility. */
+  divisibility: MarketDivisibility;
+  /** Open the existing wallet setup chooser before a wallet-owned action. */
+  onRequireWallet?: () => void;
 }
 
 export function DepositStep({
   conditionId,
-  outcomeCount = 2,
   baseAsset = "sat",
+  presentation = "creation",
+  divisibility: divisibilityInput,
+  outcomeCount,
+  onRequireWallet,
 }: DepositStepProps) {
   const { t } = useTranslation();
   const navigate = useNavigate();
-  const [selectedTier, setSelectedTier] = useState<AmmFundingTierId>("standard");
-  const [customBudgetInput, setCustomBudgetInput] = useState(0);
-  const [stage, setStage] = useState<"created" | "funding">("created");
+  const [fundingAmountSats, setFundingAmountSats] = useState("");
+  const [stage, setStage] = useState<"created" | "funding">(
+    presentation === "detail" ? "funding" : "created",
+  );
   const [deliveryProgress, setDeliveryProgress] = useState<MarketFundingDeliveryProgress | null>(
     null,
   );
   const [fundingBusy, setFundingBusy] = useState(false);
+  const [headTransferId, setHeadTransferId] = useState<string | null>(null);
+  const [headReady, setHeadReady] = useState(false);
+  const [headReadRevision, setHeadReadRevision] = useState(0);
+  const generation = useRef(0);
+  const inFlight = useRef(false);
   const [topUpStage, setTopUpStage] = useState<"closed" | "modal" | "overlay">("closed");
   const [error, setError] = useState<string | null>(null);
   const cashuUnit = defaultCollateralUnit(baseAsset);
   const activeMintUrl = useWalletStore((state) => state.activeMintUrl);
+  const walletMnemonic = useWalletStore((state) => state.mnemonic);
+  const accountSubject = useSettingsStore((settings) =>
+    resolveCreatorPubkey({
+      nostrSignerMode: settings.nostrSignerMode,
+      nsecSecret: settings.nsecSecret,
+      nostrProfilePubkey: settings.nostrProfile?.pubkey,
+    }),
+  );
   const balance = useBalance(activeMintUrl, { baseAsset });
-  const divisibility = DEFAULT_SAT_MARKET_DIVISIBILITY;
-  const customBudgetSubunits = customBudgetInputToSubunits(customBudgetInput);
+  const divisibility = normalizeMarketDivisibility(divisibilityInput, baseAsset);
+  const fundingAmountMsat = useMemo(
+    () => parseFundingAmount(fundingAmountSats),
+    [fundingAmountSats],
+  );
+  const fundingAmountInputError = fundingAmountSats.trim() !== "" && fundingAmountMsat === null;
 
-  useEffect(() => {
-    const timer = window.setTimeout(() => setStage("funding"), 5_000);
-    return () => window.clearTimeout(timer);
+  const applyFundingResult = useCallback((result: BrowserMarketFundingDeliveryResult) => {
+    setHeadTransferId(result.transfer.transferId);
+    setFundingAmountSats(formatFundingInput(Number(result.transfer.requestedAmount)));
+    setDeliveryProgress(result.progress);
   }, []);
 
-  const tiers = useMemo(
-    () =>
-      BINARY_AMM_FUNDING_TIERS.map((tier) => ({
-        ...tier,
-        budgetSats: fundingTierBudget(tier, baseAsset),
-      })),
-    [baseAsset],
-  );
-  const selectedTierBudget =
-    tiers.find((tier) => tier.id === selectedTier)?.budgetSats ?? customBudgetSubunits;
-  const budgetSats = selectedTier === "custom" ? customBudgetSubunits : selectedTierBudget;
-  const customBudgetPreview = formatFundingBudget(customBudgetSubunits, baseAsset);
-  const showWarning = selectedTier === "minimal";
-  const depthPreview =
-    selectedTier === "none"
-      ? null
-      : estimateDepthPreview({ budgetSubunits: budgetSats, outcomeCount });
-
-  const continueToMarket = useCallback(() => {
-    navigate(`/markets/${conditionId}`);
-  }, [conditionId, navigate]);
+  useEffect(() => {
+    const current = ++generation.current;
+    let cancelled = false;
+    setHeadReady(false);
+    setHeadTransferId(null);
+    setDeliveryProgress(null);
+    setError(null);
+    inFlight.current = false;
+    if (!walletMnemonic.trim() || !accountSubject) {
+      setHeadReady(true);
+      setFundingBusy(false);
+      return;
+    }
+    setFundingBusy(true);
+    const common = {
+      accountSubject,
+      conditionId,
+      mintUrl: activeMintUrl,
+      unit: cashuUnit,
+      divisibility,
+    };
+    void (async () => {
+      try {
+        const exactId = await readBrowserMarketFundingHeadId(common);
+        if (cancelled || current !== generation.current) return;
+        setHeadTransferId(exactId);
+        if (exactId !== null) {
+          const result = await executeBrowserMarketFundingDelivery({
+            ...common,
+            attempt: { kind: "resume", transferId: exactId },
+          });
+          if (cancelled || current !== generation.current) return;
+          applyFundingResult(result);
+        }
+        setHeadReady(true);
+      } catch (err) {
+        if (!cancelled && current === generation.current) {
+          setError(err instanceof Error ? err.message : t("marketCreation.ecashSubmitError"));
+        }
+      } finally {
+        if (!cancelled && current === generation.current) setFundingBusy(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+      generation.current += 1;
+    };
+  }, [
+    accountSubject,
+    activeMintUrl,
+    walletMnemonic,
+    conditionId,
+    cashuUnit,
+    divisibility,
+    applyFundingResult,
+    headReadRevision,
+    t,
+  ]);
 
   useEffect(() => {
-    if (deliveryProgress !== "credited") return undefined;
+    if (presentation === "detail") return undefined;
+    const timer = window.setTimeout(() => setStage("funding"), 5_000);
+    return () => window.clearTimeout(timer);
+  }, [presentation]);
+
+  const continueToMarket = useCallback(() => {
+    if (presentation === "detail") return;
+    navigate(`/markets/${conditionId}`);
+  }, [conditionId, navigate, presentation]);
+
+  useEffect(() => {
+    if (presentation === "detail" || deliveryProgress !== "credited" || fundingBusy)
+      return undefined;
     const timer = window.setTimeout(continueToMarket, 5_000);
     return () => window.clearTimeout(timer);
-  }, [continueToMarket, deliveryProgress]);
+  }, [continueToMarket, deliveryProgress, presentation, fundingBusy]);
 
   const submitMarketFunding = useCallback(async () => {
-    if (budgetSats < 1 || fundingBusy || deliveryProgress === "credited") return;
+    if (fundingBusy || inFlight.current) return;
+    const resuming = headTransferId !== null && deliveryProgress !== "credited";
+    if (!resuming && (fundingAmountMsat === null || fundingAmountMsat < 1)) {
+      setError(t("marketCreation.ammFundingAmountError"));
+      return;
+    }
+    if (!resuming && fundingAmountMsat !== null && fundingAmountMsat % divisibility !== 0) {
+      setError(t("marketCreation.ammFundingDivisibilityError", { divisibility }));
+      return;
+    }
+    if (!walletMnemonic.trim()) {
+      if (onRequireWallet) {
+        onRequireWallet();
+        return;
+      }
+      setError(t("marketCreation.ammFundingWalletRequired"));
+      return;
+    }
     setError(null);
+    if (!headReady) return;
+    const current = generation.current;
+    const attempt =
+      headTransferId !== null && deliveryProgress !== "credited"
+        ? { kind: "resume" as const, transferId: headTransferId }
+        : {
+            kind: "begin" as const,
+            expectedPreviousTransferId: headTransferId,
+            newAttemptId: crypto.randomUUID(),
+            requestedAmount: String(fundingAmountMsat),
+          };
+    inFlight.current = true;
     setFundingBusy(true);
     try {
-      const settings = useSettingsStore.getState();
-      const accountSubject = resolveCreatorPubkey({
-        nostrSignerMode: settings.nostrSignerMode,
-        nsecSecret: settings.nsecSecret,
-        nostrProfilePubkey: settings.nostrProfile?.pubkey,
-      });
       if (!accountSubject) throw new Error("The active wallet identity is unavailable.");
       const result = await executeBrowserMarketFundingDelivery({
         accountSubject,
@@ -114,35 +223,48 @@ export function DepositStep({
         mintUrl: activeMintUrl,
         unit: cashuUnit,
         divisibility,
-        requestedAmount: String(budgetSats),
+        outcomeCount,
+        attempt,
         availableAmount: balance,
       });
-      const persistedAmount = Number(result.transfer.requestedAmount);
-      if (persistedAmount !== budgetSats) {
-        setSelectedTier("custom");
-        setCustomBudgetInput(persistedAmount / 1_000);
-      }
-      setDeliveryProgress(result.progress);
+      if (current === generation.current) applyFundingResult(result);
     } catch (err) {
+      if (current !== generation.current) return;
       if (err instanceof BrowserMarketFundingInsufficientBalanceError) {
         setTopUpStage("modal");
         return;
       }
       setError(err instanceof Error ? err.message : t("marketCreation.ecashSubmitError"));
     } finally {
-      setFundingBusy(false);
+      if (current === generation.current) {
+        inFlight.current = false;
+        setFundingBusy(false);
+      }
     }
   }, [
     activeMintUrl,
+    accountSubject,
+    applyFundingResult,
+    headReady,
+    headTransferId,
     balance,
-    budgetSats,
     cashuUnit,
     conditionId,
     deliveryProgress,
     divisibility,
+    outcomeCount,
+    fundingAmountMsat,
     fundingBusy,
+    onRequireWallet,
     t,
+    walletMnemonic,
   ]);
+
+  const canSubmitFunding =
+    headReady &&
+    !fundingBusy &&
+    ((headTransferId !== null && deliveryProgress !== "credited") ||
+      (fundingAmountMsat !== null && fundingAmountMsat > 0));
 
   if (stage === "created") {
     return (
@@ -174,80 +296,27 @@ export function DepositStep({
       </h2>
       <p className="text-sm text-slate-400 mb-5">{t("marketCreation.ammFundingSubtitle")}</p>
 
-      <div className="mb-5 grid gap-3 sm:grid-cols-2">
-        {tiers.map((tier) => (
-          <button
-            key={tier.id}
-            data-testid={`amm-funding-tier-${tier.id}`}
-            type="button"
-            onClick={() => setSelectedTier(tier.id)}
-            className={`rounded-lg border p-4 text-left transition-colors ${
-              selectedTier === tier.id
-                ? "border-blue-400 bg-blue-500/10"
-                : "border-slate-800 bg-slate-900 hover:border-slate-600"
-            }`}
-          >
-            <span className="block text-sm font-semibold text-white">
-              {t(`marketCreation.ammFundingTier.${tier.id}`)}
-            </span>
-            <span className="mt-1 block text-lg font-bold text-slate-100">
-              {formatFundingBudget(tier.budgetSats, baseAsset)}
-            </span>
-            {tier.warning && (
-              <span className="mt-3 inline-flex items-center gap-1 rounded border border-amber-400/40 bg-amber-400/10 px-2 py-1 text-[11px] font-semibold uppercase tracking-normal text-amber-200">
-                <AlertTriangle className="h-3 w-3" strokeWidth={1.75} />
-                {t("marketCreation.ammFundingWarningBadge")}
-              </span>
-            )}
-          </button>
-        ))}
-      </div>
-
       <label className="mb-5 block rounded-lg border border-slate-800 bg-slate-900 p-4">
         <span className="mb-2 block text-sm font-semibold text-white">
-          {t("marketCreation.ammFundingTier.custom")}
+          {t("marketCreation.ammFundingAmountLabel")}
         </span>
         <input
           data-testid="amm-funding-custom-budget"
-          type="number"
-          min={0}
-          step="1"
-          inputMode="numeric"
-          aria-describedby="amm-funding-custom-preview"
-          value={customBudgetInput}
-          onChange={(event) => {
-            setSelectedTier("custom");
-            setCustomBudgetInput(Math.max(0, Number(event.target.value) || 0));
-          }}
-          className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 outline-none focus:border-blue-400"
+          type="text"
+          inputMode="decimal"
+          aria-invalid={fundingAmountInputError ? "true" : "false"}
+          aria-describedby="amm-funding-amount-hint"
+          value={fundingAmountSats}
+          disabled={fundingBusy || (headTransferId !== null && deliveryProgress !== "credited")}
+          onChange={(event) => setFundingAmountSats(event.target.value)}
+          className={`w-full rounded-lg border bg-slate-950 px-3 py-2 text-sm text-slate-100 outline-none focus:border-blue-400 ${
+            fundingAmountInputError ? "border-red-400" : "border-slate-700"
+          }`}
         />
-        <span id="amm-funding-custom-preview" className="mt-2 block text-xs text-slate-400">
-          {t("marketCreation.ammFundingCustomPreview", {
-            amount: customBudgetPreview,
-          })}
+        <span id="amm-funding-amount-hint" className="mt-2 block text-xs text-slate-400">
+          {t("marketCreation.ammFundingAmountHint")}
         </span>
       </label>
-
-      {showWarning && (
-        <div className="mb-5 rounded-lg border border-amber-400/30 bg-amber-400/10 p-3 text-sm text-amber-100">
-          <span className="font-semibold">{t("marketCreation.ammFundingWarningBadge")}</span>
-          <span className="ml-2">{t("marketCreation.ammFundingMinimalWarning")}</span>
-        </div>
-      )}
-
-      {depthPreview && (
-        <div className="mb-4 rounded-lg border border-blue-400/30 bg-blue-400/10 p-3 text-sm text-blue-100">
-          <p>
-            {t("marketCreation.ammFundingDepthPreview", {
-              levels: depthPreview.levelsPerSide,
-              shares: depthPreview.sharesPerLevel.toLocaleString(),
-            })}
-          </p>
-          <p className="mt-1 text-xs text-blue-100/80">
-            {t("marketCreation.ammFundingDepthPreviewDisclaimer")}
-          </p>
-        </div>
-      )}
 
       <div className="mb-4 flex gap-2 rounded-lg border border-slate-800 bg-slate-900 p-3 text-xs text-slate-300">
         <Info className="mt-0.5 h-4 w-4 shrink-0 text-slate-400" strokeWidth={1.75} />
@@ -257,27 +326,20 @@ export function DepositStep({
       {deliveryProgress && (
         <p className="mb-4 rounded-lg border border-emerald-400/30 bg-emerald-500/10 p-3 text-sm text-emerald-100">
           {deliveryProgress === "credited"
-            ? t("marketCreation.statusPaymentReceived")
-            : t("marketCreation.statusAwaitingPayment")}
+            ? t("marketCreation.statusPaymentCredited")
+            : deliveryProgress === "received"
+              ? t("marketCreation.statusPaymentReceived")
+              : t("marketCreation.statusAwaitingPayment")}
         </p>
       )}
 
-      {selectedTier === "none" ? (
-        <button
-          data-testid="confirm-amm-funding"
-          type="button"
-          onClick={continueToMarket}
-          className="w-full rounded-lg bg-blue-600 px-4 py-3 font-medium text-white transition-colors hover:bg-blue-500 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
-        >
-          {t("marketCreation.continueToMarket")}
-        </button>
-      ) : (
+      <div className="flex flex-col gap-3 sm:flex-row-reverse">
         <button
           data-testid="confirm-amm-funding"
           type="button"
           onClick={() => void submitMarketFunding()}
-          disabled={budgetSats < 1 || fundingBusy || deliveryProgress === "credited"}
-          className="w-full rounded-lg bg-blue-600 px-4 py-3 font-medium text-white transition-colors hover:bg-blue-500 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400"
+          disabled={!canSubmitFunding}
+          className="w-full rounded-lg bg-blue-600 px-4 py-3 font-medium text-white transition-colors hover:bg-blue-500 disabled:cursor-not-allowed disabled:bg-slate-700 disabled:text-slate-400 sm:flex-1"
         >
           {fundingBusy ? (
             <span className="inline-flex items-center justify-center gap-2">
@@ -288,22 +350,46 @@ export function DepositStep({
             t("marketCreation.retryWalletPayment")
           ) : (
             t("marketCreation.payWalletFunding", {
-              amount: formatFundingBudget(budgetSats, baseAsset),
+              amount: formatMarketSubunits(fundingAmountMsat ?? 0, baseAsset),
             })
           )}
         </button>
-      )}
+        {presentation === "creation" && (
+          <button
+            data-testid="skip-amm-funding"
+            type="button"
+            onClick={continueToMarket}
+            className="w-full rounded-lg border border-slate-700 px-4 py-3 font-medium text-slate-200 transition-colors hover:border-slate-500 hover:bg-slate-800 sm:flex-1"
+          >
+            {t("marketCreation.skipFunding")}
+          </button>
+        )}
+      </div>
 
       {error && (
-        <p className="mt-3 rounded-lg border border-red-400/30 bg-red-500/10 p-3 text-sm text-red-100">
-          {error}
-        </p>
+        <div className="mt-3 rounded-lg border border-red-400/30 bg-red-500/10 p-3 text-sm text-red-100">
+          <p role="alert" data-testid="amm-funding-error">
+            {error}
+          </p>
+          {!headReady && !fundingBusy && (
+            <button
+              type="button"
+              onClick={() => {
+                setError(null);
+                setHeadReadRevision((value) => value + 1);
+              }}
+              className="mt-2 underline"
+            >
+              {t("marketCreation.retryWalletPayment")}
+            </button>
+          )}
+        </div>
       )}
 
       {topUpStage === "modal" && (
         <InsufficientBalanceModal
           balance={balance}
-          required={budgetSats}
+          required={fundingAmountMsat ?? 0}
           title={t("marketCreation.depositWalletTopUpTitle")}
           requiredDescription={t("marketCreation.depositWalletTopUpRequiredDescription")}
           formatAmount={(amount) => formatMarketSubunits(amount, baseAsset)}
@@ -314,14 +400,20 @@ export function DepositStep({
 
       {topUpStage === "overlay" && (
         <TopUpOverlay
-          deficit={Math.max(budgetSats - balance, 0)}
+          deficit={Math.max((fundingAmountMsat ?? 0) - balance, 0)}
           baseAsset={baseAsset}
           proofUnit={cashuUnit}
           minimumDescription={t("marketCreation.depositWalletTopUpMinimumDescription", {
-            amount: formatMarketSubunits(Math.max(budgetSats - balance, 0), baseAsset),
+            amount: formatMarketSubunits(
+              Math.max((fundingAmountMsat ?? 0) - balance, 0),
+              baseAsset,
+            ),
           })}
           minimumErrorDescription={t("marketCreation.depositWalletTopUpMinimumError", {
-            amount: formatMarketSubunits(Math.max(budgetSats - balance, 0), baseAsset),
+            amount: formatMarketSubunits(
+              Math.max((fundingAmountMsat ?? 0) - balance, 0),
+              baseAsset,
+            ),
           })}
           onSuccess={() => setTopUpStage("closed")}
           onCancel={() => setTopUpStage("closed")}

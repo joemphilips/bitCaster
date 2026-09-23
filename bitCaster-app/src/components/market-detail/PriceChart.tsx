@@ -10,10 +10,13 @@ interface PriceChartProps {
   chartTimeframe: ChartTimeframe;
   onTimeframeChange?: (timeframe: ChartTimeframe) => void;
   outcomePriceHistories?: Record<string, PriceHistory>;
-  outcomes?: Array<{ id: string; label: string; odds: number }>;
+  outcomes?: Array<{ id: string; label: string; odds: number | null }>;
   currentDisplay?: string;
+  emptyDisplay?: string;
   comments?: Comment[];
   unit?: string;
+  /** Numeric markets remain disabled until a native numeric trade exists. */
+  disabledNumeric?: boolean;
 }
 
 const TIMEFRAMES: ChartTimeframe[] = ["1h", "24h", "7d", "30d", "all"];
@@ -81,7 +84,7 @@ function buildSeries(input: {
   priceHistory: PriceHistory;
   timeframe: ChartTimeframe;
   outcomePriceHistories?: Record<string, PriceHistory>;
-  outcomes?: Array<{ id: string; label: string; odds: number }>;
+  outcomes?: Array<{ id: string; label: string; odds: number | null }>;
 }): Series[] {
   const isMultiLine = !!(
     input.outcomePriceHistories &&
@@ -130,17 +133,11 @@ function alignSeries(series: Series[]): uPlot.AlignedData {
 function xScaleFor(
   data: uPlot.AlignedData,
   timeframe: ChartTimeframe,
-  series: Series[],
 ): { min: number; max: number } | null {
   const times = data[0] as number[];
   if (times.length === 0) return null;
   if (timeframe !== "all") {
     const windowSeconds = TIMEFRAME_SECONDS[timeframe];
-    const points = series.flatMap((s) => s.data);
-    if (points.length > 0 && points.every((point) => point.source === "initial")) {
-      const min = times[0];
-      return { min, max: min + windowSeconds };
-    }
     const max = times[times.length - 1];
     return { min: max - windowSeconds, max };
   }
@@ -166,6 +163,8 @@ export function PriceChart({
   outcomePriceHistories,
   outcomes,
   currentDisplay,
+  emptyDisplay,
+  disabledNumeric = false,
 }: PriceChartProps) {
   const { t } = useTranslation();
   const chartEl = useRef<HTMLDivElement | null>(null);
@@ -173,14 +172,14 @@ export function PriceChart({
   const resizeObserverRef = useRef<ResizeObserver | null>(null);
 
   const series = useMemo(
-    () => buildSeries({ priceHistory, timeframe: chartTimeframe, outcomePriceHistories, outcomes }),
-    [priceHistory, chartTimeframe, outcomePriceHistories, outcomes],
+    () =>
+      disabledNumeric
+        ? []
+        : buildSeries({ priceHistory, timeframe: chartTimeframe, outcomePriceHistories, outcomes }),
+    [priceHistory, chartTimeframe, outcomePriceHistories, outcomes, disabledNumeric],
   );
   const chartData = useMemo(() => alignSeries(series), [series]);
-  const xScale = useMemo(
-    () => xScaleFor(chartData, chartTimeframe, series),
-    [chartData, chartTimeframe, series],
-  );
+  const xScale = useMemo(() => xScaleFor(chartData, chartTimeframe), [chartData, chartTimeframe]);
   const hasChartData = series.length > 0 && chartData[0].length > 0;
   const latestValues = series
     .map((s) => {
@@ -236,7 +235,7 @@ export function PriceChart({
             label: s.label || t("market.priceChart"),
             stroke: s.color,
             width: 2,
-            points: { show: false },
+            points: { show: true },
             paths: steppedPaths,
             value: (_u: uPlot, value: number | null) => (value == null ? "" : formatPercent(value)),
           })),
@@ -288,8 +287,11 @@ export function PriceChart({
 
       <div className="relative h-56 mb-4 rounded-xl bg-slate-50 dark:bg-slate-900 overflow-hidden">
         {!hasChartData ? (
-          <div className="absolute inset-0 flex items-center justify-center text-slate-400 dark:text-slate-500 text-sm">
-            {t("market.noDataAvailable")}
+          <div
+            data-testid="price-chart-empty-state"
+            className="absolute inset-0 flex items-center justify-center text-slate-400 dark:text-slate-500 text-sm"
+          >
+            {emptyDisplay ?? t("market.noDataAvailable")}
           </div>
         ) : (
           <>

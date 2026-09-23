@@ -1,6 +1,9 @@
 import Dexie, { type Table } from "dexie";
 import type { DurableBolt11MintQuote } from "@bitcaster/client-sdk/durableBolt11MintQuote";
-import type { DurableOutgoingCashuTransfer } from "@bitcaster/client-sdk/durableOutgoingCashuTransfer";
+import {
+  decodeDurableOutgoingCashuTransfer,
+  type DurableOutgoingCashuTransfer,
+} from "@bitcaster/client-sdk/durableOutgoingCashuTransfer";
 import {
   decodeDurableCustodyProofMaterialRecord,
   deserializeDurableCustodyProofArtifact,
@@ -8,11 +11,17 @@ import {
 import { Amount, type Proof } from "@cashu/cashu-ts";
 import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
 import {
+  decodeDurableCustodyScopeId,
+  deriveDurableCustodyArtifactFingerprint,
+} from "@bitcaster/client-sdk/durableCustody";
+import {
   COLLATERAL_UNIT_REGISTRY,
+  parseMarketDivisibility,
   normalizeMarketBaseAsset,
   parseCashuProofUnit,
   type CashuProofUnit,
 } from "@bitcaster/client-sdk/marketUnits";
+import { deriveMarketFundingProductBinding } from "@bitcaster/client-sdk/marketFundingDelivery";
 import type { CtfProofOperationCompletion } from "@bitcaster/client-sdk/ctfSplit";
 import {
   readAuthenticatedCtfRedeemTerminalEvidence,
@@ -30,7 +39,7 @@ import type {
   BrowserCustodyScopeRow,
 } from "./durable-custody-types";
 import { decodeBrowserCustodyProofRow } from "./durable-custody-types";
-import type { BrowserProofBackupAuthorityRow } from "./browser-proof-backup-authority";
+import type { BrowserProofBackupAuthorityTableRow } from "./browser-proof-backup-authority";
 import type { EncryptedWalletBackupAccountOperationResultRecord } from "@bitcaster/client-sdk/encryptedWalletBackupEnrollment";
 import {
   BrowserWalletCounterDexieStore,
@@ -103,6 +112,9 @@ export interface EncryptedWalletBackupV2AcceptedHeadRow {
   activeObjectCount: number;
   activeSetDigest: string;
   canonicalCurrentHead: Uint8Array;
+  localRecoveryStatus: "ready" | "recovery-required";
+  localRecoveryReason: "none" | "genuine-conflict";
+  localRecoveryVersion: number;
 }
 
 /** One current verified V2 receipt for one opaque local asset. */
@@ -287,9 +299,256 @@ export interface BrowserOutgoingCashuTransferRow {
   transferId: string;
   /** A durable-recipient product binding enables one bounded product resume lookup. */
   recipientBinding: string | null;
+  /**
+   * The indexed predecessor relation for a durable-recipient transfer.
+   * The empty string is reserved for the first transfer in a sequence.
+   * Unsequenced transfers omit this property so they do not enter the index.
+   */
+  predecessorKey?: string;
   /** Reserved records have a matching local-only physical admission row. */
   admissionState: "reserved" | "consumed";
   transfer: DurableOutgoingCashuTransfer;
+}
+
+/** One scoped market-funding sequence head. This row is coordination state only. */
+export interface BrowserMarketFundingHeadRow {
+  scopeId: string;
+  recipientBinding: string;
+  transferId: string;
+  revision: number;
+  mintUrl: string;
+  unit: string;
+  accountSubject: string;
+  conditionId: string;
+  divisibility: number;
+}
+
+/** Derive the indexed predecessor component. Undefined excludes unsequenced rows from the index. */
+export function browserOutgoingPredecessorKey(
+  transfer: DurableOutgoingCashuTransfer,
+): string | undefined {
+  const sequence = transfer.recipientSequence;
+  if (sequence === null) return undefined;
+  return sequence.predecessorTransferId ?? "";
+}
+
+/** Validate one outgoing row and its derived indexes before a browser write. */
+export function decodeBrowserOutgoingCashuTransferRow(
+  scopeId: string,
+  row: BrowserOutgoingCashuTransferRow,
+): DurableOutgoingCashuTransfer {
+  const transfer = decodeDurableOutgoingCashuTransfer(row.transfer);
+  const expectedPredecessorKey = browserOutgoingPredecessorKey(transfer);
+  const expectedRowKeys = [
+    "admissionState",
+    "bearerMintUrl",
+    "dueAtMs",
+    "localAuthorityState",
+    "mintRecoveryState",
+    "mintUrl",
+    "recipientBinding",
+    "scopeId",
+    "transfer",
+    "transferId",
+    ...(expectedPredecessorKey === undefined ? [] : ["predecessorKey"]),
+  ].sort();
+  const actualRowKeys = Object.keys(row).sort();
+  if (
+    actualRowKeys.length !== expectedRowKeys.length ||
+    actualRowKeys.some((key, index) => key !== expectedRowKeys[index]) ||
+    row.scopeId !== scopeId ||
+    row.transferId !== transfer.transferId ||
+    row.mintUrl !== transfer.mintUrl ||
+    row.mintRecoveryState !== browserOutgoingMintRecoveryState(transfer) ||
+    row.localAuthorityState !== browserOutgoingLocalAuthorityState(transfer) ||
+    row.bearerMintUrl !== browserOutgoingBearerMintUrl(transfer) ||
+    row.dueAtMs !== transfer.recovery.dueAtMs ||
+    row.recipientBinding !== browserOutgoingRecipientBinding(transfer) ||
+    (expectedPredecessorKey === undefined
+      ? row.predecessorKey !== undefined
+      : row.predecessorKey !== expectedPredecessorKey) ||
+    (row.admissionState !== "reserved" && row.admissionState !== "consumed") ||
+    transfer.walletScopeId !== scopeId
+  ) {
+    throw new Error("browser outgoing transfer row is foreign");
+  }
+  return transfer;
+}
+
+/** Compare immutable request identity before accepting any higher-revision rewrite. */
+export function assertBrowserOutgoingCashuTransferImmutableIdentity(
+  currentRow: BrowserOutgoingCashuTransferRow,
+  replacementRow: BrowserOutgoingCashuTransferRow,
+): void {
+  const current = decodeBrowserOutgoingCashuTransferRow(currentRow.scopeId, currentRow);
+  const replacement = decodeBrowserOutgoingCashuTransferRow(replacementRow.scopeId, replacementRow);
+  if (
+    currentRow.scopeId !== replacementRow.scopeId ||
+    current.transferId !== replacement.transferId ||
+    current.walletScopeId !== replacement.walletScopeId ||
+    current.mintUrl !== replacement.mintUrl ||
+    current.unit !== replacement.unit ||
+    current.requestedAmount !== replacement.requestedAmount ||
+    deriveDurableCustodyArtifactFingerprint(current.deliveryIntent) !==
+      deriveDurableCustodyArtifactFingerprint(replacement.deliveryIntent) ||
+    deriveDurableCustodyArtifactFingerprint(current.recipientSequence) !==
+      deriveDurableCustodyArtifactFingerprint(replacement.recipientSequence) ||
+    deriveDurableCustodyArtifactFingerprint(current.walletSendOperation) !==
+      deriveDurableCustodyArtifactFingerprint(replacement.walletSendOperation) ||
+    deriveDurableCustodyArtifactFingerprint(current.walletSendOperationAuthority) !==
+      deriveDurableCustodyArtifactFingerprint(replacement.walletSendOperationAuthority) ||
+    deriveDurableCustodyArtifactFingerprint(current.keepProofDerivationLocators) !==
+      deriveDurableCustodyArtifactFingerprint(replacement.keepProofDerivationLocators)
+  ) {
+    throw new Error("browser outgoing transfer immutable request identity conflicts");
+  }
+}
+
+/** Decode and validate one persisted market-funding head projection. */
+export function decodeBrowserMarketFundingHeadRow(value: unknown): BrowserMarketFundingHeadRow {
+  if (typeof value !== "object" || value === null) {
+    throw new Error("browser market funding head is invalid");
+  }
+  const row = value as Record<string, unknown>;
+  const keys = Object.keys(row).sort();
+  const expected = [
+    "accountSubject",
+    "conditionId",
+    "divisibility",
+    "mintUrl",
+    "recipientBinding",
+    "revision",
+    "scopeId",
+    "transferId",
+    "unit",
+  ].sort();
+  if (keys.length !== expected.length || keys.some((key, index) => key !== expected[index])) {
+    throw new Error("browser market funding head has unexpected fields");
+  }
+  if (
+    typeof row.scopeId !== "string" ||
+    typeof row.recipientBinding !== "string" ||
+    !/^[0-9a-f]{64}$/.test(row.recipientBinding) ||
+    typeof row.transferId !== "string" ||
+    row.transferId.length === 0 ||
+    typeof row.accountSubject !== "string" ||
+    row.accountSubject.length === 0 ||
+    row.accountSubject.length > 256 ||
+    /[^\x20-\x7e]/.test(row.accountSubject) ||
+    row.accountSubject.includes("\0") ||
+    typeof row.conditionId !== "string" ||
+    !/^[0-9a-f]{1,128}$/.test(row.conditionId) ||
+    typeof row.unit !== "string" ||
+    row.unit !== "msat" ||
+    row.unit.length === 0 ||
+    !Number.isSafeInteger(row.revision) ||
+    (row.revision as number) < 1 ||
+    parseMarketDivisibility(row.divisibility) === null
+  ) {
+    throw new Error("browser market funding head fields are invalid");
+  }
+  const mintUrl = normalizeUrl(row.mintUrl as string);
+  const divisibility = parseMarketDivisibility(row.divisibility);
+  if (divisibility === null) throw new Error("browser market funding divisibility is invalid");
+  if (
+    deriveMarketFundingProductBinding({
+      conditionId: row.conditionId as string,
+      divisibility,
+      accountSubject: row.accountSubject as string,
+    }) !== row.recipientBinding
+  ) {
+    throw new Error("browser market funding head product binding is foreign");
+  }
+  return {
+    scopeId: row.scopeId as string,
+    recipientBinding: row.recipientBinding as string,
+    transferId: row.transferId as string,
+    revision: row.revision as number,
+    mintUrl,
+    unit: row.unit as string,
+    accountSubject: row.accountSubject as string,
+    conditionId: row.conditionId as string,
+    divisibility,
+  };
+}
+
+/** Read one scoped market-funding head. The row is decoded before it leaves storage. */
+export async function readBrowserMarketFundingHead(
+  scopeId: string,
+  recipientBinding: string,
+  database: BitcasterDB = db,
+): Promise<BrowserMarketFundingHeadRow | null> {
+  const row = await database.marketFundingHeads.get([scopeId, recipientBinding]);
+  return row === undefined ? null : decodeBrowserMarketFundingHeadRow(row);
+}
+
+/** Resolve the exact first successor for one predecessor in one recipient sequence. */
+export async function findBrowserOutgoingCashuTransferByPredecessor(input: {
+  readonly scopeId: string;
+  readonly recipientBinding: string;
+  readonly predecessorTransferId: string | null;
+  readonly database?: BitcasterDB;
+}): Promise<BrowserOutgoingCashuTransferRow | null> {
+  const predecessorKey = input.predecessorTransferId ?? "";
+  const rows = await (input.database ?? db).outgoingCashuTransfers
+    .where("[scopeId+recipientBinding+predecessorKey]")
+    .equals([input.scopeId, input.recipientBinding, predecessorKey])
+    .toArray();
+  if (rows.length > 1) throw new Error("browser outgoing predecessor relation is ambiguous");
+  if (rows.length === 0) return null;
+  const row = rows[0]!;
+  decodeBrowserOutgoingCashuTransferRow(input.scopeId, row);
+  return row;
+}
+
+function browserOutgoingMintRecoveryState(
+  transfer: DurableOutgoingCashuTransfer,
+): BrowserOutgoingCashuTransferRow["mintRecoveryState"] {
+  switch (transfer.deliveryState) {
+    case "prepared":
+      return "pending";
+    case "delivery-pending":
+    case "recipient-acknowledged":
+    case "bearer-spent":
+    case "bearer-partial":
+    case "reclaim-prepared":
+    case "reclaimed":
+      return "complete";
+    default:
+      return assertNever(transfer.deliveryState);
+  }
+}
+
+function browserOutgoingLocalAuthorityState(
+  transfer: DurableOutgoingCashuTransfer,
+): BrowserOutgoingCashuTransferRow["localAuthorityState"] {
+  switch (transfer.deliveryState) {
+    case "prepared":
+    case "delivery-pending":
+    case "bearer-partial":
+    case "reclaim-prepared":
+      return "nonterminal";
+    case "recipient-acknowledged":
+    case "bearer-spent":
+    case "reclaimed":
+      return "terminal";
+    default:
+      return assertNever(transfer.deliveryState);
+  }
+}
+
+function browserOutgoingRecipientBinding(transfer: DurableOutgoingCashuTransfer): string | null {
+  return transfer.deliveryIntent.policy === "durable-recipient-ack"
+    ? transfer.deliveryIntent.opaqueProductBinding
+    : null;
+}
+
+function browserOutgoingBearerMintUrl(transfer: DurableOutgoingCashuTransfer): string | null {
+  return transfer.deliveryIntent.policy === "bearer-spend-classification" ? transfer.mintUrl : null;
+}
+
+function assertNever(value: never): never {
+  throw new Error(`unexpected browser outgoing delivery state: ${String(value)}`);
 }
 
 /** Local-only physical storage reservation. This row must never enter proof backup. */
@@ -328,7 +587,7 @@ export class BitcasterDB extends Dexie {
   custodyProofs!: Table<BrowserCustodyProofRow, [string, string]>;
   custodyReservations!: Table<BrowserCustodyReservationRow, [string, string]>;
   custodyActiveWork!: Table<BrowserCustodyActiveWorkRow, [string, string]>;
-  custodyProofBackupAuthorities!: Table<BrowserProofBackupAuthorityRow, [string, string]>;
+  custodyProofBackupAuthorities!: Table<BrowserProofBackupAuthorityTableRow, [string, string]>;
   custodyConditionalKeysets!: Table<
     import("./durable-custody-types").BrowserCustodyConditionalKeysetRow,
     [string, string, string, string]
@@ -372,6 +631,7 @@ export class BitcasterDB extends Dexie {
   >;
   mintQuotes!: Table<BrowserMintQuoteRow, [string, "bolt11", string]>;
   outgoingCashuTransfers!: Table<BrowserOutgoingCashuTransferRow, [string, string]>;
+  marketFundingHeads!: Table<BrowserMarketFundingHeadRow, [string, string]>;
   outgoingCashuTransferAdmissions!: Table<
     BrowserOutgoingCashuTransferAdmissionRow,
     [string, string]
@@ -537,6 +797,29 @@ export class BitcasterDB extends Dexie {
       custodyProofs:
         "&[scopeId+proofId], [scopeId+selectability], [scopeId+selectability+proofId], [scopeId+normalizedMint+unit+selectability], [scopeId+conditionId+outcomeCollection+selectability], [scopeId+normalizedMint+unit+keysetId+selectability], [scopeId+normalizedMint+unit+assetKind+selectability], [scopeId+normalizedMint+unit+conditionId+outcomeCollection+selectability], [scopeId+normalizedMint+unit+assetKind+selectability+curve+amount+proofId], [scopeId+normalizedMint+unit+keysetId+assetKind+selectability+curve+amount+proofId], [scopeId+normalizedMint+unit+keysetId+conditionId+outcomeCollection+selectability+curve+amount+proofId]",
     });
+    this.version(17).stores({
+      outgoingCashuTransfers:
+        "&[scopeId+transferId], [scopeId+mintUrl+mintRecoveryState+dueAtMs+transferId], [scopeId+mintRecoveryState+dueAtMs+mintUrl+transferId], [scopeId+localAuthorityState+transferId], [scopeId+bearerMintUrl+localAuthorityState+transferId], [scopeId+recipientBinding+transferId], &[scopeId+recipientBinding+predecessorKey]",
+      marketFundingHeads: "&[scopeId+recipientBinding], [scopeId+transferId]",
+    });
+    this.version(18).stores({
+      custodyProofs:
+        "&[scopeId+proofId], [scopeId+selectability], [scopeId+selectability+proofId], [scopeId+normalizedMint+unit+selectability], [scopeId+conditionId+outcomeCollection+selectability], [scopeId+normalizedMint+unit+keysetId+selectability], [scopeId+normalizedMint+unit+assetKind+selectability], [scopeId+normalizedMint+unit+conditionId+outcomeCollection+selectability], [scopeId+normalizedMint+unit+assetKind+selectability+curve+amount+proofId], [scopeId+normalizedMint+unit+keysetId+assetKind+selectability+curve+amount+proofId], [scopeId+normalizedMint+unit+keysetId+conditionId+outcomeCollection+selectability+curve+amount+proofId], [scopeId+normalizedMint+unit+conditionId+selectability+proofId]",
+    });
+    this.version(19)
+      .stores({
+        encryptedWalletBackupV2WalletAcceptedHeads: "&[scopeId+realm+walletId+enrollmentEpoch]",
+      })
+      .upgrade(async (transaction) => {
+        await transaction
+          .table("encryptedWalletBackupV2WalletAcceptedHeads")
+          .toCollection()
+          .modify((row) => {
+            row.localRecoveryStatus = "ready";
+            row.localRecoveryReason = "none";
+            row.localRecoveryVersion = 0;
+          });
+      });
     this.encryptedWalletBackupEnrollmentResults = this.table(
       "encryptedWalletBackupWalletEnrollmentResults",
     );
@@ -558,6 +841,7 @@ export class BitcasterDB extends Dexie {
     this.targetedAssetRecoveryAttempts = this.table("targetedAssetRecoveryAttempts");
     this.mintQuotes = this.table("mintQuotes");
     this.outgoingCashuTransfers = this.table("outgoingCashuTransfers");
+    this.marketFundingHeads = this.table("marketFundingHeads");
     this.outgoingCashuTransferAdmissions = this.table("outgoingCashuTransferAdmissions");
     this.participationScoreDeliveryPointers = this.table("participationScoreDeliveryPointers");
   }
@@ -587,35 +871,113 @@ export async function getProofs(
 }
 
 /**
- * Return regular proofs grouped by base asset for UI display only.
- * WARNING: this may combine different Cashu units (for example sat + msat)
- * and is unsafe for spend/settlement operations. Use `getUnitProofs` there.
+ * Read the current browser custody proofs for a wallet scope.
+ *
+ * The legacy `proofs` table is a compatibility cache. It can retain a
+ * predecessor after an atomic send, so portfolio readers must use this
+ * canonical source when the custody tables are available. A missing custody
+ * table returns `null` instead of falling back to that cache.
  */
-export async function getBaseProofs(
-  mintUrl: string | undefined,
-  options: { includeReserved?: boolean; baseAsset: string },
-): Promise<StoredProof[]> {
-  const proofs = await getProofs(mintUrl, {
-    includeReserved: options.includeReserved,
+export async function getCanonicalCurrentProofs(
+  scopeId: string,
+  database: BitcasterDB = db,
+): Promise<StoredProof[] | null> {
+  if (database.custodyProofs === undefined) return null;
+  return database.transaction("r", [database.custodyProofs], async () => {
+    const [selectable, locked] = await Promise.all([
+      database.custodyProofs
+        .where("[scopeId+selectability]")
+        .equals([scopeId, "selectable"])
+        .toArray(),
+      database.custodyProofs.where("[scopeId+selectability]").equals([scopeId, "locked"]).toArray(),
+    ]);
+    return [...selectable, ...locked]
+      .map(decodeBrowserCustodyProofRow)
+      .filter((row) => row.scopeId === scopeId)
+      .map(storedProofFromCustodyRow);
   });
-  const baseAsset = normalizeMarketBaseAsset(options.baseAsset);
-  return proofs.filter((p) => !isCtfProof(p) && normalizeStoredProofBaseAsset(p) === baseAsset);
 }
 
-/**
- * Return regular proofs by exact Cashu unit for spend/settlement operations.
- * Legacy rows without an explicit `unit` are intentionally excluded fail-closed.
- */
-export async function getUnitProofs(
-  mintUrl: string | undefined,
-  options: { includeReserved?: boolean; unit: CashuProofUnit | string },
-): Promise<StoredProof[]> {
-  const unit = parseCashuProofUnit(options.unit);
-  if (!unit) throw new Error(`Unsupported Cashu proof unit '${options.unit}'`);
-  const proofs = await getProofs(mintUrl, {
-    includeReserved: options.includeReserved,
-  });
-  return proofs.filter((p) => !isCtfProof(p) && normalizeStoredProofUnit(p) === unit);
+export async function getCanonicalSelectableProofs(
+  scopeId: string,
+  database: BitcasterDB = db,
+): Promise<StoredProof[] | null> {
+  const proofs = await getCanonicalCurrentProofs(scopeId, database);
+  return proofs?.filter((proof) => !proof.reservedBy && !proof.terminalOperationId) ?? null;
+}
+
+export const CANONICAL_CTF_PROOF_PAGE_LIMIT_MAX = 256;
+
+export async function getCanonicalCtfProofPage(
+  mintUrl: string,
+  options: {
+    scopeId: string;
+    conditionId: string;
+    selectability: "selectable" | "locked";
+    afterProofId?: string | null;
+    limit?: number;
+  },
+  database: BitcasterDB = db,
+): Promise<{ proofs: BrowserCustodyProofRow[]; nextProofId: string | null }> {
+  const scopeId = decodeDurableCustodyScopeId(options.scopeId);
+  const normalizedMint = normalizeUrl(mintUrl);
+  const conditionId = options.conditionId;
+  const afterProofId = options.afterProofId ?? null;
+  const limit = options.limit ?? CANONICAL_CTF_PROOF_PAGE_LIMIT_MAX;
+  if (!/^[0-9a-f]{64}$/.test(conditionId)) {
+    throw new Error("CTF proof selection requires a canonical condition ID");
+  }
+  if (afterProofId !== null && !/^[0-9a-f]{64}$/.test(afterProofId)) {
+    throw new Error("CTF proof selection cursor is invalid");
+  }
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > CANONICAL_CTF_PROOF_PAGE_LIMIT_MAX) {
+    throw new Error("CTF proof selection page limit is invalid");
+  }
+  if (options.selectability !== "selectable" && options.selectability !== "locked") {
+    throw new Error("CTF proof selection state is invalid");
+  }
+  const prefix = [scopeId, normalizedMint, "msat", conditionId, options.selectability];
+  const rows = await database.custodyProofs
+    .where("[scopeId+normalizedMint+unit+conditionId+selectability+proofId]")
+    .between([...prefix, afterProofId ?? ""], [...prefix, "\uffff"], afterProofId === null, true)
+    .limit(limit)
+    .toArray();
+  const proofs = rows.map(decodeBrowserCustodyProofRow);
+  for (const proof of proofs) {
+    if (
+      proof.scopeId !== scopeId ||
+      proof.normalizedMint !== normalizedMint ||
+      proof.unit !== "msat" ||
+      proof.conditionId !== conditionId ||
+      proof.assetKind !== "conditional" ||
+      proof.selectability !== options.selectability ||
+      proof.curve !== "secp256k1" ||
+      !/^01[0-9a-f]{64}$/.test(proof.keysetId) ||
+      (afterProofId !== null && proof.proofId <= afterProofId)
+    ) {
+      throw new Error("canonical CTF proof selector row is invalid");
+    }
+  }
+  return {
+    proofs,
+    nextProofId: proofs.length === limit ? proofs[proofs.length - 1]!.proofId : null,
+  };
+}
+
+/** Converts one verified custody row to the Cashu proof shape used by readers. */
+export function storedProofFromCustodyRow(row: BrowserCustodyProofRow): StoredProof {
+  const { proof: material } = decodeDurableCustodyProofMaterialRecord(row);
+  const proof = deserializeDurableCustodyProofArtifact({ schemaVersion: 1, ...material });
+  return {
+    ...proof,
+    mintUrl: row.normalizedMint,
+    baseAsset: row.baseAsset,
+    unit: row.unit,
+    receivedAt: row.receivedAtMs,
+    ...(row.conditionId === null ? {} : { conditionId: row.conditionId }),
+    ...(row.outcomeCollection === null ? {} : { outcomeCollection: row.outcomeCollection }),
+    ...(row.reservationOperationId === null ? {} : { reservedBy: row.reservationOperationId }),
+  };
 }
 
 export const BOUNDED_CANONICAL_REGULAR_PROOF_LIMIT_MAX = 512;
@@ -767,19 +1129,6 @@ export async function getBoundedCanonicalRegularProofs(
   );
 }
 
-/** Read one bounded largest-first regular sat candidate set across canonical V2 keysets. */
-export async function getBoundedCanonicalSatProofs(
-  mintUrl: string,
-  options: { scopeId: string },
-  database: BitcasterDB = db,
-): Promise<StoredProof[]> {
-  return getBoundedCanonicalRegularProofs(
-    mintUrl,
-    { unit: "sat", scopeId: options.scopeId },
-    database,
-  );
-}
-
 async function getBoundedCanonicalV2Proofs(
   mintUrl: string,
   requestedUnit: CashuProofUnit | string,
@@ -839,135 +1188,6 @@ async function getBoundedCanonicalV2Proofs(
         amountToNumber(right.amount) - amountToNumber(left.amount) ||
         left.secret.localeCompare(right.secret),
     );
-}
-
-export async function selectAndReserveUnitProofs(
-  mintUrl: string | undefined,
-  options: { unit: CashuProofUnit | string; minimumAmount?: number },
-  reservedBy: string,
-): Promise<StoredProof[]> {
-  const unit = parseCashuProofUnit(options.unit);
-  if (!unit) throw new Error(`Unsupported Cashu proof unit '${options.unit}'`);
-  const normalizedMintUrl = mintUrl ? normalizeUrl(mintUrl) : undefined;
-  const minimumAmount = options.minimumAmount ?? 0;
-  let selected: StoredProof[] = [];
-
-  await db.transaction("rw", db.proofs, async () => {
-    const rows = normalizedMintUrl
-      ? await db.proofs.where("mintUrl").equals(normalizedMintUrl).toArray()
-      : await db.proofs.toArray();
-    const spendable = rows
-      .map(normalizeStoredProof)
-      .filter(
-        (proof) =>
-          isSpendableStoredProof(proof) &&
-          !isCtfProof(proof) &&
-          normalizeStoredProofUnit(proof) === unit,
-      );
-
-    const picked: StoredProof[] = [];
-    let pickedAmount = 0;
-    for (const proof of spendable) {
-      picked.push(proof);
-      pickedAmount += amountToNumber(proof.amount);
-      if (minimumAmount > 0 && pickedAmount >= minimumAmount) break;
-    }
-    if (minimumAmount > 0 && pickedAmount < minimumAmount) {
-      throw new Error("Insufficient spendable proofs for requested amount");
-    }
-
-    const currentRows = await db.proofs.bulkGet(picked.map((proof) => proof.secret));
-    if (currentRows.length !== picked.length) {
-      throw new Error("Selected proof reservation failed: proof set changed");
-    }
-    const current = currentRows.map((row) => (row ? normalizeStoredProof(row) : undefined));
-    if (current.some((row) => !row || !isSpendableStoredProof(row))) {
-      throw new Error("Selected proof reservation failed: proof is unavailable or missing");
-    }
-
-    selected = current.filter((row): row is StoredProof => !!row);
-    if (selected.length > 0) {
-      await db.proofs.bulkPut(selected.map((proof) => storedProofRow({ ...proof, reservedBy })));
-    }
-  });
-
-  return selected;
-}
-
-export async function getOutcomeProofs(
-  mintUrl: string,
-  conditionId: string,
-  outcomeCollection: string,
-  options: { includeReserved?: boolean; includeTerminal?: boolean; baseAsset: string },
-): Promise<StoredProof[]> {
-  const normalizedMintUrl = normalizeUrl(mintUrl);
-  const baseAsset = normalizeMarketBaseAsset(options.baseAsset);
-  const indexed = await db.proofs
-    .where("[mintUrl+conditionId+outcomeCollection]")
-    .equals([normalizedMintUrl, conditionId, outcomeCollection])
-    .toArray();
-  if (indexed.length > 0) {
-    const normalized = indexed
-      .map(normalizeStoredProof)
-      .filter(
-        (proof) =>
-          normalizeStoredProofBaseAsset(proof) === baseAsset &&
-          normalizeStoredProofUnit(proof) === "msat",
-      );
-    return normalized.filter((proof) => isReadableStoredProof(proof, options));
-  }
-
-  const proofs = await getProofs(normalizedMintUrl, options);
-  return proofs.filter((p) => {
-    const candidate = p as StoredProof & {
-      condition_id?: string;
-      outcome_collection?: string;
-    };
-    const proofConditionId = candidate.conditionId ?? candidate.condition_id;
-    const proofOutcome = candidate.outcomeCollection ?? candidate.outcome_collection;
-    return (
-      proofConditionId === conditionId &&
-      proofOutcome === outcomeCollection &&
-      normalizeStoredProofBaseAsset(p) === baseAsset &&
-      normalizeStoredProofUnit(p) === "msat"
-    );
-  });
-}
-
-/**
- * Return ALL of a condition's CTF proofs at a mint, regardless of how the
- * outcome was labelled when persisted.
- *
- * A composite ("A|B") position lives as proofs spanning MULTIPLE primitive
- * keysets, and settlement persists them inconsistently: sometimes under the
- * composite `outcomeCollection="A|B"` label, sometimes per-primitive
- * (`outcomeCollection="A"` / `"B"`). A label-scoped query (`getOutcomeProofs`)
- * therefore misses proofs. The redeem path must bucket by the proof's real
- * `keyset_id` (`Proof.id`), so it needs every CTF proof of the condition —
- * not a label slice. This query gathers them by `conditionId` only.
- */
-export async function getConditionCtfProofs(
-  mintUrl: string,
-  conditionId: string,
-  options: { includeReserved?: boolean; baseAsset: string },
-): Promise<StoredProof[]> {
-  const normalizedMintUrl = normalizeUrl(mintUrl);
-  const proofs = await db.proofs
-    .where("[mintUrl+conditionId+outcomeCollection]")
-    .between(
-      [normalizedMintUrl, conditionId, Dexie.minKey],
-      [normalizedMintUrl, conditionId, Dexie.maxKey],
-    )
-    .toArray();
-  const baseAsset = normalizeMarketBaseAsset(options.baseAsset);
-  return proofs.map(normalizeStoredProof).filter((p) => {
-    if (!isCtfProof(p)) return false;
-    return (
-      normalizeStoredProofBaseAsset(p) === baseAsset &&
-      normalizeStoredProofUnit(p) === "msat" &&
-      isReadableStoredProof(p, { ...options, includeTerminal: true })
-    );
-  });
 }
 
 // Central normalization point — proofs arrive from many receive paths
@@ -1084,81 +1304,6 @@ export async function removeProofs(secrets: string[]): Promise<void> {
   await db.proofs.bulkDelete(secrets);
 }
 
-export async function replaceProofs(
-  spentSecrets: string[],
-  freshProofs: StoredProof[],
-): Promise<void> {
-  const uniqueSpentSecrets = [...new Set(spentSecrets)];
-  const now = Date.now();
-  const stamped = freshProofs.map((p) =>
-    normalizeAndValidateStoredProof({
-      ...p,
-      receivedAt: p.receivedAt ?? now,
-    }),
-  );
-  await db.transaction("rw", db.proofs, async () => {
-    if (uniqueSpentSecrets.length > 0) {
-      await db.proofs.bulkDelete(uniqueSpentSecrets);
-    }
-    if (stamped.length > 0) {
-      await db.proofs.bulkPut(stamped.map(storedProofRow));
-    }
-  });
-}
-
-export async function reserveProofs(secrets: string[], reservedBy: string): Promise<void> {
-  const secretSet = new Set(secrets);
-  await db.transaction("rw", db.proofs, async () => {
-    const rows = await db.proofs.bulkGet(secrets);
-    if (rows.some((row) => row && normalizeStoredProof(row).terminalOperationId !== undefined)) {
-      throw new Error("Terminal proof cannot be reserved");
-    }
-    await db.proofs.bulkPut(
-      rows
-        .filter((row): row is StoredProofRow => !!row && secretSet.has(row.secret))
-        .map((row) => ({ ...row, reservedBy })),
-    );
-  });
-}
-
-export async function releaseProofReservation(reservedBy: string): Promise<void> {
-  const rows = await db.proofs.filter((proof) => proof.reservedBy === reservedBy).toArray();
-  if (rows.length === 0) return;
-  await db.proofs.bulkPut(rows.map(({ reservedBy: _reservedBy, ...row }) => row));
-}
-
-export async function releaseProofReservationsBySecret(secrets: string[]): Promise<void> {
-  const rows = await db.proofs.bulkGet(secrets);
-  const changed = rows
-    .filter((row): row is StoredProofRow => !!row)
-    .map(({ reservedBy: _reservedBy, ...row }) => row);
-  if (changed.length === 0) return;
-  await db.proofs.bulkPut(changed);
-}
-
-export async function getReservedProofs(reservedBy: string): Promise<StoredProof[]> {
-  const rows = await db.proofs.filter((proof) => proof.reservedBy === reservedBy).toArray();
-  return rows.map(normalizeStoredProof);
-}
-
-// One-shot migration: existing rows may have un-normalized mintUrl values
-// stored before addProofs normalized on write. Callers should gate this on
-// a persisted flag so it runs once per device.
-export async function normalizeStoredMintUrls(): Promise<number> {
-  const rows = await db.proofs.toArray();
-  let changed = 0;
-  await db.transaction("rw", db.proofs, async () => {
-    for (const row of rows) {
-      const normalized = normalizeUrl(row.mintUrl);
-      if (normalized !== row.mintUrl) {
-        await db.proofs.put({ ...row, mintUrl: normalized });
-        changed++;
-      }
-    }
-  });
-  return changed;
-}
-
 export function normalizeAndValidateStoredProof(proof: StoredProof): StoredProof {
   return normalizeStoredProof(validateStoredProofUnitInvariant(proof));
 }
@@ -1249,10 +1394,6 @@ function isReadableStoredProof(
     (options.includeReserved || !proof.reservedBy) &&
     (options.includeTerminal || proof.terminalOperationId === undefined)
   );
-}
-
-function isSpendableStoredProof(proof: StoredProof): boolean {
-  return !proof.reservedBy && proof.terminalOperationId === undefined;
 }
 
 function normalizeStoredProofBaseAsset(proof: StoredProof | StoredProofRow): string {

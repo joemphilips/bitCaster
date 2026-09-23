@@ -61,6 +61,16 @@ channels:
         $ref: '#/components/messages/MatchedMessage'
     description: Server pushes a public match delta to affected market groups.
 
+  confirmedTradeRecorded:
+    address: ConfirmedTradeRecorded
+    messages:
+      confirmedTradeRecordedMessage:
+        $ref: '#/components/messages/ConfirmedTradeRecordedMessage'
+    description: >
+      Server pushes a committed confirmed-trade price delta to the market
+      groups for the condition. The REST market catalogue remains authoritative
+      when a client reconnects or misses a live delta.
+
   marketStatusChanged:
     address: MarketStatusChanged
     messages:
@@ -153,6 +163,18 @@ operations:
     messages:
       - $ref: '#/channels/matched/messages/matchedMessage'
 
+  confirmedTradeRecorded:
+    action: receive
+    channel:
+      $ref: '#/channels/confirmedTradeRecorded'
+    summary: Receive committed confirmed-trade price delta
+    description: >
+      Server pushes a confirmed trade only after its settlement is committed.
+      The message contains one bounded latest-trade value. Clients must reload
+      the REST market catalogue after reconnect or an explicit refresh.
+    messages:
+      - $ref: '#/channels/confirmedTradeRecorded/messages/confirmedTradeRecordedMessage'
+
   marketStatusChanged:
     action: receive
     channel:
@@ -233,6 +255,19 @@ components:
       payload:
         $ref: '#/components/schemas/MatchedDelta'
 
+    ConfirmedTradeRecordedMessage:
+      payload:
+        type: object
+        additionalProperties: false
+        required:
+          - conditionId
+          - latestConfirmedTrade
+        properties:
+          conditionId:
+            type: string
+          latestConfirmedTrade:
+            $ref: '#/components/schemas/LatestConfirmedTrade'
+
     MarketStatusChangedMessage:
       payload:
         $ref: '#/components/schemas/MarketStatusChanged'
@@ -278,9 +313,10 @@ components:
       description: >
         Market price numerator `k`. Valid range is `1 <= k <= D - 1`, where
         `D` is the market's immutable `divisibility`. Immutable price
-        denominator D is per-market: categorical markets use D=10000 (0.01%
-        precision), while future numeric markets use D=1000000 (0.0001%
-        precision).
+        denominator D is per-market. Current yes/no and categorical markets
+        use D=1000 (0.1% precision). Numeric market creation and trading are
+        currently disabled; D=1000000 (0.0001% precision) is reserved for a
+        future numeric trade representation.
 
     OrderSide:
       type: string
@@ -452,7 +488,7 @@ components:
         divisibility:
           type: integer
           format: int32
-          enum: [10000, 1000000]
+          enum: [1000, 1000000]
           description: >
             Immutable price denominator `D`, server-determined.
         quotePaymentSubunits:
@@ -470,6 +506,40 @@ components:
         tokenSide:
           $ref: '#/components/schemas/TokenSide'
           description: Which token on the primitive outcome book was traded.
+
+    LatestConfirmedTrade:
+      type: object
+      additionalProperties: false
+      required:
+        - primitiveOutcomeId
+        - fillId
+        - executedAt
+        - eventOrder
+        - priceTick
+        - divisibility
+        - faceAmountSubunits
+      properties:
+        primitiveOutcomeId:
+          type: string
+        fillId:
+          type: string
+          format: uuid
+        executedAt:
+          type: string
+          format: date-time
+        eventOrder:
+          type: string
+        priceTick:
+          type: integer
+          minimum: 1
+        divisibility:
+          type: integer
+          format: int32
+          enum: [1000, 1000000]
+        faceAmountSubunits:
+          type: integer
+          format: int64
+          minimum: 1
 
     MarketStatusChanged:
       type: object
@@ -506,7 +576,6 @@ components:
         - resting
         - matched
         - partially_filled
-        - awaiting_authorization
         - filled
         - cancelled
         - expired
@@ -524,6 +593,7 @@ components:
         - DefinitivelyRejected
         - Refundable
         - ExpiredBeforeSubmission
+        - RejectedBeforeSubmission
 
     SettlementGroupSummary:
       type: object
@@ -553,7 +623,10 @@ components:
             - 'null'
           format: date-time
           description: >
-            Null for Prepared and ExpiredBeforeSubmission. Non-null for every
+            Null for Prepared, RejectedBeforeSubmission, and ExpiredBeforeSubmission.
+            RejectedBeforeSubmission means this group stopped before committing
+            a mint request for a reason other than authorization expiry. It does
+            not confirm wallet recovery or authorize a refund. Non-null for every
             lifecycle path that reached SubmissionPending.
 
     OrderLifecycleChangedDelta:
@@ -589,7 +662,7 @@ components:
         divisibility:
           type: integer
           format: int32
-          enum: [10000, 1000000]
+          enum: [1000, 1000000]
         activeSettlementGroup:
           oneOf:
             - $ref: '#/components/schemas/SettlementGroupSummary'

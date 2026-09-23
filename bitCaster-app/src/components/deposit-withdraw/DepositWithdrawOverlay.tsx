@@ -75,8 +75,9 @@ export function DepositWithdrawOverlay({ mode, onClose }: DepositWithdrawOverlay
   if (state.currentView === "success") {
     return (
       <SuccessView
-        amountSats={state.successAmount}
-        amountLabel={formatAmount(state.successAmount, state.successUnit)}
+        amountMsat={state.successAmountMsat}
+        baseAsset={state.successBaseAsset}
+        amountLabel={formatAmount(state.successAmountMsat, state.successBaseAsset)}
         onClose={state.onClose}
       />
     );
@@ -148,8 +149,8 @@ export function DepositWithdrawOverlay({ mode, onClose }: DepositWithdrawOverlay
         {backupWarningBanner}
         {errorBanner}
         <MeltConfirmation
-          amountSats={amountToNumber(state.meltQuote.amount)}
-          feeSats={amountToNumber(state.meltQuote.fee_reserve)}
+          amountSats={amountToNumber(state.meltQuote.amount) / 1_000}
+          feeSats={amountToNumber(state.meltQuote.fee_reserve) / 1_000}
           invoice={state.lightningInput}
           isPaying={state.meltIsPaying}
           onConfirm={state.onConfirmMelt}

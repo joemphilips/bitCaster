@@ -5,6 +5,7 @@ import type {
   AssetMonitoringAssetsResponse,
   AssetMonitoringPortfolioResponse,
 } from "@bitcaster/client-sdk/assetMonitoring";
+import { computeAssetMonitoringOutcomeUniverseDigest } from "@bitcaster/client-sdk/assetMonitoring";
 import {
   portfolioInvalidatedEvent,
   publishPortfolioInvalidation,
@@ -14,7 +15,10 @@ import type { Fund, Position } from "@/types/portfolio";
 const mocks = vi.hoisted(() => ({
   getPortfolio: vi.fn(),
   getAssetMonitoringAssets: vi.fn(),
+  readCustody: vi.fn(),
+  localQueries: [] as (() => Promise<unknown>)[],
   liveQueryCalls: 0,
+  localFundsState: "available" as "available" | "null" | "undefined",
 }));
 
 const monitoredConditionId = "b".repeat(64);
@@ -28,7 +32,7 @@ const localPosition: Position = {
   marketImageUrl: "",
   side: "yes",
   baseAsset: "sat",
-  divisibility: 10_000,
+  divisibility: 1_000,
   shares: 1,
   avgBuyPrice: 0,
   currentPrice: 0,
@@ -51,13 +55,23 @@ const localFund: Fund = {
 };
 
 vi.mock("dexie-react-hooks", () => ({
-  useLiveQuery: vi.fn(() => {
+  useLiveQuery: vi.fn((query: () => Promise<unknown>) => {
+    mocks.localQueries.push(query);
     mocks.liveQueryCalls += 1;
-    return mocks.liveQueryCalls % 2 === 1 ? [localPosition] : [localFund];
+    return mocks.liveQueryCalls % 2 === 1
+      ? [localPosition]
+      : mocks.localFundsState === "null"
+        ? null
+        : mocks.localFundsState === "undefined"
+          ? undefined
+          : [localFund];
   }),
 }));
 
 vi.mock("@/stores/proof-db", () => ({ getProofs: vi.fn(), isCtfProof: vi.fn() }));
+vi.mock("@/stores/portfolio-custody", () => ({
+  readCanonicalPortfolioCustody: mocks.readCustody,
+}));
 vi.mock("@/stores/wallet", () => ({
   useWalletStore: (selector: (state: object) => unknown) =>
     selector({ setupComplete: true, mnemonic: "test mnemonic", mints: [] }),
@@ -70,6 +84,8 @@ vi.mock("@/stores/activity-log", () => ({
 }));
 vi.mock("@/lib/browserWalletProfile", () => ({
   browserWalletIdFromMnemonic: () => activeWalletId,
+  browserWalletScopeIdFromMnemonic: () => "current-scope",
+  activeBrowserWalletScopeId: () => "current-scope",
 }));
 vi.mock("@/lib/markets", () => ({
   createAuthenticatedBrowserEngineClient: () => ({
@@ -110,7 +126,7 @@ function portfolioResponse(
             kind: "collateral",
             canonicalMintUrl: "https://mint.example",
             cashuUnit: "msat",
-            displayBaseAsset: "msat",
+            displayBaseAsset: "sat",
           },
           availableSubunits: 7_000,
           pendingOutgoingSubunits: 0,
@@ -125,7 +141,7 @@ function portfolioResponse(
             kind: "conditional",
             canonicalMintUrl: "https://mint.example",
             cashuUnit: "msat",
-            displayBaseAsset: "msat",
+            displayBaseAsset: "sat",
             conditionId: monitoredConditionId,
             parentConditionId: rootParentConditionId,
             outcomeUniverseDigest: "a".repeat(64),
@@ -187,7 +203,7 @@ function conditionalAsset(outcome: string): AssetMonitoringAssetsResponse["asset
       kind: "conditional",
       canonicalMintUrl: "https://mint.example",
       cashuUnit: "msat",
-      displayBaseAsset: "msat",
+      displayBaseAsset: "sat",
       conditionId: `${outcome[0] ?? "x"}`.repeat(64),
       parentConditionId: rootParentConditionId,
       outcomeUniverseDigest: "a".repeat(64),
@@ -201,11 +217,348 @@ function conditionalAsset(outcome: string): AssetMonitoringAssetsResponse["asset
   };
 }
 
+function conditionIdFor(index: number): string {
+  return BigInt(index + 1)
+    .toString(16)
+    .padStart(64, "0");
+}
+
+function canonicalConditionalCustody(
+  conditionId: string,
+  outcomeCollection = "YES",
+  selectability: "selectable" | "verified-losing" = "selectable",
+) {
+  return {
+    normalizedMint: "https://mint.example",
+    assetKind: "conditional",
+    conditionId,
+    outcomeCollection,
+    baseAsset: "sat",
+    unit: "msat",
+    amount: 1_000,
+    receivedAtMs: 10,
+    selectability,
+    claimRecoveryPending: false,
+  };
+}
+
+function stubCatalogue({
+  failedBatchStart,
+  closedConditionId,
+}: {
+  failedBatchStart?: string;
+  closedConditionId: string;
+}) {
+  const requests: Array<{
+    conditionIds: string[];
+    state: string | null;
+    pageSize: string | null;
+  }> = [];
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (input: string | URL) => {
+      const search = new URL(String(input), "http://localhost").searchParams;
+      const requestedIds = search.get("ids")?.split(",") ?? [];
+      requests.push({
+        conditionIds: requestedIds,
+        state: search.get("state"),
+        pageSize: search.get("page_size"),
+      });
+      if (requestedIds[0] === failedBatchStart) return new Response(null, { status: 503 });
+      return new Response(
+        JSON.stringify({
+          markets: requestedIds.map((conditionId) => ({
+            conditionId,
+            outcomes: ["NO", "YES"],
+            divisibility: 1_000,
+            state: conditionId === closedConditionId ? "closed" : "open",
+            finalOutcome: conditionId === closedConditionId ? "YES" : null,
+          })),
+        }),
+        { status: 200 },
+      );
+    }),
+  );
+  return requests;
+}
+
+async function localPositionsAfterMonitoringFailure(): Promise<Position[]> {
+  mocks.getPortfolio.mockRejectedValue(new Error("signer unavailable"));
+  const { result } = renderHook(() => usePortfolioState());
+  await waitFor(() => expect(result.current.monitoring.error).toBe("unavailable"));
+  return (await mocks.localQueries.at(-2)!()) as Position[];
+}
+
+function conditionalMonitoringAsset(
+  conditionId: string,
+): AssetMonitoringAssetsResponse["assets"][number] {
+  const asset = conditionalAsset("YES");
+  if (asset.asset.kind !== "conditional") throw new Error("fixture must be conditional");
+  return {
+    ...asset,
+    estimatedValueMsat: 700,
+    asset: {
+      ...asset.asset,
+      conditionId,
+      outcomeUniverseDigest: computeAssetMonitoringOutcomeUniverseDigest(["NO", "YES"]),
+    },
+  };
+}
+
 describe("usePortfolioState monitoring facade", () => {
   afterEach(() => {
+    vi.unstubAllGlobals();
     mocks.getPortfolio.mockReset();
     mocks.getAssetMonitoringAssets.mockReset();
+    mocks.readCustody.mockReset();
+    mocks.localQueries.length = 0;
     mocks.liveQueryCalls = 0;
+    mocks.localFundsState = "available";
+  });
+
+  it.each(["winner", "loser"])(
+    "merges canonical %s custody with monitoring without losing local actions",
+    async (outcome) => {
+      mocks.getPortfolio.mockRejectedValue(new Error("signer unavailable"));
+      mocks.readCustody.mockResolvedValue([
+        {
+          normalizedMint: "https://mint.example",
+          assetKind: "conditional",
+          conditionId: monitoredConditionId,
+          outcomeCollection: "Alpha",
+          baseAsset: "sat",
+          unit: "msat",
+          amount: 1000,
+          receivedAtMs: 10,
+          selectability: outcome === "winner" ? "selectable" : "verified-losing",
+          claimRecoveryPending: false,
+        },
+      ]);
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockResolvedValue(
+          new Response(
+            JSON.stringify({
+              markets: [
+                {
+                  conditionId: monitoredConditionId,
+                  outcomes: ["Alpha", "Beta"],
+                  divisibility: 1000,
+                  state: "closed",
+                  finalOutcome: outcome === "winner" ? "Alpha" : "Beta",
+                },
+              ],
+            }),
+            { status: 200 },
+          ),
+        ),
+      );
+      const { result } = renderHook(() => usePortfolioState());
+      await waitFor(() => expect(result.current.monitoring.error).toBe("unavailable"));
+      const positions = (await mocks.localQueries.at(-2)!()) as Position[];
+      const monitoringIdentity = canonicalMonitoringAssetIdentity({
+        kind: "conditional",
+        canonicalMintUrl: "https://mint.example",
+        cashuUnit: "msat",
+        displayBaseAsset: "sat",
+        conditionId: monitoredConditionId,
+        parentConditionId: rootParentConditionId,
+        outcomeUniverseDigest: computeAssetMonitoringOutcomeUniverseDigest(["Alpha", "Beta"]),
+        internalOutcomeSetId: "Alpha",
+      });
+      const remote = {
+        ...localPosition,
+        monitoringAssetIdentity: monitoringIdentity,
+        currentValueSats: 700,
+      };
+      expect(fetch).toHaveBeenCalled();
+      expect(positions[0]?.monitoringAssetIdentity).toBe(monitoringIdentity);
+      const merged = mergeMonitoringPositions([remote], positions);
+      expect(merged).toHaveLength(1);
+      expect(merged[0]).toMatchObject({
+        status: "closed",
+        canClaimPayout: outcome === "winner",
+        canDiscard: outcome === "loser",
+        currentValueSats: 700,
+      });
+      expect(
+        mergeMonitoringPositions(
+          [{ ...remote, monitoringAssetIdentity: "another-universe" }],
+          positions,
+        ),
+      ).toHaveLength(2);
+    },
+  );
+
+  it.each(["verified-losing", "pending-removal"])(
+    "keeps %s holdings separate by mint and shows their removal state",
+    async (selectability) => {
+      mocks.getPortfolio.mockReturnValue(new Promise(() => {}));
+      const proof = {
+        assetKind: "conditional",
+        conditionId: monitoredConditionId,
+        outcomeCollection: "Alpha",
+        baseAsset: "sat",
+        unit: "msat",
+        amount: 1_000,
+        receivedAtMs: 10,
+        selectability,
+        claimRecoveryPending: false,
+      };
+      mocks.readCustody.mockResolvedValue([
+        { ...proof, normalizedMint: "https://mint-a.example" },
+        { ...proof, normalizedMint: "https://mint-b.example", amount: 2_000 },
+      ]);
+      renderHook(() => usePortfolioState());
+
+      const positions = (await mocks.localQueries[0]!()) as Position[];
+
+      expect(mocks.readCustody).toHaveBeenCalledWith("current-scope");
+      expect(positions.map(({ mintUrl, outcomeLabel }) => ({ mintUrl, outcomeLabel }))).toEqual([
+        { mintUrl: "https://mint-a.example", outcomeLabel: "Alpha" },
+        { mintUrl: "https://mint-b.example", outcomeLabel: "Alpha" },
+      ]);
+      expect(new Set(positions.map(({ id }) => id)).size).toBe(2);
+      expect(positions.map(({ removalPending }) => removalPending)).toEqual([
+        selectability === "pending-removal",
+        selectability === "pending-removal",
+      ]);
+      expect(
+        positions.every(
+          ({ status, isLoser, canClaimPayout }) =>
+            status === "closed" && isLoser && canClaimPayout === false,
+        ),
+      ).toBe(true);
+    },
+  );
+
+  it("keeps unavailable canonical positions distinct from an empty wallet", async () => {
+    mocks.getPortfolio.mockReturnValue(new Promise(() => {}));
+    mocks.readCustody.mockResolvedValue(null);
+    renderHook(() => usePortfolioState());
+
+    await expect(mocks.localQueries[0]!()).resolves.toBeUndefined();
+  });
+
+  it.each([51, 101])(
+    "loads all %i canonical conditions in distinct catalogue batches and keeps a later winner claimable",
+    async (conditionCount) => {
+      const conditionIds = Array.from({ length: conditionCount }, (_, index) =>
+        conditionIdFor(index),
+      );
+      mocks.readCustody.mockResolvedValue([
+        ...conditionIds.map((conditionId) => canonicalConditionalCustody(conditionId)),
+        canonicalConditionalCustody(conditionIds[0]!, "NO"),
+      ]);
+      const requests = stubCatalogue({
+        closedConditionId: conditionIds.at(-1)!,
+      });
+
+      const positions = await localPositionsAfterMonitoringFailure();
+
+      expect(requests.map(({ conditionIds: ids }) => ids.length)).toEqual(
+        conditionCount === 51 ? [50, 1] : [50, 50, 1],
+      );
+      expect(requests.flatMap(({ conditionIds: ids }) => ids)).toEqual(conditionIds);
+      expect(
+        requests.every(
+          ({ conditionIds: ids, state, pageSize }) =>
+            state === "All" && pageSize === `${ids.length}`,
+        ),
+      ).toBe(true);
+      expect(positions).toHaveLength(conditionCount + 1);
+      expect(
+        positions.find((position) => position.marketId === `${conditionIds.at(-1)}-YES`),
+      ).toMatchObject({
+        status: "closed",
+        isWinner: true,
+        canClaimPayout: true,
+      });
+    },
+  );
+
+  it("keeps canonical holdings and successful sibling enrichment when a middle catalogue batch fails", async () => {
+    const conditionIds = Array.from({ length: 101 }, (_, index) => conditionIdFor(index));
+    mocks.readCustody.mockResolvedValue(
+      conditionIds.map((conditionId, index) =>
+        canonicalConditionalCustody(
+          conditionId,
+          "YES",
+          index === 50 ? "verified-losing" : "selectable",
+        ),
+      ),
+    );
+    const requests = stubCatalogue({
+      failedBatchStart: conditionIds[50],
+      closedConditionId: conditionIds.at(-1)!,
+    });
+
+    const positions = await localPositionsAfterMonitoringFailure();
+    const positionFor = (index: number) =>
+      positions.find((position) => position.marketId === `${conditionIds[index]}-YES`)!;
+    const verifiedLoser = positionFor(50);
+    const missingMetadata = positionFor(51);
+    const earlySibling = positionFor(0);
+    const laterWinner = positionFor(100);
+
+    expect(requests.map(({ conditionIds: ids }) => ids.length)).toEqual([50, 50, 1]);
+    expect(requests.map(({ conditionIds: ids }) => ids[0])).toEqual([
+      conditionIds[0],
+      conditionIds[50],
+      conditionIds[100],
+    ]);
+    expect(positions).toHaveLength(101);
+    expect(verifiedLoser).toMatchObject({
+      status: "closed",
+      isLoser: true,
+      canDiscard: true,
+      canClaimPayout: false,
+    });
+    expect(verifiedLoser.monitoringAssetIdentity).toBeUndefined();
+    expect(missingMetadata).toMatchObject({
+      status: "active",
+      isWinner: false,
+      isLoser: false,
+      isPending: false,
+      canDiscard: false,
+      canClaimPayout: false,
+    });
+    expect(missingMetadata.monitoringAssetIdentity).toBeUndefined();
+    expect(earlySibling).toMatchObject({ divisibility: 1_000, shares: 1 });
+    expect(earlySibling.monitoringAssetIdentity).toBeDefined();
+    expect(laterWinner).toMatchObject({
+      status: "closed",
+      isWinner: true,
+      canClaimPayout: true,
+    });
+    expect(laterWinner.monitoringAssetIdentity).toBeDefined();
+
+    const expectedIdentity = canonicalMonitoringAssetIdentity({
+      kind: "conditional",
+      canonicalMintUrl: "https://mint.example",
+      cashuUnit: "msat",
+      displayBaseAsset: "sat",
+      conditionId: conditionIds[100]!,
+      parentConditionId: rootParentConditionId,
+      outcomeUniverseDigest: computeAssetMonitoringOutcomeUniverseDigest(["NO", "YES"]),
+      internalOutcomeSetId: "YES",
+    });
+    expect(laterWinner.monitoringAssetIdentity).toBe(expectedIdentity);
+    const monitorResponse = portfolioResponse();
+    const monitored = mapMonitoringPortfolio({
+      ...monitorResponse,
+      assets: {
+        ...monitorResponse.assets,
+        assets: [conditionalMonitoringAsset(conditionIds[100]!)],
+      },
+    }).positions;
+    const merged = mergeMonitoringPositions(monitored, positions);
+
+    expect(monitored[0]?.monitoringAssetIdentity).toBe(laterWinner.monitoringAssetIdentity);
+    expect(merged.find((position) => position.id === laterWinner.id)).toMatchObject({
+      canClaimPayout: true,
+      currentValueSats: 700,
+    });
   });
 
   it("uses one portfolio request on first paint and no catalogue request", async () => {
@@ -350,7 +703,7 @@ describe("usePortfolioState monitoring facade", () => {
 
     expect(mapped.stats.totalValueSats).toBe(12_000);
     expect(mapped.stats.positionsValueSats).toBe(5_000);
-    expect(mapped.chart).toEqual([{ timestamp: "2026-08-09T00:00:00.000Z", cumulativePL: 12_000 }]);
+    expect(mapped.chart).toEqual([]);
     expect(mapped.funds).toHaveLength(1);
     expect(mapped.positions[0]).toMatchObject({
       marketTitle: "Condition bbbbbbbbbbbb",
@@ -361,6 +714,7 @@ describe("usePortfolioState monitoring facade", () => {
       isLoser: false,
     });
     expect(mapped.positions[0]?.shares).toBeUndefined();
+    expect(mapped.positions[0]?.divisibility).toBeUndefined();
     expect(mapped.monitoring).toMatchObject({
       stale: true,
       incomplete: true,
@@ -422,6 +776,111 @@ describe("usePortfolioState monitoring facade", () => {
     expect(mapped.chart).toEqual([]);
   });
 
+  it("keeps a non-null partial total unknown while any asset is unvalued", () => {
+    const response = portfolioResponse();
+    response.summary.estimatedTotalValueMsat = 12_000;
+    response.summary.unvaluedAssetCount = 1;
+
+    const mapped = mapMonitoringPortfolio(response);
+
+    expect(mapped.stats.totalValueKnown).toBe(false);
+    expect(mapped.stats.totalValueByUnit).toBeUndefined();
+    expect(mapped.chart).toEqual([]);
+  });
+
+  it.each(["incomplete", "building"] as const)(
+    "keeps a non-null total unknown while the summary is %s",
+    (flag) => {
+      const response = portfolioResponse();
+      response.summary.unvaluedAssetCount = 0;
+      response.summary.incomplete = false;
+      response.summary.building = false;
+      response.summary[flag] = true;
+      response.assets.incomplete = false;
+      response.assets.building = false;
+      response.assets.nextCursor = null;
+
+      const mapped = mapMonitoringPortfolio(response);
+
+      expect(mapped.stats.totalValueKnown).toBe(false);
+      expect(mapped.stats.totalValueByUnit).toBeUndefined();
+      expect(mapped.chart).toEqual([]);
+    },
+  );
+
+  it.each(["incomplete", "building"] as const)(
+    "keeps positions unknown while the asset page is %s",
+    (flag) => {
+      const response = portfolioResponse();
+      response.summary.unvaluedAssetCount = 0;
+      response.summary.incomplete = false;
+      response.summary.building = false;
+      response.assets.incomplete = false;
+      response.assets.building = false;
+      response.assets[flag] = true;
+
+      const mapped = mapMonitoringPortfolio(response);
+
+      expect(mapped.stats.positionsValueKnown).toBe(false);
+      expect(mapped.stats.totalValueKnown).toBe(true);
+      expect(mapped.stats.totalValueByUnit).toEqual([{ unit: "sat", amount: 12_000 }]);
+    },
+  );
+
+  it("keeps positions unknown until all asset pages are loaded", () => {
+    const response = portfolioResponse();
+    response.summary.unvaluedAssetCount = 0;
+    response.summary.incomplete = false;
+    response.summary.building = false;
+    response.assets.incomplete = false;
+    response.assets.building = false;
+    response.assets.nextCursor = "cursor-next";
+
+    const mapped = mapMonitoringPortfolio(response);
+
+    expect(mapped.stats.positionsValueKnown).toBe(false);
+    expect(mapped.monitoring.incomplete).toBe(true);
+  });
+
+  it.each(["incomplete", "building"] as const)(
+    "does not emit a chart while history is %s",
+    (flag) => {
+      const response = portfolioResponse();
+      response.summary.unvaluedAssetCount = 0;
+      response.summary.incomplete = false;
+      response.summary.building = false;
+      response.assets.incomplete = false;
+      response.assets.building = false;
+      response.assets.nextCursor = null;
+      response.history[flag] = true;
+
+      const mapped = mapMonitoringPortfolio(response);
+
+      expect(mapped.stats.totalValueKnown).toBe(true);
+      expect(mapped.chart).toEqual([]);
+    },
+  );
+
+  it("does not filter unknown history points into a partial chart", () => {
+    const response = portfolioResponse();
+    response.summary.unvaluedAssetCount = 0;
+    response.summary.incomplete = false;
+    response.summary.building = false;
+    response.assets.incomplete = false;
+    response.assets.building = false;
+    response.assets.nextCursor = null;
+    response.history.points = [
+      { asOf: "2026-08-09T00:00:00.000Z", estimatedTotalValueMsat: 12_000 },
+      { asOf: "2026-08-10T00:00:00.000Z", estimatedTotalValueMsat: null },
+      { asOf: "2026-08-11T00:00:00.000Z", estimatedTotalValueMsat: 13_000 },
+    ];
+
+    const mapped = mapMonitoringPortfolio(response);
+
+    expect(mapped.stats.totalValueKnown).toBe(true);
+    expect(mapped.chart).toEqual([]);
+  });
+
   it("keeps local rows when authentication or monitoring fails", async () => {
     mocks.getPortfolio.mockRejectedValue(new Error("signer unavailable"));
     const { result } = renderHook(() => usePortfolioState());
@@ -430,6 +889,19 @@ describe("usePortfolioState monitoring facade", () => {
     expect(result.current.positions).toEqual([localPosition]);
     expect(result.current.funds).toEqual([localFund]);
   });
+
+  it.each(["null", "undefined"] as const)(
+    "marks totals unknown when canonical local custody is %s",
+    async (localFundsState) => {
+      mocks.localFundsState = localFundsState;
+      mocks.getPortfolio.mockRejectedValue(new Error("signer unavailable"));
+      const { result } = renderHook(() => usePortfolioState());
+
+      await waitFor(() => expect(result.current.monitoring.error).toBe("unavailable"));
+      expect(result.current.stats.totalValueKnown).toBe(false);
+      expect(result.current.stats.totalValueByUnit).toBeUndefined();
+    },
+  );
 
   it.each([
     ["byte-identical", (response: AssetMonitoringPortfolioResponse) => response.assets.assets[0]!],
@@ -463,8 +935,7 @@ describe("usePortfolioState monitoring facade", () => {
       ...response.assets.assets[0]!,
       asset: {
         ...response.assets.assets[0]!.asset,
-        cashuUnit: "sat" as const,
-        displayBaseAsset: "sat" as const,
+        canonicalMintUrl: "https://other-mint.example",
       },
     };
     response.assets.assets = [

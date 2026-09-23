@@ -167,6 +167,10 @@
       "types": "./dist/ctfRangeOrderPreparation.d.ts",
       "import": "./dist/ctfRangeOrderPreparation.js"
     },
+    "./ctfRangeOrderFeeComposition": {
+      "types": "./dist/ctfRangeOrderFeeComposition.d.ts",
+      "import": "./dist/ctfRangeOrderFeeComposition.js"
+    },
     "./ctfRangeOrderProtocol": {
       "types": "./dist/ctfRangeOrderProtocol.d.ts",
       "import": "./dist/ctfRangeOrderProtocol.js"
@@ -239,6 +243,10 @@
     "./engineClient": {
       "types": "./dist/engineClient.d.ts",
       "import": "./dist/engineClient.js"
+    },
+    "./fokOrderPreview": {
+      "types": "./dist/fokOrderPreview.d.ts",
+      "import": "./dist/fokOrderPreview.js"
     },
     "./marketUnits": {
       "types": "./dist/marketUnits.d.ts",

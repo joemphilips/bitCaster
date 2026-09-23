@@ -26,6 +26,27 @@ const conditionId = "a".repeat(64);
 const walletId = "b".repeat(64);
 
 describe("asset monitoring snapshot", () => {
+  it("refuses the complete snapshot when one proof uses sat", () => {
+    expect(
+      buildAssetMonitoringHoldings({
+        proofs: [proof(), proof({ secret: "unsupported", unit: "sat" })],
+        catalogue: [],
+      }),
+    ).toBeNull();
+  });
+
+  it("refuses the complete snapshot when an evicted asset uses sat", () => {
+    expect(
+      buildAssetMonitoringHoldings({
+        proofs: [proof()],
+        catalogue: [],
+        evictedAssets: [
+          { kind: "ordinary", mintUrl: "https://mint.example", unit: "sat", declaredAmount: 1 },
+        ],
+      }),
+    ).toBeNull();
+  });
+
   it("reports only a valid bound NUT-13 recovery counter", () => {
     const stored = proof({ id: keysetId(), secret: "recoverable", C: "03" });
     const custody = custodyProof(stored);

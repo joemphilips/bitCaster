@@ -41,8 +41,6 @@ export function MarketCreationWizard(props: MarketCreationWizardProps) {
     onAddOutcome,
     onRemoveOutcome,
     onOutcomeLabelChange,
-    onOutcomeProbabilityChange,
-    onNormalizeProbabilities,
     onLoBoundChange,
     onHiBoundChange,
     onPrecisionChange,
@@ -57,9 +55,13 @@ export function MarketCreationWizard(props: MarketCreationWizardProps) {
     createdMarketConditionId,
     createdMarketOutcomeCount,
     createdMarketBaseAsset,
+    createdMarketDivisibility,
+    onRequireWallet,
   } = props;
 
   const { currentStep } = draft;
+  const outcomeType = draft.stepGetStarted?.outcomeType;
+  const isReviewStep = outcomeType === "yesno" ? currentStep >= 3 : currentStep === 4;
 
   const [bannerDismissed, setBannerDismissed] = useState(false);
   const showResumeBanner = hasSavedDraft && !bannerDismissed;
@@ -144,7 +146,7 @@ export function MarketCreationWizard(props: MarketCreationWizardProps) {
   // override would bounce the user back to the first wizard step even though
   // the market is already registered on the mint and engine. The matching test
   // is `MarketCreateWithDepositE2ETests.DepositStep_EcashHappyPath`.
-  if (createdMarketConditionId) {
+  if (createdMarketConditionId && createdMarketDivisibility !== null) {
     return (
       <div className="min-h-screen bg-slate-50 dark:bg-slate-950 flex flex-col">
         {header}
@@ -154,6 +156,8 @@ export function MarketCreationWizard(props: MarketCreationWizardProps) {
             defaultAmountSats={0}
             outcomeCount={createdMarketOutcomeCount ?? 2}
             baseAsset={createdMarketBaseAsset ?? "sat"}
+            divisibility={createdMarketDivisibility}
+            onRequireWallet={onRequireWallet}
           />
         </div>
         {feeOverlays}
@@ -192,7 +196,7 @@ export function MarketCreationWizard(props: MarketCreationWizardProps) {
           )}
         </div>
 
-        <StepIndicator currentStep={currentStep} />
+        <StepIndicator currentStep={currentStep} outcomeType={outcomeType} />
       </div>
 
       <div className="flex-1 flex items-start justify-center px-4 py-8">
@@ -216,7 +220,7 @@ export function MarketCreationWizard(props: MarketCreationWizardProps) {
           />
         )}
 
-        {currentStep === 3 && draft.stepOutcomes && (
+        {currentStep === 3 && outcomeType !== "yesno" && draft.stepOutcomes && (
           <OutcomesStep
             outcomeType={draft.stepOutcomes.outcomeType}
             outcomes={draft.stepOutcomes.outcomes}
@@ -227,8 +231,6 @@ export function MarketCreationWizard(props: MarketCreationWizardProps) {
             onAddOutcome={onAddOutcome}
             onRemoveOutcome={onRemoveOutcome}
             onOutcomeLabelChange={onOutcomeLabelChange}
-            onOutcomeProbabilityChange={onOutcomeProbabilityChange}
-            onNormalizeProbabilities={onNormalizeProbabilities}
             onLoBoundChange={onLoBoundChange}
             onHiBoundChange={onHiBoundChange}
             onPrecisionChange={onPrecisionChange}
@@ -237,7 +239,7 @@ export function MarketCreationWizard(props: MarketCreationWizardProps) {
           />
         )}
 
-        {currentStep === 4 && !createdMarketConditionId && (
+        {isReviewStep && !createdMarketConditionId && (
           <ReviewAndCreate
             description={draft.stepReviewAndCreate?.description ?? ""}
             basicInfo={draft.stepBasicInfo}

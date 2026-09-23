@@ -22,27 +22,31 @@ import {
   DURABLE_OUTGOING_CASHU_RECOVERY_PAGE_LIMIT_MAX,
   type DurableOutgoingCashuTransfer,
 } from "@bitcaster/client-sdk/durableOutgoingCashuTransfer";
+import { deriveMarketFundingProductBinding } from "@bitcaster/client-sdk/marketFundingDelivery";
 import {
   serializeDurableWalletProof,
   hydrateDurableWalletSendPreview,
   serializeDurableWalletSendOperation,
+  type DurableWalletSendOperation,
 } from "@bitcaster/client-sdk/durableWalletOperation";
 import { deriveDurableCustodyArtifactFingerprint } from "@bitcaster/client-sdk/durableCustody";
 import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
+import { BrowserWalletRecoveryRequiredError } from "../browserWalletNewWritePermission";
 import {
   listBrowserDurableOutgoingCashuDue,
   listBrowserDurableOutgoingCashuDueMints,
+  acknowledgeBrowserDurableOutgoingCashuRecipient,
   executeBrowserDurableOutgoingCashuTransfer,
   findBrowserDurableOutgoingBearerTransfer,
   findBrowserDurableOutgoingCashuTransferByRecipientBinding,
   recoverBrowserDurableOutgoingCashuTransfer,
   recoverBrowserDurableOutgoingCashuDuePage,
+  readBrowserDurableOutgoingCashuTransfer,
 } from "../browserDurableOutgoingCashuTransfer";
 import {
   BitcasterDB,
   BOUNDED_CANONICAL_RANGE_PROOF_LIMIT_MAX,
   getBoundedCanonicalRangeProofsForKeyset,
-  getBoundedCanonicalSatProofs,
   getBoundedCanonicalRegularProofs,
   MARKET_FUNDING_INPUT_PROOF_LIMIT_MAX,
   type BrowserOutgoingCashuTransferRow,
@@ -52,20 +56,42 @@ import { createBrowserCustodyProofRow } from "../../stores/durable-custody-db";
 import {
   advanceBrowserProofBackupAuthorityRow,
   createBrowserProofBackupAuthorityRow,
+  requireBrowserLiveProofBackupAuthorityTableRow,
 } from "../../stores/browser-proof-backup-authority";
 import { claimBrowserParticipationScoreDeliveryPointer } from "../browserParticipationScoreDeliveryPointer";
+
+const requireNewWritePermission = vi.hoisted(() => vi.fn(async () => undefined));
+
+vi.mock("../browserWalletNewWritePermission", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../browserWalletNewWritePermission")>();
+  return {
+    ...actual,
+    requireBrowserWalletNewWritePermission: requireNewWritePermission,
+  };
+});
 
 const MINT = "https://mint.example";
 const SCOPE = "wallet-scope";
 const PRIVATE_KEY = Uint8Array.from([...new Uint8Array(31), 7]);
 const KEYS = { "1": bytesToHex(secp256k1.getPublicKey(PRIVATE_KEY, true)) };
 const KEYSET_ID = deriveKeysetId(KEYS);
+const MARKET_KEYSET_ID = deriveKeysetId(KEYS, { unit: "msat" });
 const FEE_KEYSET_ID = deriveKeysetId(KEYS, { input_fee_ppk: 500 });
 const OLD_V2_KEYSET_ID = `01${"22".repeat(32)}`;
 const SELECTOR_SCOPE_ID = browserWalletScope(new Uint8Array(64).fill(8)).scopeId;
+const MARKET_SUBJECT = "subject-1";
+const MARKET_CONDITION_ID = "aa".repeat(32);
+const MARKET_DIVISIBILITY = 1_000;
+const MARKET_BINDING = deriveMarketFundingProductBinding({
+  accountSubject: MARKET_SUBJECT,
+  conditionId: MARKET_CONDITION_ID,
+  divisibility: MARKET_DIVISIBILITY,
+});
 const databases: BitcasterDB[] = [];
 
 afterEach(async () => {
+  requireNewWritePermission.mockClear();
+  requireNewWritePermission.mockResolvedValue(undefined);
   for (const database of databases.splice(0)) {
     database.close();
     await database.delete();
@@ -372,21 +398,21 @@ describe("browser durable outgoing Cashu store", () => {
   it("selects bounded Participation Score proofs across canonical V2 keysets", async () => {
     const database = createDatabase();
     await database.custodyProofs.bulkPut([
-      custodyProof(SELECTOR_SCOPE_ID, "sat", {
+      custodyProof(SELECTOR_SCOPE_ID, "msat", {
         secret: "active",
         amount: 1,
         id: KEYSET_ID,
       }),
-      custodyProof(SELECTOR_SCOPE_ID, "sat", {
+      custodyProof(SELECTOR_SCOPE_ID, "msat", {
         secret: "old",
         amount: 8,
         id: OLD_V2_KEYSET_ID,
       }),
     ]);
 
-    const selected = await getBoundedCanonicalSatProofs(
+    const selected = await getBoundedCanonicalRegularProofs(
       MINT,
-      { scopeId: SELECTOR_SCOPE_ID },
+      { scopeId: SELECTOR_SCOPE_ID, unit: "msat" },
       database,
     );
 
@@ -407,7 +433,7 @@ describe("browser durable outgoing Cashu store", () => {
     const database = createDatabase();
     await database.custodyProofs.bulkPut(
       Array.from({ length: 130 }, (_, index) =>
-        custodyProof(SELECTOR_SCOPE_ID, "sat", {
+        custodyProof(SELECTOR_SCOPE_ID, "msat", {
           secret: `historical-${index}`,
           amount: index + 1,
           id: `01${index.toString(16).padStart(64, "0")}`,
@@ -416,7 +442,11 @@ describe("browser durable outgoing Cashu store", () => {
     );
 
     await expect(
-      getBoundedCanonicalSatProofs(MINT, { scopeId: SELECTOR_SCOPE_ID }, database),
+      getBoundedCanonicalRegularProofs(
+        MINT,
+        { scopeId: SELECTOR_SCOPE_ID, unit: "msat" },
+        database,
+      ),
     ).resolves.toHaveLength(130);
   });
 
@@ -801,6 +831,33 @@ describe("browser durable outgoing Cashu store", () => {
     expect(await fixture.database.outgoingCashuTransferAdmissions.count()).toBe(0);
   });
 
+  it("refuses a new transfer before wallet-send preparation", async () => {
+    const fixture = await executionFixture();
+    const permissionError = new Error("permission-refusal-sentinel");
+    requireNewWritePermission.mockRejectedValueOnce(permissionError);
+
+    await expect(executeBrowserDurableOutgoingCashuTransfer(fixture.input)).rejects.toBe(
+      permissionError,
+    );
+
+    expect(fixture.prepareWalletSendOperation).not.toHaveBeenCalled();
+    expect(await fixture.database.outgoingCashuTransfers.count()).toBe(0);
+    expect(await fixture.database.custodyOperations.count()).toBe(0);
+  });
+
+  it("refuses market funding before wallet-send preparation", async () => {
+    const fixture = marketFundingFixture();
+    const input = await marketFundingInput(fixture, "permission-refused", null, 1_000);
+    const permissionError = new BrowserWalletRecoveryRequiredError("genuine-conflict");
+    requireNewWritePermission.mockRejectedValueOnce(permissionError);
+
+    await expect(executeBrowserDurableOutgoingCashuTransfer(input)).rejects.toBe(permissionError);
+
+    expect(input.prepareWalletSendOperation).not.toHaveBeenCalled();
+    expect(await fixture.database.outgoingCashuTransfers.count()).toBe(0);
+    expect(await fixture.database.custodyOperations.count()).toBe(0);
+  });
+
   it("uses one fresh post-mint time for successor admission and backup revision", async () => {
     const fixture = await executionFixture(undefined, true);
     let nowMs = 1_000;
@@ -1106,6 +1163,12 @@ describe("browser durable outgoing Cashu store", () => {
     );
     const preparedCalls = fixture.prepareWalletSendOperation.mock.calls.length;
     const mintCalls = fixture.wallet.completeSwap.mock.calls.length;
+    requireNewWritePermission.mockClear();
+    requireNewWritePermission.mockRejectedValue(
+      new Error(
+        "Another browser changed this wallet. Reload to start recovery before making a new wallet change.",
+      ),
+    );
     const recovered = await recoverBrowserDurableOutgoingCashuTransfer({
       transferId: "execute",
       wallet: fixture.wallet,
@@ -1114,6 +1177,7 @@ describe("browser durable outgoing Cashu store", () => {
     });
 
     expect(recovered?.deliveryState).toBe("delivery-pending");
+    expect(requireNewWritePermission).not.toHaveBeenCalled();
     expect(fixture.prepareWalletSendOperation).toHaveBeenCalledTimes(preparedCalls);
     expect(fixture.wallet.completeSwap).toHaveBeenCalledTimes(mintCalls);
     expect(
@@ -1223,6 +1287,195 @@ describe("browser durable outgoing Cashu store", () => {
     expect(await fixture.database.outgoingCashuTransfers.count()).toBe(0);
     expect(await fixture.database.outgoingCashuTransferAdmissions.count()).toBe(0);
     expect(await fixture.database.encryptedWalletBackupV2DesiredAssets.count()).toBe(0);
+  });
+
+  it("converges concurrent market-funding starts on the first successor", async () => {
+    const fixture = marketFundingFixture({ lockManager: serialLockManager() });
+    const firstInput = await marketFundingInput(fixture, "funding-first", null, 1);
+    const secondInput = await marketFundingInput(fixture, "funding-second", null, 1, {
+      requestedAmount: 2,
+    });
+
+    const [first, second] = await Promise.all([
+      executeBrowserDurableOutgoingCashuTransfer(firstInput),
+      executeBrowserDurableOutgoingCashuTransfer(secondInput),
+    ]);
+
+    expect(first.transferId).toBe("funding-first");
+    expect(second.transferId).toBe(first.transferId);
+    expect(second.requestedAmount).toBe(first.requestedAmount);
+    expect(first.recipientSequence).toEqual({ predecessorTransferId: null });
+    expect(firstInput.prepareWalletSendOperation).toHaveBeenCalledOnce();
+    expect(secondInput.prepareWalletSendOperation).not.toHaveBeenCalled();
+    expect(fixture.wallet.completeSwap).toHaveBeenCalledOnce();
+    expect(await fixture.database.outgoingCashuTransfers.count()).toBe(1);
+    expect(await fixture.database.marketFundingHeads.count()).toBe(1);
+  });
+
+  it("resolves a delayed initial begin to its first successor after later payments", async () => {
+    const fixture = marketFundingFixture();
+    const firstInput = await marketFundingInput(fixture, "funding-first", null, 1);
+    const first = await executeBrowserDurableOutgoingCashuTransfer(firstInput);
+    const secondInput = await marketFundingInput(fixture, "funding-second", "funding-first", 1);
+    const second = await executeBrowserDurableOutgoingCashuTransfer(secondInput);
+    const thirdInput = await marketFundingInput(fixture, "funding-third", "funding-second", 1);
+    const third = await executeBrowserDurableOutgoingCashuTransfer(thirdInput);
+    const delayedPrepare = vi.fn(async () => {
+      throw new Error("delayed initial begin must not prepare a wallet operation");
+    });
+    const delayedPreflight = vi.fn(async () => {
+      throw new Error("delayed initial begin must not run funded recovery");
+    });
+    const delayed = await marketFundingInput(fixture, "funding-delayed", null, 1, {
+      requestedAmount: 2,
+      prepareWalletSendOperation: delayedPrepare,
+      preflightFundedAsset: delayedPreflight,
+    });
+
+    const resolved = await executeBrowserDurableOutgoingCashuTransfer(delayed);
+
+    expect(first.transferId).toBe("funding-first");
+    expect(second.recipientSequence).toEqual({ predecessorTransferId: first.transferId });
+    expect(third.recipientSequence).toEqual({ predecessorTransferId: second.transferId });
+    expect(resolved.transferId).toBe(first.transferId);
+    expect(resolved.requestedAmount).toBe(first.requestedAmount);
+    expect(delayedPrepare).not.toHaveBeenCalled();
+    expect(delayedPreflight).not.toHaveBeenCalled();
+    expect(await fixture.database.outgoingCashuTransfers.count()).toBe(3);
+    expect((await fixture.database.marketFundingHeads.toArray())[0]?.transferId).toBe(
+      third.transferId,
+    );
+  });
+
+  it("refuses an uncredited predecessor before preparing or minting a successor", async () => {
+    const fixture = marketFundingFixture();
+    const firstInput = await marketFundingInput(fixture, "funding-first", null, 1);
+    const first = await executeBrowserDurableOutgoingCashuTransfer(firstInput);
+    const requireCredited = vi.fn(async () => {
+      throw new Error("predecessor has only been received");
+    });
+    const secondInput = await marketFundingInput(fixture, "funding-second", first.transferId, 1, {
+      requireCredited,
+    });
+
+    await expect(executeBrowserDurableOutgoingCashuTransfer(secondInput)).rejects.toThrow(
+      "predecessor has only been received",
+    );
+
+    expect(requireCredited).toHaveBeenCalledOnce();
+    expect(secondInput.prepareWalletSendOperation).not.toHaveBeenCalled();
+    expect(fixture.wallet.completeSwap).toHaveBeenCalledOnce();
+    expect(await fixture.database.outgoingCashuTransfers.count()).toBe(1);
+    expect((await fixture.database.marketFundingHeads.toArray())[0]?.transferId).toBe(
+      first.transferId,
+    );
+  });
+
+  it("isolates identical market-funding sequences by wallet scope", async () => {
+    const database = createDatabase();
+    const firstFixture = marketFundingFixture({
+      database,
+      seed: new Uint8Array(64).fill(31),
+    });
+    const secondFixture = marketFundingFixture({
+      database,
+      seed: new Uint8Array(64).fill(32),
+    });
+    const firstInput = await marketFundingInput(firstFixture, "scope-first", null, 1);
+    const secondInput = await marketFundingInput(secondFixture, "scope-second", null, 1);
+
+    const [first, second] = await Promise.all([
+      executeBrowserDurableOutgoingCashuTransfer(firstInput),
+      executeBrowserDurableOutgoingCashuTransfer(secondInput),
+    ]);
+
+    expect(first.transferId).toBe("scope-first");
+    expect(second.transferId).toBe("scope-second");
+    expect(first.walletScopeId).not.toBe(second.walletScopeId);
+    expect(await database.outgoingCashuTransfers.count()).toBe(2);
+    expect(await database.marketFundingHeads.count()).toBe(2);
+  });
+
+  it("preserves the recipient sequence through acknowledgement", async () => {
+    const fixture = marketFundingFixture();
+    const input = await marketFundingInput(fixture, "funding-ack", null, 1);
+    const delivered = await executeBrowserDurableOutgoingCashuTransfer(input);
+    if (delivered.token === null) throw new Error("market funding token is missing");
+
+    const acknowledged = await acknowledgeBrowserDurableOutgoingCashuRecipient({
+      transfer: delivered,
+      receipt: {
+        transferId: delivered.transferId,
+        expectedSubject: MARKET_SUBJECT,
+        opaqueProductBinding: MARKET_BINDING,
+        mintUrl: MINT,
+        unit: "msat",
+        requestedAmount: "1",
+        tokenSha256: delivered.token.sha256,
+        tokenLength: delivered.token.encodedLength,
+        receiveOperationId: "receive:funding-ack",
+        durableResultFingerprint: "a".repeat(64),
+      },
+      context: fixture.context,
+    });
+    const persisted = await readBrowserDurableOutgoingCashuTransfer({
+      transferId: delivered.transferId,
+      context: fixture.context,
+    });
+
+    expect(acknowledged.deliveryState).toBe("recipient-acknowledged");
+    expect(acknowledged.recipientSequence).toEqual({ predecessorTransferId: null });
+    expect(persisted?.recipientSequence).toEqual({ predecessorTransferId: null });
+    await expect(
+      acknowledgeBrowserDurableOutgoingCashuRecipient({
+        transfer: { ...acknowledged, recipientSequence: { predecessorTransferId: "tampered" } },
+        receipt: {
+          transferId: acknowledged.transferId,
+          expectedSubject: MARKET_SUBJECT,
+          opaqueProductBinding: MARKET_BINDING,
+          mintUrl: MINT,
+          unit: "msat",
+          requestedAmount: "1",
+          tokenSha256: delivered.token.sha256,
+          tokenLength: delivered.token.encodedLength,
+          receiveOperationId: "receive:funding-ack",
+          durableResultFingerprint: "a".repeat(64),
+        },
+        context: fixture.context,
+      }),
+    ).rejects.toThrow("revision conflicts");
+  });
+
+  it("preserves the recipient sequence when a prepared transfer retries after mint failure", async () => {
+    const fixture = marketFundingFixture();
+    const input = await marketFundingInput(fixture, "funding-retry", null, 1);
+    fixture.wallet.completeSwap.mockRejectedValueOnce(new Error("mint interrupted"));
+
+    await expect(executeBrowserDurableOutgoingCashuTransfer(input)).rejects.toThrow(
+      "mint interrupted",
+    );
+    const prepared = await readBrowserDurableOutgoingCashuTransfer({
+      transferId: input.transfer.transferId,
+      context: fixture.context,
+    });
+    fixture.wallet.checkProofsStates.mockResolvedValue([
+      {
+        Y: hashToCurve(new TextEncoder().encode("market-input-funding-retry")).toHex(true),
+        state: CheckStateEnum.UNSPENT,
+        witness: null,
+      },
+    ]);
+
+    const recovered = await recoverBrowserDurableOutgoingCashuTransfer({
+      transferId: input.transfer.transferId,
+      wallet: fixture.wallet,
+      restoreExactOutputs: fixture.restoreExactOutputs,
+      context: fixture.context,
+    });
+
+    expect(prepared?.recipientSequence).toEqual({ predecessorTransferId: null });
+    expect(recovered?.deliveryState).toBe("delivery-pending");
+    expect(recovered?.recipientSequence).toEqual({ predecessorTransferId: null });
   });
 });
 
@@ -1402,7 +1655,7 @@ async function executionFixture(
   const sendProof = proofForOutput(preview.sendOutputs![0]!);
   const keepOutputs = preview.keepOutputs ?? [];
   if (keepOutputs.length !== keepCount) throw new Error("keep fixture outputs are invalid");
-  const keepProofs = keepOutputs.map(proofForOutput);
+  const keepProofs = keepOutputs.map((output) => proofForOutput(output));
   const wallet = walletFor(sendProof, keepProofs);
   const prepareWalletSendOperation = vi.fn(async () => operation);
   const preflightFundedAsset = vi.fn(async () => undefined);
@@ -1456,6 +1709,155 @@ async function executionFixture(
       context,
     },
   };
+}
+
+function marketFundingFixture(
+  options: {
+    readonly database?: BitcasterDB;
+    readonly seed?: Uint8Array;
+    readonly lockManager?: Pick<LockManager, "request">;
+  } = {},
+) {
+  const database = options.database ?? createDatabase();
+  const seed = options.seed ?? new Uint8Array(64).fill(30);
+  const scope = browserWalletScope(seed);
+  const wallet = {
+    completeSwap: vi.fn(
+      async (preview: {
+        readonly keepOutputs?: readonly OutputData[];
+        readonly sendOutputs?: readonly OutputData[];
+      }) => ({
+        keep: (preview.keepOutputs ?? []).map((output) => proofForOutput(output)),
+        send: (preview.sendOutputs ?? []).map((output) => proofForOutput(output, MARKET_KEYSET_ID)),
+      }),
+    ),
+    checkProofsStates: vi.fn(),
+    getKeyset: vi.fn(() => ({
+      id: MARKET_KEYSET_ID,
+      unit: "msat",
+      keys: KEYS,
+      fee: 0,
+      verify: () => true,
+    })),
+  };
+  const preflightFundedAsset = vi.fn(async () => undefined);
+  const requireCredited = vi.fn(async () => undefined);
+  const restoreExactOutputs = vi.fn();
+  const context = {
+    seed,
+    database,
+    now: () => 1_000,
+    randomId: () => "market-funding-test",
+    requireCapturedProfile: vi.fn(),
+    lockManager:
+      options.lockManager ??
+      ({
+        request: async (_name, _options, action) => action(null as never),
+      } as Pick<LockManager, "request">),
+  };
+  return {
+    database,
+    seed,
+    scope,
+    wallet,
+    preflightFundedAsset,
+    requireCredited,
+    restoreExactOutputs,
+    context,
+  };
+}
+
+async function marketFundingInput(
+  fixture: ReturnType<typeof marketFundingFixture>,
+  transferId: string,
+  predecessorTransferId: string | null,
+  amount: number,
+  options: {
+    readonly prepareWalletSendOperation?: () => Promise<DurableWalletSendOperation>;
+    readonly preflightFundedAsset?: () => Promise<void>;
+    readonly requestedAmount?: number;
+    readonly requireCredited?: (transfer: DurableOutgoingCashuTransfer) => Promise<void>;
+  } = {},
+) {
+  const operation = marketFundingOperation(transferId, fixture.seed, amount);
+  await addInputProof(
+    fixture.database,
+    fixture.scope.scopeId,
+    operation.preview.inputs[0]!,
+    "msat",
+  );
+  const prepareWalletSendOperation =
+    options.prepareWalletSendOperation ?? vi.fn(async () => operation);
+  return {
+    marketFundingAttempt: {
+      expectedPreviousTransferId: predecessorTransferId,
+      conditionId: MARKET_CONDITION_ID,
+      divisibility: MARKET_DIVISIBILITY,
+      requireCredited: options.requireCredited ?? fixture.requireCredited,
+    },
+    transfer: {
+      transferId,
+      mintUrl: MINT,
+      unit: "msat",
+      requestedAmount: String(options.requestedAmount ?? amount),
+      recipientSequence: { predecessorTransferId },
+      deliveryIntent: {
+        policy: "durable-recipient-ack" as const,
+        expectedSubject: MARKET_SUBJECT,
+        opaqueProductBinding: MARKET_BINDING,
+        tokenBytesLimit: 4 * 1024,
+        tokenProofLimit: 1,
+      },
+    },
+    prepareWalletSendOperation,
+    preflightFundedAsset: options.preflightFundedAsset ?? fixture.preflightFundedAsset,
+    keepProofDerivationLocators: [],
+    wallet: fixture.wallet,
+    restoreExactOutputs: fixture.restoreExactOutputs,
+    context: fixture.context,
+  };
+}
+
+function marketFundingOperation(
+  transferId: string,
+  seed: Uint8Array,
+  amount: number,
+): DurableWalletSendOperation {
+  const inputSecret = `market-input-${transferId}`;
+  const output = OutputData.createSingleDeterministicData(
+    amount,
+    seed,
+    marketOutputCounter(transferId),
+    MARKET_KEYSET_ID,
+  );
+  return serializeDurableWalletSendOperation({
+    operationId: `wallet-send:${transferId}`,
+    mintUrl: MINT,
+    unit: "msat",
+    preview: {
+      amount: Amount.from(amount),
+      fees: Amount.zero(),
+      keysetId: MARKET_KEYSET_ID,
+      inputs: [
+        {
+          id: MARKET_KEYSET_ID,
+          amount: Amount.from(amount),
+          secret: inputSecret,
+          C: "02" + "1".repeat(64),
+        },
+      ],
+      sendOutputs: [output],
+      keepOutputs: [],
+      unselectedProofs: [],
+    },
+  });
+}
+
+function marketOutputCounter(transferId: string): number {
+  return (
+    (Array.from(transferId).reduce((sum, character) => sum + character.charCodeAt(0), 0) % 10_000) +
+    1
+  );
 }
 
 async function feeAwarePassthroughFixture() {
@@ -1514,10 +1916,15 @@ async function feeAwarePassthroughFixture() {
     passthroughProofId,
   ]);
   if (!originalAuthority) throw new Error("fee-aware passthrough authority is missing");
+  const liveAuthority = requireBrowserLiveProofBackupAuthorityTableRow(originalAuthority, [
+    scope.scopeId,
+    passthroughProofId,
+  ]);
+  if (!liveAuthority) throw new Error("fee-aware passthrough live authority is missing");
   await database.custodyProofs.put(revisedPassthrough);
   await database.custodyProofBackupAuthorities.put(
     advanceBrowserProofBackupAuthorityRow(
-      originalAuthority,
+      liveAuthority,
       revisedPassthrough,
       1,
       null,
@@ -1641,11 +2048,12 @@ async function addInputProof(
   database: BitcasterDB,
   scopeId: string,
   proof: { id: string; amount: string | Amount; secret: string; C: string },
+  unit: "sat" | "msat" = "sat",
 ): Promise<string> {
   const row = createBrowserCustodyProofRow({
     scopeId,
     normalizedMint: MINT,
-    unit: "sat",
+    unit,
     proof: {
       id: proof.id,
       amount: Amount.from(proof.amount.toString()),
@@ -1685,23 +2093,23 @@ function walletFor(
   };
 }
 
-function signatureForOutput(output: OutputData) {
+function signatureForOutput(output: OutputData, keysetId = KEYSET_ID) {
   const signature = createBlindSignature(
     pointFromHex(output.blindedMessage.B_),
     PRIVATE_KEY,
-    KEYSET_ID,
+    keysetId,
   );
   const dleq = createDLEQProof(pointFromHex(output.blindedMessage.B_), PRIVATE_KEY);
   return {
-    id: KEYSET_ID,
+    id: keysetId,
     amount: output.blindedMessage.amount,
     C_: signature.C_.toHex(true),
     dleq: { e: bytesToHex(dleq.e), s: bytesToHex(dleq.s) },
   };
 }
 
-function proofForOutput(output: OutputData): Proof {
-  return output.toProof(signatureForOutput(output), { id: KEYSET_ID, keys: KEYS });
+function proofForOutput(output: OutputData, keysetId = KEYSET_ID): Proof {
+  return output.toProof(signatureForOutput(output, keysetId), { id: keysetId, keys: KEYS });
 }
 
 function feeProofForOutput(output: OutputData): Proof {

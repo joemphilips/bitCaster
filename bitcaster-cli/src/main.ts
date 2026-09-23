@@ -13,6 +13,7 @@ import {
   BitcasterEngineClient,
   EngineClientError,
   isKind89NostrEvent,
+  parseSatsToMsat,
   validateMarketCreateEngineUrl,
 } from '@bitcaster-market/client-sdk'
 import { Command, CommanderError, Option } from 'commander'
@@ -203,11 +204,6 @@ function registerMarketCommand(program: Command): void {
     .requiredOption('--title <title>', 'Market title')
     .requiredOption('--description <description>', 'Market description')
     .requiredOption('--outcomes <a,b,c>', 'Comma-separated outcome names', parseOutcomeList)
-    .option(
-      '--liquidity-sats <n>',
-      'Initial liquidity in sats',
-      parseIntegerOption('liquidity sats'),
-    )
     .option('--tag <tag...>', 'Category tag (repeatable)')
     .option('--thumbnail <path>', 'Thumbnail file path on the daemon host')
     .option('--trust-engine-url', 'Trust the configured engine URL without prompting')
@@ -227,7 +223,6 @@ function registerMarketCommand(program: Command): void {
         description: options.description,
         outcomes: options.outcomes,
       }
-      if (options.liquiditySats !== undefined) params.liquiditySats = options.liquiditySats
       if (options.tag !== undefined && options.tag.length > 0) params.tags = options.tag
       if (options.thumbnail !== undefined) params.thumbnailPath = options.thumbnail
       if (isDryRun(options)) {
@@ -278,7 +273,6 @@ interface MarketCreateOptions {
   title: string
   description: string
   outcomes: string[]
-  liquiditySats?: number
   tag?: string[]
   thumbnail?: string
   trustEngineUrl?: boolean
@@ -383,7 +377,7 @@ function registerWalletCommand(program: Command): void {
       'Stable recovery job id. Reuse it for later invocations until recovery completes',
     )
     .requiredOption('--mint <url>', 'Canonical mint origin')
-    .requiredOption('--unit <unit>', 'Mint unit: sat or msat')
+    .requiredOption('--unit <unit>', 'Product mint unit: msat')
     .option(
       '--acknowledge-seed-disclosure',
       'Acknowledge that recovery discloses deterministic proof candidates to the mint',
@@ -402,8 +396,8 @@ function registerWalletCommand(program: Command): void {
         if (options.acknowledgeSeedDisclosure !== true) {
           throwUsage('wallet recover-seed requires --acknowledge-seed-disclosure')
         }
-        if (options.unit !== 'sat' && options.unit !== 'msat') {
-          throwUsage('wallet recover-seed unit must be sat or msat')
+        if (options.unit !== 'msat') {
+          throwUsage('wallet recover-seed unit must be msat')
         }
         if (isDryRun(options)) {
           printDryRun({
@@ -448,8 +442,8 @@ function registerWalletCommand(program: Command): void {
         amountSats: string,
         options: { mint?: string; operationId?: string; dryRun?: boolean },
       ) => {
-        const params: { amountSats: number; mintUrl?: string; operationId?: string } = {
-          amountSats: parseIntegerArg(amountSats, 'amount sats'),
+        const params: { amountMsat: number; mintUrl?: string; operationId?: string } = {
+          amountMsat: parseSatsToMsat(amountSats),
         }
         if (options.mint !== undefined) params.mintUrl = options.mint
         if (options.operationId !== undefined) params.operationId = options.operationId
@@ -557,12 +551,13 @@ function registerWalletSplitCommand(wallet: Command, name: string, hidden = fals
         amountSats: string,
         options: { mint?: string; operationId?: string; dryRun?: boolean },
       ) => {
+        const amountMsat = parsePositiveSatsToMsat(amountSats)
         const params: {
           conditionId: string
-          amountSats: number
+          amountMsat: number
           mintUrl?: string
           operationId?: string
-        } = { conditionId, amountSats: parseIntegerArg(amountSats, 'amount sats') }
+        } = { conditionId, amountMsat }
         if (options.mint !== undefined) params.mintUrl = options.mint
         if (options.operationId !== undefined) params.operationId = options.operationId
         if (isDryRun(options)) {
@@ -663,7 +658,7 @@ function registerOrderCommand(program: Command): void {
     .description('Submit, inspect, list, cancel orders, and read order books.')
     .addHelpText(
       'after',
-      '\nExamples:\n  bitcaster-cli order submit --market cond-YES --outcome YES --side Buy --price 4200 --amount 10000\n  bitcaster-cli order book <market-id>',
+      '\nExamples:\n  bitcaster-cli order submit --market cond-YES --outcome YES --side Buy --price 420 --amount-msat 1000\n  bitcaster-cli order book <market-id>',
     )
 
   order
@@ -673,26 +668,16 @@ function registerOrderCommand(program: Command): void {
     .option('--outcome <id>', 'Outcome id')
     .option('--side <side>', 'Order side: buy or sell', parseSide)
     .option('--price <n>', 'Limit price', parseIntegerOption('price'))
+    .option('--amount-msat <msat>', 'Order face amount in msat', parseIntegerOption('amount msat'))
     .option(
-      '--amount <subunits>',
-      'Amount in market subunits',
-      parseIntegerOption('amount subunits'),
-    )
-    .option(
-      '--min-fill <subunits>',
-      'Minimum fill in market subunits (default: one whole tradable unit)',
-      parseIntegerOption('minimum fill subunits'),
-    )
-    .option(
-      '--continue-after-partial-fill',
-      'Create a fresh successor order after a confirmed partial resting-order fill',
+      '--min-fill-msat <msat>',
+      'Minimum fill in msat (default: one whole share, 1000 msat)',
+      parseIntegerOption('minimum fill msat'),
     )
     .option(
       '--consolidate-proofs',
       'Allow bounded proof consolidation before this order (default: off)',
     )
-    .option('--tif <tif>', 'Time in force: GTC, GTD, FAK, or FOK', parseTimeInForce, 'GTC')
-    .option('--expires-at <time>', 'Required ISO 8601 UTC expiry for GTD', parseIsoDateTime)
     .option('--token-side <side>', 'Token side: Outcome or Complement', parseTokenSide)
     .option('--no-preflight-split', 'Disable preflight complete-set split')
     .option(
@@ -701,7 +686,7 @@ function registerOrderCommand(program: Command): void {
     )
     .addHelpText(
       'after',
-      '\nExample:\n  bitcaster-cli --dry-run order submit --market cond-YES --outcome YES --side Buy --price 4200 --amount 10000 --tif FAK',
+      '\nExample:\n  bitcaster-cli --dry-run order submit --market cond-YES --outcome YES --side Buy --price 420 --amount-msat 1000',
     )
     .action(async (options: OrderSubmitOptions, command: Command) => {
       const params = orderSubmitParams(options, command.args)
@@ -761,11 +746,9 @@ interface OrderSubmitOptions {
   outcome?: string
   side?: 'Buy' | 'Sell'
   price?: number
-  amount?: number
-  minFill?: number
-  continueAfterPartialFill?: boolean
+  amountMsat?: number
+  minFillMsat?: number
   consolidateProofs?: boolean
-  tif: 'FAK' | 'FOK' | 'GTC' | 'GTD'
   expiresAt?: string
   tokenSide?: 'Outcome' | 'Complement'
   preflightSplit: boolean
@@ -780,9 +763,8 @@ interface OrderSubmitParams {
   price: number
   amountSubunits: number
   minimumFillAmountSubunits?: number
-  continueAfterPartialFill: boolean
   consolidateProofs: boolean
-  timeInForce: 'FAK' | 'FOK' | 'GTC' | 'GTD'
+  timeInForce: 'FOK'
   expiresAt: string | null
   preflightSplit: boolean
 }
@@ -792,12 +774,9 @@ function orderSubmitParams(options: OrderSubmitOptions, positionals: string[]): 
     throwUsage(`Unexpected order submit argument: ${positionals[0]}`)
   }
 
-  const minimumFillAmountSubunits = options.minFill
-  if (options.tif === 'GTD' && options.expiresAt === undefined) {
-    throwUsage('Missing expires-at for GTD order')
-  }
-  if (options.tif !== 'GTD' && options.expiresAt !== undefined) {
-    throwUsage('expires-at is valid only for GTD order')
+  const minimumFillAmountSubunits = options.minFillMsat
+  if (options.expiresAt !== undefined) {
+    throwUsage('expires-at is not available for public FOK orders')
   }
   return {
     marketId: requiredArg(options.market, 'market'),
@@ -805,11 +784,10 @@ function orderSubmitParams(options: OrderSubmitOptions, positionals: string[]): 
     tokenSide: options.tokenSide ?? 'Outcome',
     side: requiredParsedOption(options.side, 'side'),
     price: requiredParsedOption(options.price, 'price'),
-    amountSubunits: requiredParsedOption(options.amount, 'amount subunits'),
+    amountSubunits: requiredParsedOption(options.amountMsat, 'amount msat'),
     ...(minimumFillAmountSubunits === undefined ? {} : { minimumFillAmountSubunits }),
-    continueAfterPartialFill: options.continueAfterPartialFill === true,
     consolidateProofs: options.consolidateProofs === true,
-    timeInForce: options.tif,
+    timeInForce: 'FOK',
     expiresAt: options.expiresAt ?? null,
     preflightSplit: options.preflightSplit,
   }
@@ -1281,6 +1259,17 @@ function parseIntegerArg(value: string | undefined, name: string): number {
   throwUsage(`Invalid ${name}: ${raw}`)
 }
 
+function parsePositiveSatsToMsat(value: string | undefined): number {
+  const raw = requiredArg(value, 'amount sats')
+  try {
+    const parsed = parseSatsToMsat(raw)
+    if (parsed > 0) return parsed
+  } catch {
+    // Convert parser failures into the CLI's standard usage error below.
+  }
+  throwUsage(`Invalid amount sats: ${raw}`)
+}
+
 function parseNonNegativeIntegerArg(value: string | undefined, name: string): number {
   const raw = requiredArg(value, name)
   const parsed = Number(raw)
@@ -1303,18 +1292,6 @@ function parseTokenSide(value: string): 'Outcome' | 'Complement' {
   if (value === 'Outcome') return 'Outcome'
   if (value === 'Complement') return 'Complement'
   throwUsage(`Invalid token side: ${value}`)
-}
-
-function parseTimeInForce(value: string): 'FAK' | 'FOK' | 'GTC' | 'GTD' {
-  const upper = value.toUpperCase()
-  if (upper === 'FAK' || upper === 'FOK' || upper === 'GTC' || upper === 'GTD') return upper
-  throwUsage(`Invalid time in force: ${value}`)
-}
-
-function parseIsoDateTime(value: string): string {
-  const time = Date.parse(value)
-  if (!Number.isFinite(time)) throwUsage(`Invalid ISO 8601 time: ${value}`)
-  return new Date(time).toISOString()
 }
 
 function parseMarketState(value: string): 'Open' | 'Closed' | 'Resolved' | 'All' {

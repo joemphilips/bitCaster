@@ -471,8 +471,8 @@ switch (command) {
           await orderHub.trackOrder(marketId, orderId)
           await startOrderHubWhenReady()
         },
-        prepareSettlementCapability: (input, client) =>
-          rangeOrderCoordinator.prepare(input, client),
+        prepareSettlementCapability: (input, client, beforeCreateCapability) =>
+          rangeOrderCoordinator.prepare(input, client, beforeCreateCapability),
         triggerSettlementRecovery: () => rangeRecoveryLoop?.trigger(),
         triggerCustodyRecovery: () => nonRetirementRecoveryLoop?.trigger(),
         getCustodyFence: currentFence,
@@ -528,7 +528,7 @@ switch (command) {
   bitcaster-daemon [--datadir <path>] init [--wallet-seed-hex-file <path>]
                          [--nostr-secret-key-hex-file <path>]
   bitcaster-daemon [--datadir <path>] recover-seed --wallet-seed-hex-file <path>
-                         --recovery-id <id> --mint <url> --unit <sat|msat>
+                         --recovery-id <id> --mint <url> --unit <msat>
                          --acknowledge-seed-disclosure
   bitcaster-daemon [--datadir <path>] run
 `)
@@ -556,14 +556,15 @@ function parseRecoverSeedOptions(args: readonly string[]): {
     const value = requiredArg(args[++index], option ?? 'recover-seed option')
     if (option === '--recovery-id') recoveryId = value
     else if (option === '--mint') mintUrl = value
-    else if (option === '--unit' && (value === 'sat' || value === 'msat')) unit = value
+    else if (option === '--unit' && value === 'msat') unit = value
+    else if (option === '--unit') throw new Error('recover-seed unit must be msat')
     else if (option === '--wallet-seed-hex-file') walletSeedHexFile = value
     else throw new Error(`Unknown recover-seed option: ${option}`)
   }
   if (!disclosureAcknowledged) {
     throw new Error('recover-seed requires --acknowledge-seed-disclosure')
   }
-  if (unit === undefined) throw new Error('recover-seed unit must be sat or msat')
+  if (unit === undefined) throw new Error('recover-seed unit must be msat')
   return {
     recoveryId: requiredArg(recoveryId, '--recovery-id'),
     mintUrl: requiredArg(mintUrl, '--mint'),

@@ -4,10 +4,9 @@ import { FundRow } from "./FundRow";
 
 interface FundsListProps {
   funds: Fund[];
-  onViewFund?: (fundId: string) => void;
 }
 
-export function FundsList({ funds, onViewFund }: FundsListProps) {
+export function FundsList({ funds }: FundsListProps) {
   const { t } = useTranslation();
   if (funds.length === 0) {
     return (
@@ -18,10 +17,10 @@ export function FundsList({ funds, onViewFund }: FundsListProps) {
   }
 
   return (
-    <div className="space-y-1">
+    <ul className="space-y-1" aria-label={t("portfolio.funds")}>
       {funds.map((fund) => (
-        <FundRow key={fund.id} fund={fund} onView={onViewFund} />
+        <FundRow key={fund.id} fund={fund} />
       ))}
-    </div>
+    </ul>
   );
 }

@@ -95,7 +95,10 @@ export function createDurableCustodyProofOperation(input: {
     proofLineage: {
       predecessorProofIds: inputProofs.map(({ proofId }) => proofId),
       successorProofIds,
-      successorAdmissionMode: operation.kind === 'ctf-range-authorization' ? 'subset' : 'exact',
+      successorAdmissionMode:
+        operation.kind === 'ctf-range-authorization' || operation.kind === 'wallet-melt'
+          ? 'subset'
+          : 'exact',
     },
     exactRequest: {
       requestId: handle('request', fingerprints.requestFingerprint),

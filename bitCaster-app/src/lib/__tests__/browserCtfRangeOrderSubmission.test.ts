@@ -2,11 +2,19 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { TradeTicket } from "@bitcaster/client-sdk/tradeTicket";
 import type { MarketDetail } from "@/types/market-detail";
 import {
+  BrowserCtfRangeScoreTopUpCancelledError,
+  BrowserCtfRangeScoreTopUpRequiredError,
   previewBrowserCtfRangeOrderFees,
   recoverBrowserCtfRangeOrder,
   recoverBrowserCtfRangeOrders,
   submitBrowserCtfRangeOrder,
+  type BrowserCtfRangeOrderSubmission,
 } from "../browserCtfRangeOrderSubmission";
+import { BrowserCtfRangeOrderError } from "../browserCtfRangeOrderCoordinator";
+import {
+  listenForBrowserCtfRangeRecoveryWake,
+  publishBrowserCtfRangeRecoveryWake,
+} from "../browserCtfRangeOrderRecoveryWake";
 
 const KEYSET_KEYS = Object.fromEntries(
   [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384].map((amount) => [
@@ -31,7 +39,9 @@ const mocks = vi.hoisted(() => ({
   recoverPage: vi.fn(),
   recoverClientOrder: vi.fn(),
   recoverFundedAsset: vi.fn(),
+  readPreparation: vi.fn(),
   recordMessage: vi.fn(),
+  ensureParticipationScoreForNextMatch: vi.fn(),
   database: {},
   wallet: {},
 }));
@@ -60,7 +70,7 @@ vi.mock("@/stores/proof-db", () => ({
 }));
 
 vi.mock("@/stores/ctf-range-order-db", () => ({
-  readCtfRangePreparation: vi.fn().mockResolvedValue(null),
+  readCtfRangePreparation: mocks.readPreparation,
 }));
 
 vi.mock("@/stores/ctf-range-order-messages", () => ({
@@ -73,6 +83,10 @@ vi.mock("@/stores/wallet", () => ({
 
 vi.mock("../markets", () => ({
   createAuthenticatedBrowserEngineClient: () => mocks.engine,
+}));
+
+vi.mock("../participationScorePayment", () => ({
+  ensureParticipationScoreForNextMatch: mocks.ensureParticipationScoreForNextMatch,
 }));
 
 vi.mock("../browserCtfRangeOrderCoordinator", () => ({
@@ -155,11 +169,79 @@ describe("submitBrowserCtfRangeOrder", () => {
     mocks.prepareAndSubmit.mockResolvedValue({ orderId: "order-1" });
     mocks.recoverPage.mockReset();
     mocks.recoverClientOrder.mockReset();
+    mocks.readPreparation.mockResolvedValue(null);
+    mocks.readPreparation.mockClear();
     mocks.recordMessage.mockResolvedValue(undefined);
+    mocks.ensureParticipationScoreForNextMatch.mockReset();
     mocks.recoverFundedAsset.mockImplementation(async ({ loadPlan }) => ({
       kind: "ready",
       plan: await loadPlan(),
     }));
+  });
+
+  it("wakes existing recovery once after a failed active attempt retains work", async () => {
+    let rejectAttempt!: (error: Error) => void;
+    mocks.prepareAndSubmit.mockImplementationOnce(
+      () => new Promise<never>((_resolve, reject) => (rejectAttempt = reject)),
+    );
+    mocks.readPreparation.mockResolvedValue({ lifecycleState: "prepared" });
+    const wakes: string[] = [];
+    const stopWake = listenForBrowserCtfRangeRecoveryWake("custody:wallet:scope-1", () => {
+      wakes.push("wake");
+    });
+
+    const submission = submitRangeOrder("client-retained-recovery");
+    await vi.waitFor(() => expect(mocks.prepareAndSubmit).toHaveBeenCalledOnce());
+    expect(wakes).toHaveLength(0);
+    rejectAttempt(new Error("active attempt failed"));
+    await expect(submission).rejects.toThrow("active attempt failed");
+
+    expect(wakes).toEqual(["wake"]);
+    stopWake();
+  });
+
+  it("does not wake for a successful or terminal active attempt", async () => {
+    const wakes: string[] = [];
+    const stopWake = listenForBrowserCtfRangeRecoveryWake("custody:wallet:scope-1", () => {
+      wakes.push("wake");
+    });
+
+    await expect(submitRangeOrder("client-success-no-recovery")).resolves.toEqual({
+      orderId: "order-1",
+    });
+    expect(wakes).toHaveLength(0);
+
+    mocks.prepareAndSubmit.mockRejectedValueOnce(new Error("terminal attempt failed"));
+    mocks.readPreparation.mockResolvedValue({ lifecycleState: "terminal" });
+    await expect(submitRangeOrder("client-terminal-no-recovery")).rejects.toThrow(
+      "terminal attempt failed",
+    );
+    expect(wakes).toHaveLength(0);
+    stopWake();
+  });
+
+  it("lets a recovery wake run recovery without submitting a new order", async () => {
+    mocks.recoverPage.mockResolvedValue({
+      recoveredOperationIds: [],
+      pending: [],
+      nextCursor: null,
+    });
+    const recovery = vi.fn(() =>
+      recoverBrowserCtfRangeOrders({
+        mnemonic:
+          "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+        mintUrls: ["https://mint.example"],
+      }),
+    );
+    const stopWake = listenForBrowserCtfRangeRecoveryWake("custody:wallet:scope-1", () => {
+      void recovery();
+    });
+
+    publishBrowserCtfRangeRecoveryWake({ scopeId: "custody:wallet:scope-1" });
+    await vi.waitFor(() => expect(recovery).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(mocks.recoverPage).toHaveBeenCalledOnce());
+    expect(mocks.prepareAndSubmit).not.toHaveBeenCalled();
+    stopWake();
   });
 
   it("recovers an insufficient explicit submission before returning insufficient funds", async () => {
@@ -175,16 +257,16 @@ describe("submitBrowserCtfRangeOrder", () => {
             outcomeId: "YES",
             tokenSide: "Outcome",
             side: "Buy",
-            price: 4_000,
-            amountSubunits: 10_000,
-            timeInForce: "FAK",
+            price: 400,
+            amountSubunits: 1_000,
+            timeInForce: "FOK",
           },
         },
         clientOrderId: "client-recover",
         mintUrl: "https://mint.example",
         mnemonic:
           "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
-        expectedConsolidationFeeSubunits: 0,
+        consentedFeeFacts: feeFacts(),
       }),
     ).rejects.toMatchObject({ code: "insufficient-funds" });
 
@@ -204,16 +286,16 @@ describe("submitBrowserCtfRangeOrder", () => {
             outcomeId: "YES",
             tokenSide: "Outcome",
             side: "Buy",
-            price: 4_000,
-            amountSubunits: 10_000,
-            timeInForce: "FAK",
+            price: 400,
+            amountSubunits: 1_000,
+            timeInForce: "FOK",
           },
         },
         clientOrderId: "client-recovery-error",
         mintUrl: "https://mint.example",
         mnemonic:
           "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
-        expectedConsolidationFeeSubunits: 0,
+        consentedFeeFacts: feeFacts(),
       }),
     ).rejects.toMatchObject({ code: "asset-recovery-failed" });
 
@@ -252,19 +334,16 @@ describe("submitBrowserCtfRangeOrder", () => {
     expect(mocks.prepareAndSubmit).toHaveBeenCalledOnce();
   });
 
-  it.each([
-    ["FAK", "FAK"],
-    ["GTC", "FOK"],
-  ] as const)("submits a durable %s ticket as immediate %s", async (ticketTif, expectedTif) => {
+  it("submits a durable FOK ticket as GUI FOK", async () => {
     const ticket: TradeTicket = {
       marketId: "condition-1-YES",
       request: {
         outcomeId: "YES",
         tokenSide: "Outcome",
         side: "Buy",
-        price: 4_000,
-        amountSubunits: 10_000,
-        timeInForce: ticketTif,
+        price: 400,
+        amountSubunits: 1_000,
+        timeInForce: "FOK",
       },
     };
 
@@ -275,7 +354,7 @@ describe("submitBrowserCtfRangeOrder", () => {
       mintUrl: "https://mint.example",
       mnemonic:
         "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
-      expectedConsolidationFeeSubunits: 0,
+      consentedFeeFacts: feeFacts(),
     });
 
     expect(mocks.buildPreparation).toHaveBeenCalledWith(
@@ -284,10 +363,10 @@ describe("submitBrowserCtfRangeOrder", () => {
           marketId: ticket.marketId,
           conditionId: "condition-1",
           clientOrderId: "client-1",
-          minimumFillAmountSubunits: 10_000,
+          minimumFillAmountSubunits: 1_000,
           baseAsset: "sat",
           collateralUnit: "msat",
-          timeInForce: expectedTif,
+          timeInForce: "FOK",
         }),
       }),
     );
@@ -307,6 +386,302 @@ describe("submitBrowserCtfRangeOrder", () => {
     );
   });
 
+  it("awaits Score top-up before rerunning the exact required tariff", async () => {
+    const score = { purchasedTotal: 0, balance: -3, enabled: true };
+    mocks.ensureParticipationScoreForNextMatch
+      .mockResolvedValueOnce({
+        kind: "needs-regular-top-up",
+        score,
+        requiredSats: 3,
+        balanceSats: 0,
+        deficitSats: 3,
+        recoveryStatus: "insufficient",
+      })
+      .mockResolvedValueOnce({ kind: "sufficient", score: { ...score, balance: 3 } });
+    let releaseTopUp!: () => void;
+    const onScoreTopUpRequired = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          releaseTopUp = resolve;
+        }),
+    );
+
+    await submitBrowserCtfRangeOrder({
+      market: market(),
+      ticket: {
+        marketId: "condition-1-YES",
+        request: {
+          outcomeId: "YES",
+          tokenSide: "Outcome",
+          side: "Buy",
+          price: 400,
+          amountSubunits: 1_000,
+          timeInForce: "FOK",
+        },
+      },
+      clientOrderId: "client-score-top-up",
+      mintUrl: "https://mint.example",
+      mnemonic:
+        "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+      consentedFeeFacts: feeFacts(),
+      onScoreTopUpRequired,
+    });
+    const beforeCreateCapability = (
+      mocks.coordinatorInput as {
+        beforeCreateCapability: (input: {
+          mintUrl: string;
+          requiredScore: number;
+        }) => Promise<void>;
+      }
+    ).beforeCreateCapability;
+    const continuation = beforeCreateCapability({
+      mintUrl: "https://mint.example",
+      requiredScore: 7,
+    });
+    await Promise.resolve();
+    expect(onScoreTopUpRequired).toHaveBeenCalledWith({
+      requiredSats: 3,
+      balanceSats: 0,
+      recoveryStatus: "insufficient",
+    });
+    expect(mocks.ensureParticipationScoreForNextMatch).toHaveBeenNthCalledWith(1, {
+      mintUrl: "https://mint.example",
+      requiredScore: 7,
+    });
+    let completed = false;
+    void continuation.then(() => {
+      completed = true;
+    });
+    await Promise.resolve();
+    expect(completed).toBe(false);
+
+    releaseTopUp();
+    await continuation;
+    expect(mocks.ensureParticipationScoreForNextMatch).toHaveBeenNthCalledWith(2, {
+      mintUrl: "https://mint.example",
+      requiredScore: 7,
+    });
+  });
+
+  it("requires a new explicit continuation for every unavailable Score retry", async () => {
+    const score = { purchasedTotal: 0, balance: -3, enabled: true };
+    mocks.ensureParticipationScoreForNextMatch
+      .mockResolvedValueOnce({
+        kind: "needs-regular-top-up",
+        score,
+        requiredSats: 3,
+        balanceSats: 0,
+        deficitSats: 3,
+        recoveryStatus: "unavailable",
+      })
+      .mockResolvedValueOnce({
+        kind: "needs-regular-top-up",
+        score,
+        requiredSats: 3,
+        balanceSats: 0,
+        deficitSats: 3,
+        recoveryStatus: "unavailable",
+      })
+      .mockResolvedValueOnce({ kind: "sufficient", score: { ...score, balance: 3 } });
+    const releases: Array<() => void> = [];
+    const onScoreTopUpRequired = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          releases.push(resolve);
+        }),
+    );
+
+    await submitBrowserCtfRangeOrder(scoreOrderInput(onScoreTopUpRequired));
+
+    const beforeCreateCapability = (
+      mocks.coordinatorInput as {
+        beforeCreateCapability: (input: {
+          mintUrl: string;
+          requiredScore: number;
+        }) => Promise<void>;
+      }
+    ).beforeCreateCapability;
+
+    const continuation = beforeCreateCapability({
+      mintUrl: "https://mint.example",
+      requiredScore: 7,
+    });
+    await Promise.resolve();
+    expect(onScoreTopUpRequired).toHaveBeenCalledWith({
+      requiredSats: 3,
+      balanceSats: 0,
+      recoveryStatus: "unavailable",
+    });
+    expect(onScoreTopUpRequired).toHaveBeenCalledTimes(1);
+    expect(releases).toHaveLength(1);
+    expect(mocks.ensureParticipationScoreForNextMatch).toHaveBeenCalledTimes(1);
+    let completed = false;
+    void continuation.then(() => {
+      completed = true;
+    });
+    await Promise.resolve();
+    expect(completed).toBe(false);
+
+    releases[0]!();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(onScoreTopUpRequired).toHaveBeenCalledTimes(2);
+    expect(releases).toHaveLength(2);
+    expect(mocks.ensureParticipationScoreForNextMatch).toHaveBeenCalledTimes(2);
+    expect(completed).toBe(false);
+
+    releases[1]!();
+    await continuation;
+    expect(mocks.ensureParticipationScoreForNextMatch).toHaveBeenCalledTimes(3);
+    expect(mocks.ensureParticipationScoreForNextMatch).toHaveBeenNthCalledWith(1, {
+      mintUrl: "https://mint.example",
+      requiredScore: 7,
+    });
+    expect(mocks.ensureParticipationScoreForNextMatch).toHaveBeenNthCalledWith(2, {
+      mintUrl: "https://mint.example",
+      requiredScore: 7,
+    });
+    expect(mocks.ensureParticipationScoreForNextMatch).toHaveBeenNthCalledWith(3, {
+      mintUrl: "https://mint.example",
+      requiredScore: 7,
+    });
+    expect(mocks.prepareAndSubmit).toHaveBeenCalledOnce();
+  });
+
+  it("throws the typed Score top-up error when no continuation is available", async () => {
+    mocks.ensureParticipationScoreForNextMatch.mockResolvedValueOnce({
+      kind: "needs-regular-top-up",
+      score: { purchasedTotal: 0, balance: -3, enabled: true },
+      requiredSats: 3,
+      balanceSats: null,
+      deficitSats: null,
+      recoveryStatus: "unavailable",
+    });
+
+    await submitBrowserCtfRangeOrder(scoreOrderInput());
+    const beforeCreateCapability = (
+      mocks.coordinatorInput as {
+        beforeCreateCapability: (input: {
+          mintUrl: string;
+          requiredScore: number;
+        }) => Promise<void>;
+      }
+    ).beforeCreateCapability;
+
+    await expect(
+      beforeCreateCapability({ mintUrl: "https://mint.example", requiredScore: 7 }),
+    ).rejects.toMatchObject({
+      name: "BrowserCtfRangeScoreTopUpRequiredError",
+      recoveryStatus: "unavailable",
+      balanceSats: null,
+    });
+    expect(mocks.ensureParticipationScoreForNextMatch).toHaveBeenCalledOnce();
+  });
+
+  it("propagates Score top-up cancellation without another ensure", async () => {
+    const cancellation = new BrowserCtfRangeScoreTopUpCancelledError();
+    mocks.ensureParticipationScoreForNextMatch.mockResolvedValueOnce({
+      kind: "needs-regular-top-up",
+      score: { purchasedTotal: 0, balance: -3, enabled: true },
+      requiredSats: 3,
+      balanceSats: 0,
+      deficitSats: 3,
+      recoveryStatus: "unavailable",
+    });
+    const onScoreTopUpRequired = vi.fn().mockRejectedValue(cancellation);
+
+    await submitBrowserCtfRangeOrder(scoreOrderInput(onScoreTopUpRequired));
+    const beforeCreateCapability = (
+      mocks.coordinatorInput as {
+        beforeCreateCapability: (input: {
+          mintUrl: string;
+          requiredScore: number;
+        }) => Promise<void>;
+      }
+    ).beforeCreateCapability;
+
+    await expect(
+      beforeCreateCapability({ mintUrl: "https://mint.example", requiredScore: 7 }),
+    ).rejects.toBe(cancellation);
+    expect(onScoreTopUpRequired).toHaveBeenCalledOnce();
+    expect(mocks.ensureParticipationScoreForNextMatch).toHaveBeenCalledOnce();
+  });
+
+  it("records a retained-funds explanation for a cancelled Score continuation", async () => {
+    const cancellation = new BrowserCtfRangeScoreTopUpCancelledError();
+    mocks.readPreparation.mockResolvedValue({ revision: 3, lifecycleState: "prepared" });
+    mocks.prepareAndSubmit.mockRejectedValueOnce(cancellation);
+
+    await expect(submitRangeOrder("client-score-cancelled")).rejects.toBe(cancellation);
+
+    expect(mocks.recordMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        operationId: "range-operation",
+        revision: 3,
+        code: "score-top-up-cancelled",
+        kind: "order",
+      }),
+    );
+    expect(mocks.recordMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        operationId: "range-operation",
+        revision: 3,
+        code: "recovery-pending",
+        kind: "funds",
+      }),
+    );
+  });
+
+  it("records a retained-funds explanation for required Score continuation", async () => {
+    const required = new BrowserCtfRangeScoreTopUpRequiredError({
+      requiredSats: 3,
+      balanceSats: 0,
+      recoveryStatus: "insufficient",
+    });
+    mocks.readPreparation.mockResolvedValue({ revision: 4, lifecycleState: "prepared" });
+    mocks.prepareAndSubmit.mockRejectedValueOnce(required);
+
+    await expect(submitRangeOrder("client-score-required")).rejects.toBe(required);
+
+    expect(mocks.recordMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        operationId: "range-operation",
+        revision: 4,
+        code: "score-top-up-required",
+        kind: "order",
+      }),
+    );
+    expect(mocks.recordMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        operationId: "range-operation",
+        revision: 4,
+        code: "recovery-pending",
+        kind: "funds",
+      }),
+    );
+  });
+
+  it("records a terminal order explanation without stale pending-funds recovery", async () => {
+    const ended = new BrowserCtfRangeOrderError(
+      "order-attempt-ended",
+      "The prepared order attempt ended before capability creation. No order was submitted.",
+    );
+    mocks.readPreparation.mockResolvedValue({ revision: 5, lifecycleState: "terminal" });
+    mocks.prepareAndSubmit.mockRejectedValueOnce(ended);
+
+    await expect(submitRangeOrder("client-score-terminal")).rejects.toBe(ended);
+
+    expect(mocks.recordMessage).toHaveBeenCalledTimes(1);
+    expect(mocks.recordMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        operationId: "range-operation",
+        revision: 5,
+        code: "order-attempt-ended",
+        kind: "order",
+      }),
+    );
+  });
+
   it.each(["Outcome", "Complement"] as const)(
     "selects exact conditional %s proofs for a Sell order",
     async (tokenSide) => {
@@ -316,9 +691,9 @@ describe("submitBrowserCtfRangeOrder", () => {
           outcomeId: "YES",
           tokenSide,
           side: "Sell",
-          price: 4_000,
-          amountSubunits: 10_000,
-          timeInForce: "FAK",
+          price: 400,
+          amountSubunits: 1_000,
+          timeInForce: "FOK",
         },
       };
 
@@ -329,7 +704,7 @@ describe("submitBrowserCtfRangeOrder", () => {
         mintUrl: "https://mint.example",
         mnemonic:
           "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
-        expectedConsolidationFeeSubunits: 0,
+        consentedFeeFacts: feeFacts("Sell"),
       });
 
       expect(mocks.getBoundedCanonicalRangeProofsForKeyset).toHaveBeenCalledWith(
@@ -360,24 +735,32 @@ describe("submitBrowserCtfRangeOrder", () => {
             outcomeId: "YES",
             tokenSide: "Outcome",
             side: "Buy",
-            price: 4_000,
-            amountSubunits: 10_000,
-            timeInForce: "FAK",
+            price: 400,
+            amountSubunits: 1_000,
+            timeInForce: "FOK",
           },
         },
         mintUrl: "https://mint.example",
       }),
-    ).resolves.toEqual({ consolidationFeeSubunits: 1, sourceFeeSubunits: 2 });
+    ).resolves.toEqual(feeFacts("Buy", { source: "2", consolidation: "1" }));
   });
 
   it("executes each planned consolidation round before source preparation", async () => {
-    mocks.planConsolidation.mockReturnValueOnce({
-      kind: "ready",
-      consolidationRounds: [{ inputs: ["4", "2"], outputs: ["4", "1"], fee: "1" }],
-      selectedInputs: ["4", "1"],
-      consolidationFee: "1",
-      sourceFee: "1",
-    });
+    mocks.planConsolidation
+      .mockReturnValueOnce({
+        kind: "ready",
+        consolidationRounds: [{ inputs: ["4", "2"], outputs: ["4", "1"], fee: "1" }],
+        selectedInputs: ["4", "1"],
+        consolidationFee: "1",
+        sourceFee: "1",
+      })
+      .mockReturnValueOnce({
+        kind: "ready",
+        consolidationRounds: [],
+        selectedInputs: ["10000"],
+        consolidationFee: "0",
+        sourceFee: "1",
+      });
     mocks.getBoundedCanonicalRangeProofsForKeyset
       .mockResolvedValueOnce([
         { id: "regular-keyset", amount: 4, secret: "four", C: "C-four" },
@@ -386,6 +769,10 @@ describe("submitBrowserCtfRangeOrder", () => {
       .mockResolvedValueOnce([
         { id: "regular-keyset", amount: 4, secret: "four", C: "C-four" },
         { id: "regular-keyset", amount: 2, secret: "two", C: "C-two" },
+      ])
+      .mockResolvedValueOnce([
+        { id: "regular-keyset", amount: 4, secret: "four", C: "C-four" },
+        { id: "regular-keyset", amount: 1, secret: "one", C: "C-one" },
       ])
       .mockResolvedValueOnce(mocks.candidates);
 
@@ -397,16 +784,16 @@ describe("submitBrowserCtfRangeOrder", () => {
           outcomeId: "YES",
           tokenSide: "Outcome",
           side: "Buy",
-          price: 4_000,
-          amountSubunits: 10_000,
-          timeInForce: "FAK",
+          price: 400,
+          amountSubunits: 1_000,
+          timeInForce: "FOK",
         },
       },
       clientOrderId: "client-consolidated",
       mintUrl: "https://mint.example",
       mnemonic:
         "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
-      expectedConsolidationFeeSubunits: 1,
+      consentedFeeFacts: feeFacts("Buy", { source: "1", consolidation: "1" }),
     });
 
     expect(mocks.consolidateRound).toHaveBeenCalledOnce();
@@ -436,18 +823,42 @@ describe("submitBrowserCtfRangeOrder", () => {
             outcomeId: "YES",
             tokenSide: "Outcome",
             side: "Buy",
-            price: 4_000,
-            amountSubunits: 10_000,
-            timeInForce: "FAK",
+            price: 400,
+            amountSubunits: 1_000,
+            timeInForce: "FOK",
           },
         },
         clientOrderId: "client-declined",
         mintUrl: "https://mint.example",
         mnemonic:
           "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
-        expectedConsolidationFeeSubunits: 0,
+        consentedFeeFacts: feeFacts("Buy", { source: "1" }),
       }),
     ).rejects.toThrow("Wallet proof fees changed");
+
+    expect(mocks.consolidateRound).not.toHaveBeenCalled();
+    expect(mocks.prepareAndSubmit).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["settlement input", { settlement: "2" }],
+    ["source preparation", { source: "2" }],
+    ["consolidation", { consolidation: "2" }],
+  ] as const)("rejects a changed %s fee before the first consolidation", async (_label, change) => {
+    mocks.planConsolidation.mockReturnValueOnce({
+      kind: "ready",
+      consolidationRounds: [{ inputs: ["4", "2"], outputs: ["4", "1"], fee: "1" }],
+      selectedInputs: ["4", "1"],
+      consolidationFee: "1",
+      sourceFee: "1",
+    });
+
+    await expect(
+      submitRangeOrderWithFacts(
+        "client-changed-fee",
+        feeFacts("Buy", { source: "1", consolidation: "1", ...change }),
+      ),
+    ).rejects.toMatchObject({ code: "source-preparation-failed" });
 
     expect(mocks.consolidateRound).not.toHaveBeenCalled();
     expect(mocks.prepareAndSubmit).not.toHaveBeenCalled();
@@ -474,7 +885,7 @@ describe("submitBrowserCtfRangeOrder", () => {
       { id: "regular-keyset", amount: 2, secret: "two", C: "C-two" },
     ]);
 
-    await expect(submitRangeOrder("client-replanned-fee", 1)).rejects.toThrow(
+    await expect(submitRangeOrder("client-replanned-fee", 1, "1")).rejects.toThrow(
       "Wallet proof fees changed",
     );
 
@@ -489,9 +900,9 @@ describe("submitBrowserCtfRangeOrder", () => {
         outcomeId: "YES",
         tokenSide: "Outcome",
         side: "Buy",
-        price: 4_000,
-        amountSubunits: 10_000,
-        timeInForce: "FAK",
+        price: 400,
+        amountSubunits: 1_000,
+        timeInForce: "FOK",
       },
     };
     const input = {
@@ -500,7 +911,7 @@ describe("submitBrowserCtfRangeOrder", () => {
       mintUrl: "https://mint.example",
       mnemonic:
         "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
-      expectedConsolidationFeeSubunits: 0,
+      consentedFeeFacts: feeFacts(),
     };
 
     await submitBrowserCtfRangeOrder({ ...input, clientOrderId: "client-cache-1" });
@@ -520,15 +931,15 @@ describe("submitBrowserCtfRangeOrder", () => {
             outcomeId: "YES",
             tokenSide: "Outcome",
             side: "Buy",
-            price: 4_000,
-            amountSubunits: 10_000,
-            timeInForce: "FAK",
+            price: 400,
+            amountSubunits: 1_000,
+            timeInForce: "FOK",
           },
         },
         clientOrderId: "client-1",
         mintUrl: "https://mint.example",
         mnemonic: "",
-        expectedConsolidationFeeSubunits: 0,
+        consentedFeeFacts: feeFacts(),
       }),
     ).rejects.toThrow(/seed is unavailable/);
     expect(mocks.engine.getSettlementCapabilityAdmissionPolicy).not.toHaveBeenCalled();
@@ -612,7 +1023,7 @@ function market(): MarketDetail {
     id: "condition-1",
     type: "yesno",
     baseAsset: "sat",
-    divisibility: 10_000,
+    divisibility: 1_000,
     outcomes: [
       { id: "yes-id", label: "YES", odds: 50 },
       { id: "no-id", label: "NO", odds: 50 },
@@ -620,7 +1031,36 @@ function market(): MarketDetail {
   } as MarketDetail;
 }
 
-function submitRangeOrder(clientOrderId: string, expectedConsolidationFeeSubunits = 0) {
+function scoreOrderInput(
+  onScoreTopUpRequired?: BrowserCtfRangeOrderSubmission["onScoreTopUpRequired"],
+): BrowserCtfRangeOrderSubmission {
+  return {
+    market: market(),
+    ticket: {
+      marketId: "condition-1-YES",
+      request: {
+        outcomeId: "YES",
+        tokenSide: "Outcome",
+        side: "Buy",
+        price: 400,
+        amountSubunits: 1_000,
+        timeInForce: "FOK",
+      },
+    },
+    clientOrderId: "client-score-recovery-unavailable",
+    mintUrl: "https://mint.example",
+    mnemonic:
+      "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+    consentedFeeFacts: feeFacts(),
+    onScoreTopUpRequired,
+  };
+}
+
+function submitRangeOrder(
+  clientOrderId: string,
+  consolidationFeeSubunits = 0,
+  sourceFeeSubunits = "0",
+) {
   return submitBrowserCtfRangeOrder({
     market: market(),
     ticket: {
@@ -629,15 +1069,68 @@ function submitRangeOrder(clientOrderId: string, expectedConsolidationFeeSubunit
         outcomeId: "YES",
         tokenSide: "Outcome",
         side: "Buy",
-        price: 4_000,
-        amountSubunits: 10_000,
-        timeInForce: "FAK",
+        price: 400,
+        amountSubunits: 1_000,
+        timeInForce: "FOK",
       },
     },
     clientOrderId,
     mintUrl: "https://mint.example",
     mnemonic:
       "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
-    expectedConsolidationFeeSubunits,
+    consentedFeeFacts: feeFacts("Buy", {
+      source: sourceFeeSubunits,
+      consolidation: String(consolidationFeeSubunits),
+    }),
   });
+}
+
+function submitRangeOrderWithFacts(
+  clientOrderId: string,
+  consentedFeeFacts: ReturnType<typeof feeFacts>,
+) {
+  return submitBrowserCtfRangeOrder({
+    market: market(),
+    ticket: {
+      marketId: "condition-1-YES",
+      request: {
+        outcomeId: "YES",
+        tokenSide: "Outcome",
+        side: "Buy",
+        price: 400,
+        amountSubunits: 1_000,
+        timeInForce: "FOK",
+      },
+    },
+    clientOrderId,
+    mintUrl: "https://mint.example",
+    mnemonic:
+      "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+    consentedFeeFacts,
+  });
+}
+
+function feeFacts(
+  side: "Buy" | "Sell" = "Buy",
+  overrides: {
+    settlement?: string;
+    source?: string;
+    consolidation?: string;
+  } = {},
+) {
+  return {
+    settlementInputFeeSubunits: overrides.settlement ?? "1",
+    sourcePreparationFeeSubunits: overrides.source ?? "0",
+    consolidationFeeSubunits: overrides.consolidation ?? "0",
+    settlementAsset: { kind: "regular", unit: "msat" } as const,
+    preparationAsset:
+      side === "Buy"
+        ? ({ kind: "regular", unit: "msat" } as const)
+        : ({
+            kind: "conditional",
+            unit: "msat",
+            conditionId: "11".repeat(32),
+            outcomeCollection: "YES",
+          } as const),
+  };
 }

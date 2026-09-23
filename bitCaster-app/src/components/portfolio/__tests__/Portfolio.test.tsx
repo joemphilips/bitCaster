@@ -2,6 +2,7 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, it, expect, vi } from "vitest";
 import { Portfolio } from "../Portfolio";
+import { PositionRow } from "../PositionRow";
 import type {
   PortfolioProps,
   UserProfile,
@@ -53,7 +54,7 @@ const mockPositions: Position[] = [
     marketTitle: "Will Bitcoin reach $100K?",
     marketImageUrl: "/images/markets/bitcoin-100k.jpg",
     baseAsset: "sat",
-    divisibility: 10_000,
+    divisibility: 1_000,
     mintUrl: "https://mint.bitcaster.io",
     side: "yes",
     shares: 150,
@@ -74,7 +75,7 @@ const mockPositions: Position[] = [
     marketTitle: "Will Ethereum merge complete?",
     marketImageUrl: "/images/markets/eth-merge.jpg",
     baseAsset: "sat",
-    divisibility: 10_000,
+    divisibility: 1_000,
     mintUrl: "https://mint.bitcaster.io",
     side: "yes",
     shares: 100,
@@ -96,7 +97,7 @@ const mockPositions: Position[] = [
     marketTitle: "Will the Fed raise rates?",
     marketImageUrl: "/images/markets/fed-rates.jpg",
     baseAsset: "sat",
-    divisibility: 10_000,
+    divisibility: 1_000,
     mintUrl: "https://mint.bitcaster.io",
     side: "yes",
     shares: 250,
@@ -151,7 +152,7 @@ const mockCreatedMarkets: CreatedMarket[] = [
     title: "Will Lightning reach 100K channels?",
     imageUrl: "/images/markets/lightning-channels.jpg",
     baseAsset: "sat",
-    divisibility: 10_000,
+    divisibility: 1_000,
     status: "active",
     createdDate: "2025-11-20T14:00:00Z",
     volume: 456200,
@@ -163,7 +164,7 @@ const mockCreatedMarkets: CreatedMarket[] = [
     title: "Will Nostr reach 10M users?",
     imageUrl: "/images/markets/nostr-users.jpg",
     baseAsset: "sat",
-    divisibility: 10_000,
+    divisibility: 1_000,
     status: "resolved",
     createdDate: "2025-06-10T08:30:00Z",
     resolvedDate: "2025-12-31T23:59:59Z",
@@ -190,6 +191,108 @@ function renderPortfolio(overrides: Partial<PortfolioProps> = {}) {
   };
   return render(<Portfolio {...defaultProps} />);
 }
+
+describe("PositionRow", () => {
+  it.each([
+    {
+      profitLossSats: 1_000,
+      profitLossPercent: -8.5,
+      expected: "+1 sats (-8.5%)",
+      color: "text-emerald-500",
+    },
+    {
+      profitLossSats: 0,
+      profitLossPercent: -100,
+      expected: "0 sats (-100.0%)",
+      color: "text-rose-500",
+    },
+    {
+      profitLossSats: -1_000,
+      profitLossPercent: 8.5,
+      expected: "-1 sats (+8.5%)",
+      color: "text-rose-500",
+    },
+    {
+      profitLossSats: 0,
+      profitLossPercent: 0,
+      expected: "0 sats (0.0%)",
+      color: "text-emerald-500",
+    },
+  ])(
+    "formats amount and percentage signs independently: $expected",
+    ({ profitLossSats, profitLossPercent, expected, color }) => {
+      const { container } = render(
+        <PositionRow
+          position={{
+            ...mockPositions[0],
+            profitLossSats,
+            profitLossPercent,
+          }}
+        />,
+      );
+
+      const profitLoss = container.querySelector(".text-xs.font-mono");
+      expect(profitLoss).toHaveTextContent(expected);
+      expect(profitLoss).toHaveClass(color);
+    },
+  );
+
+  const actionScenarios = [
+    {
+      action: "Sell",
+      kind: "sell",
+      position: mockPositions[0],
+      buttonName: /sell.*bitcoin/i,
+    },
+    {
+      action: "Claim",
+      kind: "claim",
+      position: mockPositions[1],
+      buttonName: /claim payout.*ethereum/i,
+    },
+    {
+      action: "Remove",
+      kind: "discard",
+      position: mockPositions[2],
+      buttonName: /remove losing position.*fed/i,
+    },
+  ] as const;
+
+  const actionInteractions = actionScenarios.flatMap((scenario) => [
+    { ...scenario, interaction: "click" as const },
+    { ...scenario, interaction: "Enter" as const },
+    { ...scenario, interaction: "Space" as const },
+  ]);
+
+  it.each(actionInteractions)(
+    "$action $interaction activates without navigating the parent row",
+    async ({ kind, position, buttonName, interaction }) => {
+      const onView = vi.fn();
+      const onAction = vi.fn();
+      const actionProps =
+        kind === "sell"
+          ? { onSell: onAction }
+          : kind === "claim"
+            ? { onClaim: onAction }
+            : { onDiscard: onAction };
+      const user = userEvent.setup();
+
+      render(<PositionRow position={position} onView={onView} {...actionProps} />);
+      const button = screen.getByRole("button", { name: buttonName });
+
+      if (interaction === "click") {
+        await user.click(button);
+      } else {
+        button.focus();
+        await user.keyboard(interaction === "Enter" ? "{Enter}" : " ");
+      }
+
+      expect(onAction).toHaveBeenCalledOnce();
+      expect(onAction).toHaveBeenCalledWith(position.id);
+      expect(onView).not.toHaveBeenCalled();
+    },
+  );
+});
 
 describe("Portfolio", () => {
   describe("No Wallet State", () => {
@@ -245,6 +348,16 @@ describe("Portfolio", () => {
       expect(screen.getAllByText("Sats")).toHaveLength(2);
     });
 
+    it("renders funds as non-interactive list rows", async () => {
+      renderPortfolio();
+      await userEvent.click(screen.getByRole("tab", { name: /funds/i }));
+
+      expect(screen.getByRole("list", { name: "Funds" })).toBeInTheDocument();
+      const rows = screen.getAllByRole("listitem");
+      expect(rows).toHaveLength(2);
+      expect(rows.every((row) => row.querySelector("button") === null)).toBe(true);
+    });
+
     it("switches to activity tab", async () => {
       renderPortfolio();
       await userEvent.click(screen.getByRole("tab", { name: /activity/i }));
@@ -253,7 +366,77 @@ describe("Portfolio", () => {
     });
   });
 
+  describe("Monitoring status", () => {
+    it("shows updating and unavailable states without hiding unpriced positions", () => {
+      renderPortfolio({
+        positions: [
+          ...mockPositions,
+          {
+            ...mockPositions[0],
+            id: "unpriced-position",
+            marketTitle: "Unpriced position",
+            valueKnown: false,
+          },
+        ],
+        monitoring: {
+          stale: true,
+          incomplete: true,
+          building: true,
+          unvaluedAssetCount: 1,
+          hasPendingOutgoing: false,
+          pendingOutgoingValueMsat: null,
+          error: null,
+          assetPageError: null,
+          hasMoreAssets: false,
+          loadingMoreAssets: false,
+        },
+      });
+
+      expect(screen.getByText(/Portfolio monitoring: Updating/)).toBeInTheDocument();
+      expect(screen.getByText(/value\(s\) unavailable/)).toBeInTheDocument();
+      expect(screen.getByText("Unpriced position")).toBeInTheDocument();
+      expect(screen.queryByText(/stale|incomplete|building/)).not.toBeInTheDocument();
+    });
+  });
+
   describe("Positions", () => {
+    it("keeps pending removal visible after a remount", () => {
+      const position: Position = {
+        ...mockPositions[0],
+        status: "closed",
+        isWinner: false,
+        isLoser: true,
+        removalPending: true,
+      };
+      const props = { positions: [position], positionsTab: "closed" as const };
+      const view = renderPortfolio(props);
+      expect(screen.getByText(/Removal is not finished/)).toBeInTheDocument();
+      view.unmount();
+      renderPortfolio(props);
+      expect(screen.getByText(/Removal is not finished/)).toBeInTheDocument();
+      expect(screen.getByText(position.marketTitle)).toBeInTheDocument();
+    });
+
+    it("keeps pending Claim visible and retryable after a remount", async () => {
+      const position: Position = {
+        ...mockPositions[0],
+        status: "closed",
+        isWinner: false,
+        isLoser: false,
+        isPending: true,
+        canClaimPayout: true,
+        claimRecoveryPending: true,
+      };
+      const onClaimPayout = vi.fn();
+      const props = { positions: [position], positionsTab: "closed" as const, onClaimPayout };
+      const view = renderPortfolio(props);
+      expect(screen.getByText(/The claim is not finished/)).toBeInTheDocument();
+      view.unmount();
+      renderPortfolio(props);
+      expect(screen.getByText(/The claim is not finished/)).toBeInTheDocument();
+      await userEvent.click(screen.getByRole("button", { name: /claim payout/i }));
+      expect(onClaimPayout).toHaveBeenCalledWith(position.id);
+    });
     it("shows active positions by default", () => {
       renderPortfolio();
       expect(screen.getByText("Will Bitcoin reach $100K?")).toBeInTheDocument();
@@ -268,7 +451,7 @@ describe("Portfolio", () => {
             marketTitle: "Which team wins?",
             marketImageUrl: "",
             baseAsset: "sat",
-            divisibility: 10_000,
+            divisibility: 1_000,
             mintUrl: "https://mint.bitcaster.io",
             side: "Outcome",
             outcomeId: "A",
@@ -291,7 +474,7 @@ describe("Portfolio", () => {
             marketTitle: "Which team wins?",
             marketImageUrl: "",
             baseAsset: "sat",
-            divisibility: 10_000,
+            divisibility: 1_000,
             mintUrl: "https://mint.bitcaster.io",
             side: "Outcome",
             outcomeId: "B|C",
@@ -328,7 +511,7 @@ describe("Portfolio", () => {
             marketTitle: "Which team wins?",
             marketImageUrl: "",
             baseAsset: "sat",
-            divisibility: 10_000,
+            divisibility: 1_000,
             mintUrl: "https://mint.bitcaster.io",
             side: "Outcome",
             outcomeId: "B|C",
@@ -363,7 +546,7 @@ describe("Portfolio", () => {
             marketTitle: "Which team wins?",
             marketImageUrl: "",
             baseAsset: "sat",
-            divisibility: 10_000,
+            divisibility: 1_000,
             mintUrl: "https://mint.bitcaster.io",
             side: "Outcome",
             outcomeId: "B|C",
@@ -385,7 +568,7 @@ describe("Portfolio", () => {
             marketTitle: "Unknown position",
             marketImageUrl: "",
             baseAsset: "sat",
-            divisibility: 10_000,
+            divisibility: 1_000,
             mintUrl: "https://mint.bitcaster.io",
             side: "Outcome",
             shares: 1,

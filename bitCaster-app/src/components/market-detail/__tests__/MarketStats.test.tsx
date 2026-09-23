@@ -19,7 +19,7 @@ function makeMarket(overrides: Partial<YesNoMarketDetail> = {}): YesNoMarketDeta
     createdDate: "2026-01-01T00:00:00Z",
     activeSince: "2026-01-02T00:00:00Z",
     baseAsset: "sat",
-    divisibility: 10_000,
+    divisibility: 1_000,
     baseUnit: "sats",
     creator: {
       id: "creator",
@@ -50,14 +50,14 @@ describe("MarketStats bot budget", () => {
         market={makeMarket({
           baseAsset: "sat",
           baseUnit: "sats",
-          divisibility: 10_000,
+          divisibility: 1_000,
           ammBotBudgetSubunits: 1_234,
         })}
       />,
     );
 
     const budget = screen.getByTestId("market-bot-budget");
-    expect(within(budget).getByText("1.234 sats")).toBeInTheDocument();
+    expect(within(budget).getByRole("group", { name: "1.234 sats" })).toBeInTheDocument();
     expect(budget).not.toHaveTextContent("0 sats");
   });
 

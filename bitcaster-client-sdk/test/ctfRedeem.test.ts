@@ -3,6 +3,8 @@ import { test } from 'node:test'
 import {
   CheckStateEnum,
   MintOperationError,
+  deriveKeysetId,
+  hashToCurve,
   type MintKeys,
   type Proof,
   type ProofState,
@@ -327,7 +329,7 @@ test('redeemOutcomeLegWithOperation restores outputs when prepared inputs are sp
   const store = new MemoryProofOperationStore()
   const inputs = [proof('ctf-keyset', 'spent-input', 5)]
   const restored = [proof('regular-keyset', 'restored', 5)]
-  const wallet = new FakeRedeemWallet({ states: [state(CheckStateEnum.SPENT)] })
+  const wallet = new FakeRedeemWallet({ states: [state(CheckStateEnum.SPENT, 'spent-input')] })
 
   await redeemOutcomeLegWithOperation({
     mintUrl: 'https://mint.example',
@@ -387,7 +389,7 @@ test('redeemOutcomeLegWithOperation re-executes prepared operations when inputs 
 
   const settledProofs = [proof('regular-keyset', 'retried', 5)]
   const wallet = new FakeRedeemWallet({
-    states: [state(CheckStateEnum.UNSPENT)],
+    states: [state(CheckStateEnum.UNSPENT, 'unspent-input')],
     settledProofs,
   })
   const result = await redeemOutcomeLegWithOperation({
@@ -413,6 +415,158 @@ test('redeemOutcomeLegWithOperation re-executes prepared operations when inputs 
   )
 })
 
+test('redeemOutcomeLegWithOperation does not restore a short spent-state response', async () => {
+  const store = new MemoryProofOperationStore()
+  const inputs = [proof('ctf-keyset', 'short-spent-a', 5), proof('ctf-keyset', 'short-spent-b', 5)]
+  await redeemOutcomeLegWithOperation({
+    mintUrl: 'https://mint.example',
+    operationId: 'redeem:short-spent',
+    wallet: new FakeRedeemWallet({ error: new Error('transient') }),
+    proofOperationStore: store,
+    conditionId: 'condition',
+    outcome: 'YES',
+    unit: 'sat',
+    oracleWitness: 'witness',
+    proofs: inputs,
+    outcomeKeyset: outcomeKeyset(),
+    regularKeyset: regularKeyset(),
+  }).catch(() => undefined)
+
+  let restoreCalls = 0
+  const retryWallet = new FakeRedeemWallet({
+    states: [state(CheckStateEnum.SPENT, 'short-spent-a')],
+  })
+  await assert.rejects(
+    () =>
+      redeemOutcomeLegWithOperation({
+        mintUrl: 'https://mint.example',
+        operationId: 'redeem:short-spent',
+        wallet: retryWallet,
+        proofOperationStore: store,
+        conditionId: 'condition',
+        outcome: 'YES',
+        unit: 'sat',
+        oracleWitness: 'witness',
+        proofs: inputs,
+        outcomeKeyset: outcomeKeyset(),
+        regularKeyset: regularKeyset(),
+        restoreOutputGroups: async () => {
+          restoreCalls += 1
+          return { regular: [] }
+        },
+      }),
+    /still pending at the mint/,
+  )
+  assert.equal(restoreCalls, 0)
+  assert.equal((await store.getProofOperation('redeem:short-spent'))?.state, 'prepared')
+})
+
+test('redeemOutcomeLegWithOperation does not resubmit a short unspent-state response', async () => {
+  const store = new MemoryProofOperationStore()
+  const inputs = [
+    proof('ctf-keyset', 'short-unspent-a', 5),
+    proof('ctf-keyset', 'short-unspent-b', 5),
+  ]
+  await redeemOutcomeLegWithOperation({
+    mintUrl: 'https://mint.example',
+    operationId: 'redeem:short-unspent',
+    wallet: new FakeRedeemWallet({ error: new Error('transient') }),
+    proofOperationStore: store,
+    conditionId: 'condition',
+    outcome: 'YES',
+    unit: 'sat',
+    oracleWitness: 'witness',
+    proofs: inputs,
+    outcomeKeyset: outcomeKeyset(),
+    regularKeyset: regularKeyset(),
+  }).catch(() => undefined)
+
+  const retryWallet = new FakeRedeemWallet({
+    states: [state(CheckStateEnum.UNSPENT, 'short-unspent-a')],
+  })
+  await assert.rejects(
+    () =>
+      redeemOutcomeLegWithOperation({
+        mintUrl: 'https://mint.example',
+        operationId: 'redeem:short-unspent',
+        wallet: retryWallet,
+        proofOperationStore: store,
+        conditionId: 'condition',
+        outcome: 'YES',
+        unit: 'sat',
+        oracleWitness: 'witness',
+        proofs: inputs,
+        outcomeKeyset: outcomeKeyset(),
+        regularKeyset: regularKeyset(),
+      }),
+    /still pending at the mint/,
+  )
+  assert.equal(retryWallet.redeemCalls.length, 0)
+  assert.equal((await store.getProofOperation('redeem:short-unspent'))?.state, 'prepared')
+})
+
+test('redeemOutcomeLegWithOperation refuses unbound or mixed NUT-07 state vectors', async () => {
+  const store = new MemoryProofOperationStore()
+  const inputs = [proof('ctf-keyset', 'state-a', 5), proof('ctf-keyset', 'state-b', 5)]
+  await redeemOutcomeLegWithOperation({
+    mintUrl: 'https://mint.example',
+    operationId: 'redeem:wrong-Y',
+    wallet: new FakeRedeemWallet({ error: new Error('transient') }),
+    proofOperationStore: store,
+    conditionId: 'condition',
+    outcome: 'YES',
+    unit: 'sat',
+    oracleWitness: 'witness',
+    proofs: inputs,
+    outcomeKeyset: outcomeKeyset(),
+    regularKeyset: regularKeyset(),
+  }).catch(() => undefined)
+
+  const cases = [
+    {
+      name: 'foreign spent Y',
+      states: [state(CheckStateEnum.SPENT, 'state-a'), state(CheckStateEnum.SPENT, 'foreign')],
+    },
+    {
+      name: 'duplicate unspent Y',
+      states: [state(CheckStateEnum.UNSPENT, 'state-a'), state(CheckStateEnum.UNSPENT, 'state-a')],
+    },
+    {
+      name: 'mixed exact states',
+      states: [state(CheckStateEnum.SPENT, 'state-a'), state(CheckStateEnum.UNSPENT, 'state-b')],
+    },
+  ]
+  let restoreCalls = 0
+  for (const scenario of cases) {
+    const wallet = new FakeRedeemWallet({ states: scenario.states })
+    await assert.rejects(
+      () =>
+        redeemOutcomeLegWithOperation({
+          mintUrl: 'https://mint.example',
+          operationId: 'redeem:wrong-Y',
+          wallet,
+          proofOperationStore: store,
+          conditionId: 'condition',
+          outcome: 'YES',
+          unit: 'sat',
+          oracleWitness: 'witness',
+          proofs: inputs,
+          outcomeKeyset: outcomeKeyset(),
+          regularKeyset: regularKeyset(),
+          restoreOutputGroups: async () => {
+            restoreCalls += 1
+            return { regular: [] }
+          },
+        }),
+      /still pending at the mint/,
+      scenario.name,
+    )
+    assert.equal(wallet.redeemCalls.length, 0, scenario.name)
+  }
+  assert.equal(restoreCalls, 0)
+  assert.equal((await store.getProofOperation('redeem:wrong-Y'))?.state, 'prepared')
+})
+
 test('redeemOutcomeLegWithOperation rejects witness substitution before mint I/O', async () => {
   const store = new MemoryProofOperationStore()
   const inputs = [proof('ctf-keyset', 'witness-bound-input', 5)]
@@ -431,7 +585,7 @@ test('redeemOutcomeLegWithOperation rejects witness substitution before mint I/O
   }).catch(() => undefined)
 
   const retryWallet = new FakeRedeemWallet({
-    states: [state(CheckStateEnum.UNSPENT)],
+    states: [state(CheckStateEnum.UNSPENT, 'witness-bound-input')],
     settledProofs: [proof('regular-keyset', 'must-not-settle', 5)],
   })
   await assert.rejects(
@@ -598,19 +752,160 @@ test('redeemOutcomeLegWithOperation rejects request substitution before mint eff
 })
 
 test('getActiveRegularKeyset rejects an inactive-only keyset response', async () => {
+  const regular = validRegularKeyset('sat')
   await assert.rejects(
     () =>
       getActiveRegularKeyset(
         {
           mint: {
-            getKeys: async () => ({
-              keysets: [{ ...regularKeyset(), active: false }],
+            getKeySets: async () => ({
+              keysets: [{ id: regular.id, unit: 'sat', active: true }],
             }),
+            getKeys: async () => ({ keysets: [{ ...regular, active: false }] }),
           },
         },
         'sat',
       ),
     /active regular sat keyset/,
+  )
+})
+
+test('getActiveRegularKeyset selects the regular keyset before exact key lookup', async () => {
+  const regular = validRegularKeyset('msat')
+  const regularId = regular.id
+  const conditionalId = `01${'22'.repeat(32)}`
+  const requested: string[] = []
+  const conditional = {
+    ...regular,
+    id: conditionalId,
+    conditional: {
+      conditionId: 'aa'.repeat(32),
+      outcomeCollection: 'YES',
+      outcomeCollectionId: 'bb'.repeat(32),
+    },
+  }
+
+  const result = await getActiveRegularKeyset(
+    {
+      mint: {
+        getKeySets: async () => ({
+          keysets: [
+            { id: conditionalId, unit: 'msat', active: true, conditional: conditional.conditional },
+            { id: regularId, unit: 'msat', active: true },
+          ],
+        }),
+        getKeys: async (keysetId?: string) => {
+          requested.push(keysetId ?? '')
+          return { keysets: [conditional, regular] }
+        },
+      },
+    },
+    'msat',
+  )
+
+  assert.equal(result.id, regularId)
+  assert.deepEqual(requested, [regularId])
+})
+
+test('getActiveRegularKeyset rejects missing, foreign, or inactive exact key responses', async () => {
+  const regular = validRegularKeyset('sat')
+  const regularId = regular.id
+  const cases = [
+    { name: 'missing', keysets: [] },
+    { name: 'foreign', keysets: [{ ...regular, id: `01${'44'.repeat(32)}` }] },
+    { name: 'inactive', keysets: [{ ...regular, active: false }] },
+  ]
+
+  for (const scenario of cases) {
+    await assert.rejects(
+      () =>
+        getActiveRegularKeyset(
+          {
+            mint: {
+              getKeySets: async () => ({
+                keysets: [{ id: regularId, unit: 'sat', active: true }],
+              }),
+              getKeys: async () => ({ keysets: scenario.keysets }),
+            },
+          },
+          'sat',
+        ),
+      /exact active regular sat keyset/,
+      scenario.name,
+    )
+  }
+})
+
+test('getActiveRegularKeyset accepts exact keys with omitted activity metadata', async () => {
+  const regular = validRegularKeyset('sat')
+  const regularId = regular.id
+  delete regular.active
+
+  const result = await getActiveRegularKeyset(
+    {
+      mint: {
+        getKeySets: async () => ({
+          keysets: [{ id: regularId, unit: 'sat', active: true }],
+        }),
+        getKeys: async () => ({ keysets: [regular] }),
+      },
+    },
+    'sat',
+  )
+
+  assert.equal(result.id, regularId)
+  assert.equal(result.active, undefined)
+})
+
+test('getActiveRegularKeyset rejects false key material and conflicting metadata', async () => {
+  const regular = validRegularKeyset('msat')
+  const cases = [
+    {
+      name: 'false key material',
+      keyset: { ...regular, keys: { ...regular.keys, 1: '03'.repeat(33) } },
+      error: /invalid regular msat keyset material/,
+    },
+    {
+      name: 'conflicting fee',
+      keyset: { ...regular, input_fee_ppk: 1 },
+      error: /exact active regular msat keyset/,
+    },
+  ]
+  for (const scenario of cases) {
+    await assert.rejects(
+      () =>
+        getActiveRegularKeyset(
+          {
+            mint: {
+              getKeySets: async () => ({
+                keysets: [{ id: regular.id, unit: 'msat', active: true, input_fee_ppk: 0 }],
+              }),
+              getKeys: async () => ({ keysets: [scenario.keyset] }),
+            },
+          },
+          'msat',
+        ),
+      scenario.error,
+      scenario.name,
+    )
+  }
+})
+
+test('getActiveRegularKeyset rejects a noncanonical regular keyset id', async () => {
+  await assert.rejects(
+    () =>
+      getActiveRegularKeyset(
+        {
+          mint: {
+            getKeySets: async () => ({
+              keysets: [{ id: `02${'55'.repeat(32)}`, unit: 'sat', active: true }],
+            }),
+            getKeys: async () => ({ keysets: [] }),
+          },
+        },
+        'sat',
+      ),
+    /canonical NUT-02 V2 active regular keyset/,
   )
 })
 
@@ -666,8 +961,21 @@ function proof(id: string, secret: string, amount: number): Proof {
   return { id, secret, amount, C: `C-${secret}` } as Proof
 }
 
-function state(value: CheckStateEnum): ProofState {
-  return { state: value, secret: 'secret' } as ProofState
+function state(value: CheckStateEnum, secret: string): ProofState {
+  return {
+    Y: hashToCurve(new TextEncoder().encode(secret)).toHex(true),
+    state: value,
+    witness: null,
+  }
+}
+
+function validRegularKeyset(unit: 'sat' | 'msat'): MintKeys {
+  const keyset = regularKeyset()
+  return {
+    ...keyset,
+    unit,
+    id: deriveKeysetId(keyset.keys, { unit, input_fee_ppk: keyset.input_fee_ppk }),
+  }
 }
 
 function regularKeyset(): MintKeys {

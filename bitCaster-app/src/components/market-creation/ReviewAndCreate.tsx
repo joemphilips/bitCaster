@@ -133,12 +133,7 @@ export function ReviewAndCreate({
                             key={o.id}
                             className="px-2 py-0.5 rounded-full bg-slate-800 text-xs text-slate-300"
                           >
-                            {o.probability !== undefined
-                              ? t("marketCreation.outcomeWithProbability", {
-                                  label: o.label || t("common.unnamed"),
-                                  probability: o.probability,
-                                })
-                              : o.label || t("common.unnamed")}
+                            {o.label || t("common.unnamed")}
                           </span>
                         ))}
                       </div>

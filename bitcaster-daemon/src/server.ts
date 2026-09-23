@@ -86,7 +86,7 @@ import {
   resolveMintKeysByKeyset,
   type WalletOpsDependencies,
 } from './walletOps.ts'
-import { readDaemonTokenHoldings } from './walletHoldings.ts'
+import { readDaemonAvailableRegularMsatBalance, readDaemonTokenHoldings } from './walletHoldings.ts'
 import { readDaemonWalletBalance } from './walletBalance.ts'
 import type { CustodyScopeFence } from './profileFencing.ts'
 import {
@@ -139,11 +139,6 @@ export interface EngineClientLike {
     resultId: string,
     request: AcknowledgeSettlementCapabilityResultRequest,
   ): Promise<SettlementCapabilityResultResponse | null>
-  declineOrderContinuation?(
-    marketId: string,
-    orderId: string,
-    expectedContinuationRevision: number,
-  ): Promise<void>
 }
 
 export interface PrepareSettlementCapabilityInput {
@@ -156,12 +151,11 @@ export interface PrepareSettlementCapabilityInput {
   price: number
   amountSubunits: number
   minimumFillAmountSubunits: number
-  continueAfterPartialFill: boolean
   consolidateProofs: boolean
   baseAsset: 'sat'
   collateralUnit: 'msat'
   divisibility: number
-  timeInForce: 'FAK' | 'FOK' | 'GTC' | 'GTD'
+  timeInForce: 'FOK'
   expiresAt: string | null
   mintUrl: string
   walletSeedHex: string
@@ -178,9 +172,12 @@ export interface PreparedSettlementCapability {
   }
 }
 
+export type BeforeCreateSettlementCapability = (requiredScore: number) => Promise<void>
+
 export type PrepareSettlementCapability = (
   input: PrepareSettlementCapabilityInput,
   client: EngineClientLike,
+  beforeCreateCapability?: BeforeCreateSettlementCapability,
 ) => Promise<PreparedSettlementCapability>
 
 type DaemonParticipationScorePreflightResult =
@@ -193,6 +190,13 @@ type DaemonParticipationScorePreflightResult =
       operationId: string
     }
 
+class InsufficientParticipationScoreBackingError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'InsufficientParticipationScoreBackingError'
+  }
+}
+
 export interface DispatchDependencies extends WalletOpsDependencies {
   createEngineClient?: (options: { baseUrl: string; nostrSecretKeyHex: string }) => EngineClientLike
   prepareSettlementCapability?: PrepareSettlementCapability
@@ -204,7 +208,11 @@ export interface DispatchDependencies extends WalletOpsDependencies {
   markCustodyReady?: () => void
   onManualCustodyRecoveryStatus?: (status: ManualCustodyRecoveryStatus) => void
   onOutcomeProofsReceived?: (conditionId: string, outcomeSetId: string) => Promise<void>
+  waitForParticipationScoreDeliveryRetry?: (attempt: number, delayMs: number) => Promise<void>
 }
+
+const PARTICIPATION_SCORE_DELIVERY_POLL_ATTEMPTS = 10
+const PARTICIPATION_SCORE_DELIVERY_POLL_INTERVAL_MS = 8_000
 
 export async function startDaemonServer(options: DaemonServerOptions = {}): Promise<Server> {
   const socketPath =
@@ -316,6 +324,8 @@ export async function dispatch(
   command: DaemonCommand,
   deps: DispatchDependencies = {},
 ): Promise<DaemonResponse> {
+  const unsupportedPublicOrder = rejectUnsupportedPublicOrder(command)
+  if (unsupportedPublicOrder !== null) return unsupportedPublicOrder
   if (deps.isCustodyReady?.() === false && requiresReadyCustody(command.method)) {
     return {
       ok: false,
@@ -389,9 +399,6 @@ export async function dispatch(
           title: command.params.title,
           description: command.params.description,
           outcomes: createMarketOutcomes(command.params.outcomes),
-          ...(command.params.liquiditySats !== undefined
-            ? { liquiditySats: command.params.liquiditySats }
-            : {}),
           ...(command.params.tags !== undefined ? { categoryTags: command.params.tags } : {}),
         },
         thumbnailBytes,
@@ -468,7 +475,7 @@ export async function dispatch(
         return {
           ok: true,
           result: await sendWalletToken(
-            command.params.amountSats,
+            command.params.amountMsat,
             profile,
             secrets,
             deps,
@@ -512,7 +519,7 @@ export async function dispatch(
         result: await splitWalletCompleteSet({
           mintUrl: command.params.mintUrl ?? profile.mintUrl,
           conditionId: command.params.conditionId,
-          amountSats: command.params.amountSats,
+          amountMsat: command.params.amountMsat,
           operationId:
             command.params.operationId ??
             `wallet-split-complete-set:${command.params.conditionId}:${Date.now()}`,
@@ -809,33 +816,14 @@ export async function dispatch(
         }
       }
       if (
-        orderParams.continueAfterPartialFill !== undefined &&
-        typeof orderParams.continueAfterPartialFill !== 'boolean'
-      ) {
-        return { ok: false, error: 'Order rejected: continuation policy must be boolean' }
-      }
-      if (
         orderParams.consolidateProofs !== undefined &&
         typeof orderParams.consolidateProofs !== 'boolean'
       ) {
         return { ok: false, error: 'Order rejected: proof consolidation policy must be boolean' }
       }
-      if (
-        orderParams.continueAfterPartialFill === true &&
-        orderParams.timeInForce !== 'GTC' &&
-        orderParams.timeInForce !== 'GTD'
-      ) {
-        return { ok: false, error: 'Order rejected: continuation requires a resting order' }
-      }
       const expiresAt = orderParams.expiresAt ?? null
-      if (
-        (orderParams.timeInForce === 'GTD' &&
-          (typeof expiresAt !== 'string' ||
-            !Number.isFinite(Date.parse(expiresAt)) ||
-            new Date(expiresAt).toISOString() !== expiresAt)) ||
-        (orderParams.timeInForce !== 'GTD' && expiresAt !== null)
-      ) {
-        return { ok: false, error: 'Order rejected: GTD requires one canonical UTC expiry' }
+      if (expiresAt !== null) {
+        return { ok: false, error: 'Order rejected: public FOK orders cannot expire' }
       }
       const settlementSupport = checkOrderSettlementSupport({
         request: { side: orderParams.side },
@@ -848,44 +836,21 @@ export async function dispatch(
         conditionId,
         baseAsset: marketUnit.baseAsset,
       })
-      const participationScoreSnapshot = await context.client.getParticipationScore()
-      const participationScorePlan = planParticipationScoreTopUp(participationScoreSnapshot)
-      const backingError =
-        orderBackingError({
-          side: orderParams.side,
-          price: orderParams.price,
-          amountSubunits,
-          divisibility: marketUnit.divisibility,
-          holdings,
-        }) ??
-        participationScoreBackingError({
-          side: orderParams.side,
-          price: orderParams.price,
-          amountSubunits,
-          divisibility: marketUnit.divisibility,
-          holdings,
-          plan: participationScorePlan,
-        })
+      const backingError = orderBackingError({
+        side: orderParams.side,
+        price: orderParams.price,
+        amountSubunits,
+        divisibility: marketUnit.divisibility,
+        holdings,
+      })
       if (backingError) {
         return { ok: false, error: backingError }
       }
       const clientOrderId = randomUUID()
-      let participationScore: DaemonParticipationScorePreflightResult
-      try {
-        participationScore = await ensureDaemonParticipationScoreForNextMatch({
-          client: context.client,
-          profile: context.profile,
-          secrets: context.secrets,
-          deps,
-          score: participationScoreSnapshot,
-          plan: participationScorePlan,
-        })
-      } catch (err) {
-        throw err
-      }
       if (!deps.prepareSettlementCapability) {
         return { ok: false, error: 'daemon settlement capability coordinator is unavailable' }
       }
+      let participationScore: DaemonParticipationScorePreflightResult | undefined
       let prepared: PreparedSettlementCapability
       try {
         prepared = await deps.prepareSettlementCapability(
@@ -899,23 +864,51 @@ export async function dispatch(
             price: orderParams.price,
             amountSubunits,
             minimumFillAmountSubunits,
-            continueAfterPartialFill: orderParams.continueAfterPartialFill === true,
             consolidateProofs: orderParams.consolidateProofs === true,
             baseAsset: marketUnit.baseAsset,
             collateralUnit: 'msat',
             divisibility: marketUnit.divisibility,
             timeInForce: orderParams.timeInForce,
-            expiresAt,
+            expiresAt: null,
             mintUrl: context.profile.mintUrl,
             walletSeedHex: context.secrets.walletSeedHex,
           },
           context.client,
+          async (requiredScore) => {
+            const participationScoreSnapshot = await context.client.getParticipationScore()
+            const participationScorePlan = planParticipationScoreTopUp(
+              participationScoreSnapshot,
+              requiredScore,
+            )
+            const availableScoreMsat = await readDaemonAvailableRegularMsatBalance(profileDir(), {
+              mintUrl: context.profile.mintUrl,
+            })
+            const participationScoreError = participationScoreBackingError({
+              availableScoreMsat,
+              plan: participationScorePlan,
+            })
+            if (participationScoreError) {
+              throw new InsufficientParticipationScoreBackingError(participationScoreError)
+            }
+            participationScore = await ensureDaemonParticipationScoreForNextMatch({
+              client: context.client,
+              profile: context.profile,
+              secrets: context.secrets,
+              deps,
+              score: participationScoreSnapshot,
+              plan: participationScorePlan,
+              requiredScore,
+            })
+          },
         )
         assertPreparedSettlementCapability(prepared, {
           clientOrderId,
           marketId: orderParams.marketId,
         })
       } catch (err) {
+        if (err instanceof InsufficientParticipationScoreBackingError) {
+          return { ok: false, error: err.message }
+        }
         if (err instanceof EngineClientError) {
           return {
             ok: false,
@@ -924,6 +917,9 @@ export async function dispatch(
           }
         }
         throw err
+      }
+      if (participationScore === undefined) {
+        throw new Error('daemon settlement capability coordinator skipped Score admission')
       }
       let submitted: SubmitOrderResponse
       try {
@@ -1090,6 +1086,20 @@ function requiresReadyCustody(method: DaemonCommand['method']): boolean {
   )
 }
 
+function rejectUnsupportedPublicOrder(command: DaemonCommand): DaemonResponse | null {
+  if (command.method !== 'order.submit') return null
+  const timeInForce =
+    command.params !== null && typeof command.params === 'object'
+      ? (command.params as { timeInForce?: unknown }).timeInForce
+      : undefined
+  if (timeInForce === 'FOK') return null
+  return {
+    ok: false,
+    code: 'invalid-order-type',
+    error: 'Order rejected: public orders require FOK',
+  }
+}
+
 async function ensureDaemonParticipationScoreForNextMatch(input: {
   client: EngineClientLike
   profile: NonNullable<Awaited<ReturnType<typeof readProfile>>>
@@ -1097,8 +1107,9 @@ async function ensureDaemonParticipationScoreForNextMatch(input: {
   deps: DispatchDependencies
   score: ParticipationScoreResponse
   plan: ParticipationScoreTopUpPlan
+  requiredScore: number
 }): Promise<DaemonParticipationScorePreflightResult> {
-  const { score, plan } = input
+  const { score, plan, requiredScore } = input
   if (plan.kind === 'disabled') return { kind: 'disabled', score }
   if (plan.kind === 'sufficient') return { kind: 'sufficient', score }
 
@@ -1108,11 +1119,11 @@ async function ensureDaemonParticipationScoreForNextMatch(input: {
   ) {
     throw new Error('daemon engine client does not support durable Cashu deliveries')
   }
-  const deliver = (deliveryId: string, amountSats: number, purchasedTotalEpoch: number) =>
+  const deliver = (deliveryId: string, amountMsat: number, purchasedTotalEpoch: number) =>
     deliverParticipationScoreCashu({
       deliveryId,
       accountSubject: input.secrets.nostrPublicKeyHex,
-      amountSats,
+      amountMsat,
       purchasedTotalEpoch,
       profile: input.profile,
       secrets: input.secrets,
@@ -1124,35 +1135,54 @@ async function ensureDaemonParticipationScoreForNextMatch(input: {
       },
       deps: input.deps,
     })
+  const waitForDeliveryRetry =
+    input.deps.waitForParticipationScoreDeliveryRetry ??
+    (() =>
+      new Promise<void>((resolve) =>
+        setTimeout(resolve, PARTICIPATION_SCORE_DELIVERY_POLL_INTERVAL_MS),
+      ))
+  const deliverUntilCredited = async (
+    deliveryId: string,
+    amountMsat: number,
+    purchasedTotalEpoch: number,
+  ) => {
+    let lastState: 'pending' | 'received' = 'pending'
+    for (let attempt = 0; attempt < PARTICIPATION_SCORE_DELIVERY_POLL_ATTEMPTS; attempt += 1) {
+      if (attempt > 0)
+        await waitForDeliveryRetry(attempt, PARTICIPATION_SCORE_DELIVERY_POLL_INTERVAL_MS)
+      const delivery = await deliver(deliveryId, amountMsat, purchasedTotalEpoch)
+      if (delivery.state === 'credited') return delivery
+      lastState = delivery.state
+    }
+    throw new Error(`Participation Score delivery remains ${lastState}`)
+  }
   const deliveryId = randomUUID()
   try {
-    let delivery = await deliver(deliveryId, plan.deficitScore, score.purchasedTotal)
-    if (delivery.state !== 'credited') {
-      throw new Error(`Participation Score delivery remains ${delivery.state}`)
-    }
+    let delivery = await deliverUntilCredited(
+      deliveryId,
+      participationScoreToMsat(plan.deficitScore),
+      score.purchasedTotal,
+    )
     let refreshedScore = await input.client.getParticipationScore()
     if (refreshedScore.purchasedTotal <= score.purchasedTotal) {
-      throw new Error('Participation Score credit is not available for this order')
+      throw new Error('Participation Score credit is not available for this capability')
     }
-    let refreshedPlan = planParticipationScoreTopUp(refreshedScore)
+    let refreshedPlan = planParticipationScoreTopUp(refreshedScore, requiredScore)
     if (refreshedPlan.kind === 'needs-top-up') {
       const purchasedBeforeSecondDelivery = refreshedScore.purchasedTotal
-      delivery = await deliver(
+      delivery = await deliverUntilCredited(
         randomUUID(),
-        refreshedPlan.deficitScore,
+        participationScoreToMsat(refreshedPlan.deficitScore),
         purchasedBeforeSecondDelivery,
       )
-      if (delivery.state !== 'credited') {
-        throw new Error(`Participation Score delivery remains ${delivery.state}`)
-      }
       refreshedScore = await input.client.getParticipationScore()
       if (refreshedScore.purchasedTotal <= purchasedBeforeSecondDelivery) {
-        throw new Error('Participation Score credit is not available for this order')
+        throw new Error('Participation Score credit is not available for this capability')
       }
-      refreshedPlan = planParticipationScoreTopUp(refreshedScore)
+      refreshedPlan = planParticipationScoreTopUp(refreshedScore, requiredScore)
     }
     if (refreshedPlan.kind === 'needs-top-up') {
-      throw new Error('Participation Score credit is not available for this order')
+      throw new Error('Participation Score credit is not available for this capability')
     }
     return {
       kind: 'paid',
@@ -1257,8 +1287,8 @@ async function consolidateMarket(input: {
         type: input.type,
         status: 'skipped',
         reason: plan.reason,
-        convertFeeSats: plan.feeSats ?? 0,
-        collateralReturnedSats: 0,
+        convertFeeMsat: plan.feeSubunits ?? 0,
+        collateralReturnedMsat: 0,
         spentInputs: [],
         outputs: [],
       },
@@ -1425,22 +1455,27 @@ export function orderBackingError(input: {
 }
 
 function participationScoreBackingError(input: {
-  side: 'Buy' | 'Sell'
-  price: number
-  amountSubunits: number
-  divisibility: number
-  holdings: TokenHoldings
+  availableScoreMsat: number
   plan: ParticipationScoreTopUpPlan
 }): string | null {
   if (input.plan.kind !== 'needs-top-up') return null
-  const scoreSubunits = input.plan.deficitScore * 1_000
-  const orderSubunits = input.side === 'Buy' ? requiredBuyCollateral(input) : 0
-  const required = scoreSubunits + orderSubunits
-  if (!Number.isSafeInteger(required)) {
-    throw new Error('combined order and Participation Score backing exceeds safe range')
+  if (!Number.isSafeInteger(input.availableScoreMsat) || input.availableScoreMsat < 0) {
+    throw new Error('Participation Score backing exceeds safe range')
   }
-  if (input.holdings.baseUnitProofs >= required) return null
-  return `insufficient combined backing: have ${input.holdings.baseUnitProofs} base subunits, need ${required} for the order and Participation Score`
+  const requiredMsat = participationScoreToMsat(input.plan.deficitScore)
+  if (input.availableScoreMsat >= requiredMsat) return null
+  return `insufficient Participation Score backing: have ${input.availableScoreMsat} msat, need ${requiredMsat} msat`
+}
+
+function participationScoreToMsat(score: number): number {
+  if (!Number.isSafeInteger(score) || score <= 0) {
+    throw new Error('Participation Score amount is invalid')
+  }
+  const amountMsat = score * 1_000
+  if (!Number.isSafeInteger(amountMsat)) {
+    throw new Error('Participation Score amount exceeds safe range')
+  }
+  return amountMsat
 }
 
 function requiredBuyCollateral(input: {
@@ -1496,8 +1531,7 @@ function createAuthenticatedBitcasterEngineClient(options: {
 }
 
 function createMarketOutcomes(outcomes: string[]): CreateMarketOutcome[] {
-  const probability = outcomes.length > 0 ? 1 / outcomes.length : 0
-  return outcomes.map((name) => ({ name, probability }))
+  return outcomes.map((name) => ({ name }))
 }
 
 async function readMarketThumbnail(path: string): Promise<MarketThumbnailBytes> {

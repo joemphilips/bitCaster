@@ -1,5 +1,6 @@
-import { renderHook, act } from "@testing-library/react";
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { renderHook, act, waitFor } from "@testing-library/react";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import i18n from "@/i18n";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router";
 import { useSettingsStore } from "@/stores/settings";
@@ -144,7 +145,7 @@ beforeEach(() => {
     conditionId: "test-cond-id",
     marketsCreated: ["test-cond-id-Yes", "test-cond-id-No"],
     thumbnailUrl: null,
-    divisibility: 10_000,
+    divisibility: 1_000,
   });
   mockCreateEnumAnnouncement.mockResolvedValue("announcement-hex");
   mockEnsureKormirNsec.mockResolvedValue(undefined);
@@ -198,11 +199,7 @@ async function setupDraftForSubmission() {
   await act(async () => {
     result.current.onNext();
   });
-  // Step 3: outcomes (default 50/50)
-  await act(async () => {
-    result.current.onNext();
-  });
-  // Step 4: description
+  // Binary markets enter review directly with canonical Yes/No outcomes.
   await act(async () => {
     result.current.onDescriptionChange("Test description");
   });
@@ -226,69 +223,116 @@ function setCategoricalOutcomes(outcomes: WizardOutcome[]) {
   });
 }
 
-function makeOutcome(id: string, probability: number): WizardOutcome {
-  return { id, label: id.toUpperCase(), description: "", probability };
+function makeOutcome(id: string): WizardOutcome {
+  return { id, label: id.toUpperCase(), description: "" };
 }
 
-describe("useMarketCreationState – categorical outcome probabilities", () => {
-  it("edits one outcome probability without changing the other outcomes", async () => {
-    setCategoricalOutcomes([makeOutcome("a", 60), makeOutcome("b", 30), makeOutcome("c", 10)]);
+describe("useMarketCreationState – wizard navigation", () => {
+  it("skips binary outcomes, initializes Yes/No, and returns to basic info", async () => {
     const { result } = renderHook(() => useMarketCreationState(), { wrapper });
 
     await act(async () => {
-      result.current.onOutcomeProbabilityChange("a", 70);
+      result.current.onOutcomeTypeSelect("yesno");
+      result.current.onNext();
+    });
+    expect(result.current.draft.currentStep).toBe(2);
+
+    await act(async () => {
+      result.current.onTitleChange("Binary market");
+      result.current.onNext();
     });
 
-    expect(
-      useMarketDraftStore
-        .getState()
-        .draft.stepOutcomes?.outcomes?.map((outcome) => outcome.probability),
-    ).toEqual([70, 30, 10]);
+    expect(result.current.draft.currentStep).toBe(3);
+    expect(result.current.draft.stepOutcomes).toEqual({
+      outcomeType: "yesno",
+      outcomes: [
+        { id: "yes", label: "Yes", description: "" },
+        { id: "no", label: "No", description: "" },
+      ],
+      baseAsset: "sat",
+    });
+    expect(result.current.draft.stepReviewAndCreate).toEqual({ description: "" });
+
+    await act(async () => {
+      result.current.onBack();
+    });
+    expect(result.current.draft.currentStep).toBe(2);
+    expect(result.current.draft.stepBasicInfo?.title).toBe("Binary market");
   });
 
-  it("still redistributes categorical outcomes equally when adding an outcome", async () => {
-    setCategoricalOutcomes([makeOutcome("a", 70), makeOutcome("b", 30)]);
+  it("restores a binary draft at outcomes as review without losing fields", async () => {
+    useMarketDraftStore.setState({
+      draft: {
+        ...defaultDraft(),
+        currentStep: 3,
+        stepGetStarted: { outcomeType: "yesno" },
+        stepBasicInfo: {
+          imageFile: null,
+          title: "Restored binary market",
+          categoryTags: ["finance"],
+          closingDate: "2030-01-01T00:00",
+        },
+        stepOutcomes: null,
+        stepReviewAndCreate: { description: "Keep this description" },
+      },
+      hasSavedDraft: true,
+    });
+
+    const { result } = renderHook(() => useMarketCreationState(), { wrapper });
+
+    await waitFor(() => {
+      expect(result.current.draft.currentStep).toBe(3);
+      expect(result.current.draft.stepOutcomes).toEqual({
+        outcomeType: "yesno",
+        outcomes: [
+          { id: "yes", label: "Yes", description: "" },
+          { id: "no", label: "No", description: "" },
+        ],
+        baseAsset: "sat",
+      });
+    });
+    expect(result.current.draft.stepBasicInfo?.title).toBe("Restored binary market");
+    expect(result.current.draft.stepBasicInfo?.categoryTags).toEqual(["finance"]);
+    expect(result.current.draft.stepReviewAndCreate?.description).toBe("Keep this description");
+  });
+
+  it("keeps categorical and numeric markets on the outcomes step", async () => {
+    const { result } = renderHook(() => useMarketCreationState(), { wrapper });
+
+    await act(async () => {
+      result.current.onOutcomeTypeSelect("categorical");
+      result.current.onNext();
+      result.current.onNext();
+    });
+    expect(result.current.draft.currentStep).toBe(3);
+    expect(result.current.draft.stepOutcomes?.outcomeType).toBe("categorical");
+
+    await act(async () => {
+      result.current.onBack();
+      result.current.onOutcomeTypeSelect("numeric");
+      result.current.onNext();
+    });
+    expect(result.current.draft.currentStep).toBe(3);
+    expect(result.current.draft.stepOutcomes?.outcomeType).toBe("numeric");
+  });
+});
+
+describe("useMarketCreationState – categorical outcomes", () => {
+  it("adds and removes outcomes without creator probability state", async () => {
+    setCategoricalOutcomes([makeOutcome("a"), makeOutcome("b")]);
     const { result } = renderHook(() => useMarketCreationState(), { wrapper });
 
     await act(async () => {
       result.current.onAddOutcome();
     });
-
-    expect(
-      useMarketDraftStore
-        .getState()
-        .draft.stepOutcomes?.outcomes?.map((outcome) => outcome.probability),
-    ).toEqual([34, 33, 33]);
-  });
-
-  it("still proportionally rescales categorical outcomes when removing an outcome", async () => {
-    setCategoricalOutcomes([makeOutcome("a", 50), makeOutcome("b", 25), makeOutcome("c", 25)]);
-    const { result } = renderHook(() => useMarketCreationState(), { wrapper });
-
     await act(async () => {
       result.current.onRemoveOutcome("a");
     });
 
-    expect(
-      useMarketDraftStore
-        .getState()
-        .draft.stepOutcomes?.outcomes?.map((outcome) => outcome.probability),
-    ).toEqual([50, 50]);
-  });
-
-  it("redistributes remaining zero-probability outcomes equally when removing an outcome", async () => {
-    setCategoricalOutcomes([makeOutcome("a", 100), makeOutcome("b", 0), makeOutcome("c", 0)]);
-    const { result } = renderHook(() => useMarketCreationState(), { wrapper });
-
-    await act(async () => {
-      result.current.onRemoveOutcome("a");
-    });
-
-    expect(
-      useMarketDraftStore
-        .getState()
-        .draft.stepOutcomes?.outcomes?.map((outcome) => outcome.probability),
-    ).toEqual([50, 50]);
+    expect(useMarketDraftStore.getState().draft.stepOutcomes?.outcomes).toEqual([
+      { id: "b", label: "B", description: "" },
+      { id: expect.any(String), label: "", description: "" },
+    ]);
   });
 });
 
@@ -306,7 +350,7 @@ describe("useMarketCreationState – onCreateMarket", () => {
         conditionId: "test-cond-id",
         marketsCreated: [],
         thumbnailUrl: null,
-        divisibility: 10_000,
+        divisibility: 1_000,
       };
     });
 
@@ -481,7 +525,21 @@ describe("useMarketCreationState – onCreateMarket", () => {
     expect(mockRegisterConditionWithFee).not.toHaveBeenCalled();
   });
 
-  it("blocks market creation when the registration fee exceeds the app cap", async () => {
+  afterEach(async () => {
+    await i18n.changeLanguage("en");
+  });
+
+  it.each([
+    [
+      "en",
+      "This mint requires a 1,000.001 sats condition registration fee, which exceeds the 1,000 sats app limit.",
+    ],
+    [
+      "ja",
+      "このミントのマーケット作成手数料 1,000.001 sats は、アプリの上限 1,000 sats を超えています。",
+    ],
+  ])("shows the registration fee cap in sats (%s)", async (language, expected) => {
+    await i18n.changeLanguage(language);
     mockWalletState.mints[0].info.nuts.CTF.registration_fees = [
       { unit: "msat", registration_fee_base: 1000001, registration_fee_per_keyset: 0 },
     ];
@@ -491,9 +549,7 @@ describe("useMarketCreationState – onCreateMarket", () => {
       await result.current.onCreateMarket();
     });
 
-    expect(result.current.submitError).toBe(
-      "This mint requires a 1,000,001 subunits condition registration fee, which exceeds the 1,000,000 subunits app limit.",
-    );
+    expect(result.current.submitError).toBe(expected);
     expect(mockRegisterConditionWithFee).not.toHaveBeenCalled();
     expect(mockCreateMarket).not.toHaveBeenCalled();
   });
@@ -571,6 +627,7 @@ describe("useMarketCreationState – onCreateMarket", () => {
     // the Lightning payment reaches Paid. The hook signals this via
     // `createdMarketConditionId`.
     expect(result.current.createdMarketConditionId).toBe("test-cond-id");
+    expect(result.current.createdMarketDivisibility).toBe(1_000);
     expect(mockNavigate).not.toHaveBeenCalled();
   });
 
@@ -634,9 +691,6 @@ describe("useMarketCreationState – onCreateMarket", () => {
     await act(async () => {
       const future = new Date(Date.now() + 86400000).toISOString().slice(0, 16);
       result.current.onClosingDateChange(future);
-    });
-    await act(async () => {
-      result.current.onNext();
     });
     await act(async () => {
       result.current.onNext();

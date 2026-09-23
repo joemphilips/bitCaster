@@ -37,7 +37,7 @@ paths:
                   type: string
                   description: >
                     JSON-encoded CreateMarketRequest object containing market
-                    title, description, outcomes, liquidity, and category tags.
+                    title, description, outcomes, and category tags.
                 thumbnail:
                   type: string
                   format: binary
@@ -115,14 +115,10 @@ paths:
       summary: Fetch primitive outcome price history for a market
       description: >
         Returns primitive outcome price points grouped by primitive outcome id.
-        A newly registered market includes an initial zero-volume anchor point
-        (`source = initial`) sourced from the creator probabilities. Initial
-        anchors act as a left-edge carry-forward value and are clamped to the
-        requested timeframe boundary when needed; settled trade ticks
-        (`source = fill`) are added only when settlement commits and are
-        filtered to the requested timeframe. Compound outcome-set matches are
-        projected only when settlement commits, and the response never uses
-        compound outcome ids.
+        Settled trade ticks (`source = fill`) are added only when settlement
+        commits and are filtered to the requested timeframe. Compound
+        outcome-set matches are projected only when settlement commits, and
+        the response never uses compound outcome ids.
       parameters:
         - $ref: '#/components/parameters/ConditionId'
         - name: timeframe
@@ -238,17 +234,46 @@ paths:
                 $ref: '#/components/schemas/BatchSubmitOrdersResponse'
         '400':
           description: >
-            Malformed batch envelope or malformed condition path. A resolved
-            per-item condition mismatch returns a `routeMismatch` failure
-            result instead of HTTP 400.
+            order-invalid-request. Application request validation failed.
+            Framework input validation can return a different body shape.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
         '401':
           description: Missing or invalid NIP-98 authentication
+        '403':
+          description: >
+            market-closed. The market is closed before submission.
+            Framework authorization failures can return a different body.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
         '404':
-          description: Condition not registered
+          description: >
+            order-market-not-found. The condition is not registered.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
         '409':
-          description: Market is closed or batch conflicted with book state
+          description: >
+            order-batch-conflict or order-market-closed. A failed whole-request
+            response does not establish that no item was accepted. Reconcile
+            the original item identities before retrying without changes.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
         '429':
-          description: Item-weighted rate limit exceeded
+          description: >
+            order-batch-limited. The application item-weighted rate limit
+            was reached. Framework rate limiting can return a different body.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
 
   /api/v1/conditions/{conditionId}/orders/cancel-batch:
     post:
@@ -276,13 +301,30 @@ paths:
               schema:
                 $ref: '#/components/schemas/BatchCancelOrdersResponse'
         '400':
-          description: Invalid batch envelope
+          description: >
+            order-invalid-request. Application request validation failed.
+            Framework input validation can return a different body shape.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
         '401':
           description: Missing or invalid NIP-98 authentication
         '404':
-          description: Condition not registered
+          description: >
+            order-market-not-found. The condition is not registered.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
         '429':
-          description: Item-weighted rate limit exceeded
+          description: >
+            order-batch-limited. The application item-weighted rate limit
+            was reached. Framework rate limiting can return a different body.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
 
   /api/v1/{marketId}/orders:
     get:
@@ -303,6 +345,14 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ListRestingOrdersResponse'
+        '400':
+          description: >
+            order-invalid-request. Application request validation failed.
+            Framework input validation can return a different body shape.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
         '401':
           description: Missing or invalid NIP-98 authentication
 
@@ -336,25 +386,106 @@ paths:
               schema:
                 $ref: '#/components/schemas/SubmitOrderResponse'
         '400':
-          description: Validation error
+          description: >
+            Application validation failed with order-invalid-request or
+            order-invalid-comment. Framework input validation can return a
+            different body shape.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '401':
+          description: Missing or invalid NIP-98 authentication
+        '403':
+          description: >
+            The application closed-market gate returns market-closed.
+            Framework authorization failures can return a different body.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '404':
+          description: >
+            order-market-not-found means the market is not registered.
+            order-capability-not-found means the capability is absent,
+            belongs to another owner, or its binding digest does not match.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '409':
+          description: >
+            order-capability-route-mismatch means the route differs from the
+            bound intent. order-capability-not-current means no current
+            capability or matching accepted replay exists. An exact accepted
+            replay returns its prior result. order-book-conflict permits an
+            unchanged request retry. order-processing-conflict and
+            order-market-closed are distinct, definitive submission failures.
+            A submission failure alone does not authorize a refund.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '503':
+          description: >
+            order-admission-unavailable or order-processing-unavailable.
+            Retain the original operation for retry and recovery.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+
+  /api/v1/orders/preview:
+    post:
+      operationId: PreviewFokOrder
+      summary: Preview one public FOK order
+      security:
+        - {}
+        - nip98: []
+      description: >
+        Plans one read-only Fill-Or-Kill order against one captured market
+        snapshot. The preview is not authorization, reservation, or order
+        submission. Final admission rechecks the current market state and
+        economic terms. NIP-98 authentication is optional; when present, the
+        authenticated subject is used for self-match exclusion.
+      requestBody:
+        required: true
+        description: >
+          One bounded preview request. The raw request body is limited to
+          16 KiB and oversized declared-length or chunked bodies are rejected
+          before JSON binding or planning.
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PreviewFokOrderRequest'
+      responses:
+        '200':
+          description: Read-only FOK preview result.
           content:
             application/json:
               schema:
-                type: string
-        '401':
-          description: Missing or invalid NIP-98 authentication
-        '404':
-          description: >
-            Settlement capability is absent, belongs to another authenticated
-            owner, or its binding digest does not match.
-        '409':
-          description: >
-            Route market does not match the bound intent, or the capability is
-            stale, expired, selected, or otherwise not current and no matching
-            previously accepted admission exists. An exact accepted replay
-            returns that prior result instead of this conflict.
-        '503':
-          description: Settlement capability authority is unavailable.
+                $ref: '#/components/schemas/PreviewFokOrderResponse'
+        '400':
+          description: Invalid market route, price, face amount, or request shape.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '413':
+          description: Raw request body exceeds the 16 KiB limit.
+        '429':
+          description: Preview rate limit or concurrency limit exceeded.
+          headers:
+            Retry-After:
+              description: Number of seconds before the client should retry.
+              schema:
+                type: integer
+                format: int32
+                minimum: 1
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
 
   /api/v1/orders/mine:
     get:
@@ -385,7 +516,13 @@ paths:
               schema:
                 $ref: '#/components/schemas/ListMyOrdersResponse'
         '400':
-          description: Missing or invalid conditionId
+          description: >
+            order-invalid-request. Application request validation failed.
+            Framework input validation can return a different body shape.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
         '401':
           description: Missing or invalid NIP-98 authentication
 
@@ -417,10 +554,25 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/OrderStatusResponse'
+        '400':
+          description: >
+            order-invalid-request. Application request validation failed.
+            Framework input validation can return a different body shape.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
         '401':
           description: Missing or invalid NIP-98 authentication
+        '403':
+          description: The order belongs to another authenticated owner.
         '404':
-          description: Order not found
+          description: >
+            order-not-found. The order is unavailable for this request.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
 
     delete:
       operationId: cancelOrder
@@ -439,40 +591,32 @@ paths:
       responses:
         '200':
           description: Order cancelled
+        '400':
+          description: >
+            order-invalid-request. Application request validation failed.
+            Framework input validation can return a different body shape.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
         '401':
           description: Missing or invalid NIP-98 authentication
         '404':
-          description: Order not found
-
-  /api/v1/{marketId}/orders/{orderId}/continuation/decline:
-    post:
-      operationId: declineOrderContinuation
-      summary: Decline one suspended residual continuation
-      security:
-        - nip98: []
-      parameters:
-        - $ref: '#/components/parameters/MarketId'
-        - name: orderId
-          in: path
-          required: true
-          schema:
-            type: string
-            format: uuid
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/DeclineOrderContinuationRequest'
-      responses:
-        '200':
-          description: Continuation is durably declined. Exact replay is idempotent.
-        '401':
-          description: Missing or invalid authentication.
-        '404':
-          description: Order or continuation is absent.
+          description: >
+            order-not-found. Missing, foreign, and wrong-route cancellation
+            targets return the same response.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
         '409':
-          description: Stale revision or continuation already consumed.
+          description: >
+            order-cancellation-conflict. Order state changed before
+            cancellation could be committed. Retry the original request.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
 
   /api/v1/{marketId}/orderbook:
     get:
@@ -487,23 +631,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/OrderBookSnapshot'
-
-  /api/v1/{marketId}/liquidity:
-    get:
-      operationId: getLiquidity
-      summary: Get liquidity state
-      description: Returns the current public liquidity state for a market.
-      parameters:
-        - $ref: '#/components/parameters/MarketId'
-      responses:
-        '200':
-          description: Current liquidity state
+        '400':
+          description: >
+            order-invalid-request. Application request validation failed.
+            Framework input validation can return a different body shape.
           content:
-            application/json:
+            application/problem+json:
               schema:
-                $ref: '#/components/schemas/LiquidityStateResponse'
-        '404':
-          description: No liquidity state for this market
+                $ref: '#/components/schemas/ProblemDetails'
+
 
   /api/v1/{marketId}/metadata:
     get:
@@ -539,67 +675,6 @@ paths:
         '404':
           description: No thumbnail for this condition
 
-  /api/v1/markets/{conditionId}/deposit/ecash:
-    post:
-      operationId: requestEcashDeposit
-      summary: Submit an ecash payment for market liquidity
-      security:
-        - nip98: []
-      description: >
-        Submits an ecash deposit for asynchronous proof verification and
-        crediting. Use the returned `depositId` to poll for state transitions
-        via the GET endpoint.
-      parameters:
-        - $ref: '#/components/parameters/ConditionId'
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/RequestEcashDepositRequest'
-      responses:
-        '200':
-          description: Deposit recorded; verification proceeds asynchronously
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/RequestEcashDepositResponse'
-        '400':
-          description: Validation error (e.g. malformed proofs token, non-positive amount)
-        '401':
-          description: Missing or invalid NIP-98 authentication
-        '404':
-          description: Market not found
-        '429':
-          description: Per-pubkey deposit-request rate limit exceeded
-
-  /api/v1/markets/{conditionId}/deposit/{depositId}:
-    get:
-      operationId: getDepositStatus
-      summary: Read the current state of a deposit
-      description: >
-        Polling-friendly read of a single deposit's lifecycle state. Bearer
-        payment instruments (bolt11) and proof material are deliberately
-        excluded from the response — they appear only in the original
-        request response. Public; no authentication required.
-      parameters:
-        - $ref: '#/components/parameters/ConditionId'
-        - name: depositId
-          in: path
-          required: true
-          schema:
-            type: string
-            format: uuid
-          description: Deposit identifier returned by the request endpoint.
-      responses:
-        '200':
-          description: Deposit found
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/GetDepositResponseDto'
-        '404':
-          description: No deposit with this id for this condition
 
   /api/v1/participation-score:
     get:
@@ -608,9 +683,12 @@ paths:
       security:
         - nip98: []
       description: >
-        Returns the caller's non-withdrawable participation Score balance and
-        current match-debit policy. Score is a sat-denominated engine-use fee
-        balance, separate from market collateral units.
+        Returns the caller's non-withdrawable Participation Score balance and
+        ledger totals. Score is a sat-denominated engine-use credit, separate
+        from market collateral units. The server applies the immutable
+        capability-admission tariff from verified capability work facts. The
+        tariff is not a per-order, per-fill, or settlement-failure fee and is
+        not returned by this endpoint.
       responses:
         '200':
           description: Participation Score state for the authenticated pubkey
@@ -621,43 +699,15 @@ paths:
         '401':
           description: Missing or invalid NIP-98 authentication
 
-  /api/v1/participation-score/ecash:
-    post:
-      operationId: payParticipationScoreEcash
-      summary: Pay ecash to top up participation Score
-      security:
-        - nip98: []
-      description: >
-        Pays a regular sat ecash token into the global Engine fee account.
-        The fee is non-refundable and credits participation Score for the
-        authenticated Nostr pubkey. The supplied token amount must exactly
-        match `amountSats`; this endpoint never credits a market account.
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/PayParticipationScoreEcashRequest'
-      responses:
-        '200':
-          description: Ecash accepted and Score credited
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/PayParticipationScoreEcashResponse'
-        '400':
-          description: Validation error (e.g. malformed token or non-positive amount)
-        '401':
-          description: Missing or invalid NIP-98 authentication
-        '429':
-          description: Per-pubkey payment-request rate limit exceeded
-        '502':
-          description: Wallet-service payment error
-
   /api/v1/cashu-deliveries/{deliveryId}:
     post:
       operationId: submitDurableCashuDelivery
       summary: Submit one authenticated durable Cashu delivery
+      description: >
+        Stable Problem Details codes apply to the documented application branches.
+        Route constraints, framework binding, authentication, rate limits, and
+        Score-specific failures can use other bodies. A request failure does not
+        prove that no value was received. Preserve the original delivery identity.
       security:
         - nip98: []
       parameters:
@@ -676,20 +726,59 @@ paths:
               schema:
                 $ref: '#/components/schemas/DurableCashuDeliveryStatus'
         '400':
-          description: The delivery request is invalid.
+          description: "Invalid delivery or funding request. Application codes: cashu-delivery-invalid-request, market-funding-invalid-request."
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
         '401':
           description: Missing or invalid authentication.
         '403':
-          description: The authenticated subject differs from accountSubject.
+          description: "Subject mismatch or a closed funding market. Application codes: cashu-delivery-forbidden, market-closed."
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '404':
+          description: "Funding market not found. Application code: market-funding-market-not-found."
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
         '409':
-          description: deliveryId is already bound to a different immutable tuple.
+          description: "The delivery conflicts with saved state. Shared application code: cashu-delivery-conflict. Score-specific refusals can use another body."
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
         '429':
           description: Delivery submission rate limit exceeded.
+        '500':
+          description: "Delivery state could not be read after admission. Application code: cashu-delivery-state-unavailable. Check the original delivery before retrying."
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
         '502':
-          description: The durable recipient is unavailable.
+          description: "The funding recipient is unavailable or its receipt could not be verified. Application codes: cashu-delivery-recipient-unavailable, cashu-delivery-invalid-receipt. Keep the original delivery for recovery. Score-specific failures can use another body."
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '503':
+          description: "Participation Score mint pre-admission is unavailable."
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
     get:
       operationId: getDurableCashuDeliveryStatus
       summary: Read one authenticated durable Cashu delivery status
+      description: >
+        Stable Problem Details codes apply to the documented application branches.
+        Route constraints, framework binding, authentication, rate limits, and
+        Score-specific failures can use other bodies. A request failure does not
+        prove that no value was received. Preserve the original delivery identity.
       security:
         - nip98: []
       parameters:
@@ -704,13 +793,25 @@ paths:
         '401':
           description: Missing or invalid authentication.
         '403':
-          description: The delivery belongs to a different subject.
+          description: "The delivery belongs to a different subject. Application code: cashu-delivery-forbidden."
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
         '404':
-          description: No delivery exists for deliveryId.
+          description: "No delivery exists, or the identifier is invalid. Handler code: cashu-delivery-not-found. Route constraints can return a different body."
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '409':
+          description: "The saved delivery was rejected. Application code: cashu-delivery-conflict."
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
         '429':
           description: Delivery status rate limit exceeded.
-        '502':
-          description: The durable recipient is unavailable.
 
   /api/v1/creators/{pubkey}/markets:
     get:
@@ -755,7 +856,7 @@ paths:
 
         The response combines condition metadata (`outcomes`, `creatorPubkey`,
         `deadline`, and oracle attestation/close metadata) with trading state
-        (`state`, `volume*`, `lastTradedPrice`, and `createdAt`). A market
+        (`state`, `volume*`, and `createdAt`). A market
         missing either side of that public data is omitted from the catalogue
         until both are available.
       security:
@@ -882,6 +983,15 @@ paths:
             NIP-98-authenticated callers have their own per-pubkey bucket
             with a higher permit ceiling. The engine returns this when the
             applicable bucket is empty.
+        '503':
+          description: >
+            Latest confirmed trade data is temporarily unavailable. Retry the
+            request later. The ProblemDetails `type` is
+            `/errors/market-latest-trades-unavailable`.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
 
   /api/v1/settlement-capabilities:
     post:
@@ -914,19 +1024,53 @@ paths:
               schema:
                 $ref: '#/components/schemas/SettlementCapabilityResponse'
         '400':
-          description: Malformed, noncanonical, expired, or unsupported artifact.
+          description: >
+            Application rejection of a malformed, noncanonical, expired, or
+            unsupported artifact. Framework input binding can return a
+            different error body.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
         '401':
           description: Missing or invalid authentication.
+        '402':
+          description: Participation Score is insufficient for capability preparation.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
         '409':
           description: >
             Idempotency conflict, reused input proof, mismatched order binding,
             or capability lifecycle conflict.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
         '413':
-          description: Artifact or request exceeds the advertised byte/count limits.
+          description: >
+            Application rejection of an artifact or request above the advertised
+            byte/count limits. Framework request-size rejection can return a
+            different error body.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
         '429':
-          description: Per-subject capability admission is saturated.
+          description: >
+            Application capability admission or process capacity is saturated.
+            Framework rate-limit rejection can return a different error body.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
         '503':
           description: Mint validation or durable capability authority is unavailable.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
 
   /api/v1/asset-monitoring/reports:
     post:
@@ -1136,7 +1280,7 @@ paths:
       description: >
         Returns the coordinator public key that every newly created bitCaster
         PAY_TO_UNLOCK authorization must bind. Clients fetch this authenticated
-        policy before creating or reauthorizing a range operation. Historical
+        policy before creating a range operation. Historical
         operations retain their persisted coordinator key.
       responses:
         '200':
@@ -1155,6 +1299,10 @@ paths:
           description: Missing or invalid authentication.
         '503':
           description: Settlement admission policy is unavailable.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
 
   /api/v1/settlement-capabilities/{artifactId}:
     get:
@@ -1185,10 +1333,20 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SettlementCapabilityResponse'
+        '400':
+          description: Invalid capability binding digest.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
         '401':
           description: Missing or invalid authentication.
         '404':
           description: Capability is absent, foreign, or has a different binding digest.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
 
   /api/v1/settlement-capability-results/{resultId}:
     get:
@@ -1214,6 +1372,10 @@ paths:
           description: Missing or invalid authentication.
         '404':
           description: Result is absent or belongs to another subject.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
 
   /api/v1/settlement-capability-results/by-operation:
     get:
@@ -1236,10 +1398,20 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SettlementCapabilityResultResponse'
+        '400':
+          description: Invalid operation identifier.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
         '401':
           description: Missing or invalid authentication.
         '404':
           description: Result is absent or belongs to another subject.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
 
   /api/v1/settlement-capability-results/{resultId}/acknowledgement:
     post:
@@ -1274,12 +1446,24 @@ paths:
                 $ref: '#/components/schemas/SettlementCapabilityResultResponse'
         '400':
           description: Invalid expected version.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
         '401':
           description: Missing or invalid authentication.
         '404':
           description: Result is absent or belongs to another subject.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
         '409':
           description: Result lifecycle version conflict.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
 
 components:
   securitySchemes:
@@ -1411,7 +1595,7 @@ components:
           description: Canonical origin only. A non-default port is allowed. Credentials, path, query, fragment, trailing slash, and explicit default ports are invalid.
         unit:
           type: string
-          enum: [sat, msat]
+          enum: [msat]
         requestedAmount:
           type: string
           pattern: '^[1-9][0-9]{0,18}$'
@@ -1478,7 +1662,7 @@ components:
           description: Canonical origin only. A non-default port is allowed. Credentials, path, query, fragment, trailing slash, and explicit default ports are invalid.
         unit:
           type: string
-          enum: [sat, msat]
+          enum: [msat]
         requestedAmount:
           type: string
           pattern: '^[1-9][0-9]{0,18}$'
@@ -1569,12 +1753,6 @@ components:
                   - $ref: '#/components/schemas/DurableCashuDeliveryResult'
                   - required: [businessEventId, businessEventAt]
 
-    AssetMonitoringUnit:
-      type: string
-      enum: [sat, msat]
-      description: >
-        Canonical Cashu unit for a monitored asset or its display base asset.
-
     AssetMonitoringAssetKind:
       type: string
       enum: [collateral, conditional]
@@ -1604,9 +1782,9 @@ components:
           type: string
           enum: [collateral]
         cashuUnit:
-          $ref: '#/components/schemas/AssetMonitoringUnit'
+          $ref: '#/components/schemas/CollateralUnit'
         displayBaseAsset:
-          $ref: '#/components/schemas/AssetMonitoringUnit'
+          $ref: '#/components/schemas/BaseAsset'
 
     AssetMonitoringConditionalAssetReference:
       type: object
@@ -1630,9 +1808,9 @@ components:
           type: string
           enum: [conditional]
         cashuUnit:
-          $ref: '#/components/schemas/AssetMonitoringUnit'
+          $ref: '#/components/schemas/CollateralUnit'
         displayBaseAsset:
-          $ref: '#/components/schemas/AssetMonitoringUnit'
+          $ref: '#/components/schemas/BaseAsset'
         conditionId:
           type: string
           minLength: 1
@@ -1870,68 +2048,6 @@ components:
         - terminal
         - quarantined
 
-    SettlementOrderContinuationReference:
-      type: object
-      additionalProperties: false
-      required:
-        - predecessorOrderId
-        - settlementGroupId
-        - settlementGroupRevision
-        - continuationRevision
-      properties:
-        predecessorOrderId:
-          type: string
-          format: uuid
-        settlementGroupId:
-          type: string
-          format: uuid
-        settlementGroupRevision:
-          type: integer
-          format: int32
-          minimum: 1
-        continuationRevision:
-          type: integer
-          format: int64
-          minimum: 1
-
-    OrderContinuationState:
-      type: object
-      additionalProperties: false
-      required:
-        - settlementGroupId
-        - settlementGroupRevision
-        - revision
-        - status
-      properties:
-        settlementGroupId:
-          type: string
-          format: uuid
-        settlementGroupRevision:
-          type: integer
-          format: int32
-          minimum: 1
-        revision:
-          type: integer
-          format: int64
-          minimum: 1
-        status:
-          type: string
-          enum:
-            - open
-            - consumed
-            - declined
-
-    DeclineOrderContinuationRequest:
-      type: object
-      additionalProperties: false
-      required:
-        - expectedContinuationRevision
-      properties:
-        expectedContinuationRevision:
-          type: integer
-          format: int64
-          minimum: 1
-
     SettlementOrderIntent:
       type: object
       additionalProperties: false
@@ -1989,19 +2105,18 @@ components:
           description: >
             Required explicit collateral unit. No default is implied.
         timeInForce:
-          $ref: '#/components/schemas/TimeInForce'
+          $ref: '#/components/schemas/SettlementCapabilityTimeInForce'
           description: >
-            GTD requires a non-null expiresAt. GTC, FOK, and FAK forbid
-            expiresAt.
+            Public settlement capability requests accept only FOK. FOK means
+            Fill-Or-Kill and forbids expiresAt.
         expiresAt:
           type:
             - string
             - 'null'
           format: date-time
           description: >
-            Non-null for GTD intent and exactly null for every other
-            time-in-force value. Requiring the field gives the authenticated
-            intent one canonical wire representation.
+            Exactly null for FOK. Requiring the field gives the
+            authenticated intent one canonical wire representation.
 
     CreateSettlementCapabilityRequest:
       type: object
@@ -2011,7 +2126,6 @@ components:
         - clientOrderId
         - marketId
         - orderIntent
-        - continuation
         - artifact
       properties:
         stageIdempotencyKey:
@@ -2042,14 +2156,6 @@ components:
             Economic order terms to authenticate in the durable capability
             binding. Once the stage idempotency key is durably associated,
             reusing it with different terms conflicts.
-        continuation:
-          oneOf:
-            - $ref: '#/components/schemas/SettlementOrderContinuationReference'
-            - type: 'null'
-          description: >
-            Exactly null for an initial order. A fresh successor binds the
-            confirmed predecessor continuation right and consumes it
-            atomically when the capability is bound.
         artifact:
           type: string
           format: byte
@@ -2204,9 +2310,10 @@ components:
       description: >
         Market price numerator `k`. Valid range is `1 <= k <= D - 1`, where
         `D` is the market's immutable `divisibility`. Immutable price
-        denominator D is per-market: categorical markets use D=10000 (0.01%
-        precision), while future numeric markets use D=1000000 (0.0001%
-        precision).
+        denominator D is per-market. Current yes/no and categorical markets
+        use D=1000 (0.1% precision). Numeric market creation and trading are
+        currently disabled; D=1000000 (0.0001% precision) is reserved for a
+        future numeric trade representation.
 
     BaseAsset:
       type: string
@@ -2266,13 +2373,186 @@ components:
         Good-Till-Date. GTD requires a non-null `expiresAt`; GTC, FOK, and FAK
         forbid `expiresAt`.
 
+    SettlementCapabilityTimeInForce:
+      type: string
+      enum:
+        - FOK
+      description: >
+        Public settlement capability time-in-force. FOK means Fill-Or-Kill.
+        Public capability requests are FOK-only. They cannot rest on the book
+        and cannot carry an expiry.
+
+    FokPreviewReason:
+      type: string
+      enum:
+        - fillable
+        - insufficient_liquidity
+        - price_limit
+        - request_too_large
+        - market_unavailable
+        - temporarily_unavailable
+      description: >
+        Coarse reason for the read-only FOK preview result. `fillable` means
+        the requested face amount passes the current price and match limits.
+        `insufficient_liquidity` means more available market capacity may
+        help. Other values do not promise that more capacity will help.
+
+    PreviewFokOrderRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - marketId
+        - side
+        - tokenSide
+        - price
+        - faceAmountSubunits
+      description: >
+        Economic terms for one read-only public FOK preview. This request
+        contains no time-in-force choice, owner, capability, proof, order
+        identity, expiry, or caller match bound.
+      properties:
+        marketId:
+          type: string
+          minLength: 3
+          maxLength: 256
+          pattern: '^[a-zA-Z0-9][a-zA-Z0-9-]*-[a-zA-Z0-9]+$'
+          description: >
+            Primitive outcome market id in `{conditionId}-{outcomeName}` form.
+            The condition segment starts with an alphanumeric character and
+            can then contain alphanumeric characters or hyphens. The outcome
+            segment contains one or more alphanumeric characters and must not
+            contain a finite outcome-set separator such as `|`. Binary YES/NO
+            markets expose only the `{conditionId}-YES` route; trade NO with
+            `tokenSide=Complement`, and do not use `{conditionId}-NO`.
+        side:
+          $ref: '#/components/schemas/OrderSide'
+          description: Order direction relative to the selected token.
+        tokenSide:
+          $ref: '#/components/schemas/TokenSide'
+          description: >
+            Token represented by the selected-token price. `Complement` means
+            the one-vs-rest complement of the primitive outcome route.
+        price:
+          type: integer
+          format: int32
+          minimum: 1
+          maximum: 999999
+          description: >
+            Selected-token limit-price numerator `k`. The server also requires
+            `k < D` for the market's immutable price denominator and validates
+            the token-side mapping before planning.
+        faceAmountSubunits:
+          type: integer
+          format: int64
+          minimum: 1
+          maximum: 100000000000000
+          description: >
+            Positive conditional-token face amount in market collateral
+            subunits. The server requires a whole tradable unit for the
+            market's immutable divisibility `D`; the maximum is 1e14.
+
+    PreviewFokOrderResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - fullFillAvailable
+        - reason
+        - previewRevision
+        - quotePaymentSubunits
+        - averagePrice
+        - worstPrice
+        - currentLatestTradePrice
+        - projectedFinalPrice
+        - priceDenominator
+        - subsidyMayHelp
+      description: >
+        One read-only FOK result from one captured market snapshot. Execution
+        estimates are null unless the full requested face amount is currently
+        executable. Quote payment excludes client-composed wallet preparation,
+        settlement input, and consolidation fees. Final admission repeats the
+        authoritative plan.
+      properties:
+        fullFillAvailable:
+          type: boolean
+          description: >
+            True only when the complete requested face amount passes the
+            selected-token price and bounded match checks.
+        reason:
+          $ref: '#/components/schemas/FokPreviewReason'
+        previewRevision:
+          type: [string, 'null']
+          minLength: 1
+          maxLength: 256
+          description: >
+            Opaque revision for the captured preview snapshot. Null when no
+            authoritative market snapshot is available. This value is display
+            metadata and is not authorization for final admission.
+        quotePaymentSubunits:
+          type: [integer, 'null']
+          format: int64
+          minimum: 0
+          maximum: 100000000000000
+          description: >
+            Exact quote payment in market base-asset subunits. Null when the
+            request is not fully fillable. This excludes client-composed fees.
+        averagePrice:
+          type: [number, 'null']
+          minimum: 0
+          description: >
+            Selected-token average execution price, computed from the exact
+            `quotePaymentSubunits` as `quotePaymentSubunits * D /
+            faceAmountSubunits`. It may be fractional. Null when the request
+            is not fully fillable; quotePaymentSubunits remains authoritative
+            for exact payment.
+        worstPrice:
+          type: [integer, 'null']
+          format: int32
+          minimum: 1
+          maximum: 999999
+          description: >
+            Worst selected-token execution-price numerator across the
+            canonical fill order. Null when the request is not fully fillable.
+        currentLatestTradePrice:
+          type: [integer, 'null']
+          format: int32
+          minimum: 1
+          maximum: 999999
+          description: >
+            Latest confirmed primitive-route displayed trade-price numerator.
+            Null when the market has no confirmed trade or no authoritative
+            snapshot. This is a display price, not a selected-token execution
+            price.
+        projectedFinalPrice:
+          type: [integer, 'null']
+          format: int32
+          minimum: 1
+          maximum: 999999
+          description: >
+            Projected final primitive-route displayed trade-price numerator
+            after this preview's canonical fills. Complement routes use the
+            primitive-route display mapping. Null when the request is not fully
+            fillable.
+        priceDenominator:
+          type: [integer, 'null']
+          format: int32
+          minimum: 2
+          maximum: 1000000
+          description: >
+            Immutable market price denominator `D`. Null when no authoritative
+            market snapshot is available.
+        subsidyMayHelp:
+          type: boolean
+          description: >
+            A conservative hint that additional condition funding capacity may
+            help. True only for `insufficient_liquidity` when fresh capacity
+            might make the request executable; it never guarantees execution.
+
     OrderLifecycleStatus:
       type: string
       enum:
         - resting
         - matched
         - partially_filled
-        - awaiting_authorization
         - filled
         - cancelled
         - expired
@@ -2280,9 +2560,9 @@ components:
         - rejected_capacity
         - failed
       description: >
-        Closed public order lifecycle. `awaiting_authorization` means an
-        unfilled resting remainder is intentionally non-matchable until its
-        owner durably binds a replacement one-shot range authorization.
+        Order lifecycle for public FOK orders and internal GTC quotes. A public
+        FOK order is filled or cancelled. An internal GTC quote can rest or
+        partially fill.
 
     SettlementGroupStatus:
       type: string
@@ -2294,10 +2574,15 @@ components:
         - DefinitivelyRejected
         - Refundable
         - ExpiredBeforeSubmission
+        - RejectedBeforeSubmission
       description: >
         Public atomic settlement-group lifecycle. `Prepared` is the bounded
         coalescing state. `SubmissionPending` means the group is frozen and its
         exact request authority was durably committed before mint I/O.
+        `RejectedBeforeSubmission` means this group stopped before committing
+        a mint request for a reason other than authorization expiry.
+        `ExpiredBeforeSubmission` means authorization expired before submission.
+        Neither status confirms wallet recovery or authorizes a refund.
 
     SettlementGroupSummary:
       type: object
@@ -2327,7 +2612,7 @@ components:
             - 'null'
           format: date-time
           description: >
-            Null for `Prepared` and for `ExpiredBeforeSubmission`, which
+            Null for `Prepared`, `RejectedBeforeSubmission`, and `ExpiredBeforeSubmission`, which
             transitions directly from `Prepared` without mint submission.
             Non-null for every lifecycle path that reached
             `SubmissionPending`, and preserved through later transitions.
@@ -2576,7 +2861,7 @@ components:
         divisibility:
           type: integer
           format: int32
-          enum: [10000, 1000000]
+          enum: [1000, 1000000]
           description: >
             Immutable price denominator `D`, server-determined.
         quotePaymentSubunits:
@@ -2695,7 +2980,6 @@ components:
         - baseAsset
         - divisibility
         - activeSettlementGroup
-        - continuation
       properties:
         orderId:
           type: string
@@ -2746,13 +3030,6 @@ components:
           description: >
             Current nonterminal settlement group for this order, or null when
             no group currently owns an unconfirmed fill.
-        continuation:
-          oneOf:
-            - $ref: '#/components/schemas/OrderContinuationState'
-            - type: 'null'
-          description: >
-            Current durable residual-continuation state. It is non-null only
-            after a confirmed partial resting-order settlement.
         tokenSide:
           $ref: '#/components/schemas/TokenSide'
         baseAsset:
@@ -2761,7 +3038,7 @@ components:
         divisibility:
           type: integer
           format: int32
-          enum: [10000, 1000000]
+          enum: [1000, 1000000]
           description: >
             Immutable price denominator `D`, server-determined.
 
@@ -2816,7 +3093,7 @@ components:
         divisibility:
           type: integer
           format: int32
-          enum: [10000, 1000000]
+          enum: [1000, 1000000]
           description: >
             Immutable price denominator `D`, server-determined.
 
@@ -2860,7 +3137,7 @@ components:
         divisibility:
           type: integer
           format: int32
-          enum: [10000, 1000000]
+          enum: [1000, 1000000]
         side:
           $ref: '#/components/schemas/OrderSide'
         price:
@@ -2935,7 +3212,7 @@ components:
         divisibility:
           type: integer
           format: int32
-          enum: [10000, 1000000]
+          enum: [1000, 1000000]
         activeSettlementGroup:
           oneOf:
             - $ref: '#/components/schemas/SettlementGroupSummary'
@@ -3034,7 +3311,7 @@ components:
         divisibility:
           type: integer
           format: int32
-          enum: [10000, 1000000]
+          enum: [1000, 1000000]
           description: >
             Immutable price denominator `D`, server-determined.
         activeSettlementGroup:
@@ -3069,7 +3346,6 @@ components:
         - capabilityNotCurrent
         - routeMismatch
         - authorityUnavailable
-        - participationScoreRequired
         - marketClosed
         - bookRejected
       description: >
@@ -3215,24 +3491,22 @@ components:
 
     CreateMarketOutcome:
       type: object
+      additionalProperties: false
       required:
         - name
-        - probability
       properties:
         name:
           type: string
           description: Outcome label (e.g. "Yes", "Alice").
-        probability:
-          type: integer
-          minimum: 1
-          maximum: 99
-          description: Initial implied probability for this outcome [1, 99].
 
     CreateMarketRequest:
       type: object
+      additionalProperties: false
       description: >
         JSON payload embedded in the multipart `metadata` field of the
-        createMarket endpoint.
+        createMarket endpoint. This request contains market metadata only.
+        It accepts no opening probability and no initial funding payment or
+        proof. Use the separate post-creation funding flow for bot funding.
       required:
         - title
         - description
@@ -3256,17 +3530,10 @@ components:
           type: string
           enum: [yesno, categorical, numeric]
           description: >
-            Market outcome type. Numeric creation is disabled until finite-bin
-            metadata is supported end-to-end.
-        liquiditySats:
-          type: integer
-          format: int64
-          minimum: 0
-          default: 0
-          description: >
-            Deprecated pre-create liquidity field. Market-maker funding is
-            collected after creation through the funding flow; create requests
-            should send `0`.
+            Market outcome type. Use `yesno` or `categorical` for currently
+            supported markets. The `numeric` value remains in the wire enum
+            for compatibility, but numeric market creation and trading are
+            currently disabled.
         baseAsset:
           $ref: '#/components/schemas/BaseAsset'
           description: >
@@ -3314,9 +3581,11 @@ components:
         divisibility:
           type: integer
           format: int32
-          enum: [10000, 1000000]
+          enum: [1000, 1000000]
           description: >
-            Immutable price denominator `D`, server-determined.
+            Immutable price denominator `D`, server-determined. Current
+            yes/no and categorical markets use `1000`; `1000000` is reserved
+            for a future numeric trade representation.
 
     MarketPriceHistoryPoint:
       type: object
@@ -3334,21 +3603,19 @@ components:
           minimum: 1
           description: >
             Market price numerator `k`. Valid range is `1 <= k <= D - 1`,
-            where `D` is the market's immutable `divisibility`. Current markets
-            use D=10000 (0.01% price precision).
+            where `D` is the market's immutable `divisibility`. Current yes/no
+            and categorical markets use D=1000 (0.1% price precision).
+            Numeric market creation and trading are currently disabled.
         volumeSubunits:
           type: integer
           format: int64
           minimum: 0
           description: >
             Volume represented in the market's collateral/share subunits.
-            Initial anchor points always carry zero volume.
         source:
           type: string
-          enum: [initial, fill]
+          enum: [fill]
           description: >
-            `initial` is the creator-probability anchor and is clamped to the
-            selected timeframe boundary when used as carry-forward context.
             `fill` is a settlement-committed trade tick inside the selected
             timeframe.
 
@@ -3425,54 +3692,6 @@ components:
           items:
             $ref: '#/components/schemas/MarketComment'
 
-    LiquidityStateResponse:
-      type: object
-      required:
-        - marketId
-        - reserveA
-        - reserveB
-        - impliedProbability
-        - baseAsset
-        - divisibility
-        - restingOrderLiquiditySubunits
-        - completeSetLiquiditySubunits
-        - totalLiquiditySubunits
-        - activeOrders
-      properties:
-        marketId:
-          type: string
-        reserveA:
-          type: integer
-          format: int64
-        reserveB:
-          type: integer
-          format: int64
-        impliedProbability:
-          type: integer
-          minimum: 1
-          maximum: 99
-        baseAsset:
-          $ref: '#/components/schemas/BaseAsset'
-        divisibility:
-          type: integer
-          enum: [10000, 1000000]
-          description: >
-            Immutable price denominator `D`, server-determined.
-        restingOrderLiquiditySubunits:
-          type: integer
-          format: int64
-          description: Liquidity represented by currently resting bot orders, in market-base subunits.
-        completeSetLiquiditySubunits:
-          type: integer
-          format: int64
-          description: Conservative value of free complete-set inventory, in market-base subunits.
-        totalLiquiditySubunits:
-          type: integer
-          format: int64
-          description: Total public liquidity in market-base subunits.
-        activeOrders:
-          type: integer
-          description: Number of active liquidity orders.
 
     MarketMetadataSnapshot:
       type: object
@@ -3495,7 +3714,7 @@ components:
         totalLiquiditySubunits:
           type: integer
           format: int64
-          description: Total liquidity deposited in market collateral subunits.
+          description: Always zero. Does not report bot funding, custody, or executable order-book depth.
 
     CreatorMarketEntry:
       type: object
@@ -3545,77 +3764,6 @@ components:
             Markets created by this pubkey. May be empty if the creator has
             not registered any markets yet.
 
-    DepositState:
-      type: string
-      enum:
-        - requested
-        - paid
-        - credited
-        - failed
-      description: >
-        Lifecycle state of a single deposit. `requested` → invoice issued or
-        ecash submission accepted, awaiting payment proof. `paid` → payment
-        confirmed and crediting is in progress. `credited` → the market account
-        was credited (terminal-success). `failed` → invoice expired, ecash
-        rejected, or crediting failed (terminal-failure).
-
-    DepositMethod:
-      type: string
-      enum:
-        - lightningInvoice
-        - ecash
-      description: How the funder is paying the deposit.
-
-    RequestEcashDepositRequest:
-      type: object
-      required:
-        - amountSubunits
-        - unit
-        - divisibility
-        - proofsToken
-      properties:
-        amountSubunits:
-          allOf:
-            - $ref: '#/components/schemas/CollateralSubunits'
-          description: >
-            Asserted value of the supplied ecash proofs in
-            market-collateral base subunits. The engine derives the unit from
-            the registered market.
-        unit:
-          type: string
-          enum: [msat]
-          description: Exact Cashu product-collateral unit for the supplied proofs.
-        divisibility:
-          type: integer
-          format: int32
-          enum: [10000, 1000000]
-          description: Exact market divisibility associated with the supplied proofs.
-        proofsToken:
-          type: string
-          description: >
-            Opaque ecash token (Cashu V4 token blob). Proofs and amount are
-            verified before crediting.
-        creatorPubkey:
-          type: string
-          pattern: '^[0-9a-f]{64}$'
-          description: Nostr public key (hex) of the market creator
-        fundAmm:
-          type: boolean
-          default: false
-          description: Fund the automated market-maker for this market. The deposit becomes the bot quoting budget and is NOT withdrawable. If the market resolves, any residual budget becomes operator income.
-
-    RequestEcashDepositResponse:
-      type: object
-      required:
-        - depositId
-        - state
-      properties:
-        depositId:
-          type: string
-          format: uuid
-          description: Identifier for polling the deposit's lifecycle state.
-        state:
-          $ref: '#/components/schemas/DepositState'
 
     ParticipationScoreResponse:
       type: object
@@ -3624,7 +3772,6 @@ components:
         - balance
         - purchasedTotal
         - consumedTotal
-        - matchDebitScore
         - enabled
       properties:
         pubkey:
@@ -3634,7 +3781,7 @@ components:
         balance:
           type: integer
           format: int64
-          description: Current Participation Score balance. May be negative after a durable fill debit.
+          description: Current Participation Score balance. It may be negative after a capability-admission charge.
         purchasedTotal:
           type: integer
           format: int64
@@ -3644,107 +3791,48 @@ components:
           type: integer
           format: int64
           minimum: 0
-          description: Total Score consumed by durable fill debits.
-        matchDebitScore:
-          type: integer
-          format: int64
-          minimum: 1
-          description: Configured Score debit charged to each non-exempt participant when a fill is durably reserved. The approved operator service is exempt.
+          description: Total Score consumed by capability-admission and invalid-validation charges.
         enabled:
           type: boolean
-          description: Whether durable fill Score debit is enabled by the engine.
+          description: Whether Participation Score purchase and payment is enabled by the engine.
 
-    PayParticipationScoreEcashRequest:
+
+    LatestConfirmedTrade:
       type: object
+      description: >
+        One settlement-confirmed execution used by the public market-price
+        projection. It does not represent a quote, order insertion, funding
+        payment, or registration-time value.
       required:
-        - amountSats
-        - proofsToken
+        - primitiveOutcomeId
+        - fillId
+        - executedAt
+        - eventOrder
+        - priceTick
+        - divisibility
+        - faceAmountSubunits
       properties:
-        amountSats:
-          allOf:
-            - $ref: '#/components/schemas/Sats'
-          minimum: 1
-          description: Exact sat amount carried by the supplied regular ecash token.
-        proofsToken:
+        primitiveOutcomeId:
           type: string
-          description: Opaque Cashu token paid as a non-refundable Engine fee.
-        paymentId:
+        fillId:
           type: string
           format: uuid
-          description: Optional caller-supplied idempotency id for retrying the same ecash payment.
-
-    PayParticipationScoreEcashResponse:
-      type: object
-      required:
-        - paymentId
-        - status
-        - amountSats
-        - creditedScore
-        - creditedAt
-      properties:
-        paymentId:
+        executedAt:
           type: string
-          format: uuid
-          description: Idempotency id assigned to this Score payment.
-        status:
+          format: date-time
+        eventOrder:
           type: string
-          enum:
-            - credited
-          description: Terminal success state for the synchronous ecash payment flow.
-        amountSats:
-          allOf:
-            - $ref: '#/components/schemas/Sats'
+        priceTick:
+          type: integer
           minimum: 1
-          description: Ecash amount accepted as engine fee.
-        creditedScore:
+        divisibility:
+          type: integer
+          format: int32
+          enum: [1000, 1000000]
+        faceAmountSubunits:
           type: integer
           format: int64
           minimum: 1
-          description: Score credited for this payment.
-        creditedAt:
-          type: string
-          format: date-time
-          description: Time wallet-service accepted and credited the engine-fee payment.
-
-    GetDepositResponseDto:
-      type: object
-      required:
-        - depositId
-        - conditionId
-        - state
-        - method
-        - amountSubunits
-        - requestedAt
-        - updatedAt
-      properties:
-        depositId:
-          type: string
-          format: uuid
-        conditionId:
-          type: string
-          description: Condition the deposit funds.
-        state:
-          $ref: '#/components/schemas/DepositState'
-        method:
-          $ref: '#/components/schemas/DepositMethod'
-        amountSubunits:
-          $ref: '#/components/schemas/CollateralSubunits'
-        requestedAt:
-          type: string
-          format: date-time
-        updatedAt:
-          type: string
-          format: date-time
-          description: Most recent state-change timestamp.
-        expiresAt:
-          type: string
-          format: date-time
-          nullable: true
-          description: For LN deposits, when the bolt11 stops being payable.
-        failureReason:
-          type: string
-          nullable: true
-          description: Populated only when `state == Failed`.
 
     MarketCatalogueEntry:
       type: object
@@ -3760,9 +3848,9 @@ components:
         - volumeLifetimeSubunits
         - categoryTags
         - lastSuccessfulRefreshAt
+        - latestConfirmedTrades
         - baseAsset
         - divisibility
-        - initialProbabilities
       properties:
         conditionId:
           type: string
@@ -3865,10 +3953,11 @@ components:
           format: int64
           minimum: 0
           description: >
-            Static initial budget deposited to the LMSR bot at funding time,
-            denominated in product collateral subunits (msat).
-            Operator-owned, non-withdrawable, and immutable after funding.
-            Not a live residual and not orderbook depth.
+            Total confirmed post-creation funding assigned to the LMSR bot,
+            denominated in product collateral subunits (msat). It can increase
+            after additional accepted funding payments. It is operator-owned
+            and non-withdrawable. It is not a depositor position, live
+            residual, or order-book depth.
         volumeLifetimeSubunits:
           type: integer
           format: int64
@@ -3881,30 +3970,9 @@ components:
         divisibility:
           type: integer
           format: int32
-          enum: [10000, 1000000]
+          enum: [1000, 1000000]
           description: >
             Immutable price denominator `D`, server-determined.
-        lastTradedPrice:
-          type: number
-          nullable: true
-          description: >
-            Most recent execution price as a decimal ratio in `[0, 1]`, null
-            if the market has never traded. Runtime order, fill, orderbook, and
-            price-history price fields use integer numerators against the
-            market's `divisibility`; this catalogue summary keeps the legacy
-            ratio form for sorting/display compatibility.
-        initialProbabilities:
-          type: object
-          additionalProperties:
-            type: integer
-            format: int32
-            minimum: 1
-            maximum: 99
-          description: >
-            Creator-specified registration-time probability per atomic outcome,
-            expressed as integer percentages that sum to 100. Clients use this
-            as the default market price before any trade has established a live
-            last-traded price.
         categoryTags:
           type: array
           items:
@@ -3920,6 +3988,22 @@ components:
             snapshot used to populate this entry's mintd-sourced fields.
             Mirrored on every entry so callers can render staleness
             indicators per market without an additional request.
+        latestConfirmedTrades:
+          type: array
+          minItems: 0
+          maxItems: 8
+          items:
+            $ref: '#/components/schemas/LatestConfirmedTrade'
+          description: >
+            Bounded latest confirmed execution per primitive outcome. This is
+            the public market-price authority. The array is sorted by
+            canonical primitive outcome ID. Missing outcomes are absent. An
+            untraded market has an empty array and no public price; clients
+            should show `No trades yet` or an em dash rather than inventing a
+            price from registration, funding, a uniform default, or a quote
+            midpoint. A midpoint is an order-entry reference only. For a
+            yes/no market, derive the complementary display price from the same
+            confirmed fill; do not combine trades from different executions.
 
     MarketCatalogueResponse:
       type: object
@@ -3953,7 +4037,7 @@ components:
     ProblemDetails:
       type: object
       description: >
-        RFC 7807 problem details. The matching engine returns this shape on
+        RFC 9457 problem details. The matching engine returns this shape on
         4xx and 5xx responses where additional context helps the caller
         recover.
       properties:
@@ -3972,3 +4056,12 @@ components:
         instance:
           type: string
           description: A URI reference identifying the specific occurrence.
+        code:
+          type: string
+          description: Stable application error code, when provided by the endpoint.
+        limitCode:
+          type: string
+          description: The capacity limit that rejected admission, when applicable.
+        traceId:
+          type: string
+          description: Diagnostic correlation identifier, when provided.

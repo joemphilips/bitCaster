@@ -1,9 +1,28 @@
 ---
 title: 'Encrypted wallet backup'
-description: 'How encrypted proof backup, display-only asset monitoring, and recovery work'
+description: 'What to keep safe, what wallet backup can restore, and what remains private'
 sidebar:
   order: 3
 ---
+
+Keep your 12-word recovery phrase offline and safe. Keep the wallet's local
+data while a trade, payment, or refund is unresolved. Encrypted backup helps
+you recover wallet assets. It does not replace the phrase or every local record.
+
+## What you must keep
+
+The backup service can be unavailable, refuse an upload, or lose its data.
+A failed upload leaves the affected ecash records, called proofs, in local
+storage. The web app must not discard them as backed up.
+
+Recovery from your phrase can reconstruct deterministic regular proofs and
+selected conditional-token proofs. It does not reconstruct every pending
+operation or refund record. In particular, it does not restore transient
+operation records, range locators, or refund locators. Keep the local wallet
+database until every active operation has a confirmed final result.
+Do not clear browser storage to resolve an uncertain payment or trade.
+
+## What the web app stores
 
 The web app has two independent wallet features. It enables both by default.
 
@@ -11,9 +30,8 @@ The web app has two independent wallet features. It enables both by default.
 - Display-only asset monitoring helps the app identify an exact asset that may
   be missing from the local wallet.
 
-The live wallet database remains in your browser. These features help after
-browser storage cleanup, quota eviction, or a move to a previously used
-wallet. They do not replace your 12-word recovery phrase.
+The live wallet database remains in your browser. These features help if the
+browser removes stored data or you reopen a previously used wallet.
 
 ## Encrypted proof backup
 
@@ -44,6 +62,12 @@ uses user-approved asset, amount, condition, and activity metadata.
 Its secondary purpose is to help the web app identify an exact missing asset.
 The app can then make one bounded recovery attempt.
 
+The portfolio's Funds tab groups regular funds by mint and asset. It shows
+money in sats. Different mints remain separate. The portfolio refreshes after
+the service accepts a wallet update. An updating or unavailable value does
+not mean that funds are lost. Positions without a known price remain visible.
+Use the wallet's payment or trade flow to check which funds it can spend.
+
 ## Web app restore order
 
 When the web app needs proofs for one asset, it uses this order:
@@ -59,6 +83,16 @@ not identify an exact missing asset. If the backup service is unavailable, the
 web app shows a persistent error. Unavailability does not prove that an asset
 is absent and does not authorize automatic mint recovery. Broad recovery
 remains available through the CLI.
+
+If a trade needs Engine Score and locally available funds are insufficient,
+the app checks wallet recovery. If recovery is unavailable, it offers Retry
+or Add funds. This message does not mean that other wallet funds are lost.
+Retry checks recovery again within the existing recovery limits.
+Keep browser data while a trade or payment remains unresolved.
+
+Wallet recovery supports monetary tokens with unit `msat` only. The web app
+shows their value in sats: 1,000 msat equals 1 sat. Recovery does not convert
+tokens with unit `sat`.
 
 Counter-zero discovery is only a selection step. It selects non-expired CTF
 keysets before a full recovery. It is not full recovery by itself.
@@ -77,6 +111,13 @@ The service retains one current head and the current per-asset bundles for each
 wallet id. It does not provide old wallet states as recoverable versions. Old
 versions could contain proofs that have since been spent.
 
+Browsers that use the same recovery phrase belong to the same wallet. The
+latest authenticated backup can tell another browser that an exact conditional
+proof belongs to a losing outcome, even if that browser missed intermediate
+backup updates. The browser keeps that proof complete and visible, but does not
+select it for spending. Synchronization does not silently delete the proof or
+overwrite an unfinished local wallet operation.
+
 The initial 64 MiB encrypted-storage allowance is shared by all wallet ids under
 the same authenticated account. An account may create at most 256 distinct
 seed-derived wallet ids over its lifetime. Reopening a previously used seed
@@ -84,6 +125,31 @@ does not consume another slot. Revoking or deleting a wallet id does not return
 its slot. If a recovery phrase is permanently lost, its encrypted data cannot
 be identified or deleted in this release. It continues to use part of the
 storage allowance. Keep every phrase for a wallet you may want to reopen.
+
+## Use the same wallet in another browser
+
+A fresh browser restores and checks the wallet's current encrypted backup
+before it enables wallet actions or uploads new backup data. You can read the
+app while recovery runs. If recovery cannot finish, wallet actions stay paused.
+
+Use one browser at a time for wallet actions. Another open browser can still
+run background work. When another browser changes the wallet backup, this
+browser can stop new wallet actions and automatic backup uploads.
+
+The app keeps local proofs and unresolved operations. It does not
+automatically merge different browser states. Reload starts recovery. It does
+not delete local data or guarantee that wallet actions can resume.
+
+The recovery message explains what remains unresolved. Use its retry action
+to check recovery again. Keep browser storage while recovery is incomplete.
+The app resumes new wallet actions only after it has checked the current
+backup and resolved the local state that blocks recovery.
+
+An unpaid invoice can still block recovery if the wallet has already prepared
+its ecash outputs. This can happen even if you no longer intend to pay the
+invoice. The app keeps the invoice and its prepared outputs. It does not
+replace them automatically. Reloading or retrying does not guarantee that this
+browser can resume wallet actions.
 
 ## CLI privacy and emergency recovery
 
@@ -96,15 +162,3 @@ backup service is unavailable or when you need seed recovery. It scans regular
 keysets. It uses counter-zero discovery to select non-expired CTF keysets, and
 then scans the selected keysets fully. Each keyset uses the standard
 300-counter gap limit.
-
-## Keep your recovery phrase
-
-Keep the 12 words offline and safe. Encrypted backup is a continuity feature,
-not a replacement for the phrase. The service can be unavailable, refuse an
-upload, or lose its data. A failed upload leaves the affected proofs in local
-storage. The web app must not discard them as backed up.
-
-Seed recovery reconstructs deterministic regular proofs and selected CTF
-proofs. It does not reconstruct transient operation records, range locators,
-or refund locators. Keep the local durable store until every active operation
-is terminal.

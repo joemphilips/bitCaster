@@ -163,32 +163,36 @@ describe("TopUpOverlay", () => {
     expect(await screen.findByTestId("bolt11-display")).toHaveTextContent("lnbc1example");
   });
 
-  it("can mint regular sat proofs for Engine Score top-ups", async () => {
+  it("shows Score amounts in sats and mints the exact msat quote", async () => {
     const user = userEvent.setup();
 
     render(
       <TopUpOverlay
-        deficit={500}
+        deficit={5_000}
         baseAsset="sat"
-        proofUnit="sat"
-        minimumDescription="Top up at least 500 sats to cover Engine Score before placing the order."
+        proofUnit="msat"
+        minimumDescription="Top up at least 5 sats to cover Engine Score before placing the order."
         onCancel={vi.fn()}
         onSuccess={vi.fn()}
       />,
     );
 
-    expect(screen.getByText(/Top up at least 500 sats/)).toBeInTheDocument();
-    expect(screen.getByTestId("top-up-amount-input")).toHaveValue(600);
+    expect(screen.getByText(/Top up at least 5 sats/)).toBeInTheDocument();
+    expect(screen.getByTestId("top-up-amount-input")).toHaveValue(15);
+    await user.clear(screen.getByTestId("top-up-amount-input"));
+    await user.type(screen.getByTestId("top-up-amount-input"), "5");
 
     await user.click(screen.getByTestId("top-up-continue"));
 
     await waitFor(() => {
       expect(createBrowserDurableBolt11MintQuote).toHaveBeenCalledWith({
-        amount: 600,
+        amount: 5_000,
         mintUrl: "https://mint.example",
-        unit: "sat",
+        unit: "msat",
       });
     });
+    expect(await screen.findByTestId("bolt11-display")).toHaveTextContent("lnbc1example");
+    expect(screen.getByText("5 sats")).toBeInTheDocument();
   });
 
   it("accepts a same-mint same-unit ecash token and closes after storing received proofs", async () => {
@@ -196,7 +200,13 @@ describe("TopUpOverlay", () => {
     const onSuccess = vi.fn();
 
     render(
-      <TopUpOverlay deficit={10_000} baseAsset="sat" onCancel={vi.fn()} onSuccess={onSuccess} />,
+      <TopUpOverlay
+        deficit={5_000}
+        baseAsset="sat"
+        proofUnit="msat"
+        onCancel={vi.fn()}
+        onSuccess={onSuccess}
+      />,
     );
 
     await user.click(screen.getByTestId("top-up-method-ecash"));

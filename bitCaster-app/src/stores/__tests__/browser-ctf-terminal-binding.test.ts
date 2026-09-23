@@ -7,7 +7,10 @@ import {
 } from "@bitcaster/client-sdk/durableCustody";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { bindBrowserCtfRedeemTerminalProofs } from "../browser-ctf-terminal-binding";
-import { createBrowserProofBackupAuthorityRow } from "../browser-proof-backup-authority";
+import {
+  createBrowserProofBackupAuthorityRow,
+  requireBrowserLiveProofBackupAuthorityTableRow,
+} from "../browser-proof-backup-authority";
 import { createBrowserCustodyProofRow } from "../durable-custody-db";
 import { addProofs, BitcasterDB, prepareProofOperation, type StoredProof } from "../proof-db";
 
@@ -68,7 +71,14 @@ describe("browser CTF terminal binding", () => {
 
     const custodyRows = await database.custodyProofs.toArray();
     expect(custodyRows.every((row) => row.proofBody.byteLength > 0)).toBe(true);
-    const authorities = await database.custodyProofBackupAuthorities.toArray();
+    const authorities = (await database.custodyProofBackupAuthorities.toArray()).map((row) => {
+      const authority = requireBrowserLiveProofBackupAuthorityTableRow(row, [
+        row.scopeId,
+        row.proofId,
+      ]);
+      if (!authority) throw new Error("test authority is missing");
+      return authority;
+    });
     expect(authorities).toHaveLength(2);
     expect(authorities.every((row) => row.terminalOperationId === operationId)).toBe(true);
     expect(
@@ -86,9 +96,13 @@ describe("browser CTF terminal binding", () => {
       database,
     });
     expect(
-      (await database.custodyProofBackupAuthorities.toArray()).every(
-        (row) => row.recordUpdatedAtUnixSeconds === Math.floor(operation.updatedAt / 1_000),
-      ),
+      (await database.custodyProofBackupAuthorities.toArray()).every((row) => {
+        const authority = requireBrowserLiveProofBackupAuthorityTableRow(row, [
+          row.scopeId,
+          row.proofId,
+        ]);
+        return authority?.recordUpdatedAtUnixSeconds === Math.floor(operation.updatedAt / 1_000);
+      }),
     ).toBe(true);
   });
 });

@@ -12,15 +12,17 @@ import {
 
 export interface CreateMarketOutcome {
   name: string
-  probability: number
 }
 
 export interface CreateMarketRequest {
   title: string
   description: string
   outcomes: CreateMarketOutcome[]
+  /**
+   * Use `yesno` or `categorical`. The `numeric` wire value is retained for
+   * compatibility, but numeric market creation and trading are unavailable.
+   */
   outcomeType?: 'yesno' | 'categorical' | 'numeric'
-  liquiditySats?: number
   baseAsset: MarketBaseAsset
   categoryTags?: string[]
   oracleAnnouncementHex?: string | null

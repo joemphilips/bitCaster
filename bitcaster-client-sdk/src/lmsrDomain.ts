@@ -1,5 +1,5 @@
 import { parseOutcomeSetId } from './outcomeSets.ts'
-import { defaultPriceStepSubunits } from './marketUnits.ts'
+import { DEFAULT_SAT_MARKET_DIVISIBILITY, defaultPriceStepSubunits } from './marketUnits.ts'
 import type { AmmStrategyParams, PendingQRow } from './lmsrTypes.ts'
 
 /** Keep logit arguments strictly inside (0, 1). */
@@ -41,42 +41,6 @@ export interface LmsrDomainOutput {
   levels: LmsrLevel[]
   reserveRequests: ReserveRequest[]
   paused: boolean
-}
-
-export interface DepthPreview {
-  /** Estimated number of levels per side the bot would post. */
-  levelsPerSide: number
-  /** Estimated size per level, in shares. */
-  sharesPerLevel: number
-  /** Effective liquidity parameter b in CTF subunits. */
-  bSubunits: number
-}
-
-export function estimateDepthPreview(params: {
-  budgetSubunits: number
-  outcomeCount: number
-  /** Optional: projected fee reserve to subtract from budget. Default 0. */
-  projectedFeeReserveSubunits?: number
-}): DepthPreview {
-  const effectiveBudget = Math.max(
-    0,
-    Math.floor(params.budgetSubunits) - Math.floor(params.projectedFeeReserveSubunits ?? 0),
-  )
-  const outcomeCount = Math.max(0, Math.floor(params.outcomeCount))
-  const bSubunits = outcomeCount > 1 ? Math.floor(effectiveBudget / Math.log(outcomeCount)) : 0
-  if (bSubunits <= 0) return { levelsPerSide: 0, sharesPerLevel: 0, bSubunits: 0 }
-
-  const midpoint = 1 / Math.max(2, outcomeCount)
-  const levelsPerSide = Math.max(
-    buildLadder('ask', midpoint, 0, bSubunits, 10_000, 10, 5, 1).length,
-    buildLadder('bid', midpoint, 0, bSubunits, 10_000, 10, 5, 1).length,
-  )
-  const reservePerSide = Math.max(1, Math.floor(effectiveBudget / Math.max(2, outcomeCount)))
-  return {
-    levelsPerSide,
-    sharesPerLevel: levelsPerSide > 0 ? Math.max(1, Math.floor(reservePerSide / levelsPerSide)) : 0,
-    bSubunits,
-  }
 }
 
 export function computeLmsrLevels(input: LmsrDomainInput): LmsrDomainOutput {
@@ -177,20 +141,18 @@ export function normalizeSizeTickSubunits(value: number | undefined, fallback: n
   return Math.max(value, fallback)
 }
 
-export function normalizePriceDivisibility(value: number | undefined): number {
-  if (value === undefined) return 10_000
-  if (!Number.isInteger(value) || value < 100) return 100
+export function normalizePriceDivisibility(value: unknown): typeof DEFAULT_SAT_MARKET_DIVISIBILITY {
+  if (value !== DEFAULT_SAT_MARKET_DIVISIBILITY) {
+    throw new Error('registered ordinary market divisibility is required for LMSR')
+  }
   return value
 }
 
-export function normalizePriceStepSubunits(
-  value: number | undefined,
-  divisibility: number,
-): number {
-  if (value !== undefined && Number.isInteger(value) && value >= 1) {
-    return Math.min(value, Math.max(1, divisibility - 1))
-  }
-  return defaultPriceStepSubunits(divisibility)
+export function normalizePriceStepSubunits(value: number | undefined, divisibility: unknown): 10 {
+  normalizePriceDivisibility(divisibility)
+  const requiredPriceStep = defaultPriceStepSubunits(divisibility)
+  if (value === undefined || value === requiredPriceStep) return requiredPriceStep
+  throw new Error('ordinary LMSR price step must be one percentage point')
 }
 
 /** Member atoms of the quoted market's outcome set (ATOMS-ONLY world keys). */

@@ -13,7 +13,6 @@ import {
   Wallet as CashuWallet,
   getEncodedTokenV4,
   getDecodedToken,
-  type MintKeys,
   type Proof,
   type MintQuoteResponse,
   type MeltQuoteResponse,
@@ -22,6 +21,8 @@ import {
   type OperationCounters,
   verifyProofsForReceive,
 } from "@cashu/cashu-ts";
+import { sha256 } from "@noble/hashes/sha2.js";
+import { bytesToHex } from "@noble/hashes/utils.js";
 import { getWalletForMnemonicUnit, useWalletStore } from "@/stores/wallet";
 import {
   activeBrowserWalletScopeId,
@@ -32,33 +33,17 @@ import {
   addProofs,
   addProofsIfMissing,
   DURABLE_BOLT11_MINT_QUOTE_OPERATION_METADATA_KEY,
+  getBoundedCanonicalRegularProofs,
   getProofOperation,
   getProofOperations,
   isWalletCounterRecoveryComplete,
   markProofOperationCompleted,
-  markCtfRedeemTerminalFailure,
-  markProofOperationFailed,
   prepareProofOperation,
-  removeProofs,
   restoreProofsAndAdvanceCounter,
   db,
   type BitcasterDB,
   type StoredProof,
 } from "@/stores/proof-db";
-import { bindBrowserCtfRedeemTerminalProofs } from "@/stores/browser-ctf-terminal-binding";
-import { createActiveBrowserWalletCounterSource } from "@/stores/browser-wallet-counter-db";
-import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
-import {
-  type CtfProofOperationRecord,
-  type CtfProofOperationStore,
-} from "@bitcaster/client-sdk/ctfSplit";
-import {
-  buildKeysetRedeemOperationId,
-  ORACLE_NOT_ATTESTED_OUTCOME_CODE,
-  readAuthenticatedCtfRedeemTerminalEvidence,
-  readVerifiedCtfLosingOutcomeEvidence,
-  redeemOutcomeLegWithOperation,
-} from "@bitcaster/client-sdk/ctfRedeem";
 import {
   COLLATERAL_UNIT_REGISTRY,
   DEFAULT_MARKET_BASE_ASSET,
@@ -69,11 +54,15 @@ import {
   type CashuProofUnit,
   type MarketBaseAsset,
 } from "@bitcaster/client-sdk/marketUnits";
-import { admitBrowserReceivedProofs } from "@/lib/browserCustodyProofReceive";
+import {
+  admitBrowserReceivedProofs,
+  admitBrowserReceivedProofsWithHeldProfileLock,
+} from "@/lib/browserCustodyProofReceive";
+import { requireBrowserWalletNewWritePermission } from "@/lib/browserWalletNewWritePermission";
+import { withWalletProfileLock } from "@/lib/walletProfileLock";
 import { toSeed } from "@/lib/bip39";
 import {
   hydrateDurableWalletMintPreview,
-  isDurableWalletMintDuplicateOutputsError,
   requireDurableWalletMintJournal,
   runDurableWalletMintOperation,
   serializeDurableWalletMintOperation,
@@ -84,7 +73,19 @@ import {
   receiveBrowserDurableWalletToken,
   recoverBrowserDurableWalletReceives,
 } from "@/lib/browserDurableWalletReceive";
-import { deriveDurableCustodyArtifactFingerprint } from "@bitcaster/client-sdk/durableCustody";
+import {
+  DURABLE_CUSTODY_RECOVERY_PAGE_LIMIT_MAX,
+  deriveDurableCustodyArtifactFingerprint,
+  deriveDurableCustodyProofId,
+} from "@bitcaster/client-sdk/durableCustody";
+import { DURABLE_CUSTODY_PROOF_IMPORT_PAGE_PROOF_LIMIT_MAX } from "@bitcaster/client-sdk/durableCustodyProofImport";
+import {
+  decodeDurableWalletProofDerivationLocator,
+  deriveDurableWalletProofSecret,
+  durableWalletProofDerivationLocatorsEqual,
+  type DurableWalletProofDerivationLocator,
+} from "@bitcaster/client-sdk/durableWalletProofDerivationLocator";
+import { locateSeedDerivedProofLineage } from "@bitcaster/client-sdk/durableSeedDerivedProofLineage";
 import { assertCanonicalNut02V2KeysetId } from "@bitcaster/client-sdk/durableSeedDerivedOutputs";
 import { serializeDurableCustodyProofArtifact } from "@bitcaster/client-sdk/durableCustodyProofMaterial";
 import type { TokenImportContext } from "@bitcaster/client-sdk/tokenImportValidation";
@@ -92,6 +93,16 @@ import {
   listBrowserDurableOutgoingCashuDueMints,
   recoverBrowserDurableOutgoingCashuDuePage,
 } from "@/lib/browserDurableOutgoingCashuTransfer";
+import { meltBrowserDurableWallet } from "@/lib/browserDurableWalletMelt";
+import { createBrowserCustodyProofRow } from "@/stores/durable-custody-db";
+import {
+  decodeBrowserCustodyProofRow,
+  type BrowserCustodyProofRow,
+} from "@/stores/durable-custody-types";
+import {
+  requireBrowserLiveProofBackupAuthorityTableRow,
+  type BrowserProofBackupAuthorityRow,
+} from "@/stores/browser-proof-backup-authority";
 
 // ---------------------------------------------------------------------------
 // Default mint (can be overridden at runtime)
@@ -247,9 +258,13 @@ async function mintAndStoreProofs(input: MintAndStoreProofsInput): Promise<Proof
   const normalizedMintUrl = normalizeUrl(mintUrl ?? context.activeMintUrl);
   const wallet = await getWalletForMnemonicUnit(normalizedMintUrl, unit, context.mnemonic);
   context.requireCapturedProfile();
-  let latestOperationId: string | null = null;
-  const mintOnce = async (): Promise<Proof[]> => {
+  const prepared = await withWalletProfileLock(context.scopeId, async () => {
     let counters: OperationCounters | undefined;
+    context.requireCapturedProfile();
+    await requireBrowserWalletNewWritePermission({
+      database: context.database,
+      scopeId: context.scopeId,
+    });
     context.requireCapturedProfile();
     const preview = await wallet.prepareMint("bolt11", amount, quote, {
       onCountersReserved: (reserved) => {
@@ -261,7 +276,6 @@ async function mintAndStoreProofs(input: MintAndStoreProofsInput): Promise<Proof
       throw new Error("Cashu mint did not reserve a deterministic recovery range");
     }
     const operationId = `wallet-mint:${crypto.randomUUID()}`;
-    latestOperationId = operationId;
     const durable = serializeDurableWalletMintOperation({
       operationId,
       mintUrl: normalizedMintUrl,
@@ -291,55 +305,22 @@ async function mintAndStoreProofs(input: MintAndStoreProofsInput): Promise<Proof
       context.database,
     );
     context.requireCapturedProfile();
-    const result = await runDurableWalletMintOperation({
-      mode: "execute",
-      operationId,
-      currentPreview: preview,
-      wallet,
-      store: browserDurableWalletMintStore({ baseAsset, context, unit, wallet }),
-      restoreExactOutputs: (recovery) => restoreExactMintOutputs(wallet, recovery),
-    });
-    context.requireCapturedProfile();
-    if (result.state === "nonterminal")
-      throw new Error("wallet mint did not reach a terminal state");
-    const proofs = result.proofs;
-    context.requireCapturedProfile();
-    context.requireCapturedProfile();
-    return proofs;
-  };
-  try {
-    return await mintOnce();
-  } catch (err) {
-    if (!isDurableWalletMintDuplicateOutputsError(err)) throw err;
-    if (latestOperationId !== null) {
-      context.requireCapturedProfile();
-      await markProofOperationFailed(latestOperationId, err, context.database);
-      context.requireCapturedProfile();
-    }
-    context.requireCapturedProfile();
-    const url = normalizeUrl(mintUrl ?? context.activeMintUrl);
-    const keysetId = wallet.getKeyset()?.id;
-    const result =
-      keysetId === undefined
-        ? { scannedKeysets: [], complete: false }
-        : await recoverKeysetCountersForMint(url, { force: true, unit, keysetId });
-    context.requireCapturedProfile();
-    if (!result.scannedKeysets.length) {
-      // Recovery couldn't scan the active unit (network down, restore not
-      // supported for that unit, stale keyset metadata). Skip a bounded
-      // deterministic counter window before the one allowed retry so local
-      // wallets can still escape a stale counter without looping forever.
-      const bumped = await bumpActiveKeysetCounter(
-        wallet,
-        normalizedMintUrl,
-        unit,
-        baseAsset,
-      ).catch(() => false);
-      context.requireCapturedProfile();
-      if (!bumped) throw err;
-    }
-    return await mintOnce();
+    return { operationId, preview };
+  });
+  context.requireCapturedProfile();
+  const result = await runDurableWalletMintOperation({
+    mode: "execute",
+    operationId: prepared.operationId,
+    currentPreview: prepared.preview,
+    wallet,
+    store: browserDurableWalletMintStore({ baseAsset, context, unit, wallet }),
+    restoreExactOutputs: (recovery) => restoreExactMintOutputs(wallet, recovery),
+  });
+  context.requireCapturedProfile();
+  if (result.state === "nonterminal") {
+    throw new Error("wallet mint did not reach a terminal state");
   }
+  return result.proofs;
 }
 
 export function captureBrowserMintPersistenceContext(): BrowserMintPersistenceContext & {
@@ -371,6 +352,7 @@ export async function mintProofsForUnit(
   unit: CashuProofUnit | string,
 ): Promise<Proof[]> {
   const proofUnit = requireCashuProofUnit(unit);
+  if (proofUnit !== "msat") throw new Error("Product wallet mint requires msat proofs");
   return mintAndStoreProofs({
     amount,
     quote,
@@ -534,7 +516,7 @@ export async function recoverPendingWalletMints(): Promise<{ pending: number }> 
       }
       const wallet = await getWalletForMnemonicUnit(operation.mintUrl, unit, context.mnemonic);
       context.requireCapturedProfile();
-      await runDurableWalletMintOperation({
+      const result = await runDurableWalletMintOperation({
         mode: "recover",
         operationId: operation.operationId,
         wallet,
@@ -547,6 +529,7 @@ export async function recoverPendingWalletMints(): Promise<{ pending: number }> 
         restoreExactOutputs: (input) => restoreExactMintOutputs(wallet, input),
       });
       context.requireCapturedProfile();
+      if (result.state === "nonterminal") pending += 1;
     } catch {
       pending += 1;
     }
@@ -719,31 +702,281 @@ type RecoverableMintKeyset = {
   unit?: string | null;
 };
 
-const COUNTER_RECOVERY_FALLBACK_SKIP = 100;
+const COUNTER_RECOVERY_DERIVATION_PAGE_SIZE = DURABLE_CUSTODY_RECOVERY_PAGE_LIMIT_MAX;
 
 function keysetCashuUnit(keyset: RecoverableMintKeyset): CashuProofUnit {
   return parseCashuProofUnit(keyset.unit) ?? defaultCollateralUnit(DEFAULT_MARKET_BASE_ASSET);
 }
 
-async function bumpActiveKeysetCounter(
+function requireValidCounterRecoveryResult(lastCounterWithSignature: number | undefined): void {
+  if (
+    lastCounterWithSignature !== undefined &&
+    (!Number.isSafeInteger(lastCounterWithSignature) || lastCounterWithSignature < 0)
+  ) {
+    throw new Error("counter recovery high-water mark is invalid");
+  }
+}
+
+/**
+ * Locate recovered proofs without materializing an unbounded counter range.
+ *
+ * `locateSeedDerivedProofLineage` accepts a complete contiguous range. A
+ * broad mint scan can report a much larger high-water mark than the number of
+ * spendable proofs. Build one exact, single-counter lineage at a time. Walk
+ * the counter space in bounded derivation pages, but do not cap the wallet's
+ * lifetime counter history.
+ */
+function locateRecoveredProofs(
+  seed: Uint8Array,
+  keysetId: string,
+  proofs: readonly StoredProof[],
+  lastCounterWithSignature: number,
+): ReadonlyMap<string, DurableWalletProofDerivationLocator> {
+  if (!Number.isSafeInteger(lastCounterWithSignature) || lastCounterWithSignature < 0) {
+    throw new Error("counter recovery high-water mark is invalid");
+  }
+  const remaining = new Set(proofs.map((proof) => proof.secret));
+  const locators = new Map<string, DurableWalletProofDerivationLocator>();
+  for (
+    let pageStart = 0;
+    pageStart <= lastCounterWithSignature && remaining.size > 0;
+    pageStart += COUNTER_RECOVERY_DERIVATION_PAGE_SIZE
+  ) {
+    const pageEnd = Math.min(
+      lastCounterWithSignature,
+      pageStart + COUNTER_RECOVERY_DERIVATION_PAGE_SIZE - 1,
+    );
+    for (let counter = pageStart; counter <= pageEnd && remaining.size > 0; counter += 1) {
+      const secret = deriveDurableWalletProofSecret({
+        seed,
+        locator: { schemaVersion: 1, kind: "nut13", keysetId, counter },
+        proofKeysetId: keysetId,
+        proofAmount: 1,
+      });
+      if (!remaining.has(secret)) continue;
+      const lineage = locateSeedDerivedProofLineage({
+        seed,
+        keysetId,
+        counterStart: counter,
+        counterCount: 1,
+        proofs: [{ id: keysetId, secret }],
+      });
+      const locator = lineage[0];
+      if (locator === undefined) throw new Error("counter recovery lineage is incomplete");
+      const { secret: _secret, ...exactLocator } = locator;
+      locators.set(secret, exactLocator);
+      remaining.delete(secret);
+    }
+  }
+  if (remaining.size !== 0) {
+    throw new Error("counter recovery proof is outside the deterministic lineage");
+  }
+  return locators;
+}
+
+function recoveryProofId(
+  scopeId: string,
+  mintUrl: string,
+  unit: CashuProofUnit,
+  proof: Proof,
+): string {
+  return deriveDurableCustodyProofId({
+    scopeId,
+    normalizedMint: mintUrl,
+    unit,
+    keysetId: proof.id,
+    secret: proof.secret,
+  });
+}
+
+function counterRecoverySourceOperationId(
+  scopeId: string,
+  mintUrl: string,
+  unit: CashuProofUnit,
+  keysetId: string,
+  proofs: readonly Proof[],
+): string {
+  const proofFingerprint = deriveDurableCustodyArtifactFingerprint(
+    proofs
+      .map(serializeDurableCustodyProofArtifact)
+      .sort((left, right) => left.secret.localeCompare(right.secret)),
+  );
+  const identity = new TextEncoder().encode(
+    JSON.stringify([scopeId, mintUrl, unit, keysetId, proofFingerprint]),
+  );
+  return `counter-recovery:${bytesToHex(sha256(identity))}`;
+}
+
+function validateRecoveredProofs(
   wallet: CashuWallet,
   mintUrl: string,
   unit: CashuProofUnit,
-  baseAsset?: MarketBaseAsset | string | null,
-): Promise<boolean> {
-  const keyset = wallet.getKeyset();
-  if (!keyset?.id) return false;
-  const scopeId = activeBrowserWalletScopeId();
-  if (scopeId === null) return false;
-  await createActiveBrowserWalletCounterSource(db, scopeId, {
-    mintUrl,
+  keysetId: string,
+  proofs: readonly Proof[],
+): void {
+  if (normalizeUrl(wallet.mint.mintUrl) !== mintUrl) {
+    throw new Error("counter recovery mint is foreign");
+  }
+  assertCanonicalNut02V2KeysetId(keysetId, "counter recovery keyset id");
+  if (proofs.some((proof) => proof.id !== keysetId)) {
+    throw new Error("counter recovery proof keyset is foreign");
+  }
+  const keyset = wallet.getKeyset(keysetId);
+  if (keyset.id !== keysetId || keyset.unit !== unit || !keyset.verify()) {
+    throw new Error("counter recovery keyset is invalid");
+  }
+  verifyProofsForReceive([...proofs], (proofKeysetId) => wallet.getKeyset(proofKeysetId), {
+    requireDleq: true,
+  });
+}
+
+type CounterRecoveryProofAsset =
+  | { readonly kind: "regular" }
+  | {
+      readonly kind: "conditional";
+      readonly conditionId: string;
+      readonly outcomeCollection: string;
+    };
+
+function counterRecoveryProofAsset(
+  wallet: CashuWallet,
+  keysetId: string,
+  proof: StoredProof,
+): CounterRecoveryProofAsset {
+  const keyset = wallet.getKeyset(keysetId);
+  const suppliedCondition = proof.conditionId ?? (proof as { condition_id?: unknown }).condition_id;
+  const suppliedOutcome =
+    proof.outcomeCollection ?? (proof as { outcome_collection?: unknown }).outcome_collection;
+  if ((suppliedCondition === undefined) !== (suppliedOutcome === undefined)) {
+    throw new Error("counter recovery proof metadata is incomplete");
+  }
+  if (!keyset.conditional) {
+    if (suppliedCondition !== undefined) {
+      throw new Error("counter recovery proof metadata conflicts with keyset");
+    }
+    return { kind: "regular" };
+  }
+  const conditionId = keyset.conditional.conditionId;
+  if (typeof conditionId !== "string" || !/^[0-9a-fA-F]{64}$/.test(conditionId)) {
+    throw new Error("counter recovery keyset condition id is invalid");
+  }
+  const outcomeCollection = keyset.conditional.outcomeCollection;
+  if (
+    typeof outcomeCollection !== "string" ||
+    outcomeCollection.length === 0 ||
+    outcomeCollection.length > 512
+  ) {
+    throw new Error("counter recovery keyset outcome collection is invalid");
+  }
+  if (
+    suppliedCondition !== undefined &&
+    (typeof suppliedCondition !== "string" ||
+      suppliedCondition.toLowerCase() !== conditionId.toLowerCase() ||
+      suppliedOutcome !== outcomeCollection)
+  ) {
+    throw new Error("counter recovery proof metadata conflicts with keyset");
+  }
+  return {
+    kind: "conditional",
+    conditionId: conditionId.toLowerCase(),
+    outcomeCollection,
+  };
+}
+
+function expectedCounterRecoveryProofRow(
+  scopeId: string,
+  mintUrl: string,
+  unit: CashuProofUnit,
+  wallet: CashuWallet,
+  proof: StoredProof,
+): BrowserCustodyProofRow {
+  return createBrowserCustodyProofRow({
+    scopeId,
+    normalizedMint: mintUrl,
     unit,
-    requireRecoveryComplete: false,
-  }).reserve(keyset.id, COUNTER_RECOVERY_FALLBACK_SKIP);
-  console.warn(
-    `[cashu] counter recovery could not scan ${normalizeMarketBaseAsset(baseAsset)} keyset ${keyset.id}; advanced by ${COUNTER_RECOVERY_FALLBACK_SKIP}`,
+    proof,
+    asset: counterRecoveryProofAsset(wallet, proof.id, proof),
+    receivedAtMs: 0,
+  });
+}
+
+function sameBytes(left: unknown, right: Uint8Array): boolean {
+  return (
+    left instanceof Uint8Array &&
+    left.length === right.length &&
+    left.every((byte, index) => byte === right[index])
   );
-  return true;
+}
+
+function requireMatchingCounterRecoveryProof(
+  existing: BrowserCustodyProofRow,
+  expected: BrowserCustodyProofRow,
+): void {
+  if (
+    existing.scopeId !== expected.scopeId ||
+    existing.normalizedMint !== expected.normalizedMint ||
+    existing.unit !== expected.unit ||
+    existing.assetKind !== expected.assetKind ||
+    existing.conditionId !== expected.conditionId ||
+    existing.outcomeCollection !== expected.outcomeCollection ||
+    existing.baseAsset !== expected.baseAsset ||
+    existing.proofId !== expected.proofId ||
+    existing.keysetId !== expected.keysetId ||
+    existing.amount !== expected.amount ||
+    existing.proofFingerprint !== expected.proofFingerprint ||
+    existing.curve !== expected.curve ||
+    existing.dleqPresence !== expected.dleqPresence ||
+    !sameBytes(existing.proofBody, expected.proofBody)
+  ) {
+    throw new Error("counter recovery canonical proof material conflicts");
+  }
+}
+
+function requireMatchingCounterRecoveryBackupAuthority(
+  existing: BrowserCustodyProofRow,
+  authority: BrowserProofBackupAuthorityRow | undefined,
+  locator: DurableWalletProofDerivationLocator,
+): void {
+  if (
+    authority === undefined ||
+    authority.scopeId !== existing.scopeId ||
+    authority.proofId !== existing.proofId ||
+    authority.proofFingerprint !== existing.proofFingerprint ||
+    authority.proofRevision !== existing.revision ||
+    authority.proofState !== existing.selectability ||
+    authority.derivationLocator === null
+  ) {
+    throw new Error("counter recovery canonical proof backup authority conflicts");
+  }
+  let authorityLocator: DurableWalletProofDerivationLocator;
+  try {
+    authorityLocator = decodeDurableWalletProofDerivationLocator(authority.derivationLocator);
+  } catch {
+    throw new Error("counter recovery canonical proof backup locator is invalid");
+  }
+  if (!durableWalletProofDerivationLocatorsEqual(authorityLocator, locator)) {
+    throw new Error("counter recovery canonical proof backup locator conflicts");
+  }
+}
+
+function requireExactCounterRecoveryProofStates(
+  expected: readonly Proof[],
+  groups: { readonly unspent: Proof[]; readonly pending: Proof[]; readonly spent: Proof[] },
+): ReadonlySet<string> {
+  const expectedSecrets = new Set(expected.map(({ secret }) => secret));
+  if (expectedSecrets.size !== expected.length) {
+    throw new Error("counter recovery result is duplicated");
+  }
+  const classified = [...groups.unspent, ...groups.pending, ...groups.spent];
+  const classifiedSecrets = new Set(classified.map(({ secret }) => secret));
+  if (
+    classified.length !== expected.length ||
+    classifiedSecrets.size !== expectedSecrets.size ||
+    [...classifiedSecrets].some((secret) => !expectedSecrets.has(secret))
+  ) {
+    throw new Error("counter recovery proof states are invalid");
+  }
+  return new Set(groups.unspent.map(({ secret }) => secret));
 }
 
 /**
@@ -785,6 +1018,7 @@ export async function recoverKeysetCountersForMint(
   }
   const discoveryUnit = defaultCollateralUnit(requestedBaseAsset ?? DEFAULT_MARKET_BASE_ASSET);
   const discoveryWallet = (await store.getWalletForUnit(url, discoveryUnit)) as CashuWallet;
+  const seed = toSeed(store.mnemonic.trim().split(/\s+/));
   // Use the wallet's freshly-loaded keysets via the underlying mint, not the
   // possibly-stale `store.mints[].keysets`. After mint key rotation the
   // store can be days behind; the duplicate-error path needs to scan
@@ -799,6 +1033,7 @@ export async function recoverKeysetCountersForMint(
         .map(keysetCashuUnit)
         .filter(
           (unit) =>
+            unit === "msat" &&
             (requestedBaseAsset === null ||
               COLLATERAL_UNIT_REGISTRY[unit].baseAsset === requestedBaseAsset) &&
             (opts.unit === undefined || unit === opts.unit),
@@ -837,6 +1072,7 @@ export async function recoverKeysetCountersForMint(
           keyset.id,
         );
         requireCapturedProfile();
+        requireValidCounterRecoveryResult(lastCounterWithSignature);
         const next = lastCounterWithSignature !== undefined ? lastCounterWithSignature + 1 : 0;
         // CRITICAL: batchRestore returns ALL deterministic proofs the mint
         // ever signed for this seed, including SPENT ones. Persisting spent
@@ -844,7 +1080,15 @@ export async function recoverKeysetCountersForMint(
         // errors on the next spend. Filter via `groupProofsByState` and keep
         // only UNSPENT. PENDING is also excluded — those are mid-flight on
         // another device and will resolve to SPENT or UNSPENT shortly.
-        const safe = proofs.length === 0 ? [] : (await wallet.groupProofsByState(proofs)).unspent;
+        validateRecoveredProofs(wallet, url, unit, keyset.id, proofs);
+        const unspentSecrets =
+          proofs.length === 0
+            ? new Set<string>()
+            : requireExactCounterRecoveryProofStates(
+                proofs,
+                await wallet.groupProofsByState(proofs),
+              );
+        const safe = proofs.filter((proof) => unspentSecrets.has(proof.secret));
         requireCapturedProfile();
         const stored: StoredProof[] = safe.map((proof) => ({
           ...proof,
@@ -852,14 +1096,97 @@ export async function recoverKeysetCountersForMint(
           baseAsset: COLLATERAL_UNIT_REGISTRY[unit].baseAsset,
           unit,
         }));
-        await restoreProofsAndAdvanceCounter({
-          proofs: stored,
-          scopeId,
-          mintUrl: url,
-          unit,
-          keysetId: keyset.id,
-          restoredNext: next,
-          isCurrentProfile: () => activeBrowserWalletScopeId() === scopeId,
+        const locators =
+          stored.length === 0
+            ? new Map<string, DurableWalletProofDerivationLocator>()
+            : locateRecoveredProofs(seed, keyset.id, stored, lastCounterWithSignature ?? -1);
+        await withWalletProfileLock(scopeId, async () => {
+          requireCapturedProfile();
+          await db.transaction("rw", db.tables, async () => {
+            requireCapturedProfile();
+            const cacheSafe: StoredProof[] = [];
+            for (
+              let pageStart = 0;
+              pageStart < stored.length;
+              pageStart += DURABLE_CUSTODY_PROOF_IMPORT_PAGE_PROOF_LIMIT_MAX
+            ) {
+              const page = stored.slice(
+                pageStart,
+                pageStart + DURABLE_CUSTODY_PROOF_IMPORT_PAGE_PROOF_LIMIT_MAX,
+              );
+              const proofIds = page.map((proof) => recoveryProofId(scopeId, url, unit, proof));
+              const keys = proofIds.map((proofId) => [scopeId, proofId] as [string, string]);
+              const existingRows = await db.custodyProofs.bulkGet(keys);
+              const backupAuthorities = await db.custodyProofBackupAuthorities.bulkGet(keys);
+              const freshPage: StoredProof[] = [];
+              const freshLocators = new Map<string, DurableWalletProofDerivationLocator>();
+              for (const [index, proof] of page.entries()) {
+                const locator = locators.get(proof.secret);
+                if (locator === undefined) {
+                  throw new Error("counter recovery proof locator is missing");
+                }
+                const proofId = proofIds[index]!;
+                const existingRow = existingRows[index];
+                const backupAuthority = requireBrowserLiveProofBackupAuthorityTableRow(
+                  backupAuthorities[index],
+                  [scopeId, proofId],
+                );
+                if (existingRow === undefined) {
+                  if (backupAuthority !== undefined) {
+                    throw new Error("counter recovery canonical backup authority is orphaned");
+                  }
+                  freshPage.push(proof);
+                  freshLocators.set(proof.secret, locator);
+                  cacheSafe.push(proof);
+                  continue;
+                }
+                let canonicalRow: BrowserCustodyProofRow;
+                try {
+                  canonicalRow = decodeBrowserCustodyProofRow(existingRow);
+                } catch {
+                  throw new Error("counter recovery canonical proof row is invalid");
+                }
+                requireMatchingCounterRecoveryProof(
+                  canonicalRow,
+                  expectedCounterRecoveryProofRow(scopeId, url, unit, wallet, proof),
+                );
+                requireMatchingCounterRecoveryBackupAuthority(
+                  canonicalRow,
+                  backupAuthority,
+                  locator,
+                );
+              }
+              if (freshPage.length > 0) {
+                await admitBrowserReceivedProofsWithHeldProfileLock({
+                  seed,
+                  sourceOperationId: counterRecoverySourceOperationId(
+                    scopeId,
+                    url,
+                    unit,
+                    keyset.id,
+                    freshPage,
+                  ),
+                  mintUrl: url,
+                  unit,
+                  wallet,
+                  proofs: freshPage,
+                  derivationAuthority: null,
+                  proofLocators: freshLocators,
+                  database: db,
+                });
+              }
+            }
+            await restoreProofsAndAdvanceCounter({
+              proofs: cacheSafe,
+              scopeId,
+              mintUrl: url,
+              unit,
+              keysetId: keyset.id,
+              restoredNext: next,
+              isCurrentProfile: () => activeBrowserWalletScopeId() === scopeId,
+            });
+            requireCapturedProfile();
+          });
         });
         scanned.push(keyset.id);
       } catch {
@@ -999,25 +1326,27 @@ export async function receiveAndStoreTokenRecoverably(
   baseAsset: MarketBaseAsset | string | null,
   unitValue: CashuProofUnit | string,
   importContext: TokenImportContext,
+  persistenceContext?: ReturnType<typeof captureBrowserMintPersistenceContext>,
 ): Promise<StoredProof[]> {
   const unit = requireCashuProofUnit(unitValue);
+  if (unit !== "msat") {
+    throw new Error("Product wallet receive requires msat tokens");
+  }
   const normalizedMintUrl = normalizeUrl(mintUrl);
   normalizeMarketBaseAsset(baseAsset);
+  const context = persistenceContext ?? captureBrowserMintPersistenceContext();
   if (importContext === "ctf-position-msat") {
-    return importConditionalTokenDirectly(tokenStr, normalizedMintUrl, unit);
+    return importConditionalTokenDirectly(tokenStr, normalizedMintUrl, unit, context);
   }
-  if (
-    (importContext === "ordinary-sat" && unit !== "sat") ||
-    (importContext === "ctf-collateral-msat" && unit !== "msat")
-  ) {
+  if (importContext !== "ctf-collateral-msat") {
     throw new Error("Cashu token import context does not match its unit");
   }
-  const context = captureBrowserMintPersistenceContext();
   const wallet = (await getWalletForMnemonicUnit(
     normalizedMintUrl,
     unit,
     context.mnemonic,
   )) as import("@/lib/browserDurableWalletReceive").BrowserDurableWalletReceiveWallet;
+  context.requireCapturedProfile();
   const proofs = await receiveBrowserDurableWalletToken({
     token: tokenStr,
     mintUrl: normalizedMintUrl,
@@ -1041,10 +1370,11 @@ async function importConditionalTokenDirectly(
   token: string,
   mintUrl: string,
   unit: CashuProofUnit,
+  context: ReturnType<typeof captureBrowserMintPersistenceContext>,
 ): Promise<StoredProof[]> {
   if (unit !== "msat") throw new Error("Conditional Cashu token must use msat");
-  const context = captureBrowserMintPersistenceContext();
   const decoded = await decodeToken(token);
+  context.requireCapturedProfile();
   if (
     normalizeUrl(decoded.mint) !== mintUrl ||
     decoded.unit !== unit ||
@@ -1056,6 +1386,7 @@ async function importConditionalTokenDirectly(
     assertCanonicalNut02V2KeysetId(id, "Conditional Cashu token keyset id"),
   );
   const wallet = await getWalletForMnemonicUnit(mintUrl, unit, context.mnemonic);
+  context.requireCapturedProfile();
   verifyProofsForReceive(decoded.proofs, (keysetId) => wallet.getKeyset(keysetId), {
     requireDleq: true,
   });
@@ -1070,19 +1401,27 @@ async function importConditionalTokenDirectly(
     throw new Error("Conditional Cashu token is not fully unspent");
   }
   const stored = decoded.proofs.map((proof) => conditionalStoredProof(wallet, proof, mintUrl));
-  await admitBrowserReceivedProofs({
-    seed: context.seed,
-    sourceOperationId: conditionalImportOperationId(mintUrl, unit, decoded.proofs),
-    mintUrl,
-    unit,
-    wallet,
-    proofs: stored,
-    derivationAuthority: null,
-    database: context.database,
+  await withWalletProfileLock(context.scopeId, async () => {
+    context.requireCapturedProfile();
+    await requireBrowserWalletNewWritePermission({
+      database: context.database,
+      scopeId: context.scopeId,
+    });
+    context.requireCapturedProfile();
+    await admitBrowserReceivedProofsWithHeldProfileLock({
+      seed: context.seed,
+      sourceOperationId: conditionalImportOperationId(mintUrl, unit, decoded.proofs),
+      mintUrl,
+      unit,
+      wallet,
+      proofs: stored,
+      derivationAuthority: null,
+      database: context.database,
+    });
+    context.requireCapturedProfile();
+    await addProofsIfMissing(stored, context.database);
+    context.requireCapturedProfile();
   });
-  context.requireCapturedProfile();
-  await addProofsIfMissing(stored, context.database);
-  context.requireCapturedProfile();
   return stored;
 }
 
@@ -1202,21 +1541,46 @@ export async function createMeltQuote(
   invoice: string,
   mintUrl?: string,
 ): Promise<MeltQuoteResponse> {
-  const wallet = await getWalletForUnit(mintUrl, "sat");
-  return wallet.createMeltQuote(invoice);
+  const context = captureBrowserMintPersistenceContext();
+  const normalizedMintUrl = normalizeUrl(mintUrl ?? context.activeMintUrl);
+  const wallet = await getWalletForMnemonicUnit(normalizedMintUrl, "msat", context.mnemonic);
+  context.requireCapturedProfile();
+  return withWalletProfileLock(context.scopeId, async () => {
+    context.requireCapturedProfile();
+    await requireBrowserWalletNewWritePermission({
+      database: context.database,
+      scopeId: context.scopeId,
+    });
+    context.requireCapturedProfile();
+    return wallet.createMeltQuote(invoice);
+  });
 }
 
 /** Melt proofs to pay a Lightning invoice. */
 export async function meltProofs(
   quote: MeltQuoteResponse,
-  proofs: Proof[],
   mintUrl?: string,
 ): Promise<{ paid: boolean; change: Proof[] }> {
-  const wallet = await getWalletForUnit(mintUrl, "sat");
-  const response = await wallet.meltProofs(quote, proofs);
+  const context = captureBrowserMintPersistenceContext();
+  const normalizedMintUrl = normalizeUrl(mintUrl ?? context.activeMintUrl);
+  const wallet = await getWalletForMnemonicUnit(normalizedMintUrl, "msat", context.mnemonic);
+  const proofs = await getBoundedCanonicalRegularProofs(
+    normalizedMintUrl,
+    { scopeId: context.scopeId, unit: "msat" },
+    context.database,
+  );
+  context.requireCapturedProfile();
+  const response = await meltBrowserDurableWallet({
+    quote,
+    mintUrl: normalizedMintUrl,
+    proofs,
+    wallet: wallet as import("@/lib/browserDurableWalletMelt").BrowserDurableWalletMeltWallet,
+    context,
+  });
+  context.requireCapturedProfile();
   return {
-    paid: response.quote.state === "PAID",
-    change: response.change ?? [],
+    paid: response.paid,
+    change: [...response.change],
   };
 }
 
@@ -1432,276 +1796,10 @@ function assertNeverState(s: never): never {
   throw new Error(`unhandled MintQuoteState: ${JSON.stringify(s)}`);
 }
 
-// ---------------------------------------------------------------------------
-// CTF (Conditional Token Framework) types — NUT-CTF
-// ---------------------------------------------------------------------------
-
-/**
- * A condition_id uniquely identifies a specific outcome of a prediction market.
- * It is a 32-byte hex string derived by the mint from the oracle announcement.
- */
-export type ConditionId = string;
-
-/**
- * A CTF proof is a regular Cashu proof whose keyset is bound to a condition_id.
- * At settlement, the mint will only allow spending the proof whose outcome
- * matches the oracle's attestation.
- */
-export interface CtfProof extends Proof {
-  /** The condition_id this proof is locked to. */
-  conditionId: ConditionId;
-}
-
-/**
- * Represents a prediction market position:
- *  - `conditionId` identifies the outcome
- *  - `proofs` are the CTF-locked ecash tokens
- *  - `amountSats` is the total face value
- */
-export interface MarketPosition {
-  conditionId: ConditionId;
-  proofs: Proof[];
-  amountSats: number;
-  mintUrl?: string;
-  outcomeCollection?: string;
-  baseAsset: MarketBaseAsset;
-}
-
-// ---------------------------------------------------------------------------
-// CTF helpers (stubs — full implementation follows NUT-CTF API shape)
-// ---------------------------------------------------------------------------
-
-/**
- * Mint CTF tokens for a given condition_id (NUT-CTF §3 — Mint CTF tokens).
- *
- * The mint will return proofs locked to the supplied conditionId.
- * These proofs can only be spent if the oracle attests to that condition.
- *
- * @param conditionId - hex condition_id from the mint's /v1/ctf/conditions endpoint
- * @param amountSats  - amount to lock
- * @param quote       - a paid MintQuoteResponse
- */
-export async function mintCtfProofs(
-  conditionId: ConditionId,
-  amountSats: number,
-  quote: MintQuoteResponse,
-): Promise<CtfProof[]> {
-  const wallet = await getWallet(undefined, DEFAULT_MARKET_BASE_ASSET);
-  // NUT-CTF extends CashuWallet with a conditionId option on mintProofs.
-  // Once cashu-ts ships NUT-CTF support this call becomes:
-  //   wallet.mintProofs(amountSats, quote.quote, { conditionId })
-  const proofs = await wallet.mintProofs(amountSats, quote.quote);
-  return proofs.map((p) => ({ ...p, conditionId }));
-}
-
-/**
- * Settle CTF tokens after oracle attestation (NUT-CTF §5 — Settle).
- *
- * The wallet sends the winning CTF proofs to the mint along with the
- * oracle's attestation signature, and receives regular sat proofs in return.
- *
- * @param position - the winning MarketPosition
- * @returns regular Cashu proofs redeemable as sats
- */
-export async function settleCtfPosition(position: MarketPosition): Promise<Proof[]> {
-  validateRedeemPosition(position);
-  const mintUrl = normalizeUrl(position.mintUrl ?? useWalletStore.getState().activeMintUrl);
-  const baseAsset = normalizeMarketBaseAsset(position.baseAsset);
-
-  // A composite ("A|B") position spans MULTIPLE primitive keysets, but the
-  // mint enforces a single-keyset rule per redeem (redeem_outcome.rs §1). So
-  // we bucket the position's proofs by their REAL keyset id (`Proof.id`) and
-  // issue one redeem per keyset. We deliberately do NOT trust the position's
-  // `outcomeCollection` label for bucketing — settlement persists proofs
-  // inconsistently (composite-label vs per-primitive), so the keyset id is
-  // the only reliable grouping key.
-  const legs = groupProofsByKeyset(position.proofs);
-
-  // We resolve the attestation only for its oracle witness. The attested
-  // OUTCOME is intentionally NOT used to pre-classify legs locally — only the
-  // mint may condemn a proof (see `redeemKeysetLeg`).
-  const { witnessJson } = await fetchConditionAttestation(position.conditionId);
-
-  const redeemed: Proof[] = [];
-  for (const [keysetId, legProofs] of legs) {
-    const legResult = await redeemKeysetLeg({
-      conditionId: position.conditionId,
-      keysetId,
-      proofs: legProofs,
-      mintUrl,
-      witnessJson,
-      baseAsset,
-    });
-    redeemed.push(...legResult);
-  }
-  return redeemed;
-}
-
-/** Group a position's proofs by their real keyset id (`Proof.id`). */
-function groupProofsByKeyset(proofs: Proof[]): Map<string, Proof[]> {
-  const byKeyset = new Map<string, Proof[]>();
-  for (const proof of proofs) {
-    byKeyset.set(proof.id, [...(byKeyset.get(proof.id) ?? []), proof]);
-  }
-  return byKeyset;
-}
-
-interface RedeemKeysetLegInput {
-  conditionId: string;
-  keysetId: string;
-  proofs: Proof[];
-  mintUrl: string;
-  witnessJson: string;
-  baseAsset: MarketBaseAsset;
-}
-
-/**
- * Redeem one keyset leg of a CTF position.
- *
- * EVERY leg is presented to the mint — we never pre-classify a leg as a loser
- * from its stored `outcomeCollection` label. The label can be stale or wrong
- * (settlement persists composite vs per-primitive labels inconsistently), and
- * these are bearer proofs: destroying a mislabelled would-be-winner on a label
- * alone is irreversible value loss. The mint is the sole authority that may
- * condemn a proof.
- *
- * Winning leg  → mint signs the redeem, credit regular proofs, remove inputs.
- *                Transient failures are forward-recoverable by operation ID.
- * Losing leg   → mint rejects the leg with `OracleNotAttestedOutcome` (13015).
- *                The browser binds the retained proof bodies to that operation.
- */
-async function redeemKeysetLeg(input: RedeemKeysetLegInput): Promise<Proof[]> {
-  const { conditionId, keysetId, proofs, mintUrl, witnessJson, baseAsset } = input;
-  const unit = defaultCollateralUnit(baseAsset);
-  const operationId = buildKeysetRedeemOperationId({
-    mintUrl,
-    unit,
-    conditionId,
-    keysetId,
-    proofs,
-  });
-  const existing = (await getProofOperation(operationId)) as CtfProofOperationRecord | null;
-  const proofOperationStore = ctfRedeemProofOperationStore();
-  if (existing?.state === "Failed" && existing.failureCode === ORACLE_NOT_ATTESTED_OUTCOME_CODE) {
-    await bindTerminalCtfRedeemLeg(operationId, mintUrl, unit, proofs);
-    return [];
-  }
-  const wallet = await getWallet(mintUrl, baseAsset);
-  const result = await redeemOutcomeLegWithOperation({
-    mintUrl,
-    operationId,
-    wallet,
-    proofOperationStore,
-    conditionId,
-    outcome: keysetId,
-    outcomeKeysetId: keysetId,
-    unit,
-    oracleWitness: witnessJson,
-    proofs,
-    regularKeyset: await getFrontendRegularKeyset(wallet, baseAsset),
-  });
-
-  if (result.losing) {
-    await bindTerminalCtfRedeemLeg(operationId, mintUrl, unit, proofs);
-    return [];
-  }
-  if (existing?.state !== "completed") {
-    await addProofs(result.proofs.map((proof) => ({ ...proof, mintUrl, baseAsset, unit })));
-    await removeProofs(proofs.map((proof) => proof.secret));
-  }
-  return result.proofs;
-}
-
-async function bindTerminalCtfRedeemLeg(
-  operationId: string,
-  mintUrl: string,
-  unit: CashuProofUnit,
-  proofs: readonly Proof[],
-): Promise<void> {
-  if (unit !== "msat") throw new Error("CTF redeem terminal proof unit is invalid");
-  const scopeId = activeBrowserWalletScopeId();
-  if (!scopeId) throw new Error("Browser wallet scope is unavailable");
-  const operation = (await getProofOperation(operationId)) as CtfProofOperationRecord | null;
-  if (!operation) throw new Error(`Missing proof operation ${operationId}`);
-  const committedStore = {
-    async withCommittedProofOperation<T>(
-      requestedOperationId: string,
-      read: (entry: CtfProofOperationRecord) => T,
-    ): Promise<T> {
-      if (requestedOperationId !== operationId) {
-        throw new Error("browser CTF terminal operation is foreign");
-      }
-      return read(operation);
-    },
-  };
-  for (const proof of proofs) {
-    await readVerifiedCtfLosingOutcomeEvidence({ store: committedStore, operationId, proof });
-  }
-  await bindBrowserCtfRedeemTerminalProofs({ operationId, mintUrl, scopeId, unit, proofs });
-}
-
-async function getFrontendRegularKeyset(
-  wallet: CashuWallet,
-  baseAsset: MarketBaseAsset,
-): Promise<MintKeys> {
-  const response = await wallet.mint.getKeys();
-  const keyset =
-    response.keysets.find(
-      (candidate) => candidate.unit === baseAsset && candidate.active !== false,
-    ) ??
-    response.keysets.find((candidate) => candidate.unit === baseAsset) ??
-    response.keysets[0];
-  if (!keyset) throw new Error("Mint did not return a regular keyset");
-  return keyset;
-}
-
-function ctfRedeemProofOperationStore(): CtfProofOperationStore {
-  return {
-    getProofOperation: async (operationId) =>
-      (await getProofOperation(operationId)) as CtfProofOperationRecord | null,
-    prepareProofOperation: async (input) =>
-      (await prepareProofOperation(input)) as CtfProofOperationRecord,
-    markProofOperationCompleted: async (operationId, completion) =>
-      (await markProofOperationCompleted(operationId, completion)) as CtfProofOperationRecord,
-    markProofOperationFailed: async (operationId, message, terminalEvidence) => {
-      readAuthenticatedCtfRedeemTerminalEvidence(terminalEvidence);
-      return (await markCtfRedeemTerminalFailure(
-        operationId,
-        message,
-        terminalEvidence,
-      )) as CtfProofOperationRecord;
-    },
-  };
-}
-
-export async function discardCtfPosition(position: MarketPosition): Promise<number> {
-  validateRedeemPosition(position);
-  await removeProofs(position.proofs.map((proof) => proof.secret));
-  return position.amountSats;
-}
-
 interface ConditionAttestationResponse {
   conditionId: string;
   attestedOutcome: string;
   oracleWitness: unknown;
-}
-
-function validateRedeemPosition(position: MarketPosition): void {
-  if (!/^[0-9a-fA-F]{64}$/.test(position.conditionId)) {
-    throw new Error("conditionId must be a 64-character hex string for CTF redeem");
-  }
-  if (!Number.isSafeInteger(position.amountSats) || position.amountSats <= 0) {
-    throw new Error("amountSats must be a positive safe integer");
-  }
-  if (position.proofs.length === 0) {
-    throw new Error("CTF redeem requires at least one proof");
-  }
-  const proofTotal = position.proofs.reduce((sum, proof) => sum + amountToNumber(proof.amount), 0);
-  if (proofTotal !== position.amountSats) {
-    throw new Error(
-      `CTF redeem proof total ${proofTotal} sats does not match position amount ${position.amountSats}`,
-    );
-  }
 }
 
 interface ResolvedConditionAttestation {
@@ -1709,7 +1807,7 @@ interface ResolvedConditionAttestation {
   attestedOutcome: string;
 }
 
-async function fetchConditionAttestation(
+export async function fetchConditionAttestation(
   conditionId: string,
 ): Promise<ResolvedConditionAttestation> {
   const response = await fetch(`/api/v1/conditions/${conditionId}/attestation`, {

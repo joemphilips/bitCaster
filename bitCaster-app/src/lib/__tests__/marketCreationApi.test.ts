@@ -148,13 +148,9 @@ describe("requiredMarketCreationOutcomeCollections", () => {
 const createMarketParams = {
   title: "Test Market",
   description: "Test description",
-  outcomes: [
-    { name: "Yes", probability: 50 },
-    { name: "No", probability: 50 },
-  ],
-  liquiditySats: 10000,
+  outcomes: [{ name: "Yes" }, { name: "No" }],
   baseAsset: "sat" as const,
-  divisibility: 10_000,
+  divisibility: 1_000,
   categoryTags: ["crypto"],
 };
 
@@ -203,7 +199,7 @@ describe("createMarket", () => {
       marketsCreated: ["cond-123-Yes", "cond-123-No"],
       thumbnailUrl: null,
       baseAsset: "sat",
-      divisibility: 10_000,
+      divisibility: 1_000,
     };
     mockFetchSuccess(body);
     const result = await createMarket("cond-123", createMarketParams);
@@ -217,7 +213,7 @@ describe("createMarket", () => {
       marketsCreated: [],
       thumbnailUrl: null,
       baseAsset: "sat",
-      divisibility: 10_000,
+      divisibility: 1_000,
     });
     await createMarket("cond-123", createMarketParams);
 
@@ -239,7 +235,7 @@ describe("createMarket", () => {
       marketsCreated: [],
       thumbnailUrl: null,
       baseAsset: "sat",
-      divisibility: 10_000,
+      divisibility: 1_000,
     });
     await createMarket("cond-123", createMarketParams);
 

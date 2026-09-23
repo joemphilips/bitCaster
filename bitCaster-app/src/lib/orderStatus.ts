@@ -27,7 +27,6 @@ function notificationKindForTerminalStatus(status: OrderLifecycleStatus): Notifi
     case "resting":
     case "matched":
     case "partially_filled":
-    case "awaiting_authorization":
       throw new Error(`OrderStatus is not terminal: ${status}`);
     default:
       return assertNever(status);
@@ -79,11 +78,12 @@ export function buildOrderLifecycleNotifications(
 export async function fetchOrderStatus(
   marketId: string,
   orderId: string,
+  signal?: AbortSignal,
 ): Promise<OrderStatusResponse | null> {
   return (await new BitcasterEngineClient({
     baseUrl: window.location.origin,
     authorization: ({ url, method }) => generateNip98Header(resolveApiSigningUrl(url), method),
-  }).getOrderStatus(marketId, orderId)) as OrderStatusResponse | null;
+  }).getOrderStatus(marketId, orderId, signal)) as OrderStatusResponse | null;
 }
 
 export function buildOrderStatusNotifications(
@@ -137,7 +137,6 @@ function buildOrderNotifications(
         },
       ];
     case "resting":
-    case "awaiting_authorization":
       return [];
     default:
       return assertNever(current);

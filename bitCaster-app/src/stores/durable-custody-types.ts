@@ -13,7 +13,12 @@ import {
 } from "@bitcaster/client-sdk/durableCustodyProofMaterial";
 
 export type BrowserCustodyProofUnit = "sat" | "msat";
-export type BrowserCustodyProofSelectability = "selectable" | "locked" | "spent";
+export type BrowserCustodyProofSelectability =
+  | "selectable"
+  | "locked"
+  | "verified-losing"
+  | "pending-removal"
+  | "spent";
 
 export interface BrowserCustodyScopeRow {
   scopeId: string;
@@ -74,6 +79,9 @@ export function decodeBrowserCustodyProofRow(value: unknown): BrowserCustodyProo
     row.reservationOperationId === null ? null : proofText(row.reservationOperationId);
   if (
     (selectability === "locked") !== (reservationOperationId !== null) ||
+    (selectability === "verified-losing" && asset.assetKind !== "conditional") ||
+    (selectability === "pending-removal" &&
+      (asset.assetKind !== "conditional" || reservationOperationId !== null)) ||
     row.baseAsset !== "sat"
   ) {
     throw new Error("browser custody proof row is invalid");
@@ -133,7 +141,14 @@ function proofUnit(value: unknown): BrowserCustodyProofUnit {
 }
 
 function proofSelectability(value: unknown): BrowserCustodyProofSelectability {
-  if (value === "selectable" || value === "locked" || value === "spent") return value;
+  if (
+    value === "selectable" ||
+    value === "locked" ||
+    value === "verified-losing" ||
+    value === "pending-removal" ||
+    value === "spent"
+  )
+    return value;
   throw new Error("browser custody proof row is invalid");
 }
 

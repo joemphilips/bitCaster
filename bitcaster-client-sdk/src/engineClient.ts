@@ -1,3 +1,4 @@
+import type { components } from './generated/api.ts'
 import {
   parseMarketDivisibility,
   type CtfCollateralUnit,
@@ -37,6 +38,13 @@ import {
   type DurableRecipientDeliveryStatus,
   type DurableRecipientDeliverySubmission,
 } from './durableRecipientDelivery.ts'
+import {
+  canonicalizePreviewFokOrderRequest,
+  decodePreviewFokOrderResponse,
+  FOK_PREVIEW_RESPONSE_BYTES_MAX,
+  type PreviewFokOrderRequest,
+  type PreviewFokOrderResponse,
+} from './fokOrderPreview.ts'
 
 export type EngineFetch = typeof fetch
 export const SETTLEMENT_CAPABILITY_RESULT_RESPONSE_BYTES_MAX = 384 * 1_024
@@ -62,39 +70,12 @@ export interface EngineAuthorizationRequest {
   method: string
   bodyText?: string
   payloadHash?: string
+  signal?: AbortSignal
 }
 
 export interface SettlementCapabilityReference {
   artifactId: string
   bindingDigest: string
-}
-
-export interface SettlementOrderContinuationReference {
-  predecessorOrderId: string
-  settlementGroupId: string
-  settlementGroupRevision: number
-  continuationRevision: number
-}
-
-export function decodeSettlementOrderContinuationReference(
-  value: unknown,
-): SettlementOrderContinuationReference {
-  const reference = exactEngineRecord(value, [
-    'predecessorOrderId',
-    'settlementGroupId',
-    'settlementGroupRevision',
-    'continuationRevision',
-  ])
-  requireUuid(reference.predecessorOrderId, 'continuation predecessor order id')
-  requireUuid(reference.settlementGroupId, 'continuation settlement group id')
-  requirePositiveSafeInteger(reference.settlementGroupRevision, 'continuation group revision')
-  requirePositiveSafeInteger(reference.continuationRevision, 'continuation revision')
-  return {
-    predecessorOrderId: reference.predecessorOrderId as string,
-    settlementGroupId: reference.settlementGroupId as string,
-    settlementGroupRevision: reference.settlementGroupRevision as number,
-    continuationRevision: reference.continuationRevision as number,
-  }
 }
 
 export type SettlementCapabilityState =
@@ -110,7 +91,6 @@ export type OrderLifecycleStatus =
   | 'resting'
   | 'matched'
   | 'partially_filled'
-  | 'awaiting_authorization'
   | 'filled'
   | 'cancelled'
   | 'expired'
@@ -119,6 +99,7 @@ export type OrderLifecycleStatus =
   | 'failed'
 
 export type OrderTimeInForce = 'GTC' | 'FOK' | 'FAK' | 'GTD'
+export type SettlementCapabilityTimeInForce = 'FOK'
 
 export interface SettlementOrderIntent {
   outcomeId: string
@@ -129,7 +110,7 @@ export interface SettlementOrderIntent {
   minimumFillAmountSubunits: number
   baseAsset: MarketBaseAsset
   collateralUnit: CtfCollateralUnit
-  timeInForce: OrderTimeInForce
+  timeInForce: SettlementCapabilityTimeInForce
   expiresAt: string | null
 }
 
@@ -138,7 +119,6 @@ export interface CreateSettlementCapabilityRequest {
   clientOrderId: string
   marketId: string
   orderIntent: SettlementOrderIntent
-  continuation: SettlementOrderContinuationReference | null
   artifact: string
 }
 
@@ -216,14 +196,7 @@ export interface Fill {
   outcomeFaceAmountSubunits: number
 }
 
-export type SettlementGroupStatus =
-  | 'Prepared'
-  | 'SubmissionPending'
-  | 'Reconciling'
-  | 'Confirmed'
-  | 'DefinitivelyRejected'
-  | 'Refundable'
-  | 'ExpiredBeforeSubmission'
+export type SettlementGroupStatus = components['schemas']['SettlementGroupStatus']
 
 export interface SettlementGroupSummary {
   groupId: string
@@ -314,7 +287,6 @@ export type BatchSubmitOrderErrorCode =
   | 'capabilityNotCurrent'
   | 'routeMismatch'
   | 'authorityUnavailable'
-  | 'participationScoreRequired'
   | 'marketClosed'
   | 'bookRejected'
 
@@ -361,14 +333,6 @@ export interface OrderStatusResponse {
   baseAsset: MarketBaseAsset
   divisibility: MarketDivisibility
   activeSettlementGroup: SettlementGroupSummary | null
-  continuation: OrderContinuationState | null
-}
-
-export interface OrderContinuationState {
-  settlementGroupId: string
-  settlementGroupRevision: number
-  revision: number
-  status: 'open' | 'consumed' | 'declined'
 }
 
 export interface OrderEntry {
@@ -463,17 +427,7 @@ export interface ParticipationScoreResponse {
   balance: number
   purchasedTotal: number
   consumedTotal: number
-  penaltyTotal: number
-  matchDebitScore: number
   enabled: boolean
-}
-
-export interface PayParticipationScoreEcashResponse {
-  paymentId: string
-  status: 'credited'
-  amountSats: number
-  creditedScore: number
-  creditedAt: string
 }
 
 export class BitcasterEngineClient {
@@ -540,18 +494,22 @@ export class BitcasterEngineClient {
 
   async getAssetMonitoringAssets(
     queryInput: AssetMonitoringAssetsQuery,
+    signal?: AbortSignal,
   ): Promise<AssetMonitoringAssetsResponse> {
     const query = assetMonitoringAssetsQueryString(decodeAssetMonitoringAssetsQuery(queryInput))
     const response = await this.request(
       `/api/v1/asset-monitoring/assets?${query}`,
-      {},
+      { signal },
       undefined,
       false,
       ASSET_MONITORING_ERROR_RESPONSE_BYTES_MAX,
     )
-    return decodeAssetMonitoringAssetsResponse(
-      await readAllocationBoundedJsonResponse(response, ASSET_MONITORING_RESPONSE_BYTES_MAX),
+    const body = await readAllocationBoundedJsonResponse(
+      response,
+      ASSET_MONITORING_RESPONSE_BYTES_MAX,
     )
+    signal?.throwIfAborted()
+    return decodeAssetMonitoringAssetsResponse(body)
   }
 
   async getAssetMonitoringHistory(
@@ -677,36 +635,48 @@ export class BitcasterEngineClient {
     )
   }
 
-  async getOrderStatus(marketId: string, orderId: string): Promise<OrderStatusResponse | null> {
+  async previewFokOrder(
+    request: PreviewFokOrderRequest,
+    signal?: AbortSignal,
+  ): Promise<PreviewFokOrderResponse> {
+    const bodyText = JSON.stringify(canonicalizePreviewFokOrderRequest(request))
     const response = await this.request(
-      `/api/v1/${encodePathSegment(marketId)}/orders/${encodePathSegment(orderId)}`,
-      {},
-      undefined,
-      true,
-    )
-    if (response.status === 404) return null
-    return decodeOrderStatusResponse(
-      await readAllocationBoundedJsonResponse(response, SUBMIT_ORDER_RESPONSE_BYTES_MAX),
-    )
-  }
-
-  async declineOrderContinuation(
-    marketId: string,
-    orderId: string,
-    expectedContinuationRevision: number,
-  ): Promise<void> {
-    requireUuid(orderId, 'continuation order id')
-    requirePositiveSafeInteger(expectedContinuationRevision, 'continuation revision')
-    const bodyText = JSON.stringify({ expectedContinuationRevision })
-    await this.request(
-      `/api/v1/${encodePathSegment(marketId)}/orders/${encodePathSegment(orderId)}/continuation/decline`,
+      '/api/v1/orders/preview',
       {
         method: 'POST',
         body: bodyText,
         headers: { 'content-type': 'application/json' },
+        signal,
       },
       bodyText,
+      false,
+      FOK_PREVIEW_RESPONSE_BYTES_MAX,
     )
+    return decodePreviewFokOrderResponse(
+      await readAllocationBoundedJsonResponse(response, FOK_PREVIEW_RESPONSE_BYTES_MAX),
+      request,
+    )
+  }
+
+  async getOrderStatus(
+    marketId: string,
+    orderId: string,
+    signal?: AbortSignal,
+  ): Promise<OrderStatusResponse | null> {
+    const response = await this.request(
+      `/api/v1/${encodePathSegment(marketId)}/orders/${encodePathSegment(orderId)}`,
+      { signal },
+      undefined,
+      true,
+      SUBMIT_ORDER_RESPONSE_BYTES_MAX,
+    )
+    if (response.status === 404) {
+      await response.body?.cancel().catch(() => {})
+      return null
+    }
+    const value = await readAllocationBoundedJsonResponse(response, SUBMIT_ORDER_RESPONSE_BYTES_MAX)
+    signal?.throwIfAborted()
+    return decodeOrderStatusResponse(value)
   }
 
   async listMyOrders(conditionId: string, cursor?: string): Promise<ListMyOrdersResponse> {
@@ -790,34 +760,13 @@ export class BitcasterEngineClient {
     return (await response.json()) as ParticipationScoreResponse
   }
 
-  async payParticipationScoreEcash(
-    amountSats: number,
-    proofsToken: string,
-    paymentId?: string,
-  ): Promise<PayParticipationScoreEcashResponse> {
-    const bodyText = JSON.stringify({
-      amountSats,
-      proofsToken,
-      ...(paymentId ? { paymentId } : {}),
-    })
-    const response = await this.request(
-      '/api/v1/participation-score/ecash',
-      {
-        method: 'POST',
-        body: bodyText,
-        headers: { 'content-type': 'application/json' },
-      },
-      bodyText,
-    )
-    return (await response.json()) as PayParticipationScoreEcashResponse
-  }
-
   async getDurableRecipientDeliveryStatus(
     deliveryId: string,
+    signal?: AbortSignal,
   ): Promise<DurableRecipientDeliveryStatus | null> {
     return this.requestDurableRecipientDelivery(
       `/api/v1/cashu-deliveries/${encodePathSegment(deliveryId)}`,
-      {},
+      { signal },
       undefined,
       true,
       async (response) => {
@@ -834,6 +783,7 @@ export class BitcasterEngineClient {
 
   async submitDurableRecipientDelivery(
     submission: DurableRecipientDeliverySubmission,
+    signal?: AbortSignal,
   ): Promise<DurableRecipientDeliveryStatus> {
     const exact = decodeDurableRecipientDeliverySubmission(submission)
     const bodyText = JSON.stringify(exact)
@@ -843,6 +793,7 @@ export class BitcasterEngineClient {
         method: 'POST',
         body: bodyText,
         headers: { 'content-type': 'application/json' },
+        signal,
       },
       bodyText,
       false,
@@ -901,16 +852,30 @@ export class BitcasterEngineClient {
     allowNotFound = false,
     errorResponseBytesMax?: number,
   ): Promise<Response> {
+    init.signal?.throwIfAborted()
     const url = `${this.baseUrl}${path}`
     const headers = await this.authorizedHeaders(url, init, bodyText)
+    init.signal?.throwIfAborted()
     const response = await this.fetchImpl(url, { ...init, headers })
+    if (init.signal?.aborted) {
+      await response.body?.cancel().catch(() => {})
+      init.signal.throwIfAborted()
+    }
     if (!response.ok && !(allowNotFound && response.status === 404)) {
       const detail =
         errorResponseBytesMax === undefined
           ? await response.text().catch(() => '')
           : await readAllocationBoundedTextResponse(response, errorResponseBytesMax).catch(() => '')
       const problem = parseEngineProblem(detail)
-      throw new EngineClientError(response.status, detail, problem?.code, problem?.detail)
+      throw new EngineClientError(
+        response.status,
+        detail,
+        problem?.code,
+        problem?.detail,
+        response.status === 429
+          ? parseRetryAfterHeader(response.headers.get('retry-after'))
+          : undefined,
+      )
     }
     return response
   }
@@ -969,12 +934,23 @@ export class BitcasterEngineClient {
     read: (response: Response) => Promise<T>,
   ): Promise<T> {
     const url = `${this.baseUrl}${path}`
-    const headers = await this.authorizedHeaders(url, init, bodyText)
     const lifetime = createBoundedRequestLifetime(
-      undefined,
+      init.signal ?? undefined,
       this.durableRecipientDeliveryRequestTimeoutMs,
     )
     try {
+      if (lifetime.signal.aborted) {
+        throw new Error('durable recipient delivery request failed')
+      }
+      let headers: Record<string, string>
+      try {
+        headers = await this.authorizedHeaders(url, init, bodyText, lifetime.signal)
+      } catch {
+        throw new Error('durable recipient delivery request failed')
+      }
+      if (lifetime.signal.aborted) {
+        throw new Error('durable recipient delivery request failed')
+      }
       let response: Response
       try {
         response = await this.fetchImpl(url, {
@@ -1014,17 +990,45 @@ export class BitcasterEngineClient {
     url: string,
     init: RequestInit,
     bodyText: string | undefined,
+    signal?: AbortSignal,
   ): Promise<Record<string, string>> {
     const headers = normalizeHeaders(init.headers)
     if (this.authorization) {
-      headers.Authorization = await this.authorization({
+      const authorizationRequest: EngineAuthorizationRequest = {
         url,
         method: init.method ?? 'GET',
         bodyText,
-      })
+        ...(signal === undefined ? {} : { signal }),
+      }
+      const authorization = this.authorization(authorizationRequest)
+      headers.Authorization = signal
+        ? await awaitAbortable(Promise.resolve(authorization), signal)
+        : await authorization
     }
     return headers
   }
+}
+
+async function awaitAbortable<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) throw new Error('request aborted')
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => {
+      cleanup()
+      reject(new Error('request aborted'))
+    }
+    const cleanup = () => signal.removeEventListener('abort', onAbort)
+    signal.addEventListener('abort', onAbort, { once: true })
+    operation.then(
+      (value) => {
+        cleanup()
+        resolve(value)
+      },
+      (error: unknown) => {
+        cleanup()
+        reject(error)
+      },
+    )
+  })
 }
 
 async function readSettlementCapabilityResultResponse(
@@ -1108,7 +1112,6 @@ export function decodeOrderStatusResponse(value: unknown): OrderStatusResponse {
       'baseAsset',
       'divisibility',
       'activeSettlementGroup',
-      'continuation',
     ],
     ['expiresAt'],
   )
@@ -1131,8 +1134,6 @@ export function decodeOrderStatusResponse(value: unknown): OrderStatusResponse {
     response.activeSettlementGroup === null
       ? null
       : decodeSettlementGroup(response.activeSettlementGroup)
-  const continuation =
-    response.continuation === null ? null : decodeOrderContinuationState(response.continuation)
   return {
     orderId: response.orderId as string,
     marketId: response.marketId,
@@ -1145,7 +1146,6 @@ export function decodeOrderStatusResponse(value: unknown): OrderStatusResponse {
     baseAsset: 'sat',
     divisibility,
     activeSettlementGroup,
-    continuation,
   }
 }
 
@@ -1188,27 +1188,6 @@ function decodeOrderStatusFields(
 
 function requireOptionalIsoEngineTime(value: unknown, name: string): void {
   if (value !== undefined && value !== null) requireIsoEngineTime(value, name)
-}
-
-function decodeOrderContinuationState(value: unknown): OrderContinuationState {
-  const state = exactEngineRecord(value, [
-    'settlementGroupId',
-    'settlementGroupRevision',
-    'revision',
-    'status',
-  ])
-  requireUuid(state.settlementGroupId, 'continuation settlement group id')
-  requirePositiveSafeInteger(state.settlementGroupRevision, 'continuation group revision')
-  requirePositiveSafeInteger(state.revision, 'continuation revision')
-  if (state.status !== 'open' && state.status !== 'consumed' && state.status !== 'declined') {
-    throw new Error('order continuation status is invalid')
-  }
-  return {
-    settlementGroupId: state.settlementGroupId as string,
-    settlementGroupRevision: state.settlementGroupRevision as number,
-    revision: state.revision as number,
-    status: state.status,
-  }
 }
 
 function decodeFill(value: unknown): Fill {
@@ -1285,7 +1264,8 @@ function decodeSettlementGroup(value: unknown): SettlementGroupSummary {
     group.status !== 'Confirmed' &&
     group.status !== 'DefinitivelyRejected' &&
     group.status !== 'Refundable' &&
-    group.status !== 'ExpiredBeforeSubmission'
+    group.status !== 'ExpiredBeforeSubmission' &&
+    group.status !== 'RejectedBeforeSubmission'
   ) {
     throw new Error('settlement group status is invalid')
   }
@@ -1415,7 +1395,6 @@ function requireOrderStatus(value: unknown): asserts value is OrderLifecycleStat
     value !== 'resting' &&
     value !== 'matched' &&
     value !== 'partially_filled' &&
-    value !== 'awaiting_authorization' &&
     value !== 'filled' &&
     value !== 'cancelled' &&
     value !== 'expired' &&
@@ -1586,14 +1565,22 @@ export class EngineClientError extends Error {
   public readonly detail: string
   public readonly code?: string
   public readonly problemDetail?: string
+  public readonly retryAfterSeconds?: number
 
-  constructor(status: number, detail: string, code?: string, problemDetail?: string) {
+  constructor(
+    status: number,
+    detail: string,
+    code?: string,
+    problemDetail?: string,
+    retryAfterSeconds?: number,
+  ) {
     super(formatEngineClientError(status, detail, code, problemDetail))
     this.name = 'EngineClientError'
     this.status = status
     this.detail = detail
     this.code = code
     this.problemDetail = problemDetail
+    this.retryAfterSeconds = retryAfterSeconds
   }
 }
 
@@ -1613,6 +1600,7 @@ export function isDefinitiveOrderSubmissionError(error: EngineClientError): bool
     return false
   }
   if (error.status !== 409) return true
+  if (error.code !== undefined) return error.code !== 'order-book-conflict'
   return orderSubmissionErrorDetail(error) !== RETRYABLE_ORDER_BOOK_CONFLICT
 }
 
@@ -1674,6 +1662,12 @@ function parseEngineProblem(text: string): EngineProblem | null {
   } catch {
     return null
   }
+}
+
+function parseRetryAfterHeader(value: string | null): number | undefined {
+  if (value === null || !/^[1-9][0-9]*$/.test(value)) return undefined
+  const seconds = Number(value)
+  return Number.isSafeInteger(seconds) ? seconds : undefined
 }
 
 function normalizeHeaders(headers: HeadersInit | undefined): Record<string, string> {

@@ -80,6 +80,17 @@ test('bitcaster-cli command help includes usage and subcommand summaries', async
   assert.match(result.stdout, /receive(?: \[options\])?\s+Import a Cashu token/)
 })
 
+test('bitcaster-cli order submit help is FOK-only and has no time-in-force choice', async () => {
+  const result = await execFileAsync(
+    join(import.meta.dirname, '..', 'src', 'main.ts'),
+    ['order', 'submit', '--help'],
+    { env: process.env },
+  )
+
+  assert.match(result.stdout, /order submit/)
+  assert.doesNotMatch(result.stdout, /--tif|time in force/i)
+})
+
 test('bitcaster-cli completion reports that shell completion is a stub', async () => {
   const result = await execFileAsync(
     join(import.meta.dirname, '..', 'src', 'main.ts'),
@@ -186,12 +197,10 @@ test('bitcaster-cli delegates commands to bitcaster-daemon RPC', async () => {
       'Buy',
       '--price',
       '42',
-      '--amount',
+      '--amount-msat',
       '100',
-      '--min-fill',
+      '--min-fill-msat',
       '50',
-      '--tif',
-      'FAK',
     ])
     await runCli(daemonUrl, [
       'order',
@@ -204,10 +213,8 @@ test('bitcaster-cli delegates commands to bitcaster-daemon RPC', async () => {
       'Buy',
       '--price',
       '55',
-      '--amount',
+      '--amount-msat',
       '200',
-      '--tif',
-      'GTC',
       '--no-preflight-split',
     ])
     await runCli(daemonUrl, [
@@ -221,10 +228,8 @@ test('bitcaster-cli delegates commands to bitcaster-daemon RPC', async () => {
       'Buy',
       '--price',
       '60',
-      '--amount',
+      '--amount-msat',
       '100',
-      '--tif',
-      'FAK',
       '--token-side',
       'Complement',
     ])
@@ -259,7 +264,7 @@ test('bitcaster-cli delegates commands to bitcaster-daemon RPC', async () => {
       },
       {
         method: 'wallet.send',
-        params: { amountSats: 25, mintUrl: 'mint-a', operationId: 'wallet-send-1' },
+        params: { amountMsat: 25_000, mintUrl: 'mint-a', operationId: 'wallet-send-1' },
       },
       {
         method: 'wallet.operations',
@@ -290,9 +295,8 @@ test('bitcaster-cli delegates commands to bitcaster-daemon RPC', async () => {
           price: 42,
           amountSubunits: 100,
           minimumFillAmountSubunits: 50,
-          continueAfterPartialFill: false,
           consolidateProofs: false,
-          timeInForce: 'FAK',
+          timeInForce: 'FOK',
           expiresAt: null,
           preflightSplit: true,
         },
@@ -306,9 +310,8 @@ test('bitcaster-cli delegates commands to bitcaster-daemon RPC', async () => {
           side: 'Buy',
           price: 55,
           amountSubunits: 200,
-          continueAfterPartialFill: false,
           consolidateProofs: false,
-          timeInForce: 'GTC',
+          timeInForce: 'FOK',
           expiresAt: null,
           preflightSplit: false,
         },
@@ -322,9 +325,8 @@ test('bitcaster-cli delegates commands to bitcaster-daemon RPC', async () => {
           side: 'Buy',
           price: 60,
           amountSubunits: 100,
-          continueAfterPartialFill: false,
           consolidateProofs: false,
-          timeInForce: 'FAK',
+          timeInForce: 'FOK',
           expiresAt: null,
           preflightSplit: true,
         },
@@ -577,8 +579,8 @@ test('bitcaster-cli consolidate --all sweeps wallet markets and warns on non-pen
       result: {
         marketId: command.params?.marketId,
         status: 'consolidated',
-        convertFeeSats: 1,
-        collateralReturnedSats: 2,
+        convertFeeMsat: 1,
+        collateralReturnedMsat: 2,
         spentInputs: [],
         outputs: [],
       },
@@ -1885,10 +1887,8 @@ test('P47-4: bitcaster-cli order submit accepts named flags', async () => {
       'Buy',
       '--price',
       '42',
-      '--amount',
+      '--amount-msat',
       '100',
-      '--tif',
-      'FAK',
     ])
     await runCli(`http://127.0.0.1:${address.port}`, [
       'order',
@@ -1901,9 +1901,8 @@ test('P47-4: bitcaster-cli order submit accepts named flags', async () => {
       'Buy',
       '--price',
       '55',
-      '--amount',
+      '--amount-msat',
       '200',
-      '--continue-after-partial-fill',
       '--consolidate-proofs',
       '--no-preflight-split',
     ])
@@ -1918,13 +1917,8 @@ test('P47-4: bitcaster-cli order submit accepts named flags', async () => {
       'Sell',
       '--price',
       '40',
-      '--amount',
+      '--amount-msat',
       '100',
-      '--tif',
-      'GTD',
-      '--expires-at',
-      '2030-01-01T00:00:00Z',
-      '--continue-after-partial-fill',
     ])
     assert.deepEqual(received, [
       {
@@ -1936,9 +1930,8 @@ test('P47-4: bitcaster-cli order submit accepts named flags', async () => {
           side: 'Buy',
           price: 42,
           amountSubunits: 100,
-          continueAfterPartialFill: false,
           consolidateProofs: false,
-          timeInForce: 'FAK',
+          timeInForce: 'FOK',
           expiresAt: null,
           preflightSplit: true,
         },
@@ -1952,9 +1945,8 @@ test('P47-4: bitcaster-cli order submit accepts named flags', async () => {
           side: 'Buy',
           price: 55,
           amountSubunits: 200,
-          continueAfterPartialFill: true,
           consolidateProofs: true,
-          timeInForce: 'GTC',
+          timeInForce: 'FOK',
           expiresAt: null,
           preflightSplit: false,
         },
@@ -1968,10 +1960,9 @@ test('P47-4: bitcaster-cli order submit accepts named flags', async () => {
           side: 'Sell',
           price: 40,
           amountSubunits: 100,
-          continueAfterPartialFill: true,
           consolidateProofs: false,
-          timeInForce: 'GTD',
-          expiresAt: '2030-01-01T00:00:00.000Z',
+          timeInForce: 'FOK',
+          expiresAt: null,
           preflightSplit: true,
         },
       },
@@ -1998,8 +1989,8 @@ test('P47-5: bitcaster-cli wallet consolidate merge maps to t1', async () => {
       result: {
         marketId: 'cond-A',
         status: 'consolidated',
-        convertFeeSats: 1,
-        collateralReturnedSats: 2,
+        convertFeeMsat: 1,
+        collateralReturnedMsat: 2,
         spentInputs: [],
         outputs: [],
       },
@@ -2044,8 +2035,8 @@ test('P47-5: bitcaster-cli wallet consolidate sweep maps to t2', async () => {
       result: {
         marketId: 'cond-A',
         status: 'consolidated',
-        convertFeeSats: 1,
-        collateralReturnedSats: 2,
+        convertFeeMsat: 1,
+        collateralReturnedMsat: 2,
         spentInputs: [],
         outputs: [],
       },
@@ -2090,8 +2081,8 @@ test('P47-5: bitcaster-cli wallet consolidate reclaim maps to t3 (default)', asy
       result: {
         marketId: 'cond-A',
         status: 'consolidated',
-        convertFeeSats: 1,
-        collateralReturnedSats: 2,
+        convertFeeMsat: 1,
+        collateralReturnedMsat: 2,
         spentInputs: [],
         outputs: [],
       },
@@ -2156,13 +2147,23 @@ test('P47-4: bitcaster-cli wallet split (renamed from split-complete-set)', asyn
   try {
     await runCli(`http://127.0.0.1:${address.port}`, ['wallet', 'split', 'cond-1', '100'])
     assert.deepEqual(received, [
-      { method: 'wallet.splitCompleteSet', params: { conditionId: 'cond-1', amountSats: 100 } },
+      {
+        method: 'wallet.splitCompleteSet',
+        params: { conditionId: 'cond-1', amountMsat: 100_000 },
+      },
     ])
   } finally {
     server.close()
     if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
     else process.env.BITCASTER_DAEMON_HOME = previousHome
     await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('bitcaster-cli wallet split rejects invalid sats text before daemon RPC', async () => {
+  for (const amount of ['0', '-1', '1.0001', '9007199254740992']) {
+    const amountArgs = amount === '-1' ? ['--', amount] : [amount]
+    await assertCliFailure(['wallet', 'split', 'cond-1', ...amountArgs], /Invalid amount sats:/)
   }
 })
 
@@ -2195,8 +2196,6 @@ test('P47-6b: market create with named flags sends daemon RPC params', async () 
         'Weather market',
         '--outcomes',
         'YES,NO,MAYBE',
-        '--liquidity-sats',
-        '1000',
         '--tag',
         'weather',
         '--tag',
@@ -2221,7 +2220,6 @@ test('P47-6b: market create with named flags sends daemon RPC params', async () 
           title: 'Will it rain?',
           description: 'Weather market',
           outcomes: ['YES', 'NO', 'MAYBE'],
-          liquiditySats: 1000,
           tags: ['weather', 'test'],
           thumbnailPath: '/tmp/thumb.png',
         },
@@ -2377,6 +2375,16 @@ test('P47-6b: market close --attestation rejects invalid event JSON before RPC',
       attestation: JSON.stringify({ ...kind89Event(), tags: ['e', 'c'.repeat(64)] }),
       stderr: /Oracle attestation must be a kind-89 Nostr event/,
     },
+    ...[
+      { name: 'null event', event: null },
+      { name: 'numeric tag item', event: { ...kind89Event(), tags: [['d', 1]] } },
+      { name: 'numeric content', event: { ...kind89Event(), content: 1 } },
+      { name: 'string timestamp', event: { ...kind89Event(), createdAt: '1' } },
+    ].map(({ name, event }) => ({
+      name,
+      attestation: JSON.stringify(event),
+      stderr: /Oracle attestation must be a kind-89 Nostr event/,
+    })),
   ]
 
   for (const invalidCase of invalidCases) {
@@ -2463,12 +2471,10 @@ test('P47-7: bitcaster-cli order submit --dry-run prints payload without calling
     'Buy',
     '--price',
     '42',
-    '--amount',
+    '--amount-msat',
     '100',
-    '--min-fill',
+    '--min-fill-msat',
     '50',
-    '--tif',
-    'FAK',
     '--token-side',
     'Complement',
     '--dry-run',
@@ -2481,13 +2487,54 @@ test('P47-7: bitcaster-cli order submit --dry-run prints payload without calling
     price: 42,
     amountSubunits: 100,
     minimumFillAmountSubunits: 50,
-    continueAfterPartialFill: false,
     consolidateProofs: false,
-    timeInForce: 'FAK',
+    timeInForce: 'FOK',
     expiresAt: null,
     preflightSplit: true,
   })
   assert.doesNotMatch(result.stdout, /secret|witness|mnemonic|nwc|authorization|sig/i)
+})
+
+test('public order submit rejects the removed --tif option', async () => {
+  await assertCliFailure(
+    [
+      'order',
+      'submit',
+      '--market',
+      'cond-YES',
+      '--outcome',
+      'YES',
+      '--side',
+      'Buy',
+      '--price',
+      '42',
+      '--amount-msat',
+      '100',
+      '--tif',
+      'FAK',
+    ],
+    /unknown option '--tif'/,
+  )
+})
+
+test('market creation rejects the removed --liquidity-sats option', async () => {
+  await assertCliFailure(
+    [
+      'market',
+      'create',
+      '--condition-id',
+      'cond-1',
+      '--title',
+      'Winner',
+      '--description',
+      'Alpha or Beta',
+      '--outcomes',
+      'Alpha,Beta',
+      '--liquidity-sats',
+      '0',
+    ],
+    /unknown option '--liquidity-sats'/,
+  )
 })
 
 test('P47-7: bitcaster-cli wallet and market --dry-run commands do not call daemon and redact sensitive fields', async () => {
@@ -2495,11 +2542,11 @@ test('P47-7: bitcaster-cli wallet and market --dry-run commands do not call daem
   const cases: Array<{ args: string[]; expected: unknown }> = [
     {
       args: ['wallet', 'send', '25', '--mint', 'mint-a', '--operation-id', 'op-1', '--dry-run'],
-      expected: { amountSats: 25, mintUrl: 'mint-a', operationId: 'op-1' },
+      expected: { amountMsat: 25_000, mintUrl: 'mint-a', operationId: 'op-1' },
     },
     {
-      args: ['wallet', 'split', 'cond-1', '100', '--mint', 'mint-a', '--dry-run'],
-      expected: { conditionId: 'cond-1', amountSats: 100, mintUrl: 'mint-a' },
+      args: ['wallet', 'split', 'cond-1', '1.001', '--mint', 'mint-a', '--dry-run'],
+      expected: { conditionId: 'cond-1', amountMsat: 1_001, mintUrl: 'mint-a' },
     },
     {
       args: ['wallet', 'consolidate', 'cond-A', '--strategy', 'merge', '--dry-run'],
@@ -2517,8 +2564,6 @@ test('P47-7: bitcaster-cli wallet and market --dry-run commands do not call daem
         'Description',
         '--outcomes',
         'YES,NO',
-        '--liquidity-sats',
-        '1000',
         '--trust-engine-url',
         '--dry-run',
       ],
@@ -2527,7 +2572,6 @@ test('P47-7: bitcaster-cli wallet and market --dry-run commands do not call daem
         title: 'Market',
         description: 'Description',
         outcomes: ['YES', 'NO'],
-        liquiditySats: 1000,
       },
     },
     {
@@ -2569,7 +2613,7 @@ test('P47-7: removed aliases exit with usage error code 2', async () => {
     ['wallet', 'split-complete-set', 'cond-1', '100'],
     ['consolidate', 'cond-A'],
     ['wallet', 'consolidate', 'cond-A', '--type', 't1'],
-    ['order', 'submit', 'cond-YES', 'YES', 'Buy', '42', '100', 'FAK'],
+    ['order', 'submit', 'cond-YES', 'YES', 'Buy', '42', '100'],
   ]
 
   for (const args of removedAliases) {

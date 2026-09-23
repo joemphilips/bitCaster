@@ -11,7 +11,7 @@ import {
 } from '@cashu/cashu-ts'
 import {
   CashuMintCtfSplitTransport,
-  computeGrossCtfInputAmountSats,
+  computeGrossCtfInputAmountSubunits,
   splitRootCompleteSet,
   type CtfConditionInfo,
   type CtfRootPartitionSelection,
@@ -88,8 +88,8 @@ async function mintRegularProofs(
   const keyset = await getActiveCollateralKeyset(mint, unit)
   const wallet = new CashuWallet(mint, { unit })
   await wallet.loadMint()
-  const grossAmountSubunits = computeGrossCtfInputAmountSats({
-    faceAmountSats: faceAmountSubunits,
+  const grossAmountSubunits = computeGrossCtfInputAmountSubunits({
+    faceAmountSubunits,
     keyset: {
       id: keyset.id,
       keys: keyset.keys,
@@ -105,23 +105,23 @@ async function mintRegularProofs(
 async function mintRegularProofsForCtfSplit(
   mintUrl: string,
   unit: 'sat' | 'msat',
-  faceAmountSats: number,
+  faceAmountSubunits: number,
 ): Promise<Proof[]> {
   const mint = new CashuMint(mintUrl)
   const keyset = await getActiveCollateralKeyset(mint, unit)
   const wallet = new CashuWallet(mint, { unit })
   await wallet.loadMint()
-  const grossAmountSats = computeGrossCtfInputAmountSats({
-    faceAmountSats,
+  const grossAmountSubunits = computeGrossCtfInputAmountSubunits({
+    faceAmountSubunits,
     keyset: {
       id: keyset.id,
       keys: keyset.keys,
       input_fee_ppk: keyset.input_fee_ppk ?? 0,
     },
   })
-  const quote = await wallet.createMintQuote(grossAmountSats)
+  const quote = await wallet.createMintQuote(grossAmountSubunits)
   await waitForPaidQuote(wallet, quote)
-  return wallet.mintProofs(grossAmountSats, quote.quote)
+  return wallet.mintProofs(grossAmountSubunits, quote.quote)
 }
 
 type CollateralTokenUnit = 'sat' | 'msat'

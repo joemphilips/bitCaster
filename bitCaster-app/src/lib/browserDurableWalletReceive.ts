@@ -23,10 +23,6 @@ import {
   deserializeDurableCustodyOutput,
   type DurableCustodyProofOperationInput,
 } from "@bitcaster/client-sdk/durableCustodyProofOperation";
-import {
-  deserializeDurableCustodyProofArtifact,
-  decodeDurableCustodyProofMaterialRecord,
-} from "@bitcaster/client-sdk/durableCustodyProofMaterial";
 import { locateSeedDerivedProofLineage } from "@bitcaster/client-sdk/durableSeedDerivedProofLineage";
 import { assertCanonicalNut02V2KeysetId } from "@bitcaster/client-sdk/durableSeedDerivedOutputs";
 import {
@@ -38,6 +34,7 @@ import {
 } from "@bitcaster/client-sdk/durableWalletOperation";
 import { bindDurableCustodyProofOperation } from "@bitcaster/client-sdk/durableCustodyProofOperationRecord";
 import { decodeDurableOutgoingCashuTransfer } from "@bitcaster/client-sdk/durableOutgoingCashuTransfer";
+import { requireBrowserWalletNewWritePermission } from "./browserWalletNewWritePermission";
 import { withWalletProfileLock } from "./walletProfileLock";
 import { browserWalletScope } from "./browserCtfRangeOrderSource";
 import {
@@ -47,6 +44,7 @@ import {
 } from "../stores/durable-custody-db";
 import {
   db,
+  storedProofFromCustodyRow,
   type BitcasterDB,
   type BrowserOutgoingCashuTransferRow,
   type StoredProof,
@@ -56,6 +54,7 @@ const SCOPE_LEASE_MS = 10 * 60 * 1_000;
 const RECOVERY_PAGE_LIMIT = 64;
 const PROOF_ID_MIN = "";
 const PROOF_ID_MAX = "\uffff";
+const PRODUCT_MSAT_ERROR = "browser wallet receive requires msat";
 
 export interface BrowserDurableWalletReceiveWallet {
   prepareSwapToReceive(
@@ -132,6 +131,10 @@ interface BrowserReceiveRuntime {
 export async function receiveBrowserDurableWalletToken(
   input: BrowserDurableWalletReceiveInput,
 ): Promise<readonly Proof[]> {
+  requireProductMsatUnit(input.unit);
+  if (input.preparedOperation !== undefined) {
+    requireProductMsatUnit(input.preparedOperation.unit);
+  }
   const { context, wallet } = input;
   const scope = browserWalletScope(context.seed);
   const adapter = new BrowserDurableCustodyAdapter(context.database ?? db);
@@ -140,11 +143,18 @@ export async function receiveBrowserDurableWalletToken(
   return withWalletProfileLock(
     scope.scopeId,
     async () => {
+      if (input.preparedOperation === undefined) {
+        await requireBrowserWalletNewWritePermission({
+          database: context.database ?? db,
+          scopeId: scope.scopeId,
+        });
+      }
       const owner = await claimOwner(adapter, scope, now, randomId);
       return withReceiveScope(adapter, scope, owner, now, async () => {
         const operation =
           input.preparedOperation ??
           (await prepareBrowserDurableWalletReceiveOperation(input, randomId));
+        requireProductMsatUnit(operation.unit);
         if (input.operationId !== undefined && operation.operationId !== input.operationId) {
           throw new Error("browser wallet receive operation identity conflicts");
         }
@@ -192,6 +202,7 @@ export async function prepareBrowserDurableWalletReceiveOperation(
   input: BrowserDurableWalletReceiveInput,
   randomId: () => string,
 ): Promise<DurableWalletReceiveOperation> {
+  requireProductMsatUnit(input.unit);
   input.context.requireCapturedProfile();
   let range: OperationCounters | undefined;
   const preview = await input.wallet.prepareSwapToReceive(
@@ -223,6 +234,7 @@ export async function bindPreparedBrowserDurableWalletReceiveOperation(input: {
   readonly outgoingTransfer: BrowserOutgoingCashuTransferRow;
   readonly context: BrowserDurableWalletReceiveContext;
 }): Promise<void> {
+  requireProductMsatUnit(input.operation.unit);
   const scope = browserWalletScope(input.context.seed);
   const adapter = new BrowserDurableCustodyAdapter(input.context.database ?? db);
   const now = input.context.now ?? Date.now;
@@ -324,6 +336,7 @@ export async function recoverBrowserDurableWalletReceives(input: {
     input.afterOperationId ?? null,
   );
   if (record === null) return { pending: 0, repaired: [], lastAttemptedOperationId: null };
+  requireProductMsatUnit(record.operation.custodyContext.unit);
   const repaired = await withWalletProfileLock(
     scope.scopeId,
     async () => {
@@ -331,7 +344,8 @@ export async function recoverBrowserDurableWalletReceives(input: {
       return withReceiveScope(adapter, scope, owner, now, async () => {
         try {
           return (await recoverReceiveRecord(input, adapter, scope, owner, record)) ?? [];
-        } catch {
+        } catch (error) {
+          if (error instanceof Error && error.message === PRODUCT_MSAT_ERROR) throw error;
           return [];
         }
       });
@@ -388,6 +402,7 @@ async function recoverReceiveRecord(
   const snapshot = await adapter.readOperationSnapshot(scope, record.operation.operationId);
   if (snapshot === null) throw new Error("browser wallet receive operation is missing");
   const operation = receiveOperationFromSnapshot(snapshot.record, snapshot.artifacts);
+  requireProductMsatUnit(operation.unit);
   const wallet = await input.walletForMint(operation.mintUrl, operation.unit as "sat" | "msat");
   input.context.requireCapturedProfile();
   const result = await runReceive("recover", operation.operationId, {
@@ -424,7 +439,8 @@ export async function readBrowserCurrentCustodyProofPage(input: {
     .toArray();
   input.context.requireCapturedProfile();
   const decoded = rows.map(decodeBrowserCustodyProofRow);
-  const proofs = decoded.map(toLegacyProofRow);
+  decoded.forEach(({ unit }) => requireProductMsatUnit(unit));
+  const proofs = decoded.map(storedProofFromCustodyRow);
   const nextCursor = rows.length < RECOVERY_PAGE_LIMIT ? null : decoded.at(-1)!.proofId;
   return { proofs, nextCursor };
 }
@@ -901,7 +917,7 @@ function isWalletReceiveRecord(record: DurableCustodyRecord): boolean {
 }
 
 function toLegacyProofs(proofs: readonly Proof[], mintUrl: string, unit: string): StoredProof[] {
-  if (unit !== "sat" && unit !== "msat") throw new Error("browser wallet receive unit is invalid");
+  requireProductMsatUnit(unit);
   return proofs.map((proof) => ({
     ...proof,
     mintUrl,
@@ -910,18 +926,8 @@ function toLegacyProofs(proofs: readonly Proof[], mintUrl: string, unit: string)
   }));
 }
 
-function toLegacyProofRow(row: ReturnType<typeof decodeBrowserCustodyProofRow>): StoredProof {
-  const { proof: material } = decodeDurableCustodyProofMaterialRecord(row);
-  const proof = deserializeDurableCustodyProofArtifact({ schemaVersion: 1, ...material });
-  return {
-    ...proof,
-    mintUrl: row.normalizedMint,
-    baseAsset: row.baseAsset,
-    unit: row.unit,
-    ...(row.conditionId === null ? {} : { conditionId: row.conditionId }),
-    ...(row.outcomeCollection === null ? {} : { outcomeCollection: row.outcomeCollection }),
-    ...(row.reservationOperationId === null ? {} : { reservedBy: row.reservationOperationId }),
-  };
+function requireProductMsatUnit(unit: unknown): asserts unit is "msat" {
+  if (unit !== "msat") throw new Error(PRODUCT_MSAT_ERROR);
 }
 
 async function claimOwner(

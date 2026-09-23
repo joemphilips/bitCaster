@@ -5,19 +5,22 @@ import type { Position } from "@/types/portfolio";
 
 // --- mocks -----------------------------------------------------------------
 
-const getOutcomeProofs = vi.fn();
-const getConditionCtfProofs = vi.fn().mockResolvedValue([]);
 const removeProofs = vi.fn().mockResolvedValue(undefined);
-const cashuMocks = vi.hoisted(() => ({ settleCtfPosition: vi.fn() }));
+const cashuMocks = vi.hoisted(() => ({
+  claimPortfolioPosition: vi.fn(),
+  removePortfolioPosition: vi.fn(),
+  addActivity: vi.fn(),
+}));
 
 vi.mock("@/stores/proof-db", () => ({
-  getOutcomeProofs: (...args: unknown[]) => getOutcomeProofs(...args),
-  getConditionCtfProofs: (...args: unknown[]) => getConditionCtfProofs(...args),
   removeProofs: (...args: unknown[]) => removeProofs(...args),
 }));
 
-vi.mock("@/lib/cashu", () => ({
-  settleCtfPosition: cashuMocks.settleCtfPosition,
+vi.mock("@/lib/browserPortfolioClaim", () => ({
+  claimPortfolioPosition: cashuMocks.claimPortfolioPosition,
+}));
+vi.mock("@/lib/browserPortfolioRemove", () => ({
+  removePortfolioPosition: cashuMocks.removePortfolioPosition,
 }));
 
 vi.mock("react-router", () => ({
@@ -35,7 +38,7 @@ vi.mock("@/stores/settings", () => ({
 
 vi.mock("@/stores/activity-log", () => ({
   useActivityLogStore: (selector: (s: unknown) => unknown) =>
-    selector({ items: [], addActivity: vi.fn() }),
+    selector({ items: [], addActivity: cashuMocks.addActivity }),
 }));
 
 // usePortfolioState is heavy (Dexie live queries + fetch); supply fixed state.
@@ -74,7 +77,7 @@ function closedPosition(overrides: Partial<Position>): Position {
     marketTitle: "Lost market",
     marketImageUrl: "",
     baseAsset: "sat",
-    divisibility: 10_000,
+    divisibility: 1_000,
     side: "Outcome",
     outcomeId: "A|B",
     outcomeLabel: "A|B",
@@ -96,17 +99,22 @@ function closedPosition(overrides: Partial<Position>): Position {
 
 describe("PortfolioPage — Remove lost position (P22 F2)", () => {
   beforeEach(() => {
-    getOutcomeProofs.mockReset();
-    getConditionCtfProofs.mockReset();
-    getConditionCtfProofs.mockResolvedValue([]);
-    cashuMocks.settleCtfPosition.mockReset();
-    cashuMocks.settleCtfPosition.mockResolvedValue([]);
+    cashuMocks.claimPortfolioPosition.mockReset();
+    cashuMocks.claimPortfolioPosition.mockResolvedValue({
+      kind: "completed",
+      committedPayoutAmount: 0,
+    });
+    cashuMocks.addActivity.mockReset();
+    cashuMocks.removePortfolioPosition.mockReset();
+    cashuMocks.removePortfolioPosition.mockResolvedValue({
+      kind: "completed",
+      committedPayoutAmount: 0,
+    });
     removeProofs.mockReset();
     removeProofs.mockResolvedValue(undefined);
   });
 
   it("claims a local winner even when monitoring cannot value it", async () => {
-    getConditionCtfProofs.mockResolvedValue([{ secret: "s-win", amount: 100 }]);
     mockPositions = [
       closedPosition({
         id: "cond1-A",
@@ -125,45 +133,71 @@ describe("PortfolioPage — Remove lost position (P22 F2)", () => {
     render(<PortfolioPage />);
     await userEvent.click(screen.getByLabelText(/claim.*unvalued winner/i));
 
-    const { settleCtfPosition } = await import("@/lib/cashu");
-    expect(getConditionCtfProofs).toHaveBeenCalledWith("https://mint.example", "cond1", {
-      baseAsset: "sat",
-    });
-    expect(settleCtfPosition).toHaveBeenCalledOnce();
+    expect(cashuMocks.claimPortfolioPosition).toHaveBeenCalledWith(
+      expect.objectContaining({
+        mintUrl: "https://mint.example",
+        conditionId: "cond1",
+        outcomeCollection: "A",
+      }),
+    );
+    expect(cashuMocks.addActivity).not.toHaveBeenCalled();
   });
 
-  it("deletes the lost position proofs without a mint redeem and clears the row", async () => {
-    getOutcomeProofs.mockResolvedValue([
-      { secret: "s-lost-1", amount: 50 },
-      { secret: "s-lost-2", amount: 50 },
-    ]);
+  it.each(["pending", "error"])(
+    "records only the committed leg when Claim returns %s",
+    async (kind) => {
+      mockPositions = [
+        closedPosition({
+          marketTitle: "Partial winner",
+          isWinner: true,
+          isLoser: false,
+          canClaimPayout: true,
+        }),
+      ];
+      cashuMocks.claimPortfolioPosition.mockImplementation(async ({ onCommittedLeg }) => {
+        await onCommittedLeg({ keysetId: "winning-leg", payoutAmount: 125 });
+        return { kind, committedPayoutAmount: 125 };
+      });
+      const alert = vi.spyOn(window, "alert").mockImplementation(() => {});
+      try {
+        render(<PortfolioPage />);
+        await userEvent.click(screen.getByLabelText(/claim.*partial winner/i));
+
+        expect(cashuMocks.addActivity).toHaveBeenCalledOnce();
+        expect(cashuMocks.addActivity).toHaveBeenCalledWith(
+          expect.objectContaining({
+            type: "payout_claimed",
+            amountSats: 125,
+            status: "completed",
+          }),
+        );
+        expect(alert).toHaveBeenCalledOnce();
+      } finally {
+        alert.mockRestore();
+      }
+    },
+  );
+
+  it("passes the confirmed position to canonical removal without reading or deleting cache proofs", async () => {
     mockPositions = [closedPosition({})];
     const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
 
     render(<PortfolioPage />);
     await userEvent.click(screen.getByLabelText(/remove.*lost market/i));
 
-    expect(getOutcomeProofs).toHaveBeenCalledWith("https://mint.example", "cond1", "A|B", {
-      baseAsset: "sat",
-      includeReserved: true,
-    });
-    expect(removeProofs).toHaveBeenCalledWith(["s-lost-1", "s-lost-2"]);
-    // No mint redeem path for a losing leg.
-    const { settleCtfPosition } = await import("@/lib/cashu");
-    expect(settleCtfPosition).not.toHaveBeenCalled();
+    expect(cashuMocks.removePortfolioPosition).toHaveBeenCalledWith(
+      expect.objectContaining({
+        mintUrl: "https://mint.example",
+        conditionId: "cond1",
+        outcomeCollection: "A|B",
+      }),
+    );
+    expect(removeProofs).not.toHaveBeenCalled();
+    expect(cashuMocks.claimPortfolioPosition).not.toHaveBeenCalled();
     confirmSpy.mockRestore();
   });
 
-  it("never deletes a winning-keyset proof even if the position were mis-classified a loser (P22 F2 defence-in-depth)", async () => {
-    // Defence-in-depth: even if a position is (wrongly) flagged isLoser and its
-    // fetched proofs include one on a WINNING keyset (collection "A", final
-    // "A"), the Remove handler must skip that proof and only delete the
-    // genuinely-losing keyset proofs. Destroying a winning proof is permanent
-    // value loss.
-    getOutcomeProofs.mockResolvedValue([
-      { secret: "s-win", amount: 60, outcomeCollection: "A" },
-      { secret: "s-lose", amount: 40, outcomeCollection: "B" },
-    ]);
+  it("reports a verified payout and stops when the displayed loser was stale", async () => {
     mockPositions = [
       closedPosition({
         id: "cond1-A|B",
@@ -177,13 +211,21 @@ describe("PortfolioPage — Remove lost position (P22 F2)", () => {
       }),
     ];
     const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+    const alert = vi.spyOn(window, "alert").mockImplementation(() => {});
+    cashuMocks.removePortfolioPosition.mockImplementation(async ({ onCommittedLeg }) => {
+      await onCommittedLeg({ payoutAmount: 60, keysetId: "winner" });
+      return { kind: "stopped", reason: "winning-payout", committedPayoutAmount: 60 };
+    });
 
     render(<PortfolioPage />);
     await userEvent.click(screen.getByLabelText(/remove.*misclassified market/i));
 
-    // Only the losing-keyset proof is deleted; the winning-keyset proof is
-    // never touched.
-    expect(removeProofs).toHaveBeenCalledWith(["s-lose"]);
+    expect(removeProofs).not.toHaveBeenCalled();
+    expect(cashuMocks.addActivity).toHaveBeenCalledWith(
+      expect.objectContaining({ amountSats: 60, type: "payout_claimed" }),
+    );
+    expect(alert).toHaveBeenCalledWith(expect.stringContaining("Removal stopped"));
+    alert.mockRestore();
     confirmSpy.mockRestore();
   });
 
@@ -193,7 +235,6 @@ describe("PortfolioPage — Remove lost position (P22 F2)", () => {
     // the user permanently destroy proofs whose status is not yet known. The row
     // must show neither Remove nor Claim, and even if the handler were somehow
     // invoked it must bail before touching the proof store.
-    getOutcomeProofs.mockResolvedValue([{ secret: "s-pending", amount: 100 }]);
     mockPositions = [
       closedPosition({
         id: "cond1-A",
@@ -206,6 +247,7 @@ describe("PortfolioPage — Remove lost position (P22 F2)", () => {
         isLoser: false,
         isPending: true,
         currentValueSats: 100,
+        valueKnown: false,
         profitLossSats: 0,
         profitLossPercent: 0,
       }),
@@ -215,15 +257,11 @@ describe("PortfolioPage — Remove lost position (P22 F2)", () => {
     // Pending shows neither Remove nor Claim.
     expect(screen.queryByLabelText(/remove.*awaiting market/i)).not.toBeInTheDocument();
     expect(screen.queryByLabelText(/claim.*awaiting market/i)).not.toBeInTheDocument();
+    expect(screen.getByText("Unvalued")).toBeInTheDocument();
     expect(removeProofs).not.toHaveBeenCalled();
-    expect(getOutcomeProofs).not.toHaveBeenCalled();
   });
 
-  it("STILL offers Remove for an attested loser and deletes its proofs (P22 Link F: attested losers remain removable)", async () => {
-    // Contrast with the pending case: an ATTESTED loser (final outcome known,
-    // held leg lost) keeps the destructive Remove — there is genuinely nothing
-    // to claim, so cleanup is safe.
-    getOutcomeProofs.mockResolvedValue([{ secret: "s-lost", amount: 100 }]);
+  it("does not start removal when confirmation is cancelled", async () => {
     mockPositions = [
       closedPosition({
         id: "cond1-B",
@@ -237,17 +275,40 @@ describe("PortfolioPage — Remove lost position (P22 F2)", () => {
         isPending: false,
       }),
     ];
-    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
 
     render(<PortfolioPage />);
     await userEvent.click(screen.getByLabelText(/remove.*attested loser market/i));
 
-    expect(getOutcomeProofs).toHaveBeenCalledWith("https://mint.example", "cond1", "B", {
-      baseAsset: "sat",
-      includeReserved: true,
-    });
-    expect(removeProofs).toHaveBeenCalledWith(["s-lost"]);
+    expect(cashuMocks.removePortfolioPosition).not.toHaveBeenCalled();
+    expect(removeProofs).not.toHaveBeenCalled();
     confirmSpy.mockRestore();
+  });
+
+  it.each([
+    ["pending", "Removal is not finished"],
+    ["partial", "Removal could not finish"],
+    ["error", "Removal could not finish"],
+  ])("shows a safe message for %s removal without recording a payout", async (kind, message) => {
+    mockPositions = [closedPosition({})];
+    cashuMocks.removePortfolioPosition.mockResolvedValue({
+      kind,
+      committedPayoutAmount: 0,
+      error: { message: "private protocol material" },
+    });
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    const alert = vi.spyOn(window, "alert").mockImplementation(() => {});
+    try {
+      render(<PortfolioPage />);
+      await userEvent.click(screen.getByLabelText(/remove.*lost market/i));
+      expect(alert).toHaveBeenCalledWith(expect.stringContaining(message!));
+      expect(alert).not.toHaveBeenCalledWith(expect.stringContaining("private protocol material"));
+      expect(cashuMocks.addActivity).not.toHaveBeenCalled();
+      expect(removeProofs).not.toHaveBeenCalled();
+    } finally {
+      confirm.mockRestore();
+      alert.mockRestore();
+    }
   });
 
   it("never deletes proofs for a winner even if the handler is invoked", async () => {

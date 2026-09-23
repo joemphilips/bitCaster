@@ -5,7 +5,11 @@ import { deriveRootCtfOutcomeCollectionId } from "@bitcaster/client-sdk/durableC
 import { DURABLE_CUSTODY_PROOF_IMPORT_PAGE_PROOF_LIMIT_MAX } from "@bitcaster/client-sdk/durableCustodyProofImport";
 import { afterEach, describe, expect, it } from "vitest";
 import { BitcasterDB, type StoredProof } from "../../stores/proof-db";
-import { admitBrowserReceivedProofs } from "../browserCustodyProofReceive";
+import { requireBrowserLiveProofBackupAuthorityTableRow } from "../../stores/browser-proof-backup-authority";
+import {
+  admitBrowserReceivedProofs,
+  admitBrowserReceivedProofsWithHeldProfileLock,
+} from "../browserCustodyProofReceive";
 
 const KEYSET_ID = `01${"11".repeat(32)}`;
 const PUBLIC_KEY = `02${"22".repeat(32)}`;
@@ -41,7 +45,7 @@ describe("browser custody proof receive", () => {
       seed: new Uint8Array(32).fill(7),
       sourceOperationId: "receive:large",
       mintUrl: "https://mint.example",
-      unit: "sat" as const,
+      unit: "msat" as const,
       wallet: wallet(),
       proofs,
       derivationAuthority: null,
@@ -75,6 +79,71 @@ describe("browser custody proof receive", () => {
     ]);
   });
 
+  it("rejects sat before custody state or proof writes", async () => {
+    database = new BitcasterDB(`proof-receive-sat-${crypto.randomUUID()}`);
+
+    await expect(
+      admitBrowserReceivedProofs({
+        seed: new Uint8Array(32).fill(7),
+        sourceOperationId: "receive:sat",
+        mintUrl: "https://mint.example",
+        unit: "sat",
+        wallet: wallet(),
+        proofs: [{ ...proof(0), unit: "sat" }],
+        derivationAuthority: null,
+        database,
+        lockManager: immediateLockManager(),
+      }),
+    ).rejects.toThrow(/requires msat/);
+    expect(await database.custodyScopes.count()).toBe(0);
+    expect(await database.custodyOperations.count()).toBe(0);
+    expect(await database.custodyProofs.count()).toBe(0);
+    expect(await database.custodyProofBackupAuthorities.count()).toBe(0);
+  });
+
+  it("rejects sat proof material instead of relabeling it as msat", async () => {
+    database = new BitcasterDB(`proof-receive-proof-unit-${crypto.randomUUID()}`);
+
+    await expect(
+      admitBrowserReceivedProofs({
+        seed: new Uint8Array(32).fill(7),
+        sourceOperationId: "receive:sat-proof",
+        mintUrl: "https://mint.example",
+        unit: "msat",
+        wallet: wallet(),
+        proofs: [{ ...proof(0), unit: "sat" }],
+        derivationAuthority: null,
+        database,
+        lockManager: immediateLockManager(),
+      }),
+    ).rejects.toThrow(/proof unit requires msat/);
+    expect(await database.custodyScopes.count()).toBe(0);
+    expect(await database.custodyOperations.count()).toBe(0);
+    expect(await database.custodyProofs.count()).toBe(0);
+    expect(await database.custodyProofBackupAuthorities.count()).toBe(0);
+  });
+
+  it("rejects sat through the held-lock wrapper before custody writes", async () => {
+    database = new BitcasterDB(`proof-receive-held-lock-sat-${crypto.randomUUID()}`);
+
+    await expect(
+      admitBrowserReceivedProofsWithHeldProfileLock({
+        seed: new Uint8Array(32).fill(7),
+        sourceOperationId: "receive:held-lock-sat",
+        mintUrl: "https://mint.example",
+        unit: "sat",
+        wallet: wallet(),
+        proofs: [{ ...proof(0), unit: "sat" }],
+        derivationAuthority: null,
+        database,
+      }),
+    ).rejects.toThrow(/requires msat/);
+    expect(await database.custodyScopes.count()).toBe(0);
+    expect(await database.custodyOperations.count()).toBe(0);
+    expect(await database.custodyProofs.count()).toBe(0);
+    expect(await database.custodyProofBackupAuthorities.count()).toBe(0);
+  });
+
   it("maps a reordered subset from the verified modern range to exact counters", async () => {
     database = new BitcasterDB(`proof-receive-modern-${crypto.randomUUID()}`);
     const rangeProofs = [modernProof(0), modernProof(1), modernProof(2)];
@@ -82,7 +151,7 @@ describe("browser custody proof receive", () => {
       seed: MODERN_SEED,
       sourceOperationId: "receive:modern",
       mintUrl: "https://mint.example",
-      unit: "sat",
+      unit: "msat",
       wallet: wallet(MODERN_KEYSET_ID),
       proofs: [rangeProofs[2], rangeProofs[0]],
       derivationRangeProofs: rangeProofs,
@@ -94,9 +163,15 @@ describe("browser custody proof receive", () => {
 
     expect(
       (await database.custodyProofBackupAuthorities.toArray())
-        .map((row) =>
-          row.derivationLocator?.kind === "nut13" ? row.derivationLocator.counter : null,
-        )
+        .map((row) => {
+          const authority = requireBrowserLiveProofBackupAuthorityTableRow(row, [
+            row.scopeId,
+            row.proofId,
+          ]);
+          return authority?.derivationLocator?.kind === "nut13"
+            ? authority.derivationLocator.counter
+            : null;
+        })
         .sort(),
     ).toEqual([0, 2]);
   });
@@ -107,7 +182,7 @@ describe("browser custody proof receive", () => {
       seed: MODERN_SEED,
       sourceOperationId: "receive:v2",
       mintUrl: "https://mint.example",
-      unit: "sat",
+      unit: "msat",
       wallet: wallet(),
       proofs: [deterministicProof(4)],
       derivationAuthority: { keysetId: KEYSET_ID, counterStart: 4, counterCount: 1 },
@@ -137,7 +212,7 @@ describe("browser custody proof receive", () => {
         seed: MODERN_SEED,
         sourceOperationId: "receive:invalid",
         mintUrl: "https://mint.example",
-        unit: "sat",
+        unit: "msat",
         wallet: wallet(MODERN_KEYSET_ID),
         proofs: [modernProof(0), modernProof(1)],
         derivationAuthority: { keysetId: MODERN_KEYSET_ID, ...derivationAuthority },
@@ -157,7 +232,7 @@ describe("browser custody proof receive", () => {
         seed: MODERN_SEED,
         sourceOperationId: "receive:uppercase",
         mintUrl: "https://mint.example",
-        unit: "sat",
+        unit: "msat",
         wallet: wallet(noncanonicalKeysetId),
         proofs: [{ ...modernProof(0), id: noncanonicalKeysetId }],
         derivationAuthority: { keysetId: noncanonicalKeysetId, counterStart: 0, counterCount: 1 },
@@ -177,7 +252,7 @@ describe("browser custody proof receive", () => {
         seed: MODERN_SEED,
         sourceOperationId: "receive:v3",
         mintUrl: "https://mint.example",
-        unit: "sat",
+        unit: "msat",
         wallet: wallet(v3KeysetId),
         proofs: [{ ...proof(0), id: v3KeysetId }],
         derivationAuthority: null,
@@ -198,7 +273,7 @@ describe("browser custody proof receive", () => {
         seed: new Uint8Array(32).fill(7),
         sourceOperationId: "receive:asset",
         mintUrl: "https://mint.example",
-        unit: "sat",
+        unit: "msat",
         wallet: wallet(),
         proofs: [{ ...proof(0), conditionId: "aa".repeat(32), outcomeCollection: "YES" }],
         derivationAuthority: null,
@@ -239,7 +314,7 @@ function proof(index: number): StoredProof {
     C: PUBLIC_KEY,
     mintUrl: "https://mint.example",
     baseAsset: "sat",
-    unit: "sat",
+    unit: "msat",
   };
 }
 
@@ -275,7 +350,7 @@ function wallet(keysetId = KEYSET_ID): CashuWallet {
   return {
     getKeyset: () => ({
       id: keysetId,
-      unit: "sat",
+      unit: "msat",
       keys: { 1: PUBLIC_KEY },
       expiry: undefined,
       verify: () => true,

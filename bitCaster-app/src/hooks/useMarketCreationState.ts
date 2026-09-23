@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useNavigate } from "react-router";
+import { useTranslation } from "react-i18next";
 import type {
   WizardDraft,
   WizardStep,
@@ -29,10 +30,11 @@ import {
 } from "@/lib/marketRegistrationFee";
 import {
   DEFAULT_MARKET_BASE_ASSET,
-  normalizeMarketCreationLiquiditySats,
+  formatMarketSubunits,
   normalizeMarketBaseAsset,
   normalizeMarketDivisibility,
   defaultCollateralUnit,
+  type MarketDivisibility,
 } from "@bitcaster/client-sdk/marketUnits";
 import { effectiveRelayUrls } from "@/lib/relayDefaults";
 
@@ -75,52 +77,57 @@ async function activeMintCapabilities() {
   return capabilities;
 }
 
-/** Check whether outcome probabilities sum to exactly 100. */
-export function probabilitySumValid(outcomes: WizardOutcome[]): boolean {
-  return outcomes.reduce((sum, o) => sum + (o.probability ?? 0), 0) === 100;
-}
-
-/** Check whether every outcome probability is in the backend-enforced [1, 99] range. */
-export function allProbabilitiesInRange(outcomes: WizardOutcome[]): boolean {
-  return outcomes.every((o) => {
-    const p = o.probability ?? 0;
-    return p >= 1 && p <= 99;
-  });
-}
-
-/**
- * Normalize outcome probabilities to sum to exactly 100 using largest-remainder rounding.
- * Returns outcomes unchanged when all probabilities are zero.
- */
-export function normalizeProbabilities(outcomes: WizardOutcome[]): WizardOutcome[] {
-  const total = outcomes.reduce((sum, o) => sum + (o.probability ?? 0), 0);
-  if (total === 0) return outcomes;
-  const raw = outcomes.map((o) => ((o.probability ?? 0) / total) * 100);
-  const floors = raw.map(Math.floor);
-  let remainder = 100 - floors.reduce((a, b) => a + b, 0);
-  const fracs = raw.map((v, i) => ({ i, f: v - floors[i] })).sort((a, b) => b.f - a.f);
-  for (let j = 0; j < remainder; j++) floors[fracs[j].i] += 1;
-  return outcomes.map((o, i) => ({ ...o, probability: floors[i] }));
-}
-
-function distributeProbabilitiesEqually(outcomes: WizardOutcome[]): WizardOutcome[] {
-  if (outcomes.length === 0) return outcomes;
-  const base = Math.floor(100 / outcomes.length);
-  let remainder = 100 - base * outcomes.length;
-  return outcomes.map((outcome) => ({
-    ...outcome,
-    probability: base + (remainder-- > 0 ? 1 : 0),
-  }));
-}
-
 function defaultYesNoOutcomes(): WizardOutcome[] {
   return [
-    { id: "yes", label: "Yes", description: "", probability: 50 },
-    { id: "no", label: "No", description: "", probability: 50 },
+    { id: "yes", label: "Yes", description: "" },
+    { id: "no", label: "No", description: "" },
   ];
 }
 
+function isCanonicalYesNoOutcomes(outcomes: WizardOutcome[] | null | undefined): boolean {
+  return (
+    outcomes?.length === 2 &&
+    outcomes[0]?.id === "yes" &&
+    outcomes[0].label === "Yes" &&
+    outcomes[1]?.id === "no" &&
+    outcomes[1].label === "No"
+  );
+}
+
+function normalizeRestoredBinaryDraft(draft: WizardDraft): WizardDraft {
+  if (draft.stepGetStarted?.outcomeType !== "yesno" || draft.currentStep < 3) return draft;
+
+  const stepOutcomes =
+    draft.stepOutcomes?.outcomeType === "yesno" &&
+    isCanonicalYesNoOutcomes(draft.stepOutcomes.outcomes)
+      ? draft.stepOutcomes
+      : {
+          outcomeType: "yesno" as const,
+          outcomes: defaultYesNoOutcomes(),
+          baseAsset: draft.stepOutcomes?.baseAsset ?? DEFAULT_MARKET_BASE_ASSET,
+        };
+  const currentStep = 3 as WizardStep;
+  const stepReviewAndCreate = draft.stepReviewAndCreate ?? { description: "" };
+
+  if (
+    draft.currentStep === currentStep &&
+    draft.stepOutcomes === stepOutcomes &&
+    draft.stepReviewAndCreate === stepReviewAndCreate
+  ) {
+    return draft;
+  }
+
+  return {
+    ...draft,
+    currentStep,
+    stepOutcomes,
+    stepReviewAndCreate,
+    lastModified: new Date().toISOString(),
+  };
+}
+
 export function useMarketCreationState() {
+  const { t } = useTranslation();
   const navigate = useNavigate();
   const nostrSignerMode = useSettingsStore((s) => s.nostrSignerMode);
   const relays = useSettingsStore((s) => s.relays);
@@ -135,6 +142,17 @@ export function useMarketCreationState() {
   // saved draft. We don't subscribe to `hasSavedDraft` because the first
   // keystroke would flip it to true and make the resume banner re-appear.
   const [hasSavedDraft] = useState(() => useMarketDraftStore.getState().hasSavedDraft);
+
+  useEffect(() => {
+    if (draft.stepGetStarted?.outcomeType !== "yesno" || draft.currentStep < 3) return;
+    setDraft((previous) => normalizeRestoredBinaryDraft(previous));
+  }, [
+    draft.currentStep,
+    draft.stepGetStarted?.outcomeType,
+    draft.stepOutcomes,
+    draft.stepReviewAndCreate,
+    setDraft,
+  ]);
 
   const [thumbnailFile, setThumbnailFile] = useState<File | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -160,6 +178,8 @@ export function useMarketCreationState() {
   const [createdMarketBaseAsset, setCreatedMarketBaseAsset] = useState<MarketBaseAsset | null>(
     null,
   );
+  const [createdMarketDivisibility, setCreatedMarketDivisibility] =
+    useState<MarketDivisibility | null>(null);
   // Track the last blob URL created for the thumbnail preview so we can revoke
   // it when the user picks a new file or when the component unmounts. Without
   // this, every upload leaks a live Blob reference for the page's lifetime.
@@ -189,6 +209,7 @@ export function useMarketCreationState() {
   // --- Navigation ---
   const onNext = useCallback(() => {
     setDraft((prev) => {
+      const outcomeType = prev.stepGetStarted?.outcomeType ?? "yesno";
       const next = Math.min(prev.currentStep + 1, 4) as WizardStep;
       const updated: WizardDraft = {
         ...prev,
@@ -200,8 +221,13 @@ export function useMarketCreationState() {
       if (next === 2 && !updated.stepBasicInfo) {
         updated.stepBasicInfo = { imageFile: null, title: "", categoryTags: [], closingDate: "" };
       }
-      if (next === 3 && !updated.stepOutcomes) {
-        const outcomeType = updated.stepGetStarted?.outcomeType ?? "yesno";
+      if (next === 3 && outcomeType === "yesno" && !updated.stepOutcomes) {
+        updated.stepOutcomes = {
+          outcomeType,
+          outcomes: defaultYesNoOutcomes(),
+          baseAsset: DEFAULT_MARKET_BASE_ASSET,
+        };
+      } else if (next === 3 && !updated.stepOutcomes) {
         if (outcomeType === "numeric") {
           updated.stepOutcomes = {
             outcomeType,
@@ -216,7 +242,7 @@ export function useMarketCreationState() {
           };
         }
       }
-      if (next === 4 && !updated.stepReviewAndCreate) {
+      if (next >= 3 && !updated.stepReviewAndCreate) {
         updated.stepReviewAndCreate = { description: "" };
       }
       return updated;
@@ -226,7 +252,9 @@ export function useMarketCreationState() {
   const onBack = useCallback(() => {
     setDraft((prev) => ({
       ...prev,
-      currentStep: Math.max(Math.min(prev.currentStep, 4) - 1, 1) as WizardStep,
+      currentStep: (prev.stepGetStarted?.outcomeType === "yesno" && prev.currentStep >= 3
+        ? 2
+        : Math.max(Math.min(prev.currentStep, 4) - 1, 1)) as WizardStep,
       lastModified: new Date().toISOString(),
     }));
   }, []);
@@ -294,22 +322,12 @@ export function useMarketCreationState() {
         id: `outcome-${Date.now()}`,
         label: "",
         description: "",
-        probability: 0,
       };
-      const withNew = [...prev.stepOutcomes.outcomes, newOutcome];
-      // Auto-normalize: give every outcome an equal fair share of 100.
-      const n = withNew.length;
-      const base = Math.floor(100 / n);
-      let r = 100 - base * n;
-      const normalized = withNew.map((o, i) => ({
-        ...o,
-        probability: base + (i < r ? 1 : 0),
-      }));
       return {
         ...prev,
         stepOutcomes: {
           ...prev.stepOutcomes,
-          outcomes: normalized,
+          outcomes: [...prev.stepOutcomes.outcomes, newOutcome],
         },
         lastModified: new Date().toISOString(),
       };
@@ -320,15 +338,11 @@ export function useMarketCreationState() {
     setDraft((prev) => {
       if (!prev.stepOutcomes?.outcomes) return prev;
       const filtered = prev.stepOutcomes.outcomes.filter((o) => o.id !== outcomeId);
-      // Auto-normalize so the remaining outcomes still sum to 100.
-      const normalized = filtered.every((outcome) => (outcome.probability ?? 0) === 0)
-        ? distributeProbabilitiesEqually(filtered)
-        : normalizeProbabilities(filtered);
       return {
         ...prev,
         stepOutcomes: {
           ...prev.stepOutcomes,
-          outcomes: normalized,
+          outcomes: filtered,
         },
         lastModified: new Date().toISOString(),
       };
@@ -345,39 +359,6 @@ export function useMarketCreationState() {
           outcomes: prev.stepOutcomes.outcomes.map((o) =>
             o.id === outcomeId ? { ...o, label } : o,
           ),
-        },
-        lastModified: new Date().toISOString(),
-      };
-    });
-  }, []);
-
-  const onOutcomeProbabilityChange = useCallback((outcomeId: string, probability: number) => {
-    setDraft((prev) => {
-      if (!prev.stepOutcomes?.outcomes) return prev;
-      return {
-        ...prev,
-        stepOutcomes: {
-          ...prev.stepOutcomes,
-          outcomes: prev.stepOutcomes.outcomes.map((o) =>
-            o.id === outcomeId ? { ...o, probability } : o,
-          ),
-        },
-        lastModified: new Date().toISOString(),
-      };
-    });
-  }, []);
-
-  const onNormalizeProbabilities = useCallback(() => {
-    setDraft((prev) => {
-      if (!prev.stepOutcomes?.outcomes) return prev;
-      const outcomes = prev.stepOutcomes.outcomes;
-      const total = outcomes.reduce((sum, o) => sum + (o.probability ?? 0), 0);
-      if (total === 0) return prev;
-      return {
-        ...prev,
-        stepOutcomes: {
-          ...prev.stepOutcomes,
-          outcomes: normalizeProbabilities(outcomes),
         },
         lastModified: new Date().toISOString(),
       };
@@ -492,12 +473,9 @@ export function useMarketCreationState() {
           collateralUnit,
         );
         if (requiredRegistrationFee > MAX_CONDITION_REGISTRATION_FEE_SUBUNITS) {
-          const requiredFee = `${requiredRegistrationFee.toLocaleString()} subunits`;
-          const maxFee = `${MAX_CONDITION_REGISTRATION_FEE_SUBUNITS.toLocaleString()} subunits`;
-          throw new Error(
-            `This mint requires a ${requiredFee} condition registration fee, ` +
-              `which exceeds the ${maxFee} app limit.`,
-          );
+          const requiredFee = formatMarketSubunits(requiredRegistrationFee, baseAsset);
+          const maxFee = formatMarketSubunits(MAX_CONDITION_REGISTRATION_FEE_SUBUNITS, baseAsset);
+          throw new Error(t("marketCreation.registrationFeeOverLimit", { requiredFee, maxFee }));
         }
 
         const wallet = useWalletStore.getState();
@@ -582,25 +560,15 @@ export function useMarketCreationState() {
           },
         });
 
-        // 2. Create market on matching engine. Creator AMM funding is handled
-        // after creation, so the pre-create liquidity field is always zero.
-        const liquiditySats = normalizeMarketCreationLiquiditySats({
-          baseAsset,
-          liquiditySats: 0,
-        });
+        // Create the market. Bot funding is a separate action.
         const createResponse = await createMarket(
           condition_id,
           {
             title,
             description,
-            outcomes: outcomes.map((name) => ({
-              name,
-              probability:
-                draft.stepOutcomes?.outcomes?.find((o) => o.label === name)?.probability ?? 50,
-            })),
+            outcomes: outcomes.map((name) => ({ name })),
             outcomeType:
               draft.stepOutcomes?.outcomeType ?? draft.stepGetStarted?.outcomeType ?? "yesno",
-            liquiditySats,
             baseAsset,
             categoryTags,
             oracleAnnouncementHex: announcementHex,
@@ -614,6 +582,10 @@ export function useMarketCreationState() {
         // has already been registered on the mint and the matching engine, so
         // a localStorage quota error must not surface as "Failed to create
         // market" and strand the user on the wizard.
+        const snapshotDivisibility = normalizeMarketDivisibility(
+          createResponse.divisibility,
+          baseAsset,
+        );
         try {
           useCreatorMarketsStore.getState().addCreatedMarket({
             conditionId: condition_id,
@@ -621,7 +593,7 @@ export function useMarketCreationState() {
             thumbnailUrl: createResponse.thumbnailUrl ?? null,
             createdAt: new Date().toISOString(),
             baseAsset,
-            divisibility: normalizeMarketDivisibility(createResponse.divisibility, baseAsset),
+            divisibility: snapshotDivisibility,
             creatorFeePercent: DEFAULT_CREATOR_FEE_PERCENT,
             oracle: creatorOracle,
           });
@@ -642,6 +614,7 @@ export function useMarketCreationState() {
         // AMM crediting and order posting continue asynchronously.
         setCreatedMarketOutcomeCount(snapshotOutcomeCount);
         setCreatedMarketBaseAsset(snapshotBaseAsset);
+        setCreatedMarketDivisibility(snapshotDivisibility);
         setCreatedMarketConditionId(condition_id);
       } catch (err) {
         setSubmitError(err instanceof Error ? err.message : "Failed to create market");
@@ -649,7 +622,7 @@ export function useMarketCreationState() {
         setIsSubmitting(false);
       }
     },
-    [thumbnailFile, isSubmitting, navigate, nostrSignerMode, relays, clearDraft],
+    [thumbnailFile, isSubmitting, navigate, nostrSignerMode, relays, clearDraft, t],
   );
 
   const onCreateMarket = useCallback(async () => {
@@ -704,6 +677,7 @@ export function useMarketCreationState() {
     createdMarketConditionId,
     createdMarketOutcomeCount,
     createdMarketBaseAsset,
+    createdMarketDivisibility,
     onClose,
     clearDraft,
     onNext,
@@ -716,8 +690,6 @@ export function useMarketCreationState() {
     onAddOutcome,
     onRemoveOutcome,
     onOutcomeLabelChange,
-    onOutcomeProbabilityChange,
-    onNormalizeProbabilities,
     onLoBoundChange,
     onHiBoundChange,
     onPrecisionChange,

@@ -119,7 +119,6 @@ export interface WizardOutcome {
   label: string;
   description: string;
   imageUrl?: string;
-  probability?: number; // 0-100, optional, for preview only
 }
 
 export interface WizardStep1Data {

@@ -1,11 +1,37 @@
-import { render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { MarketDetail } from "../MarketDetail";
-import type { MarketDetail as MarketDetailType, TradePreview } from "@/types/market-detail";
+import type {
+  FokOrderPreviewState,
+  MarketDetail as MarketDetailType,
+  TradeFeeFacts,
+} from "@/types/market-detail";
 
-vi.mock("../MarketHeader", () => ({ MarketHeader: () => <div /> }));
-vi.mock("../TradingPanel", () => ({ TradingPanel: () => <div /> }));
-vi.mock("../PriceChart", () => ({ PriceChart: () => <div /> }));
+vi.mock("../MarketHeader", () => ({
+  MarketHeader: () => <div data-testid="market-header-mock" />,
+}));
+const { tradingPanelMock } = vi.hoisted(() => ({
+  tradingPanelMock: vi.fn(
+    (props: { tradeTab?: string; onTradeTabChange?: (tab: string) => void }) => (
+      <div data-testid="trading-panel-mock" data-trade-tab={props.tradeTab} />
+    ),
+  ),
+}));
+vi.mock("../TradingPanel", () => ({ TradingPanel: tradingPanelMock }));
+vi.mock("../PriceChart", () => ({
+  PriceChart: ({
+    currentDisplay,
+    emptyDisplay,
+  }: {
+    currentDisplay?: string;
+    emptyDisplay?: string;
+  }) => (
+    <div data-testid="price-chart-mock">
+      <div>{currentDisplay}</div>
+      <div data-testid="chart-empty-display">{emptyDisplay}</div>
+    </div>
+  ),
+}));
 const { orderBookSectionMock } = vi.hoisted(() => ({
   orderBookSectionMock: vi.fn(({ title }: { title?: string }) => (
     <div data-testid="order-book-panel">{title ?? "Order Book"}</div>
@@ -35,7 +61,7 @@ function makeMarket(overrides: Partial<MarketDetailType> = {}): MarketDetailType
     activeSince: "2026-01-01T00:00:00Z",
     state: "open",
     baseAsset: "sat",
-    divisibility: 10_000,
+    divisibility: 1_000,
     baseUnit: "sats",
     creator: {
       id: "creator",
@@ -75,7 +101,312 @@ function makeMarket(overrides: Partial<MarketDetailType> = {}): MarketDetailType
   } as MarketDetailType;
 }
 
+type PreviewResponse = NonNullable<FokOrderPreviewState["response"]>;
+
+function readyPreview(response: Partial<PreviewResponse> = {}): FokOrderPreviewState {
+  return {
+    status: "ready",
+    requestKey: "preview-request",
+    response: {
+      fullFillAvailable: true,
+      reason: "fillable",
+      previewRevision: "preview-revision",
+      quotePaymentSubunits: 15_000,
+      averagePrice: 300,
+      worstPrice: 320,
+      currentLatestTradePrice: 280,
+      projectedFinalPrice: 310,
+      priceDenominator: 1_000,
+      subsidyMayHelp: false,
+      ...response,
+    },
+    error: null,
+    retryAfterSeconds: null,
+    refresh: vi.fn(),
+  };
+}
+
+function nonfillablePreview(): FokOrderPreviewState {
+  return readyPreview({
+    fullFillAvailable: false,
+    reason: "insufficient_liquidity",
+    previewRevision: null,
+    quotePaymentSubunits: null,
+    averagePrice: null,
+    worstPrice: null,
+    currentLatestTradePrice: null,
+    projectedFinalPrice: null,
+    priceDenominator: null,
+    subsidyMayHelp: false,
+  });
+}
+
+function feeFacts(): TradeFeeFacts {
+  return {
+    settlementInputFeeSubunits: "1000",
+    sourcePreparationFeeSubunits: "2000",
+    consolidationFeeSubunits: "3000",
+    settlementAsset: { kind: "regular", unit: "msat" },
+    preparationAsset: { kind: "regular", unit: "msat" },
+  };
+}
+
 describe("MarketDetail", () => {
+  it("mounts exactly one responsive trading panel", () => {
+    tradingPanelMock.mockClear();
+    render(
+      <MarketDetail
+        market={makeMarket()}
+        chartTimeframe="7d"
+        tradeSelection={null}
+        tradeAmount={0}
+        tradePreview={null}
+        tradeSide="Buy"
+        orderType="market"
+        limitOrderPreview={null}
+        limitPrice={50}
+      />,
+    );
+
+    expect(tradingPanelMock).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId("trading-panel-mock")).toBeInTheDocument();
+  });
+
+  it("keeps mobile source order while isolating the desktop panel column", () => {
+    render(
+      <MarketDetail
+        market={makeMarket()}
+        chartTimeframe="7d"
+        tradeSelection={null}
+        tradeAmount={0}
+        tradePreview={null}
+        tradeSide="Buy"
+        orderType="market"
+        limitOrderPreview={null}
+        limitPrice={50}
+      />,
+    );
+
+    const panel = screen.getByTestId("trading-panel-responsive");
+    const header = screen.getByTestId("market-header-mock");
+    const chart = screen.getByTestId("price-chart-mock");
+
+    expect(header.compareDocumentPosition(panel) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(panel.compareDocumentPosition(chart) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("does not expose sticky confirm for an empty selected route or LIQUIDITY", () => {
+    const emptyMarket = makeMarket({
+      orderBook: { bids: [], asks: [], spread: 0 },
+      outcomeOrderBooks: {
+        Yes: { bids: [], asks: [], spread: 0 },
+        No: { bids: [], asks: [], spread: 0 },
+      },
+    });
+    const { rerender } = render(
+      <MarketDetail
+        market={emptyMarket}
+        chartTimeframe="7d"
+        tradeSelection={{ side: "yes" }}
+        tradeAmount={1}
+        tradePreview={null}
+        tradeSide="Buy"
+        orderType="market"
+        limitOrderPreview={null}
+        limitPrice={50}
+      />,
+    );
+
+    expect(screen.queryByText("market.confirm")).not.toBeInTheDocument();
+    rerender(
+      <MarketDetail
+        market={emptyMarket}
+        chartTimeframe="7d"
+        tradeSelection={{ side: "yes" }}
+        tradeAmount={1}
+        tradePreview={null}
+        tradeSide="Buy"
+        tradeTab="Liquidity"
+        orderType="market"
+        limitOrderPreview={null}
+        limitPrice={50}
+      />,
+    );
+    expect(screen.queryByText("market.confirm")).not.toBeInTheDocument();
+  });
+
+  it("resets a local LIQUIDITY tab when the market route changes", () => {
+    const view = render(
+      <MarketDetail
+        market={makeMarket({ id: "market-a" })}
+        chartTimeframe="7d"
+        tradeSelection={null}
+        tradeAmount={0}
+        tradePreview={null}
+        tradeSide="Buy"
+        orderType="market"
+        limitOrderPreview={null}
+        limitPrice={50}
+      />,
+    );
+    act(() => {
+      tradingPanelMock.mock.calls.at(-1)?.[0].onTradeTabChange?.("Liquidity");
+    });
+    expect(tradingPanelMock.mock.calls.at(-1)?.[0].tradeTab).toBe("Liquidity");
+
+    act(() => {
+      view.rerender(
+        <MarketDetail
+          market={makeMarket({ id: "market-b" })}
+          chartTimeframe="7d"
+          tradeSelection={null}
+          tradeAmount={0}
+          tradePreview={null}
+          tradeSide="Buy"
+          orderType="market"
+          limitOrderPreview={null}
+          limitPrice={50}
+        />,
+      );
+    });
+    expect(tradingPanelMock.mock.calls.at(-1)?.[0].tradeTab).toBe("Buy");
+  });
+
+  it("renders the localized no-trade state without a zero or midpoint fallback", () => {
+    render(
+      <MarketDetail
+        market={makeMarket({ currentOdds: { yes: null, no: null }, latestConfirmedTrades: [] })}
+        chartTimeframe="7d"
+        tradeSelection={null}
+        tradeAmount={0}
+        tradePreview={null}
+        tradeSide="Buy"
+        orderType="market"
+        limitOrderPreview={null}
+        limitPrice={500}
+      />,
+    );
+
+    expect(screen.getByText("No trades yet")).toBeInTheDocument();
+    expect(screen.queryByText("0.00%")).not.toBeInTheDocument();
+  });
+
+  it.each([
+    [
+      "valid empty authority",
+      { latestConfirmedTradesValid: true, latestConfirmedTrades: [] },
+      true,
+    ],
+    [
+      "categorical empty authority",
+      {
+        type: "categorical",
+        latestConfirmedTradesValid: true,
+        latestConfirmedTrades: [],
+      },
+      true,
+    ],
+    [
+      "disabled numeric empty authority",
+      {
+        type: "numeric",
+        unit: "USD",
+        precision: 2,
+        loBound: 0,
+        hiBound: 100,
+        currentPrice: null,
+        latestConfirmedTradesValid: true,
+        latestConfirmedTrades: [],
+      },
+      false,
+    ],
+    ["invalid authority", { latestConfirmedTradesValid: false, latestConfirmedTrades: [] }, false],
+    ["missing authority", {}, false],
+    ["missing records", { latestConfirmedTradesValid: true }, false],
+    [
+      "traded with empty history",
+      {
+        latestConfirmedTradesValid: true,
+        latestConfirmedTrades: [
+          {
+            primitiveOutcomeId: "Yes",
+            fillId: "00000000-0000-0000-0000-000000000010",
+            executedAt: "2030-01-01T00:00:00Z",
+            eventOrder: "0001",
+            priceTick: 500,
+            divisibility: 1_000,
+            faceAmountSubunits: 100,
+          },
+        ],
+      },
+      false,
+    ],
+  ] as const)("sets the chart empty message from %s", (_name, authority, noTrades) => {
+    render(
+      <MarketDetail
+        market={makeMarket({
+          ...authority,
+          latestConfirmedTrades:
+            "latestConfirmedTrades" in authority ? [...authority.latestConfirmedTrades] : undefined,
+        })}
+        chartTimeframe="7d"
+        tradeSelection={null}
+        tradeAmount={0}
+        tradePreview={null}
+        tradeSide="Buy"
+        orderType="market"
+        limitOrderPreview={null}
+        limitPrice={500}
+      />,
+    );
+
+    expect(screen.getByTestId("chart-empty-display").textContent).toBe(
+      noTrades ? "No trades yet" : "",
+    );
+  });
+
+  it("keeps the disabled numeric current value unavailable", () => {
+    const numericMarket = {
+      ...makeMarket({ divisibility: 1_000_000 }),
+      type: "numeric" as const,
+      currentPrice: 75,
+      loBound: 0,
+      hiBound: 100,
+      precision: 2,
+      unit: "USD",
+      registeredPrimitiveOutcomeIds: ["HI", "LO"],
+      latestConfirmedTradesValid: true,
+      latestConfirmedTrades: [
+        {
+          primitiveOutcomeId: "HI",
+          fillId: "00000000-0000-0000-0000-000000000010",
+          executedAt: "2030-01-01T00:00:00Z",
+          eventOrder: "0001",
+          priceTick: 750_000,
+          divisibility: 1_000_000,
+          faceAmountSubunits: 100,
+        },
+      ],
+    } as unknown as MarketDetailType;
+
+    render(
+      <MarketDetail
+        market={numericMarket}
+        chartTimeframe="7d"
+        tradeSelection={null}
+        tradeAmount={0}
+        tradePreview={null}
+        tradeSide="Buy"
+        orderType="market"
+        limitOrderPreview={null}
+        limitPrice={500_000}
+      />,
+    );
+
+    expect(screen.getByText("market.priceUnavailable")).toBeInTheDocument();
+    expect(screen.queryByText("$75.00")).not.toBeInTheDocument();
+  });
+
   it("renders one order book for a yes/no market", () => {
     orderBookSectionMock.mockClear();
     render(
@@ -110,7 +441,7 @@ describe("MarketDetail", () => {
     render(
       <MarketDetail
         market={makeMarket({
-          divisibility: 10_000,
+          divisibility: 1_000,
           outcomeOrderBooks: {
             Yes: {
               bids: [],
@@ -337,27 +668,15 @@ describe("MarketDetail", () => {
   });
 
   it("disables the mobile sticky confirm for market orders without executable liquidity", () => {
-    const noLiquidityPreview: TradePreview = {
-      amount: 1,
-      predictedOdds: 0,
-      priceImpact: 0,
-      executableShares: 0,
-      hasExecutableLiquidity: false,
-      quoteSubunits: 0,
-      mintFee: 0,
-      potentialPayout: 0,
-      creatorFee: 0,
-      engineScoreFeeSats: 0,
-      totalCost: 0,
-    };
-
     render(
       <MarketDetail
         market={makeMarket()}
         chartTimeframe="7d"
         tradeSelection={{ side: "yes" }}
         tradeAmount={1}
-        tradePreview={noLiquidityPreview}
+        tradePreview={nonfillablePreview()}
+        tradeFeeFacts={feeFacts()}
+        feeConsentCurrent
         tradeSide="Buy"
         orderType="market"
         limitOrderPreview={null}
@@ -365,7 +684,73 @@ describe("MarketDetail", () => {
       />,
     );
 
-    expect(screen.getByText("No liquidity")).toBeInTheDocument();
+    expect(
+      screen.getByText("This order cannot be filled at the requested terms."),
+    ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Confirm" })).toBeDisabled();
+  });
+
+  it.each([
+    [1, "1 share"],
+    [2, "2 shares"],
+  ] as const)(
+    "localizes the mobile confirmation share count for %s",
+    (tradeAmount, expectedLabel) => {
+      render(
+        <MarketDetail
+          market={makeMarket()}
+          chartTimeframe="7d"
+          tradeSelection={{ side: "yes" }}
+          tradeAmount={tradeAmount}
+          tradePreview={readyPreview()}
+          tradeFeeFacts={feeFacts()}
+          feeConsentCurrent
+          tradeSide="Buy"
+          orderType="market"
+          limitOrderPreview={null}
+          limitPrice={50}
+        />,
+      );
+
+      expect(screen.getByText(expectedLabel)).toBeInTheDocument();
+    },
+  );
+
+  it("keeps the mobile sticky confirm for categorical NO complement liquidity", () => {
+    const categoricalMarket = makeMarket({
+      type: "categorical",
+      outcomes: [
+        { id: "outcome-0", label: "Alice", odds: null },
+        { id: "outcome-1", label: "Bob", odds: null },
+        { id: "outcome-2", label: "Carol", odds: null },
+      ],
+      outcomePriceHistories: {},
+      orderBook: { bids: [], asks: [], spread: 0 },
+      outcomeOrderBooks: {
+        Alice: {
+          bids: [{ price: 300, amount: 1_000, total: 1_000 }],
+          asks: [],
+          spread: 0,
+        },
+      },
+    } as unknown as Partial<MarketDetailType>);
+
+    render(
+      <MarketDetail
+        market={categoricalMarket}
+        chartTimeframe="7d"
+        tradeSelection={{ side: "no", outcomeId: "outcome-0" }}
+        tradeAmount={1}
+        tradePreview={readyPreview()}
+        tradeFeeFacts={feeFacts()}
+        feeConsentCurrent
+        tradeSide="Buy"
+        orderType="market"
+        limitOrderPreview={null}
+        limitPrice={50}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "Confirm" })).toBeEnabled();
   });
 });

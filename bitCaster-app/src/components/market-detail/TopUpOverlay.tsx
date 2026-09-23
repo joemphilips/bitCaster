@@ -355,7 +355,7 @@ export function TopUpOverlay({
     return (
       <InvoiceDisplay
         bolt11={bolt11}
-        amountSats={amount}
+        amountSats={displayInputAmount(amount, baseAsset, proofUnit)}
         amountLabel={formatTopUpAmount(amount, baseAsset, proofUnit)}
         status={status}
         expiresAtSec={expiresAtSec}

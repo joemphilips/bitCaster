@@ -4,7 +4,8 @@ import { useTranslation } from "react-i18next";
 import { getMarketThumbnail } from "@/lib/markets";
 import { useBookmarkStore } from "@/stores/bookmarks";
 import { useMarketState } from "@/hooks/useMarketState";
-import { formatMarketSubunits, formatPricePercentage } from "@bitcaster/client-sdk/marketUnits";
+import { formatPricePercentage } from "@bitcaster/client-sdk/marketUnits";
+import { InlineAmount } from "@/components/shared/InlineAmount";
 import type {
   Market,
   YesNoMarket,
@@ -62,14 +63,17 @@ function MarketThumbnail({ market }: { market: { id: string; title: string; imag
 function CategoricalOutcomes({
   outcomes,
   divisibility,
+  priceAuthorityUnavailable,
   onYesClick,
   onNoClick,
 }: {
   outcomes: Outcome[];
   divisibility: ProductMarketDivisibility;
+  priceAuthorityUnavailable: boolean;
   onYesClick: (outcomeId: string, label: string) => void;
   onNoClick: (outcomeId: string, label: string) => void;
 }) {
+  const { t } = useTranslation();
   const scrollRef = useRef<HTMLDivElement>(null);
   const [canScrollUp, setCanScrollUp] = useState(false);
   const [canScrollDown, setCanScrollDown] = useState(false);
@@ -129,7 +133,15 @@ function CategoricalOutcomes({
                 {outcome.label}
               </div>
               <div className="text-sm font-bold text-slate-900 dark:text-slate-100 ml-2">
-                {formatPricePercentage(outcome.odds, divisibility)}
+                <span
+                  aria-label={
+                    outcome.odds == null
+                      ? t(priceAuthorityUnavailable ? "market.priceUnavailable" : "trade.noTrades")
+                      : undefined
+                  }
+                >
+                  {formatNullablePrice(outcome.odds, divisibility)}
+                </span>
               </div>
             </div>
             <div className="flex gap-1.5">
@@ -221,6 +233,10 @@ function normalizeResolvedOutcome(outcome: string | undefined): string | undefin
   return trimmed;
 }
 
+function formatNullablePrice(price: number | null, divisibility: number): string {
+  return price == null ? "—" : formatPricePercentage(price, divisibility);
+}
+
 export function MarketCard({
   market,
   secondaryMarketInfos,
@@ -302,7 +318,19 @@ export function MarketCard({
               {t("market.chance")}
             </span>
             <span className="text-2xl font-bold text-blue-600 dark:text-blue-400">
-              {formatPricePercentage(yesNoMarket.currentOdds.yes, yesNoMarket.divisibility)}
+              <span
+                aria-label={
+                  yesNoMarket.currentOdds.yes == null
+                    ? t(
+                        yesNoMarket.latestConfirmedTradesValid === false
+                          ? "market.priceUnavailable"
+                          : "trade.noTrades",
+                      )
+                    : undefined
+                }
+              >
+                {formatNullablePrice(yesNoMarket.currentOdds.yes, yesNoMarket.divisibility)}
+              </span>
             </span>
           </div>
 
@@ -328,6 +356,7 @@ export function MarketCard({
         <CategoricalOutcomes
           outcomes={categoricalMarket.outcomes}
           divisibility={categoricalMarket.divisibility}
+          priceAuthorityUnavailable={categoricalMarket.latestConfirmedTradesValid === false}
           onYesClick={() => onViewMarket?.(market.id)}
           onNoClick={() => onViewMarket?.(market.id)}
         />
@@ -381,7 +410,10 @@ export function MarketCard({
           >
             <TrendingUp className="w-3.5 h-3.5 flex-shrink-0" />
             <span className="truncate">
-              {formatMarketSubunits(market.volumeLifetimeSubunits, market.baseAsset)}
+              <InlineAmount
+                amountSubunits={market.volumeLifetimeSubunits}
+                baseAsset={market.baseAsset}
+              />
             </span>
           </div>
           <div
@@ -392,7 +424,10 @@ export function MarketCard({
           >
             <Droplet className="w-3.5 h-3.5" />
             <span className="font-mono font-medium">
-              {formatMarketSubunits(market.ammBotBudgetSubunits, market.baseAsset)}
+              <InlineAmount
+                amountSubunits={market.ammBotBudgetSubunits}
+                baseAsset={market.baseAsset}
+              />
             </span>
           </div>
           <button

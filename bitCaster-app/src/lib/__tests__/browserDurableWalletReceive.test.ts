@@ -49,14 +49,22 @@ import {
 } from "../../stores/durable-custody-db";
 import { browserWalletScope } from "../browserCtfRangeOrderSource";
 
+const requireNewWritePermission = vi.hoisted(() => vi.fn(async () => undefined));
+
+vi.mock("../browserWalletNewWritePermission", () => ({
+  requireBrowserWalletNewWritePermission: requireNewWritePermission,
+}));
+
 const MINT = "https://mint.example";
 const PRIVATE_KEY = Uint8Array.from([...new Uint8Array(31), 7]);
 const KEYS = { "1": bytesToHex(secp256k1.getPublicKey(PRIVATE_KEY, true)) };
-const KEYSET_ID = deriveKeysetId(KEYS);
+const KEYSET_ID = deriveKeysetId(KEYS, { unit: "msat", versionByte: 1 });
 const seed = new Uint8Array(64).fill(1);
 const databases: BitcasterDB[] = [];
 
 afterEach(async () => {
+  requireNewWritePermission.mockClear();
+  requireNewWritePermission.mockResolvedValue(undefined);
   for (const database of databases.splice(0)) {
     database.close();
     await database.delete();
@@ -64,6 +72,105 @@ afterEach(async () => {
 });
 
 describe("browser durable ordinary receive", () => {
+  it("rejects sat before mint, custody, or counter writes", async () => {
+    const database = createDatabase();
+    const preview = receivePreview();
+    const receiveWallet = wallet(preview, proofForOutput(preview.keepOutputs![0]!));
+
+    await expect(
+      receiveBrowserDurableWalletToken({
+        token: "cashuB-sat-token",
+        mintUrl: MINT,
+        unit: "sat",
+        wallet: receiveWallet,
+        context: receiveContext(database),
+      }),
+    ).rejects.toThrow(/requires msat/);
+    expect(receiveWallet.prepareSwapToReceive).not.toHaveBeenCalled();
+    expect(await database.custodyScopes.count()).toBe(0);
+    expect(await database.custodyOperations.count()).toBe(0);
+    expect(await database.custodyProofs.count()).toBe(0);
+    expect(await database.walletCounterAssociations.count()).toBe(0);
+    expect(await database.walletCounterCursors.count()).toBe(0);
+
+    const prepared = await prepareBrowserDurableWalletReceiveOperation(
+      {
+        token: "cashuB-msat-token",
+        mintUrl: MINT,
+        unit: "msat",
+        wallet: receiveWallet,
+        context: receiveContext(database),
+      },
+      () => "prepared",
+    );
+    await expect(
+      receiveBrowserDurableWalletToken({
+        token: "cashuB-sat-token",
+        mintUrl: MINT,
+        unit: "msat",
+        preparedOperation: { ...prepared, unit: "sat" },
+        wallet: receiveWallet,
+        context: receiveContext(database),
+      }),
+    ).rejects.toThrow(/requires msat/);
+    expect(await database.custodyScopes.count()).toBe(0);
+    expect(await database.custodyOperations.count()).toBe(0);
+  });
+
+  it("rejects sat during legacy cache repair before legacy proof writes", async () => {
+    const database = createDatabase();
+    const scopeId = browserWalletScope(seed).scopeId;
+    await database.custodyProofs.put(
+      createBrowserCustodyProofRow({
+        scopeId,
+        normalizedMint: MINT,
+        unit: "sat",
+        proof: {
+          id: KEYSET_ID,
+          amount: Amount.from(1),
+          secret: "sat-cache-proof",
+          C: "sat-cache-signature",
+        },
+        asset: { kind: "regular" },
+        receivedAtMs: 1,
+      }),
+    );
+
+    await expect(
+      readBrowserCurrentCustodyProofPage({
+        context: receiveContext(database),
+        selectability: "selectable",
+        cursor: null,
+      }),
+    ).rejects.toThrow(/requires msat/);
+    expect(await database.proofs.count()).toBe(0);
+  });
+
+  it("refuses a new receive before deterministic output preparation", async () => {
+    const database = createDatabase();
+    const preview = receivePreview();
+    const receiveWallet = wallet(preview, proofForOutput(preview.keepOutputs![0]!));
+    requireNewWritePermission.mockRejectedValueOnce(
+      new Error(
+        "Another browser changed this wallet. Reload to start recovery before making a new wallet change.",
+      ),
+    );
+
+    await expect(
+      receiveBrowserDurableWalletToken({
+        token: "cashuB-token",
+        mintUrl: MINT,
+        unit: "msat",
+        wallet: receiveWallet,
+        context: receiveContext(database),
+      }),
+    ).rejects.toThrow("Another browser changed this wallet");
+
+    expect(receiveWallet.prepareSwapToReceive).not.toHaveBeenCalled();
+    expect(await database.custodyScopes.count()).toBe(0);
+    expect(await database.custodyOperations.count()).toBe(0);
+  });
+
   it("persists the exact preview before mint completion and replays it after an all-UNSPENT restart", async () => {
     const database = createDatabase();
     const preview = receivePreview();
@@ -75,7 +182,7 @@ describe("browser durable ordinary receive", () => {
       receiveBrowserDurableWalletToken({
         token: "cashuB-token",
         mintUrl: MINT,
-        unit: "sat",
+        unit: "msat",
         wallet: first,
         context,
       }),
@@ -89,12 +196,19 @@ describe("browser durable ordinary receive", () => {
     vi.mocked(restarted.checkProofsStates).mockResolvedValue(
       statesFor(preview, CheckStateEnum.UNSPENT) as never,
     );
+    requireNewWritePermission.mockClear();
+    requireNewWritePermission.mockRejectedValue(
+      new Error(
+        "Another browser changed this wallet. Reload to start recovery before making a new wallet change.",
+      ),
+    );
     const recovered = await recoverBrowserDurableWalletReceives({
       context,
       walletForMint: async () => restarted,
     });
 
     expect(recovered.pending).toBe(0);
+    expect(requireNewWritePermission).not.toHaveBeenCalled();
     expect(first.prepareSwapToReceive).toHaveBeenCalledOnce();
     expect(restarted.prepareSwapToReceive).not.toHaveBeenCalled();
     expect(restarted.completeSwap).toHaveBeenCalledWith(
@@ -104,6 +218,79 @@ describe("browser durable ordinary receive", () => {
         ]),
       }),
     );
+  });
+
+  it("recovers a receive in its bound database after the active profile changes during mint execution", async () => {
+    const originalDatabase = createDatabase();
+    const replacementDatabase = createDatabase();
+    const scopeId = browserWalletScope(seed).scopeId;
+    let activeProfile = "original";
+    const context: BrowserDurableWalletReceiveContext = {
+      ...receiveContext(originalDatabase),
+      requireCapturedProfile: () => {
+        if (activeProfile !== "original") {
+          throw new Error("The wallet profile changed during mint recovery.");
+        }
+      },
+    };
+    const preview = receivePreview();
+    const output = proofForOutput(preview.keepOutputs![0]!);
+    const receivingWallet = wallet(preview, output);
+    let exactAuthorityBoundBeforeMint = false;
+    vi.mocked(receivingWallet.completeSwap).mockImplementation(async () => {
+      const operation = (await originalDatabase.custodyOperations.toArray())[0];
+      if (operation) {
+        const privateArtifactId =
+          operation.record.operation.privateMaterial.exactPrivateMaterial.artifactId;
+        const authority = await originalDatabase.custodyArtifacts.get([
+          scopeId,
+          operation.operationId,
+          privateArtifactId,
+        ]);
+        exactAuthorityBoundBeforeMint =
+          operation.record.operation.result.state === "none" && authority !== undefined;
+      }
+      activeProfile = "replacement";
+      return { keep: [output], send: [] };
+    });
+
+    await expect(
+      receiveBrowserDurableWalletToken({
+        token: "cashuB-token",
+        mintUrl: MINT,
+        unit: "msat",
+        wallet: receivingWallet,
+        context,
+      }),
+    ).rejects.toThrow("The wallet profile changed during mint recovery.");
+
+    expect(exactAuthorityBoundBeforeMint).toBe(true);
+    expect(await originalDatabase.custodyOperations.count()).toBe(1);
+    expect(
+      (await originalDatabase.custodyOperations.toArray())[0]?.record.operation.result.state,
+    ).toBe("none");
+    expect(await originalDatabase.custodyProofs.count()).toBe(0);
+    expect(await replacementDatabase.custodyOperations.count()).toBe(0);
+    expect(await replacementDatabase.custodyProofs.count()).toBe(0);
+
+    activeProfile = "original";
+    const restartedWallet = wallet(preview, output);
+    vi.mocked(restartedWallet.checkProofsStates).mockResolvedValue(
+      statesFor(preview, CheckStateEnum.SPENT) as never,
+    );
+    const recovered = await recoverBrowserDurableWalletReceives({
+      context,
+      walletForMint: async () => restartedWallet,
+    });
+
+    expect(recovered).toMatchObject({
+      pending: 0,
+      repaired: [expect.objectContaining({ secret: outputSecret(preview) })],
+    });
+    expect(restartedWallet.completeSwap).not.toHaveBeenCalled();
+    expect(await originalDatabase.custodyProofs.count()).toBe(1);
+    expect(await replacementDatabase.custodyOperations.count()).toBe(0);
+    expect(await replacementDatabase.custodyProofs.count()).toBe(0);
   });
 
   it("does not mask a receive failure when scope release also fails", async () => {
@@ -120,7 +307,7 @@ describe("browser durable ordinary receive", () => {
         receiveBrowserDurableWalletToken({
           token: "cashuB-token",
           mintUrl: MINT,
-          unit: "sat",
+          unit: "msat",
           wallet: first,
           context: receiveContext(database),
         }),
@@ -140,7 +327,7 @@ describe("browser durable ordinary receive", () => {
       receiveBrowserDurableWalletToken({
         token: "cashuB-token",
         mintUrl: MINT,
-        unit: "sat",
+        unit: "msat",
         wallet: first,
         context,
       }),
@@ -176,7 +363,7 @@ describe("browser durable ordinary receive", () => {
         receiveBrowserDurableWalletToken({
           token: "cashuB-token",
           mintUrl: MINT,
-          unit: "sat",
+          unit: "msat",
           wallet: first,
           context,
         }),
@@ -200,7 +387,7 @@ describe("browser durable ordinary receive", () => {
       receiveBrowserDurableWalletToken({
         token: "cashuB-token",
         mintUrl: MINT,
-        unit: "sat",
+        unit: "msat",
         wallet: first,
         context: receiveContext(database, "before-commit"),
       }),
@@ -239,7 +426,7 @@ describe("browser durable ordinary receive", () => {
       receiveBrowserDurableWalletToken({
         token: "cashuB-token",
         mintUrl: MINT,
-        unit: "sat",
+        unit: "msat",
         wallet: first,
         context: receiveContext(database, "after-commit"),
       }),
@@ -284,7 +471,7 @@ describe("browser durable ordinary receive", () => {
         operationId: "bearer-reclaim:1",
         token,
         mintUrl: MINT,
-        unit: "sat",
+        unit: "msat",
         wallet: first,
         context: faultContext,
       },
@@ -298,7 +485,7 @@ describe("browser durable ordinary receive", () => {
         preparedOperation: operation,
         token,
         mintUrl: MINT,
-        unit: "sat",
+        unit: "msat",
         wallet: first,
         context: faultContext,
         outgoingTransferOnPrepare: browserOutgoingCashuTransferRow(scopeId, prepared, "consumed"),
@@ -323,7 +510,7 @@ describe("browser durable ordinary receive", () => {
         skipBind: true,
         token,
         mintUrl: MINT,
-        unit: "sat",
+        unit: "msat",
         wallet: restarted,
         context: receiveContext(database),
         completeOutgoingTransfer: () =>
@@ -347,7 +534,7 @@ describe("browser durable ordinary receive", () => {
         operationId: "bearer-reclaim:recipient-spent",
         token: outgoing.token!.encodedToken,
         mintUrl: MINT,
-        unit: "sat",
+        unit: "msat",
         wallet: first,
         context,
       },
@@ -368,7 +555,7 @@ describe("browser durable ordinary receive", () => {
     vi.mocked(first.mint.restore).mockResolvedValue({ outputs: [], signatures: [] });
     const token = getEncodedTokenV4({
       mint: MINT,
-      unit: "sat",
+      unit: "msat",
       proofs: prepared.reclaim!.proofs.map(hydrateDurableWalletProof),
     });
 
@@ -380,7 +567,7 @@ describe("browser durable ordinary receive", () => {
         recoveryMode: "recover",
         token,
         mintUrl: MINT,
-        unit: "sat",
+        unit: "msat",
         wallet: first,
         context,
         abortOutgoingTransfer: ({ custodyOperationId }) =>
@@ -411,7 +598,7 @@ describe("browser durable ordinary receive", () => {
       receiveBrowserDurableWalletToken({
         token: "cashuB-token",
         mintUrl: MINT,
-        unit: "sat",
+        unit: "msat",
         wallet: first,
         context: receiveContext(database, "before-commit"),
       }),
@@ -447,7 +634,7 @@ describe("browser durable ordinary receive", () => {
       receiveBrowserDurableWalletToken({
         token: "cashuB-token",
         mintUrl: MINT,
-        unit: "sat",
+        unit: "msat",
         wallet: first,
         context,
       }),
@@ -489,7 +676,7 @@ describe("browser durable ordinary receive", () => {
       receiveBrowserDurableWalletToken({
         token: "first-token",
         mintUrl: MINT,
-        unit: "sat",
+        unit: "msat",
         wallet: first,
         context: receiveContext(database, undefined, "a"),
       }),
@@ -498,7 +685,7 @@ describe("browser durable ordinary receive", () => {
       receiveBrowserDurableWalletToken({
         token: "second-token",
         mintUrl: MINT,
-        unit: "sat",
+        unit: "msat",
         wallet: second,
         context: receiveContext(database, undefined, "b"),
       }),
@@ -560,7 +747,7 @@ describe("browser durable ordinary receive", () => {
         createBrowserCustodyProofRow({
           scopeId,
           normalizedMint: MINT,
-          unit: "sat",
+          unit: "msat",
           proof: {
             id: KEYSET_ID,
             amount: Amount.from(1),
@@ -605,7 +792,7 @@ describe("browser durable ordinary receive", () => {
       ...createBrowserCustodyProofRow({
         scopeId,
         normalizedMint: MINT,
-        unit: "sat",
+        unit: "msat",
         proof,
         asset: { kind: "regular" },
         receivedAtMs: 1,
@@ -613,7 +800,7 @@ describe("browser durable ordinary receive", () => {
       selectability: "locked",
       reservationOperationId: "order-1",
     });
-    const legacy = { ...proof, mintUrl: MINT, baseAsset: "sat" as const, unit: "sat" as const };
+    const legacy = { ...proof, mintUrl: MINT, baseAsset: "sat" as const, unit: "msat" as const };
     await addProofs([{ ...legacy, reservedBy: "order-1" }], database);
 
     await addProofsIfMissing([legacy], database);
@@ -661,7 +848,7 @@ function admittedBearerTransfer(scopeId: string): DurableOutgoingCashuTransfer {
     walletSendOperation: serializeDurableWalletSendOperation({
       operationId: "wallet-send:bearer-withdrawal:1",
       mintUrl: MINT,
-      unit: "sat",
+      unit: "msat",
       preview: {
         amount: Amount.from(1),
         fees: Amount.zero(),
@@ -700,7 +887,7 @@ function admittedBearerTransfer(scopeId: string): DurableOutgoingCashuTransfer {
     transfer: prepared,
     keepProofs: [],
     sendProofs: [serialized],
-    encodedToken: getEncodedTokenV4({ mint: MINT, unit: "sat", proofs: [proof] }),
+    encodedToken: getEncodedTokenV4({ mint: MINT, unit: "msat", proofs: [proof] }),
     custodyRevisions: [
       ...prepared.walletSendOperation.preview.inputs.map(proofRevision),
       proofRevision(serialized),
@@ -797,7 +984,7 @@ function wallet(
     },
     getKeyset: vi.fn(() => ({
       id: KEYSET_ID,
-      unit: "sat",
+      unit: "msat",
       keys: KEYS,
       fee: 0,
       verify: () => true,

@@ -22,16 +22,16 @@ import {
   recoverAllDaemonWalletFromSeed,
   type AllKeysetSeedRecoveryTransport,
 } from '../src/emergencySeedRecovery.ts'
-import {
-  createSeedRecoveryProfile,
-  RECOVERY_COUNTER_BINDING,
-  withDaemonHome,
-} from './seedRecoveryTestSupport.ts'
+import { createSeedRecoveryProfile, withDaemonHome } from './seedRecoveryTestSupport.ts'
 
 const V2_ID = `01${'a'.repeat(64)}`
 const MINT_PRIVATE_KEY = Uint8Array.from([...new Uint8Array(31), 1])
 const MINT_PUBLIC_KEY = '0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798'
 const CONDITION_ID = 'ab'.repeat(32)
+const MSAT_RECOVERY_COUNTER_BINDING = {
+  normalizedMint: 'https://mint.example',
+  unit: 'msat' as const,
+}
 
 test('all-keyset recovery finalizes only after complete empty listings', async () => {
   const fixture = await recoveryFixture('empty')
@@ -57,7 +57,7 @@ test('all-keyset recovery rejects non-V2 regular authority before wallet restore
   const fixture = await recoveryFixture('v2x')
   try {
     let loaded = false
-    const transport = emptyTransport({ keysets: [{ id: `02${'b'.repeat(64)}`, unit: 'sat' }] })
+    const transport = emptyTransport({ keysets: [{ id: `02${'b'.repeat(64)}`, unit: 'msat' }] })
     transport.wallet.loadMint = async () => {
       loaded = true
     }
@@ -75,7 +75,7 @@ test('all-keyset recovery fails closed when a local high-water keyset is absent'
   const fixture = await recoveryFixture('high-water')
   try {
     await withDaemonHome(fixture.directory, () =>
-      advanceDaemonKeysetCounter(V2_ID, 1, fixture.mutation, RECOVERY_COUNTER_BINDING),
+      advanceDaemonKeysetCounter(V2_ID, 1, fixture.mutation, MSAT_RECOVERY_COUNTER_BINDING),
     )
     await assert.rejects(
       () =>
@@ -91,10 +91,10 @@ test('all-keyset recovery spends its four-batch budget on one continuing child',
   const fixture = await recoveryFixture('continuation')
   try {
     await withDaemonHome(fixture.directory, () =>
-      advanceDaemonKeysetCounter(V2_ID, 1_500, fixture.mutation, RECOVERY_COUNTER_BINDING),
+      advanceDaemonKeysetCounter(V2_ID, 1_500, fixture.mutation, MSAT_RECOVERY_COUNTER_BINDING),
     )
     const starts: number[] = []
-    const transport = emptyTransport({ keysets: [{ id: V2_ID, unit: 'sat' }] })
+    const transport = emptyTransport({ keysets: [{ id: V2_ID, unit: 'msat' }] })
     let start = 0
     transport.restoreCandidates = async () => {
       starts.push(start)
@@ -487,7 +487,7 @@ async function recoveryFixture(label: string) {
 
 function request(
   fixture: Awaited<ReturnType<typeof recoveryFixture>>,
-  unit: 'sat' | 'msat' = 'sat',
+  unit: 'sat' | 'msat' = 'msat',
 ) {
   return {
     recoveryId: 'all-empty',
@@ -512,7 +512,7 @@ function dependencies(
   }
 }
 
-function regularKeyset(keys: Record<string, string>, unit = 'sat'): MintKeys {
+function regularKeyset(keys: Record<string, string>, unit = 'msat'): MintKeys {
   return { id: deriveKeysetId(keys, { unit, versionByte: 1 }), unit, keys }
 }
 
@@ -638,12 +638,12 @@ function emptyTransport(regular: unknown = { keysets: [] }): AllKeysetSeedRecove
       async loadMint() {},
       keyChain: {
         getKeysets: () => [],
-        getKeyset: () => ({ id: V2_ID, unit: 'sat', keys: {} }),
+        getKeyset: () => ({ id: V2_ID, unit: 'msat', keys: {} }),
         async ensureKeysetKeys() {
-          return { id: V2_ID, unit: 'sat', keys: {} }
+          return { id: V2_ID, unit: 'msat', keys: {} }
         },
       },
-      getKeyset: () => ({ id: V2_ID, unit: 'sat', keys: {} }),
+      getKeyset: () => ({ id: V2_ID, unit: 'msat', keys: {} }),
       async checkProofsStates() {
         throw new Error('empty recovery must not query NUT-07')
       },

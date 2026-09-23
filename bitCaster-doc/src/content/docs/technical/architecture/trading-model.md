@@ -7,22 +7,82 @@ sidebar:
 
 # Trading Model
 
-bitCaster uses a central limit order book (CLOB). A limit order can rest on the
-book. A crossing order takes available liquidity. All product assets are sats.
+bitCaster uses a central limit order book (CLOB). Liquidity-provider quotes
+rest on the book. Public orders take available liquidity within their price
+limit. All product assets are sats.
 
 Public market books use primitive outcome routes. A categorical market exposes
 `A / Not A`, `B / Not B`, and similar books. Clients use the market identifier
 `{conditionId}-{outcomeName}` and select the required token side.
 
+## First-release public scope
+
+The public server accepts only public FOK orders. The GUI and CLI submit FOK
+orders. Each public attempt uses one one-shot capability. FOK uses the book
+state at admission. It commits the full requested quantity or cancels the
+complete request. Public FAK, GTC, GTD, continuation, and residual
+reauthorization are not available.
+
+## Public FOK preview
+
+`POST /api/v1/orders/preview` previews one FOK order. Send `marketId`, `side`,
+`tokenSide`, `price`, and `faceAmountSubunits`. Use the selected token's limit
+price. The face amount must be a whole tradable unit for the market denominator.
+Do not send proofs, an owner, or a time-in-force field.
+
+NIP-98 authentication is optional. The authenticated subject determines the
+subject rate-limit partition and self-match exclusion. The preview is read-only.
+It does not reserve funds or liquidity. It does not authorize or submit an order.
+Final admission checks the current book again with the user's price limit.
+The opaque `previewRevision` is display metadata, not authorization.
+
+The response reports full-fill availability and one reason: `fillable`,
+`insufficient_liquidity`, `price_limit`, `request_too_large`,
+`market_unavailable`, or `temporarily_unavailable`. Recommend a separate subsidy
+only when `subsidyMayHelp` is true. Funding and trading require separate consent.
+
+`quotePaymentSubunits` is the exact quote payment in msat, without fees.
+`averagePrice` and `worstPrice` describe the selected token. The current
+`currentLatestTradePrice` and projected `projectedFinalPrice` describe the
+primitive outcome route. Prices use `priceDenominator`. The projected price is
+not a confirmed trade. Execution estimates are `null` when the full amount
+cannot fill. The current price is `null` when no confirmed trade exists.
+Funding does not create a market-price point.
+
+The GUI uses one Buy/Sell form. The optional Price protection section sets a
+maximum buy price or a minimum sell price for the selected token. The default
+is the reviewed preview's `worstPrice`, not its average price. The GUI adds no
+automatic slippage allowance. You can set a different bound explicitly.
+
+The order keeps this bound through balance checks, top-up, preparation, and
+submission. It fills the complete quantity within the bound or fills none.
+The bound does not reserve liquidity or guarantee execution. If the order no
+longer fits, review a fresh preview and confirm a new attempt. The GUI does
+not retry the order automatically. Wallet or Nostr setup, or a change of
+trading identity, also requires a fresh preview and confirmation.
+
+The UI displays amounts in sats: 100 msat is 0.1 sats. Buy totals add the quote,
+settlement-input fee, source-preparation fee, and consolidation fee. Sell totals
+show gross collateral proceeds and net proceeds after the settlement-input fee.
+Show conditional-token preparation and consolidation fees separately. Do not
+add fees in different assets. Unused fee headroom is not a paid fee. If fee
+amounts or assets change, obtain fresh consent before the next new wallet step.
+Price protection does not replace fee consent. Fee consent applies to the
+order with the reviewed price bound.
+
+Invalid input returns HTTP `400`. The raw request limit is 16 KiB. Larger bodies
+return `413`. Rate or concurrency limits return `429` with `Retry-After`.
+
 ## Order authorization
 
-A wallet supplies a `PAY_TO_UNLOCK` capability when it submits an order. The
-engine validates the capability during order admission. It makes no mint
-network call during admission.
+A wallet supplies one `PAY_TO_UNLOCK` capability when it submits a public FOK
+order. The engine validates the capability during order admission. It makes no
+mint network call during admission.
 
-The capability covers an authorized range. A range continuation requires a new
-authorization. Cancellation retracts only a resting order. It does not spend a
-capability and it does not trigger a capability refund.
+The capability covers an authorized range for that one attempt. Public FOK does
+not rest on the book or leave a residual order. If the complete quantity cannot
+fill, the engine cancels the complete request. This cancellation does not spend
+the capability or trigger a refund.
 
 ## Fills and settlement groups
 
@@ -35,15 +95,28 @@ conversion. It does not expose merge conversion in this release.
 
 Mint confirmation returns exact result entries. Clients retain their submitted
 operations and confirmed results. They can recover those exact records after a
-crash. If the result is uncertain, clients reconcile with the durable engine
-and mint authority.
+crash. An acknowledged FOK operation stores its operation facts and result.
+These records survive a server restart. An intentional reuse of the same client
+order ID with the same operation facts returns the stored result.
+Changed facts return a conflict. If the result is uncertain, clients reconcile
+with the durable engine and mint authority.
 
 ## Participation Score
 
-Participation Score protects public order admission and charges durable fills.
-Each non-exempt participant pays the configured debit for each durable fill. It
-is not a settlement-negligence penalty. The approved operator wallet service
-does not receive Score debits.
+Participation Score protects public order admission. A successful public
+one-shot capability binding charges once under `settlement-capability-v1`. The
+tariff is `1 + InputCount + ceil(ManifestCount/16) +
+ceil(ArtifactByteCount/4096)`. Each authenticated invalid proof or DLEQ
+validation attempt uses the same tariff. There is no separate order, fill, or
+settlement-failure tariff. Fills, cancellation, settlement failure, refund,
+and recovery do not debit Score. This tariff applies to public client
+capabilities.
+
+If Score is insufficient, the daemon submits a payment and waits for its
+delivery state to become `credited` before it prepares the order capability.
+Retries use the same delivery identity. Credit can be delayed after the mint
+receives the payment. If the bounded wait ends, the payment remains available
+for recovery. A pending delivery does not prove that the payment failed.
 
 ## Trust boundary
 

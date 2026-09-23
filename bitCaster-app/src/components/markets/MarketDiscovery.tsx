@@ -6,6 +6,16 @@ import { FilterControls } from "./FilterControls";
 import { MarketCard } from "./MarketCard";
 import { useWalletStore } from "@/stores/wallet";
 import type { MarketDiscoveryProps, MarketType, VolumeRange, Market } from "@/types/market";
+import type { ReactNode } from "react";
+
+type DiscoveryStatus = "ready" | "loading" | "refreshing" | "error" | "empty" | "no-match";
+
+interface MarketDiscoveryExtraProps {
+  status?: DiscoveryStatus;
+  statusMessage?: string;
+  statusAction?: ReactNode;
+  onClearAll?: () => void;
+}
 
 export function MarketDiscovery({
   categoryTags,
@@ -13,7 +23,7 @@ export function MarketDiscovery({
   selectedTags,
   sort,
   onSortChange,
-  searchQuery: _searchQuery = "",
+  searchQuery = "",
   onSearch: _onSearch,
   onTagSelect,
   onClearTags,
@@ -25,7 +35,11 @@ export function MarketDiscovery({
   hasMore = false,
   onLoadMore,
   onViewSecondaryMarket,
-}: MarketDiscoveryProps) {
+  status = "ready",
+  statusMessage,
+  statusAction,
+  onClearAll,
+}: MarketDiscoveryProps & MarketDiscoveryExtraProps) {
   const { t } = useTranslation();
   const walletReady = useWalletStore((s) => s.setupComplete);
   const observerTarget = useRef<HTMLDivElement>(null);
@@ -63,6 +77,21 @@ export function MarketDiscovery({
     closingInDays !== undefined ? 1 : 0,
     includeClosed ? 1 : 0,
   ].reduce((a, b) => a + b, 0);
+
+  const hasActiveFilters =
+    searchQuery.trim().length > 0 || selectedTags.length > 0 || activeFilterCount > 0;
+
+  const handleClearAll = () => {
+    setSelectedMarketTypes([]);
+    setVolumeRange({});
+    setClosingInDays(undefined);
+    setIncludeClosed(false);
+    onMarketTypeChange?.([]);
+    onVolumeRangeChange?.({});
+    onClosingDateChange?.(undefined);
+    onIncludeClosedChange?.(false);
+    onClearAll?.();
+  };
 
   useEffect(() => {
     const observer = new IntersectionObserver(
@@ -110,6 +139,16 @@ export function MarketDiscovery({
               onClearTags={onClearTags}
               onToggleFilters={() => setFiltersVisible(!filtersVisible)}
             />
+            {hasActiveFilters && (
+              <button
+                type="button"
+                data-testid="market-discovery-clear-all"
+                onClick={handleClearAll}
+                className="shrink-0 self-center rounded-full px-3 py-2 text-sm font-semibold text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800"
+              >
+                {t("common.clearAll")}
+              </button>
+            )}
           </div>
         </div>
       </div>
@@ -136,10 +175,49 @@ export function MarketDiscovery({
           setIncludeClosed(next);
           onIncludeClosedChange?.(next);
         }}
+        onClearAll={handleClearAll}
       />
 
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        {markets.length === 0 ? (
+        {status === "loading" ||
+        status === "refreshing" ||
+        status === "error" ||
+        status === "empty" ||
+        status === "no-match" ? (
+          <div
+            className="flex min-h-[16rem] flex-col items-center justify-center gap-4 px-4 text-center"
+            role={status === "error" ? "alert" : undefined}
+          >
+            {status === "error" ? (
+              <div className="text-red-400">{statusMessage}</div>
+            ) : status === "empty" || status === "no-match" ? (
+              <>
+                <div className="text-6xl" aria-hidden="true">
+                  {status === "no-match" ? "🔍" : "📈"}
+                </div>
+                <div className="space-y-2">
+                  <h2 className="text-2xl font-bold text-slate-900 dark:text-slate-100">
+                    {statusMessage}
+                  </h2>
+                </div>
+              </>
+            ) : (
+              <div className="text-slate-400 animate-pulse">{statusMessage}</div>
+            )}
+            {status === "no-match" ? (
+              <button
+                type="button"
+                data-testid="market-status-clear-all"
+                onClick={handleClearAll}
+                className="px-4 py-2 bg-[#f7931a] text-black rounded-lg hover:bg-[#e8850f] transition-colors"
+              >
+                {t("market.clearAllFilters")}
+              </button>
+            ) : (
+              statusAction
+            )}
+          </div>
+        ) : markets.length === 0 ? (
           <div className="text-center py-16">
             <div className="text-6xl mb-4">🔍</div>
             <h3 className="text-xl font-bold text-slate-700 dark:text-slate-300 mb-2">
@@ -160,6 +238,12 @@ export function MarketDiscovery({
               />
             ))}
           </div>
+        )}
+
+        {(categoryTags.length > 0 || activeFilterCount > 0) && (
+          <p className="mt-4 text-center text-xs text-slate-500 dark:text-slate-400">
+            {t("market.discoveryScopeNotice")}
+          </p>
         )}
 
         {/* Sentinel: only mount/show when there are more pages to load so it

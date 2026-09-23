@@ -6,6 +6,7 @@ import {
   deriveDurableCustodyProofId,
   deriveDurableWalletProofSecret,
   deriveEncryptedWalletBackupV2AssetLocator,
+  EncryptedWalletBackupV2HttpTransportError,
   locateSeedDerivedProofLineage,
   prepareEncryptedWalletBackupV2RequestProof,
   recoverTargetedAsset,
@@ -32,6 +33,7 @@ import {
 } from "./browserCustodyProofReceive";
 import { browserWalletScope } from "./browserCtfRangeOrderSource";
 import {
+  BrowserEncryptedWalletBackupV2LocalCustodyError,
   readBrowserEncryptedWalletBackupV2LocalAvailableAmount,
   restoreAndAdmitBrowserEncryptedWalletBackupV2TargetedAsset,
   type BrowserEncryptedWalletBackupV2TargetedRestoreInput,
@@ -81,16 +83,39 @@ type BrowserTargetedAssetRecoveryStage =
   | "monitoring"
   | "mint";
 
+type BrowserTargetedAssetRecoveryDiagnostic =
+  | "setup"
+  | "lock"
+  | "recovery-entry"
+  | "local-custody-removal"
+  | "local-custody-missing-authority"
+  | "local-custody-invalid-action"
+  | "local-custody-partial"
+  | "local-custody-stale-profile"
+  | "local-custody-proof-read"
+  | "local-custody-snapshot-read"
+  | "local-custody-authority"
+  | "current-inventory-auth"
+  | "current-inventory-transport"
+  | "current-inventory-decode-or-digest"
+  | "current-inventory-remote";
+
 /** Runs one exact browser recovery. It does not discover monitoring assets or mint counters. */
 export async function recoverBrowserTargetedAsset(
   input: BrowserTargetedAssetRecoveryInput,
 ): Promise<TargetedAssetRecoveryOutcome> {
   let reported = false;
   let failureReported = false;
+  let diagnosticReported = false;
   const report = (stage: BrowserTargetedAssetRecoveryStage): void => {
     if (reported) return;
     reported = true;
     console.warn(`targeted-recovery-stage=${stage}`);
+  };
+  const reportDiagnostic = (code: BrowserTargetedAssetRecoveryDiagnostic): void => {
+    if (diagnosticReported) return;
+    diagnosticReported = true;
+    console.warn(`targeted-recovery-code=${code}`);
   };
   const reportFailure = (failureClass: BrowserEncryptedWalletBackupV2FailureClass): void => {
     if (failureReported) return;
@@ -104,11 +129,28 @@ export async function recoverBrowserTargetedAsset(
       throw new Error("targeted asset recovery scope is foreign");
     }
     const recovery = await recoveryInput(input);
-    return await targetedRecoveryLock(input.scopeId, recovery.assetLocator, input.lockManager, () =>
-      recoverTargetedAsset(recovery, recoveryPorts(input, report, reportFailure)),
-    );
+    let actionStarted = false;
+    try {
+      return await targetedRecoveryLock(
+        input.scopeId,
+        recovery.assetLocator,
+        input.lockManager,
+        () => {
+          actionStarted = true;
+          return recoverTargetedAsset(
+            recovery,
+            recoveryPorts(input, report, reportDiagnostic, reportFailure),
+          );
+        },
+      );
+    } catch {
+      report("current-inventory");
+      reportDiagnostic(actionStarted ? "recovery-entry" : "lock");
+      return { kind: "persistent-error" };
+    }
   } catch {
     report("current-inventory");
+    reportDiagnostic("setup");
     return { kind: "persistent-error" };
   }
 }
@@ -118,6 +160,7 @@ export function browserTargetedAssetRecoveryFactVersion(
   fact: Pick<AssetMonitoringAssetResponse, "asset" | "availableSubunits" | "recoveryHint">,
 ): string {
   const asset = decodeAssetMonitoringAssetReference(fact.asset);
+  requiredUnit(asset.cashuUnit);
   const availableSubunits = requireAmount(fact.availableSubunits);
   const recoveryHint =
     fact.recoveryHint === null
@@ -132,6 +175,7 @@ export function browserTargetedAssetRecoveryFactVersion(
 async function recoveryInput(
   input: BrowserTargetedAssetRecoveryInput,
 ): Promise<TargetedAssetRecoveryInput> {
+  requiredUnit(input.asset.unit);
   return {
     scopeId: input.scopeId,
     assetLocator: await deriveEncryptedWalletBackupV2AssetLocator({
@@ -145,6 +189,7 @@ async function recoveryInput(
 function recoveryPorts(
   input: BrowserTargetedAssetRecoveryInput,
   report: (stage: BrowserTargetedAssetRecoveryStage) => void,
+  reportDiagnostic: (code: BrowserTargetedAssetRecoveryDiagnostic) => void,
   reportFailure: (failureClass: BrowserEncryptedWalletBackupV2FailureClass) => void,
 ) {
   const attempts = new BrowserTargetedAssetRecoveryAttemptStore({
@@ -159,24 +204,18 @@ function recoveryPorts(
       try {
         const available = await readBrowserEncryptedWalletBackupV2LocalAvailableAmount(input);
         return available !== null && available >= input.requiredAmount;
-      } catch {
+      } catch (error) {
         report("current-inventory");
+        reportDiagnostic(localCustodyDiagnostic(error));
         throw new Error("targeted asset recovery local custody failed");
       }
     },
     readAuthenticatedCurrentBackupInventory: (recovery: TargetedAssetRecoveryInput) =>
-      readCurrentInventory(input, recovery, report),
+      readCurrentInventory(input, recovery, report, reportDiagnostic),
     restoreAndAdmitBackup: async () => {
-      let loadedWallet: CashuWallet;
-      try {
-        loadedWallet = await wallet();
-      } catch {
-        report("backup-verify");
-        throw new Error("targeted asset recovery wallet load failed");
-      }
       await restoreAndAdmitBrowserEncryptedWalletBackupV2TargetedAsset({
         ...input,
-        wallet: loadedWallet,
+        loadWallet: wallet,
         minimumAvailableAmount: input.requiredAmount,
         reportTargetedRecoveryStage: report,
         reportTargetedRecoveryFailureClass: reportFailure,
@@ -229,10 +268,13 @@ async function readCurrentInventory(
   input: BrowserTargetedAssetRecoveryInput,
   recovery: TargetedAssetRecoveryInput,
   report: (stage: BrowserTargetedAssetRecoveryStage) => void,
+  reportDiagnostic: (code: BrowserTargetedAssetRecoveryDiagnostic) => void,
 ) {
+  let phase: "setup" | "auth" | "remote" | "response" = "setup";
   try {
     requireCurrent(input);
     const issuedAtUnixSeconds = input.nowUnixSeconds();
+    phase = "auth";
     const requestProof = await prepareEncryptedWalletBackupV2RequestProof({
       keyHandle: input.keyHandle,
       enrollmentEpoch: input.enrollmentEpoch,
@@ -244,12 +286,16 @@ async function readCurrentInventory(
       signal: input.signal,
       runtime: input.runtime,
     });
+    phase = "setup";
     requireCurrent(input);
+    phase = "remote";
     const inventory = await input.remote.readCurrentInventory({
       requestProof,
       signal: input.signal,
     });
+    phase = "setup";
     requireCurrent(input);
+    phase = "response";
     const exact = inventory.entries.find(
       ({ assetLocator }) => assetLocator === recovery.assetLocator,
     );
@@ -258,9 +304,78 @@ async function readCurrentInventory(
       headVersion: inventory.headVersion,
       exactEntry: exact !== undefined && exact.declaredAmount >= input.requiredAmount ? true : null,
     };
-  } catch {
+  } catch (cause) {
     report("current-inventory");
+    const diagnostic =
+      phase === "remote"
+        ? currentInventoryDiagnostic(cause)
+        : phase === "auth"
+          ? "current-inventory-auth"
+          : phase === "response"
+            ? "current-inventory-decode-or-digest"
+            : "setup";
+    reportDiagnostic(diagnostic);
     throw new Error("targeted asset recovery inventory failed");
+  }
+}
+
+function currentInventoryDiagnostic(
+  cause: unknown,
+): Extract<
+  BrowserTargetedAssetRecoveryDiagnostic,
+  | "current-inventory-auth"
+  | "current-inventory-transport"
+  | "current-inventory-decode-or-digest"
+  | "current-inventory-remote"
+> {
+  if (!(cause instanceof EncryptedWalletBackupV2HttpTransportError)) {
+    return "current-inventory-remote";
+  }
+  switch (cause.code) {
+    case "unauthorized":
+    case "replay-rejected":
+    case "invalid-request":
+      return "current-inventory-auth";
+    case "concurrency-exhausted":
+    case "deadline-exceeded":
+    case "transport-failure":
+      return "current-inventory-transport";
+    case "invalid-response":
+      return "current-inventory-decode-or-digest";
+    case "conflict":
+    case "not-found":
+    case "quota-exceeded":
+    case "rate-limited":
+    case "overloaded":
+    case "unavailable":
+      return "current-inventory-remote";
+    default:
+      return assertNever(cause.code);
+  }
+}
+
+function localCustodyDiagnostic(
+  error: unknown,
+): Extract<BrowserTargetedAssetRecoveryDiagnostic, `local-custody-${string}`> {
+  if (!(error instanceof BrowserEncryptedWalletBackupV2LocalCustodyError))
+    return "local-custody-authority";
+  switch (error.code) {
+    case "removal":
+      return "local-custody-removal";
+    case "missing-authority":
+      return "local-custody-missing-authority";
+    case "invalid-action":
+      return "local-custody-invalid-action";
+    case "partial":
+      return "local-custody-partial";
+    case "stale-profile":
+      return "local-custody-stale-profile";
+    case "proof-read":
+      return "local-custody-proof-read";
+    case "snapshot-read":
+      return "local-custody-snapshot-read";
+    default:
+      return assertNever(error.code);
   }
 }
 
@@ -635,9 +750,8 @@ function canonicalRecoveryHint(value: ReturnType<typeof decodeAssetMonitoringRec
   };
 }
 
-function requiredUnit(value: string): "sat" | "msat" {
-  if (value !== "sat" && value !== "msat")
-    throw new Error("targeted asset recovery unit is invalid");
+function requiredUnit(value: string): "msat" {
+  if (value !== "msat") throw new Error("targeted asset recovery requires msat");
   return value;
 }
 
@@ -652,4 +766,9 @@ function requireCurrent(input: BrowserTargetedAssetRecoveryInput): void {
   if (!input.isCurrentProfile() || input.signal.aborted) {
     throw new Error("targeted asset recovery profile is stale");
   }
+}
+
+function assertNever(value: never): never {
+  void value;
+  throw new Error("unexpected targeted recovery diagnostic");
 }

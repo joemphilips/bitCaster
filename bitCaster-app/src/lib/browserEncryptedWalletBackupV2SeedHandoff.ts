@@ -41,6 +41,7 @@ const CONDITIONAL_KEYSET_MAX = DESIRED_ASSET_MAX * 16;
 const TEXT_KEY_MIN = "";
 const TEXT_KEY_MAX = "\uffff";
 const NUMBER_KEY_MAX = Number.MAX_SAFE_INTEGER;
+const PRODUCT_MSAT_ERROR = "browser V2 product seed handoff requires msat";
 
 /** One local asset that has complete, acknowledged V2 backup authority. */
 export interface BrowserEncryptedWalletBackupV2CacheRemovalEligibleAsset {
@@ -89,6 +90,7 @@ export async function listBrowserEncryptedWalletBackupV2CacheRemovalEligibleAsse
   const eligible: BrowserEncryptedWalletBackupV2CacheRemovalEligibleAsset[] = [];
   for (const rawDesired of desiredRows) {
     const desired = decodeEncryptedWalletBackupV2DesiredAssetRow(rawDesired);
+    requireProductMsatUnit(desired.unit);
     if (!isAcknowledgedReplacement(desired, input.scopeId)) continue;
     try {
       const proofs = await exactLocalProofs(input.database, input.scopeId, desired);
@@ -130,7 +132,11 @@ export async function listBrowserEncryptedWalletBackupV2EvictedAssetMonitoringFa
     scope = await readEvictedAssetMonitoringScope(input.database, input.scopeId);
   } catch (error) {
     requireCapturedDatabase(input);
-    if (error instanceof Error && error.message === "browser V2 desired asset limit exceeded") {
+    if (
+      error instanceof Error &&
+      (error.message === "browser V2 desired asset limit exceeded" ||
+        error.message === PRODUCT_MSAT_ERROR)
+    ) {
       throw error;
     }
     return Object.freeze([]);
@@ -174,6 +180,7 @@ async function readEvictedAssetMonitoringScope(
   const desiredRows = (await readDesiredRows(database, scopeId)).map(
     decodeEncryptedWalletBackupV2DesiredAssetRow,
   );
+  desiredRows.forEach(({ unit }) => requireProductMsatUnit(unit));
   const [receipts, heads, conditionalKeysets] = await Promise.all([
     database.encryptedWalletBackupV2AssetReceipts
       .where("[scopeId+realm+walletId+enrollmentEpoch]")
@@ -361,7 +368,7 @@ function resolveMonitoringAsset(
   readonly asset: BrowserEncryptedWalletBackupV2EvictedAssetMonitoringIdentity;
   readonly proofKeys: readonly string[];
 } | null {
-  if (desired.unit !== "sat" && desired.unit !== "msat") return null;
+  requireProductMsatUnit(desired.unit);
   if (desired.assetIdentity === "cashu:ordinary") {
     const asset = { kind: "ordinary", mintUrl: desired.mintUrl, unit: desired.unit } as const;
     return { asset, proofKeys: [monitoringOrdinaryProofKey(desired.scopeId, asset)] };
@@ -405,7 +412,7 @@ function resolveMonitoringAsset(
   const asset = {
     kind: "conditional" as const,
     mintUrl: desired.mintUrl,
-    unit: desired.unit as "sat" | "msat",
+    unit: desired.unit,
     conditionId,
     outcomeCollection: first.outcomeCollection,
   };
@@ -588,15 +595,20 @@ async function requireWholeWalletSeedHandoffEligibility(
   input: BrowserEncryptedWalletBackupV2CacheEligibilityInput,
 ): Promise<void> {
   await requireNoActiveLocalWork(input.database, input.scopeId);
-  const [desiredRows, eligible] = await Promise.all([
-    readDesiredRows(input.database, input.scopeId),
-    listBrowserEncryptedWalletBackupV2CacheRemovalEligibleAssets(input),
-  ]);
+  const desiredRows = await readDesiredRows(input.database, input.scopeId);
+  desiredRows
+    .map(decodeEncryptedWalletBackupV2DesiredAssetRow)
+    .forEach(({ unit }) => requireProductMsatUnit(unit));
+  const eligible = await listBrowserEncryptedWalletBackupV2CacheRemovalEligibleAssets(input);
   if (eligible.length !== desiredRows.length) {
     throw new Error("browser V2 seed handoff has uncovered desired assets");
   }
   await requireExactActiveProofCoverage(input.database, input.scopeId, eligible);
   requireCapturedDatabase(input);
+}
+
+function requireProductMsatUnit(unit: unknown): asserts unit is "msat" {
+  if (unit !== "msat") throw new Error(PRODUCT_MSAT_ERROR);
 }
 
 async function readDesiredRows(database: BitcasterDB, scopeId: string) {

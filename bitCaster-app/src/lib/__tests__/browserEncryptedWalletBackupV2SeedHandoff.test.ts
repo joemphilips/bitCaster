@@ -66,13 +66,57 @@ it("accepts an empty, captured wallet without network I/O", async () => {
   ).resolves.toEqual([]);
 });
 
-it("blocks seed handoff when an asset is not acknowledged", async () => {
+it("rejects sat before cache removal or seed handoff deletion", async () => {
   const { database, scopeId } = fixture();
   const desired = createEncryptedWalletBackupV2DesiredAssetRow({
     scopeId,
     asset: createEncryptedWalletBackupV2AssetIdentity({
       mintUrl: "https://mint.example",
       unit: "sat",
+      asset: { kind: "ordinary" },
+    }),
+    custodyRevision: 1n,
+    activeProofCount: 0,
+  });
+  await database.encryptedWalletBackupV2DesiredAssets.put({
+    ...desired,
+    syncState: "acknowledged",
+  });
+  const invalidate = vi.fn();
+  const activate = vi.fn();
+  const remove = vi.spyOn(database, "delete");
+
+  await expect(
+    listBrowserEncryptedWalletBackupV2CacheRemovalEligibleAssets({
+      database,
+      scopeId,
+      isCurrentProfile: () => true,
+    }),
+  ).rejects.toThrow(/requires msat/);
+  await expect(
+    handoffBrowserEncryptedWalletBackupV2Seed({
+      database,
+      scopeId,
+      isCurrentProfile: () => true,
+      lockManager: immediateLockManager(),
+      invalidateOldProfile: invalidate,
+      activateNewProfile: activate,
+      restoreOldProfile: vi.fn(),
+    }),
+  ).rejects.toThrow(/requires msat/);
+  expect(invalidate).not.toHaveBeenCalled();
+  expect(activate).not.toHaveBeenCalled();
+  expect(remove).not.toHaveBeenCalled();
+  expect(database.isOpen()).toBe(true);
+});
+
+it("blocks seed handoff when an asset is not acknowledged", async () => {
+  const { database, scopeId } = fixture();
+  const desired = createEncryptedWalletBackupV2DesiredAssetRow({
+    scopeId,
+    asset: createEncryptedWalletBackupV2AssetIdentity({
+      mintUrl: "https://mint.example",
+      unit: "msat",
       asset: { kind: "ordinary" },
     }),
     custodyRevision: 1n,
@@ -157,7 +201,7 @@ it("reports the descriptor amount only after a complete backed cache eviction", 
     {
       kind: "ordinary",
       mintUrl: "https://mint.example",
-      unit: "sat",
+      unit: "msat",
       declaredAmount: 1,
     },
   ]);
@@ -278,7 +322,7 @@ it("reads each evicted-asset monitoring scope table once as desired assets grow"
           scopeId: covered.scopeId,
           asset: createEncryptedWalletBackupV2AssetIdentity({
             mintUrl: `https://missing-${index}.example`,
-            unit: "sat",
+            unit: "msat",
             asset: { kind: "ordinary" },
           }),
           custodyRevision: 1n,
@@ -316,7 +360,7 @@ it("reads each evicted-asset monitoring scope table once as desired assets grow"
     {
       kind: "ordinary",
       mintUrl: "https://mint.example",
-      unit: "sat",
+      unit: "msat",
       declaredAmount: 1,
     },
   ]);
@@ -410,7 +454,7 @@ it("keeps an eligible asset selectable when another asset is pending", async () 
       scopeId: covered.scopeId,
       asset: createEncryptedWalletBackupV2AssetIdentity({
         mintUrl: "https://other-mint.example",
-        unit: "sat",
+        unit: "msat",
         asset: { kind: "ordinary" },
       }),
       custodyRevision: 1n,
@@ -435,7 +479,7 @@ it("keeps a signed receipt eligible when a later head retains its descriptor", a
   );
   const secondAsset = createEncryptedWalletBackupV2AssetIdentity({
     mintUrl: "https://other-mint.example",
-    unit: "sat",
+    unit: "msat",
     asset: { kind: "ordinary" },
   });
   const second = await prepareEncryptedWalletBackupV2TransportBundle({
@@ -495,12 +539,12 @@ it("omits a same-head receipt whose descriptor is absent from the current descri
   });
   const activeAsset = createEncryptedWalletBackupV2AssetIdentity({
     mintUrl: "https://active.example",
-    unit: "sat",
+    unit: "msat",
     asset: { kind: "ordinary" },
   });
   const absentAsset = createEncryptedWalletBackupV2AssetIdentity({
     mintUrl: "https://absent.example",
-    unit: "sat",
+    unit: "msat",
     asset: { kind: "ordinary" },
   });
   const absentDesired = {
@@ -613,7 +657,7 @@ it("omits a same-head receipt whose descriptor is absent from the current descri
     {
       kind: "ordinary",
       mintUrl: "https://mint.example",
-      unit: "sat",
+      unit: "msat",
       declaredAmount: 1,
     },
   ]);
@@ -857,8 +901,6 @@ function rangeRecord(scopeId: string, lifecycleState: "prepared" | "terminal", o
     scopeId,
     rangeOperationId: id,
     sourceOperationId: `${id}-source`,
-    sourceKind: "wallet-prepared" as const,
-    predecessorRangeOperationId: null,
     authorizationId: `${id}-authorization`,
     clientOrderId: `${id}-client`,
     orderRouteId: "condition-a-YES",
@@ -867,12 +909,10 @@ function rangeRecord(scopeId: string, lifecycleState: "prepared" | "terminal", o
     unit: "msat" as const,
     tokenSide: "Outcome" as const,
     side: "Buy" as const,
-    priceSubunits: 5_000,
-    amountSubunits: 10_000,
-    minimumFillAmountSubunits: 10_000,
-    continueAfterPartialFill: false,
-    continuation: null,
-    divisibility: 10_000 as const,
+    priceSubunits: 500,
+    amountSubunits: 1_000,
+    minimumFillAmountSubunits: 1_000,
+    divisibility: 1_000 as const,
     authorizationExpiresAtUnixSeconds: 1_000,
     preparationBytes: encodeCtfRangeOrderPreparationArtifact({ version: 1 }),
     createdAtMs: ordinal + 1,
@@ -894,7 +934,7 @@ async function coveredFixture(kind: "ordinary" | "conditional" = "ordinary") {
     kind === "ordinary"
       ? createEncryptedWalletBackupV2AssetIdentity({
           mintUrl: "https://mint.example",
-          unit: "sat",
+          unit: "msat",
           asset: { kind: "ordinary" },
         })
       : createEncryptedWalletBackupV2AssetIdentity({
@@ -1027,7 +1067,7 @@ function proofRow(scopeId: string, amount: number, normalizedMint = "https://min
   return createBrowserCustodyProofRow({
     scopeId,
     normalizedMint,
-    unit: "sat",
+    unit: "msat",
     proof: {
       id: KEYSET,
       amount: Amount.from(amount),

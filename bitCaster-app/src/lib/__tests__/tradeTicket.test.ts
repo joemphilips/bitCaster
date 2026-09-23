@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildTradeTicket, TradeTicketError } from "@/lib/tradeTicket";
+import { buildTradeTicket } from "@/lib/tradeTicket";
 import { computeLimitOrderPreview, displaySharesToFaceSubunits } from "@/lib/tradeCostPreview";
 import type { MarketDetail } from "@/types/market-detail";
 
@@ -19,7 +19,7 @@ const market: MarketDetail = {
   activeSince: "2026-01-01T00:00:00Z",
   baseUnit: "sats",
   baseAsset: "sat",
-  divisibility: 10_000,
+  divisibility: 1_000,
   creator: {
     id: "creator",
     name: "creator",
@@ -62,7 +62,7 @@ const categoricalMarket: MarketDetail = {
 };
 
 describe("buildTradeTicket", () => {
-  it("builds limit orders with oracle-verbatim Yes outcome names and valid GTC price", () => {
+  it("builds limit orders with oracle-verbatim Yes outcome names and FOK price", () => {
     const ticket = buildTradeTicket({
       market,
       selection: { side: "yes" },
@@ -80,11 +80,11 @@ describe("buildTradeTicket", () => {
       side: "Buy",
       price: 500,
       amountSubunits: 1_000_000,
-      timeInForce: "GTC",
+      timeInForce: "FOK",
     });
   });
 
-  it("uses aggressive FAK pricing for executable market buys", () => {
+  it("uses aggressive FOK pricing for executable market buys", () => {
     const ticket = buildTradeTicket({
       market,
       selection: { side: "yes" },
@@ -95,8 +95,8 @@ describe("buildTradeTicket", () => {
       orderBook: market.orderBook,
     });
 
-    expect(ticket.request.price).toBe(9999);
-    expect(ticket.request.timeInForce).toBe("FAK");
+    expect(ticket.request.price).toBe(999);
+    expect(ticket.request.timeInForce).toBe("FOK");
   });
 
   it("rejects amounts outside the sat whole-share face amount", () => {
@@ -110,7 +110,7 @@ describe("buildTradeTicket", () => {
         limitPrice: 500,
         orderBook: market.orderBook,
       }),
-    ).toThrow("Enter an amount in 10000 sub-unit increments.");
+    ).toThrow("Enter an amount in 1000 sub-unit increments.");
   });
 
   it("builds sell orders after same-outcome CTF swaps are supported", () => {
@@ -152,11 +152,11 @@ describe("buildTradeTicket", () => {
     expect(ticket.marketId).toBe("condition-1-Yes");
     expect(ticket.request.outcomeId).toBe("Yes");
     expect(ticket.request.tokenSide).toBe("Complement");
-    expect(ticket.request.price).toBe(9999);
-    expect(ticket.request.timeInForce).toBe("FAK");
+    expect(ticket.request.price).toBe(999);
+    expect(ticket.request.timeInForce).toBe("FOK");
   });
 
-  it("uses aggressive FAK pricing for Buy NO complement market orders when YES bids are available", () => {
+  it("uses aggressive FOK pricing for Buy NO complement market orders when YES bids are available", () => {
     const ticket = buildTradeTicket({
       market,
       selection: { side: "no" },
@@ -179,8 +179,8 @@ describe("buildTradeTicket", () => {
     expect(ticket.marketId).toBe("condition-1-Yes");
     expect(ticket.request.outcomeId).toBe("Yes");
     expect(ticket.request.tokenSide).toBe("Complement");
-    expect(ticket.request.price).toBe(9999);
-    expect(ticket.request.timeInForce).toBe("FAK");
+    expect(ticket.request.price).toBe(999);
+    expect(ticket.request.timeInForce).toBe("FOK");
   });
 
   it("builds categorical YES tickets with the selected oracle label", () => {
@@ -265,7 +265,7 @@ describe("buildTradeTicket", () => {
 
   it("sends protocol face amountSubunits, not the derived display cost", () => {
     const displayShares = 10;
-    const faceAmountSats = displaySharesToFaceSubunits(displayShares, "sat", 10_000);
+    const faceAmountSats = displaySharesToFaceSubunits(displayShares, "sat", 1_000);
     const ticket = buildTradeTicket({
       market,
       selection: { side: "yes" },
@@ -282,7 +282,7 @@ describe("buildTradeTicket", () => {
       feePercent: 2,
       mintInputFeePpk: 0,
       baseAsset: "sat",
-      divisibility: 10_000,
+      divisibility: 1_000,
     });
 
     expect(ticket.request.amountSubunits).toBe(faceAmountSats);
@@ -291,12 +291,12 @@ describe("buildTradeTicket", () => {
     expect(preview.totalCost).not.toBe(ticket.request.amountSubunits);
     expect(preview.amount).toBe(displayShares);
     // amountSubunits stays a multiple of the market divisibility.
-    expect(ticket.request.amountSubunits % 10_000).toBe(0);
+    expect(ticket.request.amountSubunits % 1_000).toBe(0);
   });
 
   it("converts share input to face amount in the order payload", () => {
     const displayShares = 50;
-    const divisibility = 10_000;
+    const divisibility = 1_000;
     const ticket = buildTradeTicket({
       market: { ...market, divisibility },
       selection: { side: "yes" },
@@ -307,7 +307,7 @@ describe("buildTradeTicket", () => {
       orderBook: market.orderBook,
     });
 
-    expect(ticket.request.amountSubunits).toBe(500_000);
+    expect(ticket.request.amountSubunits).toBe(50_000);
     expect(ticket.request.price).toBe(300);
   });
 
@@ -322,23 +322,42 @@ describe("buildTradeTicket", () => {
       limitPrice: 500,
       orderBook: market.orderBook,
     });
-    // Market buy: face shares + worst-acceptable price (max 9999) + FAK.
+    // Market buy: face shares + worst-acceptable price (max 999) + FOK.
     expect(ticket.request.amountSubunits).toBe(shares);
-    expect(ticket.request.price).toBe(9999);
-    expect(ticket.request.timeInForce).toBe("FAK");
+    expect(ticket.request.price).toBe(999);
+    expect(ticket.request.timeInForce).toBe("FOK");
   });
 
-  it("rejects market orders with no visible liquidity instead of emitting price 0", () => {
-    expect(() =>
-      buildTradeTicket({
-        market,
-        selection: { side: "yes" },
-        amountSubunits: 1_000_000,
-        side: "Buy",
-        orderType: "market",
-        limitPrice: 500,
-        orderBook: { bids: [], asks: [], spread: 0 },
-      }),
-    ).toThrow(TradeTicketError);
+  it("builds market FOK terms without requiring a displayed book", () => {
+    const missingBook = buildTradeTicket({
+      market,
+      selection: { side: "yes" },
+      amountSubunits: 1_000_000,
+      side: "Buy",
+      orderType: "market",
+      limitPrice: 500,
+    });
+    expect(missingBook.request.price).toBe(999);
+
+    const emptyBook = buildTradeTicket({
+      market,
+      selection: { side: "yes" },
+      amountSubunits: 1_000_000,
+      side: "Buy",
+      orderType: "market",
+      limitPrice: 500,
+      orderBook: { bids: [], asks: [], spread: 0 },
+    });
+    expect(emptyBook.request.price).toBe(999);
+
+    const sell = buildTradeTicket({
+      market,
+      selection: { side: "yes" },
+      amountSubunits: 1_000_000,
+      side: "Sell",
+      orderType: "market",
+      limitPrice: 500,
+    });
+    expect(sell.request.price).toBe(1);
   });
 });

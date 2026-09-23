@@ -72,7 +72,9 @@ export function useMarketStatusLive(
         title: "",
         state: "closed",
         type: "yesno",
-        currentOdds: { yes: 50, no: 50 },
+        // Close reconciliation only needs the lifecycle fields. Keep price
+        // authority explicitly unavailable instead of inventing uniform odds.
+        currentOdds: { yes: null, no: null },
         imageUrl: "",
         categoryTags: [],
         metaTags: [],
@@ -87,7 +89,7 @@ export function useMarketStatusLive(
         creatorFeePercent: 0,
         baseMarket: "sats",
         baseAsset: "sat",
-        divisibility: 10_000,
+        divisibility: 1_000,
       };
 
       const lastSeen = useLikedMarketStateStore.getState().states;

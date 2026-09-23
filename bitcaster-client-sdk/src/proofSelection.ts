@@ -59,7 +59,7 @@ export function computeInputFeeSubunitsFromPpk(inputFeePpk: number): number {
   return Math.ceil(inputFeePpk / 1_000)
 }
 
-export function computeInputFeeSatsForProofs(
+export function computeInputFeeSubunitsForProofs(
   proofs: readonly AmountProofLike[],
   inputFeePpkByKeyset: Record<string, number>,
 ): number {
@@ -141,7 +141,7 @@ function spendableProofAmount(
 ): number {
   const face = sumProofs(proofs)
   if (!inputFeePpkByKeyset) return face
-  return face - computeInputFeeSatsForProofs(proofs, inputFeePpkByKeyset)
+  return face - computeInputFeeSubunitsForProofs(proofs, inputFeePpkByKeyset)
 }
 
 function checkedAddFeePpk(total: number, inputFeePpk: number): number {

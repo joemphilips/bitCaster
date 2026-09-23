@@ -1,18 +1,20 @@
 import { useEffect, useRef, useState } from "react";
 import { Check } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { formatBtc } from "@/lib/format";
+import { formatAmount } from "@/lib/formatAmount";
+import type { MarketBaseAsset } from "@bitcaster/client-sdk/marketUnits";
 
 const AUTO_ADVANCE_MS = 3000;
 const PROGRESS_TICK_MS = 50;
 
 interface SuccessViewProps {
-  amountSats: number;
+  amountMsat: number;
+  baseAsset: MarketBaseAsset;
   amountLabel?: string;
   onClose: () => void;
 }
 
-export function SuccessView({ amountSats, amountLabel, onClose }: SuccessViewProps) {
+export function SuccessView({ amountMsat, baseAsset, amountLabel, onClose }: SuccessViewProps) {
   const { t } = useTranslation();
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
@@ -41,8 +43,10 @@ export function SuccessView({ amountSats, amountLabel, onClose }: SuccessViewPro
         <Check className="w-10 h-10 text-emerald-400" />
       </div>
       <h2 className="text-2xl font-bold text-white mb-2">{t("common.success")}</h2>
-      {amountSats > 0 && (
-        <p className="text-lg font-mono text-emerald-400">{amountLabel ?? formatBtc(amountSats)}</p>
+      {amountMsat > 0 && (
+        <p className="text-lg font-mono text-emerald-400">
+          {amountLabel ?? formatAmount(amountMsat, baseAsset)}
+        </p>
       )}
       <p className="text-sm text-slate-400 mt-4">{t("deposit.autoClose")}</p>
       <div

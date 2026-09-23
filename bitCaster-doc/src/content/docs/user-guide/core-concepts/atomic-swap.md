@@ -1,64 +1,81 @@
 ---
 title: "Atomic Settlement"
-description: "How bitCaster settles matched conditional-token orders through the mint."
+description: "What happens after you submit a trade, and how to handle a delay."
 sidebar:
   order: 2
 ---
 
 # Atomic Settlement
 
-bitCaster settles matched orders with the Cashu mint. It does not run a
-bilateral swap between two peers.
+Submitting an order is not the same as completing a trade. The matching engine
+finds matching orders. The Cashu mint then exchanges the authorized funds and
+shares. The mint completes each settlement group as one operation. It does not
+complete only one side of that exchange. This is what **atomic settlement** means.
 
-When you place an order, your wallet authorizes it with a `PAY_TO_UNLOCK`
-capability. The matching engine checks this authorization when it admits the
-order. It does not call the mint at this stage.
+## Before you confirm
 
-When orders match, the engine creates one or more fills. Each `fillId`
-identifies one real fill. The engine can put one or more fills into an atomic
-settlement group. Each `groupId` identifies that group. Do not use a `groupId`
-as a fill identifier.
+Review the quantity, price protection, and fees. Price protection limits the
+prices at which your order can trade. It does not remove wallet preparation or
+refund fees. Preparation can cost a fee even if no trade completes.
 
-The engine submits one multi-party conversion for each settlement group. The
-mint completes the group as one operation. A group can use one of these
-conversion types:
+Both the web app and CLI use fill-or-kill (FOK) orders in this release. When the
+engine accepts the order, the available matching orders must cover its full
+quantity within its price protection. Otherwise, it cancels the whole order.
+It does not fill only part of your request or leave the rest waiting for a buyer
+or seller. A matching decision still needs settlement confirmation.
 
-- **Complementary conversion.** It exchanges compatible conditional-token and
-  collateral positions.
-- **Mint conversion.** It creates a complete conditional-token set as part of
-  the conversion.
+Cancellation because the full quantity cannot match does not itself spend the
+trade authorization or start a refund. If your wallet already prepared locked
+funds, they can remain unavailable until the refund conditions are met.
 
-The NUT also defines merge conversion. bitCaster does not expose it in this
-release.
+## If a trade is delayed
 
-When the mint confirms a group, it returns exact result entries. Your wallet
-stores the submitted operation and the confirmed result. If the wallet stops or
-loses its connection, it can recover the exact operation and result later.
+A lost connection does not prove that a trade failed. The mint may have
+completed the exchange before your wallet received its reply. Do not create a
+new order just to retry a trade whose result is still unknown.
 
-## Cancellation and continuation
+Keep the same wallet and its local data. The wallet stores the submitted
+operation and checks the existing result during recovery. A saved result
+survives a server restart. Recovery of that same operation must not create
+another trade.
 
-Cancellation only retracts an order that still rests on the book. It does not
-spend a `PAY_TO_UNLOCK` capability. It does not refund a capability.
+Do not clear browser storage or delete the wallet's local records while an
+operation is unresolved. Your recovery phrase does not reconstruct every
+pending operation or refund record. See [wallet backup and recovery](/user-guide/getting-started/wallet-backup/).
 
-After a partial fill, a residual order needs a new capability before it can rest
-on the book again.
+If settlement does not complete, the authorized funds can become refundable
+after the authorization expires. A timeout alone does not make them available
+to spend. The wallet must check the existing settlement and refund conditions.
+
+The web app keeps wallet alerts until you dismiss them. Use **Next** to read
+more alerts without dismissing an unresolved alert. Use **First alerts** to
+return to the start. Dismissing an alert does not stop recovery or delete funds.
+
+The **Active trade progress** list shows operations that the wallet still needs
+to finish. It survives a reload while the wallet data remains available.
+Use **Refresh status** to check again. An unavailable status is not a failed
+trade. A confirmed settlement can still need wallet recovery. Refund eligibility
+does not mean a refund is complete. An operation leaves this active list when
+the wallet finishes its work. The list is not your completed-trade history.
+
+Wallet preparation is separate from order acceptance. The progress list shows
+which stage is confirmed. A prepared payment does not prove that the engine
+accepted an order. A rejected order can still need funds recovery. An accepted
+order is not a completed trade until settlement is confirmed.
 
 ## What the engine can see
 
-Your wallet sends the exact `PAY_TO_UNLOCK` proofs that authorize the order.
-The engine sees those proofs and their secrets. It does not receive your wallet
-seed, output blinding factors, refund key, or other wallet proofs.
+Your wallet sends the ecash records, called proofs, that authorize this order.
+The engine sees those proofs and their secrets. It does not receive your
+recovery phrase, the private material needed to unlock the received outputs,
+your refund key, or your other wallet proofs.
 
-The engine can use only the output choices that your wallet authorized. It
-cannot redirect the value or extend the authorization. If the engine does not
-settle, those authorized proofs remain unavailable until their refund becomes
-valid.
-
-If submission is absent or uncertain, the wallet reconciles with the durable
-engine and mint authority. A `PAY_TO_UNLOCK` capability can still refund after
-its expiry under the NUT rules.
+The engine can select only the outputs your wallet authorized. It cannot
+redirect that value or extend the authorization. It can delay settlement,
+which can keep the authorized funds unavailable until a refund becomes valid.
 
 ## Further reading
 
 See the [technical settlement protocol](/technical/protocol/atomic-swap/) for
-the lifecycle and trust boundary.
+authorization rules, fill and group identifiers, conversion types, and client
+retry requirements.

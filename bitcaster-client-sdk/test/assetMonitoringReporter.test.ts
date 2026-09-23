@@ -21,7 +21,7 @@ const holdings = [
   },
 ]
 
-test('asset-monitoring reporter coalesces changes and retries only a safe 409 interval', async () => {
+test('asset-monitoring reporter coalesces changes and retries only a safe 409 interval', async (t) => {
   const requests: Array<{ startsNewInterval: boolean }> = []
   let calls = 0
   const reporter = new AssetMonitoringReporter({
@@ -40,6 +40,7 @@ test('asset-monitoring reporter coalesces changes and retries only a safe 409 in
       return () => `report-${++id}`
     })(),
   })
+  t.after(() => reporter.stop())
   reporter.request()
   reporter.request()
   await waitFor(() => requests.length === 2)
@@ -47,10 +48,9 @@ test('asset-monitoring reporter coalesces changes and retries only a safe 409 in
     requests.map((request) => request.startsNewInterval),
     [false, true],
   )
-  reporter.stop()
 })
 
-test('asset-monitoring reporter retries a transient failure without another wallet change', async () => {
+test('asset-monitoring reporter retries a transient failure without another wallet change', async (t) => {
   let calls = 0
   const reporter = new AssetMonitoringReporter({
     walletId,
@@ -65,12 +65,92 @@ test('asset-monitoring reporter retries a transient failure without another wall
     isCurrent: () => true,
     retryDelayMs: () => 1,
   })
+  t.after(() => reporter.stop())
   reporter.request()
   await waitFor(() => calls === 2)
-  reporter.stop()
 })
 
-test('asset-monitoring reporter retries a transient snapshot failure independently', async () => {
+test('asset-monitoring reporter calls onAccepted only for accepted reports', async (t) => {
+  const scenarios = [
+    { name: 'normal success', firstError: undefined, expectedCalls: 1, expectedAccepted: 1 },
+    { name: 'safe 409 conflict', firstError: 409, expectedCalls: 2, expectedAccepted: 1 },
+    { name: 'permanent failure', firstError: 403, expectedCalls: 1, expectedAccepted: 0 },
+  ] as const
+
+  for (const scenario of scenarios) {
+    await t.test(scenario.name, async (subtest) => {
+      let builds = 0
+      let calls = 0
+      let accepted = 0
+      const reporter = new AssetMonitoringReporter({
+        walletId,
+        buildHoldings: async () => {
+          builds += 1
+          return holdings
+        },
+        remote: {
+          submitAssetMonitoringReport: async () => {
+            calls += 1
+            if (calls === 1 && scenario.firstError !== undefined) {
+              throw new EngineClientError(scenario.firstError, 'test response')
+            }
+          },
+        },
+        hasPendingSubmittedOrder: async () => false,
+        isCurrent: () => true,
+        onAccepted: () => {
+          accepted += 1
+        },
+      })
+      subtest.after(() => reporter.stop())
+
+      reporter.request()
+      await waitFor(() => calls === scenario.expectedCalls)
+      if (scenario.expectedAccepted > 0) {
+        await waitFor(() => accepted === scenario.expectedAccepted)
+
+        // A second request with the same holdings is coalesced after the
+        // accepted snapshot and must not publish another acceptance.
+        reporter.request()
+        await waitFor(() => builds === 2)
+        await new Promise((resolve) => setTimeout(resolve, 0))
+        assert.equal(calls, scenario.expectedCalls)
+      } else {
+        await new Promise((resolve) => setTimeout(resolve, 5))
+      }
+      assert.equal(accepted, scenario.expectedAccepted)
+    })
+  }
+})
+
+test('asset-monitoring reporter suppresses onAccepted for an obsolete profile response', async (t) => {
+  let current = true
+  let submit: (() => void) | undefined
+  const accepted: string[] = []
+  const reporter = new AssetMonitoringReporter({
+    walletId,
+    buildHoldings: async () => holdings,
+    remote: {
+      submitAssetMonitoringReport: async () => {
+        await new Promise<void>((resolve) => {
+          submit = resolve
+        })
+      },
+    },
+    hasPendingSubmittedOrder: async () => false,
+    isCurrent: () => current,
+    onAccepted: () => accepted.push('accepted'),
+  })
+  t.after(() => reporter.stop())
+  reporter.request()
+  await waitFor(() => submit !== undefined)
+  current = false
+  submit!()
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  assert.deepEqual(accepted, [])
+})
+
+test('asset-monitoring reporter retries a transient snapshot failure independently', async (t) => {
   let builds = 0
   let calls = 0
   const reporter = new AssetMonitoringReporter({
@@ -85,13 +165,13 @@ test('asset-monitoring reporter retries a transient snapshot failure independent
     isCurrent: () => true,
     retryDelayMs: () => 1,
   })
+  t.after(() => reporter.stop())
   reporter.request()
   await waitFor(() => calls === 1)
   assert.equal(builds, 2)
-  reporter.stop()
 })
 
-test('asset-monitoring reporter stop cancels a pending retry', async () => {
+test('asset-monitoring reporter stop cancels a pending retry', async (t) => {
   let calls = 0
   const reporter = new AssetMonitoringReporter({
     walletId,
@@ -106,6 +186,7 @@ test('asset-monitoring reporter stop cancels a pending retry', async () => {
     isCurrent: () => true,
     retryDelayMs: () => 20,
   })
+  t.after(() => reporter.stop())
   reporter.request()
   await waitFor(() => calls === 1)
   reporter.stop()
@@ -113,7 +194,7 @@ test('asset-monitoring reporter stop cancels a pending retry', async () => {
   assert.equal(calls, 1)
 })
 
-test('asset-monitoring reporter does not retry a permanent HTTP failure', async () => {
+test('asset-monitoring reporter does not retry a permanent HTTP failure', async (t) => {
   let calls = 0
   const reporter = new AssetMonitoringReporter({
     walletId,
@@ -128,14 +209,14 @@ test('asset-monitoring reporter does not retry a permanent HTTP failure', async 
     isCurrent: () => true,
     retryDelayMs: () => 1,
   })
+  t.after(() => reporter.stop())
   reporter.request()
   await waitFor(() => calls === 1)
   await new Promise((resolve) => setTimeout(resolve, 5))
   assert.equal(calls, 1)
-  reporter.stop()
 })
 
-test('asset-monitoring reporter does not retry a permanent catalogue failure', async () => {
+test('asset-monitoring reporter does not retry a permanent catalogue failure', async (t) => {
   let builds = 0
   let calls = 0
   const reporter = new AssetMonitoringReporter({
@@ -157,15 +238,15 @@ test('asset-monitoring reporter does not retry a permanent catalogue failure', a
     isCurrent: () => true,
     retryDelayMs: () => 1,
   })
+  t.after(() => reporter.stop())
   reporter.request()
   await waitFor(() => builds === 1)
   await new Promise((resolve) => setTimeout(resolve, 5))
   assert.equal(builds, 1)
   assert.equal(calls, 0)
-  reporter.stop()
 })
 
-test('asset-monitoring reporter does not submit an unchanged accepted snapshot again', async () => {
+test('asset-monitoring reporter does not submit an unchanged accepted snapshot again', async (t) => {
   let builds = 0
   let calls = 0
   const reporter = new AssetMonitoringReporter({
@@ -182,12 +263,12 @@ test('asset-monitoring reporter does not submit an unchanged accepted snapshot a
     hasPendingSubmittedOrder: async () => false,
     isCurrent: () => true,
   })
+  t.after(() => reporter.stop())
   reporter.request()
   await waitFor(() => calls === 1)
   reporter.request()
   await waitFor(() => builds === 2)
   assert.equal(calls, 1)
-  reporter.stop()
 })
 
 test('asset-monitoring catalogue bounds pages and rejects noncanonical outcomes', async () => {

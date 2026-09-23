@@ -1,6 +1,11 @@
 import { BrowserRouter, Routes, Route, useNavigate, useLocation } from "react-router";
 import { useTranslation } from "react-i18next";
-import { AppShell, DurableWalletErrors } from "@/components/shell";
+import {
+  AppShell,
+  DurableWalletErrors,
+  EncryptedWalletBackupRecoveryStatus,
+} from "@/components/shell";
+import { SettlementProgress } from "@/components/shell/SettlementProgress";
 import { MarketsPage } from "@/pages/MarketsPage";
 import { MarketDetailPage } from "@/pages/MarketDetailPage";
 import { PortfolioPage } from "@/pages/PortfolioPage";
@@ -16,25 +21,30 @@ import { useActivityLogSync } from "@/stores/useActivityLogSync";
 import { useOrderSettlementLifecycle } from "@/hooks/useOrderSettlementLifecycle";
 import { useLikedMarketCloseReconcile } from "@/hooks/useLikedMarketCloseReconcile";
 import { useSettingsStore } from "@/stores/settings";
-import { useBalance, useWalletStore, DEFAULT_MINT_URL } from "@/stores/wallet";
-import { ToastContainer } from "@/components/ui/Toast";
-import { normalizeStoredMintUrls } from "@/stores/proof-db";
 import {
-  recoverKeysetCountersForMint,
-  recoverBrowserDurableOutgoingCashuTransfersInPass,
-  recoverPendingTokenReceives,
-  recoverPendingWalletMints,
-} from "@/lib/cashu";
+  getWalletForMnemonicUnit,
+  useBalance,
+  useWalletStore,
+  DEFAULT_MINT_URL,
+} from "@/stores/wallet";
+import { ToastContainer } from "@/components/ui/Toast";
+import { captureBrowserMintPersistenceContext } from "@/lib/cashu";
 import { recoverBrowserDurableBolt11MintQuotesInPass } from "@/lib/browserDurableBolt11MintQuote";
-import { startNip17Listener } from "@/lib/nip17-listener";
+import { recoverBrowserDurableWalletMeltsInPass } from "@/lib/browserDurableWalletMelt";
+import { startNip17Listener, stopNip17Listener } from "@/lib/nip17-listener";
 import { effectiveRelayUrls } from "@/lib/relayDefaults";
 import { refreshMintInfoWithoutActivating, userAddAndSelectMint } from "@/lib/walletOps";
 import { rehydratePersistedNostrIdentity } from "@/lib/identityOps";
-import { reconcileAcceptedLocalWalletPayments } from "@/lib/pendingLocalWalletPayments";
-import { recoverBrowserCtfRangeOrders } from "@/lib/browserCtfRangeOrderSubmission";
-import { useEncryptedWalletBackupDriver } from "@/hooks/useEncryptedWalletBackupDriver";
+import { BrowserPreReleaseResetGate } from "@/lib/BrowserPreReleaseResetGate";
+import {
+  useEncryptedWalletBackupDriver,
+  type EncryptedWalletBackupDriverState,
+} from "@/hooks/useEncryptedWalletBackupDriver";
 import { useAssetMonitoringReporter } from "@/hooks/useAssetMonitoringReporter";
+import { useBrowserCtfRangeOrderRecovery } from "@/hooks/useBrowserCtfRangeOrderRecovery";
 import { DEFAULT_MARKET_BASE_ASSET } from "@bitcaster/client-sdk/marketUnits";
+import { browserWalletScopeIdFromMnemonic } from "@/lib/browserWalletProfile";
+import { resumeBrowserEncryptedWalletBackupV2AfterRecovery } from "@/lib/encryptedWalletBackupDriver";
 
 const RANGE_RECOVERY_RETRY_MS = 15_000;
 
@@ -60,10 +70,17 @@ function WizardRoutes() {
   );
 }
 
-function ShellRoutes() {
+export function ShellRoutes({
+  canReadOrderStatus,
+  walletBackupRecovery,
+}: {
+  canReadOrderStatus: boolean;
+  walletBackupRecovery?: EncryptedWalletBackupDriverState;
+}) {
   const navigate = useNavigate();
   const location = useLocation();
   const { t } = useTranslation();
+  const searchQuery = new URLSearchParams(location.search).get("search") ?? "";
   const nostrProfile = useSettingsStore((s) => s.nostrProfile);
   const totalBalance = useBalance(undefined, { baseAsset: DEFAULT_MARKET_BASE_ASSET });
 
@@ -85,20 +102,22 @@ function ShellRoutes() {
     <AppShell
       navigationItems={navigationItems}
       user={user}
+      searchQuery={searchQuery}
       onNavigate={(href) => navigate(href)}
       onSearchChange={(query) => {
-        const trimmed = query.trim();
         navigate(
           {
             pathname: "/markets",
-            search: trimmed ? `?search=${encodeURIComponent(trimmed)}` : "",
+            search: query ? `?search=${encodeURIComponent(query)}` : "",
           },
           { replace: location.pathname.startsWith("/markets") },
         );
       }}
       onCreateClick={() => navigate("/creator")}
     >
+      {walletBackupRecovery && <EncryptedWalletBackupRecoveryStatus {...walletBackupRecovery} />}
       <DurableWalletErrors />
+      <SettlementProgress canReadStatus={canReadOrderStatus} />
       <Routes>
         <Route path="/" element={<MarketsPage />} />
         <Route path="/markets" element={<MarketsPage />} />
@@ -127,7 +146,6 @@ function titleForPath(pathname: string): string {
 
 function AppRoutes() {
   const location = useLocation();
-  const [pendingWalletWarning, setPendingWalletWarning] = useState(false);
   useBookmarkSync();
   useCreatorSync();
   useActivityLogSync();
@@ -140,7 +158,9 @@ function AppRoutes() {
     mnemonic: walletMnemonic,
     mintUrls: walletMintUrls.split("\n").filter(Boolean),
   });
-  useEncryptedWalletBackupDriver(nostrSignerReady && nostrSignerMode !== "none");
+  const walletBackupRecovery = useEncryptedWalletBackupDriver(
+    nostrSignerReady && nostrSignerMode !== "none",
+  );
   useAssetMonitoringReporter(nostrSignerReady && nostrSignerMode !== "none");
 
   useEffect(() => {
@@ -155,133 +175,18 @@ function AppRoutes() {
       .finally(() => setNostrSignerReady(true));
   }, []);
 
-  // One-shot migration: pre-fix proofs stored their mintUrl verbatim from
-  // the decoded token / NIP-17 payload, which could differ from the
-  // normalized `activeMintUrl` by a trailing slash. That mismatch made
-  // `getBalance(activeMintUrl)` return 0 even with proofs in IndexedDB —
-  // breaking the buy gate on market detail.
-  const proofMigrationAttempted = useRef(false);
-  useEffect(() => {
-    if (!walletMnemonic || proofMigrationAttempted.current) return;
-    proofMigrationAttempted.current = true;
-    normalizeStoredMintUrls().catch(() => {});
-  }, [walletMnemonic]);
-
-  // P8 follow-up: cashu-ts deterministic counter recovery.
-  //
-  // CDK rejects re-used deterministic blinded outputs as a database duplicate.
-  // A different device can advance the same seed's mint-side cursor.
-  //
-  // Recovery walks `wallet.batchRestore(...)` for default sat keysets and
-  // advances the canonical keyset cursor past the highest signed output.
-  // Non-default units recover on the duplicate-output repair path with an
-  // explicit unit, so startup does not fan out across every mint unit.
-  // Each scan is monotonic. The effect runs once per mint at startup.
-  useEffect(() => {
-    if (!walletMnemonic || !nostrSignerReady) return;
-    const mintUrls = walletMintUrls.split("\n").filter(Boolean);
-    let cancelled = false;
-    let running = false;
-    let rerunRequested = false;
-    let receivesRecovered = false;
-    let receiveCacheRepaired = false;
-    let receiveRecoveryAfterOperationId: string | null = null;
-    let mintsRecovered = false;
-    let countersRecovered = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-
-    const schedule = () => {
-      if (cancelled || timer !== undefined) return;
-      timer = setTimeout(() => {
-        timer = undefined;
-        void runRecovery();
-      }, RANGE_RECOVERY_RETRY_MS);
-    };
-    const runRecovery = async () => {
-      if (running) {
-        rerunRequested = true;
-        return;
-      }
-      running = true;
-      let retryRequired = false;
-      try {
-        if (!receivesRecovered) {
-          try {
-            const result = await recoverPendingTokenReceives({
-              repairCurrentInventory: !receiveCacheRepaired,
-              afterOperationId: receiveRecoveryAfterOperationId,
-            });
-            receiveCacheRepaired = true;
-            receiveRecoveryAfterOperationId = result.lastAttemptedOperationId;
-            receivesRecovered = result.pending === 0;
-            retryRequired ||= !receivesRecovered;
-          } catch {
-            retryRequired = true;
-          }
-        }
-        if (!mintsRecovered) {
-          try {
-            const result = await recoverPendingWalletMints();
-            mintsRecovered = result.pending === 0;
-            retryRequired ||= !mintsRecovered;
-          } catch {
-            retryRequired = true;
-          }
-        }
-        try {
-          const result = await recoverBrowserCtfRangeOrders({
-            mnemonic: walletMnemonic,
-            mintUrls,
-          });
-          retryRequired ||= result.pending.length > 0;
-        } catch {
-          retryRequired = true;
-        }
-        try {
-          const result = await recoverBrowserDurableOutgoingCashuTransfersInPass({
-            mintUrls,
-            passCutoffMs: Date.now(),
-          });
-          retryRequired ||= result.pending > 0 || result.hasMore;
-        } catch {
-          retryRequired = true;
-        }
-        if (!countersRecovered) {
-          try {
-            let complete = true;
-            for (const mintUrl of mintUrls) {
-              const result = await recoverKeysetCountersForMint(mintUrl, { baseAsset: "sat" });
-              complete &&= result.complete;
-            }
-            countersRecovered = complete;
-            retryRequired ||= !complete;
-          } catch {
-            retryRequired = true;
-          }
-        }
-      } finally {
-        running = false;
-        if (retryRequired) schedule();
-        if (rerunRequested && !cancelled) {
-          rerunRequested = false;
-          void runRecovery();
-        }
-      }
-    };
-    const onOnline = () => void runRecovery();
-    window.addEventListener("online", onOnline);
-    void runRecovery();
-    return () => {
-      cancelled = true;
-      if (timer !== undefined) clearTimeout(timer);
-      window.removeEventListener("online", onOnline);
-    };
-  }, [nostrSignerReady, walletMnemonic, walletMintUrls]);
+  useBrowserCtfRangeOrderRecovery({
+    nostrSignerReady,
+    walletMnemonic,
+    walletMintUrls,
+  });
 
   // BOLT11 quote recovery is independent from CTF range recovery. One pass
   // checks each pending quote at most once. An online event starts a new pass.
   useEffect(() => {
     if (!walletMnemonic || !nostrSignerReady) return;
+    const scopeId = browserWalletScopeIdFromMnemonic(walletMnemonic);
+    if (scopeId === null) return;
     let cancelled = false;
     let running = false;
     let rerunRequested = false;
@@ -307,6 +212,7 @@ function AppRoutes() {
         } while (!cancelled && rerunRequested);
       } finally {
         running = false;
+        resumeBrowserEncryptedWalletBackupV2AfterRecovery(scopeId);
       }
     };
     const onOnline = () => void runPass();
@@ -318,17 +224,74 @@ function AppRoutes() {
     };
   }, [nostrSignerReady, walletMnemonic]);
 
-  const pendingWalletPaymentReconcileAttempted = useRef(false);
+  // Wallet melts are persisted before mint I/O. Recover their bounded active
+  // work after startup and when connectivity returns.
   useEffect(() => {
-    if (!walletMnemonic || pendingWalletPaymentReconcileAttempted.current) return;
-    pendingWalletPaymentReconcileAttempted.current = true;
-    reconcileAcceptedLocalWalletPayments()
-      .then((remaining) => setPendingWalletWarning(remaining.length > 0))
-      .catch((error) => {
-        console.warn("[wallet] pending local-wallet payment reconciliation failed", error);
-        setPendingWalletWarning(true);
-      });
-  }, [walletMnemonic]);
+    if (!walletMnemonic || !nostrSignerReady) return;
+    const scopeId = browserWalletScopeIdFromMnemonic(walletMnemonic);
+    if (scopeId === null) return;
+    let cancelled = false;
+    let running = false;
+    let rerunRequested = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const schedule = () => {
+      if (cancelled || timer !== undefined) return;
+      timer = setTimeout(() => {
+        timer = undefined;
+        void runPass();
+      }, RANGE_RECOVERY_RETRY_MS);
+    };
+    const runPass = async () => {
+      if (running) {
+        rerunRequested = true;
+        return;
+      }
+      running = true;
+      let retryRequired = false;
+      try {
+        do {
+          rerunRequested = false;
+          let cursor: string | null = null;
+          let hasMore = true;
+          do {
+            if (cancelled) return;
+            const context = captureBrowserMintPersistenceContext();
+            const result = await recoverBrowserDurableWalletMeltsInPass({
+              context,
+              cursor,
+              walletForMint: async (mintUrl, unit) =>
+                (await getWalletForMnemonicUnit(
+                  mintUrl,
+                  unit,
+                  walletMnemonic,
+                )) as import("@/lib/browserDurableWalletMelt").BrowserDurableWalletMeltWallet,
+            });
+            retryRequired ||= result.pending > 0;
+            cursor = result.nextCursor;
+            hasMore = result.hasMore;
+          } while (!cancelled && hasMore);
+        } while (!cancelled && rerunRequested);
+      } catch {
+        retryRequired = true;
+      } finally {
+        running = false;
+        resumeBrowserEncryptedWalletBackupV2AfterRecovery(scopeId);
+        if (retryRequired) schedule();
+        if (rerunRequested && !cancelled) {
+          rerunRequested = false;
+          void runPass();
+        }
+      }
+    };
+    const onOnline = () => void runPass();
+    window.addEventListener("online", onOnline);
+    void runPass();
+    return () => {
+      cancelled = true;
+      if (timer !== undefined) clearTimeout(timer);
+      window.removeEventListener("online", onOnline);
+    };
+  }, [nostrSignerReady, walletMnemonic]);
 
   // Continuous NIP-17 listener so inbound payment-request DMs are
   // processed regardless of which route is mounted. The per-view
@@ -343,8 +306,9 @@ function AppRoutes() {
     startNip17Listener(mnemonic, relays).catch((e) => {
       console.warn("[app] startNip17Listener failed:", e);
     });
-    // No cleanup — the listener is module-scoped and intentionally
-    // outlives React's mount/unmount dance (StrictMode, HMR).
+    return () => {
+      stopNip17Listener();
+    };
   }, [mnemonic, relayUrlsKey]);
 
   // Ensure stored mints have full info (CTF badge, NUTs, contact) and that
@@ -401,13 +365,14 @@ function AppRoutes() {
   const isWizard = (WIZARD_PATHS as readonly string[]).includes(location.pathname);
   return (
     <>
-      {pendingWalletWarning && (
-        <div className="border-b border-amber-400/40 bg-amber-500/15 px-4 py-3 text-sm text-amber-100">
-          Payment was sent but local wallet state may be inconsistent. Please restart the app to
-          reconcile.
-        </div>
+      {isWizard ? (
+        <WizardRoutes />
+      ) : (
+        <ShellRoutes
+          canReadOrderStatus={nostrSignerReady && nostrSignerMode !== "none"}
+          walletBackupRecovery={walletBackupRecovery}
+        />
       )}
-      {isWizard ? <WizardRoutes /> : <ShellRoutes />}
     </>
   );
 }
@@ -415,8 +380,10 @@ function AppRoutes() {
 export default function App() {
   return (
     <BrowserRouter>
-      <AppRoutes />
-      <ToastContainer />
+      <BrowserPreReleaseResetGate>
+        <AppRoutes />
+        <ToastContainer />
+      </BrowserPreReleaseResetGate>
     </BrowserRouter>
   );
 }

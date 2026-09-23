@@ -3,7 +3,7 @@ import { test } from 'node:test'
 import type { Proof, SerializedBlindedMessage } from '@cashu/cashu-ts'
 import {
   COLLATERAL_COLLECTION,
-  computeConvertFeeSats,
+  computeConvertFeeSubunits,
   payoffVector,
   planCtfConsolidation,
   type CtfConsolidationParams,
@@ -23,7 +23,7 @@ test('T1 converts N-1 singletons plus collateral top-up into the missing complem
 
   assert.equal(result.kind, 'plan')
   if (result.kind !== 'plan') return
-  assert.equal(result.feeSats, 1)
+  assert.equal(result.feeSubunits, 1)
   assert.deepEqual(result.inputPayoff, { A: 11, B: 11, C: 1 })
   assert.deepEqual(result.outputPayoff, { A: 10, B: 10, C: 0 })
   assert.deepEqual(Object.keys(result.request.inputs).sort(), [COLLATERAL_COLLECTION, 'A', 'B'])
@@ -40,8 +40,8 @@ test('T2 extracts max collateral from the 3-outcome NegRisk complement case', ()
 
   assert.equal(result.kind, 'plan')
   if (result.kind !== 'plan') return
-  assert.equal(result.feeSats, 1)
-  assert.equal(result.collateralOutputSats, 1)
+  assert.equal(result.feeSubunits, 1)
+  assert.equal(result.collateralOutputSubunits, 1)
   assert.deepEqual(result.inputPayoff, { A: 2, B: 2, C: 4 })
   assert.deepEqual(result.outputPayoff, { A: 1, B: 1, C: 3 })
   assert.deepEqual(result.request.outputs[COLLATERAL_COLLECTION], [
@@ -61,8 +61,8 @@ test('T3 converts a complete uniform holding into pure base collateral', () => {
 
   assert.equal(result.kind, 'plan')
   if (result.kind !== 'plan') return
-  assert.equal(result.feeSats, 1)
-  assert.equal(result.collateralOutputSats, 9)
+  assert.equal(result.feeSubunits, 1)
+  assert.equal(result.collateralOutputSubunits, 9)
   assert.deepEqual(result.inputPayoff, { A: 10, B: 10, C: 10 })
   assert.deepEqual(result.outputPayoff, { A: 9, B: 9, C: 9 })
   assert.deepEqual(Object.keys(result.request.outputs), [COLLATERAL_COLLECTION])
@@ -80,7 +80,7 @@ test('T2 skips when the fee floor consumes the available collateral gain', () =>
     kind: 'noop',
     strategy: 't2',
     reason: 'net-collateral-nonpositive',
-    feeSats: 1,
+    feeSubunits: 1,
     inputPayoff: { A: 1, B: 1, C: 2 },
   })
 })
@@ -96,8 +96,8 @@ test('T1 accepts an outcome amount exactly equal to the fee floor', () => {
 
   assert.equal(result.kind, 'plan')
   if (result.kind !== 'plan') return
-  assert.equal(result.feeSats, 1)
-  assert.equal(result.collateralOutputSats, 0)
+  assert.equal(result.feeSubunits, 1)
+  assert.equal(result.collateralOutputSubunits, 0)
   assert.deepEqual(result.inputPayoff, { A: 2, B: 2, C: 1 })
   assert.deepEqual(result.outputPayoff, { A: 1, B: 1, C: 0 })
   assert.deepEqual(Object.keys(result.request.outputs), ['A|B'])
@@ -117,7 +117,7 @@ test('T3 skips when F equals every input amount and outputs would net to zero', 
     kind: 'noop',
     strategy: 't3',
     reason: 'net-collateral-nonpositive',
-    feeSats: 1,
+    feeSubunits: 1,
     inputPayoff: { A: 1, B: 1, C: 1 },
   })
 })
@@ -147,7 +147,7 @@ test('payoff conservation uses the computed fee floor and covers F greater than 
   }
   const config = params('t3', proofsByCollection)
   const allProofs = Object.values(proofsByCollection).flat()
-  const computedFee = computeConvertFeeSats(allProofs, config.inputFeePpkByKeyset)
+  const computedFee = computeConvertFeeSubunits(allProofs, config.inputFeePpkByKeyset)
 
   assert.equal(allProofs.length, 1001)
   assert.equal(computedFee, 2)
@@ -165,7 +165,7 @@ test('payoff conservation uses the computed fee floor and covers F greater than 
       `${outcome} payoff should subtract computed F=${computedFee}`,
     )
   }
-  assert.equal(result.feeSats, computedFee)
+  assert.equal(result.feeSubunits, computedFee)
   assert.deepEqual(result.request.outputs[COLLATERAL_COLLECTION], [
     output('ks-base', 331, COLLATERAL_COLLECTION),
   ])

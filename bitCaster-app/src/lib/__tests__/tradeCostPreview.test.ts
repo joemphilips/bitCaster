@@ -11,79 +11,79 @@ describe("computeLimitOrderPreview", () => {
   it("derives a reactive total cost from display shares × price", () => {
     const preview = computeLimitOrderPreview({
       displayShares: 10,
-      limitPrice: 4_000,
+      limitPrice: 400,
       feePercent: 0,
       mintInputFeePpk: 0,
       baseAsset: "sat",
-      divisibility: 10_000,
+      divisibility: 1_000,
     });
     expect(preview.amount).toBe(10);
-    expect(preview.totalCost).toBe(40_000);
+    expect(preview.totalCost).toBe(4_000);
   });
 
   it("reacts to the limit price", () => {
     const cheap = computeLimitOrderPreview({
       displayShares: 10,
-      limitPrice: 1_000,
+      limitPrice: 100,
       feePercent: 0,
       mintInputFeePpk: 0,
       baseAsset: "sat",
-      divisibility: 10_000,
+      divisibility: 1_000,
     });
     const pricey = computeLimitOrderPreview({
       displayShares: 10,
-      limitPrice: 9_000,
+      limitPrice: 900,
       feePercent: 0,
       mintInputFeePpk: 0,
       baseAsset: "sat",
-      divisibility: 10_000,
+      divisibility: 1_000,
     });
-    expect(cheap.totalCost).toBe(10_000);
-    expect(pricey.totalCost).toBe(90_000);
+    expect(cheap.totalCost).toBe(1_000);
+    expect(pricey.totalCost).toBe(9_000);
     expect(pricey.totalCost).toBeGreaterThan(cheap.totalCost);
   });
 
   it("adds the creator fee on top of the quote", () => {
-    // quote = 10 display shares * D face * 5,000 / D=10,000 = 50,000;
-    // creator fee 2% of 50,000 = 1,000.
+    // quote = 10 display shares * D face * 500 / D=1,000 = 5,000;
+    // creator fee 2% of 5,000 = 100.
     const preview = computeLimitOrderPreview({
       displayShares: 10,
-      limitPrice: 5_000,
+      limitPrice: 500,
       feePercent: 2,
       mintInputFeePpk: 0,
       baseAsset: "sat",
-      divisibility: 10_000,
+      divisibility: 1_000,
     });
-    expect(preview.creatorFee).toBe(1_000);
+    expect(preview.creatorFee).toBe(100);
     expect(preview.mintFee).toBe(0);
-    expect(preview.totalCost).toBe(51_000);
+    expect(preview.totalCost).toBe(5_100);
   });
 
   it("exposes the pre-fee shares-times-price quote", () => {
     const preview = computeLimitOrderPreview({
       displayShares: 3,
-      limitPrice: 5_000,
+      limitPrice: 500,
       feePercent: 0,
       mintInputFeePpk: 0,
       baseAsset: "sat",
-      divisibility: 10_000,
+      divisibility: 1_000,
     });
-    expect(preview.quoteSubunits).toBe(15_000);
+    expect(preview.quoteSubunits).toBe(1_500);
   });
 
-  it("pins share-ticket math for 50 sat shares at price 300 with D=10000", () => {
+  it("pins share-ticket math for 50 one-sat shares at price 300 with D=1000", () => {
     const preview = computeLimitOrderPreview({
       displayShares: 50,
       limitPrice: 300,
       feePercent: 0,
       mintInputFeePpk: 0,
       baseAsset: "sat",
-      divisibility: 10_000,
+      divisibility: 1_000,
     });
 
     expect(preview.quoteSubunits).toBe(15_000);
     expect(preview.totalCost).toBe(15_000);
-    expect(preview.potentialPayout).toBe(500_000);
+    expect(preview.potentialPayout).toBe(50_000);
   });
 
   it("collapses the mint fee to 0 for the first-release zero-fee mint", () => {
@@ -93,24 +93,24 @@ describe("computeLimitOrderPreview", () => {
       feePercent: 1,
       mintInputFeePpk: 0,
       baseAsset: "sat",
-      divisibility: 10_000,
+      divisibility: 1_000,
     });
     expect(preview.mintFee).toBe(0);
   });
 
   it("includes a non-zero mint fee when the keyset advertises input_fee_ppk", () => {
-    // quote = 10 * 10,000 * 5,000 / 10,000 = 50,000;
-    // mint fee = ceil(50,000 * 100 / 1000) = 5,000.
+    // quote = 10 * 1,000 * 500 / 1,000 = 5,000;
+    // mint fee = ceil(5,000 * 100 / 1000) = 500.
     const preview = computeLimitOrderPreview({
       displayShares: 10,
-      limitPrice: 5_000,
+      limitPrice: 500,
       feePercent: 0,
       mintInputFeePpk: 100,
       baseAsset: "sat",
-      divisibility: 10_000,
+      divisibility: 1_000,
     });
-    expect(preview.mintFee).toBe(5_000);
-    expect(preview.totalCost).toBe(55_000);
+    expect(preview.mintFee).toBe(500);
+    expect(preview.totalCost).toBe(5_500);
   });
 });
 
@@ -118,61 +118,61 @@ describe("computeTradeCost", () => {
   it("derives the spend from display shares while protocol face stays separate", () => {
     const cost = computeTradeCost({
       displayShares: 10,
-      price: 4_000,
+      price: 400,
       feePercent: 0,
       mintInputFeePpk: 0,
       baseAsset: "sat",
-      divisibility: 10_000,
+      divisibility: 1_000,
     });
-    expect(cost.quoteSubunits).toBe(40_000);
-    expect(cost.totalCost).toBe(40_000);
-    expect(cost.totalCost).toBeLessThan(1_000_000);
+    expect(cost.quoteSubunits).toBe(4_000);
+    expect(cost.totalCost).toBe(4_000);
+    expect(cost.totalCost).toBeLessThan(100_000);
   });
 
   it("computes the creator fee on the QUOTE, not the face amount", () => {
     // Use a price/fee combo where face-vs-quote bases diverge clearly:
-    // price 5,000, fee 10% → quote 50,000, creatorFee 5,000 (quote basis)
-    // vs 10,000 (face basis).
+    // price 500, fee 10% → quote 5,000, creatorFee 500 (quote basis)
+    // vs 1,000 (face basis).
     const cost = computeTradeCost({
       displayShares: 10,
-      price: 5_000,
+      price: 500,
       feePercent: 10,
       mintInputFeePpk: 0,
       baseAsset: "sat",
-      divisibility: 10_000,
+      divisibility: 1_000,
     });
-    expect(cost.quoteSubunits).toBe(50_000);
-    expect(cost.creatorFee).toBe(5_000); // 10% of quote, not of face
-    expect(cost.creatorFee).not.toBe(10_000); // would be the face-basis bug
-    expect(cost.totalCost).toBe(55_000);
+    expect(cost.quoteSubunits).toBe(5_000);
+    expect(cost.creatorFee).toBe(500); // 10% of quote, not of face
+    expect(cost.creatorFee).not.toBe(1_000); // would be the face-basis bug
+    expect(cost.totalCost).toBe(5_500);
   });
 
-  it("matches the market worst-case (price 9999) buy cost basis", () => {
+  it("matches the market worst-case (price 999) buy cost basis", () => {
     const cost = computeTradeCost({
       displayShares: 10,
-      price: 9_999,
+      price: 999,
       feePercent: 0,
       mintInputFeePpk: 0,
       baseAsset: "sat",
-      divisibility: 10_000,
+      divisibility: 1_000,
     });
-    expect(cost.quoteSubunits).toBe(99_990);
-    expect(cost.totalCost).toBe(99_990);
+    expect(cost.quoteSubunits).toBe(9_990);
+    expect(cost.totalCost).toBe(9_990);
   });
 
   it("lets the balance gate pass when wallet >= derived cost but < face (price < 100)", () => {
     // Regression for P22 C LOW: the pre-submit gate compares wallet balance
     // against `computeTradeCost(...).totalCost`, NOT the face amount. A wallet
-    // holding 45,000 subunits can afford 10 shares @ 40% (cost 40,000).
-    const face = displaySharesToFaceSubunits(10, "sat", 10_000);
-    const walletBalance = 45_000;
+    // holding 4,500 subunits can afford 10 shares @ 40% (cost 4,000).
+    const face = displaySharesToFaceSubunits(10, "sat", 1_000);
+    const walletBalance = 4_500;
     const requiredSats = computeTradeCost({
       displayShares: 10,
-      price: 4_000,
+      price: 400,
       feePercent: 0,
       mintInputFeePpk: 0,
       baseAsset: "sat",
-      divisibility: 10_000,
+      divisibility: 1_000,
     }).totalCost;
 
     // The gate's actual comparison: `current < requiredSats` => blocked.
@@ -184,19 +184,19 @@ describe("computeTradeCost", () => {
   it("agrees with computeLimitOrderPreview for the same inputs", () => {
     const cost = computeTradeCost({
       displayShares: 20,
-      price: 3_300,
+      price: 330,
       feePercent: 1,
       mintInputFeePpk: 0,
       baseAsset: "sat",
-      divisibility: 10_000,
+      divisibility: 1_000,
     });
     const preview = computeLimitOrderPreview({
       displayShares: 20,
-      limitPrice: 3_300,
+      limitPrice: 330,
       feePercent: 1,
       mintInputFeePpk: 0,
       baseAsset: "sat",
-      divisibility: 10_000,
+      divisibility: 1_000,
     });
     expect(preview.totalCost).toBe(cost.totalCost);
     expect(preview.creatorFee).toBe(cost.creatorFee);
@@ -206,22 +206,35 @@ describe("computeTradeCost", () => {
 
 describe("trade display-unit conversion", () => {
   it("maps display shares to the market divisibility share face", () => {
-    expect(displaySharesToFaceSubunits(3, "sat", 10_000)).toBe(30_000);
-    expect(faceSubunitsToDisplayShares(30_000, "sat", 10_000)).toBe(3);
+    expect(displaySharesToFaceSubunits(3, "sat", 1_000)).toBe(3_000);
+    expect(faceSubunitsToDisplayShares(3_000, "sat", 1_000)).toBe(3);
   });
 
-  it("uses D=10000 as both price precision and share face", () => {
+  it("uses D=1000 as both price precision and share face", () => {
     const preview = computeLimitOrderPreview({
       displayShares: 2,
-      limitPrice: 5_000,
+      limitPrice: 500,
       feePercent: 0,
       mintInputFeePpk: 0,
-      divisibility: 10_000,
+      divisibility: 1_000,
       baseAsset: "sat",
     });
 
-    expect(preview.quoteSubunits).toBe(10_000);
-    expect(preview.potentialPayout).toBe(20_000);
+    expect(preview.quoteSubunits).toBe(1_000);
+    expect(preview.potentialPayout).toBe(2_000);
+  });
+
+  it("refuses a price outside the registered divisibility at the preview boundary", () => {
+    expect(() =>
+      computeLimitOrderPreview({
+        displayShares: 1,
+        limitPrice: 1_000,
+        feePercent: 0,
+        mintInputFeePpk: 0,
+        baseAsset: "sat",
+        divisibility: 1_000,
+      }),
+    ).toThrow(/priceNumerator must be between 1 and divisibility - 1/);
   });
 });
 
@@ -230,55 +243,55 @@ describe("computeMarketOrderQuotePreview", () => {
     const quote = computeMarketOrderQuotePreview({
       displayShares: 3,
       tradeSide: "Buy",
-      divisibility: 10_000,
+      divisibility: 1_000,
       orderBook: {
         bids: [],
         asks: [
-          { price: 4_000, amount: 10_000, total: 10_000 },
-          { price: 5_000, amount: 20_000, total: 30_000 },
+          { price: 400, amount: 1_000, total: 1_000 },
+          { price: 500, amount: 2_000, total: 3_000 },
         ],
-        spread: 1_000,
+        spread: 100,
       },
     });
 
     expect(quote?.executableDisplayShares).toBe(3);
-    expect(quote?.quoteSubunits).toBe(14_000);
-    expect(quote?.averageExecutionPrice).toBeCloseTo(4_666.67, 2);
+    expect(quote?.quoteSubunits).toBe(1_400);
+    expect(quote?.averageExecutionPrice).toBeCloseTo(466.67, 2);
   });
 
   it("walks bid depth for sells", () => {
     const quote = computeMarketOrderQuotePreview({
       displayShares: 2,
       tradeSide: "Sell",
-      divisibility: 10_000,
+      divisibility: 1_000,
       orderBook: {
-        bids: [{ price: 4_500, amount: 20_000, total: 20_000 }],
+        bids: [{ price: 450, amount: 2_000, total: 2_000 }],
         asks: [],
-        spread: 1_000,
+        spread: 100,
       },
     });
 
     expect(quote?.executableDisplayShares).toBe(2);
-    expect(quote?.quoteSubunits).toBe(9_000);
-    expect(quote?.averageExecutionPrice).toBe(4_500);
+    expect(quote?.quoteSubunits).toBe(900);
+    expect(quote?.averageExecutionPrice).toBe(450);
   });
 
   it("quotes complementary bids for market buys when the direct ask book is empty", () => {
     const quote = computeMarketOrderQuotePreview({
       displayShares: 2,
       tradeSide: "Buy",
-      divisibility: 10_000,
+      divisibility: 1_000,
       orderBook: { bids: [], asks: [], spread: 0 },
       complementaryOrderBook: {
-        bids: [{ price: 4_200, amount: 20_000, total: 20_000 }],
+        bids: [{ price: 420, amount: 2_000, total: 2_000 }],
         asks: [],
         spread: 0,
       },
     });
 
     expect(quote?.executableDisplayShares).toBe(2);
-    expect(quote?.averageExecutionPrice).toBe(5_800);
-    expect(quote?.quoteSubunits).toBe(11_600);
+    expect(quote?.averageExecutionPrice).toBe(580);
+    expect(quote?.quoteSubunits).toBe(1_160);
   });
 
   it("does not treat complementary-book asks as executable market-buy liquidity", () => {
@@ -286,11 +299,11 @@ describe("computeMarketOrderQuotePreview", () => {
       computeMarketOrderQuotePreview({
         displayShares: 1,
         tradeSide: "Buy",
-        divisibility: 10_000,
+        divisibility: 1_000,
         orderBook: null,
         complementaryOrderBook: {
           bids: [],
-          asks: [{ price: 3_500, amount: 10_000, total: 10_000 }],
+          asks: [{ price: 350, amount: 1_000, total: 1_000 }],
           spread: 0,
         },
       }),
@@ -301,39 +314,39 @@ describe("computeMarketOrderQuotePreview", () => {
     const quote = computeMarketOrderQuotePreview({
       displayShares: 1,
       tradeSide: "Buy",
-      divisibility: 10_000,
+      divisibility: 1_000,
       orderBook: null,
       complementaryOrderBook: {
-        bids: [{ price: 6_000, amount: 10_000, total: 10_000 }],
-        asks: [{ price: 3_500, amount: 10_000, total: 10_000 }],
-        spread: 2_500,
+        bids: [{ price: 600, amount: 1_000, total: 1_000 }],
+        asks: [{ price: 350, amount: 1_000, total: 1_000 }],
+        spread: 250,
       },
     });
 
-    expect(quote?.averageExecutionPrice).toBe(4_000);
-    expect(quote?.quoteSubunits).toBe(4_000);
+    expect(quote?.averageExecutionPrice).toBe(400);
+    expect(quote?.quoteSubunits).toBe(400);
   });
 
   it("uses direct asks before complementary bids for partial market buys", () => {
     const quote = computeMarketOrderQuotePreview({
       displayShares: 3,
       tradeSide: "Buy",
-      divisibility: 10_000,
+      divisibility: 1_000,
       orderBook: {
         bids: [],
-        asks: [{ price: 3_500, amount: 10_000, total: 10_000 }],
+        asks: [{ price: 350, amount: 1_000, total: 1_000 }],
         spread: 0,
       },
       complementaryOrderBook: {
-        bids: [{ price: 4_200, amount: 20_000, total: 20_000 }],
+        bids: [{ price: 420, amount: 2_000, total: 2_000 }],
         asks: [],
         spread: 0,
       },
     });
 
     expect(quote?.executableDisplayShares).toBe(3);
-    expect(quote?.quoteSubunits).toBe(15_100);
-    expect(quote?.averageExecutionPrice).toBeCloseTo(5_033.33, 2);
+    expect(quote?.quoteSubunits).toBe(1_510);
+    expect(quote?.averageExecutionPrice).toBeCloseTo(503.33, 2);
   });
 
   it("returns null when no executable depth is available", () => {
@@ -341,7 +354,7 @@ describe("computeMarketOrderQuotePreview", () => {
       computeMarketOrderQuotePreview({
         displayShares: 1,
         tradeSide: "Buy",
-        divisibility: 10_000,
+        divisibility: 1_000,
         orderBook: { bids: [], asks: [], spread: 0 },
       }),
     ).toBeNull();

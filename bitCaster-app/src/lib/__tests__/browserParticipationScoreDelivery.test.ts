@@ -18,9 +18,18 @@ const recoverBrowserDurableOutgoingCashuTransfer = vi.fn();
 const captureBrowserMintPersistenceContext = vi.fn();
 const getWalletForUnit = vi.fn();
 const restoreExactMintOutputs = vi.fn();
-const getBoundedCanonicalSatProofs = vi.fn();
+const getBoundedCanonicalRegularProofs = vi.fn();
 const getDurableCashuDeliveryStatus = vi.fn();
 const submitDurableCashuDelivery = vi.fn();
+const prepareBrowserDeterministicOutgoingCashuSend = vi.fn();
+const recoverBrowserFundedAsset = vi.fn();
+
+vi.mock("@/lib/browserDeterministicOutgoingCashu", () => ({
+  prepareBrowserDeterministicOutgoingCashuSend: (...args: unknown[]) =>
+    prepareBrowserDeterministicOutgoingCashuSend(...args),
+  restoreBrowserDeterministicOutgoingCashuOutputs: (...args: unknown[]) =>
+    restoreExactMintOutputs(...args),
+}));
 
 vi.mock("@/lib/browserDurableOutgoingCashuTransfer", () => ({
   acknowledgeBrowserDurableOutgoingCashuRecipient: (...args: unknown[]) =>
@@ -41,7 +50,12 @@ vi.mock("@/lib/cashu", () => ({
 }));
 
 vi.mock("@/stores/proof-db", () => ({
-  getBoundedCanonicalSatProofs: (...args: unknown[]) => getBoundedCanonicalSatProofs(...args),
+  getBoundedCanonicalRegularProofs: (...args: unknown[]) =>
+    getBoundedCanonicalRegularProofs(...args),
+}));
+
+vi.mock("../browserFundedAssetRecovery", () => ({
+  recoverBrowserFundedAsset: (...args: unknown[]) => recoverBrowserFundedAsset(...args),
 }));
 
 const ACTIVE_KEYSET_ID = `01${"11".repeat(32)}`;
@@ -54,9 +68,9 @@ vi.mock("@/stores/wallet", () => ({
         {
           url: "https://mint.example",
           keysets: [
-            { id: ACTIVE_KEYSET_ID, unit: "sat" },
-            { id: OLD_KEYSET_ID, unit: "sat" },
-            { id: "00legacy", unit: "sat" },
+            { id: ACTIVE_KEYSET_ID, unit: "msat" },
+            { id: OLD_KEYSET_ID, unit: "msat" },
+            { id: "00legacy", unit: "msat" },
           ],
         },
       ],
@@ -73,7 +87,7 @@ const input = {
   deliveryId: "3ab0f6ef-00f6-4ca3-bd69-1140528a0e83",
   accountSubject: "subject-1",
   mintUrl: "https://mint.example",
-  requestedAmount: "21",
+  requestedAmount: "21000",
 };
 const TOKEN = "cashuBabc123";
 const TOKEN_SHA256 = bytesToHex(sha256(new TextEncoder().encode(TOKEN)));
@@ -90,9 +104,11 @@ describe("browser Participation Score delivery", () => {
     captureBrowserMintPersistenceContext.mockReset();
     getWalletForUnit.mockReset();
     restoreExactMintOutputs.mockReset();
-    getBoundedCanonicalSatProofs.mockReset();
+    getBoundedCanonicalRegularProofs.mockReset();
     getDurableCashuDeliveryStatus.mockReset();
     submitDurableCashuDelivery.mockReset();
+    prepareBrowserDeterministicOutgoingCashuSend.mockReset();
+    recoverBrowserFundedAsset.mockReset();
   });
 
   it("recovers a lost POST response from status with the byte-identical stored token", async () => {
@@ -135,39 +151,114 @@ describe("browser Participation Score delivery", () => {
       reconcileBrowserParticipationScoreDelivery({
         transfer: transfer(),
         metadata: input,
-        readStatus: vi.fn().mockResolvedValue(status("credited", "22")),
+        readStatus: vi.fn().mockResolvedValue(status("credited", "22000")),
         submit: vi.fn(),
         context: context(),
       }),
     ).rejects.toThrow(/conflicts/);
   });
 
-  it("persists an exact sat plan through the shared durable outgoing coordinator", async () => {
+  it("persists an exact msat plan through the shared durable outgoing coordinator", async () => {
     captureBrowserMintPersistenceContext.mockReturnValue({
       activeMintUrl: input.mintUrl,
+      scopeId: "test-scope",
       seed: new Uint8Array(64),
       requireCapturedProfile: vi.fn(),
     });
     readBrowserDurableOutgoingCashuTransfer.mockResolvedValue(null);
     getWalletForUnit.mockResolvedValue({ getKeyset: () => ({ id: ACTIVE_KEYSET_ID }) });
-    getBoundedCanonicalSatProofs.mockResolvedValue([{ amount: input.requestedAmount }]);
+    getBoundedCanonicalRegularProofs.mockResolvedValue([{ amount: input.requestedAmount }]);
+    recoverBrowserFundedAsset.mockImplementation(async (recoveryInput) => {
+      await expect(recoveryInput.loadPlan()).resolves.toEqual({ kind: "ready" });
+      return { kind: "ready", plan: { kind: "ready" } };
+    });
     executeBrowserDurableOutgoingCashuTransfer.mockResolvedValue(transfer());
     getDurableCashuDeliveryStatus.mockResolvedValue(status("credited"));
 
     const result = await executeBrowserParticipationScoreDelivery(input);
 
     expect(result.progress).toBe("credited");
+    expect(getWalletForUnit).toHaveBeenCalledWith(input.mintUrl, "msat");
+    await executeBrowserDurableOutgoingCashuTransfer.mock.calls[0][0].prepareWalletSendOperation();
+    expect(getBoundedCanonicalRegularProofs).toHaveBeenCalledWith(input.mintUrl, {
+      scopeId: "test-scope",
+      unit: "msat",
+    });
+    expect(prepareBrowserDeterministicOutgoingCashuSend).toHaveBeenCalledWith(
+      expect.objectContaining({ amount: 21_000, unit: "msat" }),
+    );
     expect(executeBrowserDurableOutgoingCashuTransfer).toHaveBeenCalledWith(
       expect.objectContaining({
         preflightFundedAsset: expect.any(Function),
         transfer: expect.objectContaining({
           transferId: input.deliveryId,
-          unit: "sat",
+          unit: "msat",
           requestedAmount: input.requestedAmount,
         }),
       }),
     );
+    await executeBrowserDurableOutgoingCashuTransfer.mock.calls[0][0].preflightFundedAsset();
+    expect(recoverBrowserFundedAsset).toHaveBeenCalledOnce();
     expect(recoverBrowserDurableOutgoingCashuTransfer).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    {
+      name: "exact ordinary-msat absence",
+      recovery: { kind: "unavailable" as const },
+      proofs: [] as Array<{ amount: string }>,
+      loadPlan: true,
+      expectedErrorName: "BrowserParticipationScoreInsufficientBalanceError",
+      expectedStatus: "insufficient",
+      expectedBalanceMsat: 0,
+    },
+    {
+      name: "persistent recovery with unknown balance",
+      recovery: { kind: "persistent-error" as const },
+      loadPlan: false,
+      expectedErrorName: "BrowserParticipationScoreAssetUnavailableError",
+      expectedStatus: "unavailable",
+      expectedBalanceMsat: null,
+    },
+    {
+      name: "persistent recovery after a successful local balance read",
+      recovery: { kind: "persistent-error" as const },
+      proofs: [{ amount: "500" }],
+      loadPlan: true,
+      expectedErrorName: "BrowserParticipationScoreAssetUnavailableError",
+      expectedStatus: "unavailable",
+      expectedBalanceMsat: 500,
+    },
+  ])("maps $name before any Score send or recipient POST", async (scenario) => {
+    configureScoreRecoveryFixture(scenario);
+
+    await expect(executeBrowserParticipationScoreDelivery(input)).rejects.toMatchObject({
+      name: scenario.expectedErrorName,
+      recoveryStatus: scenario.expectedStatus,
+      balanceMsat: scenario.expectedBalanceMsat,
+    });
+    expect(prepareBrowserDeterministicOutgoingCashuSend).not.toHaveBeenCalled();
+    expect(submitDurableCashuDelivery).not.toHaveBeenCalled();
+  });
+
+  it("revalidates the captured profile before presenting unavailable recovery", async () => {
+    const requireCapturedProfile = vi.fn();
+    requireCapturedProfile
+      .mockImplementationOnce(() => undefined)
+      .mockImplementationOnce(() => {
+        throw new Error("browser funded recovery profile is stale");
+      });
+    configureScoreRecoveryFixture({
+      recovery: { kind: "persistent-error" },
+      loadPlan: false,
+      requireCapturedProfile,
+    });
+
+    await expect(executeBrowserParticipationScoreDelivery(input)).rejects.toThrow(
+      "browser funded recovery profile is stale",
+    );
+    expect(prepareBrowserDeterministicOutgoingCashuSend).not.toHaveBeenCalled();
+    expect(submitDurableCashuDelivery).not.toHaveBeenCalled();
   });
 
   it("reloads an acknowledged received transfer to credited without mint recovery", async () => {
@@ -188,16 +279,51 @@ describe("browser Participation Score delivery", () => {
     expect(credited.progress).toBe("credited");
     expect(getWalletForUnit).not.toHaveBeenCalled();
     expect(recoverBrowserDurableOutgoingCashuTransfer).not.toHaveBeenCalled();
-    expect(getBoundedCanonicalSatProofs).not.toHaveBeenCalled();
+    expect(getBoundedCanonicalRegularProofs).not.toHaveBeenCalled();
   });
 });
+
+function configureScoreRecoveryFixture(fixture: {
+  readonly recovery: { readonly kind: "unavailable" | "persistent-error" };
+  readonly proofs?: ReadonlyArray<{ readonly amount: string }>;
+  readonly loadPlan: boolean;
+  readonly requireCapturedProfile?: ReturnType<typeof vi.fn>;
+}): void {
+  captureBrowserMintPersistenceContext.mockReturnValue({
+    activeMintUrl: input.mintUrl,
+    database: {},
+    scopeId: "test-scope",
+    seed: new Uint8Array(64),
+    mnemonic: "test mnemonic",
+    requireCapturedProfile: fixture.requireCapturedProfile ?? vi.fn(),
+  });
+  readBrowserDurableOutgoingCashuTransfer.mockResolvedValue(null);
+  getWalletForUnit.mockResolvedValue({ getKeyset: () => ({ id: ACTIVE_KEYSET_ID }) });
+  if (fixture.proofs !== undefined) {
+    getBoundedCanonicalRegularProofs.mockResolvedValue(fixture.proofs);
+  }
+  recoverBrowserFundedAsset.mockImplementation(async (recoveryInput) => {
+    expect(recoveryInput.asset).toMatchObject({ mintUrl: input.mintUrl, unit: "msat" });
+    expect(recoveryInput.asset.assetIdentity).toBe("cashu:ordinary");
+    expect(recoveryInput.requiredAmount).toBe(21_000n);
+    if (fixture.loadPlan) {
+      await expect(recoveryInput.loadPlan()).resolves.toEqual({ kind: "insufficient" });
+    }
+    return fixture.recovery;
+  });
+  executeBrowserDurableOutgoingCashuTransfer.mockImplementation(async (transferInput) => {
+    await transferInput.preflightFundedAsset();
+    await transferInput.prepareWalletSendOperation();
+    return transfer();
+  });
+}
 
 function transfer() {
   const metadata = createParticipationScoreDeliveryMetadata(input);
   return {
     transferId: input.deliveryId,
     mintUrl: input.mintUrl,
-    unit: "sat",
+    unit: "msat",
     requestedAmount: input.requestedAmount,
     deliveryIntent: {
       policy: "durable-recipient-ack",

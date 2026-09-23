@@ -47,7 +47,7 @@ test('createMarketViaEngine signs a NIP-98 payload tag for the exact serialized 
           marketsCreated: ['cond/1-Yes', 'cond/1-No'],
           baseAsset: 'sat',
           thumbnailUrl: null,
-          divisibility: 10000,
+          divisibility: 1000,
         }),
         { status: 200, headers: { 'content-type': 'application/json' } },
       )
@@ -60,12 +60,8 @@ test('createMarketViaEngine signs a NIP-98 payload tag for the exact serialized 
     {
       title: 'Will it rain?',
       description: 'Weather market',
-      outcomes: [
-        { name: 'Yes', probability: 50 },
-        { name: 'No', probability: 50 },
-      ],
+      outcomes: [{ name: 'Yes' }, { name: 'No' }],
       baseAsset: 'sat',
-      liquiditySats: 0,
     },
     {
       data: new Uint8Array([1, 2, 3]),
@@ -120,7 +116,7 @@ test('createMarketViaEngine can use the daemon NIP-98 signer for exact multipart
           marketsCreated: ['cond/real-signer-Yes', 'cond/real-signer-No'],
           baseAsset: 'sat',
           thumbnailUrl: null,
-          divisibility: 10000,
+          divisibility: 1000,
         }),
         { status: 200, headers: { 'content-type': 'application/json' } },
       )
@@ -133,12 +129,8 @@ test('createMarketViaEngine can use the daemon NIP-98 signer for exact multipart
     {
       title: 'Will real NIP-98 bind the body?',
       description: 'Signer integration market',
-      outcomes: [
-        { name: 'Yes', probability: 50 },
-        { name: 'No', probability: 50 },
-      ],
+      outcomes: [{ name: 'Yes' }, { name: 'No' }],
       baseAsset: 'sat',
-      liquiditySats: 0,
     },
     {
       data: new Uint8Array([9, 8, 7, 6]),
@@ -159,7 +151,7 @@ test('parseCreateMarketResponse requires canonical product metadata', () => {
     conditionId: 'condition',
     marketsCreated: ['condition-Yes', 'condition-No'],
     baseAsset: 'sat',
-    divisibility: 10_000,
+    divisibility: 1_000,
   }
   assert.deepEqual(parseCreateMarketResponse(valid), valid)
   for (const key of ['baseAsset', 'divisibility'] as const) {

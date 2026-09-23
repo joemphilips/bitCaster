@@ -35,7 +35,7 @@ function makeMarket(overrides: Partial<YesNoMarketDetail> = {}): YesNoMarketDeta
     activeSince: "2026-01-01T00:00:00Z",
     baseUnit: "sats",
     baseAsset: "sat",
-    divisibility: 10_000,
+    divisibility: 1_000,
     mint: {
       collateral: "sat",
       keysetCount: 2,
@@ -140,6 +140,27 @@ describe("MarketHeader", () => {
 
     expect(screen.getByText("Final Outcome")).toBeInTheDocument();
     expect(screen.getByText("Yes")).toBeInTheDocument();
+    expect(screen.getByText(/Resolved on/)).toBeInTheDocument();
+    expect(await screen.findByText(shortCreatorNpub)).toBeInTheDocument();
+  });
+
+  it("keeps the resolved lifecycle label without inventing a missing resolution date", async () => {
+    const market = makeMarket({
+      state: "closed",
+      resolution: {
+        ...makeMarket().resolution,
+        status: "resolved",
+        resolutionDate: null,
+      },
+    });
+    renderHeader(market);
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(screen.getAllByText("Resolved")).toHaveLength(2);
+    expect(screen.queryByText(/Resolved on/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/January 1, 1970/)).not.toBeInTheDocument();
     expect(await screen.findByText(shortCreatorNpub)).toBeInTheDocument();
   });
 

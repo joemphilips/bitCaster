@@ -78,13 +78,16 @@ export interface Position {
   outcomeId?: string;
   outcomeLabel?: string;
   canClaimPayout?: boolean;
+  claimRecoveryPending?: boolean;
+  removalPending?: boolean;
   canDiscard?: boolean;
   /** False for server monitoring rows. Local proofs authorize all wallet actions. */
   canSell?: boolean;
   /** Complete canonical monitor identity when local custody can prove it. */
   monitoringAssetIdentity?: string;
   baseAsset: "sat";
-  divisibility: import("./market").ProductMarketDivisibility;
+  /** Registered market denominator, when the catalogue or monitor supplied it. */
+  divisibility?: import("./market").ProductMarketDivisibility;
   /** Exact share count when the client knows the market divisibility. */
   shares?: number;
   avgBuyPrice: number;
@@ -113,8 +116,8 @@ export interface Position {
    * Closed but NOT YET ATTESTED (no final outcome — closed by deadline, or
    * before the oracle attests). Win/loss is UNDECIDED (P22 Link F): the row
    * shows an "awaiting resolution" indicator and offers NEITHER Claim NOR
-   * Remove, so not-yet-decided proofs can never be destroyed. Its value is the
-   * full held amount, not zero. Always false while active.
+   * Remove, so not-yet-decided proofs can never be destroyed. Its value remains
+   * unvalued until authoritative attestation. Always false while active.
    */
   isPending: boolean;
   /**
@@ -281,9 +284,6 @@ export interface PortfolioProps {
 
   /** Called when user removes a losing closed CTF position from local wallet state */
   onDiscardLostPosition?: (positionId: string) => void;
-
-  /** Called when user clicks to view a fund */
-  onViewFund?: (fundId: string) => void;
 
   /** Called when user opens Settings */
   onOpenSettings?: () => void;

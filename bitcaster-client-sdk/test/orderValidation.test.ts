@@ -7,17 +7,15 @@ const validOrder = {
   outcomeId: 'YES',
   tokenSide: 'Outcome',
   side: 'Buy',
-  price: 4_200,
-  amountSubunits: 1_000_000,
+  price: 420,
+  amountSubunits: 1_000,
   baseAsset: 'sat',
-  divisibility: 10_000,
-  timeInForce: 'GTC',
+  divisibility: 1_000,
+  timeInForce: 'FOK',
 }
 
-test('validateOrderIntent accepts supported order intent shapes', () => {
-  for (const timeInForce of ['FAK', 'FOK', 'GTC']) {
-    assert.deepEqual(validateOrderIntent({ ...validOrder, timeInForce }), { valid: true })
-  }
+test('validateOrderIntent accepts the public FOK order intent shape', () => {
+  assert.deepEqual(validateOrderIntent(validOrder), { valid: true })
 })
 
 test('validateOrderRoutingIdentity rejects malformed identity before market-unit lookup', () => {
@@ -67,20 +65,23 @@ test('validateOrderIntent rejects malformed or unsupported order intent', () => 
     [{ ...validOrder, baseAsset: undefined }, /baseAsset must be sat/],
     [{ ...validOrder, baseAsset: 'SAT' }, /baseAsset must be sat/],
     [{ ...validOrder, baseAsset: 'usd' }, /baseAsset must be sat/],
-    [{ ...validOrder, divisibility: undefined }, /divisibility must be 10000 or 1000000/],
-    [{ ...validOrder, divisibility: 1_000 }, /divisibility must be 10000 or 1000000/],
-    [{ ...validOrder, price: 0 }, /price must be an integer from 1 to 9999/],
-    [{ ...validOrder, price: 10_000 }, /price must be an integer from 1 to 9999/],
-    [{ ...validOrder, price: 42.5 }, /price must be an integer from 1 to 9999/],
+    [{ ...validOrder, divisibility: undefined }, /divisibility must be 1000 or 1000000/],
+    // The retired ordinary denominator must fail closed. There is no D=10,000 compatibility path.
+    [{ ...validOrder, divisibility: 10_000 }, /divisibility must be 1000 or 1000000/],
+    [{ ...validOrder, price: 0 }, /price must be an integer from 1 to 999/],
+    [{ ...validOrder, price: 1_000 }, /price must be an integer from 1 to 999/],
+    [{ ...validOrder, price: 42.5 }, /price must be an integer from 1 to 999/],
     [
       { ...validOrder, amountSubunits: 0 },
-      /amountSubunits must be a positive integer in 10000 sub-unit increments/,
+      /amountSubunits must be a positive integer in 1000 sub-unit increments/,
     ],
     [
-      { ...validOrder, amountSubunits: 10_001 },
-      /amountSubunits must be a positive integer in 10000 sub-unit increments/,
+      { ...validOrder, amountSubunits: 1_001 },
+      /amountSubunits must be a positive integer in 1000 sub-unit increments/,
     ],
-    [{ ...validOrder, timeInForce: 'IOC' }, /timeInForce must be FAK, FOK, or GTC/],
+    [{ ...validOrder, timeInForce: 'FAK' }, /timeInForce must be FOK/],
+    [{ ...validOrder, timeInForce: 'GTC' }, /timeInForce must be FOK/],
+    [{ ...validOrder, timeInForce: 'GTD' }, /timeInForce must be FOK/],
   ] as const) {
     const result = validateOrderIntent(request)
     assert.equal(result.valid, false)

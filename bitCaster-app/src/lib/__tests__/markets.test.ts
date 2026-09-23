@@ -7,16 +7,19 @@ import {
   getTagValues,
   extractCategoryTagIds,
   getMarketThumbnail,
-  getDepositStatus,
   mapCatalogueEntryToMarket,
-  requestEcashDeposit,
+  latestConfirmedTradesAuthorityValid,
   submitOrder,
   windowPriceHistory,
   applyMarketPriceHistory,
   priceNumeratorToPercent,
   createAuthenticatedBrowserEngineClient,
+  getDurableCashuDeliveryStatus,
   generateNip98Header,
+  validateLatestConfirmedTrades,
 } from "../markets";
+import { applyConfirmedTradeDelta } from "@/lib/marketHub";
+import { outcomeSetIdsForMarketBooks, resolveOutcomeSets } from "@/lib/outcomeSets";
 import type { MarketCatalogueEntry } from "../markets";
 import type { FilterState, Market } from "@/types/market";
 import type { MarketDetail } from "@/types/market-detail";
@@ -74,9 +77,18 @@ const yesNoEntry: MarketCatalogueEntry = {
   ammBotBudgetSubunits: 88_000,
   volumeLifetimeSubunits: 980_000,
   baseAsset: "sat",
-  divisibility: 10_000,
-  lastTradedPrice: 0.62,
-  initialProbabilities: { Yes: 62, No: 38 },
+  divisibility: 1_000,
+  latestConfirmedTrades: [
+    {
+      primitiveOutcomeId: "YES",
+      fillId: "00000000-0000-0000-0000-000000000001",
+      executedAt: "2026-05-02T09:58:00Z",
+      eventOrder: "0001",
+      priceTick: 620,
+      divisibility: 1_000,
+      faceAmountSubunits: 1000,
+    },
+  ],
   categoryTags: ["crypto"],
   lastSuccessfulRefreshAt: "2026-05-02T09:58:00Z",
 };
@@ -96,9 +108,8 @@ const categoricalEntry: MarketCatalogueEntry = {
   ammBotBudgetSubunits: 12_000,
   volumeLifetimeSubunits: 45_000,
   baseAsset: "sat",
-  divisibility: 10_000,
-  lastTradedPrice: null,
-  initialProbabilities: {},
+  divisibility: 1_000,
+  latestConfirmedTrades: [],
   categoryTags: ["politics"],
   lastSuccessfulRefreshAt: "2026-05-02T09:58:00Z",
 };
@@ -113,39 +124,49 @@ describe("mapCatalogueEntryToMarket", () => {
     expect(market.title).toBe("Will BTC hit 100K?");
     expect(market.type).toBe("yesno");
     expect(market.baseAsset).toBe("sat");
-    expect(market.divisibility).toBe(10_000);
+    expect(market.divisibility).toBe(1_000);
     expect(market.baseMarket).toBe("sats");
     if (market.type === "yesno") {
-      expect(market.currentOdds).toEqual({ yes: 62, no: 38 });
+      expect(market.currentOdds).toEqual({ yes: 620, no: 380 });
+      expect(market.latestConfirmedTrades).toEqual(yesNoEntry.latestConfirmedTrades);
+      expect(market.latestConfirmedTradesValid).toBe(true);
     }
   });
 
-  it("prefers last traded price for yes/no list odds, falling back to creator initial probabilities", () => {
-    // With lastTradedPrice present, list odds use it (not initial probabilities)
+  it("uses confirmed trades for yes/no list odds and leaves no-trade odds nullable", () => {
+    // Confirmed trades are available to later displayed-price work, but do not
+    // provide visible odds in this mapper yet.
     const marketWithTrades = mapCatalogueEntryToMarket({
       ...yesNoEntry,
-      divisibility: 10_000,
-      lastTradedPrice: 6_200,
-      initialProbabilities: { Yes: 77, No: 23 },
+      divisibility: 1_000,
+      latestConfirmedTrades: [
+        {
+          primitiveOutcomeId: "YES",
+          fillId: "00000000-0000-0000-0000-000000000002",
+          executedAt: "2026-05-02T09:58:00Z",
+          eventOrder: "0002",
+          priceTick: 620,
+          divisibility: 1_000,
+          faceAmountSubunits: 1_000,
+        },
+      ],
     });
 
     expect(marketWithTrades.type).toBe("yesno");
     if (marketWithTrades.type === "yesno") {
-      // lastTradedPrice=6200 with D=10000 → 62%
-      expect(marketWithTrades.currentOdds.yes).toBe(62);
+      expect(marketWithTrades.currentOdds).toEqual({ yes: 620, no: 380 });
     }
 
-    // Without lastTradedPrice, falls back to initial probabilities
+    // Without confirmed trades, the adapter keeps the existing neutral display.
     const marketNoTrades = mapCatalogueEntryToMarket({
       ...yesNoEntry,
-      divisibility: 10_000,
-      lastTradedPrice: null,
-      initialProbabilities: { Yes: 77, No: 23 },
+      divisibility: 1_000,
+      latestConfirmedTrades: [],
     });
 
     expect(marketNoTrades.type).toBe("yesno");
     if (marketNoTrades.type === "yesno") {
-      expect(marketNoTrades.currentOdds).toEqual({ yes: 77, no: 23 });
+      expect(marketNoTrades.currentOdds).toEqual({ yes: null, no: null });
     }
   });
 
@@ -160,18 +181,17 @@ describe("mapCatalogueEntryToMarket", () => {
     expect(market.finalOutcome).toBe("No");
   });
 
-  it("falls back to 50/50 when a yes/no market has no traded price", () => {
+  it("does not invent a yes/no price when no confirmed trade exists", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
 
     const market = mapCatalogueEntryToMarket({
       ...yesNoEntry,
-      lastTradedPrice: null,
-      initialProbabilities: {},
+      latestConfirmedTrades: [],
     });
 
     expect(market.type).toBe("yesno");
     if (market.type === "yesno") {
-      expect(market.currentOdds).toEqual({ yes: 50, no: 50 });
+      expect(market.currentOdds).toEqual({ yes: null, no: null });
     }
     expect(warn).not.toHaveBeenCalled();
     warn.mockRestore();
@@ -185,7 +205,25 @@ describe("mapCatalogueEntryToMarket", () => {
     if (market.type === "categorical") {
       expect(market.outcomes).toHaveLength(3);
       expect(market.outcomes[0].label).toBe("Alice");
+      expect(market.outcomes.map((outcome) => outcome.odds)).toEqual([null, null, null]);
     }
+  });
+
+  it("fails closed for malformed or unknown latest trade facts", () => {
+    const market = mapCatalogueEntryToMarket({
+      ...yesNoEntry,
+      latestConfirmedTrades: [
+        {
+          ...yesNoEntry.latestConfirmedTrades[0],
+          primitiveOutcomeId: "Yes",
+        },
+      ],
+    });
+
+    expect(market.type).toBe("yesno");
+    expect(market.latestConfirmedTrades).toEqual([]);
+    expect(market.latestConfirmedTradesValid).toBe(false);
+    if (market.type === "yesno") expect(market.currentOdds).toEqual({ yes: null, no: null });
   });
 
   it("uses lifetime catalogue metrics for displayed market stats", () => {
@@ -206,9 +244,33 @@ describe("mapCatalogueEntryToMarket", () => {
     expect(market.categoryTags).toEqual(["crypto"]);
   });
 
-  it("uses createdAt as closingDate when deadline is null", () => {
+  it("preserves a null deadline", () => {
     const market = mapCatalogueEntryToMarket({ ...yesNoEntry, deadline: null });
-    expect(market.closingDate).toBe("2026-01-01T00:00:00Z");
+    expect(market.closingDate).toBeNull();
+  });
+});
+
+describe("latest confirmed trade authority validation", () => {
+  it("rejects noncanonical order, malformed UUID/date-time, and keeps valid empty distinct", () => {
+    const yes = yesNoEntry.latestConfirmedTrades[0];
+    const no = {
+      ...yes,
+      primitiveOutcomeId: "NO",
+      fillId: "00000000-0000-0000-0000-000000000002",
+      executedAt: "2026-05-02T10:00:00Z",
+      eventOrder: "0002",
+      priceTick: 380,
+    };
+
+    expect(latestConfirmedTradesAuthorityValid([], ["YES", "NO"], 1_000)).toBe(true);
+    expect(validateLatestConfirmedTrades([yes, no], ["YES", "NO"], 1_000)).toEqual([]);
+    expect(
+      validateLatestConfirmedTrades([{ ...yes, fillId: "not-a-uuid" }], ["YES", "NO"], 1_000),
+    ).toEqual([]);
+    expect(
+      validateLatestConfirmedTrades([{ ...yes, executedAt: "2026-05-02" }], ["YES", "NO"], 1_000),
+    ).toEqual([]);
+    expect(latestConfirmedTradesAuthorityValid([no, yes], ["YES", "NO"], 1_000)).toBe(true);
   });
 });
 
@@ -275,6 +337,36 @@ describe("filterMarkets (client-side stop-gap)", () => {
     expect(result).toHaveLength(1);
     expect(result[0].type).toBe("categorical");
   });
+
+  it("excludes markets without a deadline from a closing-window filter", () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+      const noDeadline = mapCatalogueEntryToMarket({
+        ...yesNoEntry,
+        deadline: null,
+      });
+      const closingSoon = mapCatalogueEntryToMarket({
+        ...yesNoEntry,
+        conditionId: "closing-soon",
+        deadline: "2026-01-02T00:00:00Z",
+      });
+      const closingLater = mapCatalogueEntryToMarket({
+        ...yesNoEntry,
+        conditionId: "closing-later",
+        deadline: "2026-01-10T00:00:00Z",
+      });
+
+      const result = filterMarkets([noDeadline, closingSoon, closingLater], {
+        ...baseFilter,
+        closingInDays: 3,
+      });
+
+      expect(result.map((market) => market.id)).toEqual(["closing-soon"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe("getMarketThumbnail (T4.3.c)", () => {
@@ -303,9 +395,9 @@ describe("getMarkets (engine catalogue proxy wiring)", () => {
   let fetchMock: ReturnType<typeof vi.fn>;
   let originalFetch: typeof globalThis.fetch;
 
-  function makeResponse(): Response {
+  function makeResponse(market: unknown = yesNoEntry): Response {
     const body = {
-      markets: [yesNoEntry],
+      markets: [market],
       nextCursor: null,
       lastSuccessfulRefreshAt: yesNoEntry.lastSuccessfulRefreshAt,
     };
@@ -382,6 +474,28 @@ describe("getMarkets (engine catalogue proxy wiring)", () => {
     expect(result.lastSuccessfulRefreshAt).toBe(yesNoEntry.lastSuccessfulRefreshAt);
   });
 
+  it.each(["open", "closed"] as const)("accepts exact engine state %s", async (state) => {
+    fetchMock.mockResolvedValueOnce(makeResponse({ ...yesNoEntry, state }));
+
+    const result = await getMarkets();
+
+    expect(result.markets[0]?.state).toBe(state);
+  });
+
+  it.each([
+    ["PascalCase", "Open"],
+    ["uppercase", "CLOSED"],
+    ["leading whitespace", " open"],
+    ["trailing whitespace", "closed "],
+    ["unknown value", "settling"],
+    ["null", null],
+    ["missing", undefined],
+  ] as const)("rejects %s engine state at list ingress", async (_label, state) => {
+    fetchMock.mockResolvedValueOnce(makeResponse({ ...yesNoEntry, state }));
+
+    await expect(getMarkets()).rejects.toThrow("Unsupported engine market state");
+  });
+
   it("throws on non-2xx so the page can render an error/retry affordance", async () => {
     fetchMock.mockResolvedValueOnce(new Response("boom", { status: 500 }));
     await expect(getMarkets()).rejects.toThrow(/Failed to query markets: 500/);
@@ -400,68 +514,6 @@ describe("legacy mintd-list path (markets list) is fully removed", () => {
   });
 });
 
-describe("deposit API normalization", () => {
-  let fetchMock: ReturnType<typeof vi.fn>;
-  let originalFetch: typeof globalThis.fetch;
-
-  beforeEach(() => {
-    originalFetch = globalThis.fetch;
-    fetchMock = vi.fn();
-    globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
-  });
-
-  afterEach(() => {
-    vi.useRealTimers();
-    globalThis.fetch = originalFetch;
-    vi.restoreAllMocks();
-  });
-
-  it("normalizes engine deposit status to the generated contract shape", async () => {
-    fetchMock.mockResolvedValueOnce(
-      new Response(
-        JSON.stringify({
-          depositId: "7db4b1b4-e9f6-40b4-84e3-d8b1fae15e3a",
-          conditionId: "deadbeef",
-          state: "Credited",
-          method: "LightningInvoice",
-          amountSats: 1000,
-          requestedAt: "2026-05-17T06:05:06.200Z",
-          updatedAt: "2026-05-17T06:05:10.660Z",
-          expiresAt: "2026-05-17T06:20:06.200Z",
-          failureReason: null,
-        }),
-        { status: 200 },
-      ),
-    );
-
-    await expect(
-      getDepositStatus("deadbeef", "7db4b1b4-e9f6-40b4-84e3-d8b1fae15e3a"),
-    ).resolves.toMatchObject({
-      state: "credited",
-      method: "lightningInvoice",
-    });
-  });
-
-  it("normalizes ecash deposit creation state", async () => {
-    fetchMock.mockResolvedValueOnce(
-      new Response(
-        JSON.stringify({
-          depositId: "7db4b1b4-e9f6-40b4-84e3-d8b1fae15e3a",
-          state: "requested",
-        }),
-        { status: 200 },
-      ),
-    );
-
-    await expect(
-      requestEcashDeposit("deadbeef", 1000, "cashu-token", {
-        unit: "msat",
-        divisibility: 10_000,
-      }),
-    ).resolves.toMatchObject({ state: "requested" });
-  });
-});
-
 describe("submitOrder", () => {
   let fetchMock: ReturnType<typeof vi.fn>;
   let originalFetch: typeof globalThis.fetch;
@@ -477,7 +529,7 @@ describe("submitOrder", () => {
             remainingAmountSubunits: 10_000,
             fills: [],
             baseAsset: "sat",
-            divisibility: 10_000,
+            divisibility: 1_000,
             activeSettlementGroup: null,
           }),
           { status: 200 },
@@ -578,7 +630,7 @@ describe("fetchMarketDetail (engine merge — ADR-009 Amendment 2026-05-04)", ()
   }
 
   function engineQueryResponse(
-    state: "open" | "closed",
+    state: unknown,
     thumbnailUrl: string | null,
     creatorPubkey: string | null = null,
     outcomes: string[] = ["Yes", "No"],
@@ -604,8 +656,8 @@ describe("fetchMarketDetail (engine merge — ADR-009 Amendment 2026-05-04)", ()
             ammBotBudgetSubunits: 75000,
             volumeLifetimeSubunits: 250000,
             baseAsset: "sat",
-            divisibility: 10_000,
-            lastTradedPrice: null,
+            divisibility: 1_000,
+            latestConfirmedTrades: [],
             categoryTags: ["crypto"],
             lastSuccessfulRefreshAt: "2026-05-04T00:00:00Z",
           },
@@ -638,9 +690,106 @@ describe("fetchMarketDetail (engine merge — ADR-009 Amendment 2026-05-04)", ()
     vi.restoreAllMocks();
   });
 
-  it("merges engine state into the detail (Phase 2 lifecycle authority)", async () => {
+  it.each(["open", "closed"] as const)(
+    "accepts exact engine state %s at detail ingress",
+    async (state) => {
+      fetchMock.mockImplementation(async (url: string) => {
+        if (url.includes("/api/v1/markets/query")) return engineQueryResponse(state, null);
+        return emptyMetadataResponse();
+      });
+
+      const detail = await fetchMarketDetail("abc123");
+
+      expect(detail.state).toBe(state);
+    },
+  );
+
+  it("preserves exact REST primitive IDs for order-book routes and live trade deltas", async () => {
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url.includes("/api/v1/markets/query")) {
+        return engineQueryResponse("open", null, null, ["YES", "NO"]);
+      }
+      return emptyMetadataResponse();
+    });
+
     const detail = await fetchMarketDetail("abc123");
-    expect(detail.state).toBe("open");
+    const allowed = detail.registeredPrimitiveOutcomeIds ?? [];
+    const yesTrade = {
+      primitiveOutcomeId: "YES",
+      fillId: "00000000-0000-0000-0000-000000000010",
+      executedAt: "2026-05-02T09:58:00Z",
+      eventOrder: "0001",
+      priceTick: 620,
+      divisibility: 1_000 as const,
+      faceAmountSubunits: 1000,
+    };
+
+    expect(allowed).toEqual(["YES", "NO"]);
+    expect(detail.outcomes?.map((outcome) => outcome.id)).toEqual(["YES", "NO"]);
+    expect(detail.outcomes?.map((outcome) => outcome.label)).toEqual(["YES", "NO"]);
+    expect(outcomeSetIdsForMarketBooks(detail)).toEqual(["YES", "NO"]);
+    expect(resolveOutcomeSets(detail, { side: "no" })).toMatchObject({
+      publicOutcomeSetId: "YES",
+      selectedOutcomeSetId: "NO",
+      complementOutcomeSetId: "YES",
+    });
+    const applied = applyConfirmedTradeDelta("abc123", allowed, [], {
+      conditionId: "abc123",
+      latestConfirmedTrade: yesTrade,
+    });
+    expect(applied).toEqual([yesTrade]);
+
+    const wrongCase = applyConfirmedTradeDelta("abc123", allowed, applied, {
+      conditionId: "abc123",
+      latestConfirmedTrade: {
+        ...yesTrade,
+        primitiveOutcomeId: "Yes",
+        fillId: "00000000-0000-0000-0000-000000000011",
+        eventOrder: "0002",
+      },
+    });
+    expect(wrongCase).toEqual(applied);
+  });
+
+  it("keeps the production live overlay monotonic across duplicate, older, and newer fills", () => {
+    const allowed = ["YES", "NO"];
+    const current = {
+      primitiveOutcomeId: "YES",
+      fillId: "00000000-0000-0000-0000-000000000020",
+      executedAt: "2026-05-02T09:58:00Z",
+      eventOrder: "0002",
+      priceTick: 620,
+      divisibility: 1_000 as const,
+      faceAmountSubunits: 1000,
+    };
+    const duplicate = applyConfirmedTradeDelta("abc123", allowed, [current], {
+      conditionId: "abc123",
+      latestConfirmedTrade: { ...current, eventOrder: "0003", priceTick: 700 },
+    });
+    expect(duplicate).toEqual([current]);
+
+    const older = applyConfirmedTradeDelta("abc123", allowed, duplicate, {
+      conditionId: "abc123",
+      latestConfirmedTrade: {
+        ...current,
+        fillId: "00000000-0000-0000-0000-000000000021",
+        eventOrder: "0001",
+        priceTick: 400,
+      },
+    });
+    expect(older).toEqual([current]);
+
+    const newerTrade = {
+      ...current,
+      fillId: "00000000-0000-0000-0000-000000000022",
+      eventOrder: "0004",
+      priceTick: 710,
+    };
+    const newer = applyConfirmedTradeDelta("abc123", allowed, older, {
+      conditionId: "abc123",
+      latestConfirmedTrade: newerTrade,
+    });
+    expect(newer).toEqual([newerTrade]);
   });
 
   it("merges engine thumbnailUrl into imageUrl (Phase 7 thumbnail data path)", async () => {
@@ -675,7 +824,7 @@ describe("fetchMarketDetail (engine merge — ADR-009 Amendment 2026-05-04)", ()
     // fetchMarketDetail is a single-shot: no retry loop, no delay. A newly
     // registered market that the engine has not indexed yet surfaces as "not
     // found" so the page renders without any timer blocking. The page's
-    // post-paint needsEngineDetailRefresh polling loop handles the catch-up.
+    // post-paint missing-entry recovery handles the catch-up.
     fetchMock.mockImplementation(async (url: string) => {
       if (url.includes("/api/v1/markets/query")) {
         return new Response(
@@ -839,6 +988,21 @@ describe("fetchMarketDetail (engine merge — ADR-009 Amendment 2026-05-04)", ()
     expect(fetchMock).not.toHaveBeenCalledWith("/v1/conditions");
   });
 
+  it("preserves temporary detail unavailability instead of reporting a missing market", async () => {
+    fetchMock.mockResolvedValue(new Response("untrusted service response", { status: 503 }));
+    await expect(fetchMarketDetail("abc123")).rejects.toMatchObject({
+      name: "MarketDetailUnavailableError",
+      message: "Market details are temporarily unavailable.",
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a successful empty query distinct from temporary unavailability", async () => {
+    fetchMock.mockResolvedValue(new Response(JSON.stringify({ markets: [] }), { status: 200 }));
+    await expect(fetchMarketDetail("abc123")).rejects.toThrow("Market not found: abc123");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it("does not reconstruct categorical display labels from mintd keysets", async () => {
     fetchMock.mockImplementation(async (url: string) => {
       if (url.includes("/v1/conditions"))
@@ -898,42 +1062,21 @@ describe("fetchMarketDetail (engine merge — ADR-009 Amendment 2026-05-04)", ()
     expect(queryCall!).toContain("ids=abc123");
   });
 
-  it("normalises engine state casing — defensive against the NSwag PascalCase emit", async () => {
-    // Producer bug: NSwag-generated DTOs ship `[JsonConverter(typeof(
-    // JsonStringEnumConverter<T>))]` per-property which overrides the global
-    // naming policy and emits "Open" / "Closed" instead of the spec's "open"
-    // / "closed". Until the producer is fixed upstream, the frontend
-    // normalises at the boundary so the detail page's exhaustive switch
-    // does not fall through to assertNever on every staging load.
+  it.each([
+    ["PascalCase", "Open"],
+    ["uppercase", "CLOSED"],
+    ["leading whitespace", " open"],
+    ["trailing whitespace", "closed "],
+    ["unknown value", "settling"],
+    ["null", null],
+    ["missing", undefined],
+  ] as const)("rejects %s engine state at detail ingress", async (_label, state) => {
     fetchMock.mockImplementation(async (url: string) => {
-      if (url.includes("/v1/conditions")) return mintdConditionsResponse();
-      if (url.includes("/api/v1/markets/query")) {
-        // Mimic the production engine wire form (capitalised).
-        const body = await engineQueryResponse("open", null).json();
-        body.markets[0].state = "Open";
-        return new Response(JSON.stringify(body), { status: 200 });
-      }
+      if (url.includes("/api/v1/markets/query")) return engineQueryResponse(state, null);
       return emptyMetadataResponse();
     });
-    const detail = await fetchMarketDetail("abc123");
-    // Normalised to lowercase so useMarketState's switch matches.
-    expect(detail.state).toBe("open");
-  });
 
-  it("falls back when engine state is an unrecognised value (logs a soft fail)", async () => {
-    fetchMock.mockImplementation(async (url: string) => {
-      if (url.includes("/v1/conditions")) return mintdConditionsResponse();
-      if (url.includes("/api/v1/markets/query")) {
-        const body = await engineQueryResponse("open", null).json();
-        body.markets[0].state = "Settling";
-        return new Response(JSON.stringify(body), { status: 200 });
-      }
-      return emptyMetadataResponse();
-    });
-    const detail = await fetchMarketDetail("abc123");
-    // Unrecognised value → undefined → useMarketState renders Open (safe
-    // pre-fetch default). Better than throwing on every page load.
-    expect(detail.state).toBeUndefined();
+    await expect(fetchMarketDetail("abc123")).rejects.toThrow("Unsupported engine market state");
   });
 
   it('promotes engine.deadline into closingDate so MarketHeader stops rendering "Closed" against the mintd-only "now" placeholder', async () => {
@@ -948,12 +1091,14 @@ describe("fetchMarketDetail (engine merge — ADR-009 Amendment 2026-05-04)", ()
     });
     const detail = await fetchMarketDetail("abc123");
     expect(detail.closingDate).toBe("2030-12-31T23:59:59Z");
+    expect(detail.resolution.resolutionDate).toBe("2030-12-31T23:59:59Z");
   });
 
-  it("keeps closingDate null when engine.deadline is null so unknown deadlines never decay into Closed", async () => {
+  it("keeps absent engine dates null instead of using the market creation date", async () => {
     // Default engineQueryResponse already has deadline: null
     const detail = await fetchMarketDetail("abc123");
     expect(detail.closingDate).toBeNull();
+    expect(detail.resolution.resolutionDate).toBeNull();
   });
 
   it("uses engine.closedAt as the closed-market resolution date", async () => {
@@ -1040,14 +1185,14 @@ describe("windowPriceHistory (P22 Link D timeframe windowing)", () => {
 
 describe("price history normalization", () => {
   it("normalizes raw price numerators to percentages", () => {
-    expect(priceNumeratorToPercent(5_000, 10_000)).toBe(50);
+    expect(priceNumeratorToPercent(500, 1_000)).toBe(50);
     expect(priceNumeratorToPercent(500_000, 1_000_000)).toBe(50);
-    expect(priceNumeratorToPercent(20_000, 10_000)).toBe(100);
+    expect(priceNumeratorToPercent(2_000, 1_000)).toBe(100);
   });
 
   it("applies market divisibility when mapping fetched history", () => {
     const market = {
-      ...mapCatalogueEntryToMarket({ ...yesNoEntry, divisibility: 10_000 }),
+      ...mapCatalogueEntryToMarket({ ...yesNoEntry, divisibility: 1_000 }),
       priceHistory: { timeframe: "7d" as const, data: [] },
       orderBook: { bids: [], asks: [], spread: 0 },
       recentTrades: [],
@@ -1077,7 +1222,7 @@ describe("price history normalization", () => {
           data: [
             {
               timestamp: "2026-05-25T10:00:00Z",
-              price: 5_000,
+              price: 500,
               volumeSubunits: 10,
               source: "fill",
             },
@@ -1087,6 +1232,111 @@ describe("price history normalization", () => {
     });
 
     expect(updated.priceHistory.data[0].price).toBe(50);
+  });
+
+  it("uses the case-insensitive semantic Yes identity for a No-first binary history", () => {
+    const market = {
+      ...mapCatalogueEntryToMarket({ ...yesNoEntry, outcomes: ["YeS", "nO"] }),
+      outcomes: [
+        { id: "YeS", label: "YeS", odds: null },
+        { id: "nO", label: "nO", odds: null },
+      ],
+      priceHistory: { timeframe: "7d" as const, data: [] },
+      orderBook: { bids: [], asks: [], spread: 0 },
+      recentTrades: [],
+      comments: [],
+      relatedMarkets: [],
+      baseUnit: "sats",
+      creator: {
+        id: "creator",
+        name: "creator",
+        totalMarketsCreated: 0,
+        feePercent: 0,
+      },
+      resolution: {
+        criteria: "criteria",
+        source: "oracle" as const,
+        resolutionDate: "2026-01-01T00:00:00Z",
+        status: "open" as const,
+      },
+    } as unknown as MarketDetail;
+
+    const updated = applyMarketPriceHistory(market, {
+      conditionId: "abc123",
+      timeframe: "7d",
+      outcomes: [
+        {
+          outcomeId: "nO",
+          data: [
+            {
+              timestamp: "2026-05-25T10:00:00Z",
+              price: 250,
+              volumeSubunits: 10,
+              source: "fill",
+            },
+          ],
+        },
+        {
+          outcomeId: "YeS",
+          data: [
+            {
+              timestamp: "2026-05-25T10:00:00Z",
+              price: 750,
+              volumeSubunits: 20,
+              source: "fill",
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(updated.outcomes?.map((outcome) => outcome.id)).toEqual(["YeS", "nO"]);
+    expect(updated.outcomes?.map((outcome) => outcome.label)).toEqual(["YeS", "nO"]);
+    expect(updated.priceHistory.data[0].price).toBe(75);
+  });
+
+  it("does not replace the semantic Yes history when the response contains only No", () => {
+    const priorYesHistory = {
+      timeframe: "7d" as const,
+      data: [
+        {
+          timestamp: "2026-05-25T09:00:00Z",
+          price: 70,
+          volume: 15,
+          source: "fill" as const,
+        },
+      ],
+    };
+    const market = {
+      ...mapCatalogueEntryToMarket({ ...yesNoEntry, outcomes: ["YeS", "nO"] }),
+      outcomes: [
+        { id: "YeS", label: "YeS", odds: null },
+        { id: "nO", label: "nO", odds: null },
+      ],
+      priceHistory: priorYesHistory,
+    } as unknown as MarketDetail;
+
+    const updated = applyMarketPriceHistory(market, {
+      conditionId: "abc123",
+      timeframe: "7d",
+      outcomes: [
+        {
+          outcomeId: "nO",
+          data: [
+            {
+              timestamp: "2026-05-25T10:00:00Z",
+              price: 25,
+              volumeSubunits: 10,
+              source: "fill",
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(updated.outcomes?.map((outcome) => outcome.id)).toEqual(["YeS", "nO"]);
+    expect(updated.outcomes?.map((outcome) => outcome.label)).toEqual(["YeS", "nO"]);
+    expect(updated.priceHistory).toEqual(priorYesHistory);
   });
 });
 
@@ -1135,5 +1385,44 @@ describe("NIP-98 signer binding", () => {
     );
 
     expect(mocks.eventSign).toHaveBeenCalledWith(explicitSigner);
+  });
+});
+
+describe("durable Cashu delivery transport", () => {
+  it("uses the bounded SDK status path for a stalled response body", async () => {
+    const originalFetch = globalThis.fetch;
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          init?.signal?.addEventListener(
+            "abort",
+            () => controller.error(new DOMException("aborted", "AbortError")),
+            { once: true },
+          );
+        },
+      });
+      return new Response(body, { status: 200 });
+    });
+    globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
+    vi.useFakeTimers();
+    mocks.eventSign.mockClear();
+    try {
+      const pending = getDurableCashuDeliveryStatus("88888888-8888-4888-8888-888888888888");
+      const rejection = expect(pending).rejects.toThrow(
+        /durable recipient delivery request failed/,
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      expect(fetchMock).toHaveBeenCalledOnce();
+      const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+      expect(url).toContain("/api/v1/cashu-deliveries/88888888-8888-4888-8888-888888888888");
+      expect((init.headers as Record<string, string>).Authorization).toMatch(/^Nostr /);
+      expect(mocks.eventSign).toHaveBeenCalledOnce();
+
+      await vi.advanceTimersByTimeAsync(10_000);
+      await rejection;
+    } finally {
+      vi.useRealTimers();
+      globalThis.fetch = originalFetch;
+    }
   });
 });

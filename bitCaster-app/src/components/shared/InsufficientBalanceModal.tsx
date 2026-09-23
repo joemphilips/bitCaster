@@ -3,7 +3,7 @@ import { useTranslation } from "react-i18next";
 
 interface InsufficientBalanceModalProps {
   /** How many base-asset subunits the user has in the active mint. */
-  balance: number;
+  balance: number | null;
   /** What the pending trade will cost in base-asset subunits, all-in. */
   required: number;
   title?: string;
@@ -11,6 +11,10 @@ interface InsufficientBalanceModalProps {
   formatAmount?: (amount: number) => string;
   onCancel: () => void;
   onTopUp: () => void;
+  /** Whether local spendable funds are insufficient and recovery is unavailable. */
+  recoveryUnavailable?: boolean;
+  /** Retries the recovery check without starting it automatically. */
+  onRetry?: () => void;
 }
 
 /**
@@ -27,9 +31,11 @@ export function InsufficientBalanceModal({
   formatAmount,
   onCancel,
   onTopUp,
+  recoveryUnavailable = false,
+  onRetry,
 }: InsufficientBalanceModalProps) {
   const { t } = useTranslation();
-  const deficit = Math.max(required - balance, 0);
+  const deficit = balance === null ? null : Math.max(required - balance, 0);
   const renderAmount =
     formatAmount ?? ((amount) => t("insufficientBalance.sats", { count: amount }));
 
@@ -54,11 +60,13 @@ export function InsufficientBalanceModal({
           .
         </p>
         <p className="text-slate-500 dark:text-slate-400 text-sm mb-6">
-          {t("insufficientBalance.youHave")}{" "}
+          {balance === null
+            ? t("insufficientBalance.localBalanceUnavailable")
+            : t("insufficientBalance.youHave")}{" "}
           <span className="font-mono text-slate-700 dark:text-slate-200">
-            {renderAmount(balance)}
+            {balance === null ? "" : renderAmount(balance)}
           </span>
-          {deficit > 0 && (
+          {deficit !== null && deficit > 0 && (
             <>
               {" "}
               — {t("insufficientBalance.shortBy")}{" "}
@@ -67,18 +75,43 @@ export function InsufficientBalanceModal({
               </span>
             </>
           )}
-          .
+          {balance === null ? null : "."}
         </p>
 
-        <div className="flex gap-3">
+        {recoveryUnavailable && (
+          <p
+            role="status"
+            className="mb-6 rounded-lg border border-amber-200 bg-amber-50 p-3 text-left text-sm text-amber-900 dark:border-amber-900/60 dark:bg-amber-900/20 dark:text-amber-100"
+          >
+            {t(
+              balance === null
+                ? "insufficientBalance.recoveryUnavailableUnknownBalance"
+                : "insufficientBalance.recoveryUnavailable",
+            )}
+          </p>
+        )}
+
+        <div className="flex flex-wrap gap-3">
           <button
+            type="button"
             data-testid="insufficient-balance-cancel"
             onClick={onCancel}
             className="flex-1 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 font-medium hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors"
           >
             {t("common.cancel")}
           </button>
+          {recoveryUnavailable && onRetry && (
+            <button
+              type="button"
+              data-testid="insufficient-balance-retry"
+              onClick={onRetry}
+              className="flex-1 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 font-medium hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors"
+            >
+              {t("common.retry")}
+            </button>
+          )}
           <button
+            type="button"
             data-testid="insufficient-balance-top-up"
             onClick={onTopUp}
             className="flex-1 py-2.5 rounded-xl bg-[#f7931a] hover:bg-[#e8850f] text-white font-semibold transition-colors"

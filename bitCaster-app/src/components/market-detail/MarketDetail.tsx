@@ -1,6 +1,7 @@
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Loader2 } from "lucide-react";
-import type { MarketDetailProps } from "@/types/market-detail";
+import type { MarketDetailProps, TradeTab } from "@/types/market-detail";
 import { useMarketState } from "@/hooks/useMarketState";
 import { MarketHeader } from "./MarketHeader";
 import { TradingPanel } from "./TradingPanel";
@@ -11,20 +12,35 @@ import { RelatedMarkets } from "./RelatedMarkets";
 import { CommentSection } from "./CommentSection";
 import { canonicalizeOutcomeSet } from "@/lib/outcomeSets";
 import { deriveExecutableOrderBook } from "./orderBookViewModel";
+import { formatPricePercentage } from "@bitcaster/client-sdk/marketUnits";
 
-function formatNumericPrice(value: number, unit: string): string {
-  if (unit === "USD") return `$${value.toLocaleString()}`;
-  return `${value.toLocaleString()} ${unit}`;
+function formatNumericPrice(value: number, unit: string, precision: number): string {
+  const safePrecision = Number.isFinite(precision)
+    ? Math.min(Math.max(Math.trunc(precision), 0), 8)
+    : 0;
+  const formatted = value.toLocaleString(undefined, {
+    minimumFractionDigits: safePrecision,
+    maximumFractionDigits: safePrecision,
+  });
+  if (unit === "USD") return `$${formatted}`;
+  return `${formatted} ${unit}`;
 }
 
-function computeCurrentDisplay(market: MarketDetailProps["market"]): string {
+function computeCurrentDisplay(
+  market: MarketDetailProps["market"],
+  t: (key: string) => string,
+): string {
   const isResolved = market.resolution.status === "resolved";
+  const priceAuthorityUnavailable = market.latestConfirmedTradesValid === false;
 
   if (market.type === "numeric") {
     if (isResolved && market.attestedValue != null) {
-      return `Resolved: ${formatNumericPrice(market.attestedValue, market.unit)}`;
+      return `Resolved: ${formatNumericPrice(market.attestedValue, market.unit, market.precision)}`;
     }
-    return formatNumericPrice(market.currentPrice, market.unit);
+    // Numeric HI/LO probability ticks are not a native numeric trade
+    // representation. Keep the public current value unavailable until the
+    // contract carries one, regardless of any legacy currentPrice field.
+    return t("market.priceUnavailable");
   }
 
   if (isResolved && market.resolution.finalOutcome) {
@@ -32,15 +48,14 @@ function computeCurrentDisplay(market: MarketDetailProps["market"]): string {
   }
 
   if (market.type === "yesno") {
-    const latestPoint = market.priceHistory.data.at(-1);
-    const latestYesPrice =
-      latestPoint && Number.isFinite(latestPoint.price)
-        ? latestPoint.price
-        : market.currentOdds.yes;
-    return `${latestYesPrice.toFixed(2)}%`;
+    return market.currentOdds.yes == null
+      ? t(priceAuthorityUnavailable ? "market.priceUnavailable" : "trade.noTrades")
+      : formatPricePercentage(market.currentOdds.yes, market.divisibility);
   }
 
-  return "";
+  return market.outcomes.some((outcome) => outcome.odds != null)
+    ? ""
+    : t(priceAuthorityUnavailable ? "market.priceUnavailable" : "trade.noTrades");
 }
 
 function yesNoOutcomes(market: MarketDetailProps["market"]) {
@@ -59,6 +74,8 @@ export function MarketDetail({
   tradeSelection,
   tradeAmount,
   tradePreview,
+  tradeFeeFacts,
+  feeConsentCurrent,
   tradeSide,
   orderType,
   limitOrderPreview,
@@ -78,6 +95,8 @@ export function MarketDetail({
   onLoadMoreComments,
   onRelatedMarketClick,
   onTradeSideChange,
+  tradeTab: controlledTradeTab,
+  onTradeTabChange,
   onOrderTypeChange,
   onLimitPriceChange,
   userHoldings,
@@ -86,17 +105,26 @@ export function MarketDetail({
   onTopUpRequired,
 }: MarketDetailProps) {
   const { t } = useTranslation();
+  const [localTradeTab, setLocalTradeTab] = useState<TradeTab>(tradeSide);
+  const activeTradeTab = controlledTradeTab ?? localTradeTab;
+  const previousMarketIdRef = useRef(market.id);
+  useEffect(() => {
+    if (previousMarketIdRef.current === market.id) return;
+    previousMarketIdRef.current = market.id;
+    setLocalTradeTab(tradeSide);
+    onTradeTabChange?.(tradeSide);
+  }, [market.id, onTradeTabChange, tradeSide]);
+  useEffect(() => {
+    if (controlledTradeTab == null) {
+      setLocalTradeTab((current) => (current === "Liquidity" ? current : tradeSide));
+    }
+  }, [controlledTradeTab, tradeSide]);
   const outcomes =
     market.type === "categorical"
       ? market.outcomes
       : market.type === "yesno"
         ? yesNoOutcomes(market)
         : undefined;
-  const marketOrderHasNoLiquidity =
-    orderType === "market" &&
-    !!tradeSelection &&
-    tradeAmount > 0 &&
-    tradePreview?.hasExecutableLiquidity === false;
   const backingBlocked = walletReady && tradeFeasibility?.canBack === false;
   const backingBlockReason =
     tradeFeasibility?.reason ?? (tradeSide === "Sell" ? "outcome-tokens" : "funds");
@@ -108,7 +136,7 @@ export function MarketDetail({
   const outcomeBookKey = (label: string) => canonicalizeOutcomeSet([label]);
 
   // Compute current display for price chart
-  const currentDisplay = computeCurrentDisplay(market);
+  const currentDisplay = computeCurrentDisplay(market, t);
 
   // Determine market state per ADR-009 (Amendment 2026-05-04 — detail-page
   // compliance). The detail page reads engine `state` for lifecycle
@@ -125,20 +153,67 @@ export function MarketDetail({
   const marketState = useMarketState(market.state);
   const isEffectivelyClosed = marketState === "Closed";
   const isTradingDisabled = isEffectivelyClosed;
+  const activePreview = orderType === "limit" ? limitOrderPreview : tradePreview;
+  const previewNeedsAttention =
+    !!tradeSelection &&
+    tradeAmount > 0 &&
+    !(
+      activePreview?.status === "ready" &&
+      activePreview.response?.fullFillAvailable === true &&
+      feeConsentCurrent
+    );
+  const handleTradeTabChange = (tab: TradeTab) => {
+    setLocalTradeTab(tab);
+    onTradeTabChange?.(tab);
+  };
+
+  const tradingPanel = (
+    <TradingPanel
+      market={market}
+      tradeSelection={tradeSelection}
+      tradeAmount={tradeAmount}
+      tradePreview={tradePreview}
+      tradeFeeFacts={tradeFeeFacts}
+      feeConsentCurrent={feeConsentCurrent}
+      tradeSide={tradeSide}
+      orderType={orderType}
+      limitOrderPreview={limitOrderPreview}
+      limitPrice={limitPrice}
+      onTradeSelect={onTradeSelect}
+      onTradeClear={onTradeClear}
+      onAmountChange={onAmountChange}
+      onTradeConfirm={onTradeConfirm}
+      tradeSubmitStatus={tradeSubmitStatus}
+      onTradeSubmitStatusDismiss={onTradeSubmitStatusDismiss}
+      tradeFeasibility={tradeFeasibility}
+      isTradeSubmitting={isTradeSubmitting}
+      onCommentPost={onCommentPost}
+      onTradeSideChange={onTradeSideChange}
+      tradeTab={activeTradeTab}
+      onTradeTabChange={handleTradeTabChange}
+      onOrderTypeChange={onOrderTypeChange}
+      onLimitPriceChange={onLimitPriceChange}
+      userHoldings={userHoldings}
+      walletReady={walletReady}
+      onWalletRequired={onWalletRequired}
+      onTopUpRequired={onTopUpRequired}
+      disabled={isTradingDisabled}
+    />
+  );
 
   return (
     <div className="min-h-screen bg-slate-50 pb-[calc(9rem+env(safe-area-inset-bottom))] dark:bg-slate-900 lg:pb-0">
-      {/* Desktop Layout: Two Columns (single column when resolved) */}
+      {/* Desktop Layout: keep the panel out of the main content flow so its
+          height does not stretch the gap between the header and chart. */}
       <div className="max-w-7xl mx-auto">
-        <div className="p-4 lg:grid lg:grid-cols-[1fr_380px] lg:gap-6 lg:p-6">
-          {/* Left Column - Main Content */}
-          <div className="space-y-6">
-            {/* Header */}
+        <div className="relative p-4 lg:p-6">
+          {/* Header stays before the panel on mobile and occupies the first
+              column above the content on desktop. */}
+          <div className="order-1 space-y-6 lg:mr-[404px]">
             <div className="bg-white dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 overflow-hidden">
               <MarketHeader market={market} onShare={onShare} />
             </div>
 
-            {/* Resolution Info (shown immediately after header for resolved markets) */}
             {isResolved && <ResolutionInfo resolution={market.resolution} />}
 
             {isEffectivelyClosed && (
@@ -151,39 +226,16 @@ export function MarketDetail({
                 <p>{t("market.closedBannerDescription")}</p>
               </div>
             )}
+          </div>
 
-            {/* Mobile: Trading Panel (disabled, not hidden, after close). */}
-            <div className="lg:hidden" data-testid="trading-panel-mobile">
-              <TradingPanel
-                market={market}
-                tradeSelection={tradeSelection}
-                tradeAmount={tradeAmount}
-                tradePreview={tradePreview}
-                tradeSide={tradeSide}
-                orderType={orderType}
-                limitOrderPreview={limitOrderPreview}
-                limitPrice={limitPrice}
-                onTradeSelect={onTradeSelect}
-                onTradeClear={onTradeClear}
-                onAmountChange={onAmountChange}
-                onTradeConfirm={onTradeConfirm}
-                tradeSubmitStatus={tradeSubmitStatus}
-                onTradeSubmitStatusDismiss={onTradeSubmitStatusDismiss}
-                tradeFeasibility={tradeFeasibility}
-                isTradeSubmitting={isTradeSubmitting}
-                onCommentPost={onCommentPost}
-                onTradeSideChange={onTradeSideChange}
-                onOrderTypeChange={onOrderTypeChange}
-                onLimitPriceChange={onLimitPriceChange}
-                userHoldings={userHoldings}
-                walletReady={walletReady}
-                onWalletRequired={onWalletRequired}
-                onTopUpRequired={onTopUpRequired}
-                disabled={isTradingDisabled}
-              />
-            </div>
+          <div
+            className="order-2 lg:absolute lg:top-6 lg:right-6 lg:bottom-6 lg:w-[380px]"
+            data-testid="trading-panel-responsive"
+          >
+            <div className="lg:sticky lg:top-6">{tradingPanel}</div>
+          </div>
 
-            {/* Price Chart */}
+          <div className="order-3 mt-6 space-y-6 lg:mr-[404px]">
             <PriceChart
               priceHistory={market.priceHistory}
               chartTimeframe={chartTimeframe}
@@ -191,13 +243,20 @@ export function MarketDetail({
               outcomePriceHistories={outcomePriceHistories}
               outcomes={market.type === "categorical" ? outcomes : undefined}
               currentDisplay={currentDisplay}
+              emptyDisplay={
+                market.type !== "numeric" &&
+                market.latestConfirmedTradesValid === true &&
+                market.latestConfirmedTrades?.length === 0
+                  ? t("trade.noTrades")
+                  : undefined
+              }
               comments={market.comments}
               unit={market.type === "numeric" ? market.unit : undefined}
+              disabledNumeric={market.type === "numeric"}
             />
 
-            {/* Order Book. Live state is owned by MarketDetailPage so depth,
-                previews, and submit-time ticket building all read the same
-                book snapshots. Closed markets render the last known book. */}
+            {/* Order Book. Live state is display-only; the engine preview owns
+                FOK execution authority. Closed markets render the last book. */}
             {market.type === "yesno" && (
               <div className="relative" data-testid="order-book-section">
                 {isEffectivelyClosed && (
@@ -258,57 +317,19 @@ export function MarketDetail({
               </div>
             )}
 
-            {/* Resolution Info (in normal position for open markets) */}
             {!isResolved && <ResolutionInfo resolution={market.resolution} />}
-
-            {/* Related Markets */}
             <RelatedMarkets markets={market.relatedMarkets} onMarketClick={onRelatedMarketClick} />
-
-            {/* Comments */}
             <CommentSection
               comments={market.comments}
               onCommentLike={onCommentLike}
               onLoadMoreComments={onLoadMoreComments}
             />
           </div>
-
-          {/* Right Column - Trading Panel (disabled, not hidden, after close). */}
-          <div className="hidden lg:block" data-testid="trading-panel-desktop">
-            <div className="sticky top-6">
-              <TradingPanel
-                market={market}
-                tradeSelection={tradeSelection}
-                tradeAmount={tradeAmount}
-                tradePreview={tradePreview}
-                tradeSide={tradeSide}
-                orderType={orderType}
-                limitOrderPreview={limitOrderPreview}
-                limitPrice={limitPrice}
-                onTradeSelect={onTradeSelect}
-                onTradeClear={onTradeClear}
-                onAmountChange={onAmountChange}
-                onTradeConfirm={onTradeConfirm}
-                tradeSubmitStatus={tradeSubmitStatus}
-                onTradeSubmitStatusDismiss={onTradeSubmitStatusDismiss}
-                tradeFeasibility={tradeFeasibility}
-                isTradeSubmitting={isTradeSubmitting}
-                onCommentPost={onCommentPost}
-                onTradeSideChange={onTradeSideChange}
-                onOrderTypeChange={onOrderTypeChange}
-                onLimitPriceChange={onLimitPriceChange}
-                userHoldings={userHoldings}
-                walletReady={walletReady}
-                onWalletRequired={onWalletRequired}
-                onTopUpRequired={onTopUpRequired}
-                disabled={isTradingDisabled}
-              />
-            </div>
-          </div>
         </div>
       </div>
 
       {/* Mobile: Sticky Bottom Trade Bar (only for open markets) */}
-      {!isTradingDisabled && (
+      {!isTradingDisabled && activeTradeTab !== "Liquidity" && (
         <div className="fixed left-0 right-0 bottom-[calc(4rem+env(safe-area-inset-bottom))] z-40 border-t border-slate-200 bg-white p-4 dark:border-slate-700 dark:bg-slate-800 lg:hidden">
           {tradeSelection ? (
             <div className="flex items-center gap-3">
@@ -318,13 +339,16 @@ export function MarketDetail({
                   {tradeSelection.outcomeId && ` - ${tradeSelection.outcomeId}`}
                 </p>
                 <p className="text-sm font-medium text-slate-900 dark:text-white">
-                  {marketOrderHasNoLiquidity
-                    ? t("trade.noExecutableLiquidity")
-                    : tradeAmount > 0
-                      ? t("trade.shareCount", {
-                          count: tradeAmount.toLocaleString(),
-                        })
-                      : t("trade.enterAmount")}
+                  {activePreview?.response?.fullFillAvailable === false
+                    ? t("trade.previewNotFillable")
+                    : previewNeedsAttention
+                      ? t("trade.previewLoading")
+                      : tradeAmount > 0
+                        ? t("trade.shareCount", {
+                            count: tradeAmount,
+                            formattedCount: tradeAmount.toLocaleString(),
+                          })
+                        : t("trade.enterAmount")}
                 </p>
               </div>
               <button
@@ -348,7 +372,7 @@ export function MarketDetail({
                 disabled={
                   isTradeSubmitting ||
                   (buyNeedsTopUp ? !onTopUpRequired : backingBlocked) ||
-                  marketOrderHasNoLiquidity ||
+                  (walletReady && !buyNeedsTopUp && previewNeedsAttention) ||
                   (walletReady && (!tradeAmount || tradeAmount <= 0))
                 }
                 title={

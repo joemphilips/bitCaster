@@ -117,6 +117,13 @@ describe("DepositWithdraw", () => {
       await userEvent.click(screen.getByRole("button", { name: "5" }));
       expect(onNumpadPress).toHaveBeenCalledWith("5");
     });
+
+    it("calls onNumpadPress for the decimal key", async () => {
+      const onNumpadPress = vi.fn();
+      renderDepositWithdraw({ currentView: "deposit-lightning", onNumpadPress });
+      await userEvent.click(screen.getByRole("button", { name: "." }));
+      expect(onNumpadPress).toHaveBeenCalledWith(".");
+    });
   });
 
   describe("DepositEcash view", () => {

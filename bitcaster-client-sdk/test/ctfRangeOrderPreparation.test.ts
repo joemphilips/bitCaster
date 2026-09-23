@@ -29,6 +29,7 @@ import {
   decodePersistedCtfRangeOrderPreparationBytes,
   encodePersistedCtfRangeOrderPreparation,
   planPersistedCtfRangeOrderAuthorization,
+  settlementCapabilityV1WorkFacts,
   validateAndProjectCtfRangeSettlementCapabilityResponse,
   type CtfRangeOrderRequest,
 } from '../src/ctfRangeOrderProtocol.ts'
@@ -131,7 +132,7 @@ test('prepares exact PAY_TO_UNLOCK material and completes one durable buy author
     assert.equal(condition.coordinatorPublicKey, COORDINATOR_PUBLIC_KEY)
     assert.deepEqual(condition.mode, {
       kind: 'pool',
-      policy: { rateN: 10_000n, rateD: 3n, minReceive: 10_000n, maxDebit: 3n },
+      policy: { rateN: 1_000n, rateD: 3n, minReceive: 1_000n, maxDebit: 3n },
     })
   }
 
@@ -355,45 +356,30 @@ test('derives the exact authorization plan from persisted Buy and Sell preparati
   }
 })
 
-test('GTD preparation preserves the original order expiry and rejects an expired horizon', () => {
-  const expiresAt = '1970-01-01T00:05:00.000Z'
-  const persisted = buildPersistedCtfRangeOrderPreparation({
-    request: {
-      ...rangeOrderRequest(),
-      timeInForce: 'GTD',
-      expiresAt,
-    },
-    coordinatorPublicKey: COORDINATOR_PUBLIC_KEY,
-    mintFacts: reviewedMintFacts(),
-    market: {
-      outcomes: [
-        { id: 'yes-id', label: 'YES' },
-        { id: 'no-id', label: 'NO' },
-      ],
-    },
-    nowUnixSeconds: 20,
-    randomId: sequentialId('range-operation-gtd', 'authorization-gtd'),
-  })
-
-  assert.equal(persisted.request.expiresAt, expiresAt)
-  assert.equal(persisted.expiry, 300)
-  assert.throws(
-    () =>
-      buildPersistedCtfRangeOrderPreparation({
-        request: persisted.request,
-        coordinatorPublicKey: COORDINATOR_PUBLIC_KEY,
-        mintFacts: reviewedMintFacts(),
-        market: {
-          outcomes: [
-            { id: 'yes-id', label: 'YES' },
-            { id: 'no-id', label: 'NO' },
-          ],
-        },
-        nowUnixSeconds: 300,
-        randomId: sequentialId('range-operation-expired', 'authorization-expired'),
-      }),
-    /GTD order expiry horizon is exhausted/,
-  )
+test('public capability preparation rejects non-FOK orders', () => {
+  for (const timeInForce of ['FAK', 'GTC', 'GTD'] as const) {
+    assert.throws(
+      () =>
+        buildPersistedCtfRangeOrderPreparation({
+          request: {
+            ...rangeOrderRequest(),
+            timeInForce,
+            expiresAt: timeInForce === 'GTD' ? '2030-01-01T00:05:00.000Z' : null,
+          } as unknown as CtfRangeOrderRequest,
+          coordinatorPublicKey: COORDINATOR_PUBLIC_KEY,
+          mintFacts: reviewedMintFacts(),
+          market: {
+            outcomes: [
+              { id: 'yes-id', label: 'YES' },
+              { id: 'no-id', label: 'NO' },
+            ],
+          },
+          nowUnixSeconds: 20,
+          randomId: sequentialId(`range-operation-${timeInForce}`, `authorization-${timeInForce}`),
+        }),
+      /time in force/,
+    )
+  }
 })
 
 test('builds one capability request and validates its exact engine projection', () => {
@@ -413,9 +399,10 @@ test('builds one capability request and validates its exact engine projection', 
   const request = preparation.request
   const operation = completedOperation(preparation)
   const capabilityRequest = createCtfRangeSettlementCapabilityRequest(preparation, operation)
-  const artifactDigest = deriveSettlementCapabilityArtifactDigest(
-    createPoolSettlementCapabilityArtifact(operation),
-  )
+  assert.equal(capabilityRequest.orderIntent.timeInForce, 'FOK')
+  const artifact = createPoolSettlementCapabilityArtifact(operation)
+  const artifactDigest = deriveSettlementCapabilityArtifactDigest(artifact)
+  const workFacts = settlementCapabilityV1WorkFacts(operation)
   const capability = {
     reference: {
       artifactId: '11111111-1111-4111-8111-111111111111',
@@ -433,29 +420,15 @@ test('builds one capability request and validates its exact engine projection', 
   }
 
   assert.equal(capabilityRequest.stageIdempotencyKey, operation.authorizationId)
-  assert.equal(capabilityRequest.continuation, null)
-  const continuation = {
-    predecessorOrderId: '11111111-1111-4111-8111-111111111111',
-    settlementGroupId: '22222222-2222-4222-8222-222222222222',
-    settlementGroupRevision: 3,
-    continuationRevision: 4,
-  }
-  assert.deepEqual(
-    createCtfRangeSettlementCapabilityRequest(preparation, operation, continuation).continuation,
-    continuation,
-  )
-  assert.throws(
-    () =>
-      createCtfRangeSettlementCapabilityRequest(preparation, operation, {
-        ...continuation,
-        continuationRevision: 0,
-      }),
-    /continuation revision is invalid/,
-  )
   assert.equal(
     Buffer.from(capabilityRequest.artifact, 'base64').toString('base64'),
     capabilityRequest.artifact,
   )
+  assert.deepEqual(workFacts, {
+    inputCount: artifact.inputs.length,
+    manifestCount: artifact.manifest.entries.length,
+    artifactByteCount: Buffer.from(capabilityRequest.artifact, 'base64').byteLength,
+  })
   assert.deepEqual(
     validateAndProjectCtfRangeSettlementCapabilityResponse({
       capability,
@@ -754,9 +727,9 @@ test('prepares one exact collateral conversion with locked offer and ordinary co
     COMPLEMENT_COLLECTION,
     OUTCOME_COLLECTION,
   ])
-  assert.equal(completed.authorization.reduce(sumProofAmount, 0), 10_000)
-  assert.equal(completed.complement.reduce(sumProofAmount, 0), 10_000)
-  assert.equal(completed.collateralChange.reduce(sumProofAmount, 0), 9_999)
+  assert.equal(completed.authorization.reduce(sumProofAmount, 0), 1_000)
+  assert.equal(completed.complement.reduce(sumProofAmount, 0), 1_000)
+  assert.equal(completed.collateralChange.reduce(sumProofAmount, 0), 18_999)
   assert.throws(
     () =>
       validateCtfRangeCollateralSourceOperation(
@@ -830,9 +803,9 @@ function preparationInput() {
     coordinatorPublicKey: COORDINATOR_PUBLIC_KEY,
     side: 'Buy' as const,
     priceNumerator: 2,
-    amountSubunits: 10_000,
-    minimumFillAmountSubunits: 10_000,
-    divisibility: 10_000,
+    amountSubunits: 1_000,
+    minimumFillAmountSubunits: 1_000,
+    divisibility: 1_000,
     offerKeyset: regularKeyset(),
     receiveKeyset: outcomeKeyset(),
     expiryObservation: expiryObservation(),
@@ -927,12 +900,12 @@ function rangeOrderRequest(): CtfRangeOrderRequest {
     tokenSide: 'Outcome',
     side: 'Buy',
     price: 2,
-    amountSubunits: 10_000,
-    minimumFillAmountSubunits: 10_000,
+    amountSubunits: 1_000,
+    minimumFillAmountSubunits: 1_000,
     baseAsset: 'sat',
     collateralUnit: 'msat',
-    divisibility: 10_000,
-    timeInForce: 'GTC',
+    divisibility: 1_000,
+    timeInForce: 'FOK',
     expiresAt: null,
     mintUrl: MINT_URL,
   }
@@ -997,7 +970,11 @@ function sequentialId(...ids: string[]): () => string {
   return () => ids[index++] ?? 'unexpected-id'
 }
 
-function persistedPreparation(operationId: string, side: 'Buy' | 'Sell' = 'Buy') {
+function persistedPreparation(
+  operationId: string,
+  side: 'Buy' | 'Sell' = 'Buy',
+  authorizationLifetimeSeconds?: number,
+) {
   return buildPersistedCtfRangeOrderPreparation({
     request: { ...rangeOrderRequest(), side },
     coordinatorPublicKey: COORDINATOR_PUBLIC_KEY,
@@ -1010,8 +987,31 @@ function persistedPreparation(operationId: string, side: 'Buy' | 'Sell' = 'Buy')
     },
     nowUnixSeconds: 20,
     randomId: sequentialId(operationId, `${operationId}:authorization`),
+    authorizationLifetimeSeconds,
   })
 }
+
+test('authorization lifetime cap only shortens the mint-derived expiry', () => {
+  const baseline = persistedPreparation('lifetime-cap')
+  assert.equal(baseline.expiry, 700)
+  assert.equal(persistedPreparation('lifetime-cap', 'Buy', 60).expiry, 80)
+  assert.equal(persistedPreparation('lifetime-cap', 'Buy', 680).expiry, 700)
+  assert.ok(
+    Buffer.from(
+      encodePersistedCtfRangeOrderPreparation(persistedPreparation('lifetime-cap', 'Buy', 1_000)),
+    ).equals(Buffer.from(encodePersistedCtfRangeOrderPreparation(baseline))),
+    'a larger lifetime cap changed the default preparation bytes',
+  )
+})
+
+test('authorization lifetime cap rejects invalid values and addition overflow', () => {
+  for (const lifetime of [0, -1, 0.5, NaN, Infinity, Number.MAX_SAFE_INTEGER]) {
+    assert.throws(
+      () => persistedPreparation('invalid-lifetime', 'Buy', lifetime),
+      /authorization lifetime/,
+    )
+  }
+})
 
 function withoutPersistedRequest(preparation: ReturnType<typeof persistedPreparation>) {
   const { version: _, request: _request, complementKeyset: _complement, ...input } = preparation
@@ -1026,8 +1026,6 @@ function preparationRecord(
     scopeId: `custody:wallet:${'11'.repeat(32)}`,
     rangeOperationId: persisted.operationId,
     sourceOperationId: persisted.sourceOperationId,
-    sourceKind: persisted.sourceKind,
-    predecessorRangeOperationId: persisted.predecessorRangeOperationId,
     authorizationId: persisted.authorizationId,
     clientOrderId: persisted.request.clientOrderId,
     orderRouteId: persisted.request.marketId,
@@ -1039,8 +1037,6 @@ function preparationRecord(
     priceSubunits: persisted.priceNumerator,
     amountSubunits: persisted.amountSubunits,
     minimumFillAmountSubunits: persisted.request.minimumFillAmountSubunits,
-    continueAfterPartialFill: false,
-    continuation: null,
     divisibility: persisted.divisibility,
     authorizationExpiresAtUnixSeconds: persisted.expiry,
     preparationBytes,

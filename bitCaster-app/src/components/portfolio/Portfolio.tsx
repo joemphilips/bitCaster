@@ -30,9 +30,8 @@ function MonitoringStatus({
   if (!monitoring) return null;
   const error = monitoring.error ?? monitoring.assetPageError;
   const states = [
-    monitoring.stale && t("portfolio.monitoringStale"),
-    monitoring.incomplete && t("portfolio.monitoringIncomplete"),
-    monitoring.building && t("portfolio.monitoringBuilding"),
+    (monitoring.stale || monitoring.incomplete || monitoring.building) &&
+      t("portfolio.monitoringUpdating"),
     monitoring.unvaluedAssetCount > 0 &&
       t("portfolio.monitoringUnvalued", { count: monitoring.unvaluedAssetCount }),
     monitoring.hasPendingOutgoing &&
@@ -244,7 +243,7 @@ export function Portfolio(props: PortfolioProps) {
           )}
           {mainTab === "funds" && (
             <>
-              <FundsList funds={props.funds} onViewFund={props.onViewFund} />
+              <FundsList funds={props.funds} />
               <LoadMoreAssets monitoring={props.monitoring} onLoadMore={props.onLoadMoreAssets} />
             </>
           )}

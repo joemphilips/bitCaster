@@ -1,7 +1,8 @@
 import { ChevronRight, TrendingUp } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { RelatedMarket } from "@/types/market-detail";
-import { formatMarketSubunits } from "@bitcaster/client-sdk/marketUnits";
+import { formatPricePercentage } from "@bitcaster/client-sdk/marketUnits";
+import { InlineAmount } from "@/components/shared/InlineAmount";
 
 interface RelatedMarketsProps {
   markets: RelatedMarket[];
@@ -24,6 +25,16 @@ function formatClosingDate(dateStr: string, t: (key: string) => string, locale: 
 
 function RelatedMarketCard({ market, onClick }: { market: RelatedMarket; onClick?: () => void }) {
   const { t, i18n } = useTranslation();
+  const formatNullablePrice = (price: number | null) => {
+    if (market.latestConfirmedTradesValid !== true) {
+      return <span aria-label={t("market.priceUnavailable")}>—</span>;
+    }
+    if (price == null) return <span aria-label={t("trade.noTrades")}>—</span>;
+    if (market.divisibility == null) {
+      return <span aria-label={t("market.priceUnavailable")}>—</span>;
+    }
+    return formatPricePercentage(price, market.divisibility);
+  };
   return (
     <button
       onClick={onClick}
@@ -38,10 +49,10 @@ function RelatedMarketCard({ market, onClick }: { market: RelatedMarket; onClick
       {market.currentOdds && (
         <div className="flex gap-2 mb-3">
           <span className="px-2 py-1 rounded-md bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 text-xs font-medium">
-            {t("common.yes")} {market.currentOdds.yes.toFixed(2)}%
+            {t("common.yes")} {formatNullablePrice(market.currentOdds.yes)}
           </span>
           <span className="px-2 py-1 rounded-md bg-red-500/10 text-red-600 dark:text-red-400 text-xs font-medium">
-            {t("common.no")} {market.currentOdds.no.toFixed(2)}%
+            {t("common.no")} {formatNullablePrice(market.currentOdds.no)}
           </span>
         </div>
       )}
@@ -50,7 +61,7 @@ function RelatedMarketCard({ market, onClick }: { market: RelatedMarket; onClick
       <div className="flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
         <div className="flex items-center gap-1">
           <TrendingUp className="w-3.5 h-3.5" />
-          <span>{formatMarketSubunits(market.volume, market.baseAsset)}</span>
+          <InlineAmount amountSubunits={market.volume} baseAsset={market.baseAsset} />
         </div>
         <span>{formatClosingDate(market.closingDate, t, i18n.language)}</span>
       </div>

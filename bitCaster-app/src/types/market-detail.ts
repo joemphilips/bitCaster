@@ -3,8 +3,16 @@
 // =============================================================================
 
 // Import shared types from market discovery
-import type { CurrentOdds, Outcome, CategoryTag, ProductMarketDivisibility } from "./market";
+import type {
+  CurrentOdds,
+  Outcome,
+  CategoryTag,
+  ProductMarketDivisibility,
+  LatestConfirmedTrade,
+} from "./market";
 import type { MarketState } from "@/hooks/useMarketState";
+import type { UseFokOrderPreviewResult } from "@/hooks/useFokOrderPreview";
+import type { CtfRangeOrderFeeFacts } from "@bitcaster/client-sdk/ctfRangeOrderFeeComposition";
 
 // =============================================================================
 // Resolution Types
@@ -18,7 +26,7 @@ export interface ResolutionDetails {
   criteria: string;
   source: ResolutionSource;
   sourceDescription?: string;
-  resolutionDate: string;
+  resolutionDate: string | null;
   status: ResolutionStatus;
   finalOutcome?: string; // Only set when resolved
   disputeDeadline?: string; // For disputed markets
@@ -67,7 +75,7 @@ export interface PricePoint {
   timestamp: string;
   price: number; // 0-100
   volume?: number;
-  source?: "initial" | "fill";
+  source?: "fill";
 }
 
 export interface PriceHistory {
@@ -112,6 +120,11 @@ export interface RelatedMarket {
   title: string;
   imageUrl?: string;
   currentOdds?: CurrentOdds;
+  divisibility?: ProductMarketDivisibility;
+  /** Exact bounded confirmed-trade snapshot used for compact prices. */
+  latestConfirmedTrades?: LatestConfirmedTrade[];
+  /** False or missing means compact prices are unavailable. */
+  latestConfirmedTradesValid?: boolean;
   volume: number;
   baseAsset: "sat";
   closingDate: string;
@@ -137,6 +150,12 @@ interface BaseMarketDetail {
   baseAsset: "sat";
   divisibility: ProductMarketDivisibility;
   baseUnit: string; // e.g. "sats", "USD"
+  /** Exact primitive outcome IDs from the REST registration snapshot. */
+  registeredPrimitiveOutcomeIds?: string[];
+  /** Exact bounded REST/live confirmed-trade records used for price authority. */
+  latestConfirmedTrades?: LatestConfirmedTrade[];
+  /** False means the source price authority was malformed and is unavailable. */
+  latestConfirmedTradesValid?: boolean;
   mint?: MarketMintInfo;
   creator: MarketCreator;
   outcomes?: Outcome[];
@@ -155,7 +174,6 @@ interface BaseMarketDetail {
   recentTrades: Trade[];
   comments: Comment[];
   relatedMarkets: RelatedMarket[];
-  initialProbabilities?: Record<string, number>;
 }
 
 export interface YesNoMarketDetail extends BaseMarketDetail {
@@ -179,7 +197,7 @@ export interface NumericMarketDetail extends BaseMarketDetail {
   hiBound: number; // Upper bound of the outcome range
   precision: number; // Decimal places for display
   unit: string; // Display unit (e.g. "USD", "BTC")
-  currentPrice: number; // Implied price: loBound + (hiPrice / 100) * (hiBound - loBound)
+  currentPrice: number | null; // Implied price: loBound + (hiPrice / D) * (hiBound - loBound)
   attestedValue?: number; // Set when resolved — the oracle-attested value
 }
 
@@ -190,22 +208,43 @@ export type MarketDetail = YesNoMarketDetail | CategoricalMarketDetail | Numeric
 // =============================================================================
 
 export type TradeSide = "Buy" | "Sell";
+export type TradeTab = TradeSide | "Liquidity";
 export type OrderType = "market" | "limit";
 
+/** Read-only server preview state. The response remains generated SDK data. */
+export type FokOrderPreviewState = UseFokOrderPreviewResult;
+
+/** Legacy local quote shape kept for the isolated arithmetic helper tests. */
 export interface LimitOrderPreview {
-  limitPrice: number; // price numerator 1..divisibility-1
-  amount: number; // display shares
+  limitPrice: number;
+  amount: number;
   sharesIfFilled?: number;
-  quoteSubunits: number; // whole shares × price, the pre-fee quote
+  quoteSubunits: number;
   creatorFee: number;
-  mintFee: number; // read from the CTF keyset input_fee_ppk (0 in the first release)
-  engineScoreFeeSats: number | null; // sat-denominated Score fee; null means auth-gated until confirmation
-  potentialPayout: number; // display shares × market divisibility
-  // Display-only spend estimate used for the balance check. NEVER sent as the
-  // wire amountSubunits (which is `amount * divisibility`). Reactive:
-  //   limitPrice * amount + creatorFee + mintFee
+  mintFee: number;
+  engineScoreFeeSats: number | null;
+  potentialPayout: number;
   totalCost: number;
 }
+
+/** Legacy local quote shape. New UI props use FokOrderPreviewState. */
+export interface TradePreview {
+  amount: number;
+  predictedOdds: number;
+  priceImpact: number;
+  averageExecutionPrice?: number;
+  executableShares?: number;
+  hasExecutableLiquidity?: boolean;
+  quoteSubunits: number;
+  mintFee: number;
+  potentialPayout: number;
+  creatorFee: number;
+  engineScoreFeeSats: number | null;
+  totalCost: number;
+}
+
+/** Exact wallet preparation and settlement facts shown beside the quote. */
+export type TradeFeeFacts = CtfRangeOrderFeeFacts;
 
 // =============================================================================
 // Trade State Types
@@ -217,21 +256,6 @@ export interface TradeSelection {
   tradeSide?: TradeSide;
   orderType?: OrderType;
   limitPrice?: number;
-}
-
-export interface TradePreview {
-  amount: number;
-  predictedOdds: number; // Odds after trade
-  priceImpact: number; // Change in odds
-  averageExecutionPrice?: number;
-  executableShares?: number;
-  hasExecutableLiquidity?: boolean;
-  quoteSubunits: number;
-  mintFee: number;
-  potentialPayout: number;
-  creatorFee: number;
-  engineScoreFeeSats: number | null;
-  totalCost: number;
 }
 
 // =============================================================================
@@ -252,7 +276,13 @@ export interface MarketDetailProps {
   tradeAmount: number;
 
   /** Preview of trade outcome (null if no valid selection) */
-  tradePreview: TradePreview | null;
+  tradePreview: FokOrderPreviewState | null;
+
+  /** Exact wallet preparation and settlement facts for the current ticket. */
+  tradeFeeFacts?: TradeFeeFacts | null;
+
+  /** True when the displayed fee facts match the current trade ticket; the Confirm action supplies consent. */
+  feeConsentCurrent?: boolean;
 
   /** Called when user changes chart timeframe */
   onTimeframeChange?: (timeframe: ChartTimeframe) => void;
@@ -312,6 +342,12 @@ export interface MarketDetailProps {
   /** Called when user toggles between buy and sell */
   onTradeSideChange?: (side: TradeSide) => void;
 
+  /** Current trade pane tab. */
+  tradeTab?: TradeTab;
+
+  /** Called when the trade pane tab changes. */
+  onTradeTabChange?: (tab: TradeTab) => void;
+
   /** Current order type (market or limit) */
   orderType: OrderType;
 
@@ -319,7 +355,7 @@ export interface MarketDetailProps {
   onOrderTypeChange?: (type: OrderType) => void;
 
   /** Preview for limit orders (null if not applicable) */
-  limitOrderPreview?: LimitOrderPreview | null;
+  limitOrderPreview?: FokOrderPreviewState | null;
 
   /** Current limit price (in market's base unit) */
   limitPrice?: number;

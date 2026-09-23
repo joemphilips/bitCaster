@@ -15,6 +15,43 @@ import { decodeCanonicalMintOrigin } from './durableCustody.ts'
 import { parseMarketDivisibility } from './marketUnits.ts'
 
 const MARKET_FUNDING_DELIVERY_DOMAIN = 'bitcaster/market-funding-delivery/v1'
+const MINIMUM_ACTIVATION_NET_MSAT = new Map([
+  [2, 1],
+  [3, 2],
+  [4, 2],
+  [5, 2],
+  [6, 2],
+  [7, 2],
+  [8, 3],
+])
+
+export function requireMarketFundingActivationAmount(input: {
+  readonly grossMsat: number
+  readonly receiveFeeMsat: number
+  readonly outcomeCount: number
+}): number {
+  const { grossMsat, receiveFeeMsat, outcomeCount } = input
+  if (
+    !Number.isSafeInteger(grossMsat) ||
+    grossMsat < 1 ||
+    !Number.isSafeInteger(receiveFeeMsat) ||
+    receiveFeeMsat < 0 ||
+    !Number.isInteger(outcomeCount) ||
+    outcomeCount < 2 ||
+    outcomeCount > 8
+  ) {
+    throw new Error('market funding preview is invalid')
+  }
+  const netMsat = grossMsat - receiveFeeMsat
+  // An unconfirmed activation cannot justify the smaller subsequent-payment bound.
+  // These integer minima cover the conservative first-activation loss bound.
+  const minimumNetMsat = MINIMUM_ACTIVATION_NET_MSAT.get(outcomeCount)
+  if (minimumNetMsat === undefined) throw new Error('market funding outcome count is invalid')
+  if (netMsat < minimumNetMsat) {
+    throw new Error('market funding amount is too small after the receive fee')
+  }
+  return netMsat
+}
 
 export interface MarketFundingDeliveryInput {
   readonly deliveryId: string

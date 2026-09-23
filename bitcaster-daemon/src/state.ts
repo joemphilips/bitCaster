@@ -27,6 +27,7 @@ import {
   createDaemonStateSqliteSession,
   openDaemonStateSqlite,
   withDaemonStateSqliteTransaction,
+  type StateSqliteFaultPhase,
 } from './stateSqlite.ts'
 import {
   withDurableCustodyFencedRead,
@@ -163,7 +164,7 @@ export interface CompleteSetRecoveryRoot {
   readonly rootOperationId: string
   readonly mintUrl: string
   readonly conditionId: string
-  readonly amountSats: number
+  readonly amountMsat: number
   readonly regularOperationId: string | null
   readonly ctfOperationId: string | null
 }
@@ -229,7 +230,7 @@ export const COMPLETE_SET_RECOVERY_PAGE_SAMPLE_LIMIT = 64
 
 export const COMPLETE_SET_RECOVERY_ROOT_PAGE_SQL = `SELECT
     root.scope_id, root.root_operation_id, root.normalized_mint, root.condition_id,
-    root.amount_sats, root.regular_operation_id, root.ctf_operation_id, root.state,
+    root.amount_msat, root.regular_operation_id, root.ctf_operation_id, root.state,
     operation.operation_id, operation.kind, operation.purpose, operation.state AS operation_state,
     operation.normalized_mint AS operation_mint, operation.reservation_id
   FROM daemon_complete_set_recovery_roots AS root
@@ -636,77 +637,6 @@ export async function addAvailableProofs(
   })
 }
 
-export async function reserveAvailableSatProofsForSend(input: {
-  mintUrl: string
-  amountSats: number
-  reservedBy: string
-}): Promise<CashuProofRecord[]> {
-  return updateState((state, now) => {
-    const selected: StoredProofRecord[] = []
-    let total = 0
-    const candidates = state.wallet.proofs
-      .filter(
-        (record) =>
-          record.mintUrl === input.mintUrl &&
-          record.state === 'available' &&
-          record.asset.kind === 'sats' &&
-          normalizeProofAssetBaseAsset(record.asset) === 'sat' &&
-          normalizeProofAssetUnit(record.asset) === 'sat',
-      )
-      .sort((a, b) => amountToNumber(b.proof.amount) - amountToNumber(a.proof.amount))
-
-    for (const record of candidates) {
-      selected.push(record)
-      total += amountToNumber(record.proof.amount)
-      if (total >= input.amountSats) break
-    }
-    if (total < input.amountSats) {
-      throw new Error(`insufficient available sats in mint ${input.mintUrl}`)
-    }
-
-    for (const record of selected) {
-      record.state = 'reserved'
-      record.reservedBy = input.reservedBy
-      record.updatedAt = now
-    }
-    return selected.map((record) => structuredClone(record.proof))
-  })
-}
-
-export async function completeReservedSatSend(input: {
-  mintUrl: string
-  reservedBy: string
-  keepProofs: CashuProofRecord[]
-}): Promise<StoredProofRecord[]> {
-  return updateState((state, now) => {
-    state.wallet.proofs = state.wallet.proofs.filter(
-      (record) => record.mintUrl !== input.mintUrl || record.reservedBy !== input.reservedBy,
-    )
-
-    const existingSecrets = new Set(
-      state.wallet.proofs
-        .filter((record) => record.mintUrl === input.mintUrl)
-        .map((record) => record.proof.secret),
-    )
-    const inserted: StoredProofRecord[] = []
-    for (const proof of input.keepProofs) {
-      if (existingSecrets.has(proof.secret)) continue
-      existingSecrets.add(proof.secret)
-      const record: StoredProofRecord = {
-        proof: normalizeCashuProofRecord(proof),
-        mintUrl: input.mintUrl,
-        state: 'available',
-        asset: { kind: 'sats', baseAsset: 'sat', unit: 'sat' },
-        createdAt: now,
-        updatedAt: now,
-      }
-      state.wallet.proofs.push(record)
-      inserted.push(record)
-    }
-    return inserted
-  })
-}
-
 export async function releaseProofReservation(reservedBy: string): Promise<void> {
   await updateState((state, now) => {
     for (const record of state.wallet.proofs) {
@@ -781,6 +711,277 @@ export async function prepareProofOperationWithExactReservation(
       return operation
     },
   )
+}
+
+/** Prepare a mixed collateral/outcome CTF operation with exact target reservations. */
+export async function prepareCtfConsolidationProofOperationWithExactReservation(
+  input: PrepareProofOperationInput & {
+    readonly reservationId: string
+    readonly inputAssets: readonly StoredProofAsset[]
+  },
+  mutation: FencedStateMutation,
+  afterPrepare?: (database: DatabaseSync, operation: ProofOperationRecord) => void,
+  injectFault?: (phase: StateSqliteFaultPhase) => void,
+): Promise<ProofOperationRecord> {
+  return withDurableCustodyUnitOfWork(
+    profileDir(),
+    mutation.fence,
+    mutation.observedAtMs,
+    (database) => {
+      const operation = prepareCtfExactProofOperation(database, input)
+      afterPrepare?.(database, operation)
+      return operation
+    },
+    injectFault === undefined ? {} : { injectFault },
+  )
+}
+
+function prepareCtfExactProofOperation(
+  database: DatabaseSync,
+  input: PrepareProofOperationInput & {
+    readonly reservationId: string
+    readonly inputAssets: readonly StoredProofAsset[]
+  },
+): ProofOperationRecord {
+  assertCtfExactInputs(input)
+  const existing = readDaemonProofOperationFromDatabase(database, input.operationId)
+  if (existing !== null) {
+    assertCompatibleProofOperation(existing, input)
+    assertCtfExactReservedProofRows(
+      readDaemonReservedWalletProofsFromDatabase(database, input.mintUrl, input.reservationId),
+      input,
+    )
+    return existing
+  }
+  input.inputAssets.forEach((asset) => {
+    assertManagedConditionProofOperation(database, { ...input, asset })
+  })
+  const scopeId = readScopeId(database)
+  const timestamp = Date.now()
+  input.inputs.forEach((proof, index) => {
+    reserveExactProofRow(
+      database,
+      scopeId,
+      { ...input, asset: input.inputAssets[index]! },
+      proof,
+      timestamp,
+    )
+  })
+  const record = newPreparedProofOperation(input, timestamp)
+  insertProofOperation(database, scopeId, record)
+  return record
+}
+
+function assertCtfExactInputs(
+  input: PrepareProofOperationInput & {
+    readonly reservationId: string
+    readonly inputAssets: readonly StoredProofAsset[]
+  },
+): void {
+  assertValidExactInputs({ ...input, asset: input.inputAssets[0]! })
+  if (input.inputAssets.length !== input.inputs.length) {
+    throw new Error(`Proof operation ${input.operationId} exact input assets are incomplete`)
+  }
+  input.inputAssets.forEach((asset) => normalizeProofAsset(asset))
+}
+
+function assertCtfExactReservedProofRows(
+  reserved: readonly StoredProofRecord[],
+  input: PrepareProofOperationInput & {
+    readonly reservationId: string
+    readonly inputAssets: readonly StoredProofAsset[]
+  },
+): void {
+  assertCtfExactInputs(input)
+  if (
+    reserved.length !== input.inputs.length ||
+    input.inputs.some((proof, index) => {
+      const expectedAsset = normalizeProofAsset(input.inputAssets[index]!)
+      return !reserved.some(
+        (record) =>
+          record.mintUrl === input.mintUrl &&
+          record.reservedBy === input.reservationId &&
+          record.proof.secret === proof.secret &&
+          isDeepStrictEqual(record.proof, normalizeCashuProofRecord(proof)) &&
+          isDeepStrictEqual(normalizeProofAsset(record.asset), expectedAsset),
+      )
+    })
+  ) {
+    throw new Error(`Proof operation ${input.operationId} exact reservation is incomplete`)
+  }
+}
+
+/** Complete or replay a mixed CTF operation's target projection in the caller's transaction. */
+export function completeCtfConsolidationTargetFromDatabase(
+  database: DatabaseSync,
+  input: {
+    readonly operationId: string
+    readonly resultProofs: Record<string, CashuProofRecord[]>
+    readonly inputAssets: readonly StoredProofAsset[]
+    readonly successorAssets: Readonly<Record<string, StoredProofAsset>>
+    readonly nowMs: number
+  },
+): ProofOperationRecord {
+  const operation = readDaemonProofOperationFromDatabase(database, input.operationId)
+  if (operation === null) throw new Error(`Missing proof operation ${input.operationId}`)
+  const reservationId = requireText(
+    operation.metadata.reservationId,
+    'CTF consolidation reservation id',
+  )
+  const exactInput = {
+    operationId: operation.operationId,
+    kind: operation.kind,
+    mintUrl: operation.mintUrl,
+    inputs: operation.inputs,
+    outputs: operation.outputs,
+    metadata: operation.metadata,
+    reservationId,
+    inputAssets: input.inputAssets,
+  }
+  if (operation.state === 'prepared') {
+    assertCtfExactReservedProofRows(
+      readDaemonReservedWalletProofsFromDatabase(database, operation.mintUrl, reservationId),
+      exactInput,
+    )
+    const completed = completeProofOperation(
+      database,
+      operation.operationId,
+      input.resultProofs,
+      input.nowMs,
+    )
+    const released = database
+      .prepare(
+        `DELETE FROM target_wallet_proofs
+         WHERE scope_id = ? AND normalized_mint = ?
+           AND state = 'reserved' AND reserved_by = ?`,
+      )
+      .run(readScopeId(database), operation.mintUrl, reservationId)
+    if (released.changes !== operation.inputs.length) {
+      throw new Error('CTF consolidation predecessors changed before completion')
+    }
+    for (const [group, proofs] of Object.entries(input.resultProofs)) {
+      const asset = input.successorAssets[group]
+      if (asset === undefined) {
+        throw new Error('CTF consolidation successor asset is missing')
+      }
+      admitExactAvailableWalletProofsFromDatabase(database, {
+        mintUrl: completed.mintUrl,
+        proofs,
+        asset,
+        nowMs: input.nowMs,
+      })
+    }
+    return completed
+  }
+  if (operation.state !== 'completed') {
+    throw new Error(`Proof operation ${operation.operationId} is not recoverable`)
+  }
+  if (
+    readDaemonReservedWalletProofsFromDatabase(database, operation.mintUrl, reservationId)
+      .length !== 0
+  ) {
+    throw new Error('completed CTF consolidation operation retains a reservation')
+  }
+  for (const proof of operation.inputs) {
+    const stale = database
+      .prepare(
+        `SELECT 1 FROM target_wallet_proofs
+         WHERE scope_id = ? AND normalized_mint = ? AND secret = ? LIMIT 1`,
+      )
+      .get(readScopeId(database), operation.mintUrl, proof.secret)
+    if (stale !== undefined) throw new Error('completed CTF consolidation retains a predecessor')
+  }
+  for (const [group, proofs] of Object.entries(input.resultProofs)) {
+    const asset = input.successorAssets[group]
+    if (asset === undefined) throw new Error('CTF consolidation successor asset is missing')
+    for (const proof of proofs) {
+      admitRecoveredWalletProofFromDatabase(database, {
+        mintUrl: operation.mintUrl,
+        proof,
+        asset,
+        nowMs: input.nowMs,
+      })
+    }
+  }
+  return operation
+}
+
+/** Release a definite pre-mint CTF rejection without weakening exact input checks. */
+export function releaseCtfConsolidationProofReservationFromDatabase(
+  database: DatabaseSync,
+  input: {
+    readonly operationId: string
+    readonly reservationId: string
+    readonly inputAssets: readonly StoredProofAsset[]
+    readonly reason: string
+    readonly observedAtMs: number
+  },
+): ProofOperationRecord {
+  const operation = readDaemonProofOperationFromDatabase(database, input.operationId)
+  if (
+    operation === null ||
+    operation.metadata.reservationId !== input.reservationId ||
+    input.reason.length < 1 ||
+    input.reason.length > 1_024 ||
+    input.reason !== input.reason.trim()
+  ) {
+    throw new Error('CTF consolidation rejection authority is invalid')
+  }
+  if (operation.state === 'Failed') {
+    if (operation.lastError !== input.reason) {
+      throw new Error('CTF consolidation reservation failed with a different reason')
+    }
+    if (
+      readDaemonReservedWalletProofsFromDatabase(database, operation.mintUrl, input.reservationId)
+        .length !== 0
+    ) {
+      throw new Error('failed CTF consolidation reservation still owns wallet proofs')
+    }
+    return operation
+  }
+  if (operation.state !== 'prepared') {
+    throw new Error('only a prepared CTF consolidation operation can be released')
+  }
+  const exactInput = {
+    operationId: operation.operationId,
+    kind: operation.kind,
+    mintUrl: operation.mintUrl,
+    inputs: operation.inputs,
+    outputs: operation.outputs,
+    metadata: operation.metadata,
+    reservationId: input.reservationId,
+    inputAssets: input.inputAssets,
+  }
+  assertCtfExactReservedProofRows(
+    readDaemonReservedWalletProofsFromDatabase(database, operation.mintUrl, input.reservationId),
+    exactInput,
+  )
+  const released = database
+    .prepare(
+      `UPDATE target_wallet_proofs
+       SET state = 'available', reserved_by = NULL,
+           updated_at_ms = MAX(created_at_ms, ?)
+       WHERE scope_id = ? AND state = 'reserved' AND reserved_by = ?`,
+    )
+    .run(input.observedAtMs, readScopeId(database), input.reservationId)
+  if (released.changes !== operation.inputs.length) {
+    throw new Error('CTF consolidation reservation changed before release')
+  }
+  const failed = database
+    .prepare(
+      `UPDATE target_proof_operations
+       SET state = 'failed', last_error = ?,
+           updated_at_ms = MAX(created_at_ms, ?)
+       WHERE scope_id = ? AND operation_id = ? AND state = 'prepared'`,
+    )
+    .run(input.reason, input.observedAtMs, readScopeId(database), input.operationId)
+  if (failed.changes !== 1) throw new Error('CTF consolidation rejection CAS lost')
+  return {
+    ...operation,
+    state: 'Failed',
+    lastError: input.reason,
+    updatedAt: input.observedAtMs,
+  }
 }
 
 export async function readAvailableWalletProofsFenced(input: {
@@ -1626,6 +1827,19 @@ export async function markProofOperationCompletedFenced(
   )
 }
 
+export function completeRangeSourceFromDatabase(
+  database: DatabaseSync,
+  operationId: string,
+  completion: Record<string, CashuProofRecord[]>,
+  nowMs: number,
+): ProofOperationRecord {
+  const source = readDaemonProofOperationFromDatabase(database, operationId)
+  if (source?.metadata.purpose !== 'ctf-range-authorization-source') {
+    throw new Error('range source completion authority is invalid')
+  }
+  return completeProofOperation(database, operationId, completion, nowMs)
+}
+
 /**
  * Complete one ordinary send inside the caller's custody transaction.
  * The caller must admit the matching custody successors in the same transaction.
@@ -1635,6 +1849,7 @@ export function completeDurableOutgoingWalletSendFromDatabase(
   input: {
     readonly operationId: string
     readonly reservationId: string
+    readonly unit: 'msat'
     readonly keepProofs: readonly CashuProofRecord[]
     readonly sendProofs: readonly CashuProofRecord[]
     readonly nowMs: number
@@ -1645,7 +1860,8 @@ export function completeDurableOutgoingWalletSendFromDatabase(
     operation === null ||
     operation.kind !== 'wallet-send' ||
     operation.state !== 'prepared' ||
-    operation.metadata.reservationId !== input.reservationId
+    operation.metadata.reservationId !== input.reservationId ||
+    operation.metadata.unit !== 'msat'
   ) {
     throw new Error('durable outgoing wallet send proof operation is missing or foreign')
   }
@@ -1659,7 +1875,7 @@ export function completeDurableOutgoingWalletSendFromDatabase(
       outputs: operation.outputs,
       metadata: operation.metadata,
       reservationId: input.reservationId,
-      asset: { kind: 'sats', baseAsset: 'sat', unit: 'sat' },
+      asset: { kind: 'sats', baseAsset: 'sat', unit: 'msat' },
     },
   )
   const completed = completeProofOperation(
@@ -1671,13 +1887,13 @@ export function completeDurableOutgoingWalletSendFromDatabase(
   removeExactReservedPredecessors(database, completed, {
     purpose: 'durable-outgoing-cashu',
     reservationId: input.reservationId,
-    inputAsset: { kind: 'sats', baseAsset: 'sat', unit: 'sat' },
-    successorAssets: { keep: { kind: 'sats', baseAsset: 'sat', unit: 'sat' } },
+    inputAsset: { kind: 'sats', baseAsset: 'sat', unit: 'msat' },
+    successorAssets: { keep: { kind: 'sats', baseAsset: 'sat', unit: 'msat' } },
   })
   admitExactAvailableWalletProofsFromDatabase(database, {
     mintUrl: completed.mintUrl,
     proofs: input.keepProofs,
-    asset: { kind: 'sats', baseAsset: 'sat', unit: 'sat' },
+    asset: { kind: 'sats', baseAsset: 'sat', unit: 'msat' },
     nowMs: input.nowMs,
   })
   return completed
@@ -1694,6 +1910,12 @@ export async function completeManagedConditionRedeemFenced(
     mutation.observedAtMs,
     (database) => {
       const before = requireManagedConditionRedeemOperation(database, operationId)
+      if (before.state === 'completed') {
+        return completedProofOperation(before, completion, mutation.observedAtMs)
+      }
+      if (before.state !== 'prepared') {
+        throw new Error('managed condition redeem is not prepared for completion')
+      }
       const completed = completeProofOperation(
         database,
         operationId,
@@ -1701,34 +1923,32 @@ export async function completeManagedConditionRedeemFenced(
         mutation.observedAtMs,
       )
       const regular = completed.resultProofs?.regular ?? []
-      if (before.state === 'prepared') {
-        const reserved = readDaemonReservedWalletProofsFromDatabase(
-          database,
-          before.mintUrl,
+      const reserved = readDaemonReservedWalletProofsFromDatabase(
+        database,
+        before.mintUrl,
+        requireText(before.metadata.reservationId, 'retirement reservation id'),
+      )
+      assertExactReservedProofRows(reserved, {
+        operationId: before.operationId,
+        kind: before.kind,
+        mintUrl: before.mintUrl,
+        inputs: before.inputs,
+        outputs: before.outputs,
+        metadata: before.metadata,
+        reservationId: requireText(before.metadata.reservationId, 'retirement reservation id'),
+        asset: reserved[0]?.asset ?? retirementOutcomeAsset(before),
+      })
+      const removed = database
+        .prepare(
+          `DELETE FROM target_wallet_proofs
+           WHERE scope_id = ? AND state = 'reserved' AND reserved_by = ?`,
+        )
+        .run(
+          readScopeId(database),
           requireText(before.metadata.reservationId, 'retirement reservation id'),
         )
-        assertExactReservedProofRows(reserved, {
-          operationId: before.operationId,
-          kind: before.kind,
-          mintUrl: before.mintUrl,
-          inputs: before.inputs,
-          outputs: before.outputs,
-          metadata: before.metadata,
-          reservationId: requireText(before.metadata.reservationId, 'retirement reservation id'),
-          asset: reserved[0]?.asset ?? retirementOutcomeAsset(before),
-        })
-        const removed = database
-          .prepare(
-            `DELETE FROM target_wallet_proofs
-             WHERE scope_id = ? AND state = 'reserved' AND reserved_by = ?`,
-          )
-          .run(
-            readScopeId(database),
-            requireText(before.metadata.reservationId, 'retirement reservation id'),
-          )
-        if (removed.changes !== before.inputs.length) {
-          throw new Error('managed condition redeem inputs changed before completion')
-        }
+      if (removed.changes !== before.inputs.length) {
+        throw new Error('managed condition redeem inputs changed before completion')
       }
       admitExactAvailableWalletProofsFromDatabase(database, {
         mintUrl: completed.mintUrl,
@@ -2308,55 +2528,67 @@ function upsertOrderFromEngine(
   suppliedBaseAsset?: 'sat',
   suppliedDivisibility?: number,
 ): Promise<LocalOrderRecord> {
-  return updateState((state, now) => {
-    const existing = state.orders[orderId]
-    const status = readStringProperty(engineStatus, 'status') ?? existing?.status ?? 'unknown'
-    const engineBaseAsset = readStringProperty(engineStatus, 'baseAsset')
-    const baseAsset =
-      suppliedBaseAsset ??
-      (engineBaseAsset === undefined
-        ? existing?.baseAsset
-        : normalizeMarketBaseAsset(engineBaseAsset))
-    if (baseAsset === undefined) {
-      throw new Error('engine order status did not include required baseAsset')
-    }
-    const engineDivisibility = readNumberProperty(engineStatus, 'divisibility')
-    const divisibility =
-      suppliedDivisibility ??
-      (engineDivisibility === undefined
-        ? existing?.divisibility
-        : normalizeMarketDivisibility(engineDivisibility, baseAsset))
-    if (divisibility === undefined) {
-      throw new Error('engine order status did not include required divisibility')
-    }
-    const nextTokenSide = tokenSide ?? existing?.tokenSide
-    const nextSide = side ?? existing?.side
-    const nextPriceSubunits = priceSubunits ?? existing?.priceSubunits
-    const nextAmountSubunits = amountSubunits ?? existing?.amountSubunits
-    const record: LocalOrderRecord = {
-      orderId,
-      marketId,
-      ...(nextTokenSide ? { tokenSide: nextTokenSide } : {}),
-      ...(nextSide ? { side: nextSide } : {}),
-      ...(nextPriceSubunits != null ? { priceSubunits: nextPriceSubunits } : {}),
-      ...(nextAmountSubunits != null ? { amountSubunits: nextAmountSubunits } : {}),
-      status,
-      ...((clientOrderId ?? existing?.clientOrderId)
-        ? { clientOrderId: clientOrderId ?? existing?.clientOrderId }
-        : {}),
-      baseAsset,
-      divisibility,
-      ...(preflightSplit === null
-        ? {}
-        : preflightSplit || existing?.preflightSplit
-          ? { preflightSplit: preflightSplit ?? existing?.preflightSplit }
+  return withStateUpdateLock(async () => {
+    return withDaemonStateSqliteTransaction(profileDir(), (database) => {
+      const scopeId = readScopeId(database)
+      const existing = readOrderFromDatabase(database, scopeId, orderId)
+      const now = new Date().toISOString()
+      const status = readStringProperty(engineStatus, 'status') ?? existing?.status ?? 'unknown'
+      const engineBaseAsset = readStringProperty(engineStatus, 'baseAsset')
+      const baseAsset =
+        suppliedBaseAsset ??
+        (engineBaseAsset === null ? existing?.baseAsset : normalizeMarketBaseAsset(engineBaseAsset))
+      if (baseAsset === undefined) {
+        throw new Error('engine order status did not include required baseAsset')
+      }
+      const engineDivisibility = readNumberProperty(engineStatus, 'divisibility')
+      const divisibility =
+        suppliedDivisibility ??
+        (engineDivisibility === null
+          ? existing?.divisibility
+          : normalizeMarketDivisibility(engineDivisibility, baseAsset))
+      if (divisibility === undefined) {
+        throw new Error('engine order status did not include required divisibility')
+      }
+      const nextTokenSide = tokenSide ?? existing?.tokenSide
+      const nextSide = side ?? existing?.side
+      const nextPriceSubunits = priceSubunits ?? existing?.priceSubunits
+      const nextAmountSubunits = amountSubunits ?? existing?.amountSubunits
+      const record: LocalOrderRecord = {
+        orderId,
+        marketId,
+        ...(nextTokenSide ? { tokenSide: nextTokenSide } : {}),
+        ...(nextSide ? { side: nextSide } : {}),
+        ...(nextPriceSubunits != null ? { priceSubunits: nextPriceSubunits } : {}),
+        ...(nextAmountSubunits != null ? { amountSubunits: nextAmountSubunits } : {}),
+        status,
+        ...((clientOrderId ?? existing?.clientOrderId)
+          ? { clientOrderId: clientOrderId ?? existing?.clientOrderId }
           : {}),
-      engineStatus,
-      createdAt: existing?.createdAt ?? now,
-      updatedAt: now,
-    }
-    state.orders[orderId] = record
-    return record
+        baseAsset,
+        divisibility,
+        ...(preflightSplit === null
+          ? {}
+          : preflightSplit || existing?.preflightSplit
+            ? { preflightSplit: preflightSplit ?? existing?.preflightSplit }
+            : {}),
+        engineStatus,
+        createdAt: existing?.createdAt ?? now,
+        updatedAt: now,
+      }
+      const normalized = normalizeOrders({ [orderId]: record })[orderId]
+      if (normalized === undefined) throw new Error('normalized engine order is missing')
+      database
+        .prepare(
+          `INSERT INTO target_state_metadata (scope_id, schema_version) VALUES (?, 1)
+           ON CONFLICT(scope_id) DO NOTHING`,
+        )
+        .run(scopeId)
+      insertOrder(database, scopeId, normalized)
+      const persisted = readOrderFromDatabase(database, scopeId, orderId)
+      if (persisted === null) throw new Error('engine order was not persisted')
+      return persisted
+    })
   })
 }
 
@@ -2383,49 +2615,67 @@ export function readDaemonStateFromDatabase(database: DatabaseSync): DaemonState
   for (const raw of database
     .prepare('SELECT * FROM daemon_orders WHERE scope_id = ?')
     .all(scopeId) as Array<Record<string, unknown>>) {
-    const orderId = requireText(raw.order_id, 'order id')
-    const preflight =
-      raw.preflight_reservation_id === null
-        ? undefined
-        : {
-            reservationId: requireText(raw.preflight_reservation_id, 'preflight reservation'),
-            conditionId: requireText(raw.preflight_condition_id, 'preflight condition'),
-            keepOutcomeSetId: requireText(raw.preflight_keep_outcome_set_id, 'preflight keep set'),
-            lockOutcomeSetId: requireText(raw.preflight_lock_outcome_set_id, 'preflight lock set'),
-            amountSubunits: requireInteger(
-              raw.preflight_amount_subunits,
-              'preflight amountSubunits',
-            ),
-          }
-    state.orders[orderId] = {
-      orderId,
-      marketId: requireText(raw.market_id, 'order market'),
-      ...(raw.token_side === null ? {} : { tokenSide: requireTokenSide(raw.token_side) }),
-      ...(raw.side === null ? {} : { side: requireOrderSide(raw.side) }),
-      ...(raw.price_subunits === null
-        ? {}
-        : { priceSubunits: requireInteger(raw.price_subunits, 'order price') }),
-      ...(raw.amount_subunits === null
-        ? {}
-        : { amountSubunits: requireInteger(raw.amount_subunits, 'order amount') }),
-      status: requireText(raw.status, 'order status'),
-      ...(raw.client_order_id === null
-        ? {}
-        : { clientOrderId: requireText(raw.client_order_id, 'client order id') }),
-      ...(preflight === undefined ? {} : { preflightSplit: preflight }),
-      baseAsset: requireSatBaseAsset(raw.base_asset, 'order base asset'),
-      divisibility: normalizeMarketDivisibility(
-        requireInteger(raw.divisibility, 'order divisibility'),
-        'sat',
-      ),
-      ...(raw.engine_status_present === 1
-        ? { engineStatus: decodeArtifact(raw.engine_status_body, 'engine status') }
-        : {}),
-      createdAt: timestampToIso(raw.created_at_ms, 'order created time'),
-      updatedAt: timestampToIso(raw.updated_at_ms, 'order updated time'),
-    }
+    const order = decodeOrderRow(raw, scopeId)
+    state.orders[order.orderId] = order
   }
   return state
+}
+
+function readOrderFromDatabase(
+  database: DatabaseSync,
+  scopeId: string,
+  orderId: string,
+): LocalOrderRecord | null {
+  const raw = database
+    .prepare(
+      `SELECT * FROM daemon_orders
+       WHERE scope_id = ? AND order_id = ?`,
+    )
+    .get(scopeId, orderId) as Record<string, unknown> | undefined
+  return raw === undefined ? null : decodeOrderRow(raw, scopeId)
+}
+
+function decodeOrderRow(raw: Record<string, unknown>, expectedScopeId: string): LocalOrderRecord {
+  const scopeId = requireText(raw.scope_id, 'order scope')
+  if (scopeId !== expectedScopeId) throw new Error('order scope does not match the daemon profile')
+  const orderId = requireText(raw.order_id, 'order id')
+  const preflight =
+    raw.preflight_reservation_id === null
+      ? undefined
+      : {
+          reservationId: requireText(raw.preflight_reservation_id, 'preflight reservation'),
+          conditionId: requireText(raw.preflight_condition_id, 'preflight condition'),
+          keepOutcomeSetId: requireText(raw.preflight_keep_outcome_set_id, 'preflight keep set'),
+          lockOutcomeSetId: requireText(raw.preflight_lock_outcome_set_id, 'preflight lock set'),
+          amountSubunits: requireInteger(raw.preflight_amount_subunits, 'preflight amountSubunits'),
+        }
+  return {
+    orderId,
+    marketId: requireText(raw.market_id, 'order market'),
+    ...(raw.token_side === null ? {} : { tokenSide: requireTokenSide(raw.token_side) }),
+    ...(raw.side === null ? {} : { side: requireOrderSide(raw.side) }),
+    ...(raw.price_subunits === null
+      ? {}
+      : { priceSubunits: requireInteger(raw.price_subunits, 'order price') }),
+    ...(raw.amount_subunits === null
+      ? {}
+      : { amountSubunits: requireInteger(raw.amount_subunits, 'order amount') }),
+    status: requireText(raw.status, 'order status'),
+    ...(raw.client_order_id === null
+      ? {}
+      : { clientOrderId: requireText(raw.client_order_id, 'client order id') }),
+    ...(preflight === undefined ? {} : { preflightSplit: preflight }),
+    baseAsset: requireSatBaseAsset(raw.base_asset, 'order base asset'),
+    divisibility: normalizeMarketDivisibility(
+      requireInteger(raw.divisibility, 'order divisibility'),
+      'sat',
+    ),
+    ...(raw.engine_status_present === 1
+      ? { engineStatus: decodeArtifact(raw.engine_status_body, 'engine status') }
+      : {}),
+    createdAt: timestampToIso(raw.created_at_ms, 'order created time'),
+    updatedAt: timestampToIso(raw.updated_at_ms, 'order updated time'),
+  }
 }
 
 export function readDaemonProofOperationFromDatabase(
@@ -2759,7 +3009,7 @@ function decodeCompleteSetRecoveryRoot(
     rootOperationId: requireText(raw.root_operation_id, 'complete-set root id'),
     mintUrl: requireText(raw.normalized_mint, 'complete-set root mint'),
     conditionId: requireText(raw.condition_id, 'complete-set root condition'),
-    amountSats: requireInteger(raw.amount_sats, 'complete-set root amount'),
+    amountMsat: requireInteger(raw.amount_msat, 'complete-set root amount'),
     regularOperationId:
       raw.regular_operation_id === null
         ? null
@@ -2796,7 +3046,7 @@ function upsertCompleteSetRecoveryRoot(
   database
     .prepare(
       `INSERT INTO daemon_complete_set_recovery_roots (
-         scope_id, root_operation_id, normalized_mint, condition_id, amount_sats,
+         scope_id, root_operation_id, normalized_mint, condition_id, amount_msat,
          regular_operation_id, regular_reservation_id, regular_purpose,
          ctf_operation_id, ctf_reservation_id, ctf_purpose, state, created_at_ms, updated_at_ms
        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -2818,7 +3068,7 @@ function upsertCompleteSetRecoveryRoot(
       root.rootOperationId,
       root.mintUrl,
       root.conditionId,
-      root.amountSats,
+      root.amountMsat,
       root.regularOperationId,
       root.regularOperationId === null ? null : `${root.regularOperationId}:reservation`,
       root.regularOperationId === null ? null : 'daemon-complete-set-regular-split',
@@ -2892,8 +3142,8 @@ function assertCompleteSetRecoveryRoot(root: CompleteSetRecoveryRoot): void {
     root.mintUrl.length > 2_048 ||
     root.conditionId.length < 1 ||
     root.conditionId.length > 1_024 ||
-    !Number.isSafeInteger(root.amountSats) ||
-    root.amountSats < 1 ||
+    !Number.isSafeInteger(root.amountMsat) ||
+    root.amountMsat < 1 ||
     (root.regularOperationId !== null &&
       (root.regularOperationId.length < 1 || root.regularOperationId.length > 16_384))
   ) {
@@ -2909,7 +3159,7 @@ function sameCompleteSetRecoveryRoot(
     left.rootOperationId === right.rootOperationId &&
     left.mintUrl === right.mintUrl &&
     left.conditionId === right.conditionId &&
-    left.amountSats === right.amountSats &&
+    left.amountMsat === right.amountMsat &&
     left.regularOperationId === right.regularOperationId &&
     (left.ctfOperationId === null || left.ctfOperationId === right.ctfOperationId)
   )
@@ -3258,7 +3508,7 @@ function synchronizePreparedCtfCompleteSetRecoveryRoots(
 
 function completeSetRootOperationId(operation: ProofOperationRecord): string | null {
   const purpose = operation.metadata.purpose
-  const amountSats = operation.metadata.amountSats
+  const amountMsat = operation.metadata.amountMsat
   if (
     purpose !== 'daemon-complete-set-regular-split' &&
     purpose !== 'daemon-complete-set-ctf-split'
@@ -3270,9 +3520,9 @@ function completeSetRootOperationId(operation: ProofOperationRecord): string | n
     operation.metadata.rootOperationId.length === 0 ||
     typeof operation.metadata.conditionId !== 'string' ||
     operation.metadata.conditionId.length === 0 ||
-    typeof amountSats !== 'number' ||
-    !Number.isSafeInteger(amountSats) ||
-    amountSats <= 0
+    typeof amountMsat !== 'number' ||
+    !Number.isSafeInteger(amountMsat) ||
+    amountMsat <= 0
   ) {
     throw new Error('complete-set operation metadata is invalid')
   }
@@ -3288,7 +3538,7 @@ function completeSetRecoveryRootFromOperation(
     rootOperationId: operation.metadata.rootOperationId as string,
     mintUrl: operation.mintUrl,
     conditionId: operation.metadata.conditionId as string,
-    amountSats: operation.metadata.amountSats as number,
+    amountMsat: operation.metadata.amountMsat as number,
     regularOperationId,
     ctfOperationId,
   }

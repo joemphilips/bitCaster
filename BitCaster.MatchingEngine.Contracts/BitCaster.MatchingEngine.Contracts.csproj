@@ -5,6 +5,13 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
 
+  <!-- NSwag creates this file before CoreCompile. -->
+  <!-- Keep it in Compile during clean builds. -->
+  <ItemGroup>
+    <Compile Remove="Generated\ApiContracts.g.cs" />
+    <Compile Include="Generated\ApiContracts.g.cs" />
+  </ItemGroup>
+
   <!-- Embed OpenAPI + AsyncAPI specs in the NuGet package -->
   <ItemGroup>
     <None Include="specs\openapi.yaml" Pack="true" PackagePath="specs\" />

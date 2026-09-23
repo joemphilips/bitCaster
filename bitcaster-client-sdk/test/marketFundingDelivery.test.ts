@@ -5,6 +5,7 @@ import {
   createMarketFundingDeliverySubmission,
   deriveMarketFundingProductBinding,
   marketFundingDeliveryIntent,
+  requireMarketFundingActivationAmount,
 } from '../src/marketFundingDelivery.ts'
 
 const input = {
@@ -14,8 +15,58 @@ const input = {
   mintUrl: 'https://mint.example',
   unit: 'msat' as const,
   requestedAmount: '100000000',
-  divisibility: 10_000,
+  divisibility: 1_000,
 }
+
+for (const [outcomeCount, minimumNetMsat] of [
+  [2, 1],
+  [3, 2],
+  [4, 2],
+  [5, 2],
+  [6, 2],
+  [7, 2],
+  [8, 3],
+]) {
+  test(`funding preview preserves the first-activation boundary for ${outcomeCount} outcomes`, () => {
+    const grossMsat = 1000
+    assert.equal(
+      requireMarketFundingActivationAmount({
+        grossMsat,
+        receiveFeeMsat: grossMsat - minimumNetMsat,
+        outcomeCount,
+      }),
+      minimumNetMsat,
+    )
+    assert.throws(
+      () =>
+        requireMarketFundingActivationAmount({
+          grossMsat,
+          receiveFeeMsat: grossMsat - minimumNetMsat + 1,
+          outcomeCount,
+        }),
+      /too small/,
+    )
+  })
+}
+
+test('funding preview rejects malformed amounts, fees, and outcome counts', () => {
+  const valid = { grossMsat: 1000, receiveFeeMsat: 1, outcomeCount: 2 }
+  for (const invalid of [
+    { grossMsat: 0 },
+    { grossMsat: Number.MAX_SAFE_INTEGER + 1 },
+    { receiveFeeMsat: -1 },
+    { receiveFeeMsat: 0.5 },
+    { outcomeCount: 1 },
+    { outcomeCount: 9 },
+    { outcomeCount: 2.5 },
+  ]) {
+    assert.throws(() => requireMarketFundingActivationAmount({ ...valid, ...invalid }), /invalid/)
+  }
+  assert.throws(
+    () => requireMarketFundingActivationAmount({ ...valid, receiveFeeMsat: 1001 }),
+    /too small/,
+  )
+})
 
 test('builds one canonical AMM durable-recipient binding', () => {
   const metadata = createMarketFundingDeliveryMetadata(input)
@@ -60,7 +111,7 @@ test('rejects a noncanonical condition or nonexact token authority', () => {
     /requested amount/,
   )
   assert.throws(
-    () => createMarketFundingDeliveryMetadata({ ...input, requestedAmount: '10001' }),
+    () => createMarketFundingDeliveryMetadata({ ...input, requestedAmount: '1001' }),
     /requested amount/,
   )
   assert.throws(

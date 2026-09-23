@@ -1,7 +1,7 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Market } from "@/types/market";
+import type { Market, YesNoMarket } from "@/types/market";
 import { useBookmarkStore } from "@/stores/bookmarks";
 
 const { mockGetMarkets } = vi.hoisted(() => ({
@@ -18,7 +18,7 @@ vi.mock("@/lib/markets", async () => {
 
 import { LikedMarkets } from "../LikedMarkets";
 
-function makeMarket(id: string, title = `Market ${id}`): Market {
+function makeMarket(id: string, title = `Market ${id}`): YesNoMarket {
   const now = new Date().toISOString();
   return {
     id,
@@ -40,8 +40,8 @@ function makeMarket(id: string, title = `Market ${id}`): Market {
     creatorFeePercent: 0,
     baseMarket: "sats",
     baseAsset: "sat",
-    divisibility: 10_000,
-  } as Market;
+    divisibility: 1_000,
+  } as YesNoMarket;
 }
 
 function makeResult(markets: Market[]) {
@@ -85,6 +85,44 @@ describe("LikedMarkets (P5.1)", () => {
 
     await user.click(screen.getByTestId("liked-market-card-a"));
     expect(onViewMarket).toHaveBeenCalledWith("a");
+  });
+
+  it("labels null compact prices as no trades", async () => {
+    mockGetMarkets.mockResolvedValue(
+      makeResult([
+        {
+          ...makeMarket("a"),
+          currentOdds: { yes: null, no: null },
+          latestConfirmedTrades: [],
+          latestConfirmedTradesValid: true,
+        },
+      ]),
+    );
+    useBookmarkStore.setState({ markets: ["a"] });
+    render(<LikedMarkets />);
+
+    await screen.findByTestId("liked-market-card-a");
+    expect(screen.getAllByText("—")).toHaveLength(2);
+    expect(screen.getAllByLabelText("No trades yet")).toHaveLength(2);
+  });
+
+  it("labels null compact prices as unavailable when authority is missing", async () => {
+    mockGetMarkets.mockResolvedValue(
+      makeResult([
+        {
+          ...makeMarket("a"),
+          currentOdds: { yes: 2_500, no: 7_500 },
+          latestConfirmedTrades: [],
+          latestConfirmedTradesValid: false,
+        },
+      ]),
+    );
+    useBookmarkStore.setState({ markets: ["a"] });
+    render(<LikedMarkets />);
+
+    await screen.findByTestId("liked-market-card-a");
+    expect(screen.getAllByLabelText("market.priceUnavailable")).toHaveLength(2);
+    expect(screen.queryAllByLabelText("No trades yet")).toHaveLength(0);
   });
 
   it("shows an error message when the bulk fetch fails", async () => {

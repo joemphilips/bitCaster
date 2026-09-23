@@ -1,21 +1,33 @@
 import { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import { useLiveQuery } from "dexie-react-hooks";
-import { getProofs, isCtfProof } from "@/stores/proof-db";
+import {
+  db,
+  getCanonicalCurrentProofs,
+  isCtfProof,
+  type BitcasterDB,
+  type StoredProof,
+} from "@/stores/proof-db";
+import { readCanonicalPortfolioCustody } from "@/stores/portfolio-custody";
 import { useWalletStore } from "@/stores/wallet";
 import { useSettingsStore } from "@/stores/settings";
 import { useActivityLogStore } from "@/stores/activity-log";
-import { normalizeUrl, safeHostname } from "@/lib/url";
+import { safeHostname } from "@/lib/url";
+import { canonicalizeOutcomeSet } from "@bitcaster/client-sdk/outcomeSets";
 import {
   createAuthenticatedBrowserEngineClient,
   type MarketCatalogueEntry,
   type MarketCatalogueResponse,
 } from "@/lib/markets";
-import { browserWalletIdFromMnemonic } from "@/lib/browserWalletProfile";
+import {
+  activeBrowserWalletScopeId,
+  browserWalletIdFromMnemonic,
+  browserWalletScopeIdFromMnemonic,
+} from "@/lib/browserWalletProfile";
 import {
   cashuAmountToMarketSubunits,
   normalizeMarketBaseAsset,
-  normalizeMarketDivisibility,
   parseCashuProofUnit,
+  parseMarketDivisibility,
   type MarketBaseAsset,
 } from "@bitcaster/client-sdk/marketUnits";
 import { groupAmountsByUnit } from "@/lib/formatAmount";
@@ -41,7 +53,10 @@ import type {
   AssetMonitoringConditionalAssetReference,
   AssetMonitoringPortfolioResponse,
 } from "@bitcaster/client-sdk/assetMonitoring";
-import { decodeAssetMonitoringWalletId } from "@bitcaster/client-sdk/assetMonitoring";
+import {
+  computeAssetMonitoringOutcomeUniverseDigest,
+  decodeAssetMonitoringWalletId,
+} from "@bitcaster/client-sdk/assetMonitoring";
 import {
   listenForPortfolioInvalidation,
   type PortfolioInvalidation,
@@ -68,6 +83,8 @@ const TIME_RANGE_MS: Record<PLTimeSelector, number> = {
   "1M": 30 * 24 * 60 * 60 * 1000,
   ALL: Infinity,
 };
+
+const EMPTY_PL_CHART_DATA: PLChartData = { "1D": [], "1W": [], "1M": [], ALL: [] };
 
 /** Build P/L chart data from activity history. Sat-market amounts are collateral subunits (msat). */
 export function buildPLChartData(items: ActivityItem[]): PLChartData {
@@ -122,8 +139,9 @@ function loadProfile(): UserProfile {
 
 export function computeStats(positions: Position[], funds: Fund[]): PortfolioStats {
   const activePositions = positions.filter((p) => p.status === "active");
+  const valuedActivePositions = activePositions.filter((p) => p.valueKnown !== false);
   const positionsValueByUnit = groupAmountsByUnit(
-    activePositions,
+    valuedActivePositions,
     (p) => p.baseAsset,
     (p) => p.currentValueSats,
   );
@@ -140,10 +158,15 @@ export function computeStats(positions: Position[], funds: Fund[]): PortfolioSta
   const positionsValueSats =
     positionsValueByUnit.find((entry) => entry.unit === "sat")?.amount ?? 0;
   const totalValueSats = totalValueByUnit.find((entry) => entry.unit === "sat")?.amount ?? 0;
-  const biggestWinSats = positions.reduce((max, p) => Math.max(max, p.profitLossSats), 0);
+  const biggestWinSats = positions
+    .filter((p) => p.valueKnown !== false)
+    .reduce((max, p) => Math.max(max, p.profitLossSats), 0);
+  const positionsValueKnown = positions.every((position) => position.valueKnown !== false);
   return {
     positionsValueSats,
     totalValueSats,
+    positionsValueKnown,
+    totalValueKnown: positionsValueKnown,
     positionsValueByUnit,
     totalValueByUnit,
     biggestWinSats,
@@ -166,21 +189,30 @@ async function loadMarketCatalogue(
   conditionIds: string[],
 ): Promise<Map<string, MarketCatalogueEntry>> {
   if (conditionIds.length === 0) return new Map();
-  try {
-    const search = new URLSearchParams({
-      ids: conditionIds.join(","),
-      state: "All",
-      page_size: String(Math.min(Math.max(conditionIds.length, 1), 50)),
-    });
-    const response = await fetch(`/api/v1/markets/query?${search}`, {
-      headers: { Accept: "application/json" },
-    });
-    if (!response.ok) return new Map();
-    const body = (await response.json()) as MarketCatalogueResponse;
-    return new Map((body.markets ?? []).map((market) => [market.conditionId, market]));
-  } catch {
-    return new Map();
+  const uniqueConditionIds = [...new Set(conditionIds)];
+  const catalogue = new Map<string, MarketCatalogueEntry>();
+  for (let offset = 0; offset < uniqueConditionIds.length; offset += 50) {
+    const batch = uniqueConditionIds.slice(offset, offset + 50);
+    try {
+      const search = new URLSearchParams({
+        ids: batch.join(","),
+        state: "All",
+        page_size: String(batch.length),
+      });
+      const response = await fetch(`/api/v1/markets/query?${search}`, {
+        headers: { Accept: "application/json" },
+      });
+      if (!response.ok) continue;
+      const body = (await response.json()) as MarketCatalogueResponse;
+      const requestedIds = new Set(batch);
+      for (const market of body.markets ?? []) {
+        if (requestedIds.has(market.conditionId)) catalogue.set(market.conditionId, market);
+      }
+    } catch {
+      // Keep successful sibling batches when one catalogue page is unavailable.
+    }
   }
+  return catalogue;
 }
 
 function monitoringAssetValue(asset: AssetMonitoringAssetResponse): number {
@@ -188,7 +220,19 @@ function monitoringAssetValue(asset: AssetMonitoringAssetResponse): number {
 }
 
 export function canonicalMonitoringAssetIdentity(asset: AssetMonitoringAssetReference): string {
-  return JSON.stringify(asset);
+  const common = [asset.kind, asset.canonicalMintUrl, asset.cashuUnit, asset.displayBaseAsset];
+  switch (asset.kind) {
+    case "collateral":
+      return JSON.stringify(common);
+    case "conditional":
+      return JSON.stringify([
+        ...common,
+        asset.conditionId,
+        asset.parentConditionId,
+        asset.outcomeUniverseDigest,
+        asset.internalOutcomeSetId,
+      ]);
+  }
 }
 
 function sameMonitoringAsset(
@@ -225,56 +269,39 @@ export function appendMonitoringAssets(
 }
 
 function localMonitoringAssetIdentity(
-  proof: object,
-  conditionId: string,
-  outcomeCollection: string,
+  position: {
+    mintUrl: string;
+    conditionId: string;
+    outcomeCollection: string;
+    baseAsset: MarketBaseAsset;
+    unit: string;
+  },
+  market: MarketCatalogueEntry | undefined,
 ): string | null {
-  const metadata = proof as Record<string, unknown>;
-  const mintUrl = metadata.canonicalMintUrl ?? metadata.mintUrl;
-  if (typeof mintUrl !== "string") return null;
-  let canonicalMintUrl: string;
+  if (!market || position.baseAsset !== "sat" || position.unit !== "msat") return null;
+  const selected = position.outcomeCollection.split("|");
   try {
-    canonicalMintUrl = normalizeUrl(mintUrl);
+    if (
+      selected.length >= market.outcomes.length ||
+      canonicalizeOutcomeSet(selected) !== position.outcomeCollection ||
+      !selected.every((outcome) => market.outcomes.includes(outcome))
+    )
+      return null;
+    const asset: AssetMonitoringConditionalAssetReference = {
+      canonicalMintUrl: position.mintUrl,
+      kind: "conditional",
+      cashuUnit: "msat",
+      displayBaseAsset: position.baseAsset,
+      conditionId: position.conditionId,
+      parentConditionId: "0".repeat(64),
+      outcomeUniverseDigest: computeAssetMonitoringOutcomeUniverseDigest(market.outcomes),
+      internalOutcomeSetId: position.outcomeCollection,
+    };
+    return canonicalMonitoringAssetIdentity(asset);
   } catch {
+    // Missing or invalid display metadata must not hide local custody or its actions.
     return null;
   }
-  const asset = {
-    canonicalMintUrl,
-    kind: "conditional" as const,
-    cashuUnit: metadata.cashuUnit ?? metadata.unit,
-    displayBaseAsset: metadata.displayBaseAsset ?? metadata.baseAsset,
-    conditionId,
-    parentConditionId: metadata.parentConditionId,
-    outcomeUniverseDigest: metadata.outcomeUniverseDigest,
-    internalOutcomeSetId: metadata.internalOutcomeSetId ?? outcomeCollection,
-  };
-  if (
-    (asset.cashuUnit !== "sat" && asset.cashuUnit !== "msat") ||
-    (asset.displayBaseAsset !== "sat" && asset.displayBaseAsset !== "msat") ||
-    typeof asset.parentConditionId !== "string" ||
-    typeof asset.outcomeUniverseDigest !== "string" ||
-    asset.internalOutcomeSetId !== outcomeCollection
-  )
-    return null;
-  const completeAsset: AssetMonitoringConditionalAssetReference = {
-    canonicalMintUrl: asset.canonicalMintUrl,
-    kind: "conditional",
-    cashuUnit: asset.cashuUnit,
-    displayBaseAsset: asset.displayBaseAsset,
-    conditionId: asset.conditionId,
-    parentConditionId: asset.parentConditionId,
-    outcomeUniverseDigest: asset.outcomeUniverseDigest,
-    internalOutcomeSetId: asset.internalOutcomeSetId,
-  };
-  return canonicalMonitoringAssetIdentity(completeAsset);
-}
-
-function mergeLocalMonitoringIdentity(
-  current: string | null | undefined,
-  candidate: string | null,
-): string | null {
-  if (current === undefined) return candidate;
-  return current === candidate ? current : null;
 }
 
 function monitoringPosition(asset: AssetMonitoringAssetResponse): Position | null {
@@ -282,6 +309,9 @@ function monitoringPosition(asset: AssetMonitoringAssetResponse): Position | nul
   const value = monitoringAssetValue(asset);
   const conditionId = asset.asset.conditionId;
   const identity = canonicalMonitoringAssetIdentity(asset.asset);
+  const divisibility = parseMarketDivisibility(
+    (asset as AssetMonitoringAssetResponse & { divisibility?: unknown }).divisibility,
+  );
   return {
     id: `monitoring:${identity}`,
     marketId: conditionId,
@@ -295,7 +325,7 @@ function monitoringPosition(asset: AssetMonitoringAssetResponse): Position | nul
     canDiscard: false,
     monitoringAssetIdentity: identity,
     baseAsset: "sat",
-    divisibility: 10_000,
+    divisibility: divisibility ?? undefined,
     avgBuyPrice: 0,
     currentPrice: 0,
     currentValueSats: value,
@@ -309,6 +339,66 @@ function monitoringPosition(asset: AssetMonitoringAssetResponse): Position | nul
     acquiredDate: "",
     mintUrl: asset.asset.canonicalMintUrl,
   };
+}
+
+type LocalFundMint = { readonly url: string; readonly info?: Record<string, unknown> };
+
+/** Groups canonical, spendable product proofs for the read-only Funds view. */
+export function buildLocalFunds(
+  proofs: readonly StoredProof[],
+  mints: readonly LocalFundMint[],
+): (Fund & { mintName: string })[] {
+  const balanceByMintAndAsset = new Map<
+    string,
+    { mintUrl: string; baseAsset: MarketBaseAsset; unit: "msat"; amount: number }
+  >();
+  for (const proof of proofs) {
+    const unit = parseCashuProofUnit(proof.unit);
+    if (!unit) {
+      throw new Error(`Stored proof has unsupported unit '${String(proof.unit)}'`);
+    }
+    if (
+      isCtfProof(proof) ||
+      proof.reservedBy !== undefined ||
+      proof.terminalOperationId !== undefined ||
+      unit !== "msat"
+    )
+      continue;
+    // Canonical custody rows carry the normalized mint and product asset
+    // metadata before this helper runs. Product regular assets are msat
+    // displayed as sats.
+    if (proof.baseAsset !== "sat") continue;
+    const key = `${proof.mintUrl}:msat:sat`;
+    const current = balanceByMintAndAsset.get(key);
+    balanceByMintAndAsset.set(key, {
+      mintUrl: proof.mintUrl,
+      baseAsset: "sat",
+      unit: "msat",
+      amount:
+        (current?.amount ?? 0) + cashuAmountToMarketSubunits(amountToNumber(proof.amount), "msat"),
+    });
+  }
+  return [...balanceByMintAndAsset.values()].map(({ mintUrl, baseAsset, unit, amount }) => {
+    const mintInfo = mints.find((mint) => mint.url === mintUrl);
+    const name = mintInfo?.info?.name;
+    return {
+      id: `${mintUrl}:${unit}:${baseAsset}`,
+      unit: "sats" as const,
+      amount,
+      mintUrl,
+      mintName: typeof name === "string" ? name : safeHostname(mintUrl),
+    };
+  });
+}
+
+/** Reads the canonical spendable source used by the local Funds fallback. */
+export async function readCanonicalLocalFunds(
+  scopeId: string,
+  mints: readonly LocalFundMint[],
+  database: BitcasterDB = db,
+): Promise<(Fund & { mintName: string })[] | null> {
+  const proofs = await getCanonicalCurrentProofs(scopeId, database);
+  return proofs === null ? null : buildLocalFunds(proofs, mints);
 }
 
 export function mergeMonitoringPositions(
@@ -365,12 +455,23 @@ export function mapMonitoringPortfolio(response: AssetMonitoringPortfolioRespons
     );
   const positionsValueKnown =
     response.assets.nextCursor == null &&
+    response.summary.unvaluedAssetCount === 0 &&
+    !response.assets.incomplete &&
+    !response.assets.building &&
     positions.every((position) => position.valueKnown !== false);
-  const positionsValueSats = positions.reduce(
-    (total, position) => total + position.currentValueSats,
-    0,
-  );
-  const totalValueKnown = response.summary.estimatedTotalValueMsat !== null;
+  const positionsValueSats = positions
+    .filter((position) => position.valueKnown !== false)
+    .reduce((total, position) => total + position.currentValueSats, 0);
+  const totalValueKnown =
+    response.summary.estimatedTotalValueMsat !== null &&
+    response.summary.unvaluedAssetCount === 0 &&
+    !response.summary.incomplete &&
+    !response.summary.building;
+  const historyComplete =
+    !response.history.incomplete &&
+    !response.history.building &&
+    response.history.points.every((point) => point.estimatedTotalValueMsat !== null);
+  const chartComplete = totalValueKnown && historyComplete;
   return {
     stats: {
       positionsValueSats,
@@ -388,12 +489,12 @@ export function mapMonitoringPortfolio(response: AssetMonitoringPortfolioRespons
     },
     positions,
     funds,
-    chart: response.history.points
-      .filter((point) => point.estimatedTotalValueMsat !== null)
-      .map((point) => ({
-        timestamp: point.asOf,
-        cumulativePL: point.estimatedTotalValueMsat!,
-      })),
+    chart: chartComplete
+      ? response.history.points.map((point) => ({
+          timestamp: point.asOf,
+          cumulativePL: point.estimatedTotalValueMsat!,
+        }))
+      : [],
     monitoring: {
       stale: response.summary.stale || response.assets.stale || response.history.stale,
       incomplete:
@@ -626,114 +727,115 @@ export function usePortfolioState(): PortfolioState & {
 
   const positionsFromDb = useLiveQuery(
     async () => {
-      const proofs = await getProofs();
+      const scopeId = browserWalletScopeIdFromMnemonic(walletMnemonic);
+      if (scopeId === null || activeBrowserWalletScopeId() !== scopeId) return undefined;
+      const proofs = await readCanonicalPortfolioCustody(scopeId);
+      if (proofs === null) return undefined;
       const byOutcome = new Map<
         string,
         {
           conditionId: string;
           outcomeCollection: string;
           baseAsset: MarketBaseAsset;
+          unit: string;
           amount: number;
           mintUrl: string;
           firstReceivedAt: number;
-          monitoringAssetIdentity: string | null;
+          allVerifiedLosing: boolean;
+          claimRecoveryPending: boolean;
+          removalPending: boolean;
         }
       >();
-      for (const proof of proofs.filter(isCtfProof)) {
-        const candidate = proof as typeof proof & {
-          conditionId?: string;
-          condition_id?: string;
-          outcomeCollection?: string;
-          outcome_collection?: string;
-        };
-        const conditionId = candidate.conditionId ?? candidate.condition_id;
-        const outcomeCollection = candidate.outcomeCollection ?? candidate.outcome_collection;
+      for (const proof of proofs) {
+        if (proof.assetKind !== "conditional") continue;
+        const { conditionId, outcomeCollection } = proof;
         if (!conditionId || !outcomeCollection) continue;
         const baseAsset = normalizeMarketBaseAsset(proof.baseAsset);
-        const proofMonitoringIdentity = localMonitoringAssetIdentity(
-          proof,
+        const key = JSON.stringify([
+          proof.normalizedMint,
+          proof.unit,
           conditionId,
           outcomeCollection,
-        );
-        const key = `${conditionId}:${outcomeCollection}:${baseAsset}`;
+          baseAsset,
+        ]);
         const current = byOutcome.get(key);
         byOutcome.set(key, {
           conditionId,
           outcomeCollection,
           baseAsset,
-          amount: (current?.amount ?? 0) + amountToNumber(proof.amount),
-          mintUrl: current?.mintUrl ?? proof.mintUrl,
-          monitoringAssetIdentity: mergeLocalMonitoringIdentity(
-            current?.monitoringAssetIdentity,
-            proofMonitoringIdentity,
-          ),
+          amount: (current?.amount ?? 0) + proof.amount,
+          unit: proof.unit,
+          mintUrl: proof.normalizedMint,
+          claimRecoveryPending:
+            (current?.claimRecoveryPending ?? false) || proof.claimRecoveryPending,
+          removalPending:
+            (current?.removalPending ?? false) || proof.selectability === "pending-removal",
+          allVerifiedLosing:
+            (current?.allVerifiedLosing ?? true) &&
+            (proof.selectability === "verified-losing" ||
+              proof.selectability === "pending-removal"),
           firstReceivedAt: Math.min(
             current?.firstReceivedAt ?? Number.POSITIVE_INFINITY,
-            proof.receivedAt ?? Date.now(),
+            proof.receivedAtMs,
           ),
         });
       }
       const entries = Array.from(byOutcome.values());
       const catalogue =
         monitoringUnavailable || monitoringReady
-          ? await loadMarketCatalogue([...new Set(entries.map((entry) => entry.conditionId))])
+          ? await loadMarketCatalogue(entries.map((entry) => entry.conditionId))
           : new Map<string, MarketCatalogueEntry>();
       return entries.map((entry): Position => {
         const market = catalogue.get(entry.conditionId);
-        const divisibility = normalizeMarketDivisibility(
-          market?.divisibility ?? 10_000,
-          entry.baseAsset,
-        );
+        const divisibility = parseMarketDivisibility(market?.divisibility);
         const finalOutcome = market?.finalOutcome?.trim();
-        const isClosed = String(market?.state ?? "").toLowerCase() === "closed";
-        // Single source-of-truth winner/value derivation (P22 Link F HIGH).
-        // A keyset is a WINNING keyset iff the attested final outcome is a member
-        // of that keyset's outcome-collection (the mint redeems a collection's
-        // proofs iff the collection contains the attested outcome). A position is
-        // a WINNER iff it holds >= 1 proof on a winning keyset — the existence
-        // ("some winning leg") rule, NOT "every leg wins". An UNCLAIMED composite
-        // "A|B" position (final "A") therefore correctly counts as a winner and
-        // stays claimable; the old `.every` rule mis-classified it as a loser and
-        // offered only the destructive Remove, destroying the winning A-leg.
-        // Claimable value sums WINNING keysets only (losing-keyset proofs = 0).
-        // Each position group shares one outcome-collection label by construction
-        // (the group key includes it), so it is a single leg here.
-        const { status: winnerStatus, claimableValue } = deriveWinner({
-          isClosed,
-          finalOutcome,
-          legs: [{ outcomeCollection: entry.outcomeCollection, amount: entry.amount }],
-        });
+        const isClosed =
+          entry.allVerifiedLosing ||
+          entry.claimRecoveryPending ||
+          String(market?.state ?? "").toLowerCase() === "closed";
+        // Closure alone does not prove a loss. Only mint classification or an
+        // attested outcome can classify this display row.
+        const { status: winnerStatus, claimableValue } = entry.allVerifiedLosing
+          ? { status: "loser" as const, claimableValue: 0 }
+          : deriveWinner({
+              isClosed,
+              finalOutcome,
+              legs: [{ outcomeCollection: entry.outcomeCollection, amount: entry.amount }],
+            });
         const isWinner = winnerStatus === "winner";
         const isLoser = winnerStatus === "loser";
-        // Closed but NOT YET ATTESTED (P22 Link F): win/loss undecided. The row
-        // must offer NEITHER Claim NOR Remove (destroying not-yet-decided proofs
-        // is permanent loss) and show an "awaiting resolution" indicator. It stays
-        // visible in the Closed tab (status 'closed'), and its value is the full
-        // held amount — an undecided outcome is not a loss, so it is NOT zeroed.
         const isPending = winnerStatus === "pending";
         const status = isClosed ? "closed" : "active";
-        const currentValueSats = isClosed
-          ? isWinner || isPending
-            ? claimableValue
-            : 0
-          : entry.amount;
+        const currentValueSats = isClosed && isWinner ? claimableValue : 0;
         return {
-          id: `${entry.conditionId}-${entry.outcomeCollection}`,
+          id: JSON.stringify([
+            entry.mintUrl,
+            entry.conditionId,
+            entry.outcomeCollection,
+            entry.baseAsset,
+          ]),
           marketId: `${entry.conditionId}-${entry.outcomeCollection}`,
           marketTitle: market?.title ?? conditionLabel(entry.conditionId),
           marketImageUrl: market?.thumbnailUrl ?? "",
           side: positionSide(entry.outcomeCollection),
           outcomeId: entry.outcomeCollection,
           outcomeLabel: entry.outcomeCollection,
-          canClaimPayout: isWinner,
+          canClaimPayout: isWinner || entry.claimRecoveryPending,
+          claimRecoveryPending: entry.claimRecoveryPending,
+          removalPending: entry.removalPending,
           canDiscard: isLoser,
-          monitoringAssetIdentity: entry.monitoringAssetIdentity ?? undefined,
+          monitoringAssetIdentity: localMonitoringAssetIdentity(entry, market) ?? undefined,
           baseAsset: entry.baseAsset,
-          divisibility,
-          shares: entry.amount / divisibility,
+          divisibility: divisibility ?? undefined,
+          shares: divisibility === null ? undefined : entry.amount / divisibility,
           avgBuyPrice: 0,
-          currentPrice: isClosed && isWinner ? divisibility : 0,
+          currentPrice: isClosed && isWinner && divisibility !== null ? divisibility : 0,
           currentValueSats,
+          // Local proof rows have no current market valuation until an
+          // authoritative attestation or the exact display-only asset monitor
+          // supplies one. Face amount is not a current value and must not enter
+          // totals or P/L.
+          valueKnown: divisibility !== null && isClosed && !isPending,
           // Pending (undecided) shows no realised P&L; only attested winners/losers do.
           profitLossSats: isClosed && !isPending ? currentValueSats : 0,
           profitLossPercent: isClosed ? (isWinner ? 100 : isPending ? 0 : -100) : 0,
@@ -749,45 +851,21 @@ export function usePortfolioState(): PortfolioState & {
       });
     },
     [monitoringReady, monitoringUnavailable, walletMnemonic],
-    [] as Position[],
+    undefined as Position[] | undefined,
   );
   const positions: Position[] = positionsFromDb ?? [];
+  const localPositionsUnavailable = positionsFromDb === undefined;
   const fundsFromDb = useLiveQuery(
     async () => {
-      const proofs = await getProofs();
-      const balanceByMintAndUnit: Record<
-        string,
-        { mintUrl: string; baseAsset: MarketBaseAsset; amount: number }
-      > = {};
-      for (const p of proofs.filter((proof) => !isCtfProof(proof))) {
-        const baseAsset = normalizeMarketBaseAsset(p.baseAsset);
-        const unit = parseCashuProofUnit(p.unit);
-        if (!unit) throw new Error(`Stored proof has unsupported unit '${String(p.unit)}'`);
-        const key = `${p.mintUrl}:${baseAsset}`;
-        const current = balanceByMintAndUnit[key];
-        balanceByMintAndUnit[key] = {
-          mintUrl: p.mintUrl,
-          baseAsset,
-          amount:
-            (current?.amount ?? 0) + cashuAmountToMarketSubunits(amountToNumber(p.amount), unit),
-        };
-      }
-      return Object.values(balanceByMintAndUnit).map(({ mintUrl, baseAsset, amount }) => {
-        const mintInfo = storeMints.find((m) => m.url === mintUrl);
-        const name = (mintInfo?.info as Record<string, unknown>)?.name as string | undefined;
-        return {
-          id: `${mintUrl}:${baseAsset}`,
-          unit: "sats" as const,
-          amount,
-          mintUrl,
-          mintName: name ?? safeHostname(mintUrl),
-        };
-      });
+      const scopeId = browserWalletScopeIdFromMnemonic(walletMnemonic);
+      if (scopeId === null || activeBrowserWalletScopeId() !== scopeId) return undefined;
+      return readCanonicalLocalFunds(scopeId, storeMints);
     },
     [storeMints, walletMnemonic],
-    [] as (Fund & { mintName: string })[],
+    undefined as (Fund & { mintName: string })[] | null | undefined,
   );
-  const localFunds: Fund[] = fundsFromDb;
+  const localFunds: Fund[] = fundsFromDb ?? [];
+  const localFundsUnavailable = fundsFromDb == null;
   const localStats = useMemo(() => computeStats(positions, localFunds), [positions, localFunds]);
   const visibleMonitoring =
     monitoringResponse?.key === monitoringKey && visibleAssets
@@ -801,14 +879,24 @@ export function usePortfolioState(): PortfolioState & {
         })
       : null;
   const funds = visibleMonitoring?.funds ?? localFunds;
-  const stats = visibleMonitoring?.stats ?? localStats;
+  const stats = visibleMonitoring?.stats
+    ? visibleMonitoring.stats
+    : localFundsUnavailable || localPositionsUnavailable
+      ? {
+          ...localStats,
+          totalValueKnown: false,
+          totalValueByUnit: undefined,
+          positionsValueKnown: !localPositionsUnavailable && localStats.positionsValueKnown,
+        }
+      : localStats;
   const visiblePositions = visibleMonitoring
     ? mergeMonitoringPositions(visibleMonitoring.positions, positions)
     : positions;
   const plChartData = useMemo(() => {
+    if (stats.totalValueKnown === false) return EMPTY_PL_CHART_DATA;
     if (!visibleMonitoring) return buildPLChartData(activity);
     return { ...buildPLChartData(activity), [selectedTimeRange]: visibleMonitoring.chart };
-  }, [activity, selectedTimeRange, visibleMonitoring]);
+  }, [activity, selectedTimeRange, stats.totalValueKnown, visibleMonitoring]);
   const monitoring: PortfolioMonitoringState = {
     stale: visibleMonitoring?.monitoring.stale ?? false,
     incomplete: visibleMonitoring?.monitoring.incomplete ?? false,
@@ -816,7 +904,11 @@ export function usePortfolioState(): PortfolioState & {
     unvaluedAssetCount: visibleMonitoring?.monitoring.unvaluedAssetCount ?? 0,
     hasPendingOutgoing: visibleMonitoring?.monitoring.hasPendingOutgoing ?? false,
     pendingOutgoingValueMsat: visibleMonitoring?.monitoring.pendingOutgoingValueMsat ?? null,
-    error: monitoringError,
+    error:
+      monitoringError ??
+      (!visibleMonitoring && (localFundsUnavailable || localPositionsUnavailable)
+        ? "unavailable"
+        : null),
     assetPageError: visibleAssetPageError ? "unavailable" : null,
     hasMoreAssets: visibleAssets?.nextCursor != null,
     loadingMoreAssets: visibleAssets !== null && loadingMoreAssets,

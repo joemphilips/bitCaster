@@ -20,7 +20,7 @@ export interface DurableRecipientDeliveryTuple {
   readonly destinationId: string
   readonly productBindingSha256: string
   readonly mintUrl: string
-  readonly unit: 'sat' | 'msat'
+  readonly unit: 'msat'
   readonly requestedAmount: string
   readonly creditPolicy: DurableRecipientCreditPolicy
   readonly tokenSha256: string
@@ -333,8 +333,7 @@ function decodeTuple(value: unknown, allowToken = false): DurableRecipientDelive
   } catch {
     throw new Error('durable recipient delivery mint URL is not normalized')
   }
-  if (value.unit !== 'sat' && value.unit !== 'msat')
-    throw new Error('durable recipient unit is invalid')
+  if (value.unit !== 'msat') throw new Error('durable recipient unit is invalid')
   requireAmount(value.requestedAmount, 'requested amount')
   if (value.creditPolicy !== 'exact-amount' && value.creditPolicy !== 'net-of-receive-fee') {
     throw new Error('durable recipient credit policy is invalid')

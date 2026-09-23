@@ -312,7 +312,7 @@ test('wallet send and reclaim wake bounded custody recovery after a durable atte
         dispatch(
           {
             method: 'wallet.send',
-            params: { amountSats: 1, mintUrl: 'https://mint.example' },
+            params: { amountMsat: 1, mintUrl: 'https://mint.example' },
           },
           dependencies,
         ),
@@ -533,7 +533,7 @@ function completedCompleteSetOperation() {
       purpose: 'daemon-complete-set-ctf-split',
       rootOperationId: 'root',
       conditionId,
-      amountSats: 1,
+      amountMsat: 1,
       amountSubunits: 1,
       reservationId: 'root:ctf-split:reservation',
       inputAsset: { kind: 'sats', baseAsset: 'sat', unit: 'msat' },
@@ -586,9 +586,9 @@ test('buy order backing uses quote payment, not face amount', () => {
   assert.equal(
     orderBackingError({
       side: 'Buy',
-      price: 4_000,
-      amountSubunits: 30_000,
-      divisibility: 10_000,
+      price: 400,
+      amountSubunits: 3_000,
+      divisibility: 1_000,
       holdings: {
         baseUnitProofs: 12_000,
         primitiveProofsByAtom: {},
@@ -603,12 +603,12 @@ test('sell order backing still uses VCS face amount', () => {
   assert.match(
     orderBackingError({
       side: 'Sell',
-      price: 4_000,
-      amountSubunits: 30_000,
-      divisibility: 10_000,
+      price: 400,
+      amountSubunits: 3_000,
+      divisibility: 1_000,
       holdings: {
         baseUnitProofs: 50_000,
-        primitiveProofsByAtom: { Alpha: 20_000 },
+        primitiveProofsByAtom: { Alpha: 2_000 },
         complementProofsByAtom: {},
       },
     }) ?? '',

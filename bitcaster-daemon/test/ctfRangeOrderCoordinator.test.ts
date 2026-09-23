@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import test from 'node:test'
 import {
   Amount,
+  MintOperationError,
   OutputData,
   createBlindSignature,
   createDLEQProof,
@@ -21,6 +22,7 @@ import {
 } from '@cashu/cashu-ts'
 import {
   deriveDurableCustodyScopeId,
+  deriveDurableCustodyProofId,
   deriveDurableCustodyWalletId,
 } from '@bitcaster-market/client-sdk'
 import {
@@ -55,6 +57,8 @@ import {
   type StoredProofAsset,
 } from '../src/state.ts'
 import { openDaemonStateSqlite } from '../src/stateSqlite.ts'
+import { DurableCustodySqliteStore } from '../src/durableCustodySqliteStore.ts'
+import { createCustodyProofSqliteRow } from '../src/custodyProofSqliteRow.ts'
 import type { EngineClientLike, PrepareSettlementCapabilityInput } from '../src/server.ts'
 import { deserializeOutputGroups } from '../src/walletOps.ts'
 
@@ -156,8 +160,11 @@ test('daemon retries the exact capability request after its acknowledgement is l
       const wallet = new FakeWallet([sourceProof])
       const mint = fakeMint()
       const posted: CreateSettlementCapabilityRequest[] = []
+      const callOrder: string[] = []
+      const requiredScores: number[] = []
       let createAttempts = 0
       const client = fakeEngineClient((request) => {
+        callOrder.push('create-capability')
         posted.push(structuredClone(request))
         createAttempts += 1
         if (createAttempts === 1) throw new Error('capability acknowledgement lost')
@@ -172,7 +179,10 @@ test('daemon retries the exact capability request after its acknowledgement is l
       })
 
       await assert.rejects(
-        coordinator.prepare(orderRequest(), client),
+        coordinator.prepare(orderRequest(), client, async (requiredScore) => {
+          callOrder.push('fund-score')
+          requiredScores.push(requiredScore)
+        }),
         /capability acknowledgement lost/,
       )
       assert.equal(wallet.completeCalls, 1)
@@ -183,7 +193,7 @@ test('daemon retries the exact capability request after its acknowledgement is l
       )
       assert.equal(
         committed?.wallet.proofs.reduce((total, { proof }) => total + Number(proof.amount), 0),
-        3_190,
+        7_690,
       )
       assert.equal(committed?.proofOperations['range-operation-1:source']?.state, 'completed')
       assert.deepEqual(committed?.orders, {})
@@ -193,16 +203,29 @@ test('daemon retries the exact capability request after its acknowledgement is l
       assert.deepEqual(recovered.pending, [])
       assert.equal(wallet.completeCalls, 1)
       assert.equal(posted.length, 2)
+      assert.deepEqual(callOrder, ['fund-score', 'create-capability', 'create-capability'])
+      assert.equal(requiredScores.length, 1)
+      const artifactBytes = Buffer.from(posted[0]!.artifact, 'base64')
+      const artifact = decodeSettlementCapabilityArtifactBytes(artifactBytes)
+      assert.equal(
+        requiredScores[0],
+        1 +
+          artifact.inputs.length +
+          Math.ceil(artifact.manifest.entries.length / 16) +
+          Math.ceil(artifactBytes.byteLength / 4_096),
+      )
       assert.deepEqual(posted[1], posted[0])
       assert.equal(JSON.stringify(posted[0]), canonicalJson(posted[0]))
       const database = await openDaemonStateSqlite(directory)
       const custodyRows = database
         .prepare(
-          'SELECT operation_id, operation_state, result_state, revision FROM custody_operations',
+          `SELECT operation_id, operation_state, result_state, revision
+           FROM custody_operations WHERE semantic_kind = 'conditional-keyset-swap'`,
         )
         .all() as Array<{ operation_id: string }>
       database.close()
       assert.equal(custodyRows.length, 1)
+      await assertSourceCustodyIdentity(directory, 'ctf-range-regular-source')
       assert.ok(
         await new DaemonCtfRangeCoordinator(directory, fence).load(custodyRows[0]!.operation_id),
       )
@@ -221,8 +244,57 @@ test('daemon retries the exact capability request after its acknowledgement is l
   )
 })
 
+test('daemon retains a capped authorization after restart with a different cap', async () => {
+  const sourceProof = signedProof(OutputData.createRandomData(Amount.from(8_192), mintKeys())[0]!)
+  await withDaemonProfile(
+    {
+      prefix: 'bitcaster-range-lifetime-',
+      incarnationId: 'range-lifetime-test',
+      proofs: [sourceProof],
+      asset: regularAsset(),
+    },
+    async ({ directory, fence }) => {
+      const wallet = new FakeWallet([sourceProof])
+      const posted: CreateSettlementCapabilityRequest[] = []
+      const client = fakeEngineClient((request) => {
+        posted.push(structuredClone(request))
+        if (posted.length === 1) throw new Error('capability acknowledgement lost')
+        return boundCapability(request)
+      })
+      const ids = ['range-lifetime-operation', 'range-lifetime-authorization']
+      const dependencies = {
+        createMint: () => fakeMint(),
+        createWallet: () => wallet,
+        now: () => 10_000,
+        randomId: () => ids.shift()!,
+      }
+      const coordinator = new DaemonCtfRangeOrderCoordinator(directory, () => fence, {
+        ...dependencies,
+        authorizationLifetimeSeconds: 60,
+      })
+      await assert.rejects(coordinator.prepare(orderRequest(), client), /acknowledgement lost/)
+      const first = decodeSettlementCapabilityArtifactBytes(
+        Buffer.from(posted[0]!.artifact, 'base64'),
+      )
+      assert.equal(first.expiry, 70)
+      const restarted = new DaemonCtfRangeOrderCoordinator(directory, () => fence, {
+        ...dependencies,
+        authorizationLifetimeSeconds: 600,
+      })
+      const recovery = await restarted.recover(WALLET_SEED_HEX, client)
+      assert.equal(recovery.pending.length, 0)
+      assert.equal(posted.length, 2)
+      assert.ok(
+        posted[0]!.artifact === posted[1]!.artifact,
+        'replay changed the authorization artifact',
+      )
+      assert.equal(wallet.completeCalls, 1)
+    },
+  )
+})
+
 test('daemon does not consolidate fragmented order funds unless the caller opts in', async () => {
-  const sourceProofs = [4_096, 4_096, 2, 2, 2].map((amount) =>
+  const sourceProofs = [2, 2, 2, 2].map((amount) =>
     signedProof(OutputData.createRandomData(Amount.from(amount), mintKeys())[0]!),
   )
   await withDaemonProfile(
@@ -247,7 +319,15 @@ test('daemon does not consolidate fragmented order funds unless the caller opts 
       })
 
       await assert.rejects(
-        coordinator.prepare({ ...orderRequest(), price: 8_193 }, client),
+        coordinator.prepare(
+          {
+            ...orderRequest(),
+            price: 5,
+            amountSubunits: 1_000,
+            minimumFillAmountSubunits: 1_000,
+          },
+          client,
+        ),
         /proofs exceed the mint input limit; retry with proof consolidation enabled/,
       )
 
@@ -263,8 +343,179 @@ test('daemon does not consolidate fragmented order funds unless the caller opts 
   )
 })
 
+test('daemon releases a rejected consolidation in both stores and closes the failed preparation', async () => {
+  const proofs = [2, 2, 2, 2].map((amount) =>
+    signedProof(OutputData.createRandomData(Amount.from(amount), mintKeys())[0]!),
+  )
+  await withDaemonProfile(
+    {
+      prefix: 'bitcaster-consolidation-rejected-',
+      incarnationId: 'consolidation-rejected-test',
+      proofs,
+      asset: regularAsset(),
+    },
+    async ({ directory, fence }) => {
+      const wallet = new FakeWallet(proofs, 'unspent')
+      const ids = ['range-consolidation-rejected', 'authorization-consolidation-rejected']
+      const client = fakeEngineClient(() => {
+        throw new Error('failed preparation must not request a capability')
+      })
+      const coordinator = new DaemonCtfRangeOrderCoordinator(directory, () => fence, {
+        createMint: () => fakeMint(3),
+        createWallet: () => wallet,
+        now: () => 10_000,
+        randomId: () => ids.shift()!,
+      })
+      await assert.rejects(
+        coordinator.prepare(
+          {
+            ...orderRequest(),
+            price: 5,
+            amountSubunits: 1_000,
+            minimumFillAmountSubunits: 1_000,
+            consolidateProofs: true,
+          },
+          client,
+        ),
+        /mint swap acknowledgement lost/,
+      )
+      let replays = 0
+      wallet.completeSwap = async () => {
+        replays += 1
+        throw new MintOperationError(11001, 'definite rejection')
+      }
+      const recovered = await coordinator.recover(WALLET_SEED_HEX, client)
+      assert.equal(replays, 1)
+      assert.equal(recovered.pending.length, 0)
+      assert.equal(
+        (await readState())?.wallet.proofs.filter(({ state }) => state === 'available').length,
+        4,
+      )
+      const database = await openDaemonStateSqlite(directory)
+      try {
+        assert.equal(
+          database.prepare('SELECT count(*) AS count FROM custody_proof_reservations').get()?.count,
+          0,
+        )
+        assert.equal(
+          database
+            .prepare(
+              "SELECT operation_state AS state FROM custody_operations WHERE semantic_kind = 'proof-consolidation'",
+            )
+            .get()?.state,
+          'aborted',
+        )
+        assert.equal(
+          database
+            .prepare('SELECT lifecycle_state AS state FROM daemon_ctf_range_preparations')
+            .get()?.state,
+          'terminal',
+        )
+      } finally {
+        database.close()
+      }
+      assert.deepEqual(await coordinator.recover(WALLET_SEED_HEX, client), {
+        recovered: [],
+        pending: [],
+      })
+    },
+  )
+})
+
+test('daemon consolidation replay does not restore successors consumed after commit', async () => {
+  const proofs = [2, 2, 2, 2].map((amount) =>
+    signedProof(OutputData.createRandomData(Amount.from(amount), mintKeys())[0]!),
+  )
+  await withDaemonProfile(
+    {
+      prefix: 'bitcaster-consolidation-consumed-',
+      incarnationId: 'consolidation-consumed-test',
+      proofs,
+      asset: regularAsset(),
+    },
+    async ({ directory, fence }) => {
+      const wallet = new FakeWallet(proofs)
+      const prepare = wallet.prepareSwapToSend.bind(wallet)
+      let preparations = 0
+      wallet.prepareSwapToSend = async (...args) => {
+        preparations += 1
+        if (preparations > 1) throw new Error('source preparation interrupted')
+        return prepare(...args)
+      }
+      const ids = ['range-consolidation-consumed', 'authorization-consolidation-consumed']
+      const client = fakeEngineClient(() => {
+        throw new Error('must not request a capability')
+      })
+      const coordinator = new DaemonCtfRangeOrderCoordinator(directory, () => fence, {
+        createMint: () => fakeMint(3),
+        createWallet: () => wallet,
+        now: () => 10_000,
+        randomId: () => ids.shift()!,
+      })
+      await assert.rejects(
+        coordinator.prepare(
+          {
+            ...orderRequest(),
+            price: 5,
+            amountSubunits: 1_000,
+            minimumFillAmountSubunits: 1_000,
+            consolidateProofs: true,
+          },
+          client,
+        ),
+        /source preparation interrupted/,
+      )
+      const state = await readState()
+      assert.ok(state)
+      const consolidation = Object.values(state.proofOperations).find(
+        ({ kind }) => kind === 'proof-consolidation',
+      )
+      assert.equal(consolidation?.state, 'completed')
+      const successors = consolidation?.resultProofs?.consolidated
+      assert.ok(successors?.length)
+      const database = await openDaemonStateSqlite(directory)
+      try {
+        const store = new DurableCustodySqliteStore(database)
+        for (const proof of successors) {
+          assert.ok(proof.id)
+          const proofId = deriveDurableCustodyProofId({
+            scopeId: testScopeId(),
+            normalizedMint: MINT_URL,
+            unit: 'msat',
+            keysetId: proof.id,
+            secret: proof.secret,
+          })
+          const row = store.getProof(testScopeId(), proofId)
+          assert.ok(row)
+          store.putProofCas(
+            { ...row, nut07State: 'SPENT', selectability: 'spent', revision: row.revision + 1 },
+            row.revision,
+          )
+        }
+      } finally {
+        database.close()
+      }
+      state.wallet.proofs = state.wallet.proofs.filter(
+        ({ proof }) => !successors.some((successor) => successor.secret === proof.secret),
+      )
+      await writeState(state)
+      const result = await coordinator.recover(WALLET_SEED_HEX, client)
+      assert.equal(result.pending.length, 1)
+      assert.match(result.pending[0]!.error, /insufficient exact range-order funds/)
+      assert.equal(preparations, 2)
+      const replayed = await readState()
+      assert.equal(
+        replayed?.wallet.proofs.some(({ proof }) =>
+          successors.some((successor) => successor.secret === proof.secret),
+        ),
+        false,
+      )
+    },
+  )
+})
+
 test('daemon resumes exact bounded consolidation without recreating its range capability', async () => {
-  const sourceProofs = [4_096, 4_096, 2, 2, 2].map((amount) =>
+  const sourceProofs = [2, 2, 2, 2].map((amount) =>
     signedProof(OutputData.createRandomData(Amount.from(amount), mintKeys())[0]!),
   )
   await withDaemonProfile(
@@ -285,7 +536,13 @@ test('daemon resumes exact bounded consolidation without recreating its range ca
         now: () => 10_000,
         randomId: () => ids.shift()!,
       })
-      const request = { ...orderRequest(), price: 8_193, consolidateProofs: true }
+      const request = {
+        ...orderRequest(),
+        price: 5,
+        amountSubunits: 1_000,
+        minimumFillAmountSubunits: 1_000,
+        consolidateProofs: true,
+      }
 
       await assert.rejects(coordinator.prepare(request, client), /mint swap acknowledgement lost/)
       const interrupted = await readState()
@@ -341,7 +598,63 @@ test('daemon resumes exact bounded consolidation without recreating its range ca
   )
 })
 
-test('daemon releases the exact unspent source when authorization expires', async () => {
+test('daemon keeps both reservations when an expired source replay is uncertain', async () => {
+  const proof = signedProof(OutputData.createRandomData(Amount.from(8_192), mintKeys())[0]!)
+  await withDaemonProfile(
+    {
+      prefix: 'bitcaster-source-uncertain-',
+      incarnationId: 'source-uncertain-test',
+      proofs: [proof],
+      asset: regularAsset(),
+    },
+    async ({ directory, fence }) => {
+      let nowMs = 10_000
+      const wallet = new FakeWallet([proof], 'unspent')
+      const ids = ['range-uncertain', 'authorization-uncertain']
+      const client = fakeEngineClient(() => {
+        throw new Error('must not submit a capability')
+      })
+      const coordinator = new DaemonCtfRangeOrderCoordinator(directory, () => fence, {
+        createMint: () => fakeMint(64, 320),
+        createWallet: () => wallet,
+        now: () => nowMs,
+        randomId: () => ids.shift()!,
+      })
+      await assert.rejects(
+        coordinator.prepare(orderRequest(), client),
+        /mint swap acknowledgement lost/,
+      )
+      nowMs = 31_000
+      let replayCalls = 0
+      wallet.completeSwap = async () => {
+        replayCalls += 1
+        throw new Error('transport unavailable')
+      }
+      const result = await coordinator.recover(WALLET_SEED_HEX, client)
+      assert.equal(replayCalls, 1)
+      assert.equal(result.recovered.length, 0)
+      assert.equal(result.pending.length, 1)
+      assert.match(result.pending[0]!.error, /replay result is uncertain/)
+      const state = await readState()
+      assert.equal(state?.wallet.proofs[0]?.state, 'reserved')
+      const database = await openDaemonStateSqlite(directory)
+      try {
+        assert.equal(
+          database.prepare('SELECT count(*) AS count FROM custody_proof_reservations').get()?.count,
+          1,
+        )
+        assert.equal(
+          database.prepare('SELECT selectability FROM custody_proofs').get()?.selectability,
+          'locked',
+        )
+      } finally {
+        database.close()
+      }
+    },
+  )
+})
+
+test('daemon releases both source reservations only after definite replay rejection and fresh unspent evidence', async () => {
   const sourceProof = signedProof(OutputData.createRandomData(Amount.from(8_192), mintKeys())[0]!)
   await withDaemonProfile(
     {
@@ -369,11 +682,33 @@ test('daemon releases the exact unspent source when authorization expires', asyn
         /mint swap acknowledgement lost/,
       )
       nowMs = 31_000
+      let replayCalls = 0
+      wallet.completeSwap = async () => {
+        replayCalls += 1
+        throw new MintOperationError(11001, 'definite replay rejection')
+      }
       assert.deepEqual(await coordinator.recover(WALLET_SEED_HEX, client), {
         recovered: ['range-operation-expired:source'],
         pending: [],
       })
       const state = await readState()
+      assert.equal(replayCalls, 1)
+      const database = await openDaemonStateSqlite(directory)
+      try {
+        const custody = database
+          .prepare(
+            `SELECT operation_state AS state FROM custody_operations
+          WHERE semantic_kind = 'ctf-range-regular-source'`,
+          )
+          .get()
+        assert.equal(custody?.state, 'aborted')
+        const reservations = database
+          .prepare('SELECT count(*) AS count FROM custody_proof_reservations')
+          .get()
+        assert.equal(reservations?.count, 0)
+      } finally {
+        database.close()
+      }
       assert.equal(
         state?.wallet.proofs.find(({ proof }) => proof.secret === sourceProof.secret)?.state,
         'available',
@@ -510,7 +845,11 @@ test('daemon refunds a definitively rejected order without requiring engine orde
            WHERE range_operation_id = ?`,
         )
         .get(prepared.operationId) as { lifecycle: string }
-      const custody = database.prepare('SELECT operation_id FROM custody_operations').get() as {
+      const custody = database
+        .prepare(
+          "SELECT operation_id FROM custody_operations WHERE semantic_kind = 'conditional-keyset-swap'",
+        )
+        .get() as {
         operation_id: string
       }
       database.close()
@@ -558,7 +897,7 @@ test('daemon refunds a definitively rejected order without requiring engine orde
   )
 })
 
-test('daemon cancels an expired resting order before refunding its authorization', async () => {
+test('daemon leaves an unexpectedly active FOK pending without cancellation or refund', async () => {
   const sourceProof = signedProof(OutputData.createRandomData(Amount.from(8_192), mintKeys())[0]!)
   await withDaemonProfile(
     {
@@ -570,25 +909,28 @@ test('daemon cancels an expired resting order before refunding its authorization
     async ({ directory, fence }) => {
       let activeFence = fence
       let nowMs = 10_000
-      let cancelled = false
       let cancellationCalls = 0
+      const activeStatuses = [
+        restingOrderStatus(),
+        { ...restingOrderStatus()!, status: 'matched' as const },
+        { ...restingOrderStatus()!, status: 'partially_filled' as const },
+      ]
+      let activeStatusIndex = 0
       const baseClient = fakeEngineClient(boundCapability)
       const client: EngineClientLike = {
         ...baseClient,
-        getOrderStatus: async () => (cancelled ? cancelledOrderStatus() : restingOrderStatus()),
+        getOrderStatus: async () => activeStatuses[activeStatusIndex]!,
         cancelOrder: async () => {
           cancellationCalls += 1
-          cancelled = true
-          return true
+          throw new Error('public FOK recovery must not cancel a resting order')
         },
       }
       const ids = ['range-operation-resting-expiry', 'range-authorization-resting-expiry']
       const coordinator = new DaemonCtfRangeOrderCoordinator(directory, () => activeFence, {
         createMint: () => fakeMint(64, 320),
         createWallet: () => new FakeWallet([sourceProof]),
-        executeRefundSwap: async (_mintUrl, request) => {
-          assert.equal(cancelled, true)
-          return { signatures: request.outputs.map(signBlindedOutput) }
+        executeRefundSwap: async () => {
+          throw new Error('public FOK recovery must not refund a resting order')
         },
         now: () => nowMs,
         randomId: () => ids.shift()!,
@@ -615,17 +957,36 @@ test('daemon cancels an expired resting order before refunding its authorization
         incarnationId: 'range-resting-expiry-recovery',
         observedAtMs: nowMs,
       })
-      assert.deepEqual(await coordinator.recover(WALLET_SEED_HEX, client), {
-        recovered: ['range-operation-resting-expiry:source'],
-        pending: [],
-      })
-      assert.equal(cancellationCalls, 1)
-      assert.equal((await readState())?.orders[ORDER_ID]?.status, 'cancelled')
+      for (
+        activeStatusIndex = 0;
+        activeStatusIndex < activeStatuses.length;
+        activeStatusIndex += 1
+      ) {
+        const recovery = await coordinator.recover(WALLET_SEED_HEX, client)
+        assert.deepEqual(recovery.recovered, [])
+        assert.equal(recovery.pending.length, 1)
+        assert.match(recovery.pending[0]!.error, /unexpectedly active/)
+      }
+      assert.equal(cancellationCalls, 0)
+      const state = await readState()
+      assert.equal(state?.orders[ORDER_ID]?.status, 'partially_filled')
+      assert.equal(
+        Object.values(state?.proofOperations ?? {}).some(
+          ({ metadata }) => metadata.purpose === 'ctf-range-refund',
+        ),
+        false,
+      )
+      const database = await openDaemonStateSqlite(directory)
+      const journal = database
+        .prepare('SELECT lifecycle_state AS lifecycle FROM daemon_ctf_range_preparations')
+        .get() as { lifecycle: string }
+      database.close()
+      assert.equal(journal.lifecycle, 'order-submitted')
     },
   )
 })
 
-test('daemon terminates a partially filled FAK result after acknowledgement recovery', async () => {
+test('daemon completes a filled FOK result after acknowledgement recovery', async () => {
   const sourceProof = signedProof(OutputData.createRandomData(Amount.from(8_192), mintKeys())[0]!)
   await withDaemonProfile(
     {
@@ -657,7 +1018,7 @@ test('daemon terminates a partially filled FAK result after acknowledgement reco
           acknowledgementCommitted = true
           throw new Error('settlement result acknowledgement response lost')
         },
-        getOrderStatus: async () => partiallyFilledFakOrderStatus(),
+        getOrderStatus: async () => filledOrderStatus(),
       }
       const ids = ['range-operation-result', 'range-authorization-result']
       const coordinator = new DaemonCtfRangeOrderCoordinator(directory, () => fence, {
@@ -666,7 +1027,7 @@ test('daemon terminates a partially filled FAK result after acknowledgement reco
         now: () => 10_000,
         randomId: () => ids.shift()!,
       })
-      const request = { ...orderRequest(), timeInForce: 'FAK' as const }
+      const request = orderRequest()
       const prepared = await coordinator.prepare(request, client)
       await recordSubmittedOrder(
         request.marketId,
@@ -683,7 +1044,11 @@ test('daemon terminates a partially filled FAK result after acknowledgement reco
       await prepared.markSubmitted()
 
       const database = await openDaemonStateSqlite(directory)
-      const custody = database.prepare('SELECT operation_id FROM custody_operations').get() as {
+      const custody = database
+        .prepare(
+          "SELECT operation_id FROM custody_operations WHERE semantic_kind = 'conditional-keyset-swap'",
+        )
+        .get() as {
         operation_id: string
       }
       database.close()
@@ -727,6 +1092,90 @@ test('daemon terminates a partially filled FAK result after acknowledgement reco
         pending: [],
       })
       assert.deepEqual(mint.calls, mintCallsAfterPreparation)
+    },
+  )
+})
+
+test('daemon applies a partial FOK result but keeps it pending and unacknowledged', async () => {
+  const sourceProof = signedProof(OutputData.createRandomData(Amount.from(8_192), mintKeys())[0]!)
+  await withDaemonProfile(
+    {
+      prefix: 'bitcaster-range-partial-fok-',
+      incarnationId: 'range-partial-fok-test',
+      proofs: [sourceProof],
+      asset: regularAsset(),
+    },
+    async ({ directory, fence }) => {
+      let result: SettlementCapabilityResultResponse | null = null
+      let acknowledgementCalls = 0
+      const baseClient = fakeEngineClient(boundCapability)
+      const client: EngineClientLike = {
+        ...baseClient,
+        getSettlementCapabilityResultByOperation: async () => result,
+        acknowledgeSettlementCapabilityResult: async () => {
+          acknowledgementCalls += 1
+          throw new Error('partial FOK result must not be acknowledged')
+        },
+      }
+      const ids = ['range-operation-partial-fok', 'range-authorization-partial-fok']
+      const coordinator = new DaemonCtfRangeOrderCoordinator(directory, () => fence, {
+        createMint: () => fakeMint(64, 1_000),
+        createWallet: () => new FakeWallet([sourceProof]),
+        now: () => 10_000,
+        randomId: () => ids.shift()!,
+      })
+      const request = {
+        ...orderRequest(),
+        amountSubunits: 2_000,
+        minimumFillAmountSubunits: 2_000,
+      }
+      const prepared = await coordinator.prepare(request, client)
+      await recordSubmittedOrder(
+        request.marketId,
+        request.clientOrderId,
+        submittedOrder(),
+        null,
+        request.tokenSide,
+        request.side,
+        request.price,
+        request.amountSubunits,
+        request.baseAsset,
+        request.divisibility,
+      )
+      await prepared.markSubmitted()
+
+      const database = await openDaemonStateSqlite(directory)
+      const custody = database
+        .prepare(
+          "SELECT operation_id FROM custody_operations WHERE semantic_kind = 'conditional-keyset-swap'",
+        )
+        .get() as {
+        operation_id: string
+      }
+      database.close()
+      const loaded = await new DaemonCtfRangeCoordinator(directory, fence).load(
+        custody.operation_id,
+      )
+      assert.ok(loaded)
+      const selection = validPartialSelection(loaded.operation)
+      result = engineResult(prepared, loaded.operation, selection.selection)
+
+      const recovery = await coordinator.recover(WALLET_SEED_HEX, client)
+      assert.deepEqual(recovery.recovered, [])
+      assert.equal(recovery.pending.length, 1)
+      assert.match(recovery.pending[0]!.error, /does not satisfy the submitted FOK order/)
+      assert.equal(acknowledgementCalls, 0)
+
+      const persisted = await new DaemonCtfRangeCoordinator(directory, fence).load(
+        custody.operation_id,
+      )
+      assert.equal(persisted?.record.operation.result.state, 'applied')
+      const finalDatabase = await openDaemonStateSqlite(directory)
+      const journal = finalDatabase
+        .prepare('SELECT lifecycle_state AS lifecycle FROM daemon_ctf_range_preparations')
+        .get() as { lifecycle: string }
+      finalDatabase.close()
+      assert.equal(journal.lifecycle, 'order-submitted')
     },
   )
 })
@@ -793,7 +1242,11 @@ test('daemon applies exact mint recovery for an unavailable or cryptographically
       await prepared.markSubmitted()
 
       const database = await openDaemonStateSqlite(directory)
-      const custody = database.prepare('SELECT operation_id FROM custody_operations').get() as {
+      const custody = database
+        .prepare(
+          "SELECT operation_id FROM custody_operations WHERE semantic_kind = 'conditional-keyset-swap'",
+        )
+        .get() as {
         operation_id: string
       }
       database.close()
@@ -930,7 +1383,11 @@ test('daemon resumes the exact post-expiry refund after mint acknowledgement los
       await prepared.markSubmitted()
 
       const database = await openDaemonStateSqlite(directory)
-      const custody = database.prepare('SELECT operation_id FROM custody_operations').get() as {
+      const custody = database
+        .prepare(
+          "SELECT operation_id FROM custody_operations WHERE semantic_kind = 'conditional-keyset-swap'",
+        )
+        .get() as {
         operation_id: string
       }
       database.close()
@@ -1084,503 +1541,121 @@ test('daemon resumes the exact post-expiry refund after mint acknowledgement los
   )
 })
 
-test('daemon resumes an exact residual authorization after a restart boundary', async () => {
-  const sourceProof = signedProof(OutputData.createRandomData(Amount.from(16_384), mintKeys())[0]!)
+for (const faultPhase of ['before-commit', 'after-commit'] as const) {
+  test(`daemon recovers source binding ${faultPhase} without wallet loading or order submission`, async () => {
+    const proof = signedProof(OutputData.createRandomData(Amount.from(8_192), mintKeys())[0]!)
+    await withDaemonProfile(
+      {
+        prefix: 'bitcaster-range-staged-',
+        incarnationId: 'range-staged-recovery-test',
+        proofs: [proof],
+        asset: regularAsset(),
+      },
+      async ({ directory, fence }) => {
+        const wallet = new FakeWallet([proof])
+        const ids = ['range-staged', 'authorization-staged']
+        const mint = fakeMint()
+        const client = fakeEngineClient(() => {
+          throw new Error('recovery must not request a capability')
+        })
+        const first = new DaemonCtfRangeOrderCoordinator(directory, () => fence, {
+          createMint: () => mint,
+          injectRangeBindFault: (phase) => {
+            if (phase === faultPhase) throw new Error('binding interrupted')
+          },
+          createWallet: () => wallet,
+          now: () => 10_000,
+          randomId: () => ids.shift()!,
+        })
+        await assert.rejects(first.prepare(orderRequest(), client), /binding interrupted/)
+        assert.equal(wallet.completeCalls, 1)
+        const beforeRecovery = await rangeRecoverySnapshot(directory)
+        if (faultPhase === 'before-commit') {
+          const interrupted = await readState()
+          assert.equal(interrupted?.wallet.proofs.length, 1)
+          assert.equal(interrupted?.wallet.proofs[0]?.state, 'reserved')
+          assert.equal(interrupted?.proofOperations['range-staged:source']?.state, 'prepared')
+          const database = await openDaemonStateSqlite(directory)
+          try {
+            assert.equal(
+              database.prepare('SELECT count(*) AS count FROM custody_operations').get()?.count,
+              1,
+            )
+            assert.equal(
+              database.prepare('SELECT result_state AS state FROM custody_operations').get()?.state,
+              'verified-staged',
+            )
+            assert.equal(
+              database.prepare('SELECT count(*) AS count FROM custody_proofs').get()?.count,
+              1,
+            )
+            assert.equal(
+              database.prepare('SELECT selectability FROM custody_proofs').get()?.selectability,
+              'locked',
+            )
+            assert.equal(
+              database.prepare('SELECT count(*) AS count FROM custody_successor_admissions').get()
+                ?.count,
+              0,
+            )
+          } finally {
+            database.close()
+          }
+        }
+        const restarted = new DaemonCtfRangeOrderCoordinator(directory, () => fence, {
+          createMint: () => mint,
+          createWallet: () => {
+            throw new Error('staged recovery must not load a wallet')
+          },
+          now: () => 10_000,
+        })
+        const result = await restarted.recover(WALLET_SEED_HEX, client)
+        assert.equal(result.pending.length, 1)
+        assert.match(result.pending[0]!.error, /unsubmitted range authorization remains unspent/)
+        assert.equal(wallet.completeCalls, 1)
+        assert.deepEqual((await readState())?.orders, {})
+        await assertSourceCustodyIdentity(directory, 'ctf-range-regular-source')
+        if (faultPhase === 'after-commit') {
+          assert.deepEqual(await rangeRecoverySnapshot(directory), beforeRecovery)
+        }
+      },
+    )
+  })
+}
+
+test('daemon binds a conditional source to range custody without consolidation', async () => {
+  const proof = signedProof(
+    OutputData.createRandomData(Amount.from(16_384), conditionalMintKeys())[0]!,
+  )
   await withDaemonProfile(
     {
-      prefix: 'bitcaster-range-residual-',
-      incarnationId: 'range-residual-production-test',
-      proofs: [sourceProof],
-      asset: regularAsset(),
+      prefix: 'bitcaster-range-conditional-direct-',
+      incarnationId: 'range-conditional-direct',
+      proofs: [proof],
+      asset: outcomeAsset(),
     },
     async ({ directory, fence }) => {
-      let selectedOutputs = new Set<string>()
-      let predecessorOperationId = ''
-      let predecessorCustodyOperationId = ''
-      let result: SettlementCapabilityResultResponse | null = null
-      let capabilityAttempts = 0
-      let submitCalls = 0
-      let policyCalls = 0
-      let nowMs = 10_000
-      const capabilityRequests: CreateSettlementCapabilityRequest[] = []
-      const successorOrderId = '00000000-0000-4000-8000-000000000005'
-      const mint = fakeMint(64, 1_000, () => selectedOutputs)
-      const baseClient = fakeEngineClient((request) => {
-        capabilityRequests.push(structuredClone(request))
-        capabilityAttempts += 1
-        if (capabilityAttempts === 2) {
-          throw new Error('residual capability acknowledgement lost')
-        }
-        return request.continuation === null
-          ? boundCapability(request)
-          : {
-              ...boundCapability(request),
-              reference: {
-                artifactId: '00000000-0000-4000-8000-000000000006',
-                bindingDigest: 'aa'.repeat(32),
-              },
-              orderId: successorOrderId,
-            }
-      })
-      const client: EngineClientLike = {
-        ...baseClient,
-        getSettlementCapabilityAdmissionPolicy: async () => {
-          policyCalls += 1
-          if (policyCalls === 2) throw new Error('successor policy unavailable')
-          return {
-            coordinatorPubkey: policyCalls === 1 ? COORDINATOR_KEY : ROTATED_COORDINATOR_KEY,
-          }
-        },
-        submitOrder: async () => {
-          submitCalls += 1
-          return { ...submittedOrder(10_000), orderId: successorOrderId }
-        },
-        getSettlementCapabilityResultByOperation: async (operationId) =>
-          operationId === predecessorOperationId ? result : null,
-        acknowledgeSettlementCapabilityResult: async (_resultId, request) => {
-          assert.equal(request.expectedVersion, 1)
-          assert.ok(result)
-          return {
-            ...result,
-            acknowledgedAt: new Date(12_000).toISOString(),
-            version: 2,
-          }
-        },
-        getOrderStatus: async () => awaitingAuthorizationOrderStatus(10_000, 20_000),
-      }
-      const ids = [
-        'range-operation-partial',
-        'range-authorization-partial',
-        'client-order-successor',
-        'range-operation-residual',
-        'range-authorization-residual',
-      ]
+      const wallet = new FakeWallet([proof])
+      const ids = ['range-conditional-direct', 'authorization-conditional-direct']
       const coordinator = new DaemonCtfRangeOrderCoordinator(directory, () => fence, {
-        createMint: () => mint,
-        createWallet: () => new FakeWallet([sourceProof]),
-        now: () => nowMs,
+        createMint: () => fakeMint(),
+        createWallet: () => wallet,
+        now: () => 10_000,
         randomId: () => ids.shift()!,
       })
-      const request = {
-        ...orderRequest(),
-        amountSubunits: 20_000,
-        continueAfterPartialFill: true,
-        timeInForce: 'GTD' as const,
-        expiresAt: '2030-01-01T00:00:00.000Z',
-      }
-      const prepared = await coordinator.prepare(request, client)
-      await recordSubmittedOrder(
-        request.marketId,
-        request.clientOrderId,
-        submittedOrder(20_000),
-        null,
-        request.tokenSide,
-        request.side,
-        request.price,
-        request.amountSubunits,
-        request.baseAsset,
-        request.divisibility,
-      )
-      await prepared.markSubmitted()
-
-      const database = await openDaemonStateSqlite(directory)
-      const custody = database.prepare('SELECT operation_id FROM custody_operations').get() as {
-        operation_id: string
-      }
-      database.close()
-      const loaded = await new DaemonCtfRangeCoordinator(directory, fence).load(
-        custody.operation_id,
-      )
-      assert.ok(loaded)
-      predecessorCustodyOperationId = custody.operation_id
-      predecessorOperationId = loaded.operation.operationId
-      const selection = validPartialSelection(loaded.operation, 10_000n)
-      selectedOutputs = new Set(
-        loaded.operation.manifest.entries
-          .filter((_, index) => selection.selectedIndices.includes(index))
-          .map(({ B_ }) => B_),
-      )
-      result = engineResult(prepared, loaded.operation, selection.selection)
-      nowMs = 650_000
-
-      const interrupted = await coordinator.recover(WALLET_SEED_HEX, client)
-      assert.deepEqual(interrupted.recovered, [])
-      assert.equal(interrupted.pending.length, 1)
-      assert.match(interrupted.pending[0]!.error, /successor policy unavailable/)
-      assert.equal(capabilityAttempts, 1)
-      const intentDatabase = await openDaemonStateSqlite(directory)
-      const persistedIntent = intentDatabase
-        .prepare(
-          `SELECT successor_client_order_id AS clientOrderId,
-             successor_range_operation_id AS operationId,
-             successor_authorization_id AS authorizationId
-           FROM daemon_ctf_range_successor_intents`,
-        )
-        .get() as { clientOrderId: string; operationId: string; authorizationId: string }
-      intentDatabase.close()
-      assert.deepEqual(
-        { ...persistedIntent },
+      await coordinator.prepare(
         {
-          clientOrderId: 'client-order-successor',
-          operationId: 'range-operation-residual',
-          authorizationId: 'range-authorization-residual',
+          ...orderRequest(),
+          side: 'Sell',
+          amountSubunits: 10_000,
+          minimumFillAmountSubunits: 10_000,
         },
+        fakeEngineClient(boundCapability),
       )
-
-      const capabilityInterrupted = await coordinator.recover(WALLET_SEED_HEX, client)
-      assert.deepEqual(capabilityInterrupted.recovered, [])
-      assert.equal(capabilityInterrupted.pending.length, 1)
-      assert.match(
-        capabilityInterrupted.pending[0]!.error,
-        /residual capability acknowledgement lost/,
-      )
-
-      const resumed = await coordinator.recover(WALLET_SEED_HEX, client)
-      assert.deepEqual(resumed.recovered, [])
-      assert.equal(resumed.pending.length, 1)
-      assert.match(resumed.pending[0]!.error, /submitted and remains pending settlement/)
-      assert.equal(capabilityAttempts, 3)
-      assert.equal(submitCalls, 1)
-      assert.equal(ids.length, 0)
-      assert.equal(capabilityRequests[0]?.continuation, null)
-      assert.deepEqual(capabilityRequests[1], capabilityRequests[2])
-      assert.deepEqual(capabilityRequests[1]?.continuation, {
-        predecessorOrderId: ORDER_ID,
-        settlementGroupId: SETTLEMENT_GROUP_ID,
-        settlementGroupRevision: 1,
-        continuationRevision: 2,
-      })
-      assert.equal(capabilityRequests[1]?.clientOrderId, 'client-order-successor')
-      assert.equal(capabilityRequests[1]?.orderIntent.amountSubunits, 10_000)
-      assert.equal(capabilityRequests[1]?.orderIntent.timeInForce, 'GTD')
-      assert.equal(capabilityRequests[1]?.orderIntent.expiresAt, request.expiresAt)
-      const recoveredDatabase = await openDaemonStateSqlite(directory)
-      const preparations = recoveredDatabase
-        .prepare(
-          `SELECT range_operation_id AS operationId, lifecycle_state AS lifecycle
-           FROM daemon_ctf_range_preparations ORDER BY created_at_ms, range_operation_id`,
-        )
-        .all() as Array<{ operationId: string; lifecycle: string }>
-      const preparationAuthorities = recoveredDatabase
-        .prepare(
-          `SELECT range_operation_id AS operationId,
-             authorization_expires_at_unix_seconds AS expiresAt,
-             preparation_body AS preparationBody
-           FROM daemon_ctf_range_preparations
-           ORDER BY created_at_ms, range_operation_id`,
-        )
-        .all() as Array<{
-        operationId: string
-        expiresAt: number
-        preparationBody: Uint8Array
-      }>
-      const custodyCount = recoveredDatabase
-        .prepare('SELECT count(*) AS count FROM custody_operations')
-        .get() as { count: number }
-      const residualOperationId = (
-        recoveredDatabase
-          .prepare(
-            `SELECT operation_id AS operationId
-             FROM custody_operations
-             WHERE operation_id <> ?`,
-          )
-          .get(predecessorCustodyOperationId) as { operationId: string }
-      ).operationId
-      const predecessorSuccessors = recoveredDatabase
-        .prepare(
-          `SELECT proofs.selectability
-           FROM custody_selected_successors AS successors
-           JOIN custody_proofs AS proofs
-             ON proofs.scope_id = successors.scope_id
-            AND proofs.proof_id = successors.proof_id
-           WHERE successors.operation_id = ?
-           ORDER BY successors.proof_position`,
-        )
-        .all(predecessorCustodyOperationId) as Array<{ selectability: string }>
-      const residualInputs = recoveredDatabase
-        .prepare(
-          `SELECT proofs.selectability,
-             proofs.reservation_operation_id AS reservationOperationId
-           FROM custody_operation_inputs AS inputs
-           JOIN custody_proofs AS proofs
-             ON proofs.scope_id = inputs.scope_id
-            AND proofs.proof_id = inputs.proof_id
-           WHERE inputs.operation_id = ?
-           ORDER BY inputs.input_position`,
-        )
-        .all(residualOperationId) as Array<{
-        selectability: string
-        reservationOperationId: string | null
-      }>
-      const selectableCustodyCount = recoveredDatabase
-        .prepare(
-          `SELECT count(*) AS count
-           FROM custody_proofs
-           WHERE selectability = 'selectable'`,
-        )
-        .get() as { count: number }
-      const reservedWalletCount = recoveredDatabase
-        .prepare(
-          `SELECT count(*) AS count
-           FROM target_wallet_proofs
-           WHERE state = 'reserved'`,
-        )
-        .get() as { count: number }
-      recoveredDatabase.close()
-      assert.deepEqual(
-        preparations.map(({ operationId, lifecycle }) => ({ operationId, lifecycle })),
-        [
-          { operationId: 'range-operation-partial', lifecycle: 'terminal' },
-          { operationId: 'range-operation-residual', lifecycle: 'order-submitted' },
-        ],
-      )
-      assert.equal(preparationAuthorities.length, 2)
-      assert.ok(preparationAuthorities[1]!.expiresAt > preparationAuthorities[0]!.expiresAt)
-      assert.equal(
-        JSON.parse(Buffer.from(preparationAuthorities[1]!.preparationBody).toString('utf8'))
-          .coordinatorPublicKey,
-        ROTATED_COORDINATOR_KEY,
-      )
-      assert.equal(custodyCount.count, 2)
-      assert.ok(predecessorSuccessors.length > 0)
-      assert.equal(
-        predecessorSuccessors.every(
-          ({ selectability }) => selectability === 'retained' || selectability === 'spent',
-        ),
-        true,
-      )
-      assert.equal(
-        predecessorSuccessors.some(({ selectability }) => selectability === 'spent'),
-        true,
-      )
-      assert.ok(residualInputs.length > 0)
-      assert.equal(
-        residualInputs.every(
-          ({ selectability, reservationOperationId }) =>
-            selectability === 'locked' && reservationOperationId === residualOperationId,
-        ),
-        true,
-      )
-      assert.equal(selectableCustodyCount.count, 0)
-      assert.equal(reservedWalletCount.count, 0)
+      assert.equal(wallet.completeCalls, 1)
+      await assertSourceCustodyIdentity(directory, 'ctf-range-conditional-source')
     },
   )
-})
-
-test('daemon applies revisioned continuation policy before creating any successor', async (t) => {
-  const cases: Array<{
-    name: string
-    continueAfterPartialFill: boolean
-    continuationStatus: 'open' | 'consumed' | 'declined'
-    foreignOrderId: boolean
-    terminal: boolean
-    declineCalls: number
-    loseFirstDecline: boolean
-    hostile?: 'group' | 'amount'
-  }> = [
-    {
-      name: 'default-off declines the open continuation',
-      continueAfterPartialFill: false,
-      continuationStatus: 'open' as const,
-      foreignOrderId: false,
-      terminal: true,
-      declineCalls: 2,
-      loseFirstDecline: true,
-    },
-    {
-      name: 'a committed decline is retried to repair the order-book tombstone',
-      continueAfterPartialFill: true,
-      continuationStatus: 'declined' as const,
-      foreignOrderId: false,
-      terminal: true,
-      declineCalls: 1,
-      loseFirstDecline: false,
-    },
-    {
-      name: 'a consumed continuation never creates a blind successor',
-      continueAfterPartialFill: true,
-      continuationStatus: 'consumed' as const,
-      foreignOrderId: false,
-      terminal: false,
-      declineCalls: 0,
-      loseFirstDecline: false,
-    },
-    {
-      name: 'a foreign continuation predecessor fails closed',
-      continueAfterPartialFill: true,
-      continuationStatus: 'open' as const,
-      foreignOrderId: true,
-      terminal: false,
-      declineCalls: 0,
-      loseFirstDecline: false,
-    },
-    {
-      name: 'a foreign result group creates no successor authority',
-      continueAfterPartialFill: true,
-      continuationStatus: 'open',
-      foreignOrderId: false,
-      terminal: false,
-      declineCalls: 0,
-      loseFirstDecline: false,
-      hostile: 'group',
-    },
-    {
-      name: 'a hostile remaining amount creates no successor authority',
-      continueAfterPartialFill: true,
-      continuationStatus: 'open',
-      foreignOrderId: false,
-      terminal: false,
-      declineCalls: 0,
-      loseFirstDecline: false,
-      hostile: 'amount',
-    },
-  ]
-  for (const [index, candidate] of cases.entries()) {
-    await t.test(candidate.name, async () => {
-      const sourceProof = signedProof(
-        OutputData.createRandomData(Amount.from(16_384), mintKeys())[0]!,
-      )
-      await withDaemonProfile(
-        {
-          prefix: `bitcaster-range-continuation-${index}-`,
-          incarnationId: `range-continuation-${index}`,
-          proofs: [sourceProof],
-          asset: regularAsset(),
-        },
-        async ({ directory, fence }) => {
-          let selectedOutputs = new Set<string>()
-          let predecessorOperationId = ''
-          let result: SettlementCapabilityResultResponse | null = null
-          let capabilityCalls = 0
-          let continuationStatus = candidate.continuationStatus
-          const declineArguments: unknown[][] = []
-          const mint = fakeMint(64, 1_000, () => selectedOutputs)
-          const baseClient = fakeEngineClient((request) => {
-            capabilityCalls += 1
-            return boundCapability(request)
-          })
-          const client: EngineClientLike = {
-            ...baseClient,
-            getSettlementCapabilityResultByOperation: async (operationId) =>
-              operationId === predecessorOperationId ? result : null,
-            acknowledgeSettlementCapabilityResult: async () => ({
-              ...result!,
-              acknowledgedAt: new Date(12_000).toISOString(),
-              version: 2,
-            }),
-            getOrderStatus: async () => ({
-              ...awaitingAuthorizationOrderStatus(
-                candidate.hostile === 'amount' ? 20_000 : 10_000,
-                20_000,
-                continuationStatus,
-              )!,
-              ...(candidate.hostile === 'group'
-                ? {
-                    continuation: {
-                      ...awaitingAuthorizationOrderStatus(10_000)!.continuation!,
-                      settlementGroupRevision: 2,
-                    },
-                  }
-                : {}),
-              ...(candidate.foreignOrderId
-                ? { orderId: '00000000-0000-4000-8000-000000000099' }
-                : {}),
-            }),
-            declineOrderContinuation: async (...args) => {
-              declineArguments.push(args)
-              if (candidate.loseFirstDecline && declineArguments.length === 1) {
-                continuationStatus = 'declined'
-                throw new Error('decline response lost after durable commit')
-              }
-            },
-          }
-          const ids = ['range-operation-policy', 'range-authorization-policy']
-          const coordinator = new DaemonCtfRangeOrderCoordinator(directory, () => fence, {
-            createMint: () => mint,
-            createWallet: () => new FakeWallet([sourceProof]),
-            now: () => 10_000,
-            randomId: () => ids.shift()!,
-          })
-          const request = {
-            ...orderRequest(),
-            amountSubunits: 20_000,
-            continueAfterPartialFill: candidate.continueAfterPartialFill,
-          }
-          const prepared = await coordinator.prepare(request, client)
-          await recordSubmittedOrder(
-            request.marketId,
-            request.clientOrderId,
-            submittedOrder(20_000),
-            null,
-            request.tokenSide,
-            request.side,
-            request.price,
-            request.amountSubunits,
-            request.baseAsset,
-            request.divisibility,
-          )
-          await prepared.markSubmitted()
-          const database = await openDaemonStateSqlite(directory)
-          const custody = database.prepare('SELECT operation_id FROM custody_operations').get() as {
-            operation_id: string
-          }
-          database.close()
-          const loaded = await new DaemonCtfRangeCoordinator(directory, fence).load(
-            custody.operation_id,
-          )
-          assert.ok(loaded)
-          predecessorOperationId = loaded.operation.operationId
-          const selection = validPartialSelection(loaded.operation, 10_000n)
-          selectedOutputs = new Set(
-            loaded.operation.manifest.entries
-              .filter((_, entryIndex) => selection.selectedIndices.includes(entryIndex))
-              .map(({ B_ }) => B_),
-          )
-          result = engineResult(prepared, loaded.operation, selection.selection)
-
-          let recovery = await coordinator.recover(WALLET_SEED_HEX, client)
-          if (candidate.loseFirstDecline) {
-            assert.equal(recovery.pending.length, 1)
-            assert.match(recovery.pending[0]!.error, /decline response lost/)
-            recovery = await coordinator.recover(WALLET_SEED_HEX, client)
-          }
-          assert.equal(recovery.pending.length, candidate.terminal ? 0 : 1)
-          if (candidate.hostile !== undefined) {
-            assert.match(
-              recovery.pending[0]!.error,
-              /continuation authority is unavailable|amount differs/,
-            )
-          }
-          assert.equal(declineArguments.length, candidate.declineCalls)
-          if (candidate.declineCalls > 0) {
-            assert.equal(
-              declineArguments.every(
-                (argumentsValue) =>
-                  JSON.stringify(argumentsValue) ===
-                  JSON.stringify([request.marketId, ORDER_ID, 2]),
-              ),
-              true,
-            )
-          }
-          assert.equal(capabilityCalls, 1)
-          const recoveredDatabase = await openDaemonStateSqlite(directory)
-          const preparation = recoveredDatabase
-            .prepare(
-              `SELECT lifecycle_state AS lifecycle
-               FROM daemon_ctf_range_preparations
-               WHERE range_operation_id = ?`,
-            )
-            .get(predecessorOperationId) as { lifecycle: string }
-          const successorIntentCount = recoveredDatabase
-            .prepare('SELECT count(*) AS count FROM daemon_ctf_range_successor_intents')
-            .get() as { count: number }
-          recoveredDatabase.close()
-          assert.equal(preparation.lifecycle, candidate.terminal ? 'terminal' : 'order-submitted')
-          assert.equal(successorIntentCount.count, 0)
-        },
-      )
-    })
-  }
 })
 
 test('daemon consolidates conditional CTF inventory with the same bounded source protocol', async () => {
@@ -1604,8 +1679,16 @@ test('daemon consolidates conditional CTF inventory with the same bounded source
         randomId: () => ids.shift()!,
       })
 
+      // Ten current-D shares keep this bounded-consolidation fixture fragmented.
       const prepared = await coordinator.prepare(
-        { ...orderRequest(), side: 'Sell', price: 5_000, consolidateProofs: true },
+        {
+          ...orderRequest(),
+          side: 'Sell',
+          price: 500,
+          amountSubunits: 10_000,
+          minimumFillAmountSubunits: 10_000,
+          consolidateProofs: true,
+        },
         fakeEngineClient(boundCapability),
       )
 
@@ -1614,6 +1697,7 @@ test('daemon consolidates conditional CTF inventory with the same bounded source
         feeSubunits: 1,
       })
       assert.equal(wallet.completeCalls, 2)
+      await assertSourceCustodyIdentity(directory, 'ctf-range-conditional-source')
       assert.equal(
         (await readState())?.proofOperations['range-operation-conditional:source']?.state,
         'completed',
@@ -1622,6 +1706,92 @@ test('daemon consolidates conditional CTF inventory with the same bounded source
     },
   )
 })
+
+async function assertSourceCustodyIdentity(
+  directory: string,
+  semanticKind: 'ctf-range-regular-source' | 'ctf-range-conditional-source',
+): Promise<void> {
+  const state = await readState()
+  const source = Object.values(state?.proofOperations ?? {}).find(
+    ({ metadata }) => metadata.purpose === 'ctf-range-authorization-source',
+  )
+  assert.ok(source?.resultProofs)
+  const database = await openDaemonStateSqlite(directory)
+  try {
+    const rows = database
+      .prepare(
+        `SELECT wallet_stage AS stage, result_state AS resultState
+        FROM custody_operations WHERE semantic_kind = ?`,
+      )
+      .all(semanticKind)
+    assert.equal(rows.length, 1)
+    assert.equal(rows[0]!.stage, 'capability-preparation')
+    assert.equal(rows[0]!.resultState, 'applied')
+    const custody = new DurableCustodySqliteStore(database)
+    for (const [group, proofs] of Object.entries(source.resultProofs)) {
+      for (const proof of proofs) {
+        assert.ok(proof.id)
+        const row = custody.getProof(
+          testScopeId(),
+          deriveDurableCustodyProofId({
+            scopeId: testScopeId(),
+            normalizedMint: MINT_URL,
+            unit: 'msat',
+            keysetId: proof.id,
+            secret: proof.secret,
+          }),
+        )
+        assert.ok(row)
+        const target = state?.wallet.proofs.find(
+          ({ proof: candidate }) => candidate.secret === proof.secret,
+        )
+        switch (group) {
+          case 'authorization':
+            assert.equal(row.selectability, 'locked')
+            assert.equal(target, undefined)
+            break
+          case 'keep':
+            assert.equal(row.selectability, 'retained')
+            assert.equal(target?.state, 'available')
+            break
+          default:
+            assert.fail('unexpected source output group')
+        }
+      }
+    }
+    const authorizations = database
+      .prepare(
+        `
+      SELECT proofs.selectability, proofs.condition_id AS conditionId,
+        proofs.outcome_set_id AS outcomeSetId,
+        proofs.reservation_operation_id = operations.operation_id AS owned,
+        reservations.operation_id = operations.operation_id AS reserved
+      FROM custody_operations AS operations
+      JOIN custody_operation_inputs AS inputs
+        ON inputs.scope_id = operations.scope_id AND inputs.operation_id = operations.operation_id
+      JOIN custody_proofs AS proofs
+        ON proofs.scope_id = inputs.scope_id AND proofs.proof_id = inputs.proof_id
+      LEFT JOIN custody_proof_reservations AS reservations
+        ON reservations.scope_id = proofs.scope_id AND reservations.proof_id = proofs.proof_id
+      WHERE operations.semantic_kind = 'conditional-keyset-swap'
+    `,
+      )
+      .all()
+    assert.ok(authorizations.length > 0)
+    for (const row of authorizations) {
+      assert.equal(row.selectability, 'locked')
+      assert.equal(row.owned, 1)
+      assert.equal(row.reserved, 1)
+      assert.equal(
+        row.conditionId,
+        semanticKind === 'ctf-range-regular-source' ? null : CONDITION_ID,
+      )
+      assert.equal(row.outcomeSetId, semanticKind === 'ctf-range-regular-source' ? null : 'YES')
+    }
+  } finally {
+    database.close()
+  }
+}
 
 async function withDaemonProfile(
   input: {
@@ -1674,6 +1844,40 @@ async function writeAvailableProofs(
     })),
   )
   await writeState(state)
+  const database = await openDaemonStateSqlite(process.env.BITCASTER_DAEMON_HOME!)
+  try {
+    const custody = new DurableCustodySqliteStore(database)
+    for (const proof of proofs) {
+      custody.putProofCas(
+        createCustodyProofSqliteRow({
+          scopeId: testScopeId(),
+          normalizedMint: MINT_URL,
+          unit: asset.unit,
+          proof: {
+            ...proof,
+            dleq: proof.dleq ?? null,
+            witness: proof.witness ?? null,
+            p2pkE: proof.p2pk_e ?? null,
+          },
+          baseAsset: 'sat',
+          conditionId: asset.kind === 'Outcome' ? asset.conditionId : null,
+          outcomeSetId: asset.kind === 'Outcome' ? asset.outcomeSetId : null,
+          productBinding: null,
+          signatureVerified: true,
+          dleqState: proof.dleq == null ? 'not-present' : 'verified',
+          nut07State: 'UNSPENT',
+          selectability: 'retained',
+          storageClass: 'terminal-replay-retained',
+          reservationOperationId: null,
+          revision: 0,
+          nowMs: 1,
+        }),
+        null,
+      )
+    }
+  } finally {
+    database.close()
+  }
 }
 
 function testScopeId(): string {
@@ -1735,6 +1939,7 @@ class FakeWallet {
     config: { includeFees: false; keysetId: string },
     outputConfig: {
       send: { type: 'custom'; data: OutputData[] } | { type: 'random' }
+      keep: { type: 'custom'; data: OutputData[] } | { type: 'random' }
     },
   ): Promise<SwapPreview> {
     assert.equal(
@@ -1756,7 +1961,11 @@ class FakeWallet {
       inputs: proofs,
       sendOutputs,
       keepOutputs:
-        keepAmount === 0 ? [] : OutputData.createRandomData(Amount.from(keepAmount), mintKeys()),
+        keepAmount === 0
+          ? []
+          : outputConfig.keep.type === 'custom'
+            ? outputConfig.keep.data
+            : OutputData.createRandomData(Amount.from(keepAmount), mintKeys()),
       unselectedProofs: [],
     }
   }
@@ -1987,9 +2196,6 @@ function fakeEngineClient(
     getParticipationScore: async () => {
       throw new Error('not used')
     },
-    payParticipationScoreEcash: async () => {
-      throw new Error('not used')
-    },
   }
 }
 
@@ -2013,7 +2219,7 @@ function boundCapability(
 }
 
 function submittedOrder(
-  remainingAmountSubunits = 10_000,
+  remainingAmountSubunits = 1_000,
 ): Awaited<ReturnType<EngineClientLike['submitOrder']>> {
   return {
     orderId: ORDER_ID,
@@ -2021,51 +2227,23 @@ function submittedOrder(
     remainingAmountSubunits,
     fills: [],
     baseAsset: 'sat',
-    divisibility: 10_000,
+    divisibility: 1_000,
     activeSettlementGroup: null,
-  }
-}
-
-function awaitingAuthorizationOrderStatus(
-  remainingAmountSubunits: number,
-  originalAmountSubunits = orderRequest().amountSubunits,
-  continuationStatus: 'open' | 'consumed' | 'declined' = 'open',
-): Awaited<ReturnType<EngineClientLike['getOrderStatus']>> {
-  return {
-    orderId: ORDER_ID,
-    marketId: orderRequest().marketId,
-    status: 'awaiting_authorization',
-    remainingAmountSubunits,
-    filledAmountSubunits: originalAmountSubunits - remainingAmountSubunits,
-    fills: [],
-    tokenSide: 'Outcome',
-    baseAsset: 'sat',
-    divisibility: 10_000,
-    activeSettlementGroup: null,
-    continuation: {
-      settlementGroupId: SETTLEMENT_GROUP_ID,
-      settlementGroupRevision: 1,
-      revision: 2,
-      status: continuationStatus,
-    },
   }
 }
 
 function restingOrderStatus(): Awaited<ReturnType<EngineClientLike['getOrderStatus']>> {
   return {
-    ...awaitingAuthorizationOrderStatus(orderRequest().amountSubunits),
+    orderId: ORDER_ID,
+    marketId: orderRequest().marketId,
     status: 'resting',
+    remainingAmountSubunits: orderRequest().amountSubunits,
     filledAmountSubunits: 0,
-    continuation: null,
-  }
-}
-
-function partiallyFilledFakOrderStatus(): Awaited<ReturnType<EngineClientLike['getOrderStatus']>> {
-  return {
-    ...restingOrderStatus(),
-    status: 'partially_filled',
-    remainingAmountSubunits: 5_000,
-    filledAmountSubunits: 5_000,
+    fills: [],
+    tokenSide: 'Outcome',
+    baseAsset: 'sat',
+    divisibility: 1_000,
+    activeSettlementGroup: null,
   }
 }
 
@@ -2079,9 +2257,8 @@ function filledOrderStatus(): Awaited<ReturnType<EngineClientLike['getOrderStatu
     fills: [],
     tokenSide: 'Outcome',
     baseAsset: 'sat',
-    divisibility: 10_000,
+    divisibility: 1_000,
     activeSettlementGroup: null,
-    continuation: null,
   }
 }
 
@@ -2089,7 +2266,6 @@ function cancelledOrderStatus(): Awaited<ReturnType<EngineClientLike['getOrderSt
   return {
     ...restingOrderStatus(),
     status: 'cancelled',
-    continuation: null,
   }
 }
 
@@ -2227,15 +2403,14 @@ function orderRequest(): PrepareSettlementCapabilityInput {
     outcomeId: 'yes-id',
     tokenSide: 'Outcome',
     side: 'Buy',
-    price: 5_000,
-    amountSubunits: 10_000,
-    minimumFillAmountSubunits: 10_000,
-    continueAfterPartialFill: false,
+    price: 500,
+    amountSubunits: 1_000,
+    minimumFillAmountSubunits: 1_000,
     consolidateProofs: false,
     baseAsset: 'sat',
     collateralUnit: 'msat',
-    divisibility: 10_000,
-    timeInForce: 'GTC',
+    divisibility: 1_000,
+    timeInForce: 'FOK',
     expiresAt: null,
     mintUrl: MINT_URL,
     walletSeedHex: WALLET_SEED_HEX,

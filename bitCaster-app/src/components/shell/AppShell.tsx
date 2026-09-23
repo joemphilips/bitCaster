@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { TrendingUp, Search, User, Sparkles } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { LANGUAGES } from "@/i18n";
@@ -6,7 +6,7 @@ import { MainNav } from "./MainNav";
 import { UserMenu } from "./UserMenu";
 import { NotificationBell } from "./NotificationBell";
 import { BitCasterLogo } from "./BitCasterLogo";
-import { formatMarketSubunits } from "@bitcaster/client-sdk/marketUnits";
+import { InlineAmount } from "@/components/shared/InlineAmount";
 
 export interface AppShellProps {
   children: React.ReactNode;
@@ -14,6 +14,7 @@ export interface AppShellProps {
   user?: { name: string; avatarUrl?: string; balance?: number };
   onNavigate?: (href: string) => void;
   onLogout?: () => void;
+  searchQuery?: string;
   onSearchChange?: (query: string) => void;
   onCreateClick?: () => void;
 }
@@ -24,12 +25,28 @@ export function AppShell({
   user,
   onNavigate,
   onLogout,
+  searchQuery = "",
   onSearchChange,
   onCreateClick,
 }: AppShellProps) {
   const { t, i18n } = useTranslation();
+  // BrowserRouter commits navigation in a transition. Keep one shared draft
+  // so rapid typing does not lose characters. External URL changes replace it.
+  const [searchDraft, setSearchDraft] = useState(searchQuery);
+  const lastUrlSearchQuery = useRef(searchQuery);
   const [mobileSearchOpen, setMobileSearchOpen] = useState(false);
   const [mobileUserMenuOpen, setMobileUserMenuOpen] = useState(false);
+
+  useEffect(() => {
+    if (lastUrlSearchQuery.current === searchQuery) return;
+    lastUrlSearchQuery.current = searchQuery;
+    setSearchDraft(searchQuery);
+  }, [searchQuery]);
+
+  const handleSearchChange = (query: string) => {
+    setSearchDraft(query);
+    onSearchChange?.(query);
+  };
 
   return (
     <div className="min-h-screen bg-slate-50 dark:bg-slate-950 relative">
@@ -49,7 +66,8 @@ export function AppShell({
             <MainNav
               items={navigationItems}
               onNavigate={onNavigate}
-              onSearchChange={onSearchChange}
+              searchQuery={searchDraft}
+              onSearchChange={handleSearchChange}
             />
 
             {/* Notification Bell */}
@@ -159,7 +177,8 @@ export function AppShell({
                 type="text"
                 placeholder={t("nav.searchMarkets")}
                 autoFocus
-                onChange={(e) => onSearchChange?.(e.target.value)}
+                value={searchDraft}
+                onChange={(e) => handleSearchChange(e.target.value)}
                 className="w-full pl-10 pr-4 py-3 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-base text-slate-900 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
               />
             </div>
@@ -184,7 +203,7 @@ export function AppShell({
               <div>
                 <div className="font-medium text-slate-900 dark:text-slate-100">{user.name}</div>
                 <div className="text-sm text-amber-400 font-mono">
-                  {formatMarketSubunits(user.balance ?? 0, "sat")}
+                  <InlineAmount amountSubunits={user.balance ?? 0} baseAsset="sat" />
                 </div>
               </div>
             </div>
