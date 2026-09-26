@@ -494,8 +494,8 @@ describe("useWalletStore", () => {
       expect(state.mints.map((m) => m.url)).toContain("https://attacker.example");
       // Critical assertion: untrusted-input registration MUST NOT change the
       // user's active mint. If this assertion ever fails, the activating add-mint anti-
-      // pattern has been re-introduced — re-read bitcaster-coding-guideline
-      // Rule 5 in the bitCaster submodule's SKILL.md.
+      // pattern has been re-introduced — re-read Rule 5 in
+      // `.claude/rules/wire-values.md`.
       expect(state.activeMintUrl).toBe("http://staging.example");
     });
 

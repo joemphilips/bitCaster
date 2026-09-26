@@ -3,7 +3,7 @@ import { assertNever } from "./enumDiscipline";
 /**
  * Canonical wire form of mintd's `attestation.status` field, normalised once
  * at the ingress boundary. Mintd is upstream and not under our OpenAPI spec
- * (per `bitcaster-coding-guideline` Rule 1 the spec is the single source of
+ * (per `.claude/rules/wire-values.md` Rule 1 the spec is the single source of
  * truth only for enums we own). Treat any value coming out of `/v1/conditions`
  * as a raw string at the boundary, normalise it through this module, then
  * compare against this union — never compare a raw mintd value past ingress.
@@ -19,7 +19,7 @@ export type AttestationStatus = "pending" | "attested" | "expired" | "violation"
 
 /**
  * Normalise a raw mintd `attestation.status` string into the canonical
- * `AttestationStatus` union. Implements `bitcaster-coding-guideline` Rule 2:
+ * `AttestationStatus` union. Implements `.claude/rules/wire-values.md` Rule 2:
  * one canonical wire form, normalised at the boundary, never paved over with
  * `.toLowerCase()` at call sites.
  *

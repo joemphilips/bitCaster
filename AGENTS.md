@@ -131,6 +131,7 @@ Details scoped per subproject live in `.claude/rules/`:
 
 - `frontend.md` — React PWA, env setup, kormir-wasm build
 - `server.md` — Public contract conventions
+- `wire-values.md` — Shared wire values and enum discipline
 - `nut-ctf.md` — NUT-CTF protocol and CDK submodule policy
 - `e2e-tests.md` — Browser checks and local service ownership
 - `doc-site.md` — Astro Starlight

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Enum-discipline grep gate. Codified by `.claude/skills/bitcaster-coding-guideline/SKILL.md`.
+# Enum-discipline grep gate. Codified by `.claude/rules/wire-values.md` (Rule 3).
 #
 # Fails the build when frontend code under `src/` (excluding `generated/`,
 # canonical normalisers, and tests) compares a wire-crossing-enum-shaped
@@ -72,7 +72,7 @@ for pattern in "${PATTERNS[@]}"; do
     if [[ ${found} -eq 0 ]]; then
       echo "enum-discipline gate: banned string-literal comparisons found." >&2
       echo "Use an exhaustive switch over the generated union with assertNever." >&2
-      echo "See .claude/skills/bitcaster-coding-guideline/SKILL.md (Rule 3)." >&2
+      echo "See .claude/rules/wire-values.md (Rule 3)." >&2
       echo "" >&2
     fi
     echo "  ${match}" >&2

@@ -27,7 +27,7 @@ Use the same authority in detail and list pages.
 | Volume / liquidity / last-traded price | engine | `GET /api/v1/markets/query` (catalogue) + `/api/v1/{marketId}/metadata` (per-outcome detail) |
 | Thumbnail (`imageUrl`) | engine | `GET /api/v1/markets/query` returns `thumbnailUrl`; `GET /api/v1/{conditionId}/thumbnail` serves the bytes |
 
-Frontend rule of thumb: never derive lifecycle from mintd's `attestation.status`. Mintd's attestation is reduced to outcome metadata, normalised once at ingress via `lib/mintdIngress.ts`. See `.claude/skills/bitcaster-coding-guideline/SKILL.md` for the cross-language enum discipline that enforces this.
+Frontend rule of thumb: never derive lifecycle from mintd's `attestation.status`. Mintd's attestation is reduced to outcome metadata, normalised once at ingress via `lib/mintdIngress.ts`. See `.claude/rules/wire-values.md` for the cross-language enum discipline that enforces this.
 
 ## Market ID & Order Book
 

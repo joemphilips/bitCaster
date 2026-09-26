@@ -37,8 +37,8 @@ Do not add unrequested features or speculative abstractions.
 - For browser checks, read `.claude/rules/e2e-tests.md`.
 - For doc-site work, read `.claude/rules/doc-site.md`.
 - For protocol or CDK work, read the relevant `nut-ctf.md` or `cdk.md` rule.
-- Use the public `bitcaster-coding-guideline` skill for shared wire values.
-- Use the public `bitcaster-doc-sync` skill when a change affects public docs.
+- For shared wire values, read `.claude/rules/wire-values.md`.
+- For public docs, read `.claude/rules/doc-site.md`.
 - Use `.agents/skills/bitcaster-frontend-guideline` for GUI state and messages.
 
 Do not run removed-project commands or assume fixed service ports.
