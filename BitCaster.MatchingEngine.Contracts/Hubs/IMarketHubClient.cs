@@ -18,6 +18,8 @@ public interface IMarketHubClient
 
     Task ConfirmedTradeRecorded(ConfirmedTradeRecordedMessage message);
 
+    Task MarketFundingUpdated(MarketFundingUpdatedMessage message);
+
     /// <summary>
     /// Pushed to every per-outcome market group of a condition when its
     /// lifecycle state changes (e.g. open -> closed on oracle/deadline close).
@@ -56,6 +58,15 @@ public sealed record MatchedDelta(
 public sealed record ConfirmedTradeRecordedMessage(
     string ConditionId,
     LatestConfirmedTrade LatestConfirmedTrade);
+
+/// <summary>
+/// One committed cumulative market-funding observation. The revision is the
+/// exact durable event order that produced the total.
+/// </summary>
+public sealed record MarketFundingUpdatedMessage(
+    string ConditionId,
+    long AmmBotBudgetSubunits,
+    string FundingRevision);
 
 public sealed record MarketStatusChanged(
     string ConditionId,

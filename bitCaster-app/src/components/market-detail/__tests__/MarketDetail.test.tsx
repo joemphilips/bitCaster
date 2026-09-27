@@ -22,11 +22,18 @@ vi.mock("../PriceChart", () => ({
   PriceChart: ({
     currentDisplay,
     emptyDisplay,
+    outcomes,
   }: {
     currentDisplay?: string;
     emptyDisplay?: string;
+    outcomes?: Array<{ label: string; color?: string }>;
   }) => (
-    <div data-testid="price-chart-mock">
+    <div
+      data-testid="price-chart-mock"
+      data-outcome-colors={outcomes
+        ?.map(({ label, color }) => `${label}:${color ?? "automatic"}`)
+        .join("|")}
+    >
       <div>{currentDisplay}</div>
       <div data-testid="chart-empty-display">{emptyDisplay}</div>
     </div>
@@ -40,7 +47,16 @@ const { orderBookSectionMock } = vi.hoisted(() => ({
 vi.mock("../OrderBookSection", () => ({
   OrderBookSection: orderBookSectionMock,
 }));
-vi.mock("../ResolutionInfo", () => ({ ResolutionInfo: () => <div /> }));
+vi.mock("../ResolutionInfo", () => ({
+  ResolutionInfo: ({ outcomes }: { outcomes?: Array<{ label: string; color?: string }> }) => (
+    <div
+      data-testid="resolution-info-mock"
+      data-outcome-colors={outcomes
+        ?.map(({ label, color }) => `${label}:${color ?? "automatic"}`)
+        .join("|")}
+    />
+  ),
+}));
 vi.mock("../RelatedMarkets", () => ({ RelatedMarkets: () => <div /> }));
 vi.mock("../CommentSection", () => ({ CommentSection: () => <div /> }));
 
@@ -147,7 +163,9 @@ function feeFacts(): TradeFeeFacts {
     sourcePreparationFeeSubunits: "2000",
     consolidationFeeSubunits: "3000",
     settlementAsset: { kind: "regular", unit: "msat" },
-    preparationAsset: { kind: "regular", unit: "msat" },
+    sourcePreparationAsset: { kind: "regular", unit: "msat" },
+    consolidationAsset: { kind: "regular", unit: "msat" },
+    sourceMode: "wallet-send",
   };
 }
 
@@ -289,6 +307,53 @@ describe("MarketDetail", () => {
 
     expect(screen.getByText("No trades yet")).toBeInTheDocument();
     expect(screen.queryByText("0.00%")).not.toBeInTheDocument();
+  });
+
+  it("keeps the latest confirmed trade as the chart price when the book midpoint differs", () => {
+    const yesBook = {
+      bids: [{ price: 400, amount: 1_000, total: 1_000 }],
+      asks: [{ price: 600, amount: 1_000, total: 1_000 }],
+      spread: 200,
+    };
+    render(
+      <MarketDetail
+        market={makeMarket({
+          currentOdds: { yes: 420, no: 580 },
+          latestConfirmedTradesValid: true,
+          latestConfirmedTrades: [
+            {
+              primitiveOutcomeId: "Yes",
+              fillId: "00000000-0000-0000-0000-000000000010",
+              executedAt: "2030-01-01T00:00:00Z",
+              eventOrder: "0001",
+              priceTick: 420,
+              divisibility: 1_000,
+              faceAmountSubunits: 1_000,
+            },
+          ],
+          orderBook: yesBook,
+          outcomeOrderBooks: {
+            Yes: yesBook,
+            No: {
+              bids: [{ price: 400, amount: 1_000, total: 1_000 }],
+              asks: [{ price: 600, amount: 1_000, total: 1_000 }],
+              spread: 200,
+            },
+          },
+        })}
+        chartTimeframe="7d"
+        tradeSelection={null}
+        tradeAmount={0}
+        tradePreview={null}
+        tradeSide="Buy"
+        orderType="market"
+        limitOrderPreview={null}
+        limitPrice={500}
+      />,
+    );
+
+    expect(screen.getByTestId("price-chart-mock")).toHaveTextContent("42.0%");
+    expect(screen.getByTestId("price-chart-mock")).not.toHaveTextContent("50.0%");
   });
 
   it.each([
@@ -539,7 +604,7 @@ describe("MarketDetail", () => {
         market={makeMarket({
           type: "categorical",
           outcomes: [
-            { id: "outcome-0", label: "Alpha", odds: 70 },
+            { id: "outcome-0", label: "Alpha", odds: 70, color: "#1A2B3C" },
             { id: "outcome-1", label: "Beta", odds: 30 },
           ],
           outcomePriceHistories: {
@@ -571,9 +636,18 @@ describe("MarketDetail", () => {
     );
 
     expect(screen.getAllByTestId("order-book-panel")).toHaveLength(2);
+    expect(screen.getByTestId("price-chart-mock")).toHaveAttribute(
+      "data-outcome-colors",
+      "Alpha:#1A2B3C|Beta:automatic",
+    );
+    expect(screen.getByTestId("resolution-info-mock")).toHaveAttribute(
+      "data-outcome-colors",
+      "Alpha:#1A2B3C|Beta:automatic",
+    );
     expect(orderBookSectionMock).toHaveBeenCalledWith(
       expect.objectContaining({
         title: "Alpha",
+        outcome: { id: "outcome-0", label: "Alpha", odds: 70, color: "#1A2B3C" },
         orderBook: expect.objectContaining({
           bids: [{ price: 68, amount: 400, total: 400 }],
           asks: [{ price: 72, amount: 400, total: 400 }],

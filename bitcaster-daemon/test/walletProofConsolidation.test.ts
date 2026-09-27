@@ -17,7 +17,7 @@ import {
   deriveDurableCustodyWalletId,
 } from '@bitcaster-market/client-sdk'
 import { bootstrapFreshDaemonProfile } from '../src/profileBootstrap.ts'
-import { claimCustodyScopeLease } from '../src/profileFencing.ts'
+import { claimCustodyScopeLease, releaseCustodyScopeLease } from '../src/profileFencing.ts'
 import { dispatch, type EngineClientLike } from '../src/server.ts'
 import { emptyDaemonState, readState, writeState, type StoredProofAsset } from '../src/state.ts'
 import { recoverPreparedWalletSends } from '../src/walletOps.ts'
@@ -376,12 +376,12 @@ test('a later mint failure returns prior paid rounds and its recoverable operati
   })
 })
 
-test('definitive rejected replay releases the exact still-unspent reservation', async () => {
+test('rejected replay stays active through all-unspent and restores a later commit after restart', async () => {
   await withProfile(async (directory) => {
     await writeRegularProofs()
-    const { fence, observedAtMs } = await testFence(directory, 'definitive-rejection')
+    const { fence, observedAtMs } = await testFence(directory, 'late-consolidation-commit')
     const rejection = new MintOperationError(11001, 'request rejected')
-    const firstAttempt = fakeDependencies({ completeError: rejection })
+    const firstAttempt = fakeDependencies({ completeError: new Error('lost mint response') })
     const interrupted = await consolidateWalletProofs({
       secrets: { walletSeedHex: SEED },
       mutation: () => ({ fence, observedAtMs }),
@@ -389,24 +389,68 @@ test('definitive rejected replay releases the exact still-unspent reservation', 
     })
     assert.equal(interrupted.pending.length, 1)
 
-    const retry = fakeDependencies({ inputState: 'UNSPENT', completeError: rejection })
-    const recovery = await recoverWalletProofConsolidations({
+    const lateOutputs: Proof[] = []
+    const rejectedReplay = fakeDependencies({
+      inputStates: ['UNSPENT', 'UNSPENT'],
+      completeError: rejection,
+      acceptBeforeError: true,
+      acceptedProofs: lateOutputs,
+    })
+    const unresolved = await recoverWalletProofConsolidations({
       secrets: { walletSeedHex: SEED },
       mutation: () => ({ fence, observedAtMs: observedAtMs + 1 }),
-      dependencies: retry.dependencies,
+      dependencies: rejectedReplay.dependencies,
     })
-    assert.equal(recovery.pending.length, 0)
-    assert.equal(recovery.recovered.length, 1)
-    const state = await readState()
+    assert.equal(unresolved.pending.length, 1)
+    assert.equal(unresolved.pending[0]?.operationId, interrupted.pending[0]?.operationId)
+    assert.equal(unresolved.recovered.length, 0)
+    assert.ok(lateOutputs.length > 0)
+
+    const retained = await readState()
+    const retainedOperation = Object.values(retained?.proofOperations ?? {})[0]
+    assert.equal(retainedOperation?.state, 'prepared')
+    assert.ok((retainedOperation?.outputs.consolidated.length ?? 0) > 0)
     assert.equal(
-      state?.wallet.proofs.every(({ state }) => state === 'available'),
+      retained?.wallet.proofs.every(({ state }) => state === 'reserved'),
       true,
     )
-    assert.equal(Object.values(state?.proofOperations ?? {})[0]?.state, 'Failed')
-    assert.equal(
-      Object.values(state?.proofOperations ?? {})[0]?.lastError,
-      'wallet-proof-consolidation-mint-rejected-11001',
+
+    await releaseCustodyScopeLease(directory, fence, observedAtMs + 2)
+    const { fence: restartedFence, observedAtMs: restartedAtMs } = await testFence(
+      directory,
+      'late-consolidation-restart',
     )
+    assert.notEqual(restartedFence.incarnationId, fence.incarnationId)
+    assert.equal(restartedFence.fencingEpoch, fence.fencingEpoch + 1)
+    const restarted = fakeDependencies({ inputState: 'SPENT', restoreProofs: lateOutputs })
+    const recovered = await recoverWalletProofConsolidations({
+      secrets: { walletSeedHex: SEED },
+      mutation: () => ({ fence: restartedFence, observedAtMs: restartedAtMs + 1 }),
+      dependencies: restarted.dependencies,
+    })
+    assert.equal(recovered.pending.length, 0)
+    assert.equal(recovered.recovered.length, 1)
+    assert.equal(restarted.calls.restore, 1)
+
+    const state = await readState()
+    assert.equal(Object.values(state?.proofOperations ?? {})[0]?.state, 'completed')
+    assert.equal(state?.wallet.proofs.length, lateOutputs.length)
+    assert.equal(
+      state?.wallet.proofs.every(({ proof }) =>
+        lateOutputs.some(({ secret }) => secret === proof.secret),
+      ),
+      true,
+    )
+
+    const repeated = fakeDependencies({ inputState: 'SPENT', restoreProofs: lateOutputs })
+    const scannedAgain = await recoverWalletProofConsolidations({
+      secrets: { walletSeedHex: SEED },
+      mutation: () => ({ fence: restartedFence, observedAtMs: restartedAtMs + 2 }),
+      dependencies: repeated.dependencies,
+    })
+    assert.deepEqual(scannedAgain, { recovered: [], pending: [] })
+    assert.equal(repeated.calls.restore, 0)
+    assert.equal((await readState())?.wallet.proofs.length, lateOutputs.length)
   })
 })
 

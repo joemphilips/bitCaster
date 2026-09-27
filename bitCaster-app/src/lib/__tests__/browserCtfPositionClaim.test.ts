@@ -22,7 +22,10 @@ import {
   claimBrowserCanonicalCtfPosition,
   type BrowserCanonicalCtfPositionClaimContext,
 } from "../browserCtfPositionClaim";
-import { markBrowserCanonicalCtfRedeemTransportAttempted } from "../browserCtfRedeemCoordinator";
+import {
+  BrowserCtfClaimBoundaryError,
+  markBrowserCanonicalCtfRedeemTransportAttempted,
+} from "../browserCtfRedeemCoordinator";
 import {
   CONDITION,
   MINT,
@@ -232,7 +235,10 @@ describe("browser canonical CTF position claim", () => {
       kind: "error",
       error: {
         code: "claim-failed",
-        message: expect.stringContaining("referenced artifact is missing"),
+        category: "keyset-authority",
+        message: "The selected keyset could not be verified.",
+        attemptRef: expect.any(String),
+        operationRef: record.operation.operationId,
       },
     });
     expect(prepareNewLegAuthority).not.toHaveBeenCalled();
@@ -245,7 +251,7 @@ describe("browser canonical CTF position claim", () => {
     const entry = await fixture({ amounts: [1, 2] });
     const recovered = await entry.bindLeg(entry.legs[0]!);
     const prepareNewLegAuthority = vi.fn(async () => {
-      throw new Error("fresh engine attestation is unavailable");
+      throw new BrowserCtfClaimBoundaryError("attestation-lookup");
     });
 
     const result = await claimBrowserCanonicalCtfPosition({
@@ -257,8 +263,15 @@ describe("browser canonical CTF position claim", () => {
       kind: "error",
       committedPayoutAmount: 1,
       committedLegs: 1,
-      error: { code: "claim-failed", message: "fresh engine attestation is unavailable" },
+      error: {
+        code: "claim-failed",
+        category: "attestation-lookup",
+        message: "The condition attestation could not be loaded.",
+        attemptRef: expect.any(String),
+      },
     });
+    if (result.kind !== "error") throw new Error("Claim should report a safe error.");
+    expect(result.error).not.toHaveProperty("operationRef");
     expect(prepareNewLegAuthority).toHaveBeenCalledOnce();
     expect(
       (await entry.adapter.readOperation(entry.scope, recovered.operation.operationId))?.operation
@@ -431,6 +444,80 @@ describe("browser canonical CTF position claim", () => {
     expect(
       (await entry.adapter.readProof(entry.scope.scopeId, entry.proofs[1]!.proofId))?.selectability,
     ).toBe("selectable");
+  });
+
+  it.each([
+    {
+      boundary: "mint refusal",
+      category: "mint-refusal",
+      message: "The mint refused this claim.",
+      makeError: () => new MintOperationError(400, "private mint response material"),
+    },
+    {
+      boundary: "unknown mint result",
+      category: "unknown-mint-result",
+      message: "The mint result is not confirmed. Recover this claim before retrying.",
+      makeError: () => new Error("private transport response material"),
+    },
+  ] as const)(
+    "returns a safe category for a $boundary",
+    async ({ category, message, makeError }) => {
+      const entry = await fixture();
+      const wallet: RedeemWallet = {
+        ...winningWallet(),
+        redeemOutcomeProofs: async () => {
+          throw makeError();
+        },
+      };
+
+      const result = await claimBrowserCanonicalCtfPosition({
+        position: { conditionId: CONDITION, outcomeCollection: OUTCOME },
+        context: context(entry, wallet),
+      });
+
+      expect(result).toMatchObject({
+        kind: "error",
+        error: {
+          code: "claim-failed",
+          category,
+          message,
+          attemptRef: expect.any(String),
+          operationRef: expect.any(String),
+        },
+      });
+      expect(JSON.stringify(result)).not.toContain("private");
+      expect(await entry.database.custodyOperations.count()).toBe(1);
+      expect(
+        (await entry.adapter.readProof(entry.scope.scopeId, entry.proof.proofId))?.selectability,
+      ).toBe("locked");
+    },
+  );
+
+  it("reports a local commit failure without exposing the storage exception", async () => {
+    const entry = await fixture();
+    vi.spyOn(entry.adapter, "transactAtomic").mockRejectedValue(
+      new Error("private local persistence details"),
+    );
+
+    const result = await claimBrowserCanonicalCtfPosition({
+      position: { conditionId: CONDITION, outcomeCollection: OUTCOME },
+      context: context(entry),
+    });
+
+    expect(result).toMatchObject({
+      kind: "error",
+      error: {
+        category: "local-commit",
+        message:
+          "The claim result could not be saved to wallet storage. Recover this claim before retrying.",
+        attemptRef: expect.any(String),
+        operationRef: expect.any(String),
+      },
+    });
+    expect(JSON.stringify(result)).not.toContain("private local persistence details");
+    expect(
+      (await entry.adapter.readProof(entry.scope.scopeId, entry.proof.proofId))?.selectability,
+    ).toBe("locked");
   });
 
   it("retains proof bodies after authenticated terminal losing response", async () => {

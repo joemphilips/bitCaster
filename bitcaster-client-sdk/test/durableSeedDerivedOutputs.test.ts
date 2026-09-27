@@ -2,8 +2,10 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { OutputData, type CounterRange, type CounterSource } from '@cashu/cashu-ts'
 import {
+  DurableSeedDerivedOutputReservationError,
   matchDurableSeedDerivedProofsToPlan,
   reconstructDurableSeedDerivedOutputs,
+  reserveAndConstructDurableSeedDerivedOutputs,
   reserveDurableSeedDerivedOutputs,
   type DurableSeedDerivedOutputPlan,
 } from '../src/durableSeedDerivedOutputs.ts'
@@ -203,28 +205,81 @@ test('rejects malformed and foreign plans', async () => {
   )
 })
 
-test('fails closed when reservation fails or is malformed', async () => {
-  const failed: CounterSource = {
-    reserve: async () => {
-      throw new Error('storage unavailable')
+test('preserves only bounded safe reservation failure categories', async (context) => {
+  const secretLikeContent = 'proof-secret=reserve-test key=private-test-key'
+  const cases: readonly {
+    readonly name: string
+    readonly rejection: unknown
+    readonly category: 'recovery_incomplete' | 'stale_profile' | 'unavailable'
+  }[] = [
+    {
+      name: 'recovery is incomplete',
+      rejection: Object.assign(new Error(secretLikeContent), { code: 'recovery_incomplete' }),
+      category: 'recovery_incomplete',
     },
-    advanceToAtLeast: async () => undefined,
+    {
+      name: 'profile is stale',
+      rejection: Object.assign(new Error(secretLikeContent), { code: 'stale_profile' }),
+      category: 'stale_profile',
+    },
+    {
+      name: 'unknown error code',
+      rejection: Object.assign(new Error(secretLikeContent), { code: 'foreign_database' }),
+      category: 'unavailable',
+    },
+    {
+      name: 'non-Error rejection',
+      rejection: secretLikeContent,
+      category: 'unavailable',
+    },
+  ]
+
+  for (const scenario of cases) {
+    await context.test(scenario.name, async () => {
+      let reservations = 0
+      let result: unknown
+      const failed: CounterSource = {
+        reserve: async () => {
+          reservations += 1
+          throw scenario.rejection
+        },
+        advanceToAtLeast: async () => undefined,
+      }
+
+      await assert.rejects(
+        async () => {
+          result = await reserveAndConstructDurableSeedDerivedOutputs({
+            seed: SEED,
+            counterSource: failed,
+            keyset: KEYSET,
+            amounts: [2],
+          })
+        },
+        (error: unknown) => {
+          assert.ok(error instanceof DurableSeedDerivedOutputReservationError)
+          assert.equal(error.category, scenario.category)
+          assert.equal(error.message, 'durable seed-derived output reservation failed')
+          assert.equal(Object.hasOwn(error, 'cause'), false)
+          const ownProperties = Object.getOwnPropertyNames(error)
+            .map((name) => `${name}:${String((error as unknown as Record<string, unknown>)[name])}`)
+            .join('\n')
+          assert.equal(ownProperties.includes(secretLikeContent), false)
+          return true
+        },
+      )
+
+      assert.equal(reservations, 1)
+      assert.equal(result, undefined)
+    })
   }
+})
+
+test('fails closed when reservation is malformed', async () => {
   const malformed: CounterSource = {
     reserve: async () => ({ start: 3, count: 2 }),
     advanceToAtLeast: async () => undefined,
   }
 
-  await assert.rejects(
-    () =>
-      reserveDurableSeedDerivedOutputs({
-        seed: SEED,
-        counterSource: failed,
-        keyset: KEYSET,
-        amounts: [2],
-      }),
-    /reservation failed/,
-  )
   await assert.rejects(
     () =>
       reserveDurableSeedDerivedOutputs({

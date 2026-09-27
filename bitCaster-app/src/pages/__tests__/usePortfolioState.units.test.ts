@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { Amount } from "@cashu/cashu-ts";
-import { buildLocalFunds, buildPLChartData, computeStats } from "../usePortfolioState";
-import type { ActivityItem, Fund, Position } from "@/types/portfolio";
+import { buildLocalFunds, computeStats } from "../usePortfolioState";
+import type { Fund, Position } from "@/types/portfolio";
 import type { StoredProof } from "@/stores/proof-db";
 
 const basePosition: Position = {
@@ -13,11 +13,7 @@ const basePosition: Position = {
   divisibility: 1_000,
   side: "yes",
   shares: 1,
-  avgBuyPrice: 0,
-  currentPrice: 0,
   currentValueSats: 0,
-  profitLossSats: 0,
-  profitLossPercent: 0,
   status: "active",
   isWinner: false,
   isLoser: false,
@@ -44,45 +40,28 @@ describe("computeStats", () => {
     expect(stats.totalValueSats).toBe(1600);
   });
 
-  it("keeps PL chart cumulative and stats total in sat-market subunits", () => {
-    const activity: ActivityItem[] = [
-      {
-        id: "deposit-1",
-        type: "deposit",
-        amountSats: 10_000,
-        baseAsset: "sat",
-        date: new Date(0).toISOString(),
-        status: "completed",
-        txId: null,
-        lightningInvoice: null,
-      },
-    ];
+  it("sums local portfolio value in sat-market subunits", () => {
     const stats = computeStats(
       [],
       [{ id: "sat-fund", unit: "sats", amount: 10_000, mintUrl: "https://mint.example" }],
     );
 
-    expect(buildPLChartData(activity).ALL).toEqual([
-      { timestamp: new Date(0).toISOString(), cumulativePL: 10_000 },
-    ]);
     expect(stats.totalValueSats).toBe(10_000);
   });
 
-  it("excludes unvalued active positions from totals and biggest-win P/L", () => {
+  it("excludes unvalued active positions from totals", () => {
     const stats = computeStats(
       [
         {
           ...basePosition,
           id: "unvalued",
           currentValueSats: 9_000,
-          profitLossSats: 8_000,
           valueKnown: false,
         },
         {
           ...basePosition,
           id: "valued",
           currentValueSats: 2_000,
-          profitLossSats: 1_000,
         },
       ],
       [{ id: "sat-fund", unit: "sats", amount: 500, mintUrl: "https://mint.example" }],
@@ -94,7 +73,6 @@ describe("computeStats", () => {
     expect(stats.totalValueByUnit).toEqual([{ unit: "sat", amount: 2_500 }]);
     expect(stats.positionsValueKnown).toBe(false);
     expect(stats.totalValueKnown).toBe(false);
-    expect(stats.biggestWinSats).toBe(1_000);
   });
 
   it("keeps a closed-unattested position unvalued and excludes it from totals", () => {
@@ -105,7 +83,6 @@ describe("computeStats", () => {
           id: "closed-pending",
           status: "closed",
           currentValueSats: 10_000,
-          profitLossSats: 10_000,
           valueKnown: false,
           isPending: true,
         },
@@ -118,7 +95,6 @@ describe("computeStats", () => {
     expect(stats.totalValueSats).toBe(2_000);
     expect(stats.positionsValueKnown).toBe(false);
     expect(stats.totalValueKnown).toBe(false);
-    expect(stats.biggestWinSats).toBe(0);
   });
 });
 

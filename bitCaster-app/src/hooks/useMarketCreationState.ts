@@ -12,7 +12,15 @@ import type {
 import { useSettingsStore } from "@/stores/settings";
 import { useMarketDraftStore } from "@/stores/marketDraft";
 import { useCreatorMarketsStore } from "@/stores/creatorMarkets";
-import { createMarket, requiredMarketCreationOutcomeCollections } from "@/lib/markets";
+import {
+  CreateMarketError,
+  createMarket,
+  fetchEngineCatalogueEntry,
+  requiredMarketCreationOutcomeCollections,
+} from "@/lib/markets";
+import type { CreateMarketResponse, MarketCatalogueEntry } from "@/lib/markets";
+import { resolveNsecIdentity } from "@/lib/identityOps";
+import { parseCreateMarketResponse } from "@bitcaster/client-sdk";
 import {
   createEnumAnnouncement,
   ensureKormirNsec,
@@ -34,6 +42,7 @@ import {
   normalizeMarketBaseAsset,
   normalizeMarketDivisibility,
   defaultCollateralUnit,
+  defaultMarketDivisibility,
   type MarketDivisibility,
 } from "@bitcaster/client-sdk/marketUnits";
 import { effectiveRelayUrls } from "@/lib/relayDefaults";
@@ -49,6 +58,52 @@ import { effectiveRelayUrls } from "@/lib/relayDefaults";
  */
 const DEFAULT_CREATOR_FEE_PERCENT = 0;
 export const MAX_MARKET_OUTCOMES = 8;
+
+function hasExactMarketOutcomeMembership(
+  actualOutcomes: unknown,
+  expectedOutcomes: readonly string[],
+): actualOutcomes is string[] {
+  if (!Array.isArray(actualOutcomes) || expectedOutcomes.length < 2) return false;
+  const expected = new Set(expectedOutcomes);
+  const actual = new Set(actualOutcomes);
+  return (
+    expected.size === expectedOutcomes.length &&
+    actual.size === actualOutcomes.length &&
+    actual.size === expectedOutcomes.length &&
+    expectedOutcomes.every((outcome) => actual.has(outcome))
+  );
+}
+
+function isMatchingCreatedMarket(
+  entry: MarketCatalogueEntry | null,
+  expected: {
+    conditionId: string;
+    creatorPubkey: string;
+    outcomes: readonly string[];
+    baseAsset: string;
+    divisibility: number;
+  },
+): entry is MarketCatalogueEntry {
+  return (
+    entry !== null &&
+    entry.conditionId === expected.conditionId &&
+    entry.creatorPubkey === expected.creatorPubkey &&
+    entry.baseAsset === expected.baseAsset &&
+    entry.divisibility === expected.divisibility &&
+    hasExactMarketOutcomeMembership(entry.outcomes, expected.outcomes)
+  );
+}
+
+function createMarketResponseFromCatalogueEntry(entry: MarketCatalogueEntry): CreateMarketResponse {
+  return parseCreateMarketResponse({
+    conditionId: entry.conditionId,
+    marketsCreated: entry.outcomes.map((outcome) => `${entry.conditionId}-${outcome}`),
+    baseAsset: entry.baseAsset,
+    divisibility: entry.divisibility,
+    thumbnailUrl: entry.thumbnailUrl ?? null,
+    ...(entry.outcomeDetails !== undefined ? { outcomeDetails: entry.outcomeDetails } : {}),
+  });
+}
 
 const NSEC_ORACLE_REQUIRED_MESSAGE = "You must register a nostr key to become an oracle";
 type RegistrationFeePrompt = {
@@ -365,6 +420,35 @@ export function useMarketCreationState() {
     });
   }, []);
 
+  const onOutcomeColorChange = useCallback(
+    (outcomeId: string, color: string | null) => {
+      setDraft((prev) => {
+        if (prev.stepOutcomes?.outcomeType !== "categorical" || !prev.stepOutcomes.outcomes) {
+          return prev;
+        }
+
+        return {
+          ...prev,
+          stepOutcomes: {
+            ...prev.stepOutcomes,
+            outcomes: prev.stepOutcomes.outcomes.map((outcome) => {
+              if (outcome.id !== outcomeId) return outcome;
+              const updated = { ...outcome };
+              if (color === null) {
+                delete updated.color;
+              } else {
+                updated.color = color;
+              }
+              return updated;
+            }),
+          },
+          lastModified: new Date().toISOString(),
+        };
+      });
+    },
+    [setDraft],
+  );
+
   const onLoBoundChange = useCallback((value: number) => {
     setDraft((prev) => ({
       ...prev,
@@ -560,21 +644,67 @@ export function useMarketCreationState() {
           },
         });
 
+        const outcomeDetails = outcomes.map((name) => {
+          const draftOutcome =
+            outcomeType === "categorical"
+              ? draftOutcomes.find((outcome) => outcome.label === name)
+              : undefined;
+          const color =
+            typeof draftOutcome?.color === "string" && /^#[0-9A-Fa-f]{6}$/.test(draftOutcome.color)
+              ? draftOutcome.color
+              : undefined;
+          return { name, ...(color ? { color } : {}) };
+        });
+
         // Create the market. Bot funding is a separate action.
-        const createResponse = await createMarket(
-          condition_id,
-          {
-            title,
-            description,
-            outcomes: outcomes.map((name) => ({ name })),
-            outcomeType:
-              draft.stepOutcomes?.outcomeType ?? draft.stepGetStarted?.outcomeType ?? "yesno",
-            baseAsset,
-            categoryTags,
-            oracleAnnouncementHex: announcementHex,
-          },
-          thumbnailFile,
-        );
+        let createResponse: CreateMarketResponse;
+        try {
+          createResponse = await createMarket(
+            condition_id,
+            {
+              title,
+              description,
+              outcomes: outcomeDetails,
+              outcomeType:
+                draft.stepOutcomes?.outcomeType ?? draft.stepGetStarted?.outcomeType ?? "yesno",
+              baseAsset,
+              categoryTags,
+              oracleAnnouncementHex: announcementHex,
+            },
+            thumbnailFile,
+          );
+        } catch (error) {
+          if (!(error instanceof CreateMarketError) || !error.mayHaveCommitted) throw error;
+
+          const creatorPubkey = resolveNsecIdentity(nsecSecret)?.publicKey;
+          if (!creatorPubkey) throw error;
+
+          let existingMarket: MarketCatalogueEntry | null;
+          try {
+            existingMarket = await fetchEngineCatalogueEntry(condition_id);
+          } catch {
+            throw error;
+          }
+          const expectedDivisibility = defaultMarketDivisibility(baseAsset);
+          if (
+            !isMatchingCreatedMarket(existingMarket, {
+              conditionId: condition_id,
+              creatorPubkey,
+              outcomes,
+              baseAsset,
+              divisibility: expectedDivisibility,
+            })
+          ) {
+            throw error;
+          }
+          // The condition is unique to this submission. Trust the matching
+          // engine's first committed display metadata, including colors.
+          try {
+            createResponse = createMarketResponseFromCatalogueEntry(existingMarket);
+          } catch {
+            throw error;
+          }
+        }
 
         // Record the newly created market in the client-side creator store so
         // the dashboard can render it immediately. NIP-78 sync takes over from
@@ -690,6 +820,7 @@ export function useMarketCreationState() {
     onAddOutcome,
     onRemoveOutcome,
     onOutcomeLabelChange,
+    onOutcomeColorChange,
     onLoBoundChange,
     onHiBoundChange,
     onPrecisionChange,

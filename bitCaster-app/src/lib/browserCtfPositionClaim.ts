@@ -21,6 +21,10 @@ import type { BrowserCtfRedeemLeg } from "./browserCtfRedeemSelection";
 import { readBrowserCanonicalCtfRedeemLegs } from "./browserCtfRedeemSelection";
 import {
   bindBrowserCanonicalCtfRedeemLeg,
+  BrowserCtfClaimBoundaryError,
+  browserCtfClaimBoundaryError,
+  createBrowserCtfClaimAttemptRef,
+  isBrowserCtfClaimPendingError,
   recoverBrowserCanonicalCtfRedeemOperation,
   type BrowserCanonicalCtfRedeemRecoveryResult,
 } from "./browserCtfRedeemCoordinator";
@@ -32,8 +36,6 @@ import { normalizeUrl } from "./url";
 import { withWalletProfileLock } from "./walletProfileLock";
 
 const RECOVERABLE_PAGE_LIMIT = 256;
-const ERROR_MESSAGE_LIMIT = 160;
-
 /** The proof identity captured by an exclusion confirmation. */
 export interface BrowserCanonicalCtfPositionClaimTarget {
   readonly proofId: string;
@@ -83,6 +85,8 @@ export interface BrowserCanonicalCtfPositionClaimInput {
   readonly stopOnCommittedPayout?: boolean;
   /** Caller already owns the profile lock across recovery and mint I/O. */
   readonly walletProfileLockHeld?: boolean;
+  /** Correlates the result with the app entry point's Claim attempt. */
+  readonly attemptRef?: string;
 }
 
 export type BrowserCanonicalCtfPositionClaimResult =
@@ -118,7 +122,13 @@ export interface BrowserCanonicalCtfPositionClaimPending extends BrowserCanonica
 
 export interface BrowserCanonicalCtfPositionClaimError extends BrowserCanonicalCtfPositionClaimBase {
   readonly kind: "error";
-  readonly error: { readonly code: "claim-failed"; readonly message: string };
+  readonly error: {
+    readonly code: "claim-failed";
+    readonly category: BrowserCtfClaimBoundaryError["category"];
+    readonly message: string;
+    readonly attemptRef: string;
+    readonly operationRef?: string;
+  };
 }
 
 interface ClaimTotals {
@@ -143,13 +153,23 @@ const alreadyHeldLockManager: Pick<LockManager, "request"> = {
 export async function claimBrowserCanonicalCtfPosition(
   input: BrowserCanonicalCtfPositionClaimInput,
 ): Promise<BrowserCanonicalCtfPositionClaimResult> {
-  const scope = browserWalletScope(input.context.seed);
-  if (input.walletProfileLockHeld) return claimWhileLocked(input, scope);
-  return withWalletProfileLock(
-    scope.scopeId,
-    () => claimWhileLocked(input, scope),
-    input.context.lockManager,
-  );
+  const attemptRef = input.attemptRef ?? createBrowserCtfClaimAttemptRef();
+  const claimInput = { ...input, attemptRef };
+  try {
+    const scope = browserWalletScope(input.context.seed);
+    if (input.walletProfileLockHeld) return await claimWhileLocked(claimInput, scope);
+    return await withWalletProfileLock(
+      scope.scopeId,
+      () => claimWhileLocked(claimInput, scope),
+      input.context.lockManager,
+    );
+  } catch (error) {
+    return claimErrorResult(
+      { committedPayoutAmount: 0, committedLegs: 0, losingLegs: 0, pendingLegs: 0 },
+      browserCtfClaimBoundaryError(error, "profile-ownership"),
+      attemptRef,
+    );
+  }
 }
 
 async function claimWhileLocked(
@@ -165,11 +185,15 @@ async function claimWhileLocked(
     pendingLegs: 0,
   };
   let pendingReason: BrowserCanonicalCtfPositionClaimPending["reason"] | null = null;
-  let failure: string | null = null;
+  let failure: BrowserCtfClaimBoundaryError | null = null;
   const processedOperationIds = new Set<string>();
   let newLegAuthority: Promise<BrowserCanonicalCtfPositionClaimPreparation> | null = null;
   const prepareNewLegAuthority = () => {
-    newLegAuthority ??= Promise.resolve().then(() => context.prepareNewLegAuthority());
+    newLegAuthority ??= Promise.resolve()
+      .then(() => context.prepareNewLegAuthority())
+      .catch((error: unknown) => {
+        throw browserCtfClaimBoundaryError(error, "keyset-authority");
+      });
     return newLegAuthority;
   };
   let exact: ExactTargetState | null = null;
@@ -177,11 +201,11 @@ async function claimWhileLocked(
     try {
       exact = await readExactTargetState(input, scope, normalizedMint);
     } catch (error) {
-      return {
-        kind: "error",
-        ...totals,
-        error: { code: "claim-failed", message: boundedErrorMessage(error) },
-      };
+      return claimErrorResult(
+        totals,
+        browserCtfClaimBoundaryError(error, "profile-ownership"),
+        input.attemptRef!,
+      );
     }
   }
 
@@ -212,28 +236,30 @@ async function claimWhileLocked(
             markPending: (reason) => {
               pendingReason = pendingReason ?? reason;
             },
-            markFailure: (message) => {
-              failure = failure ?? message;
+            markFailure: (claimFailure) => {
+              failure = failure ?? claimFailure;
             },
           })
         ) {
           return stoppedResult(totals);
         }
       } catch (error) {
-        if (isPendingError(error)) {
+        if (isBrowserCtfClaimPendingError(error)) {
           totals.pendingLegs += 1;
           pendingReason = pendingReason ?? "mint-response-pending";
         } else {
-          failure = failure ?? boundedErrorMessage(error);
+          failure =
+            failure ??
+            browserCtfClaimBoundaryError(error, "persisted-recovery", record.operation.operationId);
         }
       }
     }
   } catch (error) {
-    if (isPendingError(error)) {
+    if (isBrowserCtfClaimPendingError(error)) {
       totals.pendingLegs += 1;
       pendingReason = pendingReason ?? "recovery-pending";
     } else {
-      failure = failure ?? boundedErrorMessage(error);
+      failure = failure ?? browserCtfClaimBoundaryError(error, "persisted-recovery");
     }
   }
 
@@ -256,8 +282,10 @@ async function claimWhileLocked(
       );
       if (processedOperationIds.has(operationId)) continue;
       processedOperationIds.add(operationId);
+      let operationRef: string | undefined;
       try {
         const existing = await context.adapter.readOperation(scope, operationId);
+        if (existing !== null) operationRef = operationId;
         if (existing?.operation.result.state === "applied") {
           markTargetCovered(
             exact,
@@ -281,7 +309,7 @@ async function claimWhileLocked(
         if (existing === null) {
           const preparation = await prepareNewLegAuthority();
           try {
-            await bindBrowserCanonicalCtfRedeemLeg({
+            const bound = await bindBrowserCanonicalCtfRedeemLeg({
               seed: context.seed,
               mintUrl: normalizedMint,
               conditionId: input.position.conditionId,
@@ -295,8 +323,17 @@ async function claimWhileLocked(
               owner: context.owner,
               lockManager: alreadyHeldLockManager,
             });
+            operationRef = bound.operation.operationId;
           } catch (error) {
-            if (!isPersistedRecoveryRace(error)) throw error;
+            if (
+              !(error instanceof BrowserCtfClaimBoundaryError) ||
+              error.category !== "persisted-recovery"
+            ) {
+              throw error;
+            }
+            const appeared = await context.adapter.readOperation(scope, operationId);
+            if (appeared === null) throw error;
+            operationRef = operationId;
           }
         }
 
@@ -315,45 +352,42 @@ async function claimWhileLocked(
             markPending: (reason) => {
               pendingReason = pendingReason ?? reason;
             },
-            markFailure: (message) => {
-              failure = failure ?? message;
+            markFailure: (claimFailure) => {
+              failure = failure ?? claimFailure;
             },
           })
         ) {
           return stoppedResult(totals);
         }
       } catch (error) {
-        if (isPendingError(error)) {
+        if (isBrowserCtfClaimPendingError(error)) {
           totals.pendingLegs += 1;
           pendingReason = pendingReason ?? "mint-response-pending";
         } else {
-          failure = failure ?? boundedErrorMessage(error);
+          failure =
+            failure ?? browserCtfClaimBoundaryError(error, "persisted-recovery", operationRef);
         }
       }
     }
   } catch (error) {
-    if (isPendingError(error)) {
+    if (isBrowserCtfClaimPendingError(error)) {
       totals.pendingLegs += 1;
       pendingReason = pendingReason ?? "recovery-pending";
     } else {
-      failure = failure ?? boundedErrorMessage(error);
+      failure = failure ?? browserCtfClaimBoundaryError(error, "persisted-recovery");
     }
   }
 
   if (exact !== null && failure === null && totals.pendingLegs === 0) {
     for (const proofId of exact.targets.keys()) {
       if (!exact.covered.has(proofId) && !isTerminalTarget(exact.rows.get(proofId))) {
-        failure = "confirmed CTF proof target is missing or changed";
+        failure = new BrowserCtfClaimBoundaryError("profile-ownership");
         break;
       }
     }
   }
   if (failure !== null) {
-    return {
-      kind: "error",
-      ...totals,
-      error: { code: "claim-failed", message: failure },
-    };
+    return claimErrorResult(totals, failure, input.attemptRef!);
   }
   if (totals.pendingLegs > 0) {
     return {
@@ -385,12 +419,16 @@ async function runRecovery(
     observedAtMs: context.observedAtMs,
   });
   if (result.kind === "losing") {
-    await reconcileBrowserCanonicalCtfRedeemTerminal({
-      scope,
-      operationId,
-      evidence: result.evidence,
-      context,
-    });
+    try {
+      await reconcileBrowserCanonicalCtfRedeemTerminal({
+        scope,
+        operationId,
+        evidence: result.evidence,
+        context,
+      });
+    } catch {
+      throw new BrowserCtfClaimBoundaryError("local-commit", operationId);
+    }
   }
   return result;
 }
@@ -417,7 +455,7 @@ async function mergeLegOutcome(input: {
   readonly outcome: BrowserCanonicalCtfRedeemRecoveryResult;
   readonly stopOnCommittedPayout: boolean;
   readonly markPending: (reason: BrowserCanonicalCtfPositionClaimPending["reason"]) => void;
-  readonly markFailure: (message: string) => void;
+  readonly markFailure: (failure: BrowserCtfClaimBoundaryError) => void;
 }): Promise<boolean> {
   switch (input.outcome.kind) {
     case "redeemed":
@@ -438,9 +476,27 @@ async function mergeLegOutcome(input: {
       input.markPending("recovery-pending");
       return false;
     default:
-      input.markFailure("browser CTF redeem returned an unknown recovery result");
+      input.markFailure(new BrowserCtfClaimBoundaryError("unknown-mint-result"));
       return false;
   }
+}
+
+function claimErrorResult(
+  totals: ClaimTotals,
+  failure: BrowserCtfClaimBoundaryError,
+  attemptRef: string,
+): BrowserCanonicalCtfPositionClaimError {
+  return {
+    kind: "error",
+    ...totals,
+    error: {
+      code: "claim-failed",
+      category: failure.category,
+      message: failure.message,
+      attemptRef,
+      ...(failure.operationRef === undefined ? {} : { operationRef: failure.operationRef }),
+    },
+  };
 }
 
 function stoppedResult(totals: ClaimTotals): BrowserCanonicalCtfPositionClaimStopped {
@@ -493,7 +549,7 @@ function exactLeg(leg: BrowserCtfRedeemLeg, exact: ExactTargetState): BrowserCtf
     keysetTargetIds.length !== targetRows.length ||
     keysetTargetIds.some((proofId) => !targetRows.some((row) => row.proofId === proofId))
   ) {
-    throw new Error("confirmed CTF proof target set changed");
+    throw new BrowserCtfClaimBoundaryError("profile-ownership");
   }
   for (const row of targetRows) {
     const target = exact.targets.get(row.proofId)!;
@@ -502,7 +558,7 @@ function exactLeg(leg: BrowserCtfRedeemLeg, exact: ExactTargetState): BrowserCtf
       row.revision !== target.revision ||
       row.proofFingerprint !== target.proofFingerprint
     ) {
-      throw new Error("confirmed CTF proof target revision changed");
+      throw new BrowserCtfClaimBoundaryError("profile-ownership");
     }
   }
   const selected = new Set(targetRows.map(({ proofId }) => proofId));
@@ -550,7 +606,7 @@ function requireOperationTargetSubset(
   const proofIds = record.operation.reservation.inputs.map(({ proofId }) => proofId);
   const overlap = proofIds.some((proofId) => targets.has(proofId));
   if (overlap && proofIds.some((proofId) => !targets.has(proofId))) {
-    throw new Error("recoverable CTF operation overlaps an unconfirmed proof target");
+    throw new BrowserCtfClaimBoundaryError("profile-ownership");
   }
 }
 
@@ -564,7 +620,7 @@ function requireOperationTargetFingerprints(
     if (target === undefined) continue;
     const row = exact.rows.get(proofId);
     if (row === undefined || row.proofFingerprint !== target.proofFingerprint) {
-      throw new Error("recoverable CTF proof target body changed");
+      throw new BrowserCtfClaimBoundaryError("profile-ownership");
     }
   }
 }
@@ -596,19 +652,29 @@ async function* readMatchingRecoverableOperations(input: {
       if (exact === null || exact.operation.operationId !== record.operation.operationId) {
         throw new Error("browser CTF claim recovery operation is foreign");
       }
-      const snapshot = await input.adapter.readOperationSnapshot(
-        input.scope,
-        record.operation.operationId,
-      );
+      let snapshot: Awaited<ReturnType<BrowserDurableCustodyAdapter["readOperationSnapshot"]>>;
+      try {
+        snapshot = await input.adapter.readOperationSnapshot(
+          input.scope,
+          record.operation.operationId,
+        );
+      } catch {
+        throw new BrowserCtfClaimBoundaryError("keyset-authority", record.operation.operationId);
+      }
       if (snapshot === null) throw new Error("browser CTF claim recovery operation is missing");
       const exactReference = snapshot.record.operation.privateMaterial.exactPrivateMaterial;
       const exactAuthority = snapshot.artifacts.find(
         ({ reference }) => reference.artifactId === exactReference.artifactId,
       )?.artifact;
       if (exactAuthority === undefined) {
-        throw new Error("browser CTF claim recovery authority is missing");
+        throw new BrowserCtfClaimBoundaryError("keyset-authority", record.operation.operationId);
       }
-      const authority = assertDurableCustodyMintOperationAuthority(snapshot.record, exactAuthority);
+      let authority: ReturnType<typeof assertDurableCustodyMintOperationAuthority>;
+      try {
+        authority = assertDurableCustodyMintOperationAuthority(snapshot.record, exactAuthority);
+      } catch {
+        throw new BrowserCtfClaimBoundaryError("keyset-authority", record.operation.operationId);
+      }
       const metadata = authority.operation.metadata;
       if (
         authority.operation.mintUrl !== input.normalizedMint ||
@@ -697,27 +763,4 @@ async function reconcileBrowserCanonicalCtfRedeemTerminal(input: {
         authorization,
       }),
   );
-}
-
-function isPendingError(error: unknown): boolean {
-  if (error instanceof DOMException && error.name === "AbortError") return true;
-  if (error instanceof Error && (error.name === "AbortError" || error.name === "TimeoutError")) {
-    return true;
-  }
-  const message = error instanceof Error ? error.message : String(error);
-  return /(?:timed? ?out|timeout|network error|failed to fetch|connection reset|temporarily unavailable)/i.test(
-    message,
-  );
-}
-
-function isPersistedRecoveryRace(error: unknown): boolean {
-  return error instanceof Error && /requires persisted recovery/.test(error.message);
-}
-
-function boundedErrorMessage(error: unknown): string {
-  const message = error instanceof Error ? error.message : "browser CTF claim failed";
-  const normalized = message.replace(/[\r\n\t]+/g, " ").trim();
-  return normalized.length > ERROR_MESSAGE_LIMIT
-    ? `${normalized.slice(0, ERROR_MESSAGE_LIMIT - 1)}…`
-    : normalized || "browser CTF claim failed";
 }

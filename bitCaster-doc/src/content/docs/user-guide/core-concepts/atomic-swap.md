@@ -18,6 +18,10 @@ Review the quantity, price protection, and fees. Price protection limits the
 prices at which your order can trade. It does not remove wallet preparation or
 refund fees. Preparation can cost a fee even if no trade completes.
 
+To sell all your shares, keep some ordinary sats available for preparation
+fees. The wallet can pay those fees with sats instead of reducing the shares
+you sell. The sale proceeds cannot pay this fee because preparation comes first.
+
 Both the web app and CLI use fill-or-kill (FOK) orders in this release. When the
 engine accepts the order, the available matching orders must cover its full
 quantity within its price protection. Otherwise, it cancels the whole order.
@@ -27,6 +31,15 @@ or seller. A matching decision still needs settlement confirmation.
 Cancellation because the full quantity cannot match does not itself spend the
 trade authorization or start a refund. If your wallet already prepared locked
 funds, they can remain unavailable until the refund conditions are met.
+
+The wallet keeps a completed preparation if the order fails. It does not undo
+the preparation or refund its paid fees. Unused locked funds follow the normal
+expiry and refund process. Recovery does not submit a new order automatically.
+
+If the mint's preparation reply is missing, the wallet keeps the affected
+funds reserved while it checks the result. An expired authorization or a
+rejected retry does not prove that the first request failed. Recovery can
+remain pending if the mint cannot complete or return the exact result.
 
 ## If a trade is delayed
 

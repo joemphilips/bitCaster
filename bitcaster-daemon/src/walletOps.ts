@@ -41,7 +41,6 @@ import {
   amountToNumber,
   computeInputFeeSubunitsForProofs,
 } from '@bitcaster-market/client-sdk/proofSelection'
-import { classifyExactProofConsolidationReplayFailure } from '@bitcaster-market/client-sdk/proofConsolidationOperation'
 import { classifyCtfRangeSourceRecovery } from '@bitcaster-market/client-sdk/ctfRangeSourceRecovery'
 import {
   createDurableCustodyProofOperation,
@@ -114,7 +113,6 @@ import {
   type StoredProofAsset,
   completeCtfConsolidationTargetFromDatabase,
   prepareCtfConsolidationProofOperationWithExactReservation,
-  releaseCtfConsolidationProofReservationFromDatabase,
 } from './state.ts'
 import { profileDir, type DaemonProfile } from './profile.ts'
 import type { CustodyScopeFence } from './profileFencing.ts'
@@ -1164,45 +1162,6 @@ async function readCtfConsolidationInputStates(
   return states
 }
 
-async function releaseCtfConsolidationReservations(
-  operationId: string,
-  binding: CtfCustodyBinding,
-  fence: CustodyScopeFence,
-  reason: string,
-): Promise<void> {
-  const observedAtMs = Date.now()
-  await withDurableCustodyUnitOfWork(profileDir(), fence, observedAtMs, (database) => {
-    const custody = new DurableCustodySqliteStore(database)
-    const canonical = custody.getOperation(binding.record.operation.operationId)
-    if (canonical === null) throw new Error('CTF consolidation custody operation is missing')
-    releaseCtfConsolidationProofReservationFromDatabase(database, {
-      operationId,
-      reservationId: `ctf-consolidation:${operationId}`,
-      inputAssets: binding.inputAssets,
-      reason,
-      observedAtMs,
-    })
-    const authorization = custodyOwner(fence, observedAtMs)
-    const transaction = new DurableCustodyTransactionSqlite(database, fence.scopeId, observedAtMs, [
-      canonical,
-    ])
-    applyDurableCustodyTransaction(
-      transaction,
-      custodySelection(canonical, authorization, canonical.revision),
-      (selected) =>
-        selected.transitionOperation({
-          operationId: binding.record.operation.operationId,
-          expectedRevision: canonical.revision,
-          transition: {
-            kind: 'release-unspent-reservation',
-            expectedRevision: canonical.revision,
-            authorization,
-          },
-        }),
-    )
-  })
-}
-
 export async function executeCtfConsolidationPlan(
   input: ExecuteCtfConsolidationPlanInput,
   deps: WalletOpsDependencies = {},
@@ -1281,31 +1240,6 @@ export async function executeCtfConsolidationPlan(
       ? await deps.ctfConvert(input.mintUrl, input.plan.request, input.outputsByCollection)
       : await executeMintCtfConvert(input.mintUrl, input.plan.request, input.outputsByCollection)
   } catch (error) {
-    if (error instanceof MintOperationError) {
-      let inputStates: readonly ProofState[] | null = null
-      try {
-        inputStates = await readCtfConsolidationInputStates(
-          input.mintUrl,
-          input.secrets,
-          selectedInputs,
-          deps,
-        )
-      } catch {
-        inputStates = null
-      }
-      const disposition =
-        inputStates === null
-          ? 'remain-pending'
-          : classifyExactProofConsolidationReplayFailure({
-              definiteMintRejection: true,
-              inputStates: inputStates.map(({ state }) => state),
-            })
-      if (disposition === 'release-exact-unspent-inputs') {
-        const reason = 'CTF consolidation mint rejected before mutation'
-        await releaseCtfConsolidationReservations(operationId, binding, fence, reason)
-        throw new Error('CTF consolidation mint rejected before mutation')
-      }
-    }
     throw new Error(
       error instanceof MintOperationError
         ? 'CTF consolidation mint rejection remains held for exact recovery'
@@ -2252,22 +2186,6 @@ async function resumeCtfConsolidationOperation(
           )
           return restored
         }
-      }
-      const disposition =
-        inputStates === null
-          ? 'remain-pending'
-          : classifyExactProofConsolidationReplayFailure({
-              definiteMintRejection: true,
-              inputStates: inputStates.map(({ state }) => state),
-            })
-      if (disposition === 'release-exact-unspent-inputs') {
-        await releaseCtfConsolidationReservations(
-          entry.operationId,
-          binding,
-          fence,
-          'CTF consolidation mint rejected before mutation',
-        )
-        return {}
       }
       throw new Error('CTF consolidation mint rejection remains held for exact recovery')
     }

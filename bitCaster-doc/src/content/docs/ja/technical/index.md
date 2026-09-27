@@ -6,7 +6,10 @@ sidebar:
 
 このセクションでは、bitCaster の公開技術動作を説明します。
 
-読み取り専用の取引見積もりと個別の手数料計算については、
+マーケット作成とカタログのレスポンスに含まれるアウトカムIDと省略可能な表示メタデータは、
+[Market Catalogue API](/ja/technical/protocol/market-catalogue/) を参照してください。
+
+読み取り専用の取引見積もり、約定可能な数量、個別の手数料計算については、
 [公開 FOK プレビュー](/ja/technical/architecture/trading-model/#公開-fok-プレビュー)
 を参照してください。
 
@@ -32,3 +35,7 @@ sidebar:
 後続の page を読むには、返された asset cursor を `GET /api/v1/asset-monitoring/assets` と一緒に使用します。後続 page に portfolio endpoint を呼び出さないでください。private response は `Cache-Control: no-store` を使用します。API は無効な query には `400`、非アクティブな wallet には `409`、history read limit が上限の場合は `429`、有効な provider に bounded monitoring reader がない場合は `503` を返します。
 
 決済が確定した後、owner-filtered の `SettlementGroupStateChanged` update はアクティブな portfolio を更新できます。このベストエフォートの表示 update は、カストディの証明や支出の承認には使用しません。
+
+価格と取引終了の更新を受け取るには、market hub の `SetPortfolioValuationSubscriptions` に購読するコンディションIDを渡します。その接続の購読対象を置き換えます。重複を含めて最大200件を受け付けます。APIが返す正確なコンディションIDを使ってください。空の配列で購読を解除できます。再接続後は購読対象を再送してください。
+
+この購読では `ConfirmedTradeRecorded` と `MarketStatusChanged` を受け取ります。注文板のスナップショットや板の厚さの更新は受け取りません。購読、再接続、または対象の通知を受信した後に、Portfolioのレスポンスを再取得してください。更新要求をまとめ、`429` の応答に従ってください。通知を受け取っても、直後のPortfolio読み取りに反映されている保証はありません。

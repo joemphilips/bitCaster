@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import type { PLChartData, PLTimeSelector } from "@/types/portfolio";
 import { InlineAmount } from "@/components/shared/InlineAmount";
 
@@ -18,12 +19,12 @@ export function PLChart({
   totalValueKnown,
   onTimeRangeChange,
 }: PLChartProps) {
+  const { t } = useTranslation();
   const valuationKnown = totalValueKnown !== false;
   const data = valuationKnown ? chartData[selectedTimeRange] : [];
   const currentPL = data.length > 0 ? data[data.length - 1].cumulativePL : 0;
   const startPL = data.length > 0 ? data[0].cumulativePL : 0;
   const periodChange = currentPL - startPL;
-  const isPositive = currentPL >= 0;
   const periodPositive = periodChange >= 0;
 
   // SVG chart generation
@@ -45,11 +46,11 @@ export function PLChart({
   const linePath = points.map((p, i) => `${i === 0 ? "M" : "L"} ${p.x} ${p.y}`).join(" ");
   const areaPath = `${linePath} L ${points[points.length - 1]?.x ?? width - padding} ${height} L ${points[0]?.x ?? padding} ${height} Z`;
 
-  const lineColor = isPositive ? "rgb(16, 185, 129)" : "rgb(239, 68, 68)";
+  const lineColor = periodPositive ? "rgb(16, 185, 129)" : "rgb(239, 68, 68)";
 
   return (
     <div>
-      {/* Total Value / P/L Amount */}
+      {/* Current portfolio value and selected-range change */}
       <div className="mb-3">
         {totalValueKnown === false ? (
           <div className="text-2xl font-bold text-amber-600 dark:text-amber-300">—</div>
@@ -58,19 +59,19 @@ export function PLChart({
             <InlineAmount amountSubunits={totalValueSats} baseAsset="sat" />
           </div>
         ) : (
-          <div
-            className={`text-2xl font-bold font-mono ${isPositive ? "text-emerald-500" : "text-rose-500"}`}
-          >
-            {isPositive ? "+" : ""}
+          <div className="text-2xl font-bold font-mono text-slate-900 dark:text-white">
             <InlineAmount amountSubunits={currentPL} baseAsset="sat" />
           </div>
         )}
         {valuationKnown && data.length > 0 && (
-          <div
-            className={`text-sm font-mono ${periodPositive ? "text-emerald-500" : "text-rose-500"}`}
-          >
-            {periodPositive ? "+" : ""}
-            <InlineAmount amountSubunits={periodChange} baseAsset="sat" /> this period
+          <div className="text-sm">
+            <div className="text-xs text-slate-500 dark:text-slate-400">
+              {t("portfolio.estimatedValueChange")}
+            </div>
+            <div className={`font-mono ${periodPositive ? "text-emerald-500" : "text-rose-500"}`}>
+              {periodPositive ? "+" : ""}
+              <InlineAmount amountSubunits={periodChange} baseAsset="sat" />
+            </div>
           </div>
         )}
       </div>

@@ -12,6 +12,7 @@ import type {
 } from "./market";
 import type { MarketState } from "@/hooks/useMarketState";
 import type { UseFokOrderPreviewResult } from "@/hooks/useFokOrderPreview";
+import type { UseFokOrderCapacityPreviewResult } from "@/hooks/useFokOrderCapacityPreview";
 import type { CtfRangeOrderFeeFacts } from "@bitcaster/client-sdk/ctfRangeOrderFeeComposition";
 
 // =============================================================================
@@ -143,6 +144,8 @@ interface BaseMarketDetail {
   liquidity: number;
   liquiditySubunits: number;
   ammBotBudgetSubunits: number;
+  /** Revision paired with the confirmed funding total; absent only on local placeholders. */
+  fundingRevision?: string | null;
   volumeLifetimeSubunits: number;
   closingDate: string | null;
   createdDate: string;
@@ -211,6 +214,19 @@ export type TradeSide = "Buy" | "Sell";
 export type TradeTab = TradeSide | "Liquidity";
 export type OrderType = "market" | "limit";
 
+/**
+ * Why the wallet cannot back the selected trade. `preparation-fee-cash` means
+ * the offered holding is enough, but ordinary sats for the preparation fee
+ * are missing. `mint-limits` means the wallet has the funds, but the order
+ * needs more proofs than one mint request accepts.
+ */
+export type TradeFeasibilityReason =
+  | "funds"
+  | "outcome-tokens"
+  | "preparation-fee-cash"
+  | "mint-limits"
+  | "unavailable";
+
 /** Read-only server preview state. The response remains generated SDK data. */
 export type FokOrderPreviewState = UseFokOrderPreviewResult;
 
@@ -257,6 +273,19 @@ export interface TradeSelection {
   orderType?: OrderType;
   limitPrice?: number;
 }
+
+export interface SellOutcomeHolding {
+  selectableSubunits: number;
+  reservedSubunits: number;
+}
+
+export type SellHoldingsState =
+  | { status: "loading" }
+  | { status: "unavailable" }
+  | {
+      status: "ready";
+      byOutcomeSetId: ReadonlyMap<string, SellOutcomeHolding>;
+    };
 
 // =============================================================================
 // Component Props
@@ -311,9 +340,11 @@ export interface MarketDetailProps {
   /** UX-only wallet feasibility gate for local wallet backing checks. */
   tradeFeasibility?: {
     canBack: boolean;
-    reason?: "funds" | "outcome-tokens";
+    reason?: TradeFeasibilityReason;
     message?: string;
   } | null;
+
+  onTradeFeasibilityRetry?: () => void;
 
   /** True while an order submit is in flight. Disables duplicate confirms. */
   isTradeSubmitting?: boolean;
@@ -360,11 +391,20 @@ export interface MarketDetailProps {
   /** Current limit price (in market's base unit) */
   limitPrice?: number;
 
+  /** Read-only capacity at the current Auto or Custom price limit. */
+  tradeCapacityPreview?: UseFokOrderCapacityPreviewResult | null;
+
+  /** The server-derived Auto price limit for the selected route and side. */
+  automaticLimitPrice?: number | null;
+
+  /** Retry the read-only capacity request. */
+  onTradeCapacityRetry?: () => void;
+
   /** Called when user changes limit price */
   onLimitPriceChange?: (price: number) => void;
 
-  /** Number of shares the user currently holds (for sell percentage calculation) */
-  userHoldings?: number;
+  /** Canonical selectable and reserved conditional holdings for each outcome set. */
+  sellHoldings?: SellHoldingsState;
 
   /** Whether the user has a wallet configured (gates trade confirmation) */
   walletReady?: boolean;
@@ -374,4 +414,7 @@ export interface MarketDetailProps {
 
   /** Called when the trade UI should open the wallet top-up flow. */
   onTopUpRequired?: () => void;
+
+  /** Refresh live market snapshots after a funding credit completes in this session. */
+  onFundingCredited?: () => void;
 }

@@ -23,6 +23,15 @@ If a payment needs a wallet, choose Create wallet or Restore wallet.
 Setup and cancellation preserve your draft. Setup does not submit the market
 or pay its fee. Continue only after you review the next action.
 
+For each categorical outcome, choose a color or leave **Automatic** selected.
+With Automatic, the server assigns the color when it creates the market.
+The market views and Portfolio use the same outcome colors.
+Colors do not change outcome identity or settlement.
+
+API clients can set the optional `color` field to a six-digit hexadecimal
+value with a leading `#`. Omit it for automatic assignment. See the
+[Market Catalogue API](/technical/protocol/market-catalogue/) for the wire fields.
+
 ## Your role as oracle
 
 The creation flow uses your own Nostr private key to make a signed promise

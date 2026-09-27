@@ -1,14 +1,17 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
+import type { ComponentProps } from "react";
 import { TradingPanel } from "../TradingPanel";
 import type {
   CategoricalMarketDetail,
   FokOrderPreviewState,
   NumericMarketDetail,
+  SellHoldingsState,
   TradeFeeFacts,
   YesNoMarketDetail,
 } from "@/types/market-detail";
+import type { UseFokOrderCapacityPreviewResult } from "@/hooks/useFokOrderCapacityPreview";
 import { useState } from "react";
 
 const { depositFundingAction } = vi.hoisted(() => ({
@@ -116,6 +119,29 @@ function errorPreview(retryAfterSeconds: number | null = null): FokOrderPreviewS
   };
 }
 
+function readyCapacityPreview(
+  overrides: Partial<NonNullable<UseFokOrderCapacityPreviewResult["response"]>> = {},
+): UseFokOrderCapacityPreviewResult {
+  return {
+    status: "ready",
+    requestKey: "capacity-request",
+    response: {
+      status: "ready",
+      referencePrice: 400,
+      effectiveLimitPrice: 600,
+      maxFaceAmountSubunits: 2_000,
+      quotePaymentSubunits: 800,
+      worstPrice: 400,
+      priceDenominator: 1_000,
+      previewRevision: "capacity-revision",
+      ...overrides,
+    },
+    error: null,
+    retryAfterSeconds: null,
+    refresh: vi.fn(),
+  };
+}
+
 function nonfillablePreview(
   reason: PreviewResponse["reason"] = "insufficient_liquidity",
   subsidyMayHelp = reason === "insufficient_liquidity",
@@ -146,12 +172,54 @@ function feeFacts(overrides: Partial<TradeFeeFacts> = {}): TradeFeeFacts {
     sourcePreparationFeeSubunits: "2000",
     consolidationFeeSubunits: "3000",
     settlementAsset: regularAsset,
-    preparationAsset: regularAsset,
+    sourcePreparationAsset: regularAsset,
+    consolidationAsset: regularAsset,
+    sourceMode: "wallet-send",
     ...overrides,
   };
 }
 
+function sellHoldings(
+  entries: Record<string, { selectableSubunits: number; reservedSubunits?: number }>,
+): SellHoldingsState {
+  return {
+    status: "ready",
+    byOutcomeSetId: new Map(
+      Object.entries(entries).map(([outcomeSetId, holding]) => [
+        outcomeSetId,
+        {
+          selectableSubunits: holding.selectableSubunits,
+          reservedSubunits: holding.reservedSubunits ?? 0,
+        },
+      ]),
+    ),
+  };
+}
+
 describe("TradingPanel", () => {
+  it.each(["funds", "outcome-tokens", "unavailable"] as const)(
+    "ends the fee loading message after a %s refusal",
+    (reason) => {
+      const props = {
+        market: makeMarket(),
+        tradeSelection: { side: "yes" as const },
+        tradeAmount: 1,
+        tradeSide: "Buy" as const,
+        orderType: "market" as const,
+        tradePreview: readyPreview(),
+        tradeFeeFacts: null,
+        walletReady: true,
+      };
+      const { rerender } = render(<TradingPanel {...props} />);
+      expect(screen.getByTestId("trade-fees-loading")).toBeInTheDocument();
+
+      rerender(<TradingPanel {...props} tradeFeasibility={{ canBack: false, reason }} />);
+
+      expect(screen.queryByTestId("trade-fees-loading")).not.toBeInTheDocument();
+      expect(screen.getByTestId("trade-confirm")).toBeDisabled();
+    },
+  );
+
   const emptyBook = {
     bids: [],
     asks: [],
@@ -173,6 +241,20 @@ describe("TradingPanel", () => {
     });
   }
 
+  function renderSellPanel(overrides: Partial<ComponentProps<typeof TradingPanel>> = {}) {
+    return render(
+      <TradingPanel
+        market={makeEmptyBookMarket()}
+        tradeSelection={null}
+        tradeAmount={0}
+        tradePreview={null}
+        tradeSide="Sell"
+        orderType="market"
+        {...overrides}
+      />,
+    );
+  }
+
   it("renders selectable BUY, SELL, and LIQUIDITY tabs", async () => {
     const user = userEvent.setup();
     render(
@@ -191,7 +273,7 @@ describe("TradingPanel", () => {
     expect(screen.getByTestId("detail-deposit-step")).toHaveTextContent("sat-market:1000");
   });
 
-  it("shows the preview worst price by default and an exact optional bound", async () => {
+  it("shows the Auto bound and lets the user change or restore it", async () => {
     const user = userEvent.setup();
     function Harness() {
       const [orderType, setOrderType] = useState<"market" | "limit">("market");
@@ -202,6 +284,8 @@ describe("TradingPanel", () => {
           tradeAmount={1}
           tradePreview={readyPreview({ worstPrice: 320 })}
           limitOrderPreview={readyPreview({ worstPrice: 320 })}
+          tradeCapacityPreview={readyCapacityPreview()}
+          automaticLimitPrice={600}
           tradeSide="Buy"
           orderType={orderType}
           limitPrice={450}
@@ -214,13 +298,16 @@ describe("TradingPanel", () => {
 
     expect(screen.queryByText("Market")).not.toBeInTheDocument();
     expect(screen.queryByText("Limit")).not.toBeInTheDocument();
-    expect(screen.getByTestId("trade-price-protection-toggle")).toHaveAccessibleName(
-      "Customize price protection",
-    );
+    expect(screen.getByTestId("trade-price-protection-toggle")).toHaveTextContent("Change");
     expect(screen.getByTestId("trade-protected-price")).toHaveAttribute(
       "data-price-numerator",
-      "320",
+      "600",
     );
+    expect(screen.getByTestId("trade-capacity-available")).toHaveTextContent(
+      "Available at this limit: 2 shares",
+    );
+    expect(screen.getByText(/20 percentage points/)).toBeInTheDocument();
+    expect(screen.getByText(/not reserved/)).toBeInTheDocument();
 
     await user.click(screen.getByTestId("trade-price-protection-toggle"));
 
@@ -229,6 +316,125 @@ describe("TradingPanel", () => {
       "450",
     );
     expect(screen.getByTestId("limit-price-input")).toHaveValue(0.45);
+    expect(screen.getByTestId("trade-use-auto")).toBeInTheDocument();
+    await user.click(screen.getByTestId("trade-use-auto"));
+    expect(screen.getByTestId("trade-protected-price")).toHaveAttribute(
+      "data-price-numerator",
+      "600",
+    );
+  });
+
+  it("keeps a Custom price editable when a ready snapshot has zero capacity", async () => {
+    const user = userEvent.setup();
+    function Harness() {
+      const [orderType, setOrderType] = useState<"market" | "limit">("market");
+      return (
+        <TradingPanel
+          market={makeMarket()}
+          tradeSelection={{ side: "yes" }}
+          tradeAmount={1}
+          tradePreview={readyPreview()}
+          limitOrderPreview={readyPreview()}
+          tradeCapacityPreview={readyCapacityPreview({
+            maxFaceAmountSubunits: 0,
+            quotePaymentSubunits: 0,
+            worstPrice: null,
+          })}
+          automaticLimitPrice={600}
+          tradeSide="Buy"
+          orderType={orderType}
+          limitPrice={600}
+          onOrderTypeChange={setOrderType}
+        />
+      );
+    }
+
+    render(<Harness />);
+    expect(screen.getByTestId("trade-capacity-available")).toHaveTextContent(
+      "Available at this limit: 0 shares",
+    );
+    await user.click(screen.getByTestId("trade-price-protection-toggle"));
+    expect(screen.getByTestId("limit-price-input")).toBeEnabled();
+  });
+
+  it("distinguishes no eligible reference from an unavailable market", () => {
+    const noReference = readyCapacityPreview({
+      referencePrice: null,
+      effectiveLimitPrice: null,
+      maxFaceAmountSubunits: 0,
+      quotePaymentSubunits: 0,
+      worstPrice: null,
+    });
+    const view = renderSellPanel({
+      tradeSelection: { side: "yes" },
+      tradeCapacityPreview: noReference,
+    });
+    expect(screen.getByTestId("trade-capacity-status")).toHaveTextContent(
+      "No eligible reference price.",
+    );
+
+    view.rerender(
+      <TradingPanel
+        market={makeMarket()}
+        tradeSelection={{ side: "yes" }}
+        tradeAmount={0}
+        tradePreview={null}
+        tradeSide="Sell"
+        orderType="market"
+        tradeCapacityPreview={{
+          ...noReference,
+          response: {
+            status: "market_unavailable",
+            referencePrice: null,
+            effectiveLimitPrice: null,
+            maxFaceAmountSubunits: null,
+            quotePaymentSubunits: null,
+            worstPrice: null,
+            priceDenominator: null,
+            previewRevision: null,
+          },
+        }}
+      />,
+    );
+    expect(screen.getByTestId("trade-capacity-status")).toHaveTextContent(
+      "Market is unavailable; available shares cannot be checked.",
+    );
+  });
+
+  it("allows retry when a capacity snapshot is temporarily unavailable", async () => {
+    const user = userEvent.setup();
+    const onTradeCapacityRetry = vi.fn();
+    const capacityPreview = readyCapacityPreview();
+    render(
+      <TradingPanel
+        market={makeMarket()}
+        tradeSelection={{ side: "yes" }}
+        tradeAmount={0}
+        tradePreview={null}
+        tradeSide="Buy"
+        orderType="market"
+        tradeCapacityPreview={{
+          ...capacityPreview,
+          response: {
+            status: "temporarily_unavailable",
+            referencePrice: null,
+            effectiveLimitPrice: null,
+            maxFaceAmountSubunits: null,
+            quotePaymentSubunits: null,
+            worstPrice: null,
+            priceDenominator: null,
+            previewRevision: null,
+          },
+        }}
+        onTradeCapacityRetry={onTradeCapacityRetry}
+      />,
+    );
+
+    expect(screen.getByTestId("trade-capacity-status")).toHaveTextContent(
+      "Available shares could not be checked.",
+    );
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    expect(onTradeCapacityRetry).toHaveBeenCalledOnce();
   });
 
   it("does not block trading controls when the local book is empty", async () => {
@@ -386,7 +592,7 @@ describe("TradingPanel", () => {
       ...makeMarket(),
       type: "categorical" as const,
       outcomes: [
-        { id: "outcome-0", label: "Alice", odds: null },
+        { id: "outcome-0", label: "Alice", odds: null, color: "#445566" },
         { id: "outcome-1", label: "Bob", odds: null },
         { id: "outcome-2", label: "Carol", odds: null },
       ],
@@ -410,6 +616,9 @@ describe("TradingPanel", () => {
 
     expect(screen.queryByTestId("empty-trade-liquidity")).not.toBeInTheDocument();
     expect(screen.getByTestId("buy-no-Alice")).toBeInTheDocument();
+    expect(screen.getAllByTestId("outcome-color-swatch")[0]).toHaveStyle({
+      backgroundColor: "#445566",
+    });
 
     unmount();
     render(
@@ -513,7 +722,7 @@ describe("TradingPanel", () => {
     expect(screen.getAllByLabelText("No trades yet")).toHaveLength(2);
     expect(screen.getAllByText("—")).toHaveLength(2);
     expect(screen.queryAllByLabelText("market.priceUnavailable")).toHaveLength(0);
-    expect(screen.getByRole("button", { name: "Yes No trades yet" })).toBeInTheDocument();
+    expect(screen.getByTestId("trade-outcome-yes")).toHaveAccessibleName("Yes");
   });
 
   it("labels malformed or missing price authority as unavailable", () => {
@@ -537,7 +746,7 @@ describe("TradingPanel", () => {
     expect(screen.getAllByLabelText("market.priceUnavailable")).toHaveLength(2);
     expect(screen.queryAllByLabelText("No trades yet")).toHaveLength(0);
     expect(screen.getAllByText("—")).toHaveLength(2);
-    expect(screen.getByRole("button", { name: "Yes market.priceUnavailable" })).toBeInTheDocument();
+    expect(screen.getByTestId("trade-outcome-yes")).toHaveAccessibleName("Yes");
   });
 
   it("keeps a valid partial categorical snapshot as no trades only for null outcomes", () => {
@@ -719,7 +928,9 @@ describe("TradingPanel", () => {
         tradePreview={null}
         limitOrderPreview={readyPreview()}
         tradeFeeFacts={feeFacts({
-          preparationAsset: conditionalAsset,
+          sourcePreparationAsset: conditionalAsset,
+          consolidationAsset: conditionalAsset,
+          sourceMode: "conditional-keyset-swap",
         })}
         feeConsentCurrent
         tradeSide="Sell"
@@ -741,6 +952,171 @@ describe("TradingPanel", () => {
     );
     expect(screen.queryByRole("button", { name: "Top up wallet" })).not.toBeInTheDocument();
     expect(screen.queryByText(/VCS/i)).not.toBeInTheDocument();
+  });
+
+  it("keeps Sell selectable while enabling only outcomes with canonical selectable shares", async () => {
+    const user = userEvent.setup();
+    renderSellPanel({
+      tradeSide: "Buy",
+      tradeSelection: { side: "no" },
+      sellHoldings: sellHoldings({
+        Yes: { selectableSubunits: 0 },
+        No: { selectableSubunits: 2_000 },
+      }),
+    });
+
+    await user.click(screen.getByTestId("trade-tab-sell"));
+
+    expect(screen.getByTestId("trade-tab-sell")).toBeEnabled();
+    expect(screen.getByTestId("trade-outcome-yes")).toBeDisabled();
+    expect(screen.getByTestId("trade-outcome-yes-availability")).toHaveTextContent(
+      "No selectable shares",
+    );
+    expect(screen.getByTestId("trade-outcome-no")).toBeEnabled();
+    expect(screen.getByTestId("trade-outcome-no-availability")).toHaveTextContent(
+      "2 shares available",
+    );
+    expect(screen.getByTestId("trade-outcome-no")).toHaveAttribute(
+      "aria-describedby",
+      "trade-outcome-no-availability",
+    );
+    expect(screen.getByText("Balance: 2 shares")).toBeInTheDocument();
+  });
+
+  it("keeps all Sell choices disabled when the canonical holdings are zero", async () => {
+    const user = userEvent.setup();
+    renderSellPanel({
+      tradeSide: "Buy",
+      sellHoldings: sellHoldings({ Yes: { selectableSubunits: 0 }, No: { selectableSubunits: 0 } }),
+    });
+
+    await user.click(screen.getByTestId("trade-tab-sell"));
+
+    expect(screen.getByTestId("trade-outcome-yes")).toBeDisabled();
+    expect(screen.getByTestId("trade-outcome-no")).toBeDisabled();
+    expect(screen.getByTestId("trade-tab-sell")).toBeEnabled();
+  });
+
+  it("excludes reserved shares from Sell availability", () => {
+    renderSellPanel({
+      sellHoldings: sellHoldings({ Yes: { selectableSubunits: 0, reservedSubunits: 3_000 } }),
+    });
+
+    expect(screen.getByTestId("trade-outcome-yes")).toBeDisabled();
+    expect(screen.getByTestId("trade-outcome-yes-availability")).toHaveTextContent(
+      "Available shares are reserved",
+    );
+    expect(screen.getByTestId("trade-outcome-no")).toBeDisabled();
+  });
+
+  it.each([
+    [{ status: "loading" as const }, "Checking selectable shares..."],
+    [{ status: "unavailable" as const }, "Wallet holdings are unavailable"],
+  ])("keeps Sell choices disabled while holdings are %s", (state, expectedMessage) => {
+    renderSellPanel({
+      tradeSelection: { side: "yes" },
+      tradeAmount: 1,
+      tradePreview: readyPreview(),
+      sellHoldings: state,
+    });
+
+    expect(screen.getByTestId("trade-outcome-yes")).toBeDisabled();
+    expect(screen.getByTestId("trade-outcome-yes-availability")).toHaveTextContent(expectedMessage);
+    expect(screen.getByTestId("sell-holding-status")).toHaveTextContent(expectedMessage);
+    expect(screen.getByTestId("trade-confirm")).toBeDisabled();
+  });
+
+  it.each([
+    [25, 1],
+    [50, 3],
+    [75, 5],
+    [100, 7],
+  ])("floors the Sell %s%% shortcut against selected whole shares", (percentage, expected) => {
+    const onAmountChange = vi.fn();
+    renderSellPanel({
+      tradeSelection: { side: "yes" },
+      sellHoldings: sellHoldings({
+        Yes: { selectableSubunits: 7_999 },
+        No: { selectableSubunits: 90_000 },
+      }),
+      onAmountChange,
+    });
+
+    fireEvent.click(screen.getByTestId(`trade-sell-percentage-${percentage}`));
+
+    expect(onAmountChange).toHaveBeenCalledWith(expected);
+  });
+
+  it("disables a Sell percentage shortcut when flooring would select zero shares", () => {
+    const onAmountChange = vi.fn();
+    renderSellPanel({
+      tradeSelection: { side: "yes" },
+      sellHoldings: sellHoldings({ Yes: { selectableSubunits: 3_000 } }),
+      onAmountChange,
+    });
+
+    expect(screen.getByTestId("trade-sell-percentage-25")).toBeDisabled();
+    expect(screen.getByTestId("trade-sell-percentage-50")).toBeEnabled();
+    fireEvent.click(screen.getByTestId("trade-sell-percentage-50"));
+    expect(onAmountChange).toHaveBeenCalledWith(1);
+  });
+
+  it("uses the exact categorical complement collection for Sell No", () => {
+    const categoricalMarket = {
+      ...makeMarket(),
+      type: "categorical" as const,
+      outcomes: [
+        { id: "outcome-0", label: "Alice", odds: null },
+        { id: "outcome-1", label: "Bob", odds: null },
+        { id: "outcome-2", label: "Carol", odds: null },
+      ],
+      outcomePriceHistories: {},
+      outcomeOrderBooks: {},
+    } as unknown as CategoricalMarketDetail;
+
+    renderSellPanel({
+      market: categoricalMarket,
+      tradeSelection: { side: "no", outcomeId: "outcome-0" },
+      tradeAmount: 2,
+      tradePreview: readyPreview(),
+      feeConsentCurrent: true,
+      sellHoldings: sellHoldings({
+        Alice: { selectableSubunits: 1_000 },
+        "Bob|Carol": { selectableSubunits: 2_000 },
+      }),
+    });
+
+    expect(screen.getByTestId("sell-holding-no-outcome-0")).toHaveTextContent("2 shares available");
+    expect(screen.getByText("Balance: 2 shares")).toBeInTheDocument();
+    expect(screen.getByTestId("buy-no-Alice")).toHaveAttribute(
+      "aria-describedby",
+      "sell-holding-no-0",
+    );
+  });
+
+  it("disables Sell confirmation when holdings are depleted after selection", () => {
+    const props = {
+      market: makeEmptyBookMarket(),
+      tradeSelection: { side: "yes" as const },
+      tradeAmount: 2,
+      tradePreview: readyPreview(),
+      feeConsentCurrent: true,
+      tradeSide: "Sell" as const,
+      orderType: "market" as const,
+      onTradeConfirm: vi.fn(),
+    };
+    const { rerender } = renderSellPanel({
+      ...props,
+      sellHoldings: sellHoldings({ Yes: { selectableSubunits: 2_000 } }),
+    });
+    expect(screen.getByTestId("trade-confirm")).toBeEnabled();
+
+    rerender(
+      <TradingPanel {...props} sellHoldings={sellHoldings({ Yes: { selectableSubunits: 0 } })} />,
+    );
+
+    expect(screen.getByTestId("sell-holding-status")).toHaveTextContent("No selectable shares");
+    expect(screen.getByTestId("trade-confirm")).toBeDisabled();
   });
 
   it("keeps submit enabled when local backing is sufficient", () => {
@@ -1020,6 +1396,47 @@ describe("TradingPanel", () => {
     expect(screen.queryByTestId("fok-preview-subsidy")).not.toBeInTheDocument();
   });
 
+  it.each([
+    ["matching snapshot", "preview-revision", true],
+    ["different snapshot", "older-revision", false],
+  ] as const)(
+    "explains a price-limit refusal and displays only matching book facts (%s)",
+    (_case, capacityRevision, showFacts) => {
+      render(
+        <TradingPanel
+          market={makeMarket()}
+          tradeSelection={{ side: "yes" }}
+          tradeAmount={5}
+          tradePreview={nonfillablePreview("price_limit", true)}
+          tradeCapacityPreview={readyCapacityPreview({
+            referencePrice: 500,
+            effectiveLimitPrice: 700,
+            previewRevision: capacityRevision,
+          })}
+          tradeFeeFacts={feeFacts()}
+          feeConsentCurrent
+          tradeSide="Buy"
+          orderType="market"
+          onTradeConfirm={vi.fn()}
+        />,
+      );
+
+      expect(screen.getByTestId("fok-preview-nonfillable")).toHaveTextContent(
+        "Reduce the share amount or deliberately change the price limit.",
+      );
+      expect(screen.queryByTestId("fok-preview-subsidy")).not.toBeInTheDocument();
+
+      const details = screen.queryByTestId("fok-preview-price-limit-details");
+      if (!showFacts) {
+        expect(details).not.toBeInTheDocument();
+        return;
+      }
+
+      expect(details).toHaveTextContent("Current best executable price: 50.0%");
+      expect(details).toHaveTextContent("Maximum buy price: 70.0%");
+    },
+  );
+
   it("renders a missing confirmed price as no trades rather than zero", () => {
     render(
       <TradingPanel
@@ -1039,7 +1456,35 @@ describe("TradingPanel", () => {
     expect(screen.getByTestId("trade-current-latest-price")).not.toHaveTextContent("0");
   });
 
-  it("shows Sell net regular proceeds and separate conditional preparation fees", () => {
+  it.each([
+    {
+      name: "conditional preparation",
+      sourceAsset: conditionalAsset,
+      consolidationAsset: conditionalAsset,
+      sourceMode: "conditional-keyset-swap" as const,
+      expectedNet: "-0.050 sats",
+      sourceLabel: "5.000 sats (conditional tokens)",
+      consolidationLabel: "1.000 sats (conditional tokens)",
+    },
+    {
+      name: "cash preparation and conditional consolidation",
+      sourceAsset: regularAsset,
+      consolidationAsset: conditionalAsset,
+      sourceMode: "mixed-source-ctf-convert" as const,
+      expectedNet: "-5.050 sats",
+      sourceLabel: "5.000 sats",
+      consolidationLabel: "1.000 sats (conditional tokens)",
+    },
+    {
+      name: "cash preparation and consolidation",
+      sourceAsset: regularAsset,
+      consolidationAsset: regularAsset,
+      sourceMode: "mixed-source-ctf-convert" as const,
+      expectedNet: "-6.050 sats",
+      sourceLabel: "5.000 sats",
+      consolidationLabel: "1.000 sats",
+    },
+  ])("shows Sell net cash after $name without treating conditional fees as cash", (scenario) => {
     render(
       <TradingPanel
         market={makeMarket()}
@@ -1050,7 +1495,9 @@ describe("TradingPanel", () => {
           settlementInputFeeSubunits: "100",
           sourcePreparationFeeSubunits: "5000",
           consolidationFeeSubunits: "1000",
-          preparationAsset: conditionalAsset,
+          sourcePreparationAsset: scenario.sourceAsset,
+          consolidationAsset: scenario.consolidationAsset,
+          sourceMode: scenario.sourceMode,
         })}
         feeConsentCurrent
         tradeSide="Sell"
@@ -1061,13 +1508,13 @@ describe("TradingPanel", () => {
 
     expect(screen.getByText("Quote proceeds")).toBeInTheDocument();
     expect(screen.getByTestId("trade-quote-payment")).toHaveTextContent("0.050 sats");
-    expect(screen.getByTestId("trade-net-proceeds")).toHaveTextContent("-0.050 sats");
+    expect(screen.getByTestId("trade-net-proceeds")).toHaveTextContent(scenario.expectedNet);
     expect(screen.getByTestId("trade-settlement-input-fee")).toHaveTextContent(/^0\.100 sats$/);
     expect(screen.getByTestId("trade-source-preparation-fee")).toHaveTextContent(
-      "5.000 sats (conditional tokens)",
+      scenario.sourceLabel,
     );
     expect(screen.getByTestId("trade-consolidation-fee")).toHaveTextContent(
-      "1.000 sats (conditional tokens)",
+      scenario.consolidationLabel,
     );
   });
 

@@ -111,6 +111,20 @@ describe("DepositWithdraw", () => {
       expect(screen.getByText(/5 sats available/)).toBeInTheDocument();
     });
 
+    it("keeps deposit messages in the Lightning scrollable flow", () => {
+      renderDepositWithdraw({
+        currentView: "deposit-lightning",
+        depositReminder: <div data-testid="deposit-reminder">Backup reminder</div>,
+        statusMessage: <div data-testid="deposit-status">Mint error</div>,
+      });
+
+      const content = screen.getByTestId("deposit-lightning-content");
+      expect(content).toContainElement(screen.getByTestId("deposit-reminder"));
+      expect(content).toContainElement(screen.getByTestId("deposit-status"));
+      expect(screen.getByTestId("deposit-reminder")).not.toHaveClass("fixed");
+      expect(screen.getByTestId("deposit-status")).not.toHaveClass("fixed");
+    });
+
     it("calls onNumpadPress when numpad keys are clicked", async () => {
       const onNumpadPress = vi.fn();
       renderDepositWithdraw({ currentView: "deposit-lightning", onNumpadPress });
@@ -152,6 +166,16 @@ describe("DepositWithdraw", () => {
   });
 
   describe("SendEcash view", () => {
+    it("does not render deposit reminders in withdrawal views", () => {
+      renderDepositWithdraw({
+        mode: "withdraw",
+        currentView: "send-ecash",
+        depositReminder: <div data-testid="deposit-reminder">Backup reminder</div>,
+      });
+
+      expect(screen.queryByTestId("deposit-reminder")).not.toBeInTheDocument();
+    });
+
     it("shows SEND button disabled when amount is 0", () => {
       renderDepositWithdraw({ mode: "withdraw", currentView: "send-ecash", amountSats: 0 });
       const button = screen.getByRole("button", { name: /send/i });

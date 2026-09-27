@@ -11,6 +11,7 @@ import type { Proof, SerializedBlindedMessage, SerializedBlindedSignature } from
 import type { components } from "@/generated/api";
 import {
   BitcasterEngineClient,
+  CreateMarketError,
   createMarketViaEngine,
   submitOracleAttestationViaEngine,
 } from "@bitcaster/client-sdk";
@@ -32,6 +33,7 @@ import {
 } from "@bitcaster/client-sdk/durableRecipientDelivery";
 
 export { requiredMarketCreationOutcomeCollections } from "@bitcaster/client-sdk/ctfRegistration";
+export { CreateMarketError };
 
 // Types from generated OpenAPI spec
 
@@ -360,6 +362,9 @@ export function mapCatalogueEntryToMarket(entry: MarketCatalogueEntry): Market {
   const registeredPrimitiveOutcomeIds = [...(entry.outcomes ?? [])];
   const outcomes = orderAtomicOutcomes(registeredPrimitiveOutcomeIds);
   const isYesNo = isYesNoUniverse(outcomes);
+  const outcomeColors = new Map(
+    (entry.outcomeDetails ?? []).map((detail) => [detail.name, detail.color] as const),
+  );
 
   const closingDate = entry.deadline ?? null;
   const title = entry.title ?? "Untitled Market";
@@ -388,6 +393,8 @@ export function mapCatalogueEntryToMarket(entry: MarketCatalogueEntry): Market {
     liquidity: entry.liquiditySubunits ?? 0,
     liquiditySubunits: entry.liquiditySubunits ?? 0,
     ammBotBudgetSubunits: entry.ammBotBudgetSubunits ?? 0,
+    fundingRevision: entry.fundingRevision,
+    registeredPrimitiveOutcomeIds,
     volumeLifetimeSubunits: entry.volumeLifetimeSubunits ?? 0,
     closingDate,
     createdDate: entry.createdAt,
@@ -418,6 +425,7 @@ export function mapCatalogueEntryToMarket(entry: MarketCatalogueEntry): Market {
     ...base,
     type: "categorical",
     outcomes: outcomes.map((label) => ({
+      ...(outcomeColors.get(label) ? { color: outcomeColors.get(label) } : {}),
       id: label,
       label,
       odds: categoricalOdds[label] ?? null,
@@ -498,7 +506,12 @@ export function filterMarkets(markets: Market[], filter: FilterState): Market[] 
 function mapCatalogueEntryToMarketDetail(entry: MarketCatalogueEntry): MarketDetail {
   const registeredPrimitiveOutcomeIds = [...(entry.outcomes ?? [])];
   const outcomes = orderAtomicOutcomes(registeredPrimitiveOutcomeIds);
+  const isYesNo = isYesNoUniverse(outcomes);
+  const outcomeColors = new Map(
+    (entry.outcomeDetails ?? []).map((detail) => [detail.name, detail.color] as const),
+  );
   const mappedOutcomes = outcomes.map((label) => ({
+    ...(!isYesNo && outcomeColors.get(label) ? { color: outcomeColors.get(label) } : {}),
     id: label,
     label,
     odds: null,
@@ -510,7 +523,6 @@ function mapCatalogueEntryToMarketDetail(entry: MarketCatalogueEntry): MarketDet
   const creatorPubkey = entry.creatorPubkey?.trim();
   const finalOutcome = entry.finalOutcome?.trim() || undefined;
   const resolutionDate = entry.closedAt ?? entry.deadline ?? null;
-  const isYesNo = isYesNoUniverse(outcomes);
   const baseAsset = normalizeMarketBaseAsset(entry.baseAsset);
   const divisibility = normalizeMarketDivisibility(entry.divisibility, baseAsset);
   const latestConfirmedTrades = validateLatestConfirmedTrades(
@@ -543,6 +555,7 @@ function mapCatalogueEntryToMarketDetail(entry: MarketCatalogueEntry): MarketDet
     liquidity: entry.liquiditySubunits ?? 0,
     liquiditySubunits: entry.liquiditySubunits ?? 0,
     ammBotBudgetSubunits: entry.ammBotBudgetSubunits ?? 0,
+    fundingRevision: entry.fundingRevision,
     volumeLifetimeSubunits: entry.volumeLifetimeSubunits ?? 0,
     closingDate: entry.deadline ?? null,
     createdDate: createdAt,
@@ -609,8 +622,8 @@ function mapCatalogueEntryToMarketDetail(entry: MarketCatalogueEntry): MarketDet
 
 /**
  * Resolve the engine catalogue entry for a single `conditionId`. Used by the
- * detail page to read engine-authoritative fields (`outcomes`, `state`,
- * `thumbnailUrl`, `volumeLifetimeSubunits`, `liquiditySubunits`).
+ * detail page and same-submission creation reconciliation to read
+ * engine-authoritative market metadata.
  * Creator-defined outcome order comes from engine registration metadata, not
  * mintd's one-vs-rest keysets.
  * Returns `null` when the engine has no record or for existing non-503 failures.
@@ -621,7 +634,7 @@ function mapCatalogueEntryToMarketDetail(entry: MarketCatalogueEntry): MarketDet
  * retry loop in their own post-paint enrichment path so the blocking first
  * render is never delayed.
  */
-async function fetchEngineCatalogueEntry(
+export async function fetchEngineCatalogueEntry(
   conditionId: string,
 ): Promise<MarketCatalogueEntry | null> {
   try {

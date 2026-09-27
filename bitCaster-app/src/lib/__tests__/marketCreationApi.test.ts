@@ -197,6 +197,7 @@ describe("createMarket", () => {
     const body = {
       conditionId: "cond-123",
       marketsCreated: ["cond-123-Yes", "cond-123-No"],
+      outcomeDetails: [{ name: "Yes" }, { name: "No" }],
       thumbnailUrl: null,
       baseAsset: "sat",
       divisibility: 1_000,
@@ -205,6 +206,7 @@ describe("createMarket", () => {
     const result = await createMarket("cond-123", createMarketParams);
     expect(result.conditionId).toBe("cond-123");
     expect(result.marketsCreated).toEqual(["cond-123-Yes", "cond-123-No"]);
+    expect(result.outcomeDetails).toEqual([{ name: "Yes" }, { name: "No" }]);
   });
 
   it("sends metadata as multipart form data", async () => {

@@ -6,6 +6,7 @@ import { secp256k1 } from "@noble/curves/secp256k1.js";
 import { bytesToHex } from "@noble/curves/utils.js";
 import {
   Amount,
+  MintOperationError,
   createBlindSignature,
   createDLEQProof,
   deriveConditionalKeysetId,
@@ -75,6 +76,7 @@ import {
 import { sha256 } from "@noble/hashes/sha2.js";
 import {
   BrowserCtfRangeOrderCoordinator,
+  buildBrowserCtfRangeOrderPreparation,
   type BrowserCtfRangeEngine,
   type BrowserCtfRangeOrderCoordinatorDependencies,
 } from "../browserCtfRangeOrderCoordinator";
@@ -84,6 +86,10 @@ import {
   type BrowserEncryptedWalletBackupV2TargetedRestoreInput,
 } from "../browserEncryptedWalletBackupV2Restore";
 import { browserWalletDatabaseName } from "../browserWalletProfile";
+import {
+  BrowserWalletCounterDexieStore,
+  BrowserWalletCounterSource,
+} from "../../stores/browser-wallet-counter-db";
 import {
   browserRangeJournalIdentity,
   browserWalletScope,
@@ -168,6 +174,7 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   for (const database of openDatabases.splice(0)) {
     database.close();
     await database.delete();
@@ -175,6 +182,101 @@ afterEach(async () => {
 });
 
 describe("browser CTF range order coordinator", () => {
+  it.each(["confirmed", "lost response", "missing cash", "missing holding", "output limit"])(
+    "keeps full-share mixed preparation assets separate after %s",
+    async (outcome) => {
+      const preparation = persistedPreparation("range-mixed-full-exit", "FOK", { side: "Sell" });
+      const held = [512, 256, 128, 64, 32, 8].map((amount) =>
+        sourceProof(preparation.offerKeyset.id, amount, `held-${amount}`),
+      );
+      const cash = sourceProof(preparation.receiveKeyset.id, 4, "preparation-cash");
+      let database = createDatabase([
+        ...held.map((proof) =>
+          storedSourceProof(proof, { conditionId: CONDITION_ID, outcomeCollection: "YES" }),
+        ),
+        storedSourceProof(cash),
+      ]);
+      const engine = engineMock();
+      let conversions = 0;
+      const coordinator = createCoordinator(database, sourceWallet(), engine, {
+        executeSourceConvert: async (_mintUrl, request) => {
+          conversions += 1;
+          expect(request.inputs.YES?.length).toBe(6);
+          expect(request.inputs["*"]?.length).toBe(1);
+          if (outcome === "lost response") throw new Error("mint response lost");
+          return {
+            signatures: Object.fromEntries(
+              Object.entries(request.outputs).map(([group, outputs]) => [
+                group,
+                outputs.map(signBlindedMessage),
+              ]),
+            ),
+          };
+        },
+      });
+      const fees = {
+        ...coordinatorFeeFacts(preparation),
+        sourceMode: "mixed-source-ctf-convert" as const,
+        sourcePreparationAsset: { kind: "regular", unit: "msat" } as const,
+      };
+      const submitting = coordinator.prepareAndSubmit({
+        seed: SEED,
+        preparation,
+        candidates: outcome === "missing holding" ? [] : held,
+        collateralCandidates: outcome === "missing cash" ? [] : [cash],
+        maxOutputs: outcome === "output limit" ? 7 : 8,
+        consentedFeeFacts: fees,
+        currentFeeFacts: fees,
+      });
+      if (
+        outcome === "missing cash" ||
+        outcome === "missing holding" ||
+        outcome === "output limit"
+      ) {
+        await expect(submitting).rejects.toMatchObject({ code: "source-preparation-failed" });
+        expect(conversions).toBe(0);
+        expect(engine.createCalls).toBe(0);
+        expect(engine.submitCalls).toBe(0);
+        expect(await database.custodyOperations.count()).toBe(0);
+        expect(
+          (await database.proofs.toArray()).every(({ reservedBy }) => reservedBy === undefined),
+        ).toBe(true);
+        return;
+      }
+      if (outcome === "confirmed") {
+        await expect(submitting).resolves.toEqual(submitResponse());
+      } else {
+        await expect(submitting).rejects.toMatchObject({ code: "mint-source-uncertain" });
+        const name = database.name;
+        database.close();
+        database = createDatabase([], name);
+        const restarted = createCoordinator(
+          database,
+          sourceWallet({ inputState: "SPENT" }),
+          engine,
+          { restoreOutputs: restoreSignedOutputGroups },
+        );
+        const recovered = await restarted.recoverPage({ seed: SEED, limit: 8 });
+        expect(recovered.pending).toMatchObject([
+          { operationId: preparation.operationId, code: "recovery-pending" },
+        ]);
+      }
+      expect(conversions).toBe(1);
+      expect(engine.createCalls).toBe(outcome === "confirmed" ? 1 : 0);
+      expect(engine.submitCalls).toBe(outcome === "confirmed" ? 1 : 0);
+      const rows = await database.proofs.toArray();
+      expect(
+        rows.some(({ secret }) => [...held, cash].some((input) => input.secret === secret)),
+      ).toBe(false);
+      const conditional = rows.filter(({ conditionId }) => conditionId === CONDITION_ID);
+      expect(conditional.reduce((total, row) => total + row.amount, 0)).toBe(1000);
+      expect(conditional.every(({ reservedBy }) => reservedBy !== undefined)).toBe(true);
+      const regular = rows.filter(({ conditionId }) => conditionId === undefined);
+      expect(regular.reduce((total, row) => total + row.amount, 0)).toBe(3);
+      expect(regular.every(({ reservedBy }) => reservedBy === undefined)).toBe(true);
+    },
+  );
+
   it("refuses a new range source before preparation", async () => {
     const preparation = persistedPreparation("range-write-refused-source");
     const database = createDatabase();
@@ -250,6 +352,38 @@ describe("browser CTF range order coordinator", () => {
     expect(engine.createCalls).toBe(0);
     expect(engine.submitCalls).toBe(0);
   });
+
+  // The mint observes at 20 and advertises a 86,400-second ceiling, far above
+  // five minutes. The SDK subtracts a 300-second refund margin from the
+  // earlier of that ceiling and the conditional keyset final expiry.
+  it.each([
+    { conditionalFinalExpiry: null, expectedExpiry: 100 + 300 },
+    { conditionalFinalExpiry: 500, expectedExpiry: 500 - 300 },
+  ])(
+    "caps a browser FOK authorization at now + 300 seconds (conditional final expiry $conditionalFinalExpiry)",
+    ({ conditionalFinalExpiry, expectedExpiry }) => {
+      const reviewed = reviewedMintFacts(conditionalFinalExpiry);
+
+      const preparation = buildBrowserCtfRangeOrderPreparation({
+        request: rangeRequest("FOK"),
+        policy: { coordinatorPubkey: COORDINATOR_PUBLIC_KEY },
+        mintFacts: {
+          ...reviewed,
+          observation: { ...reviewed.observation, maxExpirySeconds: 86_400 },
+        },
+        market: {
+          outcomes: [
+            { id: "yes-id", label: "YES" },
+            { id: "no-id", label: "NO" },
+          ],
+        },
+        nowUnixSeconds: 100,
+        randomId: sequentialId("range-browser-lifetime", "range-browser-lifetime:authorization"),
+      });
+
+      expect(preparation.expiry).toBe(expectedExpiry);
+    },
+  );
 
   it("accepts a conditional keyset without final expiry", async () => {
     const preparation = persistedPreparation(
@@ -914,7 +1048,112 @@ describe("browser CTF range order coordinator", () => {
     ).toBe(true);
   });
 
+  it.each(["missing", "restored"] as const)(
+    "characterizes complementary Sell preparation with %s conditional counter readiness",
+    async (readiness) => {
+      const seed = new Uint8Array(64).fill(readiness === "missing" ? 7 : 8);
+      const scopeId = browserWalletScope(seed).scopeId;
+      const preparation = persistedPreparation(`range-sell-counter-${readiness}`, "FOK", {
+        side: "Sell",
+        tokenSide: "Complement",
+        amountSubunits: 1_000,
+        minimumFillAmountSubunits: 1_000,
+      });
+      expect(preparation.offerKeyset.id).toBe(COMPLEMENT_KEYSET_ID);
+      const proof = sourceProof(
+        preparation.offerKeyset.id,
+        2_048,
+        `sell-counter-${readiness}-input`,
+      );
+      const database = new BitcasterDB(browserWalletDatabaseName(scopeId));
+      openDatabases.push(database);
+      await database.open();
+      await database.proofs.add({
+        ...storedSourceProof(proof, {
+          conditionId: CONDITION_ID,
+          outcomeCollection: COMPLEMENT_COLLECTION,
+        }),
+        amount: amountToNumber(proof.amount),
+      });
+
+      const context = { mintUrl: MINT_URL, unit: "msat" };
+      const counterStore = new BrowserWalletCounterDexieStore({ database, scopeId });
+      if (readiness === "restored") {
+        // This new profile and keyset have no prior outputs, so its test high-water mark is zero.
+        await counterStore.restoreInContext(
+          context,
+          preparation.offerKeyset.id,
+          0,
+          false,
+          () => {},
+        );
+      }
+      expect(await counterStore.isRecoveryComplete(context, preparation.offerKeyset.id)).toBe(
+        readiness === "restored",
+      );
+      const counterSource = new BrowserWalletCounterSource({ database, scopeId }, context);
+      const mintCalls: string[] = [];
+      const wallet = sourceWallet({
+        onCheck: () => {
+          mintCalls.push("check-proof-states");
+        },
+        onComplete: async () => {
+          mintCalls.push("complete-conditional-swap");
+        },
+      });
+      const prepareConditionalSwap = vi.spyOn(wallet, "prepareConditionalSwap");
+      const engine = engineMock();
+      const coordinator = createCoordinator(database, wallet, engine, {
+        createCounterSource: (requestedScopeId, mintUrl, unit) => {
+          expect([requestedScopeId, mintUrl, unit]).toEqual([scopeId, MINT_URL, "msat"]);
+          return counterSource;
+        },
+      });
+
+      expect(database.name).toBe(browserWalletDatabaseName(scopeId));
+      const submit = coordinator.prepareAndSubmit({ seed, preparation, candidates: [proof] });
+      if (readiness === "missing") {
+        await expect(submit).rejects.toMatchObject({ code: "source-preparation-failed" });
+        expect(mintCalls).toEqual([]);
+        expect(prepareConditionalSwap).not.toHaveBeenCalled();
+        expect(engine.createCalls).toBe(0);
+        expect(engine.submitCalls).toBe(0);
+        expect(await database.custodyReservations.count()).toBe(0);
+        expect(await database.custodyOperations.count()).toBe(0);
+        expect(await database.walletCounterCursors.count()).toBe(0);
+        expect(await database.walletCounterAssociations.count()).toBe(0);
+        expect((await database.proofs.get(proof.secret))?.reservedBy).toBeUndefined();
+        return;
+      }
+
+      await expect(submit).resolves.toMatchObject({
+        orderId: "44444444-4444-4444-8444-444444444444",
+      });
+      expect(mintCalls).toEqual(["complete-conditional-swap"]);
+      expect(prepareConditionalSwap).toHaveBeenCalledTimes(1);
+      const sourceRequest = prepareConditionalSwap.mock.calls[0]?.[0];
+      expect(sourceRequest?.inputs.map(({ secret }) => secret)).toEqual([proof.secret]);
+      const keepOutput = sourceRequest?.outputs.find(
+        (output) => output.label === "keep" && output.kind === "custom",
+      );
+      expect(
+        keepOutput?.kind === "custom"
+          ? keepOutput.data.reduce(
+              (total, output) => total + amountToNumber(output.blindedMessage.amount),
+              0,
+            )
+          : 0,
+      ).toBe(1_047);
+      expect(await counterSource.snapshot()).toEqual({
+        [preparation.offerKeyset.id]: 5,
+      });
+      expect(engine.createCalls).toBe(1);
+      expect(engine.submitCalls).toBe(1);
+    },
+  );
+
   it("keeps Buy source authorization out of local backup availability", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(20_000);
     const database = createDatabase([], browserWalletDatabaseName(walletScopeId()));
     const preparation = persistedPreparation("range-buy-local-custody-count");
     const seeded = await admitDeterministicRegularProof(database, 8);
@@ -933,7 +1172,7 @@ describe("browser CTF range order coordinator", () => {
       sourceFee: number;
       keepAmount: number;
     }> = [];
-    let now = Date.now();
+    let now = 20_000;
     const coordinator = createCoordinator(
       database,
       sourceWallet({ onPrepare: (plan) => sourcePlans.push(plan) }),
@@ -1236,14 +1475,22 @@ describe("browser CTF range order coordinator", () => {
     ).toBe("dispatch-intent");
   });
 
-  it("atomically releases exact unspent source proofs at expiry", async () => {
+  it("keeps uncertain source proofs reserved at expiry after a rejected retry", async () => {
     const database = createDatabase();
     const preparation = persistedPreparation("range-source-expired");
     let now = 20_000;
+    const engine = engineMock();
     const coordinator = createCoordinator(
       database,
-      sourceWallet({ onComplete: async () => Promise.reject(new Error("uncertain")) }),
-      engineMock(),
+      sourceWallet({
+        onComplete: async () => {
+          if (now >= preparation.expiry * 1_000) {
+            throw new MintOperationError(11001, "source retry rejected");
+          }
+          throw new Error("response lost");
+        },
+      }),
+      engine,
       { now: () => now },
     );
     await expect(
@@ -1257,8 +1504,10 @@ describe("browser CTF range order coordinator", () => {
     now = preparation.expiry * 1_000;
     const recovery = await coordinator.recoverPage({ seed: SEED, limit: 8 });
 
-    expect(recovery.recoveredOperationIds).toEqual([preparation.operationId]);
-    expect(recovery.pending).toEqual([]);
+    expect(recovery.recoveredOperationIds).toEqual([]);
+    expect(recovery.pending).toMatchObject([
+      { operationId: preparation.operationId, code: "mint-source-uncertain" },
+    ]);
     expect(
       (
         await new BrowserDurableCustodyAdapter(database).readOperation(
@@ -1266,23 +1515,25 @@ describe("browser CTF range order coordinator", () => {
           sourceCustodyOperationId(preparation.sourceOperationId),
         )
       )?.operation.state,
-    ).toBe("aborted");
-    expect(await database.custodyReservations.count()).toBe(0);
+    ).toBe("transport-attempted");
+    expect(await database.custodyReservations.count()).toBe(1);
     expect((await database.custodyProofs.toArray()).map((proof) => proof.selectability)).toEqual([
-      "selectable",
+      "locked",
     ]);
     expect(
       (await readCtfRangePreparation(walletScopeId(), preparation.operationId, database))
         ?.lifecycleState,
-    ).toBe("terminal");
-    const [releasedProof] = await database.proofs.toArray();
-    expect(releasedProof?.secret).toBe("source-proof");
-    expect(releasedProof).not.toHaveProperty("reservedBy");
+    ).toBe("prepared");
+    expect(await database.proofs.get("source-proof")).toMatchObject({
+      reservedBy: sourceCustodyOperationId(preparation.sourceOperationId),
+    });
+    expect(engine.createCalls).toBe(0);
+    expect(engine.submitCalls).toBe(0);
   });
 
-  it("rolls back expiry release when the legacy proof mirror cannot be released", async () => {
+  it("recovers a late source result after restart and refunds without engine admission", async () => {
     const database = createDatabase();
-    const preparation = persistedPreparation("range-source-release-fault");
+    const preparation = persistedPreparation("range-source-late-result");
     let now = 20_000;
     const coordinator = createCoordinator(
       database,
@@ -1297,14 +1548,39 @@ describe("browser CTF range order coordinator", () => {
         candidates: [sourceProof(preparation.offerKeyset.id)],
       }),
     ).rejects.toMatchObject({ code: "mint-source-uncertain" });
-    database.proofs.hook("updating", () => {
-      throw new Error("injected legacy proof release failure");
-    });
-
     now = preparation.expiry * 1_000;
-    await expect(coordinator.recoverPage({ seed: SEED, limit: 8 })).rejects.toThrow(
-      "injected legacy proof release failure",
-    );
+    const engine = engineMock();
+    let sourceCommitted = false;
+    const mintState: Parameters<typeof sourceWallet>[0] = {
+      onComplete: async () => {
+        throw new MintOperationError(11001, "retry lost the race with the original request");
+      },
+    };
+    const wallet = sourceWallet(mintState);
+    wallet.checkProofsStates = async (proofs) =>
+      proofs.map(({ secret }, index) => ({
+        Y: `source-y-${index}`,
+        state: secret === "source-proof" && sourceCommitted ? "SPENT" : "UNSPENT",
+        witness: null,
+      }));
+    const resumed = createCoordinator(database, wallet, engine, {
+      now: () => now,
+      restoreOutputs: restoreSignedOutputGroups,
+      createMintRecovery: refundableRecovery(preparation),
+      executeRefundSwap: async (_mintUrl, request) => ({
+        signatures: request.outputs.map(signBlindedMessage),
+      }),
+    });
+    expect(await resumed.recoverPage({ seed: SEED, limit: 8 })).toMatchObject({
+      recoveredOperationIds: [],
+      pending: [{ operationId: preparation.operationId, code: "mint-source-uncertain" }],
+    });
+    expect(await database.custodyReservations.count()).toBe(1);
+    sourceCommitted = true;
+    expect(await resumed.recoverPage({ seed: SEED, limit: 8 })).toMatchObject({
+      recoveredOperationIds: [preparation.operationId],
+      pending: [],
+    });
 
     const custody = new BrowserDurableCustodyAdapter(database);
     expect(
@@ -1314,18 +1590,24 @@ describe("browser CTF range order coordinator", () => {
           sourceCustodyOperationId(preparation.sourceOperationId),
         )
       )?.operation.state,
-    ).toBe("transport-attempted");
-    expect(await database.custodyReservations.count()).toBe(1);
-    expect((await database.custodyProofs.toArray()).map((proof) => proof.selectability)).toEqual([
-      "locked",
-    ]);
-    expect(await database.proofs.get("source-proof")).toMatchObject({
-      reservedBy: sourceCustodyOperationId(preparation.sourceOperationId),
-    });
+    ).toBe("reconciled");
+    expect(await database.custodyReservations.count()).toBe(0);
+    expect(await database.proofs.get("source-proof")).toBeUndefined();
     expect(
       (await readCtfRangePreparation(walletScopeId(), preparation.operationId, database))
         ?.lifecycleState,
-    ).toBe("prepared");
+    ).toBe("terminal");
+    expect(
+      await database.proofOperations.get(
+        deriveDurableCtfRangeRefundOperationId(preparation.operationId),
+      ),
+    ).toMatchObject({ state: "completed" });
+    expect(engine.createCalls).toBe(0);
+    expect(engine.submitCalls).toBe(0);
+    expect(await resumed.recoverPage({ seed: SEED, limit: 8 })).toMatchObject({
+      recoveredOperationIds: [],
+      pending: [],
+    });
   });
 
   it("never retries submission after a lost order acknowledgement", async () => {
@@ -1412,6 +1694,189 @@ describe("browser CTF range order coordinator", () => {
       (await readCtfRangePreparation(walletScopeId(), preparation.operationId, database))
         ?.lifecycleState,
     ).toBe("capability-bound");
+  });
+
+  it.each(["source-completion", "capability-requested"] as const)(
+    "refunds expired %s without another capability request",
+    async (stage) => {
+      const database = createDatabase();
+      const preparation = persistedPreparation(`range-expired-${stage}`);
+      let now = preparation.expiry * 1_000 - 1_000;
+      const engine = engineMock({
+        onCreate: async () => {
+          throw new Error("lost capability response");
+        },
+      });
+      const wallet = sourceWallet({
+        onComplete: async () => {
+          if (stage === "source-completion") now = preparation.expiry * 1_000;
+        },
+      });
+      const beforeCreateCapability = vi.fn(async () => {});
+      const coordinator = createCoordinator(database, wallet, engine, {
+        now: () => now,
+        beforeCreateCapability,
+        createMintRecovery: refundableRecovery(preparation),
+        executeRefundSwap: async (_mintUrl, request) => ({
+          signatures: request.outputs.map(signBlindedMessage),
+        }),
+      });
+      await expect(
+        coordinator.prepareAndSubmit({
+          seed: SEED,
+          preparation,
+          candidates: [sourceProof(preparation.offerKeyset.id)],
+        }),
+      ).rejects.toMatchObject({
+        code: stage === "source-completion" ? "order-attempt-ended" : "capability-creation-failed",
+      });
+
+      now = preparation.expiry * 1_000;
+      expect(await coordinator.recoverPage({ seed: SEED, limit: 8 })).toMatchObject({
+        recoveredOperationIds: [preparation.operationId],
+        pending: [],
+      });
+      expect(engine.createCalls).toBe(stage === "source-completion" ? 0 : 1);
+      expect(beforeCreateCapability).toHaveBeenCalledTimes(stage === "source-completion" ? 0 : 1);
+      expect(engine.submitCalls).toBe(0);
+      expect(await database.custodyReservations.count()).toBe(0);
+      expect(
+        (await readCtfRangePreparation(walletScopeId(), preparation.operationId, database))
+          ?.lifecycleState,
+      ).toBe("terminal");
+    },
+  );
+
+  it("refunds an accepted but unsubmitted capability after a policy refusal expires", async () => {
+    const database = createDatabase();
+    const preparation = persistedPreparation("range-capability-policy-refusal-expiry");
+    let now = 20_000;
+    let rejectInitialCapability = true;
+    const requests: CreateSettlementCapabilityRequest[] = [];
+    const engine = engineMock({
+      onCreate: async (request) => {
+        requests.push(structuredClone(request));
+        if (!rejectInitialCapability) return;
+        rejectInitialCapability = false;
+        throw new EngineClientError(
+          400,
+          "controlled settlement capability policy refusal",
+          "settlement-capability-policy-rejected",
+        );
+      },
+    });
+    const recoveryOptions = {
+      now: () => now,
+      createMintRecovery: refundableRecovery(preparation),
+      executeRefundSwap: async (_mintUrl, request) => ({
+        signatures: request.outputs.map(signBlindedMessage),
+      }),
+    } satisfies Parameters<typeof createCoordinator>[3];
+    const coordinator = createCoordinator(database, sourceWallet(), engine, recoveryOptions);
+
+    await expect(
+      coordinator.prepareAndSubmit({
+        seed: SEED,
+        preparation,
+        candidates: [sourceProof(preparation.offerKeyset.id)],
+      }),
+    ).rejects.toMatchObject({ code: "settlement-capability-policy-rejected" });
+    expect(
+      (await readCtfRangePreparation(walletScopeId(), preparation.operationId, database))
+        ?.lifecycleState,
+    ).toBe("capability-requested");
+    expect(engine.createCalls).toBe(1);
+    expect(engine.submitCalls).toBe(0);
+
+    const beforeExpiry = await coordinator.recoverPage({ seed: SEED, limit: 8 });
+    expect(beforeExpiry.pending).toMatchObject([
+      { operationId: preparation.operationId, code: "awaiting-authorization-expiry" },
+    ]);
+    expect(requests).toHaveLength(2);
+    expect(requests[1]).toEqual(requests[0]);
+    expect(engine.createCalls).toBe(2);
+    expect(engine.submitCalls).toBe(0);
+    expect(
+      (await readCtfRangePreparation(walletScopeId(), preparation.operationId, database))
+        ?.lifecycleState,
+    ).toBe("capability-bound");
+    expect(await database.custodyReservations.count()).toBeGreaterThan(0);
+    expect(
+      (await database.custodyProofs.toArray()).some(
+        ({ selectability }) => selectability === "locked",
+      ),
+    ).toBe(true);
+
+    now = preparation.expiry * 1_000;
+    const afterExpiry = await coordinator.recoverPage({ seed: SEED, limit: 8 });
+    expect(afterExpiry).toEqual({
+      recoveredOperationIds: [preparation.operationId],
+      pending: [],
+      nextCursor: null,
+    });
+    expect(engine.createCalls).toBe(2);
+    expect(engine.submitCalls).toBe(0);
+    expect(await database.custodyReservations.count()).toBe(0);
+
+    const outerOperationId = custodyOperationId(preparation.operationId);
+    const outerCustody = await new BrowserDurableCustodyAdapter(database).readOperation(
+      walletScope(),
+      outerOperationId,
+    );
+    expect(outerCustody?.operation.state).toBe("aborted");
+    const predecessorIds = outerCustody?.operation.proofStorage.lineage.predecessorProofIds ?? [];
+    expect(predecessorIds.length).toBeGreaterThan(0);
+
+    const refundId = deriveDurableCtfRangeRefundOperationId(preparation.operationId);
+    const refund = await database.proofOperations.get(refundId);
+    expect(refund).toMatchObject({
+      kind: "ctf-range-refund",
+      state: "completed",
+      metadata: { rangeOperationId: preparation.operationId },
+    });
+    const refundProofs = refund?.resultProofs?.refund ?? [];
+    expect(refundProofs.length).toBeGreaterThan(0);
+    const refundProofIds = refundProofs.map((proof) =>
+      deriveDurableCustodyProofId({
+        scopeId: walletScopeId(),
+        normalizedMint: preparation.mintUrl,
+        unit: "msat",
+        keysetId: proof.id,
+        secret: proof.secret,
+      }),
+    );
+    expect(new Set(refundProofIds).size).toBe(refundProofs.length);
+    expect(refundProofIds.some((proofId) => predecessorIds.includes(proofId))).toBe(false);
+
+    const custodyProofs = await database.custodyProofs.toArray();
+    const predecessorProofs = custodyProofs.filter(({ proofId }) =>
+      predecessorIds.includes(proofId),
+    );
+    expect(predecessorProofs).toHaveLength(predecessorIds.length);
+    expect(predecessorProofs.every(({ selectability }) => selectability === "spent")).toBe(true);
+    expect(custodyProofs.filter(({ selectability }) => selectability === "locked")).toHaveLength(0);
+
+    const selectableRefundProofs = custodyProofs.filter(({ proofId }) =>
+      refundProofIds.includes(proofId),
+    );
+    expect(selectableRefundProofs).toHaveLength(refundProofs.length);
+    expect(
+      selectableRefundProofs.every(({ selectability }) => selectability === "selectable"),
+    ).toBe(true);
+    const verifiedRefundValue = refundProofs.reduce(
+      (total, proof) => total + amountToNumber(proof.amount),
+      0,
+    );
+    const selectableRefundValue = selectableRefundProofs.reduce(
+      (total, proof) => total + proof.amount,
+      0,
+    );
+    expect(verifiedRefundValue).toBeGreaterThan(0);
+    expect(selectableRefundValue).toBe(verifiedRefundValue);
+    expect(
+      (await readCtfRangePreparation(walletScopeId(), preparation.operationId, database))
+        ?.lifecycleState,
+    ).toBe("terminal");
   });
 
   it("isolates a transient outer recovery failure from the next page record", async () => {
@@ -1676,6 +2141,43 @@ describe("browser CTF range order coordinator", () => {
     ).rejects.toMatchObject({ code: "order-submission-uncertain" });
   });
 
+  // The fixture FOK requests 1,000 face subunits.
+  it.each([
+    { remainingAmountSubunits: 1_000, expected: "order-submitted" },
+    { remainingAmountSubunits: 400, expected: "order-submission-uncertain" },
+    { remainingAmountSubunits: 0, expected: "order-submission-uncertain" },
+  ] as const)(
+    "classifies a cancelled FOK acknowledgement with $remainingAmountSubunits remaining as $expected",
+    async ({ remainingAmountSubunits, expected }) => {
+      const database = createDatabase();
+      const preparation = persistedPreparation(`range-cancelled-${remainingAmountSubunits}`);
+      const coordinator = createCoordinator(
+        database,
+        sourceWallet(),
+        engineMock({ submitResponse: { status: "cancelled", remainingAmountSubunits } }),
+      );
+
+      const submitted = coordinator.prepareAndSubmit({
+        seed: SEED,
+        preparation,
+        candidates: [sourceProof(preparation.offerKeyset.id)],
+      });
+
+      if (expected === "order-submitted") {
+        await expect(submitted).resolves.toMatchObject({
+          status: "cancelled",
+          remainingAmountSubunits,
+        });
+      } else {
+        await expect(submitted).rejects.toMatchObject({ code: expected });
+      }
+      expect(
+        (await readCtfRangePreparation(walletScopeId(), preparation.operationId, database))
+          ?.lifecycleState,
+      ).toBe(expected === "order-submitted" ? "order-submitted" : "capability-bound");
+    },
+  );
+
   it("does not classify a post-submit journal failure as a definitive rejection", async () => {
     const database = createDatabase();
     const preparation = persistedPreparation("range-journal-failure");
@@ -1889,6 +2391,54 @@ describe("browser CTF range order coordinator", () => {
       (await readCtfRangePreparation(walletScopeId(), preparation.operationId, database))
         ?.lifecycleState,
     ).toBe("terminal");
+  });
+
+  it("reports a cancelled FOK as awaiting authorization expiry, then refunds it", async () => {
+    const database = createDatabase();
+    const preparation = persistedPreparation("range-cancelled-fok-wait");
+    let now = 20_000;
+    const wallet = sourceWallet();
+    const engine = engineMock({
+      submitResponse: { status: "cancelled", remainingAmountSubunits: 1_000 },
+      orderStatus: { ...discoveredOrderStatus(), status: "cancelled" },
+    });
+    const coordinator = createCoordinator(database, wallet, engine, {
+      now: () => now,
+      createMintRecovery: refundableRecovery(preparation),
+      executeRefundSwap: async (_mintUrl, request) => ({
+        signatures: request.outputs.map(signBlindedMessage),
+      }),
+    });
+    await coordinator.prepareAndSubmit({
+      seed: SEED,
+      preparation,
+      candidates: [sourceProof(preparation.offerKeyset.id)],
+    });
+
+    // Before expiry the mint reports every authorization input UNSPENT.
+    expect(await coordinator.recoverPage({ seed: SEED, limit: 8 })).toEqual({
+      recoveredOperationIds: [],
+      pending: [
+        {
+          operationId: preparation.operationId,
+          revision: expect.any(Number),
+          code: "awaiting-authorization-expiry",
+        },
+      ],
+      nextCursor: null,
+    });
+
+    now = preparation.expiry * 1_000;
+    expect(await coordinator.recoverPage({ seed: SEED, limit: 8 })).toEqual({
+      recoveredOperationIds: [preparation.operationId],
+      pending: [],
+      nextCursor: null,
+    });
+    expect(
+      (await readCtfRangePreparation(walletScopeId(), preparation.operationId, database))
+        ?.lifecycleState,
+    ).toBe("terminal");
+    expect(engine.submitCalls).toBe(1);
   });
 
   it("ends a paused capability attempt after another tab refunds it at expiry", async () => {
@@ -2326,12 +2876,20 @@ describe("browser CTF range order coordinator", () => {
 type CoordinatorSubmitInput = Parameters<BrowserCtfRangeOrderCoordinator["prepareAndSubmit"]>[0];
 type TestCoordinatorSubmitInput = Omit<
   CoordinatorSubmitInput,
-  "consentedFeeFacts" | "paidConsolidationFeeSubunits" | "currentFeeFacts"
+  | "consentedFeeFacts"
+  | "paidConsolidationFeeSubunits"
+  | "currentFeeFacts"
+  | "collateralCandidates"
+  | "maxOutputs"
 > &
   Partial<
     Pick<
       CoordinatorSubmitInput,
-      "consentedFeeFacts" | "paidConsolidationFeeSubunits" | "currentFeeFacts"
+      | "consentedFeeFacts"
+      | "paidConsolidationFeeSubunits"
+      | "currentFeeFacts"
+      | "collateralCandidates"
+      | "maxOutputs"
     >
   >;
 type TestCoordinator = Omit<BrowserCtfRangeOrderCoordinator, "prepareAndSubmit"> & {
@@ -2352,6 +2910,7 @@ function createCoordinator(
     restoreRefundOutputs?: BrowserCtfRangeOrderCoordinatorDependencies["restoreRefundOutputs"];
     createMintRecovery?: BrowserCtfRangeOrderCoordinatorDependencies["createMintRecovery"];
     executeRefundSwap?: BrowserCtfRangeOrderCoordinatorDependencies["executeRefundSwap"];
+    executeSourceConvert?: BrowserCtfRangeOrderCoordinatorDependencies["executeSourceConvert"];
     now?: () => number;
     counterSource?: CounterSource;
     createCounterSource?: (scopeId: string, mintUrl: string, unit: string) => CounterSource;
@@ -2362,6 +2921,9 @@ function createCoordinator(
     database,
     wallet,
     engine,
+    ...(options.executeSourceConvert === undefined
+      ? {}
+      : { executeSourceConvert: options.executeSourceConvert }),
     now: options.now ?? (() => now++),
     randomId: () => crypto.randomUUID(),
     lockManager: options.lockManager ?? immediateLockManager(),
@@ -2407,6 +2969,8 @@ function createCoordinator(
   const testPrepareAndSubmit = (input: TestCoordinatorSubmitInput) =>
     prepareAndSubmit({
       ...input,
+      collateralCandidates: input.collateralCandidates ?? [],
+      maxOutputs: input.maxOutputs ?? 256,
       consentedFeeFacts: input.consentedFeeFacts ?? coordinatorFeeFacts(input.preparation),
       paidConsolidationFeeSubunits: input.paidConsolidationFeeSubunits ?? "0",
       currentFeeFacts: input.currentFeeFacts ?? coordinatorFeeFacts(input.preparation),
@@ -2911,14 +3475,17 @@ function coordinatorFeeFacts(preparation: PersistedCtfRangeOrderPreparation) {
   return composeCtfRangeOrderFeeFacts({
     authorizationPlan: planPersistedCtfRangeOrderAuthorization(preparation),
     sourcePlan: {
-      kind: "ready",
-      consolidationRounds: [],
-      selectedInputs: [],
-      consolidationFee: "0",
-      sourceFee: "1",
+      kind: "same-keyset-swap",
+      inputs: [],
+      authorizationAmounts: [],
+      changeAmount: 0,
+      inputFee: 1,
     },
     settlementAsset: { kind: "regular", unit: "msat" },
-    preparationAsset: sourceAsset,
+    sourcePreparationAsset: sourceAsset,
+    consolidationAsset: sourceAsset,
+    consolidationFeeSubunits: "0",
+    sourceMode: preparation.side === "Buy" ? "wallet-send" : "conditional-keyset-swap",
   });
 }
 

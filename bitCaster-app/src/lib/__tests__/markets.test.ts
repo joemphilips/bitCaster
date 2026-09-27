@@ -75,6 +75,7 @@ const yesNoEntry: MarketCatalogueEntry = {
   volume30dSubunits: 340_000,
   liquiditySubunits: 88_000,
   ammBotBudgetSubunits: 88_000,
+  fundingRevision: null,
   volumeLifetimeSubunits: 980_000,
   baseAsset: "sat",
   divisibility: 1_000,
@@ -106,6 +107,7 @@ const categoricalEntry: MarketCatalogueEntry = {
   volume30dSubunits: 0,
   liquiditySubunits: 12_000,
   ammBotBudgetSubunits: 12_000,
+  fundingRevision: null,
   volumeLifetimeSubunits: 45_000,
   baseAsset: "sat",
   divisibility: 1_000,
@@ -126,11 +128,26 @@ describe("mapCatalogueEntryToMarket", () => {
     expect(market.baseAsset).toBe("sat");
     expect(market.divisibility).toBe(1_000);
     expect(market.baseMarket).toBe("sats");
+    expect(market.fundingRevision).toBeNull();
+    expect(market.registeredPrimitiveOutcomeIds).toEqual(["YES", "NO"]);
     if (market.type === "yesno") {
       expect(market.currentOdds).toEqual({ yes: 620, no: 380 });
       expect(market.latestConfirmedTrades).toEqual(yesNoEntry.latestConfirmedTrades);
       expect(market.latestConfirmedTradesValid).toBe(true);
     }
+  });
+
+  it("maps the funding total with its exact source revision", () => {
+    const market = mapCatalogueEntryToMarket({
+      ...yesNoEntry,
+      ammBotBudgetSubunits: 98_765,
+      fundingRevision: "funding-revision-2",
+    });
+
+    expect(market).toMatchObject({
+      ammBotBudgetSubunits: 98_765,
+      fundingRevision: "funding-revision-2",
+    });
   });
 
   it("uses confirmed trades for yes/no list odds and leaves no-trade odds nullable", () => {
@@ -206,7 +223,38 @@ describe("mapCatalogueEntryToMarket", () => {
       expect(market.outcomes).toHaveLength(3);
       expect(market.outcomes[0].label).toBe("Alice");
       expect(market.outcomes.map((outcome) => outcome.odds)).toEqual([null, null, null]);
+      expect(market.registeredPrimitiveOutcomeIds).toEqual(["Alice", "Bob", "Charlie"]);
     }
+  });
+
+  it("maps catalogue colors by exact outcome name rather than detail ordering", () => {
+    const market = mapCatalogueEntryToMarket({
+      ...categoricalEntry,
+      outcomeDetails: [
+        { name: "Charlie", color: "#AABBCC" },
+        { name: "Alice", color: "#112233" },
+      ],
+    });
+
+    expect(market.type).toBe("categorical");
+    if (market.type === "categorical") {
+      expect(Object.fromEntries(market.outcomes.map(({ label, color }) => [label, color]))).toEqual(
+        {
+          Alice: "#112233",
+          Bob: undefined,
+          Charlie: "#AABBCC",
+        },
+      );
+    }
+  });
+
+  it("preserves exact registered primitive outcome IDs for live list routes", () => {
+    const market = mapCatalogueEntryToMarket({
+      ...categoricalEntry,
+      outcomes: ["North Star", "lowercase", "Finalist 3"],
+    });
+
+    expect(market.registeredPrimitiveOutcomeIds).toEqual(["North Star", "lowercase", "Finalist 3"]);
   });
 
   it("fails closed for malformed or unknown latest trade facts", () => {
@@ -654,6 +702,7 @@ describe("fetchMarketDetail (engine merge — ADR-009 Amendment 2026-05-04)", ()
             volume30dSubunits: 50000,
             liquiditySubunits: 75000,
             ammBotBudgetSubunits: 75000,
+            fundingRevision: null,
             volumeLifetimeSubunits: 250000,
             baseAsset: "sat",
             divisibility: 1_000,
@@ -703,6 +752,25 @@ describe("fetchMarketDetail (engine merge — ADR-009 Amendment 2026-05-04)", ()
       expect(detail.state).toBe(state);
     },
   );
+
+  it("maps the funding total with its exact source revision to market detail", async () => {
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url.includes("/api/v1/markets/query")) {
+        const body = await engineQueryResponse("open", null).json();
+        body.markets[0].ammBotBudgetSubunits = 98_765;
+        body.markets[0].fundingRevision = "funding-revision-2";
+        return new Response(JSON.stringify(body), { status: 200 });
+      }
+      return emptyMetadataResponse();
+    });
+
+    const detail = await fetchMarketDetail("abc123");
+
+    expect(detail).toMatchObject({
+      ammBotBudgetSubunits: 98_765,
+      fundingRevision: "funding-revision-2",
+    });
+  });
 
   it("preserves exact REST primitive IDs for order-book routes and live trade deltas", async () => {
     fetchMock.mockImplementation(async (url: string) => {
@@ -807,8 +875,14 @@ describe("fetchMarketDetail (engine merge — ADR-009 Amendment 2026-05-04)", ()
     fetchMock.mockImplementation(async (url: string) => {
       if (url.includes("/v1/conditions"))
         return mintdConditionsResponse(categoricalComplementFirstKeysets);
-      if (url.includes("/api/v1/markets/query"))
-        return engineQueryResponse("open", null, null, ["A", "B", "C"]);
+      if (url.includes("/api/v1/markets/query")) {
+        const response = await engineQueryResponse("open", null, null, ["A", "B", "C"]).json();
+        response.markets[0].outcomeDetails = [
+          { name: "C", color: "#ABCDEF" },
+          { name: "A", color: "#123456" },
+        ];
+        return new Response(JSON.stringify(response), { status: 200 });
+      }
       return emptyMetadataResponse();
     });
 
@@ -818,6 +892,13 @@ describe("fetchMarketDetail (engine merge — ADR-009 Amendment 2026-05-04)", ()
     const labels = detail.outcomes?.map((outcome) => outcome.label) ?? [];
     expect(labels).toEqual(["A", "B", "C"]);
     expect(labels).not.toContain("B|C");
+    expect(
+      Object.fromEntries(detail.outcomes?.map(({ label, color }) => [label, color]) ?? []),
+    ).toEqual({
+      A: "#123456",
+      B: undefined,
+      C: "#ABCDEF",
+    });
   });
 
   it("issues exactly one engine request and fails fast when the market is not yet indexed", async () => {

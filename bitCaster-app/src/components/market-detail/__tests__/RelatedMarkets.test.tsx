@@ -1,5 +1,6 @@
 import { render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import userEvent from "@testing-library/user-event";
 import { RelatedMarkets } from "../RelatedMarkets";
 import type { RelatedMarket } from "@/types/market-detail";
 
@@ -18,6 +19,17 @@ function makeRelatedMarket(overrides: Partial<RelatedMarket> = {}): RelatedMarke
 }
 
 describe("RelatedMarkets", () => {
+  it("explains volume without navigating, while the market action still navigates", async () => {
+    const user = userEvent.setup();
+    const onMarketClick = vi.fn();
+    render(<RelatedMarkets markets={[makeRelatedMarket()]} onMarketClick={onMarketClick} />);
+    await user.click(screen.getByRole("button", { name: /Volume/ }));
+    expect(screen.getByRole("tooltip")).toHaveTextContent("Total traded volume so far");
+    expect(onMarketClick).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: /Related market/ }));
+    expect(onMarketClick).toHaveBeenCalledWith("related-1");
+  });
+
   it("labels null compact prices as no trades", () => {
     render(<RelatedMarkets markets={[makeRelatedMarket()]} />);
 

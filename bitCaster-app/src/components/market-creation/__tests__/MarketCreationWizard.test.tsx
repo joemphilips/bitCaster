@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { MarketCreationWizard } from "../MarketCreationWizard";
 import i18n from "@/i18n";
@@ -60,6 +60,7 @@ function makeProps(outcomeType: "yesno" | "categorical"): MarketCreationWizardPr
     onAddOutcome: vi.fn(),
     onRemoveOutcome: vi.fn(),
     onOutcomeLabelChange: vi.fn(),
+    onOutcomeColorChange: vi.fn(),
     onLoBoundChange: vi.fn(),
     onHiBoundChange: vi.fn(),
     onPrecisionChange: vi.fn(),
@@ -89,6 +90,7 @@ describe("MarketCreationWizard outcome-step rendering", () => {
     expect(screen.getByText("No")).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Define Outcomes" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Add Outcome" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Automatic")).not.toBeInTheDocument();
   });
 
   it("keeps the categorical outcomes editor on the outcomes step", () => {
@@ -99,5 +101,29 @@ describe("MarketCreationWizard outcome-step rendering", () => {
     expect(screen.getByDisplayValue("Alpha")).toBeInTheDocument();
     expect(screen.getByDisplayValue("Beta")).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Review & Create" })).not.toBeInTheDocument();
+  });
+
+  it("wires categorical color changes to the outcome callback", () => {
+    const props = makeProps("categorical");
+    const onOutcomeColorChange = vi.fn();
+    render(<MarketCreationWizard {...props} onOutcomeColorChange={onOutcomeColorChange} />);
+
+    fireEvent.change(screen.getByLabelText("Color for Alpha"), {
+      target: { value: "#124578" },
+    });
+    expect(onOutcomeColorChange).toHaveBeenCalledWith("alpha", "#124578");
+  });
+
+  it("previews explicit and automatic colors in categorical review", () => {
+    const props = makeProps("categorical");
+    props.draft.currentStep = 4;
+    props.draft.stepOutcomes!.outcomes![0] = {
+      ...props.draft.stepOutcomes!.outcomes![0],
+      color: "#123456",
+    };
+    render(<MarketCreationWizard {...props} />);
+
+    expect(screen.getByText("#123456")).toBeInTheDocument();
+    expect(screen.getByText("Automatic")).toBeInTheDocument();
   });
 });

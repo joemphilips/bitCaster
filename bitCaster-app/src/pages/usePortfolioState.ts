@@ -61,6 +61,15 @@ import {
   listenForPortfolioInvalidation,
   type PortfolioInvalidation,
 } from "@/lib/portfolioInvalidation";
+import { observePortfolioValuations } from "@/lib/marketHub";
+
+const automaticPortfolioRefreshDelayMs = 10_000;
+const maximumBuildingPortfolioExtraReads = 3;
+type PortfolioPositionSnapshot = {
+  positions: Position[];
+  marketCatalogue: Map<string, MarketCatalogueEntry>;
+};
+const EMPTY_MARKET_CATALOGUE = new Map<string, MarketCatalogueEntry>();
 
 interface PortfolioState {
   walletState: WalletState;
@@ -77,48 +86,7 @@ interface PortfolioState {
   monitoring: PortfolioMonitoringState;
 }
 
-const TIME_RANGE_MS: Record<PLTimeSelector, number> = {
-  "1D": 24 * 60 * 60 * 1000,
-  "1W": 7 * 24 * 60 * 60 * 1000,
-  "1M": 30 * 24 * 60 * 60 * 1000,
-  ALL: Infinity,
-};
-
 const EMPTY_PL_CHART_DATA: PLChartData = { "1D": [], "1W": [], "1M": [], ALL: [] };
-
-/** Build P/L chart data from activity history. Sat-market amounts are collateral subunits (msat). */
-export function buildPLChartData(items: ActivityItem[]): PLChartData {
-  // Sort oldest-first
-  const sorted = [...items]
-    .filter((a) => a.status === "completed")
-    .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
-
-  if (sorted.length === 0) {
-    return { "1D": [], "1W": [], "1M": [], ALL: [] };
-  }
-
-  // Build cumulative balance points
-  const points: PLChartDataPoint[] = [];
-  let cumulative = 0;
-  for (const item of sorted) {
-    const deltaSubunits =
-      item.type === "deposit" ||
-      item.type === "payout_claimed" ||
-      item.type === "creator_fee_claimed"
-        ? item.amountSats
-        : -item.amountSats;
-    cumulative += deltaSubunits;
-    points.push({ timestamp: item.date, cumulativePL: cumulative });
-  }
-
-  const now = Date.now();
-  const result: PLChartData = { "1D": [], "1W": [], "1M": [], ALL: points };
-  for (const range of ["1D", "1W", "1M"] as const) {
-    const cutoff = now - TIME_RANGE_MS[range];
-    result[range] = points.filter((p) => new Date(p.timestamp).getTime() >= cutoff);
-  }
-  return result;
-}
 
 const DEFAULT_PROFILE: UserProfile = {
   userId: "",
@@ -158,9 +126,6 @@ export function computeStats(positions: Position[], funds: Fund[]): PortfolioSta
   const positionsValueSats =
     positionsValueByUnit.find((entry) => entry.unit === "sat")?.amount ?? 0;
   const totalValueSats = totalValueByUnit.find((entry) => entry.unit === "sat")?.amount ?? 0;
-  const biggestWinSats = positions
-    .filter((p) => p.valueKnown !== false)
-    .reduce((max, p) => Math.max(max, p.profitLossSats), 0);
   const positionsValueKnown = positions.every((position) => position.valueKnown !== false);
   return {
     positionsValueSats,
@@ -169,16 +134,54 @@ export function computeStats(positions: Position[], funds: Fund[]): PortfolioSta
     totalValueKnown: positionsValueKnown,
     positionsValueByUnit,
     totalValueByUnit,
-    biggestWinSats,
     predictionsCount: positions.length,
   };
 }
 
-function positionSide(outcomeCollection: string): Position["side"] {
+function isBinaryYesNoUniverse(outcomes: readonly string[]): boolean {
+  if (outcomes.length !== 2) return false;
+  const normalized = new Set(outcomes.map((outcome) => outcome.toUpperCase()));
+  return normalized.has("YES") && normalized.has("NO");
+}
+
+function positionSide(
+  outcomeCollection: string,
+  market: MarketCatalogueEntry | undefined,
+): Position["side"] {
+  if (!market || !isBinaryYesNoUniverse(market.outcomes)) return "Outcome";
+  if (!market.outcomes.includes(outcomeCollection)) return "Outcome";
   const normalized = outcomeCollection.toUpperCase();
   if (normalized === "YES") return "yes";
   if (normalized === "NO") return "no";
   return "Outcome";
+}
+
+function outcomeDisplayColor(
+  outcomeCollection: string,
+  market: MarketCatalogueEntry | undefined,
+): string | undefined {
+  if (
+    !market ||
+    isBinaryYesNoUniverse(market.outcomes) ||
+    outcomeCollection.includes("|") ||
+    !market.outcomes.includes(outcomeCollection)
+  )
+    return undefined;
+  return market.outcomeDetails?.find((detail) => detail.name === outcomeCollection)?.color;
+}
+
+export function enrichPositionWithCatalogue(
+  position: Position,
+  market: MarketCatalogueEntry | undefined,
+): Position {
+  const outcomeCollection = position.outcomeId ?? position.outcomeLabel ?? "";
+  return {
+    ...position,
+    marketTitle: market?.title ?? position.marketTitle,
+    marketImageUrl: market?.thumbnailUrl ?? position.marketImageUrl,
+    side: positionSide(outcomeCollection, market),
+    outcomeColor: outcomeDisplayColor(outcomeCollection, market),
+  };
 }
 
 function conditionLabel(conditionId: string): string {
@@ -294,7 +297,9 @@ function localMonitoringAssetIdentity(
       displayBaseAsset: position.baseAsset,
       conditionId: position.conditionId,
       parentConditionId: "0".repeat(64),
-      outcomeUniverseDigest: computeAssetMonitoringOutcomeUniverseDigest(market.outcomes),
+      outcomeUniverseDigest: computeAssetMonitoringOutcomeUniverseDigest(
+        [...market.outcomes].sort(),
+      ),
       internalOutcomeSetId: position.outcomeCollection,
     };
     return canonicalMonitoringAssetIdentity(asset);
@@ -326,12 +331,8 @@ function monitoringPosition(asset: AssetMonitoringAssetResponse): Position | nul
     monitoringAssetIdentity: identity,
     baseAsset: "sat",
     divisibility: divisibility ?? undefined,
-    avgBuyPrice: 0,
-    currentPrice: 0,
     currentValueSats: value,
     valueKnown: asset.valuationStatus === "valued" && asset.estimatedValueMsat != null,
-    profitLossSats: 0,
-    profitLossPercent: 0,
     status: "active",
     isWinner: false,
     isLoser: false,
@@ -484,7 +485,6 @@ export function mapMonitoringPortfolio(response: AssetMonitoringPortfolioRespons
       totalValueByUnit: totalValueKnown
         ? [{ unit: "sat", amount: response.summary.estimatedTotalValueMsat! }]
         : undefined,
-      biggestWinSats: 0,
       predictionsCount: positions.length,
     },
     positions,
@@ -506,6 +506,7 @@ export function mapMonitoringPortfolio(response: AssetMonitoringPortfolioRespons
       unvaluedAssetCount: response.summary.unvaluedAssetCount,
       hasPendingOutgoing: response.assets.assets.some((asset) => asset.pendingOutgoingSubunits > 0),
       pendingOutgoingValueMsat: response.summary.pendingOutgoingValueMsat,
+      liveUpdateCoverageLimited: false,
     },
   };
 }
@@ -547,9 +548,21 @@ export function usePortfolioState(): PortfolioState & {
   const assetPageInFlight = useRef(false);
   const activePortfolioRead = useRef<{
     monitoringKey: string;
+    requestKey: string;
     requestId: number;
+    controller: AbortController;
   } | null>(null);
-  const portfolioRefreshScheduled = useRef(false);
+  const automaticRefreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const automaticRefreshTimerKind = useRef<"notification" | "building" | null>(null);
+  const automaticRefreshScheduled = useRef(false);
+  const automaticRefreshScheduledKind = useRef<"notification" | "building" | null>(null);
+  const buildingRefreshCycle = useRef<{
+    monitoringKey: string;
+    extraReadsStarted: number;
+  } | null>(null);
+  const portfolioObserver = useRef<ReturnType<typeof observePortfolioValuations> | null>(null);
+  const portfolioObserverRefresh = useRef<() => void>(() => {});
+  const subscribedConditionIds = useRef<string[] | null>(null);
   const [localProfile, setLocalProfile] = useState<UserProfile>(loadProfile);
   const [positionsTab, setPositionsTab] = useState<"active" | "closed">("active");
 
@@ -574,6 +587,108 @@ export function usePortfolioState(): PortfolioState & {
   const monitoringKey =
     walletState === "ready" && walletId !== null ? `${walletId}:${selectedTimeRange}` : null;
   const monitoringReady = monitoringResponse?.key === monitoringKey;
+  const clearAutomaticRefreshTimer = useCallback(() => {
+    if (automaticRefreshTimer.current !== null) {
+      clearTimeout(automaticRefreshTimer.current);
+      automaticRefreshTimer.current = null;
+    }
+    automaticRefreshTimerKind.current = null;
+  }, []);
+
+  const abortActivePortfolioRead = useCallback(() => {
+    const read = activePortfolioRead.current;
+    if (!read) return;
+    activePortfolioRead.current = null;
+    if (requestedMonitoringKey.current === read.requestKey) {
+      requestedMonitoringKey.current = null;
+    }
+    activeMonitoringRequest.current += 1;
+    read.controller.abort();
+  }, []);
+
+  const scheduleAutomaticPortfolioRefresh = useCallback(
+    (kind: "notification" | "building") => {
+      if (monitoringKey === null || walletId === null) return;
+
+      // A timer wake that already became dirty owns the next read. More events
+      // can change its reason, but they must not enqueue or defer another read.
+      if (automaticRefreshScheduled.current) {
+        if (kind === "notification") {
+          automaticRefreshScheduledKind.current = "notification";
+          buildingRefreshCycle.current = { monitoringKey, extraReadsStarted: 0 };
+        }
+        return;
+      }
+
+      // Later notifications join the first timer. A notification also turns a
+      // pending building retry into the new bounded cycle's reconciliation read.
+      if (automaticRefreshTimer.current !== null) {
+        if (kind === "notification") automaticRefreshTimerKind.current = "notification";
+        return;
+      }
+
+      automaticRefreshTimerKind.current = kind;
+      automaticRefreshTimer.current = setTimeout(() => {
+        automaticRefreshTimer.current = null;
+        const wakeKind = automaticRefreshTimerKind.current;
+        automaticRefreshTimerKind.current = null;
+        if (activeMonitoringKey.current !== monitoringKey || wakeKind === null) return;
+
+        if (wakeKind === "notification") {
+          buildingRefreshCycle.current = { monitoringKey, extraReadsStarted: 0 };
+        } else {
+          const cycle = buildingRefreshCycle.current;
+          if (
+            cycle?.monitoringKey !== monitoringKey ||
+            cycle.extraReadsStarted >= maximumBuildingPortfolioExtraReads
+          )
+            return;
+          cycle.extraReadsStarted += 1;
+        }
+
+        if (activePortfolioRead.current?.monitoringKey === monitoringKey) {
+          automaticRefreshScheduled.current = true;
+          automaticRefreshScheduledKind.current = wakeKind;
+          return;
+        }
+        setPortfolioRefreshEpoch((current) => current + 1);
+      }, automaticPortfolioRefreshDelayMs);
+    },
+    [monitoringKey, walletId],
+  );
+
+  portfolioObserverRefresh.current = () => scheduleAutomaticPortfolioRefresh("notification");
+
+  useEffect(() => {
+    const observer = observePortfolioValuations(() => portfolioObserverRefresh.current());
+    portfolioObserver.current = observer;
+    subscribedConditionIds.current = null;
+    return () => {
+      if (portfolioObserver.current === observer) portfolioObserver.current = null;
+      subscribedConditionIds.current = null;
+      observer.dispose();
+    };
+  }, []);
+
+  useEffect(() => {
+    activeMonitoringKey.current = monitoringKey;
+    clearAutomaticRefreshTimer();
+    automaticRefreshScheduled.current = false;
+    automaticRefreshScheduledKind.current = null;
+    buildingRefreshCycle.current =
+      monitoringKey === null ? null : { monitoringKey, extraReadsStarted: 0 };
+    const activeRead = activePortfolioRead.current;
+    if (activeRead && activeRead.monitoringKey !== monitoringKey) abortActivePortfolioRead();
+    return () => {
+      clearAutomaticRefreshTimer();
+      automaticRefreshScheduled.current = false;
+      automaticRefreshScheduledKind.current = null;
+      if (activePortfolioRead.current?.monitoringKey === monitoringKey) {
+        abortActivePortfolioRead();
+      }
+      if (activeMonitoringKey.current === monitoringKey) activeMonitoringKey.current = null;
+    };
+  }, [abortActivePortfolioRead, clearAutomaticRefreshTimer, monitoringKey]);
 
   const invalidatePortfolio = useCallback(
     (invalidation: PortfolioInvalidation) => {
@@ -583,20 +698,9 @@ export function usePortfolioState(): PortfolioState & {
       } catch {
         return;
       }
-      activeMonitoringRequest.current += 1;
-      activeAssetPageRequest.current += 1;
-      assetPageInFlight.current = false;
-      if (
-        activePortfolioRead.current?.monitoringKey === monitoringKey ||
-        portfolioRefreshScheduled.current
-      ) {
-        portfolioRefreshScheduled.current = true;
-        return;
-      }
-      portfolioRefreshScheduled.current = true;
-      setPortfolioRefreshEpoch((current) => current + 1);
+      scheduleAutomaticPortfolioRefresh("notification");
     },
-    [monitoringKey, walletId],
+    [monitoringKey, scheduleAutomaticPortfolioRefresh, walletId],
   );
 
   useEffect(() => {
@@ -613,17 +717,20 @@ export function usePortfolioState(): PortfolioState & {
     if (requestedMonitoringKey.current === requestKey) return;
     requestedMonitoringKey.current = requestKey;
     const requestId = ++activeMonitoringRequest.current;
-    portfolioRefreshScheduled.current = false;
-    activePortfolioRead.current = { monitoringKey, requestId };
+    const controller = new AbortController();
+    const read = { monitoringKey, requestKey, requestId, controller };
+    activePortfolioRead.current = read;
     activeAssetPageRequest.current += 1;
     assetPageInFlight.current = false;
     setMonitoringUnavailable(false);
     void createAuthenticatedBrowserEngineClient()
-      .getPortfolio({ walletId, timeframe: selectedTimeRange, pageSize: 200 })
+      .getPortfolio({ walletId, timeframe: selectedTimeRange, pageSize: 200 }, controller.signal)
       .then((value) => {
         if (
           activeMonitoringKey.current !== monitoringKey ||
-          activeMonitoringRequest.current !== requestId
+          activeMonitoringRequest.current !== requestId ||
+          activePortfolioRead.current !== read ||
+          controller.signal.aborted
         )
           return;
         const initialAssets = appendMonitoringAssets([], value.assets.assets);
@@ -641,37 +748,131 @@ export function usePortfolioState(): PortfolioState & {
         });
         setLoadingMoreAssets(false);
         setMonitoringError(null);
+        const building = value.summary.building || value.assets.building || value.history.building;
+        const cycle = buildingRefreshCycle.current;
+        if (
+          building &&
+          cycle?.monitoringKey === monitoringKey &&
+          cycle.extraReadsStarted < maximumBuildingPortfolioExtraReads
+        ) {
+          scheduleAutomaticPortfolioRefresh("building");
+        } else if (!building) {
+          const notificationWakePending =
+            automaticRefreshTimerKind.current === "notification" ||
+            (automaticRefreshScheduled.current &&
+              automaticRefreshScheduledKind.current === "notification");
+          if (!notificationWakePending) buildingRefreshCycle.current = null;
+          if (automaticRefreshTimerKind.current === "building") clearAutomaticRefreshTimer();
+        }
       })
       .catch(() => {
         if (
           activeMonitoringKey.current !== monitoringKey ||
-          activeMonitoringRequest.current !== requestId
+          activeMonitoringRequest.current !== requestId ||
+          activePortfolioRead.current !== read ||
+          controller.signal.aborted
         )
           return;
+        const notificationWakePending =
+          automaticRefreshTimerKind.current === "notification" ||
+          (automaticRefreshScheduled.current &&
+            automaticRefreshScheduledKind.current === "notification");
+        if (!notificationWakePending) buildingRefreshCycle.current = null;
+        if (automaticRefreshTimerKind.current === "building") clearAutomaticRefreshTimer();
+        if (automaticRefreshScheduledKind.current === "building") {
+          automaticRefreshScheduled.current = false;
+          automaticRefreshScheduledKind.current = null;
+        }
         setMonitoringUnavailable(true);
         setMonitoringError("unavailable");
       })
       .finally(() => {
-        const activeRead = activePortfolioRead.current;
-        if (activeRead?.monitoringKey !== monitoringKey || activeRead.requestId !== requestId) {
-          return;
-        }
-
+        if (activePortfolioRead.current !== read) return;
         activePortfolioRead.current = null;
-        if (!portfolioRefreshScheduled.current) return;
-        portfolioRefreshScheduled.current = false;
-        setPortfolioRefreshEpoch((current) => current + 1);
+        if (automaticRefreshScheduled.current) {
+          automaticRefreshScheduled.current = false;
+          automaticRefreshScheduledKind.current = null;
+          setPortfolioRefreshEpoch((current) => current + 1);
+        }
       });
-  }, [monitoringKey, portfolioRefreshEpoch, selectedTimeRange, walletId]);
+    return () => {
+      if (activePortfolioRead.current !== read) return;
+      abortActivePortfolioRead();
+    };
+  }, [
+    abortActivePortfolioRead,
+    clearAutomaticRefreshTimer,
+    monitoringKey,
+    portfolioRefreshEpoch,
+    scheduleAutomaticPortfolioRefresh,
+    selectedTimeRange,
+    walletId,
+  ]);
+
+  const firstPageConditionIds = useMemo(() => {
+    if (monitoringResponse?.key !== monitoringKey) return null;
+    return [
+      ...new Set(
+        monitoringResponse.value.assets.assets.flatMap((asset) =>
+          asset.asset.kind === "conditional" ? [asset.asset.conditionId] : [],
+        ),
+      ),
+    ].sort();
+  }, [monitoringKey, monitoringResponse]);
+  const firstPageConditionIdSet = useMemo(
+    () => new Set(firstPageConditionIds ?? []),
+    [firstPageConditionIds],
+  );
+
+  useEffect(() => {
+    const observer = portfolioObserver.current;
+    if (!observer || firstPageConditionIds === null) return;
+    const previous = subscribedConditionIds.current;
+    if (
+      previous !== null &&
+      previous.length === firstPageConditionIds.length &&
+      previous.every((conditionId, index) => conditionId === firstPageConditionIds[index])
+    )
+      return;
+
+    const nextConditionIds = firstPageConditionIds;
+    subscribedConditionIds.current = nextConditionIds;
+    const resetFailedReplacement = () => {
+      if (
+        portfolioObserver.current === observer &&
+        subscribedConditionIds.current === nextConditionIds
+      ) {
+        subscribedConditionIds.current = null;
+      }
+    };
+    try {
+      void observer.replaceConditionIds(nextConditionIds).catch(resetFailedReplacement);
+    } catch {
+      resetFailedReplacement();
+    }
+  }, [firstPageConditionIds]);
 
   const visibleAssets =
     monitoringAssets?.key === monitoringKey &&
     monitoringAssets.generation === activeMonitoringRequest.current
       ? monitoringAssets
       : null;
+  const visibleMonitoringConditionIdsKey = useMemo(() => {
+    const ids = visibleAssets?.assets.flatMap((asset) =>
+      asset.asset.kind === "conditional" ? [asset.asset.conditionId] : [],
+    );
+    return [...new Set(ids ?? [])].sort().join(",");
+  }, [visibleAssets]);
   const visibleAssetPageError =
     assetPageError?.key === monitoringKey &&
     assetPageError.generation === activeMonitoringRequest.current;
+  const liveUpdateCoverageLimited =
+    visibleAssets !== null &&
+    firstPageConditionIds !== null &&
+    visibleAssets.assets.some(
+      (asset) =>
+        asset.asset.kind === "conditional" && !firstPageConditionIdSet.has(asset.asset.conditionId),
+    );
 
   const loadMoreAssets = useCallback(() => {
     if (!visibleAssets || walletId === null || loadingMoreAssets || assetPageInFlight.current)
@@ -730,7 +931,7 @@ export function usePortfolioState(): PortfolioState & {
       const scopeId = browserWalletScopeIdFromMnemonic(walletMnemonic);
       if (scopeId === null || activeBrowserWalletScopeId() !== scopeId) return undefined;
       const proofs = await readCanonicalPortfolioCustody(scopeId);
-      if (proofs === null) return undefined;
+      if (activeBrowserWalletScopeId() !== scopeId || proofs === null) return undefined;
       const byOutcome = new Map<
         string,
         {
@@ -781,11 +982,18 @@ export function usePortfolioState(): PortfolioState & {
         });
       }
       const entries = Array.from(byOutcome.values());
+      const visibleMonitoringConditionIds = visibleMonitoringConditionIdsKey
+        ? visibleMonitoringConditionIdsKey.split(",")
+        : [];
       const catalogue =
         monitoringUnavailable || monitoringReady
-          ? await loadMarketCatalogue(entries.map((entry) => entry.conditionId))
+          ? await loadMarketCatalogue([
+              ...entries.map((entry) => entry.conditionId),
+              ...visibleMonitoringConditionIds,
+            ])
           : new Map<string, MarketCatalogueEntry>();
-      return entries.map((entry): Position => {
+      if (activeBrowserWalletScopeId() !== scopeId) return undefined;
+      const positions = entries.map((entry): Position => {
         const market = catalogue.get(entry.conditionId);
         const divisibility = parseMarketDivisibility(market?.divisibility);
         const finalOutcome = market?.finalOutcome?.trim();
@@ -807,7 +1015,7 @@ export function usePortfolioState(): PortfolioState & {
         const isPending = winnerStatus === "pending";
         const status = isClosed ? "closed" : "active";
         const currentValueSats = isClosed && isWinner ? claimableValue : 0;
-        return {
+        const position: Position = {
           id: JSON.stringify([
             entry.mintUrl,
             entry.conditionId,
@@ -817,7 +1025,7 @@ export function usePortfolioState(): PortfolioState & {
           marketId: `${entry.conditionId}-${entry.outcomeCollection}`,
           marketTitle: market?.title ?? conditionLabel(entry.conditionId),
           marketImageUrl: market?.thumbnailUrl ?? "",
-          side: positionSide(entry.outcomeCollection),
+          side: "Outcome",
           outcomeId: entry.outcomeCollection,
           outcomeLabel: entry.outcomeCollection,
           canClaimPayout: isWinner || entry.claimRecoveryPending,
@@ -828,17 +1036,12 @@ export function usePortfolioState(): PortfolioState & {
           baseAsset: entry.baseAsset,
           divisibility: divisibility ?? undefined,
           shares: divisibility === null ? undefined : entry.amount / divisibility,
-          avgBuyPrice: 0,
-          currentPrice: isClosed && isWinner && divisibility !== null ? divisibility : 0,
           currentValueSats,
           // Local proof rows have no current market valuation until an
           // authoritative attestation or the exact display-only asset monitor
           // supplies one. Face amount is not a current value and must not enter
-          // totals or P/L.
+          // portfolio totals.
           valueKnown: divisibility !== null && isClosed && !isPending,
-          // Pending (undecided) shows no realised P&L; only attested winners/losers do.
-          profitLossSats: isClosed && !isPending ? currentValueSats : 0,
-          profitLossPercent: isClosed ? (isWinner ? 100 : isPending ? 0 : -100) : 0,
           status,
           isWinner,
           isLoser,
@@ -848,12 +1051,14 @@ export function usePortfolioState(): PortfolioState & {
           acquiredDate: new Date(entry.firstReceivedAt).toISOString(),
           mintUrl: entry.mintUrl,
         };
+        return enrichPositionWithCatalogue(position, market);
       });
+      return { positions, marketCatalogue: catalogue };
     },
-    [monitoringReady, monitoringUnavailable, walletMnemonic],
-    undefined as Position[] | undefined,
+    [monitoringReady, monitoringUnavailable, visibleMonitoringConditionIdsKey, walletMnemonic],
+    undefined as PortfolioPositionSnapshot | undefined,
   );
-  const positions: Position[] = positionsFromDb ?? [];
+  const positions: Position[] = positionsFromDb?.positions ?? [];
   const localPositionsUnavailable = positionsFromDb === undefined;
   const fundsFromDb = useLiveQuery(
     async () => {
@@ -890,13 +1095,20 @@ export function usePortfolioState(): PortfolioState & {
         }
       : localStats;
   const visiblePositions = visibleMonitoring
-    ? mergeMonitoringPositions(visibleMonitoring.positions, positions)
+    ? mergeMonitoringPositions(
+        visibleMonitoring.positions.map((position) =>
+          enrichPositionWithCatalogue(
+            position,
+            (positionsFromDb?.marketCatalogue ?? EMPTY_MARKET_CATALOGUE).get(position.marketId),
+          ),
+        ),
+        positions,
+      )
     : positions;
   const plChartData = useMemo(() => {
-    if (stats.totalValueKnown === false) return EMPTY_PL_CHART_DATA;
-    if (!visibleMonitoring) return buildPLChartData(activity);
-    return { ...buildPLChartData(activity), [selectedTimeRange]: visibleMonitoring.chart };
-  }, [activity, selectedTimeRange, stats.totalValueKnown, visibleMonitoring]);
+    if (!visibleMonitoring || stats.totalValueKnown === false) return EMPTY_PL_CHART_DATA;
+    return { ...EMPTY_PL_CHART_DATA, [selectedTimeRange]: visibleMonitoring.chart };
+  }, [selectedTimeRange, stats.totalValueKnown, visibleMonitoring]);
   const monitoring: PortfolioMonitoringState = {
     stale: visibleMonitoring?.monitoring.stale ?? false,
     incomplete: visibleMonitoring?.monitoring.incomplete ?? false,
@@ -904,6 +1116,7 @@ export function usePortfolioState(): PortfolioState & {
     unvaluedAssetCount: visibleMonitoring?.monitoring.unvaluedAssetCount ?? 0,
     hasPendingOutgoing: visibleMonitoring?.monitoring.hasPendingOutgoing ?? false,
     pendingOutgoingValueMsat: visibleMonitoring?.monitoring.pendingOutgoingValueMsat ?? null,
+    liveUpdateCoverageLimited,
     error:
       monitoringError ??
       (!visibleMonitoring && (localFundsUnavailable || localPositionsUnavailable)

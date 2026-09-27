@@ -109,10 +109,7 @@ export function SettingsPage() {
       signerMode: settingsStore.nostrSignerMode,
       signerSource: settingsStore.signerSource,
       signerBackupState: settingsStore.signerBackupState,
-      canRevealGeneratedNsec:
-        settingsStore.signerSource === "implicit-generated" &&
-        settingsStore.nostrSignerMode === "nsec" &&
-        !!settingsStore.nsecSecret,
+      canRevealLocalNsec: settingsStore.nostrSignerMode === "nsec" && !!settingsStore.nsecSecret,
       profile: settingsStore.nostrProfile,
       profileFetchStatus: settingsStore.nostrProfileFetchStatus,
       relays: settingsStore.relays,
@@ -213,9 +210,7 @@ export function SettingsPage() {
       settings={settingsState}
       seedPhrase={walletStore.mnemonic}
       walletBackupState={walletStore.walletBackupState}
-      generatedNsecSecret={
-        settingsStore.signerSource === "implicit-generated" ? settingsStore.nsecSecret : null
-      }
+      localNsecSecret={settingsStore.nostrSignerMode === "nsec" ? settingsStore.nsecSecret : null}
       onCategoryToggle={settingsStore.setActiveCategory}
       onThemeChange={handleThemeChange}
       onLikedMarketCloseNotificationsChange={handleLikedMarketCloseNotificationsChange}
@@ -224,6 +219,7 @@ export function SettingsPage() {
       onMintClick={handleMintClick}
       onSignerModeChange={handleSignerModeChange}
       onNsecSubmit={handleNsecSubmit}
+      onViewSeedPhrase={walletStore.acknowledgeWalletSeedReminder}
       onConfirmWalletBackup={walletStore.markWalletBackupConfirmed}
       onConfirmSignerBackup={() => settingsStore.setSignerBackupState("confirmed")}
       onDisconnectNostr={handleDisconnectNostr}

@@ -240,7 +240,7 @@ test('wallet.consolidateMarket retains both reservations when the mint result is
   })
 })
 
-test('wallet.consolidateMarket releases both reservations on a definite mint rejection', async () => {
+test('wallet.consolidateMarket retains both reservations after a rejected request', async () => {
   await withDaemonHome(async () => {
     await seedWallet([proofRecord(2, 'B|C', 'not-a'), proofRecord(2, 'A|C', 'not-b')])
     await assert.rejects(
@@ -254,7 +254,7 @@ test('wallet.consolidateMarket releases both reservations on a definite mint rej
           },
         },
       ),
-      /CTF consolidation mint rejected before mutation/,
+      /CTF consolidation mint rejection remains held for exact recovery/,
     )
     const database = await openDaemonStateSqlite(process.env.BITCASTER_DAEMON_HOME!)
     try {
@@ -264,21 +264,21 @@ test('wallet.consolidateMarket releases both reservations on a definite mint rej
            WHERE scope_id = ? AND kind = 'ctf-consolidation'`,
         )
         .get(activeFence!.scopeId) as { state: string } | undefined
-      assert.equal(target?.state, 'failed')
+      assert.equal(target?.state, 'prepared')
       const reserved = database
         .prepare(
           `SELECT COUNT(*) AS count FROM target_wallet_proofs
            WHERE scope_id = ? AND state = 'reserved'`,
         )
         .get(activeFence!.scopeId) as { count: number }
-      assert.equal(reserved.count, 0)
+      assert.equal(reserved.count, 2)
       const custody = database
         .prepare(
           `SELECT COUNT(*) AS count FROM custody_proofs
            WHERE scope_id = ? AND selectability = 'locked'`,
         )
         .get(activeFence!.scopeId) as { count: number }
-      assert.equal(custody.count, 0)
+      assert.equal(custody.count, 2)
     } finally {
       database.close()
     }
@@ -710,32 +710,31 @@ test('wallet recovery sweep resumes prepared CTF consolidation operations', asyn
   })
 })
 
-test('wallet recovery restores exact outputs after a committed mint loses its response', async () => {
-  await withDaemonHome(async () => {
-    await seedWallet([proofRecord(2, 'B|C', 'not-a'), proofRecord(2, 'A|C', 'not-b')])
-    await assert.rejects(
-      dispatch(
-        { method: 'wallet.consolidateMarket', params: { marketId: 'cond2-A', type: 't2' } },
-        {
-          ...depsForMarket(market('cond2', 'pending')),
-          ctfConvert: async () => {
-            throw new Error('local response lost after mint commit')
+for (const commitTiming of ['during-retry', 'after-retry'] as const) {
+  test(`wallet recovery restores exact outputs when the original mint commits ${commitTiming}`, async () => {
+    await withDaemonHome(async () => {
+      await seedWallet([proofRecord(2, 'B|C', 'not-a'), proofRecord(2, 'A|C', 'not-b')])
+      await assert.rejects(
+        dispatch(
+          { method: 'wallet.consolidateMarket', params: { marketId: 'cond2-A', type: 't2' } },
+          {
+            ...depsForMarket(market('cond2', 'pending')),
+            ctfConvert: async () => {
+              throw new Error('local response lost after mint commit')
+            },
           },
-        },
-      ),
-      /CTF consolidation mint result is uncertain/,
-    )
-    const prepared = await readState()
-    assert.ok(prepared)
-    const operationId = Object.keys(prepared.proofOperations)[0]
-    assert.ok(operationId)
-    const persistedOutputs = prepared.proofOperations[operationId]!.outputs
-    let stateChecks = 0
-    let recoveryMintCalls = 0
-    let restoreCalls = 0
-    const recovery = await recoverPreparedWalletSends(
-      { walletSeedHex: '00'.repeat(64) },
-      {
+        ),
+        /CTF consolidation mint result is uncertain/,
+      )
+      const prepared = await readState()
+      assert.ok(prepared)
+      const operationId = Object.keys(prepared.proofOperations)[0]
+      assert.ok(operationId)
+      const persistedOutputs = prepared.proofOperations[operationId]!.outputs
+      let stateChecks = 0
+      let recoveryMintCalls = 0
+      let restoreCalls = 0
+      const recoveryDeps = {
         getCustodyFence: () => {
           if (activeFence === null) throw new Error('consolidation test custody fence is missing')
           return activeFence
@@ -746,7 +745,9 @@ test('wallet recovery restores exact outputs after a committed mint loses its re
           send: async () => ({ keep: [], send: [] }),
           checkProofsStates: async (proofs: Array<Pick<Proof, 'id' | 'secret'>>) => {
             stateChecks += 1
-            const state = stateChecks === 1 ? CheckStateEnum.UNSPENT : CheckStateEnum.SPENT
+            const unspentChecks = commitTiming === 'after-retry' ? 2 : 1
+            const state =
+              stateChecks <= unspentChecks ? CheckStateEnum.UNSPENT : CheckStateEnum.SPENT
             return proofs.map(() => ({ state }))
           },
         }),
@@ -764,33 +765,46 @@ test('wallet recovery restores exact outputs after a committed mint loses its re
             ]),
           )
         },
-      },
-    )
-    assert.deepEqual(recovery, { recovered: [operationId], pending: [] })
-    assert.equal(recoveryMintCalls, 1)
-    assert.equal(restoreCalls, 1)
-    assertWalletProofs(await readState(), {
-      sats: 1,
-      outcomes: { C: 2 },
-      spent: ['secret-not-a', 'secret-not-b'],
+      } satisfies Parameters<typeof recoverPreparedWalletSends>[1]
+      let recovery = await recoverPreparedWalletSends(
+        { walletSeedHex: '00'.repeat(64) },
+        recoveryDeps,
+      )
+      if (commitTiming === 'after-retry') {
+        assert.deepEqual(recovery.recovered, [])
+        assert.equal(recovery.pending.length, 1)
+        assert.equal((await readState())?.proofOperations[operationId]?.state, 'prepared')
+        recovery = await recoverPreparedWalletSends(
+          { walletSeedHex: '00'.repeat(64) },
+          recoveryDeps,
+        )
+      }
+      assert.deepEqual(recovery, { recovered: [operationId], pending: [] })
+      assert.equal(recoveryMintCalls, 1)
+      assert.equal(restoreCalls, 1)
+      assertWalletProofs(await readState(), {
+        sats: 1,
+        outcomes: { C: 2 },
+        spent: ['secret-not-a', 'secret-not-b'],
+      })
+      const retry = await recoverPreparedWalletSends(
+        { walletSeedHex: '00'.repeat(64) },
+        {
+          getCustodyFence: () => {
+            if (activeFence === null) throw new Error('consolidation test custody fence is missing')
+            return activeFence
+          },
+          ctfConvert: async () => {
+            throw new Error('exactly-once recovery called mint again')
+          },
+        },
+      )
+      assert.deepEqual(retry, { recovered: [], pending: [] })
+      assert.equal((await readState())?.proofOperations[operationId]?.state, 'completed')
+      assert.deepEqual(persistedOutputs, prepared.proofOperations[operationId]!.outputs)
     })
-    const retry = await recoverPreparedWalletSends(
-      { walletSeedHex: '00'.repeat(64) },
-      {
-        getCustodyFence: () => {
-          if (activeFence === null) throw new Error('consolidation test custody fence is missing')
-          return activeFence
-        },
-        ctfConvert: async () => {
-          throw new Error('exactly-once recovery called mint again')
-        },
-      },
-    )
-    assert.deepEqual(retry, { recovered: [], pending: [] })
-    assert.equal((await readState())?.proofOperations[operationId]?.state, 'completed')
-    assert.deepEqual(persistedOutputs, prepared.proofOperations[operationId]!.outputs)
   })
-})
+}
 
 test('wallet recovery sweep finalizes completed CTF consolidation operations', async () => {
   await withDaemonHome(async () => {

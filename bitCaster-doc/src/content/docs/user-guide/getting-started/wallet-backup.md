@@ -9,6 +9,30 @@ Keep your 12-word recovery phrase offline and safe. Keep the wallet's local
 data while a trade, payment, or refund is unresolved. Encrypted backup helps
 you recover wallet assets. It does not replace the phrase or every local record.
 
+## Seed reminder for deposits
+
+Top-up and deposit screens show a non-blocking reminder until you view the
+wallet's recovery phrase in Settings, then Cashu. The reminder appears again
+each time you open one of these screens. Viewing the phrase acknowledges the
+reminder for the current wallet. It does not confirm the encrypted backup or
+prove that you made an external backup. A different wallet starts with a new
+reminder.
+
+## Back up your Nostr key separately
+
+Your Nostr private key (`nsec`) is separate from your wallet recovery phrase.
+The phrase does not restore this key.
+
+For a key stored in this browser, open Settings, then Nostr, then **View nsec**.
+This works for both a key created by the app and a key you imported.
+You can back up the key even if your relay profile does not load.
+Confirm the warning before you view the key. Use **Copy nsec** only in private.
+The app blurs the key after 15 seconds and hides it after 60 seconds.
+Keep the copy safe. Do not share it with support or other users.
+
+If you use a NIP-07 external signer, back up the key in that signer.
+bitCaster cannot display its private key.
+
 ## What you must keep
 
 The backup service can be unavailable, refuse an upload, or lose its data.
@@ -58,6 +82,9 @@ Asset monitoring does not store proofs for you and does not give the matching
 engine authority to spend. It is display-only. Its primary purpose is a
 best-effort display of your current and historical portfolio in base units. It
 uses user-approved asset, amount, condition, and activity metadata.
+
+The history chart shows changes in estimated portfolio value. These changes
+can include cash flows. They do not measure profit or investment return.
 
 Its secondary purpose is to help the web app identify an exact missing asset.
 The app can then make one bounded recovery attempt.

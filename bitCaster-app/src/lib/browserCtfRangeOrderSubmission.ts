@@ -1,4 +1,4 @@
-import { Mint as CashuMint } from "@cashu/cashu-ts";
+import { Mint as CashuMint, splitAmount, type Proof } from "@cashu/cashu-ts";
 import {
   EngineClientError,
   isDefinitiveOrderSubmissionError,
@@ -10,7 +10,13 @@ import {
   type CtfRangeMintMetadataClient,
 } from "@bitcaster/client-sdk/ctfRangeMintMetadata";
 import type { TradeTicket } from "@bitcaster/client-sdk/tradeTicket";
+import {
+  planCtfRangeCapabilitySource,
+  type CtfRangeCapabilitySourcePlan,
+  type CtfRangeSourceShortfall,
+} from "@bitcaster/client-sdk/ctfRangeCapabilitySourcePlan";
 import { planCtfRangeSourceConsolidation } from "@bitcaster/client-sdk/ctfRangeSourceOperation";
+import type { CtfRangeSourceMode } from "@bitcaster/client-sdk/ctfRangeSourceOperation";
 import { planCtfRangeOrderAuthorization } from "@bitcaster/client-sdk/ctfRangeOrderAuthorization";
 import {
   assertCtfRangeOrderFeeConsent,
@@ -31,6 +37,7 @@ import {
   buildBrowserCtfRangeOrderPreparation,
   browserCtfRangeOrderErrorMessage,
   type BrowserCtfRangeOrderErrorCode,
+  type BrowserCtfRangeRecoveryPage,
 } from "./browserCtfRangeOrderCoordinator";
 import { createAuthenticatedBrowserEngineClient } from "./markets";
 import { readCtfRangePreparation } from "@/stores/ctf-range-order-db";
@@ -38,6 +45,7 @@ import { recordBrowserCtfRangeMessage } from "@/stores/ctf-range-order-messages"
 import { recoverBrowserFundedAsset } from "./browserFundedAssetRecovery";
 import { activeBrowserWalletScopeId } from "./browserWalletProfile";
 import { browserRangeSourceAsset } from "./browserCtfRangeOrderSource";
+import { ensureWalletKeysetCounterReady } from "./cashu";
 import { ensureParticipationScoreForNextMatch } from "./participationScorePayment";
 import type { BrowserParticipationScoreRecoveryStatus } from "./browserParticipationScoreDelivery";
 import {
@@ -49,6 +57,7 @@ const MINT_METADATA_CACHE_TTL_MS = 30_000;
 const MINT_METADATA_CACHE_LIMIT = 64;
 const ADMISSION_POLICY_CACHE_TTL_MS = 30_000;
 const BROWSER_CONSOLIDATION_ROUNDS_MAX = 256;
+type BrowserCtfRangeRecoveryPending = BrowserCtfRangeRecoveryPage["pending"][number];
 const ORDER_FAILURE_CODES = new Set<BrowserCtfRangeOrderErrorCode>([
   "invalid-order-type",
   "capability-creation-failed",
@@ -117,18 +126,33 @@ export async function previewBrowserCtfRangeOrderFees(input: {
 }): Promise<BrowserCtfRangeOrderFeePreview> {
   const scopeId = activeBrowserWalletScopeId();
   if (scopeId === null) throw new Error("The active wallet profile is unavailable.");
-  const { preparation } = await loadBrowserRangePreparation({
+  const { preparation, maxOutputs } = await loadBrowserRangePreparation({
     ...input,
     clientOrderId: crypto.randomUUID(),
   });
-  const plan = await loadBrowserRangeConsolidationPlan(preparation, scopeId);
-  if (plan.kind !== "ready") {
-    throw new BrowserCtfRangeOrderError(
-      plan.kind === "insufficient" ? "insufficient-funds" : "source-preparation-failed",
-      consolidationPlanMessage(plan.kind),
-    );
+  const selection = await loadBrowserRangeSourceSelection(
+    preparation,
+    scopeId,
+    maxOutputs,
+    "cash-funded-preferred",
+  );
+  switch (selection.kind) {
+    case "direct":
+      return selection.currentFeeFacts;
+    case "unavailable":
+      throw insufficientSourceError(selection.shortfall);
+    case "consolidation-required": {
+      const plan = await loadBrowserRangeConsolidationPlan(
+        preparation,
+        scopeId,
+        selection.offeredCandidates,
+      );
+      if (plan.kind !== "ready") throw rangeSourcePlanError(plan.kind);
+      return browserBoundedFeeFacts(preparation, plan, maxOutputs);
+    }
+    default:
+      return assertNever(selection);
   }
-  return browserFeeFacts(preparation, plan);
 }
 
 export async function submitBrowserCtfRangeOrder(
@@ -140,7 +164,7 @@ export async function submitBrowserCtfRangeOrder(
   const seed = toSeed(words);
   const scopeId = browserWalletScopeIdFromMnemonic(input.mnemonic);
   if (scopeId === null) throw new Error("The wallet profile is unavailable.");
-  const { engine, preparation } = await loadBrowserRangePreparation(input);
+  const { engine, preparation, maxOutputs } = await loadBrowserRangePreparation(input);
   const coordinator = createBrowserCtfRangeCoordinator(
     engine,
     input.mnemonic,
@@ -153,10 +177,48 @@ export async function submitBrowserCtfRangeOrder(
   });
   let failed = false;
   try {
+    const asset = browserRangeSourceAsset(preparation);
+    try {
+      await ensureWalletKeysetCounterReady({
+        scopeId,
+        mintUrl: preparation.mintUrl,
+        unit: "msat",
+        keyset: preparation.offerKeyset,
+        ...(asset.kind === "conditional"
+          ? {
+              conditionalAsset: {
+                conditionId: asset.conditionId,
+                outcomeCollection: asset.outcomeCollection,
+              },
+            }
+          : {}),
+      });
+    } catch {
+      throw new BrowserCtfRangeOrderError(
+        "source-preparation-failed",
+        "The wallet could not finish preparing this order. No order was submitted. Please try again.",
+      );
+    }
+    if (preparation.side === "Sell") {
+      try {
+        await ensureWalletKeysetCounterReady({
+          scopeId,
+          mintUrl: preparation.mintUrl,
+          unit: "msat",
+          keyset: preparation.receiveKeyset,
+        });
+      } catch {
+        throw new BrowserCtfRangeOrderError(
+          "source-preparation-failed",
+          "The wallet could not finish preparing this order. No order was submitted. Please try again.",
+        );
+      }
+    }
     const consolidated = await consolidateBrowserRangeSource({
       coordinator,
       seed,
       preparation,
+      maxOutputs,
       mnemonic: input.mnemonic,
       scopeId,
       consentedFeeFacts: input.consentedFeeFacts,
@@ -165,6 +227,8 @@ export async function submitBrowserCtfRangeOrder(
       seed,
       preparation,
       candidates: consolidated.candidates,
+      collateralCandidates: consolidated.collateralCandidates,
+      maxOutputs,
       comment: input.comment ?? null,
       consentedFeeFacts: input.consentedFeeFacts,
       paidConsolidationFeeSubunits: consolidated.paidConsolidationFeeSubunits,
@@ -220,29 +284,87 @@ export async function submitBrowserCtfRangeOrder(
   }
 }
 
-async function consolidateBrowserRangeSource(input: {
-  coordinator: BrowserCtfRangeOrderCoordinator;
-  seed: Uint8Array;
-  preparation: ReturnType<typeof buildBrowserCtfRangeOrderPreparation>;
-  mnemonic: string;
-  scopeId: string;
-  consentedFeeFacts: CtfRangeOrderFeeFacts;
-}) {
-  const plan = await recoverRangeSourcePlan(input);
-  const finalPlan = await executeConsolidationRounds(input, plan);
+interface BrowserRangeSourceInput {
+  readonly coordinator: BrowserCtfRangeOrderCoordinator;
+  readonly seed: Uint8Array;
+  readonly preparation: ReturnType<typeof buildBrowserCtfRangeOrderPreparation>;
+  readonly mnemonic: string;
+  readonly scopeId: string;
+  readonly maxOutputs: number;
+  readonly consentedFeeFacts: CtfRangeOrderFeeFacts;
+}
+
+interface SelectedBrowserRangeSource {
+  readonly candidates: readonly Proof[];
+  readonly collateralCandidates: readonly Proof[];
+  readonly paidConsolidationFeeSubunits: string;
+  readonly currentFeeFacts: CtfRangeOrderFeeFacts;
+}
+
+/**
+ * Applies the preview's selection policy to current custody. A direct source
+ * is used at once. Otherwise the offered asset may be recovered, and a
+ * fragmented offered holding is consolidated before its fee-funded source.
+ */
+async function consolidateBrowserRangeSource(
+  input: BrowserRangeSourceInput,
+): Promise<SelectedBrowserRangeSource> {
+  const initial = await loadBrowserRangeSourceSelection(
+    input.preparation,
+    input.scopeId,
+    input.maxOutputs,
+    "cash-funded-preferred",
+  );
+  switch (initial.kind) {
+    case "direct":
+      return directRangeSource(input, "0", initial);
+    case "unavailable":
+      switch (initial.shortfall) {
+        case "offered":
+          break;
+        case "collateral":
+        case "mint-limits":
+          // The held offered value already covers the face. Offered-asset
+          // recovery cannot add regular cash or reduce the mint request size,
+          // so refuse before it runs.
+          throw insufficientSourceError(initial.shortfall);
+        default:
+          return assertNever(initial.shortfall);
+      }
+      break;
+    case "consolidation-required":
+      break;
+    default:
+      return assertNever(initial);
+  }
+  const recovered = await recoverRangeSourcePlan(input);
+  switch (recovered.kind) {
+    case "direct":
+      return directRangeSource(input, "0", recovered.selection);
+    case "consolidation":
+      return executeConsolidationRounds(input, recovered.plan);
+    default:
+      return assertNever(recovered);
+  }
+}
+
+function directRangeSource(
+  input: Pick<BrowserRangeSourceInput, "preparation" | "consentedFeeFacts">,
+  paidConsolidationFeeSubunits: string,
+  selection: DirectBrowserRangeSourceSelection,
+): SelectedBrowserRangeSource {
+  assertApprovedFeeFacts(input, paidConsolidationFeeSubunits, selection.currentFeeFacts);
   return {
-    candidates: await selectedRangeSourceProofs(input, finalPlan.selectedInputs),
-    paidConsolidationFeeSubunits: finalPlan.paidConsolidationFeeSubunits,
-    currentFeeFacts: finalPlan.currentFeeFacts,
+    candidates: selection.offeredCandidates,
+    collateralCandidates: selection.collateralCandidates,
+    paidConsolidationFeeSubunits,
+    currentFeeFacts: selection.currentFeeFacts,
   };
 }
 
-async function recoverRangeSourcePlan(input: {
-  seed: Uint8Array;
-  preparation: ReturnType<typeof buildBrowserCtfRangeOrderPreparation>;
-  mnemonic: string;
-  scopeId: string;
-}): Promise<ReadyRangeSourcePlan> {
+async function recoverRangeSourcePlan(
+  input: BrowserRangeSourceInput,
+): Promise<RecoveredRangeSourcePlan> {
   const recovery = await recoverBrowserFundedAsset({
     scopeId: input.scopeId,
     seed: input.seed,
@@ -254,11 +376,23 @@ async function recoverRangeSourcePlan(input: {
   });
   switch (recovery.kind) {
     case "ready":
-      return readyRangeSourcePlan(recovery.plan);
-    case "recovered":
-      return postRecoveryRangeSourcePlan(
-        await loadBrowserRangeConsolidationPlan(input.preparation, input.scopeId),
+      return { kind: "consolidation", plan: readyRangeSourcePlan(recovery.plan) };
+    case "recovered": {
+      // Recovered custody gets the same selection policy as a fresh preview.
+      const selection = await loadBrowserRangeSourceSelection(
+        input.preparation,
+        input.scopeId,
+        input.maxOutputs,
+        "cash-funded-preferred",
       );
+      if (selection.kind === "direct") return { kind: "direct", selection };
+      return {
+        kind: "consolidation",
+        plan: postRecoveryRangeSourcePlan(
+          await loadBrowserRangeConsolidationPlan(input.preparation, input.scopeId),
+        ),
+      };
+    }
     case "persistent-error":
       throw assetRecoveryFailed();
     case "unavailable":
@@ -271,6 +405,12 @@ async function recoverRangeSourcePlan(input: {
       throw new Error("browser range recovery outcome is invalid");
   }
 }
+
+type DirectBrowserRangeSourceSelection = Extract<BrowserRangeSourceSelection, { kind: "direct" }>;
+
+type RecoveredRangeSourcePlan =
+  | { readonly kind: "direct"; readonly selection: DirectBrowserRangeSourceSelection }
+  | { readonly kind: "consolidation"; readonly plan: ReadyRangeSourcePlan };
 
 function postRecoveryRangeSourcePlan(
   plan: Awaited<ReturnType<typeof loadBrowserRangeConsolidationPlan>>,
@@ -293,9 +433,26 @@ function readyRangeSourcePlan(
 }
 
 function rangeSourcePlanError(kind: "insufficient" | "not-reducible" | "round-limit") {
+  switch (kind) {
+    case "insufficient":
+      // Consolidation and funded recovery read only the offered asset.
+      return insufficientSourceError("offered");
+    case "not-reducible":
+    case "round-limit":
+      return new BrowserCtfRangeOrderError(
+        "source-preparation-failed",
+        consolidationPlanMessage(kind),
+      );
+    default:
+      return assertNever(kind);
+  }
+}
+
+function insufficientSourceError(shortfall: CtfRangeSourceShortfall) {
   return new BrowserCtfRangeOrderError(
-    kind === "insufficient" ? "insufficient-funds" : "source-preparation-failed",
-    consolidationPlanMessage(kind),
+    "insufficient-funds",
+    consolidationPlanMessage("insufficient"),
+    shortfall,
   );
 }
 
@@ -307,20 +464,9 @@ function assetRecoveryFailed() {
 }
 
 async function executeConsolidationRounds(
-  input: {
-    coordinator: BrowserCtfRangeOrderCoordinator;
-    seed: Uint8Array;
-    preparation: ReturnType<typeof buildBrowserCtfRangeOrderPreparation>;
-    scopeId: string;
-    consentedFeeFacts: CtfRangeOrderFeeFacts;
-  },
+  input: BrowserRangeSourceInput,
   plan: ReadyRangeSourcePlan,
-): Promise<
-  ReadyRangeSourcePlan & {
-    readonly paidConsolidationFeeSubunits: string;
-    readonly currentFeeFacts: CtfRangeOrderFeeFacts;
-  }
-> {
+): Promise<SelectedBrowserRangeSource> {
   let current = plan;
   let round = 0;
   let committedFeeSubunits = "0";
@@ -343,25 +489,55 @@ async function executeConsolidationRounds(
     round += 1;
   }
   assertApprovedConsolidationFee(input, committedFeeSubunits, current);
-  return {
-    ...current,
-    paidConsolidationFeeSubunits: committedFeeSubunits,
-    currentFeeFacts: browserFeeFacts(input.preparation, current),
-  };
+  // The consented plan is fee-funded from the offered asset. Consolidation can
+  // make cash-funded preparation feasible, but that changes the consented
+  // source mode and fee asset, so the final selection excludes collateral.
+  const final = await loadBrowserRangeSourceSelection(
+    input.preparation,
+    input.scopeId,
+    input.maxOutputs,
+    "fee-funded-only",
+  );
+  switch (final.kind) {
+    case "direct":
+      return directRangeSource(input, committedFeeSubunits, final);
+    case "unavailable":
+      throw insufficientSourceError(final.shortfall);
+    case "consolidation-required":
+      throw rangeSourcePlanError("not-reducible");
+    default:
+      return assertNever(final);
+  }
 }
 
 function assertApprovedConsolidationFee(
   input: {
     readonly preparation: ReturnType<typeof buildBrowserCtfRangeOrderPreparation>;
+    readonly maxOutputs: number;
     readonly consentedFeeFacts: CtfRangeOrderFeeFacts;
   },
   committedFeeSubunits: string,
   plan: ReadyRangeSourcePlan,
 ): void {
+  assertApprovedFeeFacts(
+    input,
+    committedFeeSubunits,
+    browserBoundedFeeFacts(input.preparation, plan, input.maxOutputs),
+  );
+}
+
+function assertApprovedFeeFacts(
+  input: {
+    readonly preparation: ReturnType<typeof buildBrowserCtfRangeOrderPreparation>;
+    readonly consentedFeeFacts: CtfRangeOrderFeeFacts;
+  },
+  committedFeeSubunits: string,
+  current: CtfRangeOrderFeeFacts,
+): void {
   try {
     assertCtfRangeOrderFeeConsent({
       consented: input.consentedFeeFacts,
-      current: browserFeeFacts(input.preparation, plan),
+      current,
       paidConsolidationFeeSubunits: committedFeeSubunits,
     });
   } catch {
@@ -374,14 +550,73 @@ function assertApprovedConsolidationFee(
 
 function browserFeeFacts(
   preparation: ReturnType<typeof buildBrowserCtfRangeOrderPreparation>,
-  plan: ReadyRangeSourcePlan,
+  plan: Extract<
+    CtfRangeCapabilitySourcePlan,
+    { kind: "same-keyset-swap" | "mixed-source-ctf-convert" }
+  >,
 ): CtfRangeOrderFeeFacts {
+  const sourceMode: CtfRangeSourceMode =
+    plan.kind === "mixed-source-ctf-convert"
+      ? "mixed-source-ctf-convert"
+      : preparation.side === "Buy"
+        ? "wallet-send"
+        : "conditional-keyset-swap";
   return composeCtfRangeOrderFeeFacts({
     authorizationPlan: planPersistedCtfRangeOrderAuthorization(preparation),
     sourcePlan: plan,
+    sourceMode,
+    consolidationFeeSubunits: "0",
     settlementAsset: { kind: "regular", unit: "msat" },
-    preparationAsset: browserPreparationAsset(preparation),
+    sourcePreparationAsset:
+      sourceMode === "conditional-keyset-swap"
+        ? browserPreparationAsset(preparation)
+        : { kind: "regular", unit: "msat" },
+    consolidationAsset: browserPreparationAsset(preparation),
   });
+}
+
+function browserBoundedFeeFacts(
+  preparation: ReturnType<typeof buildBrowserCtfRangeOrderPreparation>,
+  plan: ReadyRangeSourcePlan,
+  maxOutputs: number,
+): CtfRangeOrderFeeFacts {
+  if (plan.consolidationRounds.some((round) => round.outputs.length > maxOutputs)) {
+    throw new BrowserCtfRangeOrderError(
+      "source-preparation-failed",
+      "The selected consolidation exceeds the mint output limit.",
+    );
+  }
+  const authorization = planPersistedCtfRangeOrderAuthorization(preparation);
+  const selectedTotal = plan.selectedInputs.reduce((total, amount) => total + BigInt(amount), 0n);
+  const sourceFee = BigInt(requireFeeAmount(plan.sourceFee, "source preparation fee"));
+  const changeAmount = selectedTotal - BigInt(authorization.inputAmount) - sourceFee;
+  if (changeAmount < 0n) throw new Error("bounded source selection is underfunded");
+  const changeOutputCount =
+    changeAmount === 0n ? 0 : splitAmount(changeAmount, { ...preparation.offerKeyset.keys }).length;
+  if (authorization.authorizationAmounts.length + changeOutputCount > maxOutputs) {
+    throw new BrowserCtfRangeOrderError(
+      "source-preparation-failed",
+      "The selected source exceeds the mint output limit.",
+    );
+  }
+  const sourceMode: CtfRangeSourceMode =
+    preparation.side === "Buy" ? "wallet-send" : "conditional-keyset-swap";
+  return {
+    settlementInputFeeSubunits: authorization.participantFeeAllocationUpperBound,
+    sourcePreparationFeeSubunits: sourceFee.toString(),
+    consolidationFeeSubunits: requireFeeAmount(plan.consolidationFee, "consolidation fee"),
+    settlementAsset: { kind: "regular", unit: "msat" },
+    sourcePreparationAsset: browserPreparationAsset(preparation),
+    consolidationAsset: browserPreparationAsset(preparation),
+    sourceMode,
+  };
+}
+
+function requireFeeAmount(value: string, label: string): string {
+  if (!/^(0|[1-9][0-9]*)$/.test(value) || value.length > 20) {
+    throw new Error(`${label} is invalid`);
+  }
+  return BigInt(value).toString();
 }
 
 function browserPreparationAsset(
@@ -503,29 +738,27 @@ async function loadBrowserRangePreparation(input: {
       allowInsecureLoopbackHttp: isLoopbackMint(input.mintUrl),
     }),
   ]);
-  return {
-    engine,
-    preparation: buildBrowserCtfRangeOrderPreparation({
-      request: {
-        ...input.ticket.request,
-        clientOrderId: input.clientOrderId,
-        marketId: input.ticket.marketId,
-        conditionId: input.market.id,
-        minimumFillAmountSubunits: input.market.divisibility,
-        baseAsset: "sat",
-        collateralUnit: "msat",
-        divisibility: input.market.divisibility,
-        timeInForce: "FOK",
-        expiresAt: null,
-        mintUrl: input.mintUrl,
-      },
-      policy,
-      mintFacts,
-      market: input.market,
-      nowUnixSeconds: Math.floor(Date.now() / 1_000),
-      randomId: () => crypto.randomUUID(),
-    }),
-  };
+  const preparation = buildBrowserCtfRangeOrderPreparation({
+    request: {
+      ...input.ticket.request,
+      clientOrderId: input.clientOrderId,
+      marketId: input.ticket.marketId,
+      conditionId: input.market.id,
+      minimumFillAmountSubunits: input.market.divisibility,
+      baseAsset: "sat",
+      collateralUnit: "msat",
+      divisibility: input.market.divisibility,
+      timeInForce: "FOK",
+      expiresAt: null,
+      mintUrl: input.mintUrl,
+    },
+    policy,
+    mintFacts,
+    market: input.market,
+    nowUnixSeconds: Math.floor(Date.now() / 1_000),
+    randomId: () => crypto.randomUUID(),
+  });
+  return { engine, preparation, maxOutputs: mintFacts.maxOutputs };
 }
 
 function loadCachedAdmissionPolicy(
@@ -546,19 +779,113 @@ function loadCachedAdmissionPolicy(
 async function loadBrowserRangeConsolidationPlan(
   preparation: ReturnType<typeof buildBrowserCtfRangeOrderPreparation>,
   scopeId: string,
+  candidates?: readonly Proof[],
 ) {
-  const proofs = await getBoundedCanonicalRangeProofsForKeyset(preparation.mintUrl, {
-    scopeId,
-    unit: "msat",
-    keysetId: preparation.offerKeyset.id,
-    asset: browserRangeSourceAsset(preparation),
-  });
+  const proofs =
+    candidates ??
+    (await getBoundedCanonicalRangeProofsForKeyset(preparation.mintUrl, {
+      scopeId,
+      unit: "msat",
+      keysetId: preparation.offerKeyset.id,
+      asset: browserRangeSourceAsset(preparation),
+    }));
   const inventory = proofAmountInventory(proofs);
   return planCtfRangeSourceConsolidation({
     preparation,
     inventory,
     maxRounds: BROWSER_CONSOLIDATION_ROUNDS_MAX,
   });
+}
+
+type BrowserRangeSourceSelection =
+  | {
+      readonly kind: "direct";
+      readonly offeredCandidates: readonly Proof[];
+      readonly collateralCandidates: readonly Proof[];
+      readonly currentFeeFacts: CtfRangeOrderFeeFacts;
+    }
+  | { readonly kind: "consolidation-required"; readonly offeredCandidates: readonly Proof[] }
+  | { readonly kind: "unavailable"; readonly shortfall: CtfRangeSourceShortfall };
+
+/**
+ * `cash-funded-preferred` lets a held-share Sell pay its preparation fee with
+ * regular cash. `fee-funded-only` keeps an already consented fee-funded source.
+ */
+type BrowserRangeSourcePolicy = "cash-funded-preferred" | "fee-funded-only";
+
+async function loadBrowserRangeSourceSelection(
+  preparation: ReturnType<typeof buildBrowserCtfRangeOrderPreparation>,
+  scopeId: string,
+  maxOutputs: number,
+  policy: BrowserRangeSourcePolicy,
+): Promise<BrowserRangeSourceSelection> {
+  const offeredCandidates = await getBoundedCanonicalRangeProofsForKeyset(preparation.mintUrl, {
+    scopeId,
+    unit: "msat",
+    keysetId: preparation.offerKeyset.id,
+    asset: browserRangeSourceAsset(preparation),
+  });
+  const collateralCandidates = await loadCollateralCandidates(preparation, scopeId, policy);
+  const plan = planCtfRangeCapabilitySource({
+    side: preparation.side,
+    authorizationAmounts: planPersistedCtfRangeOrderAuthorization(preparation).authorizationAmounts,
+    offeredKeyset: preparation.offerKeyset,
+    collateralKeyset:
+      preparation.side === "Sell" ? preparation.receiveKeyset : preparation.offerKeyset,
+    complementKeyset: preparation.complementKeyset,
+    offeredCandidates,
+    collateralCandidates,
+    maxInputs: preparation.maxInputs,
+    maxOutputs,
+  });
+  switch (plan.kind) {
+    case "same-keyset-swap":
+      return {
+        kind: "direct",
+        offeredCandidates: plan.inputs,
+        collateralCandidates: [],
+        currentFeeFacts: browserFeeFacts(preparation, plan),
+      };
+    case "mixed-source-ctf-convert":
+      return {
+        kind: "direct",
+        offeredCandidates: plan.offeredInputs,
+        collateralCandidates: plan.collateralInputs,
+        currentFeeFacts: browserFeeFacts(preparation, plan),
+      };
+    case "collateral-ctf-convert":
+      // This path never synthesizes a held-share shortfall from collateral.
+      return { kind: "unavailable", shortfall: "offered" };
+    case "consolidation-required":
+      return { kind: "consolidation-required", offeredCandidates };
+    case "source-unavailable":
+      return { kind: "unavailable", shortfall: plan.shortfall };
+    default:
+      return assertNever(plan);
+  }
+}
+
+async function loadCollateralCandidates(
+  preparation: ReturnType<typeof buildBrowserCtfRangeOrderPreparation>,
+  scopeId: string,
+  policy: BrowserRangeSourcePolicy,
+): Promise<readonly Proof[]> {
+  switch (policy) {
+    case "fee-funded-only":
+      return [];
+    case "cash-funded-preferred":
+      // Only a held-share Sell has a separate regular asset for its fee.
+      return preparation.side === "Sell"
+        ? getBoundedCanonicalRangeProofsForKeyset(preparation.mintUrl, {
+            scopeId,
+            unit: "msat",
+            keysetId: preparation.receiveKeyset.id,
+            asset: { kind: "regular" },
+          })
+        : [];
+    default:
+      return assertNever(policy);
+  }
 }
 
 async function selectCanonicalRangeProofAmounts(
@@ -609,6 +936,10 @@ function proofAmountInventory(proofs: readonly { amount: unknown }[]) {
     .map(([amount, count]) => ({ amount: String(amount), count }));
 }
 
+function assertNever(value: never): never {
+  throw new Error(`Unsupported browser range source variant: ${String(value)}`);
+}
+
 function consolidationPlanMessage(kind: "insufficient" | "not-reducible" | "round-limit"): string {
   switch (kind) {
     case "insufficient":
@@ -625,11 +956,7 @@ export async function recoverBrowserCtfRangeOrders(input: {
   readonly mintUrls: readonly string[];
 }): Promise<{
   readonly recovered: number;
-  readonly pending: readonly {
-    operationId: string;
-    revision: number;
-    code: BrowserCtfRangeOrderErrorCode;
-  }[];
+  readonly pending: readonly BrowserCtfRangeRecoveryPending[];
 }> {
   const words = input.mnemonic.trim().split(/\s+/).filter(Boolean);
   if (words.length === 0) return { recovered: 0, pending: [] };
@@ -643,11 +970,7 @@ export async function recoverBrowserCtfRangeOrders(input: {
   );
   let after: Parameters<BrowserCtfRangeOrderCoordinator["recoverPage"]>[0]["after"];
   let recovered = 0;
-  const pending: Array<{
-    operationId: string;
-    revision: number;
-    code: BrowserCtfRangeOrderErrorCode;
-  }> = [];
+  const pending: BrowserCtfRangeRecoveryPending[] = [];
   let priorCursor = "";
   do {
     const page = await coordinator.recoverPage({
@@ -658,7 +981,7 @@ export async function recoverBrowserCtfRangeOrders(input: {
     recovered += page.recoveredOperationIds.length;
     for (const message of page.pending) {
       pending.push(message);
-      await persistRangeMessages({ scopeId, ...message, observedAtMs: Date.now() });
+      await persistRecoveryPending(scopeId, message);
     }
     if (page.nextCursor === null) break;
     const cursor = JSON.stringify(page.nextCursor);
@@ -676,11 +999,7 @@ export async function recoverBrowserCtfRangeOrder(input: {
   readonly clientOrderId: string;
 }): Promise<{
   readonly recovered: number;
-  readonly pending: readonly {
-    operationId: string;
-    revision: number;
-    code: BrowserCtfRangeOrderErrorCode;
-  }[];
+  readonly pending: readonly BrowserCtfRangeRecoveryPending[];
 }> {
   const words = input.mnemonic.trim().split(/\s+/).filter(Boolean);
   if (words.length === 0) return { recovered: 0, pending: [] };
@@ -697,9 +1016,25 @@ export async function recoverBrowserCtfRangeOrder(input: {
     clientOrderId: input.clientOrderId,
   });
   for (const message of recovery.pending) {
-    await persistRangeMessages({ scopeId, ...message, observedAtMs: Date.now() });
+    await persistRecoveryPending(scopeId, message);
   }
   return { recovered: recovery.recoveredOperationIds.length, pending: recovery.pending };
+}
+
+async function persistRecoveryPending(
+  scopeId: string,
+  pending: BrowserCtfRangeRecoveryPending,
+): Promise<void> {
+  // Recovery keeps retrying this operation. A durable funds message would
+  // report the protocol's normal pre-expiry refund wait as a failure.
+  if (pending.code === "awaiting-authorization-expiry") return;
+  await persistRangeMessages({
+    scopeId,
+    operationId: pending.operationId,
+    revision: pending.revision,
+    code: pending.code,
+    observedAtMs: Date.now(),
+  });
 }
 
 async function persistRangeMessages(input: {

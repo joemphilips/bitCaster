@@ -271,7 +271,7 @@ test('asset-monitoring reporter does not submit an unchanged accepted snapshot a
   assert.equal(calls, 1)
 })
 
-test('asset-monitoring catalogue bounds pages and rejects noncanonical outcomes', async () => {
+test('asset-monitoring catalogue bounds pages', async () => {
   const ids = Array.from({ length: 51 }, (_, index) => index.toString(16).padStart(64, '0'))
   const urls: URL[] = []
   await fetchAssetMonitoringCatalogue(ids, {
@@ -283,11 +283,37 @@ test('asset-monitoring catalogue bounds pages and rejects noncanonical outcomes'
   })
   assert.equal(urls.length, 2)
   assert.equal(urls[0]!.searchParams.get('ids')!.split(',').length, 50)
+})
+
+test('asset-monitoring catalogue canonicalizes a copied display-order outcome universe', async () => {
+  for (const [displayOutcomes, expectedOutcomes] of [
+    [
+      ['YES', 'NO'],
+      ['NO', 'YES'],
+    ],
+    [
+      ['Zulu', 'alpha', 'Beta'],
+      ['Beta', 'Zulu', 'alpha'],
+    ],
+  ] as const) {
+    const result = await fetchAssetMonitoringCatalogue([conditionId], {
+      engineBaseUrl: 'https://engine.example',
+      fetchImpl: async () =>
+        new Response(JSON.stringify({ markets: [{ conditionId, outcomes: displayOutcomes }] })),
+    })
+
+    assert.deepEqual(result, [{ conditionId, outcomes: expectedOutcomes }])
+  }
+})
+
+test('asset-monitoring catalogue rejects duplicate outcome labels', async () => {
   await assert.rejects(() =>
     fetchAssetMonitoringCatalogue([conditionId], {
       engineBaseUrl: 'https://engine.example',
       fetchImpl: async () =>
-        new Response(JSON.stringify({ markets: [{ conditionId, outcomes: ['YES', 'NO'] }] })),
+        new Response(
+          JSON.stringify({ markets: [{ conditionId, outcomes: ['YES', 'NO', 'YES'] }] }),
+        ),
     }),
   )
 })

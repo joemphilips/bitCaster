@@ -279,6 +279,38 @@ describe("Portfolio remove entry point", () => {
     expect(mocks.remove).not.toHaveBeenCalled();
   });
 
+  it("preserves safe Claim failure metadata and committed payouts through removal composition", async () => {
+    const entry = await useFixture();
+    const claimFailure = {
+      code: "claim-failed" as const,
+      category: "counter-readiness" as const,
+      message: "Wallet counter recovery is incomplete for the selected keyset.",
+      attemptRef: "claim-attempt-789",
+    };
+    mocks.claim.mockResolvedValue({
+      kind: "error",
+      committedPayoutAmount: 9,
+      committedLegs: 1,
+      losingLegs: 0,
+      pendingLegs: 0,
+      error: claimFailure,
+    });
+
+    await expect(removePortfolioPosition(position)).resolves.toEqual({
+      kind: "error",
+      committedPayoutAmount: 9,
+      error: {
+        code: "remove-failed",
+        message: claimFailure.message,
+        claimFailure,
+      },
+    });
+    expect(mocks.remove).not.toHaveBeenCalled();
+    expect(
+      (await entry.adapter.readProof(entry.scope.scopeId, entry.proof.proofId))?.selectability,
+    ).toBe("selectable");
+  });
+
   it("stops removal after a stale display discovers a committed winning payout", async () => {
     await useFixture();
     mocks.claim.mockResolvedValue({

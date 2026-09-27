@@ -35,7 +35,12 @@ For an overview of Cashu itself, see the [Bitcoin Design guide on ecash](https:/
 
 Choose a market, an outcome, and how many shares to buy or sell. Review the
 price and fees before you confirm. Price protection sets a maximum buy price
-or a minimum sell price. You can change this limit. Your order fills in full
+or a minimum sell price. Auto allows 20 percentage points from the current
+best executable price. A Buy price of 10% gives a 30% cap, not 12%.
+Choose Custom to change the limit. Review the actual quote before confirming.
+`Available at this limit` shows the current maximum quantity from matching
+orders. It is not your wallet balance or reserved liquidity. The form still
+checks your entered quantity and its fees. Your order fills in full
 within the limit or does not fill. It does not stay on the order book for later.
 Markets can have two outcomes, such as Yes and No, or up to eight named
 outcomes. You can fund your wallet through a Lightning invoice or with an

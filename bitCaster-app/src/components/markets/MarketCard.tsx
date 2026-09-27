@@ -6,6 +6,8 @@ import { useBookmarkStore } from "@/stores/bookmarks";
 import { useMarketState } from "@/hooks/useMarketState";
 import { formatPricePercentage } from "@bitcaster/client-sdk/marketUnits";
 import { InlineAmount } from "@/components/shared/InlineAmount";
+import { MetricExplanation } from "@/components/shared/MetricExplanation";
+import { OutcomeLabel } from "@/components/shared/OutcomeLabel";
 import type {
   Market,
   YesNoMarket,
@@ -129,9 +131,11 @@ function CategoricalOutcomes({
             className="flex-shrink-0 bg-slate-50 dark:bg-slate-800/60 rounded-lg p-2.5 border border-slate-200 dark:border-slate-700"
           >
             <div className="flex items-center justify-between mb-2">
-              <div className="text-xs font-medium text-slate-600 dark:text-slate-400 truncate">
-                {outcome.label}
-              </div>
+              <OutcomeLabel
+                outcome={outcome}
+                className="min-w-0 text-xs font-medium"
+                labelClassName="truncate text-slate-600 dark:text-slate-400"
+              />
               <div className="text-sm font-bold text-slate-900 dark:text-slate-100 ml-2">
                 <span
                   aria-label={
@@ -286,8 +290,12 @@ export function MarketCard({
 
   const renderClosedView = () => {
     const resolvedOutcome = normalizeResolvedOutcome(market.finalOutcome) ?? "Closed";
-    const isYes = resolvedOutcome === "YES";
-    const isNo = resolvedOutcome === "NO";
+    const matchedCategoricalOutcome =
+      market.type === "categorical"
+        ? market.outcomes.find((outcome) => outcome.label === market.finalOutcome?.trim())
+        : undefined;
+    const isYes = market.type === "yesno" && resolvedOutcome === "YES";
+    const isNo = market.type === "yesno" && resolvedOutcome === "NO";
     const outcomeColor = isYes
       ? "text-emerald-600 dark:text-emerald-400"
       : isNo
@@ -299,9 +307,21 @@ export function MarketCard({
         <div className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400 mb-2">
           Resolved
         </div>
-        <div className={`text-4xl font-black tracking-tight ${outcomeColor}`}>
-          {resolvedOutcome}
-        </div>
+        {market.type === "categorical" ? (
+          <OutcomeLabel
+            outcome={{
+              label: market.finalOutcome?.trim() || resolvedOutcome,
+              color: matchedCategoricalOutcome?.color,
+            }}
+            className="text-4xl font-black tracking-tight"
+            labelClassName="text-slate-900 dark:text-slate-100"
+            swatchClassName="h-3.5 w-3.5"
+          />
+        ) : (
+          <div className={`text-4xl font-black tracking-tight ${outcomeColor}`}>
+            {resolvedOutcome}
+          </div>
+        )}
       </div>
     );
   };
@@ -403,33 +423,36 @@ export function MarketCard({
         </div>
 
         <div className="flex items-center justify-between gap-2 text-[11px] text-slate-600 dark:text-slate-400 pt-2 mt-auto border-t border-slate-200 dark:border-slate-700 flex-shrink-0">
-          <div
+          <MetricExplanation
             className="flex min-w-0 items-center gap-1 font-mono font-semibold text-amber-600 dark:text-amber-400"
-            title={t("market.volume")}
-            aria-label={t("market.volume")}
+            label={t("market.volume")}
+            description={t("market.volumeDescription")}
           >
-            <TrendingUp className="w-3.5 h-3.5 flex-shrink-0" />
+            <TrendingUp aria-hidden="true" className="w-3.5 h-3.5 flex-shrink-0" />
             <span className="truncate">
               <InlineAmount
                 amountSubunits={market.volumeLifetimeSubunits}
                 baseAsset={market.baseAsset}
+                showTitle={false}
               />
             </span>
-          </div>
-          <div
+          </MetricExplanation>
+          <MetricExplanation
             className="flex items-center gap-1"
-            title={t("market.botBudgetLabel")}
-            aria-label={t("market.botBudgetLabel")}
-            data-testid="market-bot-budget"
+            label={t("market.botBudgetLabel")}
+            description={t("market.botFundingDescription")}
+            align="right"
+            testId="market-bot-budget"
           >
-            <Droplet className="w-3.5 h-3.5" />
+            <Droplet aria-hidden="true" className="w-3.5 h-3.5" />
             <span className="font-mono font-medium">
               <InlineAmount
                 amountSubunits={market.ammBotBudgetSubunits}
                 baseAsset={market.baseAsset}
+                showTitle={false}
               />
             </span>
-          </div>
+          </MetricExplanation>
           <button
             onClick={handleBookmark}
             className={`flex items-center cursor-pointer transition-colors ${

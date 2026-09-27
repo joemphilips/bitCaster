@@ -5,6 +5,7 @@ import type { MarketDetailProps, TradeTab } from "@/types/market-detail";
 import { useMarketState } from "@/hooks/useMarketState";
 import { MarketHeader } from "./MarketHeader";
 import { TradingPanel } from "./TradingPanel";
+import { tradeFeasibilityMessageKey } from "./tradeFeasibilityMessage";
 import { PriceChart } from "./PriceChart";
 import { OrderBookSection } from "./OrderBookSection";
 import { ResolutionInfo } from "./ResolutionInfo";
@@ -80,6 +81,9 @@ export function MarketDetail({
   orderType,
   limitOrderPreview,
   limitPrice,
+  tradeCapacityPreview,
+  automaticLimitPrice,
+  onTradeCapacityRetry,
   onTimeframeChange,
   onTradeSelect,
   onTradeClear,
@@ -88,6 +92,7 @@ export function MarketDetail({
   tradeSubmitStatus,
   onTradeSubmitStatusDismiss,
   tradeFeasibility,
+  onTradeFeasibilityRetry,
   isTradeSubmitting,
   onShare,
   onCommentPost,
@@ -99,10 +104,11 @@ export function MarketDetail({
   onTradeTabChange,
   onOrderTypeChange,
   onLimitPriceChange,
-  userHoldings,
+  sellHoldings,
   walletReady = true,
   onWalletRequired,
   onTopUpRequired,
+  onFundingCredited,
 }: MarketDetailProps) {
   const { t } = useTranslation();
   const [localTradeTab, setLocalTradeTab] = useState<TradeTab>(tradeSide);
@@ -179,6 +185,9 @@ export function MarketDetail({
       orderType={orderType}
       limitOrderPreview={limitOrderPreview}
       limitPrice={limitPrice}
+      tradeCapacityPreview={tradeCapacityPreview}
+      automaticLimitPrice={automaticLimitPrice}
+      onTradeCapacityRetry={onTradeCapacityRetry}
       onTradeSelect={onTradeSelect}
       onTradeClear={onTradeClear}
       onAmountChange={onAmountChange}
@@ -186,6 +195,7 @@ export function MarketDetail({
       tradeSubmitStatus={tradeSubmitStatus}
       onTradeSubmitStatusDismiss={onTradeSubmitStatusDismiss}
       tradeFeasibility={tradeFeasibility}
+      onTradeFeasibilityRetry={onTradeFeasibilityRetry}
       isTradeSubmitting={isTradeSubmitting}
       onCommentPost={onCommentPost}
       onTradeSideChange={onTradeSideChange}
@@ -193,10 +203,11 @@ export function MarketDetail({
       onTradeTabChange={handleTradeTabChange}
       onOrderTypeChange={onOrderTypeChange}
       onLimitPriceChange={onLimitPriceChange}
-      userHoldings={userHoldings}
+      sellHoldings={sellHoldings}
       walletReady={walletReady}
       onWalletRequired={onWalletRequired}
       onTopUpRequired={onTopUpRequired}
+      onFundingCredited={onFundingCredited}
       disabled={isTradingDisabled}
     />
   );
@@ -214,7 +225,12 @@ export function MarketDetail({
               <MarketHeader market={market} onShare={onShare} />
             </div>
 
-            {isResolved && <ResolutionInfo resolution={market.resolution} />}
+            {isResolved && (
+              <ResolutionInfo
+                resolution={market.resolution}
+                outcomes={market.type === "categorical" ? market.outcomes : undefined}
+              />
+            )}
 
             {isEffectivelyClosed && (
               <div
@@ -297,6 +313,7 @@ export function MarketDetail({
                   <OrderBookSection
                     key={outcome.id}
                     title={outcome.label}
+                    outcome={outcome}
                     outcomeId={outcomeBookKey(outcome.label)}
                     orderBook={deriveExecutableOrderBook({
                       book: market.outcomeOrderBooks?.[outcomeBookKey(outcome.label)] ?? {
@@ -317,7 +334,12 @@ export function MarketDetail({
               </div>
             )}
 
-            {!isResolved && <ResolutionInfo resolution={market.resolution} />}
+            {!isResolved && (
+              <ResolutionInfo
+                resolution={market.resolution}
+                outcomes={market.type === "categorical" ? market.outcomes : undefined}
+              />
+            )}
             <RelatedMarkets markets={market.relatedMarkets} onMarketClick={onRelatedMarketClick} />
             <CommentSection
               comments={market.comments}
@@ -378,9 +400,7 @@ export function MarketDetail({
                 title={
                   backingBlocked && !buyNeedsTopUp
                     ? (tradeFeasibility.message ??
-                      (backingBlockReason === "outcome-tokens"
-                        ? t("trade.insufficientOutcomeTokens")
-                        : t("trade.insufficientFunds")))
+                      t(tradeFeasibilityMessageKey(backingBlockReason)))
                     : undefined
                 }
                 className={`px-6 py-2 rounded-xl font-semibold transition-colors disabled:cursor-not-allowed ${

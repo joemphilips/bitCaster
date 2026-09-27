@@ -364,4 +364,64 @@ describe("PriceChart", () => {
     expect(pills[1]).toHaveTextContent("Bob");
     expect(pills[1]).toHaveTextContent("28.00%");
   });
+
+  it("keeps each categorical series and legend accent bound to exact outcome identity", () => {
+    const outcomes = [
+      { id: "bob", label: "Bob", odds: 28, color: "#AABBCC" },
+      { id: "alice", label: "Alice", odds: 33, color: "#112233" },
+    ];
+    const histories = {
+      Bob: {
+        timeframe: "7d" as const,
+        data: [{ timestamp: "2026-05-25T10:00:00Z", price: 28 }],
+      },
+      Alice: {
+        timeframe: "7d" as const,
+        data: [{ timestamp: "2026-05-25T10:00:00Z", price: 33 }],
+      },
+    };
+    const { rerender } = render(
+      <PriceChart
+        priceHistory={{ timeframe: "7d", data: [] }}
+        chartTimeframe="7d"
+        outcomes={outcomes}
+        outcomePriceHistories={histories}
+      />,
+    );
+    const seriesByLabel = (index: number) => {
+      const options = plotInstances[index].options as {
+        series: Array<{ label?: string; stroke?: string }>;
+      };
+      return new Map(options.series.slice(1).map((series) => [series.label, series.stroke]));
+    };
+    expect(seriesByLabel(0)).toEqual(
+      new Map([
+        ["Bob", "#AABBCC"],
+        ["Alice", "#112233"],
+      ]),
+    );
+    expect(
+      document.querySelectorAll('[data-outcome-label="Bob"] [data-testid="outcome-color-swatch"]'),
+    ).toHaveLength(2);
+    for (const swatch of document.querySelectorAll(
+      '[data-outcome-label="Bob"] [data-testid="outcome-color-swatch"]',
+    )) {
+      expect(swatch).toHaveStyle({ backgroundColor: "#AABBCC" });
+    }
+
+    rerender(
+      <PriceChart
+        priceHistory={{ timeframe: "7d", data: [] }}
+        chartTimeframe="7d"
+        outcomes={[...outcomes].reverse()}
+        outcomePriceHistories={histories}
+      />,
+    );
+    expect(seriesByLabel(1)).toEqual(
+      new Map([
+        ["Alice", "#112233"],
+        ["Bob", "#AABBCC"],
+      ]),
+    );
+  });
 });

@@ -2,9 +2,9 @@
  * SignalR client helper for the matching engine's MarketHub at /hubs/market.
  *
  * Scope: live order-book updates per market group (`JoinMarket` /
- * `LeaveMarket`). Per-user position pushes are deliberately not part of
- * this client. Order-owner settlement lifecycle runs on the authenticated
- * order hub.
+ * `LeaveMarket`) and display-only portfolio valuation invalidations. The hub
+ * does not send per-position values. Order-owner settlement lifecycle runs
+ * on the authenticated order hub.
  *
  * Lifecycle: a single lazy HubConnection is shared across the whole app.
  * React components subscribe via `onOrderBookUpdated` and are returned an
@@ -17,6 +17,7 @@ import { HubConnectionBuilder, HubConnectionState, type HubConnection } from "@m
 import type { components } from "@/generated/api";
 import { debounce, type DebouncedFunction } from "@/lib/debounce";
 import { resolveHubServerUrl } from "@/lib/hubUrl";
+import type { MarketFundingObservation } from "@/lib/marketFunding";
 import { refreshOrderBook } from "@/lib/orderBookRefresh";
 
 export type OrderBookSnapshot = components["schemas"]["OrderBookSnapshot"];
@@ -25,6 +26,13 @@ export type LatestConfirmedTrade = components["schemas"]["LatestConfirmedTrade"]
 export interface ConfirmedTradeRecordedMessage {
   conditionId: string;
   latestConfirmedTrade: LatestConfirmedTrade;
+}
+export interface MarketFundingUpdatedMessage extends Omit<
+  MarketFundingObservation,
+  "fundingRevision"
+> {
+  conditionId: string;
+  fundingRevision: string;
 }
 export interface OrderCancelled {
   marketId: string;
@@ -70,6 +78,39 @@ export function parseConfirmedTradeRecorded(
   const latestConfirmedTrade = raw.latestConfirmedTrade ?? raw.LatestConfirmedTrade;
   if (!conditionId || !isLatestConfirmedTrade(latestConfirmedTrade)) return null;
   return { conditionId, latestConfirmedTrade };
+}
+
+export function parseMarketFundingUpdated(payload: unknown): MarketFundingUpdatedMessage | null {
+  if (typeof payload !== "object" || payload === null || Array.isArray(payload)) return null;
+  const raw = payload as Record<string, unknown>;
+  const keys = Object.keys(raw);
+  if (
+    keys.length !== 3 ||
+    keys.some(
+      (key) => key !== "conditionId" && key !== "ammBotBudgetSubunits" && key !== "fundingRevision",
+    )
+  ) {
+    return null;
+  }
+
+  const conditionId = raw.conditionId;
+  const ammBotBudgetSubunits = raw.ammBotBudgetSubunits;
+  const fundingRevision = raw.fundingRevision;
+  if (
+    typeof conditionId !== "string" ||
+    conditionId.length === 0 ||
+    conditionId.trim() !== conditionId ||
+    typeof ammBotBudgetSubunits !== "number" ||
+    !Number.isSafeInteger(ammBotBudgetSubunits) ||
+    ammBotBudgetSubunits <= 0 ||
+    typeof fundingRevision !== "string" ||
+    fundingRevision.length === 0 ||
+    fundingRevision.trim() !== fundingRevision
+  ) {
+    return null;
+  }
+
+  return { conditionId, ammBotBudgetSubunits, fundingRevision };
 }
 
 function compareEventOrder(left: string, right: string): number {
@@ -196,8 +237,31 @@ export function parseOrderCancelled(payload: unknown): OrderCancelled | null {
 type OrderBookHandler = (snapshot: OrderBookSnapshot) => void;
 type MarketStatusHandler = (status: MarketStatusChanged) => void;
 type ConfirmedTradeRecordedHandler = (message: ConfirmedTradeRecordedMessage) => void;
+type MarketFundingUpdatedHandler = (message: MarketFundingUpdatedMessage) => void;
 type OrderCancelledHandler = (cancelled: OrderCancelled) => void;
 type MarketRejoinedHandler = () => void;
+type PortfolioValuationObserverState = {
+  onRefresh: () => void;
+  conditionHandlers: Map<string, () => void>;
+  disposed: boolean;
+};
+type DesiredPortfolioValuationSet = {
+  observer: PortfolioValuationObserverState | null;
+  conditionIds: readonly string[] | null;
+  revision: number;
+  notifyOnSuccess: boolean;
+};
+type AppliedPortfolioValuationSet = {
+  connection: HubConnection;
+  conditionIds: readonly string[];
+};
+type MarketSnapshotRefresh = {
+  promise: Promise<void>;
+  dirty: boolean;
+};
+
+const PORTFOLIO_VALUATION_CONDITION_IDS_MAX = 200;
+const PORTFOLIO_CONDITION_ID_PATTERN = /^[0-9a-fA-F]{1,128}$/;
 
 const SERVER_URL = resolveHubServerUrl();
 const HUB_URL = `${SERVER_URL}/hubs/market`;
@@ -233,10 +297,23 @@ let _startPromise: Promise<void> | null = null;
 const _orderBookHandlers = new Map<string, Set<OrderBookHandler>>();
 const _orderCancelledHandlers = new Map<string, Set<OrderCancelledHandler>>();
 const _confirmedTradeRecordedHandlers = new Map<string, Set<ConfirmedTradeRecordedHandler>>();
+const _marketFundingUpdatedHandlers = new Map<string, Set<MarketFundingUpdatedHandler>>();
 const _marketJoinCounts = new Map<string, number>();
 const _desiredMarketJoins = new Set<string>();
+const _marketSnapshotRequests = new Map<string, MarketSnapshotRefresh>();
 const _marketRejoinedHandlers = new Map<string, Set<MarketRejoinedHandler>>();
 const _rejoinRefreshers = new Map<string, DebouncedFunction<[]>>();
+let _portfolioValuationObserver: PortfolioValuationObserverState | null = null;
+let _portfolioValuationSetRevision = 0;
+let _desiredPortfolioValuationSet: DesiredPortfolioValuationSet = {
+  observer: null,
+  conditionIds: null,
+  revision: 0,
+  notifyOnSuccess: false,
+};
+let _appliedPortfolioValuationSet: AppliedPortfolioValuationSet | null = null;
+let _portfolioValuationMembershipGeneration = 0;
+let _portfolioValuationReplacementTail: Promise<void> = Promise.resolve();
 
 // Per-condition lifecycle handlers. The server fans MarketStatusChanged out to
 // every per-outcome group of the condition, so a client joined to any one
@@ -302,8 +379,40 @@ function buildConnection(): HubConnection {
     }
   });
 
+  conn.on("MarketFundingUpdated", (payload: unknown) => {
+    const message = parseMarketFundingUpdated(payload);
+    if (!message) return;
+    const handlers = _marketFundingUpdatedHandlers.get(message.conditionId);
+    if (!handlers) return;
+    for (const handler of handlers) {
+      try {
+        handler(message);
+      } catch (err) {
+        console.warn("[marketHub] MarketFundingUpdated handler threw:", err);
+      }
+    }
+  });
+
   conn.onreconnected(() => {
     void rejoinMarketsAfterReconnect(conn);
+    if (_connection !== conn) return;
+    _portfolioValuationMembershipGeneration += 1;
+    _appliedPortfolioValuationSet = null;
+    const desired = _desiredPortfolioValuationSet;
+    if (
+      desired.conditionIds !== null &&
+      desired.observer !== null &&
+      desired.observer === _portfolioValuationObserver
+    ) {
+      _desiredPortfolioValuationSet = {
+        ...desired,
+        revision: ++_portfolioValuationSetRevision,
+        notifyOnSuccess: true,
+      };
+      void enqueuePortfolioValuationReplacement().catch((err) => {
+        console.warn("[marketHub] portfolio valuation subscription after reconnect failed:", err);
+      });
+    }
   });
 
   return conn;
@@ -367,6 +476,141 @@ async function ensureStarted(): Promise<HubConnection> {
   return conn;
 }
 
+function normalizePortfolioValuationConditionIds(conditionIds: readonly string[]): string[] {
+  if (!Array.isArray(conditionIds)) {
+    throw new Error("portfolio valuation condition IDs must be an array");
+  }
+  if (conditionIds.length > PORTFOLIO_VALUATION_CONDITION_IDS_MAX) {
+    throw new Error("at most 200 portfolio valuation condition IDs are allowed");
+  }
+
+  const unique = new Set<string>();
+  for (const conditionId of conditionIds) {
+    if (typeof conditionId !== "string" || !PORTFOLIO_CONDITION_ID_PATTERN.test(conditionId)) {
+      throw new Error(
+        "portfolio valuation condition IDs must contain 1 to 128 hexadecimal characters",
+      );
+    }
+    unique.add(conditionId);
+  }
+  return [...unique].sort((left, right) => (left < right ? -1 : left > right ? 1 : 0));
+}
+
+function haveSamePortfolioConditionIds(
+  left: readonly string[] | null,
+  right: readonly string[] | null,
+): boolean {
+  return (
+    left !== null &&
+    right !== null &&
+    left.length === right.length &&
+    left.every((conditionId, index) => conditionId === right[index])
+  );
+}
+
+function notifyPortfolioValuationObserver(observer: PortfolioValuationObserverState): void {
+  try {
+    observer.onRefresh();
+  } catch (err) {
+    console.warn("[marketHub] portfolio valuation refresh handler threw:", err);
+  }
+}
+
+function completePortfolioValuationReplacement(desired: DesiredPortfolioValuationSet): void {
+  if (!desired.notifyOnSuccess || _desiredPortfolioValuationSet.revision !== desired.revision) {
+    return;
+  }
+
+  _desiredPortfolioValuationSet = { ...desired, notifyOnSuccess: false };
+  if (
+    desired.observer !== null &&
+    desired.observer === _portfolioValuationObserver &&
+    !desired.observer.disposed
+  ) {
+    notifyPortfolioValuationObserver(desired.observer);
+  }
+}
+
+function clearPortfolioValuationConditionHandlers(observer: PortfolioValuationObserverState): void {
+  for (const removeHandlers of observer.conditionHandlers.values()) removeHandlers();
+  observer.conditionHandlers.clear();
+}
+
+function replacePortfolioValuationConditionHandlers(
+  observer: PortfolioValuationObserverState,
+  conditionIds: readonly string[],
+): void {
+  const nextIds = new Set(conditionIds);
+  for (const [conditionId, removeHandlers] of observer.conditionHandlers) {
+    if (nextIds.has(conditionId)) continue;
+    removeHandlers();
+    observer.conditionHandlers.delete(conditionId);
+  }
+
+  for (const conditionId of conditionIds) {
+    if (observer.conditionHandlers.has(conditionId)) continue;
+    const onChange = () => notifyPortfolioValuationObserver(observer);
+    const removeTradeHandler = onConfirmedTradeRecorded(conditionId, onChange);
+    const removeStatusHandler = onMarketStatusChanged(conditionId, onChange);
+    observer.conditionHandlers.set(conditionId, () => {
+      removeTradeHandler();
+      removeStatusHandler();
+    });
+  }
+}
+
+function enqueuePortfolioValuationReplacement(): Promise<void> {
+  if (marketHubDisabledForE2E()) return Promise.resolve();
+
+  const replacement = _portfolioValuationReplacementTail
+    .catch(() => undefined)
+    .then(async () => {
+      while (true) {
+        const desired = _desiredPortfolioValuationSet;
+        if (desired.conditionIds === null) return;
+
+        const connection = await ensureStarted();
+        if (desired.revision !== _desiredPortfolioValuationSet.revision) continue;
+        const conditionIds = desired.conditionIds;
+        const applied = _appliedPortfolioValuationSet;
+        if (
+          applied?.connection === connection &&
+          haveSamePortfolioConditionIds(applied.conditionIds, conditionIds)
+        ) {
+          completePortfolioValuationReplacement(desired);
+          return;
+        }
+
+        const membershipGeneration = _portfolioValuationMembershipGeneration;
+        try {
+          await connection.invoke("SetPortfolioValuationSubscriptions", [...conditionIds]);
+        } catch (err) {
+          if (
+            desired.revision !== _desiredPortfolioValuationSet.revision ||
+            membershipGeneration !== _portfolioValuationMembershipGeneration ||
+            _connection !== connection
+          ) {
+            continue;
+          }
+          throw err;
+        }
+
+        if (
+          membershipGeneration !== _portfolioValuationMembershipGeneration ||
+          _connection !== connection
+        ) {
+          continue;
+        }
+        _appliedPortfolioValuationSet = { connection, conditionIds };
+        if (desired.revision !== _desiredPortfolioValuationSet.revision) continue;
+        completePortfolioValuationReplacement(desired);
+        return;
+      }
+    });
+  _portfolioValuationReplacementTail = replacement;
+  return replacement;
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -382,6 +626,124 @@ export async function joinMarket(marketId: string): Promise<void> {
   _marketJoinCounts.set(marketId, 1);
   const conn = await ensureStarted();
   await conn.invoke("JoinMarket", marketId);
+}
+
+export interface PortfolioValuationObserver {
+  /** Replace this observer's condition set after a fresh Portfolio response. */
+  replaceConditionIds(conditionIds: readonly string[]): Promise<void>;
+  /** Remove this observer. Only the current observer clears server membership. */
+  dispose(): void;
+}
+
+/**
+ * Observe display invalidations for the current Portfolio page. Condition
+ * sets use a separate hub method and never join order-book groups.
+ */
+export function observePortfolioValuations(onRefresh: () => void): PortfolioValuationObserver {
+  const previousObserver = _portfolioValuationObserver;
+  if (previousObserver) {
+    previousObserver.disposed = true;
+    clearPortfolioValuationConditionHandlers(previousObserver);
+  }
+
+  const observer: PortfolioValuationObserverState = {
+    onRefresh,
+    conditionHandlers: new Map(),
+    disposed: false,
+  };
+  _portfolioValuationObserver = observer;
+  _desiredPortfolioValuationSet = {
+    observer,
+    conditionIds: null,
+    revision: ++_portfolioValuationSetRevision,
+    notifyOnSuccess: false,
+  };
+
+  return {
+    replaceConditionIds(conditionIds) {
+      if (observer.disposed || _portfolioValuationObserver !== observer) {
+        return Promise.resolve();
+      }
+      const normalizedConditionIds = normalizePortfolioValuationConditionIds(conditionIds);
+
+      replacePortfolioValuationConditionHandlers(observer, normalizedConditionIds);
+      const desired = _desiredPortfolioValuationSet;
+      if (
+        desired.observer !== observer ||
+        !haveSamePortfolioConditionIds(desired.conditionIds, normalizedConditionIds)
+      ) {
+        _desiredPortfolioValuationSet = {
+          observer,
+          conditionIds: normalizedConditionIds,
+          revision: ++_portfolioValuationSetRevision,
+          notifyOnSuccess: true,
+        };
+      }
+      return enqueuePortfolioValuationReplacement();
+    },
+    dispose() {
+      if (observer.disposed) return;
+      observer.disposed = true;
+      clearPortfolioValuationConditionHandlers(observer);
+      if (_portfolioValuationObserver !== observer) return;
+
+      _portfolioValuationObserver = null;
+      _desiredPortfolioValuationSet = {
+        observer: null,
+        conditionIds: [],
+        revision: ++_portfolioValuationSetRevision,
+        notifyOnSuccess: false,
+      };
+      const connection = _connection;
+      if (
+        connection?.state === HubConnectionState.Connected ||
+        (connection !== null && _startPromise !== null)
+      ) {
+        void enqueuePortfolioValuationReplacement().catch((err) => {
+          console.warn("[marketHub] portfolio valuation unsubscribe failed:", err);
+        });
+      } else {
+        _appliedPortfolioValuationSet = null;
+      }
+    },
+  };
+}
+
+/**
+ * Ask the server for a fresh snapshot of a group this client already joined.
+ * JoinMarket is idempotent on the hub; calling it here must not change the
+ * client-side subscription reference count.
+ */
+export function refreshMarketSnapshot(marketId: string): Promise<void> {
+  if (marketHubDisabledForE2E() || !_desiredMarketJoins.has(marketId)) {
+    return Promise.resolve();
+  }
+  const inFlight = _marketSnapshotRequests.get(marketId);
+  if (inFlight) {
+    inFlight.dirty = true;
+    return inFlight.promise;
+  }
+
+  const refreshState: MarketSnapshotRefresh = {
+    promise: Promise.resolve(),
+    dirty: false,
+  };
+  refreshState.promise = (async () => {
+    const conn = await ensureStarted();
+    do {
+      if (!_desiredMarketJoins.has(marketId)) return;
+      refreshState.dirty = false;
+      await conn.invoke("JoinMarket", marketId);
+    } while (refreshState.dirty && _desiredMarketJoins.has(marketId));
+  })();
+  _marketSnapshotRequests.set(marketId, refreshState);
+  const clearRequest = () => {
+    if (_marketSnapshotRequests.get(marketId) === refreshState) {
+      _marketSnapshotRequests.delete(marketId);
+    }
+  };
+  void refreshState.promise.then(clearRequest, clearRequest);
+  return refreshState.promise;
 }
 
 export async function leaveMarket(marketId: string): Promise<void> {
@@ -490,6 +852,25 @@ export function onConfirmedTradeRecorded(
   };
 }
 
+/** Register for committed funding observations for one condition. */
+export function onMarketFundingUpdated(
+  conditionId: string,
+  handler: MarketFundingUpdatedHandler,
+): () => void {
+  let set = _marketFundingUpdatedHandlers.get(conditionId);
+  if (!set) {
+    set = new Set();
+    _marketFundingUpdatedHandlers.set(conditionId, set);
+  }
+  set.add(handler);
+  return () => {
+    const handlers = _marketFundingUpdatedHandlers.get(conditionId);
+    if (!handlers) return;
+    handlers.delete(handler);
+    if (handlers.size === 0) _marketFundingUpdatedHandlers.delete(conditionId);
+  };
+}
+
 export function onMarketRejoined(marketId: string, handler: MarketRejoinedHandler): () => void {
   let set = _marketRejoinedHandlers.get(marketId);
   if (!set) {
@@ -513,10 +894,26 @@ export async function disconnect(): Promise<void> {
   const conn = _connection;
   _connection = null;
   _startPromise = null;
+  _portfolioValuationMembershipGeneration += 1;
+  if (_portfolioValuationObserver) {
+    _portfolioValuationObserver.disposed = true;
+    clearPortfolioValuationConditionHandlers(_portfolioValuationObserver);
+  }
+  _portfolioValuationObserver = null;
+  _portfolioValuationSetRevision += 1;
+  _desiredPortfolioValuationSet = {
+    observer: null,
+    conditionIds: null,
+    revision: _portfolioValuationSetRevision,
+    notifyOnSuccess: false,
+  };
+  _appliedPortfolioValuationSet = null;
   _orderBookHandlers.clear();
   _confirmedTradeRecordedHandlers.clear();
+  _marketFundingUpdatedHandlers.clear();
   _marketStatusHandlers.clear();
   _marketRejoinedHandlers.clear();
+  _marketSnapshotRequests.clear();
   for (const refresh of _rejoinRefreshers.values()) refresh.cancel();
   _rejoinRefreshers.clear();
   _marketJoinCounts.clear();

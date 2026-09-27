@@ -6,8 +6,11 @@ sidebar:
 
 This section describes the public technical behavior of bitCaster.
 
+For outcome identity and optional outcome display metadata in market creation
+and catalogue responses, see [Market Catalogue API](/technical/protocol/market-catalogue/).
+
 See [Public FOK preview](/technical/architecture/trading-model/#public-fok-preview)
-for read-only trade estimates and separate fee calculation.
+for read-only trade estimates, executable capacity, and separate fee calculation.
 
 The first-release server accepts only public FOK orders. The GUI and CLI submit
 FOK orders. Each public attempt uses one one-shot capability. FOK uses the book
@@ -55,3 +58,15 @@ is full, and `503` when the active provider has no bounded monitoring reader.
 After a confirmed settlement, an owner-filtered
 `SettlementGroupStateChanged` update can refresh the active portfolio. This
 best-effort display update does not prove custody or authorize spending.
+
+For price and closure updates, invoke `SetPortfolioValuationSubscriptions`
+on the market hub with the desired condition IDs. This replaces the set for
+that connection. It accepts at most 200 entries, including duplicates.
+Use exact condition IDs from the API. An empty array removes the subscriptions.
+Send the set again after reconnecting.
+
+These subscriptions receive `ConfirmedTradeRecorded` and
+`MarketStatusChanged`, without order-book snapshots or depth updates.
+Refresh the Portfolio response after subscribing, reconnecting, or receiving
+a relevant notification. Coalesce refreshes and respect `429` responses.
+A notification does not guarantee that the next Portfolio read includes it.

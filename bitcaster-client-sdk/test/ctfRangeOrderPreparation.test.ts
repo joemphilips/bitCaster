@@ -43,6 +43,7 @@ import {
   deriveSettlementCapabilityArtifactDigest,
 } from '../src/settlementCapabilityArtifact.ts'
 import {
+  ctfRangeSourceMode,
   ctfRangeSourceKeepDerivationLocators,
   prepareCtfRangeSourceOperation,
   validateCtfRangeSourceCompletionOperation,
@@ -50,8 +51,12 @@ import {
 import { deserializeDurableCustodyOutput } from '../src/durableCustodyProofOperation.ts'
 import { planCtfRangeCapabilitySource } from '../src/ctfRangeCapabilitySourcePlan.ts'
 import {
+  completeCtfRangeMixedSourceOperation,
+  ctfRangeMixedSourceChangeDerivationLocators,
   completeCtfRangeCollateralSourceOperation,
   prepareCtfRangeCollateralSourceOperation,
+  prepareCtfRangeMixedSourceOperation,
+  validateCtfRangeMixedSourceOperation,
   validateCtfRangeCollateralSourceOperation,
 } from '../src/ctfRangeCollateralSourceOperation.ts'
 
@@ -741,6 +746,255 @@ test('prepares one exact collateral conversion with locked offer and ordinary co
       ),
     /value authority|preparation is foreign|plan is invalid/,
   )
+})
+
+test('persists and replays one exact mixed held-share conversion with separate change groups', async () => {
+  const preparation = persistedPreparation('range-operation-mixed-source', 'Sell')
+  const seed = new Uint8Array(64).fill(7)
+  const authorization = prepareCtfRangeOrderAuthorization({
+    seed,
+    ...withoutPersistedRequest(preparation),
+  }).authorizationOutputs
+  const offered: Proof = {
+    id: preparation.offerKeyset.id,
+    amount: 1_024,
+    secret: 'held-share-input',
+    C: MINT_PUBLIC_KEY,
+  }
+  const collateral: Proof = {
+    id: preparation.receiveKeyset.id,
+    amount: 16,
+    secret: 'regular-fee-input',
+    C: MINT_PUBLIC_KEY,
+  }
+  const plan = planCtfRangeCapabilitySource({
+    side: 'Sell',
+    authorizationAmounts: authorization.map(({ blindedMessage }) =>
+      blindedMessage.amount.toString(),
+    ),
+    offeredKeyset: preparation.offerKeyset,
+    collateralKeyset: preparation.receiveKeyset,
+    complementKeyset: preparation.complementKeyset,
+    offeredCandidates: [offered],
+    collateralCandidates: [collateral],
+    maxInputs: preparation.maxInputs,
+    maxOutputs: 256,
+  })
+  assert.equal(plan.kind, 'mixed-source-ctf-convert')
+  if (plan.kind !== 'mixed-source-ctf-convert') throw new Error('expected mixed source plan')
+
+  const reservations: Array<{ keysetId: string; count: number }> = []
+  const operation = await prepareCtfRangeMixedSourceOperation({
+    preparation,
+    seed,
+    counterSource: counterSource(11, reservations),
+    plan,
+  })
+  assert.ok(operation)
+  assert.equal(operation.kind, 'ctf-range-conditional-source')
+  assert.equal(ctfRangeSourceMode(operation), 'mixed-source-ctf-convert')
+  assert.equal(operation.metadata?.endpoint, 'POST /v1/ctf/convert')
+  assert.deepEqual(Object.keys(operation.outputs).sort(), [
+    'authorization',
+    'collateral-change',
+    'offered-change',
+  ])
+  assert.equal(operation.inputs.length, 2)
+  assert.equal(operation.inputs[0]?.id, preparation.offerKeyset.id)
+  assert.equal(operation.inputs[1]?.id, preparation.receiveKeyset.id)
+  assert.equal(operation.metadata?.fees, 1)
+  assert.equal(
+    operation.outputs.authorization!.reduce(
+      (sum, output) => sum + Number(output.blindedMessage.amount),
+      0,
+    ),
+    1_000,
+  )
+  assert.equal(
+    operation.outputs['offered-change']!.reduce(
+      (sum, output) => sum + Number(output.blindedMessage.amount),
+      0,
+    ),
+    24,
+  )
+  assert.equal(
+    operation.outputs['collateral-change']!.reduce(
+      (sum, output) => sum + Number(output.blindedMessage.amount),
+      0,
+    ),
+    15,
+  )
+  assert.deepEqual(
+    reservations.map(({ keysetId }) => keysetId),
+    [preparation.offerKeyset.id, preparation.receiveKeyset.id],
+  )
+  assert.equal(
+    (operation.metadata?.offeredPlan as { keysetId: string }).keysetId,
+    preparation.offerKeyset.id,
+  )
+  assert.equal(
+    (operation.metadata?.collateralPlan as { keysetId: string }).keysetId,
+    preparation.receiveKeyset.id,
+  )
+  assert.deepEqual(validateCtfRangeMixedSourceOperation(operation, preparation), operation)
+
+  const requests: CtfConvertRequest[] = []
+  const transport = {
+    postConvert: async (value: CtfConvertRequest) => {
+      requests.push(value)
+      return {
+        signatures: Object.fromEntries(
+          Object.entries(value.outputs).map(([collection, messages]) => [
+            collection,
+            messages.map(signBlindedMessage),
+          ]),
+        ),
+      }
+    },
+  }
+  const completionInput = {
+    operation,
+    preparation,
+    seed,
+    transport,
+  }
+  const completed = await completeCtfRangeMixedSourceOperation(completionInput)
+  const replayed = await completeCtfRangeMixedSourceOperation(completionInput)
+  assert.equal(requests.length, 2)
+  assert.equal(
+    JSON.stringify(requests[0], (_key, value) =>
+      typeof value === 'bigint' ? value.toString() : value,
+    ),
+    JSON.stringify(requests[1], (_key, value) =>
+      typeof value === 'bigint' ? value.toString() : value,
+    ),
+  )
+  assert.deepEqual(Object.keys(requests[0]!.inputs).sort(), ['*', OUTCOME_COLLECTION])
+  assert.deepEqual(Object.keys(requests[0]!.outputs).sort(), ['*', OUTCOME_COLLECTION])
+  assert.equal(completed.authorization.reduce(sumProofAmount, 0), 1_000)
+  assert.equal(completed.offeredChange.reduce(sumProofAmount, 0), 24)
+  assert.equal(completed.collateralChange.reduce(sumProofAmount, 0), 15)
+  for (const [first, second] of [
+    [completed.authorization, replayed.authorization],
+    [completed.offeredChange, replayed.offeredChange],
+    [completed.collateralChange, replayed.collateralChange],
+  ] as const) {
+    assert.deepEqual(
+      first.map(({ id, amount, secret, C }) => [id, Number(amount), secret, C]),
+      second.map(({ id, amount, secret, C }) => [id, Number(amount), secret, C]),
+    )
+  }
+
+  await assert.rejects(
+    completeCtfRangeMixedSourceOperation({
+      ...completionInput,
+      transport: {
+        postConvert: async (request) => {
+          const signatures = Object.fromEntries(
+            Object.entries(request.outputs).map(([collection, messages]) => [
+              collection,
+              messages.map(signBlindedMessage),
+            ]),
+          )
+          const offeredSignatures = signatures[OUTCOME_COLLECTION]!
+          return {
+            signatures: {
+              ...signatures,
+              [OUTCOME_COLLECTION]: [
+                { ...offeredSignatures[0]!, id: 'foreign-keyset' },
+                ...offeredSignatures.slice(1),
+              ],
+            },
+          }
+        },
+      },
+    }),
+    /foreign collateral range authorization signature/,
+  )
+
+  const locators = ctfRangeMixedSourceChangeDerivationLocators(operation, preparation, {
+    offeredChange: completed.offeredChange,
+    collateralChange: completed.collateralChange,
+  })
+  assert.ok(locators.offeredChange.every(({ keysetId }) => keysetId === preparation.offerKeyset.id))
+  assert.ok(
+    locators.collateralChange.every(({ keysetId }) => keysetId === preparation.receiveKeyset.id),
+  )
+  assert.equal(locators.offeredChange.length, completed.offeredChange.length)
+  assert.equal(locators.collateralChange.length, completed.collateralChange.length)
+})
+
+test('rejects malformed mixed-source operation authority before conversion', async () => {
+  const preparation = persistedPreparation('range-operation-mixed-source-invalid', 'Sell')
+  const seed = new Uint8Array(64).fill(7)
+  const authorization = prepareCtfRangeOrderAuthorization({
+    seed,
+    ...withoutPersistedRequest(preparation),
+  }).authorizationOutputs
+  const plan = planCtfRangeCapabilitySource({
+    side: 'Sell',
+    authorizationAmounts: authorization.map(({ blindedMessage }) =>
+      blindedMessage.amount.toString(),
+    ),
+    offeredKeyset: preparation.offerKeyset,
+    collateralKeyset: preparation.receiveKeyset,
+    complementKeyset: preparation.complementKeyset,
+    offeredCandidates: [
+      {
+        id: preparation.offerKeyset.id,
+        amount: 1_024,
+        secret: 'held-share-invalid-case',
+        C: MINT_PUBLIC_KEY,
+      },
+    ],
+    collateralCandidates: [
+      {
+        id: preparation.receiveKeyset.id,
+        amount: 16,
+        secret: 'regular-fee-invalid-case',
+        C: MINT_PUBLIC_KEY,
+      },
+    ],
+    maxInputs: preparation.maxInputs,
+    maxOutputs: 256,
+  })
+  if (plan.kind !== 'mixed-source-ctf-convert') throw new Error('expected mixed source plan')
+  const preflightReservations: Array<{ keysetId: string; count: number }> = []
+  await assert.rejects(
+    prepareCtfRangeMixedSourceOperation({
+      preparation,
+      seed,
+      counterSource: counterSource(0, preflightReservations),
+      plan: { ...plan, inputFee: plan.inputFee + 1 },
+    }),
+    /fee or output plan authority/,
+  )
+  assert.deepEqual(preflightReservations, [])
+  const operation = await prepareCtfRangeMixedSourceOperation({
+    preparation,
+    seed,
+    counterSource: counterSource(),
+    plan,
+  })
+  assert.ok(operation)
+  const invalidOperations: unknown[] = [
+    { ...operation, metadata: { ...operation.metadata, endpoint: 'POST /v1/swap' } },
+    { ...operation, metadata: { ...operation.metadata, conditionId: 'cd'.repeat(32) } },
+    {
+      ...operation,
+      inputs: [
+        operation.inputs[0]!,
+        { ...operation.inputs[1]!, secret: operation.inputs[0]!.secret },
+      ],
+    },
+    { ...operation, metadata: { ...operation.metadata, fees: 0 } },
+  ]
+  for (const invalid of invalidOperations) {
+    assert.throws(
+      () => validateCtfRangeMixedSourceOperation(invalid, preparation),
+      /invalid|authority|foreign|duplicated|exact output plan/i,
+    )
+  }
 })
 
 test('rejects wallet substitution of exact range authorization outputs', async () => {

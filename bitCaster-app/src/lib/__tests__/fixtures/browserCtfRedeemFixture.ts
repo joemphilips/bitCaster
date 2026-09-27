@@ -21,7 +21,9 @@ import {
   BrowserDurableCustodyAdapter,
   createBrowserCustodyProofRow,
 } from "../../../stores/durable-custody-db";
+import { BrowserWalletCounterSource } from "../../../stores/browser-wallet-counter-db";
 import { BitcasterDB } from "../../../stores/proof-db";
+import { activeBrowserWalletScopeId, browserWalletDatabaseName } from "../../browserWalletProfile";
 import { browserWalletScope } from "../../browserCtfRangeOrderSource";
 import {
   bindBrowserCanonicalCtfRedeemLeg,
@@ -76,6 +78,7 @@ export const immediateLockManager = {
 export interface BrowserCtfRedeemFixture {
   readonly database: BitcasterDB;
   readonly adapter: BrowserDurableCustodyAdapter;
+  readonly seed: Uint8Array;
   readonly scope: ReturnType<typeof browserWalletScope>;
   readonly proof: Awaited<ReturnType<typeof createBrowserCustodyProofRow>>;
   readonly proofs: readonly Awaited<ReturnType<typeof createBrowserCustodyProofRow>>[];
@@ -89,11 +92,20 @@ export interface BrowserCtfRedeemFixture {
 }
 
 export async function fixture(
-  input: { readonly amounts?: readonly number[] } = {},
+  input: {
+    readonly amounts?: readonly number[];
+    readonly counterSource?: "memory" | "browser";
+    readonly seed?: Uint8Array;
+  } = {},
 ): Promise<BrowserCtfRedeemFixture> {
   const amounts = input.amounts ?? [1];
-  const database = new BitcasterDB(`ctf-redeem-bind-${crypto.randomUUID()}`);
-  const scope = browserWalletScope(SEED);
+  const seed = input.seed ?? SEED;
+  const scope = browserWalletScope(seed);
+  const database = new BitcasterDB(
+    input.counterSource === "browser"
+      ? browserWalletDatabaseName(scope.scopeId)
+      : `ctf-redeem-bind-${crypto.randomUUID()}`,
+  );
   const proofs = amounts.map((amount, index) =>
     createBrowserCustodyProofRow({
       scopeId: scope.scopeId,
@@ -150,18 +162,28 @@ export async function fixture(
   }
   if (legs.length === 0) throw new Error("CTF redeem test leg is missing");
   let nextCounter = 0;
-  const counters: CounterSource = {
-    reserve: async (_keysetId, count) => {
-      const start = nextCounter;
-      nextCounter += count;
-      return { start, count };
-    },
-    advanceToAtLeast: async (_keysetId, minimum) => {
-      nextCounter = Math.max(nextCounter, minimum);
-    },
-  };
+  const counters: CounterSource =
+    input.counterSource === "browser"
+      ? new BrowserWalletCounterSource(
+          {
+            database,
+            scopeId: scope.scopeId,
+            isCurrentProfile: () => activeBrowserWalletScopeId() === scope.scopeId,
+          },
+          { mintUrl: MINT, unit: "msat" },
+        )
+      : {
+          reserve: async (_keysetId, count) => {
+            const start = nextCounter;
+            nextCounter += count;
+            return { start, count };
+          },
+          advanceToAtLeast: async (_keysetId, minimum) => {
+            nextCounter = Math.max(nextCounter, minimum);
+          },
+        };
   const bindInput = (leg: BrowserCtfRedeemLeg): BrowserCanonicalCtfRedeemBindingInput => ({
-    seed: SEED,
+    seed,
     mintUrl: MINT,
     conditionId: CONDITION,
     outcomeCollection: OUTCOME,
@@ -177,6 +199,7 @@ export async function fixture(
   return {
     database,
     adapter,
+    seed,
     scope,
     proof: proofs[0]!,
     proofs,

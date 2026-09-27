@@ -83,21 +83,6 @@ interface ExactProofConsolidationPreparationInput {
   readonly wallet: ExactProofConsolidationWallet
 }
 
-export type ExactProofConsolidationReplayFailureDisposition =
-  | 'release-exact-unspent-inputs'
-  | 'remain-pending'
-
-export function classifyExactProofConsolidationReplayFailure(input: {
-  readonly definiteMintRejection: boolean
-  readonly inputStates: readonly string[]
-}): ExactProofConsolidationReplayFailureDisposition {
-  return input.definiteMintRejection &&
-    input.inputStates.length > 0 &&
-    input.inputStates.every((state) => state === 'UNSPENT')
-    ? 'release-exact-unspent-inputs'
-    : 'remain-pending'
-}
-
 export async function prepareExactProofConsolidationOperation(
   input: ExactProofConsolidationPreparationInput,
 ): Promise<DurableCustodyProofOperationInput> {

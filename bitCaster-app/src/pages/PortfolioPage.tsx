@@ -10,6 +10,7 @@ import { useActivityLogStore } from "@/stores/activity-log";
 import { useWalletStore } from "@/stores/wallet";
 import { claimPortfolioPosition } from "@/lib/browserPortfolioClaim";
 import { removePortfolioPosition } from "@/lib/browserPortfolioRemove";
+import type { BrowserCtfClaimFailureCategory } from "@/lib/browserCtfRedeemCoordinator";
 import type { PLTimeSelector } from "@/types/portfolio";
 import type { DepositWithdrawMode } from "@/types/deposit-withdraw";
 
@@ -20,6 +21,17 @@ export function toPortfolioMarketDetailId(marketId: string, outcomeId?: string |
   }
   return marketId;
 }
+
+const CLAIM_FAILURE_TRANSLATION_KEYS = {
+  "profile-ownership": "portfolio.claimFailureProfileOwnership",
+  "counter-readiness": "portfolio.claimFailureCounterReadiness",
+  "keyset-authority": "portfolio.claimFailureKeysetAuthority",
+  "attestation-lookup": "portfolio.claimFailureAttestationLookup",
+  "persisted-recovery": "portfolio.claimFailurePersistedRecovery",
+  "mint-refusal": "portfolio.claimFailureMintRefusal",
+  "unknown-mint-result": "portfolio.claimFailureUnknownMintResult",
+  "local-commit": "portfolio.claimFailureLocalCommit",
+} as const satisfies Record<BrowserCtfClaimFailureCategory, string>;
 
 export function PortfolioPage() {
   const navigate = useNavigate();
@@ -156,7 +168,18 @@ export function PortfolioPage() {
           },
         });
         if (result.kind === "pending") window.alert(t("portfolio.claimPending"));
-        if (result.kind === "error") window.alert(t("portfolio.claimFailed"));
+        if (result.kind === "error") {
+          window.alert(
+            [
+              t("portfolio.claimFailed"),
+              t(CLAIM_FAILURE_TRANSLATION_KEYS[result.error.category]),
+              t("portfolio.claimAttemptReference", { reference: result.error.attemptRef }),
+              ...(result.error.operationRef
+                ? [t("portfolio.claimOperationReference", { reference: result.error.operationRef })]
+                : []),
+            ].join("\n"),
+          );
+        }
       } catch {
         window.alert(t("portfolio.claimFailed"));
       } finally {
@@ -203,8 +226,27 @@ export function PortfolioPage() {
             window.alert(t("portfolio.removePayout"));
             break;
           case "partial":
-          case "error":
             window.alert(t("portfolio.removeFailed"));
+            break;
+          case "error":
+            window.alert(
+              result.error.claimFailure
+                ? [
+                    t("portfolio.removeFailed"),
+                    t(CLAIM_FAILURE_TRANSLATION_KEYS[result.error.claimFailure.category]),
+                    t("portfolio.claimAttemptReference", {
+                      reference: result.error.claimFailure.attemptRef,
+                    }),
+                    ...(result.error.claimFailure.operationRef
+                      ? [
+                          t("portfolio.claimOperationReference", {
+                            reference: result.error.claimFailure.operationRef,
+                          }),
+                        ]
+                      : []),
+                  ].join("\n")
+                : t("portfolio.removeFailed"),
+            );
             break;
         }
       } catch {

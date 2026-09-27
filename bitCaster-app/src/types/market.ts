@@ -37,6 +37,8 @@ export interface Outcome {
   label: string;
   /** Price numerator. Null means no confirmed trade exists for this outcome. */
   odds: number | null;
+  /** Persisted display accent for this categorical outcome, when available. */
+  color?: string;
 }
 
 // Base market properties shared by all market types
@@ -53,6 +55,10 @@ interface BaseMarket {
   liquidity: number;
   liquiditySubunits: number;
   ammBotBudgetSubunits: number;
+  /** Revision paired with the confirmed funding total; absent only on local placeholders. */
+  fundingRevision?: string | null;
+  /** Exact primitive outcome IDs registered by the engine for live route subscriptions. */
+  registeredPrimitiveOutcomeIds?: string[];
   volumeLifetimeSubunits: number;
   closingDate: string | null;
   createdDate: string;

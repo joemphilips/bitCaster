@@ -9,7 +9,7 @@ sidebar:
 
 bitCaster uses a central limit order book (CLOB). Liquidity-provider quotes
 rest on the book. Public orders take available liquidity within their price
-limit. All product assets are sats.
+limit. Amounts use msat internally. The UI displays sats.
 
 Public market books use primitive outcome routes. A categorical market exposes
 `A / Not A`, `B / Not B`, and similar books. Clients use the market identifier
@@ -49,10 +49,37 @@ not a confirmed trade. Execution estimates are `null` when the full amount
 cannot fill. The current price is `null` when no confirmed trade exists.
 Funding does not create a market-price point.
 
-The GUI uses one Buy/Sell form. The optional Price protection section sets a
-maximum buy price or a minimum sell price for the selected token. The default
-is the reviewed preview's `worstPrice`, not its average price. The GUI adds no
-automatic slippage allowance. You can set a different bound explicitly.
+The GUI uses one Buy/Sell form. Auto price protection sets a maximum buy
+price or a minimum sell price for the selected token. It uses the best
+eligible execution price before the requested trade. It adds 20 percentage
+points for Buy and subtracts 20 percentage points for Sell. For example,
+a best Buy price of 10% gives a 30% limit, not 12%. The limit stays within
+valid market prices. This rule does not prohibit all extreme prices.
+Choose Custom to set a different absolute limit. The last trade, midpoint,
+and quoted average price do not determine the Auto limit.
+
+`POST /api/v1/orders/capacity-preview` estimates the maximum quantity at
+that limit. Send `marketId`, `side`, and `tokenSide`. Omit `price` for Auto.
+Send an integer `price` for Custom. Explicit `null` is invalid.
+Auto uses `floor(D * 20 / 100)` ticks and clamps the limit to `1..D-1`.
+The result includes all eligible makers, not only the bot.
+The form shows this result as `Available at this limit: N shares`.
+It excludes wallet balance and fees. It does not reserve liquidity.
+
+A `ready` result contains `referencePrice`, `effectiveLimitPrice`,
+`maxFaceAmountSubunits`, `quotePaymentSubunits`, `worstPrice`,
+`priceDenominator`, and an opaque `previewRevision`.
+Prices describe the selected token, including a selected complement.
+Zero capacity has zero face and quote amounts and a null worst price.
+When no eligible maker exists, the reference is null. Auto then has a null
+limit; Custom retains the supplied limit. A restrictive Custom limit can
+also return zero capacity with a known reference price.
+`market_unavailable` and `temporarily_unavailable` have null facts, not zero
+capacity. Both preview endpoints share the same preview rate budgets.
+
+Capacity is limited to one public FOK order. Maker minimums can leave gaps:
+not every smaller quantity must fill. Continue to use `/orders/preview`
+for the entered quantity and calculate its fees separately.
 
 The order keeps this bound through balance checks, top-up, preparation, and
 submission. It fills the complete quantity within the bound or fills none.
@@ -63,10 +90,15 @@ trading identity, also requires a fresh preview and confirmation.
 
 The UI displays amounts in sats: 100 msat is 0.1 sats. Buy totals add the quote,
 settlement-input fee, source-preparation fee, and consolidation fee. Sell totals
-show gross collateral proceeds and net proceeds after the settlement-input fee.
+show gross collateral proceeds and net proceeds after the settlement-input fee
+and preparation costs paid in regular cash.
 Show conditional-token preparation and consolidation fees separately. Do not
 add fees in different assets. Unused fee headroom is not a paid fee. If fee
-amounts or assets change, obtain fresh consent before the next new wallet step.
+amounts, assets, or preparation mode change, obtain fresh consent before the
+next new wallet step. A Sell can use held conditional tokens and regular cash
+to prepare the full offered quantity. The cash pays the preparation fee.
+The wallet needs this cash before the sale. Future sale proceeds cannot pay it.
+Do not use this preparation path to create missing shares.
 Price protection does not replace fee consent. Fee consent applies to the
 order with the reviewed price bound.
 

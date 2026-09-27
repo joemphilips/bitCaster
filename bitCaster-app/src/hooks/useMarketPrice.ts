@@ -22,10 +22,6 @@ export interface MarketPriceState {
   defaultOrderPrice: number;
 }
 
-export function defaultLimitPriceForDivisibility(divisibility: number, baseAsset: string): number {
-  return Math.max(1, Math.floor(normalizeMarketDivisibility(divisibility, baseAsset) / 2));
-}
-
 export function clampOrderPrice(price: number, divisibility: number): number {
   if (!Number.isFinite(price)) return Math.max(1, Math.floor(divisibility / 2));
   return Math.max(1, Math.min(divisibility - 1, Math.round(price)));
@@ -132,6 +128,12 @@ function deriveCategoricalPrice(
   if (!outcomeSetId) return null;
   const primitiveId = primitiveIdForOutcome(market, outcomeSetId);
   if (primitiveId) {
+    const registered = market.registeredPrimitiveOutcomeIds ?? [];
+    if (registered.length === 2 && registered[0] !== registered[1]) {
+      const latest = latestTradeAcrossOutcomes(market.latestConfirmedTrades ?? []);
+      if (!latest || !registered.includes(latest.primitiveOutcomeId)) return null;
+      return primitivePriceFromTrade(latest, primitiveId);
+    }
     return (
       latestTradeForOutcome(market.latestConfirmedTrades ?? [], primitiveId)?.priceTick ?? null
     );
@@ -219,7 +221,7 @@ export function useMarketPrice({
     const midpoint = computeSpreadMidpoint(scopedOrderBook);
     if (midpoint != null) return clampOrderPrice(midpoint, divisibility);
     if (currentPrice != null) return clampOrderPrice(currentPrice, divisibility);
-    return defaultLimitPriceForDivisibility(divisibility, baseAsset);
+    return Math.max(1, Math.floor(normalizeMarketDivisibility(divisibility, baseAsset) / 2));
   }, [scopedOrderBook, currentPrice, divisibility, baseAsset]);
 
   return { currentPrice, defaultOrderPrice };

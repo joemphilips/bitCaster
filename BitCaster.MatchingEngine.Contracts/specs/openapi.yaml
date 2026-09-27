@@ -487,6 +487,60 @@ paths:
               schema:
                 $ref: '#/components/schemas/ProblemDetails'
 
+  /api/v1/orders/capacity-preview:
+    post:
+      operationId: PreviewFokOrderCapacity
+      summary: Preview maximum public FOK capacity
+      security:
+        - {}
+        - nip98: []
+      description: >
+        Returns the maximum face amount that one public FOK order can match in
+        one captured market snapshot. This read-only estimate is not
+        authorization, reservation, or an order. Final admission rechecks
+        market state. Capacity includes all matching makers and excludes
+        wallet balance and fees. Maker minimums can make smaller amounts
+        unfillable. Optional NIP-98 authentication applies self-match
+        exclusion. This operation shares the per-condition preview rate and
+        concurrency limits with POST /api/v1/orders/preview.
+      requestBody:
+        required: true
+        description: >
+          The raw request body is limited to 16 KiB. Oversized declared-length
+          or chunked bodies are rejected before JSON binding or planning.
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PreviewFokOrderCapacityRequest'
+      responses:
+        '200':
+          description: Read-only FOK capacity result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PreviewFokOrderCapacityResponse'
+        '400':
+          description: Invalid market route, price, or request shape.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '413':
+          description: Raw request body exceeds the 16 KiB limit.
+        '429':
+          description: Preview rate limit or concurrency limit exceeded.
+          headers:
+            Retry-After:
+              description: Number of seconds before the client should retry.
+              schema:
+                type: integer
+                format: int32
+                minimum: 1
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+
   /api/v1/orders/mine:
     get:
       operationId: listMyOrders
@@ -2397,6 +2451,151 @@ components:
         `insufficient_liquidity` means more available market capacity may
         help. Other values do not promise that more capacity will help.
 
+    FokCapacityPreviewStatus:
+      type: string
+      enum:
+        - ready
+        - market_unavailable
+        - temporarily_unavailable
+      description: >
+        ready means a complete snapshot produced a capacity result.
+        market_unavailable means no market snapshot is available.
+        temporarily_unavailable means snapshot or quote/revision data is
+        incomplete. Only ready can report zero capacity.
+
+    PreviewFokOrderCapacityRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - marketId
+        - side
+        - tokenSide
+      description: >
+        Economic terms for a read-only capacity preview. No time-in-force,
+        owner, capability, proof, order identity, expiry, or caller match
+        bound is accepted.
+      properties:
+        marketId:
+          type: string
+          minLength: 3
+          maxLength: 256
+          pattern: '^[a-zA-Z0-9][a-zA-Z0-9-]*-[a-zA-Z0-9]+$'
+          description: >
+            Primitive outcome market id in {conditionId}-{outcomeName} form.
+            Binary YES/NO markets expose only the {conditionId}-YES route;
+            trade NO with tokenSide=Complement, not {conditionId}-NO.
+        side:
+          $ref: '#/components/schemas/OrderSide'
+          description: Order direction relative to the selected token.
+        tokenSide:
+          $ref: '#/components/schemas/TokenSide'
+          description: >
+            Token represented by the selected-token price. Complement means
+            the one-vs-rest complement of the primitive outcome route.
+        price:
+          type: integer
+          format: int32
+          minimum: 1
+          maximum: 999999
+          description: >
+            Optional absolute Custom limit-price numerator k. If omitted,
+            derive the Auto limit from referencePrice using floor(D*20/100)
+            ticks added to the best eligible Buy price or subtracted from
+            the best eligible Sell price, clamped to 1..D-1 (20 percentage
+            points, not relative 20%). If present, require k < D.
+
+    PreviewFokOrderCapacityResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - status
+        - referencePrice
+        - effectiveLimitPrice
+        - maxFaceAmountSubunits
+        - quotePaymentSubunits
+        - worstPrice
+        - priceDenominator
+        - previewRevision
+      description: >
+        One read-only result from one captured snapshot. All fact fields are
+        null when status is market_unavailable or temporarily_unavailable;
+        neither status means zero capacity. Ready results include a price
+        denominator and revision. Maximum face and quote amount are numeric,
+        including zero when capacity is empty. Empty capacity has no worst
+        price. No eligible executable maker means no reference price. Auto
+        limit is null without a reference. Custom price remains known even
+        then. A Custom limit can return zero capacity while reference and
+        limit remain known. A positive maximum is a snapshot, not a reservation, and does
+        not guarantee that every smaller amount fills because maker minimums
+        can create gaps. Quote excludes wallet preparation and settlement
+        fees. Final admission rechecks the plan.
+      properties:
+        status:
+          $ref: '#/components/schemas/FokCapacityPreviewStatus'
+        referencePrice:
+          type: [integer, 'null']
+          format: int32
+          minimum: 1
+          maximum: 999999
+          description: >
+            Best eligible selected-token price numerator before the limit and
+            capacity sweep. Null when there is no eligible executable maker.
+        effectiveLimitPrice:
+          type: [integer, 'null']
+          format: int32
+          minimum: 1
+          maximum: 999999
+          description: >
+            Selected-token limit numerator used for the sweep. This is the
+            Auto limit derived from referencePrice or the supplied Custom
+            price. Null when Auto has no reference price.
+        maxFaceAmountSubunits:
+          type: [integer, 'null']
+          format: int64
+          minimum: 0
+          maximum: 100000000000000
+          description: >
+            Maximum face amount one FOK order can match under the selected
+            limit, one-share taker minimum, 63-match ceiling, and 1e14 face
+            ceiling. Any nonzero value is a whole-share multiple of D.
+            Zero is a complete snapshot with no executable capacity.
+            Null means status is market_unavailable or
+            temporarily_unavailable.
+        quotePaymentSubunits:
+          type: [integer, 'null']
+          format: int64
+          minimum: 0
+          maximum: 100000000000000
+          description: >
+            Exact quote amount for maxFaceAmountSubunits, using the existing
+            order-preview quote convention. Zero when maximum capacity is
+            zero. Null for unavailable status. This excludes client-composed
+            fees.
+        worstPrice:
+          type: [integer, 'null']
+          format: int32
+          minimum: 1
+          maximum: 999999
+          description: >
+            Worst selected-token execution-price numerator across fills of
+            the maximum face amount. Null when capacity is zero or unavailable.
+        priceDenominator:
+          type: [integer, 'null']
+          format: int32
+          minimum: 2
+          maximum: 1000000
+          description: >
+            Immutable denominator D for the captured market. Non-null for
+            ready status; null otherwise.
+        previewRevision:
+          type: [string, 'null']
+          minLength: 1
+          maxLength: 256
+          description: >
+            Opaque revision for the captured snapshot. Non-null for ready
+            status and null otherwise. This is display metadata, not
+            authorization for final admission.
+
     PreviewFokOrderRequest:
       type: object
       additionalProperties: false
@@ -3498,6 +3697,29 @@ components:
         name:
           type: string
           description: Outcome label (e.g. "Yes", "Alice").
+        color:
+          type: string
+          pattern: '^#[0-9A-Fa-f]{6}$'
+          description: >
+            Optional categorical outcome display color. The server accepts
+            either hex letter case and resolves it to uppercase #RRGGBB.
+            Omit this field to request a server-assigned color.
+
+    MarketOutcomeDetails:
+      type: object
+      additionalProperties: false
+      required:
+        - name
+      properties:
+        name:
+          type: string
+          description: Exact outcome identity name from the corresponding outcomes list.
+        color:
+          type: string
+          pattern: '^#[0-9A-F]{6}$'
+          description: >
+            Optional server-resolved display color. Present colors use
+            uppercase #RRGGBB. Older records can omit color.
 
     CreateMarketRequest:
       type: object
@@ -3570,6 +3792,14 @@ components:
           description: >
             List of per-outcome market IDs created
             (format: "{conditionId}-{outcomeName}").
+        outcomeDetails:
+          type: array
+          items:
+            $ref: '#/components/schemas/MarketOutcomeDetails'
+          description: >
+            Server-resolved display details for every created outcome. Each
+            name matches an outcome identity from the request. Omitted by
+            older engines.
         baseAsset:
           $ref: '#/components/schemas/BaseAsset'
           description: Required immutable product base asset. Always exact `sat`.
@@ -3845,6 +4075,7 @@ components:
         - volume30dSubunits
         - liquiditySubunits
         - ammBotBudgetSubunits
+        - fundingRevision
         - volumeLifetimeSubunits
         - categoryTags
         - lastSuccessfulRefreshAt
@@ -3866,6 +4097,14 @@ components:
             `tokenSide = "Complement"` rather than a compound public market ID.
           items:
             type: string
+        outcomeDetails:
+          type: array
+          items:
+            $ref: '#/components/schemas/MarketOutcomeDetails'
+          description: >
+            Display details for each outcome. Each name matches an outcome
+            identity from outcomes. Legacy entries can omit colors. Outcomes
+            remains the identity list.
         title:
           type: string
           nullable: true
@@ -3958,6 +4197,14 @@ components:
             after additional accepted funding payments. It is operator-owned
             and non-withdrawable. It is not a depositor position, live
             residual, or order-book depth.
+        fundingRevision:
+          type: string
+          nullable: true
+          description: >
+            Exact durable event order that produced `ammBotBudgetSubunits`.
+            Null before the first confirmed funding receipt. Clients use this
+            value to reject an older catalogue total after a live funding
+            notification.
         volumeLifetimeSubunits:
           type: integer
           format: int64

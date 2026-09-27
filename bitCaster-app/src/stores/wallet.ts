@@ -50,6 +50,7 @@ interface WalletState {
   mnemonic: string;
   setupComplete: boolean;
   walletBackupState: SecretBackupState;
+  walletSeedReminderAcknowledgedScopeId: string | null;
   mints: StoredMint[];
   activeMintUrl: string;
   mintConnectionStatuses: Record<string, MintConnectionTestStatus>;
@@ -57,6 +58,7 @@ interface WalletState {
   generateMnemonic: () => void;
   ensureImplicitWallet: () => Promise<void>;
   markWalletBackupConfirmed: () => void;
+  acknowledgeWalletSeedReminder: () => void;
   recoverFromMnemonic: (words: string[]) => Promise<{ valid: boolean; error?: string }>;
   testMintConnection: (url: string) => Promise<MintConnectionTestStatus>;
   /**
@@ -175,6 +177,7 @@ export const useWalletStore = create<WalletState>()(
       mnemonic: "",
       setupComplete: false,
       walletBackupState: "none",
+      walletSeedReminderAcknowledgedScopeId: null,
       mints: [],
       activeMintUrl: DEFAULT_MINT_URL,
       mintConnectionStatuses: {},
@@ -191,6 +194,7 @@ export const useWalletStore = create<WalletState>()(
         set({
           mnemonic,
           walletBackupState: "needs_backup",
+          walletSeedReminderAcknowledgedScopeId: null,
         });
       },
 
@@ -217,6 +221,13 @@ export const useWalletStore = create<WalletState>()(
       },
 
       markWalletBackupConfirmed: () => set({ walletBackupState: "confirmed" }),
+
+      acknowledgeWalletSeedReminder: () => {
+        const { mnemonic } = get();
+        const scopeId = browserWalletScopeIdFromMnemonic(mnemonic);
+        if (scopeId === null || activeBrowserWalletScopeId() !== scopeId) return;
+        set({ walletSeedReminderAcknowledgedScopeId: scopeId });
+      },
 
       recoverFromMnemonic: async (words: string[]) => {
         if (words.length !== 12) {
@@ -260,6 +271,7 @@ export const useWalletStore = create<WalletState>()(
         set({
           mnemonic,
           walletBackupState: "confirmed",
+          walletSeedReminderAcknowledgedScopeId: null,
         });
         requestWalletStoragePersistence(mnemonic);
         return { valid: true };
@@ -374,6 +386,7 @@ export const useWalletStore = create<WalletState>()(
         mnemonic: state.mnemonic,
         setupComplete: state.setupComplete,
         walletBackupState: state.walletBackupState,
+        walletSeedReminderAcknowledgedScopeId: state.walletSeedReminderAcknowledgedScopeId,
         mints: state.mints,
         activeMintUrl: state.activeMintUrl,
         // Persist connection statuses so the Settings green/grey indicator

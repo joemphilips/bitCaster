@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ComponentProps } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -71,5 +71,29 @@ describe("InsufficientBalanceModal", () => {
     expect(screen.getByText("Wallet recovery is currently unavailable.")).toBeInTheDocument();
     expect(screen.queryByText(/^0 sats$/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/you have/i)).not.toBeInTheDocument();
+  });
+
+  it("routes native cancel to the owner without starting top-up", () => {
+    const handlers = renderModal();
+
+    fireEvent(
+      screen.getByRole("dialog", { name: "Insufficient Balance" }),
+      new Event("cancel", { cancelable: true }),
+    );
+
+    expect(handlers.onCancel).toHaveBeenCalledOnce();
+    expect(handlers.onTopUp).not.toHaveBeenCalled();
+  });
+
+  it("dismisses only when its layout backdrop is clicked", () => {
+    const handlers = renderModal();
+
+    fireEvent.click(screen.getByRole("heading", { name: "Insufficient Balance" }));
+
+    expect(handlers.onCancel).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByTestId("insufficient-balance-dialog-backdrop"));
+
+    expect(handlers.onCancel).toHaveBeenCalledOnce();
   });
 });

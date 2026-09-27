@@ -1173,6 +1173,147 @@ namespace BitCaster.MatchingEngine.Contracts
     }
 
     /// <summary>
+    /// ready means a complete snapshot produced a capacity result. market_unavailable means no market snapshot is available. temporarily_unavailable means snapshot or quote/revision data is incomplete. Only ready can report zero capacity.
+    /// <br/>
+    /// </summary>
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public enum FokCapacityPreviewStatus
+    {
+
+        [System.Runtime.Serialization.EnumMember(Value = @"ready")]
+        Ready = 0,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"market_unavailable")]
+        Market_unavailable = 1,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"temporarily_unavailable")]
+        Temporarily_unavailable = 2,
+
+    }
+
+    /// <summary>
+    /// Economic terms for a read-only capacity preview. No time-in-force, owner, capability, proof, order identity, expiry, or caller match bound is accepted.
+    /// <br/>
+    /// </summary>
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class PreviewFokOrderCapacityRequest
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public PreviewFokOrderCapacityRequest(string @marketId, int? @price, OrderSide @side, TokenSide @tokenSide)
+        {
+            this.MarketId = @marketId;
+            this.Side = @side;
+            this.TokenSide = @tokenSide;
+            this.Price = @price;
+        }
+
+        /// <summary>
+        /// Primitive outcome market id in {conditionId}-{outcomeName} form. Binary YES/NO markets expose only the {conditionId}-YES route; trade NO with tokenSide=Complement, not {conditionId}-NO.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("marketId")]
+        public string MarketId { get; }
+
+        /// <summary>
+        /// Order direction relative to the selected token.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("side")]
+        [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<OrderSide>))]
+        public OrderSide Side { get; }
+
+        /// <summary>
+        /// Token represented by the selected-token price. Complement means the one-vs-rest complement of the primitive outcome route.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("tokenSide")]
+        [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<TokenSide>))]
+        public TokenSide TokenSide { get; }
+
+        /// <summary>
+        /// Optional absolute Custom limit-price numerator k. If omitted, derive the Auto limit from referencePrice using floor(D*20/100) ticks added to the best eligible Buy price or subtracted from the best eligible Sell price, clamped to 1..D-1 (20 percentage points, not relative 20%). If present, require k &lt; D.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("price")]
+        public int? Price { get; }
+
+    }
+
+    /// <summary>
+    /// One read-only result from one captured snapshot. All fact fields are null when status is market_unavailable or temporarily_unavailable; neither status means zero capacity. Ready results include a price denominator and revision. Maximum face and quote amount are numeric, including zero when capacity is empty. Empty capacity has no worst price. No eligible executable maker means no reference price. Auto limit is null without a reference. Custom price remains known even then. A Custom limit can return zero capacity while reference and limit remain known. A positive maximum is a snapshot, not a reservation, and does not guarantee that every smaller amount fills because maker minimums can create gaps. Quote excludes wallet preparation and settlement fees. Final admission rechecks the plan.
+    /// <br/>
+    /// </summary>
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class PreviewFokOrderCapacityResponse
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public PreviewFokOrderCapacityResponse(int? @effectiveLimitPrice, long? @maxFaceAmountSubunits, string? @previewRevision, int? @priceDenominator, long? @quotePaymentSubunits, int? @referencePrice, FokCapacityPreviewStatus @status, int? @worstPrice)
+        {
+            this.Status = @status;
+            this.ReferencePrice = @referencePrice;
+            this.EffectiveLimitPrice = @effectiveLimitPrice;
+            this.MaxFaceAmountSubunits = @maxFaceAmountSubunits;
+            this.QuotePaymentSubunits = @quotePaymentSubunits;
+            this.WorstPrice = @worstPrice;
+            this.PriceDenominator = @priceDenominator;
+            this.PreviewRevision = @previewRevision;
+        }
+
+        [System.Text.Json.Serialization.JsonPropertyName("status")]
+        [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<FokCapacityPreviewStatus>))]
+        public FokCapacityPreviewStatus Status { get; }
+
+        /// <summary>
+        /// Best eligible selected-token price numerator before the limit and capacity sweep. Null when there is no eligible executable maker.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("referencePrice")]
+        public int? ReferencePrice { get; }
+
+        /// <summary>
+        /// Selected-token limit numerator used for the sweep. This is the Auto limit derived from referencePrice or the supplied Custom price. Null when Auto has no reference price.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("effectiveLimitPrice")]
+        public int? EffectiveLimitPrice { get; }
+
+        /// <summary>
+        /// Maximum face amount one FOK order can match under the selected limit, one-share taker minimum, 63-match ceiling, and 1e14 face ceiling. Any nonzero value is a whole-share multiple of D. Zero is a complete snapshot with no executable capacity. Null means status is market_unavailable or temporarily_unavailable.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("maxFaceAmountSubunits")]
+        public long? MaxFaceAmountSubunits { get; }
+
+        /// <summary>
+        /// Exact quote amount for maxFaceAmountSubunits, using the existing order-preview quote convention. Zero when maximum capacity is zero. Null for unavailable status. This excludes client-composed fees.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("quotePaymentSubunits")]
+        public long? QuotePaymentSubunits { get; }
+
+        /// <summary>
+        /// Worst selected-token execution-price numerator across fills of the maximum face amount. Null when capacity is zero or unavailable.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("worstPrice")]
+        public int? WorstPrice { get; }
+
+        /// <summary>
+        /// Immutable denominator D for the captured market. Non-null for ready status; null otherwise.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("priceDenominator")]
+        public int? PriceDenominator { get; }
+
+        /// <summary>
+        /// Opaque revision for the captured snapshot. Non-null for ready status and null otherwise. This is display metadata, not authorization for final admission.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("previewRevision")]
+        public string? PreviewRevision { get; }
+
+    }
+
+    /// <summary>
     /// Economic terms for one read-only public FOK preview. This request contains no time-in-force choice, owner, capability, proof, order identity, expiry, or caller match bound.
     /// <br/>
     /// </summary>
@@ -2755,9 +2896,10 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class CreateMarketOutcome
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public CreateMarketOutcome(string @name)
+        public CreateMarketOutcome(string? @color, string @name)
         {
             this.Name = @name;
+            this.Color = @color;
         }
 
         /// <summary>
@@ -2765,6 +2907,38 @@ namespace BitCaster.MatchingEngine.Contracts
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("name")]
         public string Name { get; }
+
+        /// <summary>
+        /// Optional categorical outcome display color. The server accepts either hex letter case and resolves it to uppercase #RRGGBB. Omit this field to request a server-assigned color.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("color")]
+        public string? Color { get; }
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class MarketOutcomeDetails
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public MarketOutcomeDetails(string? @color, string @name)
+        {
+            this.Name = @name;
+            this.Color = @color;
+        }
+
+        /// <summary>
+        /// Exact outcome identity name from the corresponding outcomes list.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("name")]
+        public string Name { get; }
+
+        /// <summary>
+        /// Optional server-resolved display color. Present colors use uppercase #RRGGBB. Older records can omit color.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("color")]
+        public string? Color { get; }
 
     }
 
@@ -2840,10 +3014,11 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class CreateMarketResponse
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public CreateMarketResponse(BaseAsset @baseAsset, string @conditionId, CreateMarketResponseDivisibility @divisibility, System.Collections.Generic.List<string> @marketsCreated, string? @thumbnailUrl)
+        public CreateMarketResponse(BaseAsset @baseAsset, string @conditionId, CreateMarketResponseDivisibility @divisibility, System.Collections.Generic.List<string> @marketsCreated, System.Collections.Generic.List<MarketOutcomeDetails>? @outcomeDetails, string? @thumbnailUrl)
         {
             this.ConditionId = @conditionId;
             this.MarketsCreated = @marketsCreated;
+            this.OutcomeDetails = @outcomeDetails;
             this.BaseAsset = @baseAsset;
             this.ThumbnailUrl = @thumbnailUrl;
             this.Divisibility = @divisibility;
@@ -2861,6 +3036,13 @@ namespace BitCaster.MatchingEngine.Contracts
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("marketsCreated")]
         public System.Collections.Generic.List<string> MarketsCreated { get; }
+
+        /// <summary>
+        /// Server-resolved display details for every created outcome. Each name matches an outcome identity from the request. Omitted by older engines.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("outcomeDetails")]
+        public System.Collections.Generic.List<MarketOutcomeDetails>? OutcomeDetails { get; }
 
         /// <summary>
         /// Required immutable product base asset. Always exact `sat`.
@@ -3314,10 +3496,11 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class MarketCatalogueEntry
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public MarketCatalogueEntry(long @ammBotBudgetSubunits, BaseAsset @baseAsset, System.Collections.Generic.List<string> @categoryTags, System.DateTimeOffset? @closedAt, string @conditionId, System.DateTimeOffset @createdAt, string? @creatorPubkey, System.DateTimeOffset? @deadline, string? @description, MarketCatalogueEntryDivisibility @divisibility, string? @finalOutcome, System.DateTimeOffset @lastSuccessfulRefreshAt, System.Collections.Generic.List<LatestConfirmedTrade> @latestConfirmedTrades, long @liquiditySubunits, System.Collections.Generic.List<string> @outcomes, MarketCatalogueEntryState @state, string? @thumbnailUrl, string? @title, long @volume24hSubunits, long @volume30dSubunits, long @volumeLifetimeSubunits)
+        public MarketCatalogueEntry(long @ammBotBudgetSubunits, BaseAsset @baseAsset, System.Collections.Generic.List<string> @categoryTags, System.DateTimeOffset? @closedAt, string @conditionId, System.DateTimeOffset @createdAt, string? @creatorPubkey, System.DateTimeOffset? @deadline, string? @description, MarketCatalogueEntryDivisibility @divisibility, string? @finalOutcome, string? @fundingRevision, System.DateTimeOffset @lastSuccessfulRefreshAt, System.Collections.Generic.List<LatestConfirmedTrade> @latestConfirmedTrades, long @liquiditySubunits, System.Collections.Generic.List<MarketOutcomeDetails>? @outcomeDetails, System.Collections.Generic.List<string> @outcomes, MarketCatalogueEntryState @state, string? @thumbnailUrl, string? @title, long @volume24hSubunits, long @volume30dSubunits, long @volumeLifetimeSubunits)
         {
             this.ConditionId = @conditionId;
             this.Outcomes = @outcomes;
+            this.OutcomeDetails = @outcomeDetails;
             this.Title = @title;
             this.Description = @description;
             this.ThumbnailUrl = @thumbnailUrl;
@@ -3331,6 +3514,7 @@ namespace BitCaster.MatchingEngine.Contracts
             this.Volume30dSubunits = @volume30dSubunits;
             this.LiquiditySubunits = @liquiditySubunits;
             this.AmmBotBudgetSubunits = @ammBotBudgetSubunits;
+            this.FundingRevision = @fundingRevision;
             this.VolumeLifetimeSubunits = @volumeLifetimeSubunits;
             this.BaseAsset = @baseAsset;
             this.Divisibility = @divisibility;
@@ -3352,6 +3536,13 @@ namespace BitCaster.MatchingEngine.Contracts
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("outcomes")]
         public System.Collections.Generic.List<string> Outcomes { get; }
+
+        /// <summary>
+        /// Display details for each outcome. Each name matches an outcome identity from outcomes. Legacy entries can omit colors. Outcomes remains the identity list.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("outcomeDetails")]
+        public System.Collections.Generic.List<MarketOutcomeDetails>? OutcomeDetails { get; }
 
         /// <summary>
         /// Optional human-readable title from market registration. Null when the creator did not supply one.
@@ -3444,6 +3635,13 @@ namespace BitCaster.MatchingEngine.Contracts
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("ammBotBudgetSubunits")]
         public long AmmBotBudgetSubunits { get; }
+
+        /// <summary>
+        /// Exact durable event order that produced `ammBotBudgetSubunits`. Null before the first confirmed funding receipt. Clients use this value to reject an older catalogue total after a live funding notification.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("fundingRevision")]
+        public string? FundingRevision { get; }
 
         /// <summary>
         /// Cumulative settled collateral face amount of all fills in the market's history.

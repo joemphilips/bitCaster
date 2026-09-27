@@ -643,6 +643,56 @@ test('asset-monitoring assets forwards a caller abort signal', async () => {
   assert.equal(observedSignal, controller.signal)
 })
 
+test(
+  'portfolio forwards abort signals and does not retry an aborted request',
+  { timeout: 5_000 },
+  async () => {
+    const controller = new AbortController()
+    let observedSignal: AbortSignal | undefined
+    let calls = 0
+    const client = new BitcasterEngineClient({
+      baseUrl: 'https://engine.example',
+      fetchImpl: async (_input, init) => {
+        calls += 1
+        observedSignal = init?.signal
+        return new Promise<Response>((_resolve, reject) => {
+          controller.signal.addEventListener('abort', () => reject(controller.signal.reason), {
+            once: true,
+          })
+        })
+      },
+    })
+
+    const reading = client.getPortfolio(
+      { walletId: WALLET_ID, timeframe: 'ALL' },
+      controller.signal,
+    )
+    setTimeout(() => controller.abort(), 0)
+
+    await assert.rejects(reading, { name: 'AbortError' })
+    assert.equal(observedSignal, controller.signal)
+    assert.equal(calls, 1)
+  },
+)
+
+test('portfolio does not send a request when its caller signal is already aborted', async () => {
+  const controller = new AbortController()
+  controller.abort()
+  let calls = 0
+  const client = new BitcasterEngineClient({
+    baseUrl: 'https://engine.example',
+    fetchImpl: async () => {
+      calls += 1
+      return jsonResponse({})
+    },
+  })
+
+  await assert.rejects(
+    client.getPortfolio({ walletId: WALLET_ID, timeframe: 'ALL' }, controller.signal),
+  )
+  assert.equal(calls, 0)
+})
+
 test('asset-monitoring client rejects an oversized response before parsing', async () => {
   const client = new BitcasterEngineClient({
     baseUrl: 'https://engine.example',

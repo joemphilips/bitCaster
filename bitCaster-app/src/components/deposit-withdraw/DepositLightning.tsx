@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { X, Bitcoin } from "lucide-react";
 import type { MintInfo } from "@/types/deposit-withdraw";
 import { MintSelector } from "./MintSelector";
@@ -7,6 +8,8 @@ import { Numpad } from "./Numpad";
 interface DepositLightningProps {
   mints: MintInfo[];
   selectedMintId: string;
+  depositReminder?: ReactNode;
+  statusMessage?: ReactNode;
   amountSats: number;
   amountLabel?: string;
   amountFiat: string;
@@ -22,6 +25,8 @@ interface DepositLightningProps {
 export function DepositLightning({
   mints,
   selectedMintId,
+  depositReminder,
+  statusMessage,
   amountSats,
   amountLabel,
   amountFiat,
@@ -50,37 +55,46 @@ export function DepositLightning({
       </div>
 
       {/* Content */}
-      <div className="flex-1 flex flex-col max-w-md mx-auto w-full">
-        {/* Mint selector */}
-        <div className="px-5 pt-2">
-          <MintSelector mints={mints} selectedMintId={selectedMintId} onMintChange={onMintChange} />
-        </div>
+      <div data-testid="deposit-lightning-content" className="min-h-0 flex-1 overflow-y-auto">
+        <div className="mx-auto flex min-h-full w-full max-w-md flex-col">
+          {statusMessage && <div className="px-5 pt-2">{statusMessage}</div>}
+          {depositReminder && <div className="px-5 pt-2">{depositReminder}</div>}
 
-        {/* Amount */}
-        <div className="flex-1 flex items-center justify-center">
-          <AmountDisplay
-            amountSats={amountSats}
-            amountLabel={amountLabel}
-            amountFiat={amountFiat}
-            fiatSymbol={fiatSymbol}
-            showFiatPrimary={showFiatPrimary}
-            showFiatToggle
-            onToggleCurrency={onToggleCurrency}
-          />
-        </div>
+          {/* Mint selector */}
+          <div className="px-5 pt-2">
+            <MintSelector
+              mints={mints}
+              selectedMintId={selectedMintId}
+              onMintChange={onMintChange}
+            />
+          </div>
 
-        {/* Numpad */}
-        <Numpad onPress={onNumpadPress} />
+          {/* Amount */}
+          <div className="flex flex-1 items-center justify-center">
+            <AmountDisplay
+              amountSats={amountSats}
+              amountLabel={amountLabel}
+              amountFiat={amountFiat}
+              fiatSymbol={fiatSymbol}
+              showFiatPrimary={showFiatPrimary}
+              showFiatToggle
+              onToggleCurrency={onToggleCurrency}
+            />
+          </div>
 
-        {/* Action button */}
-        <div className="px-5 py-6">
-          <button
-            onClick={() => onCreateInvoice?.()}
-            disabled={amountSats === 0}
-            className="w-full py-4 rounded-xl text-base font-bold uppercase tracking-wide transition-colors disabled:opacity-40 disabled:cursor-not-allowed bg-slate-200 text-slate-900 hover:bg-white active:bg-slate-300 disabled:hover:bg-slate-200"
-          >
-            Create Invoice
-          </button>
+          {/* Numpad */}
+          <Numpad onPress={onNumpadPress} />
+
+          {/* Action button */}
+          <div className="px-5 py-6">
+            <button
+              onClick={() => onCreateInvoice?.()}
+              disabled={amountSats === 0}
+              className="w-full py-4 rounded-xl text-base font-bold uppercase tracking-wide transition-colors disabled:opacity-40 disabled:cursor-not-allowed bg-slate-200 text-slate-900 hover:bg-white active:bg-slate-300 disabled:hover:bg-slate-200"
+            >
+              Create Invoice
+            </button>
+          </div>
         </div>
       </div>
     </div>

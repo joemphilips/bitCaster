@@ -1,12 +1,22 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useTranslation } from "react-i18next";
 import { TagBar } from "./TagBar";
 import { SortBar } from "./SortBar";
 import { FilterControls } from "./FilterControls";
 import { MarketCard } from "./MarketCard";
 import { useWalletStore } from "@/stores/wallet";
+import { joinMarket, leaveMarket, onMarketFundingUpdated } from "@/lib/marketHub";
+import { mergeMarketFundingObservation, type MarketFundingObservation } from "@/lib/marketFunding";
 import type { MarketDiscoveryProps, MarketType, VolumeRange, Market } from "@/types/market";
-import type { ReactNode } from "react";
+import type { ReactNode, RefCallback } from "react";
 
 type DiscoveryStatus = "ready" | "loading" | "refreshing" | "error" | "empty" | "no-match";
 
@@ -15,6 +25,80 @@ interface MarketDiscoveryExtraProps {
   statusMessage?: string;
   statusAction?: ReactNode;
   onClearAll?: () => void;
+}
+
+function marketFundingObservation(market: Market): MarketFundingObservation {
+  return {
+    ammBotBudgetSubunits: market.ammBotBudgetSubunits,
+    fundingRevision: market.fundingRevision ?? null,
+  };
+}
+
+function sameFundingObservation(
+  left: MarketFundingObservation,
+  right: MarketFundingObservation,
+): boolean {
+  return (
+    left.ammBotBudgetSubunits === right.ammBotBudgetSubunits &&
+    left.fundingRevision === right.fundingRevision
+  );
+}
+
+function MarketFundingSubscription({
+  conditionId,
+  routeMarketId,
+  visible,
+  onFundingObservation,
+}: {
+  conditionId: string;
+  routeMarketId: string | undefined;
+  visible: boolean;
+  onFundingObservation: (conditionId: string, observation: MarketFundingObservation) => void;
+}) {
+  useEffect(() => {
+    if (!visible || !routeMarketId) return;
+
+    let active = true;
+    let joinSettled = false;
+    let released = false;
+    const releaseJoin = () => {
+      if (released) return;
+      released = true;
+      void leaveMarket(routeMarketId);
+    };
+
+    // Register first. JoinMarket immediately sends the current committed
+    // funding pair, and it may arrive before the REST projection catches up.
+    const unsubscribe = onMarketFundingUpdated(conditionId, (message) => {
+      if (active && message.conditionId === conditionId) {
+        onFundingObservation(conditionId, message);
+      }
+    });
+
+    // joinMarket reserves its client-side refcount before its first await.
+    // Delay this owner's leave until that promise settles to avoid a late join
+    // after an unmount racing the hub connection startup.
+    void joinMarket(routeMarketId)
+      .then(() => {
+        joinSettled = true;
+        if (!active) releaseJoin();
+      })
+      .catch((error: unknown) => {
+        joinSettled = true;
+        console.warn("[MarketDiscovery] market funding subscription failed:", error);
+        // joinMarket increments its refcount before asynchronous startup can
+        // fail, so release that reservation even when the join rejects.
+        releaseJoin();
+      });
+
+    return () => {
+      active = false;
+      unsubscribe();
+      if (joinSettled) releaseJoin();
+    };
+  }, [conditionId, onFundingObservation, routeMarketId, visible]);
+
+  return null;
 }
 
 export function MarketDiscovery({
@@ -48,12 +132,133 @@ export function MarketDiscovery({
   const [volumeRange, setVolumeRange] = useState<VolumeRange>({});
   const [closingInDays, setClosingInDays] = useState<number | undefined>(undefined);
   const [includeClosed, setIncludeClosed] = useState(false);
+  const [visibleFundingMarketIds, setVisibleFundingMarketIds] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const [fundingObservations, setFundingObservations] = useState<
+    Map<string, MarketFundingObservation>
+  >(() => new Map());
+  const fundingTargetsByIdRef = useRef(new Map<string, HTMLDivElement>());
+  const fundingTargetIdsRef = useRef(new Map<Element, string>());
+  const fundingObserverRef = useRef<IntersectionObserver | null>(null);
+  const fundingTargetRefCallbacksRef = useRef(new Map<string, RefCallback<HTMLDivElement>>());
+  const latestMarketsByIdRef = useRef(new Map<string, Market>());
 
   const marketMap = useMemo(() => {
     const map = new Map<string, Market>();
     markets.forEach((m) => map.set(m.id, m));
     return map;
   }, [markets]);
+
+  useLayoutEffect(() => {
+    latestMarketsByIdRef.current = marketMap;
+    setFundingObservations((current) => {
+      let next: Map<string, MarketFundingObservation> | null = null;
+      for (const [conditionId, currentObservation] of current) {
+        const market = marketMap.get(conditionId);
+        if (!market) {
+          next ??= new Map(current);
+          next.delete(conditionId);
+          continue;
+        }
+        const merged = mergeMarketFundingObservation(
+          currentObservation,
+          marketFundingObservation(market),
+        );
+        if (sameFundingObservation(currentObservation, merged)) continue;
+        next ??= new Map(current);
+        next.set(conditionId, merged);
+      }
+      return next ?? current;
+    });
+  }, [marketMap]);
+
+  const observeFundingTarget = useCallback((conditionId: string): RefCallback<HTMLDivElement> => {
+    const existing = fundingTargetRefCallbacksRef.current.get(conditionId);
+    if (existing) return existing;
+
+    const ref: RefCallback<HTMLDivElement> = (element) => {
+      const previous = fundingTargetsByIdRef.current.get(conditionId);
+      if (previous === element) return;
+      if (previous) {
+        fundingObserverRef.current?.unobserve(previous);
+        fundingTargetIdsRef.current.delete(previous);
+        fundingTargetsByIdRef.current.delete(conditionId);
+      }
+      if (element) {
+        fundingTargetsByIdRef.current.set(conditionId, element);
+        fundingTargetIdsRef.current.set(element, conditionId);
+        fundingObserverRef.current?.observe(element);
+        return;
+      }
+
+      fundingTargetRefCallbacksRef.current.delete(conditionId);
+      setVisibleFundingMarketIds((current) => {
+        if (!current.has(conditionId)) return current;
+        const next = new Set(current);
+        next.delete(conditionId);
+        return next;
+      });
+    };
+    fundingTargetRefCallbacksRef.current.set(conditionId, ref);
+    return ref;
+  }, []);
+
+  useEffect(() => {
+    const observer = new IntersectionObserver(
+      (entries) => {
+        setVisibleFundingMarketIds((current) => {
+          let next: Set<string> | null = null;
+          for (const entry of entries) {
+            const conditionId = fundingTargetIdsRef.current.get(entry.target);
+            if (!conditionId) continue;
+            const shouldBeVisible = entry.isIntersecting;
+            const isVisible = current.has(conditionId);
+            if (shouldBeVisible === isVisible) continue;
+            next ??= new Set(current);
+            if (shouldBeVisible) next.add(conditionId);
+            else next.delete(conditionId);
+          }
+          return next ?? current;
+        });
+      },
+      { threshold: 0 },
+    );
+    fundingObserverRef.current = observer;
+    for (const element of fundingTargetsByIdRef.current.values()) observer.observe(element);
+    return () => {
+      observer.disconnect();
+      fundingObserverRef.current = null;
+    };
+  }, []);
+
+  const applyFundingObservation = useCallback(
+    (conditionId: string, observation: MarketFundingObservation) => {
+      const market = latestMarketsByIdRef.current.get(conditionId);
+      if (!market) return;
+      setFundingObservations((current) => {
+        const currentObservation = current.get(conditionId) ?? marketFundingObservation(market);
+        const merged = mergeMarketFundingObservation(currentObservation, observation);
+        if (sameFundingObservation(currentObservation, merged)) return current;
+        const next = new Map(current);
+        next.set(conditionId, merged);
+        return next;
+      });
+    },
+    [],
+  );
+
+  const displayMarkets = useMemo(
+    () =>
+      markets.map((market) => {
+        const currentObservation = fundingObservations.get(market.id);
+        if (!currentObservation) return market;
+        const restObservation = marketFundingObservation(market);
+        const merged = mergeMarketFundingObservation(currentObservation, restObservation);
+        return sameFundingObservation(restObservation, merged) ? market : { ...market, ...merged };
+      }),
+    [fundingObservations, markets],
+  );
 
   const getSecondaryMarketInfos = (market: Market) => {
     if (!market.secondaryMarkets || market.secondaryMarkets.length === 0) {
@@ -227,16 +432,33 @@ export function MarketDiscovery({
           </div>
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 items-start">
-            {markets.map((market) => (
-              <MarketCard
-                key={market.id}
-                market={market}
-                secondaryMarketInfos={getSecondaryMarketInfos(market)}
-                onViewMarket={onViewMarket}
-                onViewSecondaryMarket={onViewSecondaryMarket}
-                walletReady={walletReady}
-              />
-            ))}
+            {displayMarkets.map((market) => {
+              const routeOutcomeId = market.registeredPrimitiveOutcomeIds?.[0];
+              const routeMarketId = routeOutcomeId ? `${market.id}-${routeOutcomeId}` : undefined;
+              return (
+                <Fragment key={market.id}>
+                  <MarketFundingSubscription
+                    conditionId={market.id}
+                    routeMarketId={routeMarketId}
+                    visible={visibleFundingMarketIds.has(market.id)}
+                    onFundingObservation={applyFundingObservation}
+                  />
+                  <div
+                    ref={observeFundingTarget(market.id)}
+                    data-testid={`market-funding-target-${market.id}`}
+                    className="min-w-0"
+                  >
+                    <MarketCard
+                      market={market}
+                      secondaryMarketInfos={getSecondaryMarketInfos(market)}
+                      onViewMarket={onViewMarket}
+                      onViewSecondaryMarket={onViewSecondaryMarket}
+                      walletReady={walletReady}
+                    />
+                  </div>
+                </Fragment>
+              );
+            })}
           </div>
         )}
 

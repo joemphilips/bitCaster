@@ -32,4 +32,30 @@ describe("ResolutionInfo", () => {
       expect(screen.queryByText(/January 1, 1970/)).not.toBeInTheDocument();
     },
   );
+
+  it("uses the exact categorical winner color as a swatch, not label text", () => {
+    render(
+      <ResolutionInfo
+        resolution={{
+          criteria: "Use the official final result.",
+          source: "oracle",
+          resolutionDate: null,
+          status: "resolved",
+          finalOutcome: "Alpha",
+        }}
+        outcomes={[
+          { id: "alpha", label: "Alpha", odds: null, color: "#BADA55" },
+          { id: "beta", label: "Beta", odds: null, color: "#112233" },
+        ]}
+      />,
+    );
+
+    const finalOutcome = screen.getByText("Alpha");
+    expect(finalOutcome).toHaveClass("text-slate-900");
+    expect(
+      finalOutcome.parentElement?.querySelector('[data-testid="outcome-color-swatch"]'),
+    ).toHaveStyle({
+      backgroundColor: "#BADA55",
+    });
+  });
 });

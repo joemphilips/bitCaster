@@ -7,6 +7,7 @@ import type {
   PreviewFokOrderResponse,
 } from "@bitcaster/client-sdk/fokOrderPreview";
 import { useFokOrderPreview, type FokOrderPreviewClient } from "../useFokOrderPreview";
+import { clearFokPreviewCooldownsForTests } from "../fokPreviewCooldown";
 
 const request: PreviewFokOrderRequest = {
   marketId: "condition-Yes",
@@ -55,6 +56,7 @@ function deferred<T>() {
 describe("useFokOrderPreview", () => {
   afterEach(() => {
     vi.useRealTimers();
+    clearFokPreviewCooldownsForTests();
   });
 
   it("stays idle when no request is supplied", () => {

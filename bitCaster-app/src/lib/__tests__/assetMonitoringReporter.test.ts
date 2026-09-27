@@ -391,6 +391,50 @@ describe("asset monitoring snapshot", () => {
     expect(String(fetchImpl.mock.calls[0]?.[0])).toContain("page_size=1");
   });
 
+  it.each([
+    [
+      ["YES", "NO"],
+      ["NO", "YES"],
+    ],
+    [
+      ["Zulu", "alpha", "Beta"],
+      ["Beta", "Zulu", "alpha"],
+    ],
+  ])(
+    "canonicalizes copied public display-order outcomes for monitoring (%j)",
+    async (displayOutcomes, expectedOutcomes) => {
+      const fetchImpl = vi
+        .fn()
+        .mockResolvedValue(
+          new Response(JSON.stringify({ markets: [{ conditionId, outcomes: displayOutcomes }] })),
+        );
+
+      await expect(
+        fetchAssetMonitoringCatalogue([conditionId], {
+          engineBaseUrl: "https://engine.example",
+          fetchImpl,
+        }),
+      ).resolves.toEqual([{ conditionId, outcomes: expectedOutcomes }]);
+    },
+  );
+
+  it("rejects duplicate public catalogue outcome labels", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValue(
+        new Response(
+          JSON.stringify({ markets: [{ conditionId, outcomes: ["YES", "NO", "YES"] }] }),
+        ),
+      );
+
+    await expect(
+      fetchAssetMonitoringCatalogue([conditionId], {
+        engineBaseUrl: "https://engine.example",
+        fetchImpl,
+      }),
+    ).rejects.toThrow();
+  });
+
   it("splits more than 50 selected conditions into bounded catalogue requests", async () => {
     const conditionIds = Array.from({ length: 101 }, (_, index) =>
       index.toString(16).padStart(64, "0"),

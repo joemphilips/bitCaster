@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { act, render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { nip19 } from "nostr-tools";
 import { generateSecretKey, getPublicKey } from "nostr-tools/pure";
@@ -21,7 +21,7 @@ function settingsState(overrides: Partial<SettingsState["nostr"]> = {}): Setting
       signerMode: "none",
       signerSource: "none",
       signerBackupState: "none",
-      canRevealGeneratedNsec: false,
+      canRevealLocalNsec: false,
       profile: null,
       profileFetchStatus: "idle",
       relays: [],
@@ -30,40 +30,27 @@ function settingsState(overrides: Partial<SettingsState["nostr"]> = {}): Setting
   };
 }
 
-describe("Settings generated nsec reveal", () => {
-  it("shows the reveal affordance for implicit generated nsec signers", () => {
-    render(
-      <Settings
-        activeCategory="nostr"
-        settings={settingsState({
-          signerMode: "nsec",
-          signerSource: "implicit-generated",
-          signerBackupState: "needs_backup",
-          canRevealGeneratedNsec: true,
-        })}
-        generatedNsecSecret="nsec1generated"
-      />,
-    );
+describe("Settings local nsec reveal", () => {
+  it.each(["implicit-generated", "user-nsec"] as const)(
+    "shows local key backup for %s without a relay profile",
+    (signerSource) => {
+      render(
+        <Settings
+          activeCategory="nostr"
+          settings={settingsState({
+            signerMode: "nsec",
+            signerSource,
+            signerBackupState: "needs_backup",
+            canRevealLocalNsec: true,
+          })}
+          localNsecSecret="nsec1generated"
+        />,
+      );
 
-    expect(screen.getByRole("button", { name: /view generated nsec/i })).toBeInTheDocument();
-  });
-
-  it("hides the reveal affordance for user-provided nsec signers", () => {
-    render(
-      <Settings
-        activeCategory="nostr"
-        settings={settingsState({
-          signerMode: "nsec",
-          signerSource: "user-nsec",
-          signerBackupState: "confirmed",
-          canRevealGeneratedNsec: false,
-        })}
-        generatedNsecSecret="nsec1user"
-      />,
-    );
-
-    expect(screen.queryByRole("button", { name: /view generated nsec/i })).not.toBeInTheDocument();
-  });
+      expect(screen.getByRole("button", { name: /view nsec/i })).toBeInTheDocument();
+      expect(screen.queryByTestId("generated-nsec-value")).not.toBeInTheDocument();
+    },
+  );
 
   it("hides the reveal affordance for NIP-07 signers", () => {
     render(
@@ -73,54 +60,115 @@ describe("Settings generated nsec reveal", () => {
           signerMode: "nip07",
           signerSource: "nip07",
           signerBackupState: "confirmed",
-          canRevealGeneratedNsec: false,
+          canRevealLocalNsec: false,
         })}
       />,
     );
 
-    expect(screen.queryByRole("button", { name: /view generated nsec/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /view nsec/i })).not.toBeInTheDocument();
+    expect(screen.getByText(/back up your nostr key in your external signer/i)).toBeInTheDocument();
   });
 });
 
 describe("Settings generated nsec/npub reveal modal (P22 Link E)", () => {
-  it("shows BOTH the public npub and the secret nsec, and the npub matches the derived pubkey", () => {
-    // Derive a real keypair in-test so the npub assertion is meaningful:
-    // the modal must independently re-derive the same npub from the nsec.
-    const sk = generateSecretKey();
-    const nsec = nip19.nsecEncode(sk);
-    const expectedNpub = nip19.npubEncode(getPublicKey(sk));
+  afterEach(() => vi.useRealTimers());
 
+  it("keeps the settings backdrop inert and clears a revealed nsec on native cancel", () => {
+    const onConfirmSignerBackup = vi.fn();
     render(
       <Settings
         activeCategory="nostr"
         settings={settingsState({
           signerMode: "nsec",
-          signerSource: "implicit-generated",
-          signerBackupState: "needs_backup",
-          canRevealGeneratedNsec: true,
+          signerSource: "user-nsec",
+          canRevealLocalNsec: true,
         })}
-        generatedNsecSecret={nsec}
+        localNsecSecret="nsec-test-placeholder"
+        onConfirmSignerBackup={onConfirmSignerBackup}
       />,
     );
 
-    // Open the reveal modal, then accept the security warning.
-    fireEvent.click(screen.getByRole("button", { name: /view generated nsec/i }));
+    fireEvent.click(screen.getByRole("button", { name: /view nsec/i }));
+    const dialog = screen.getByRole("dialog", { name: "Nostr private-key backup" });
+    fireEvent.click(dialog);
+    expect(dialog).toBeInTheDocument();
+
     fireEvent.click(screen.getByRole("button", { name: /i understand, show nsec/i }));
+    expect(screen.getByTestId("generated-nsec-value")).toBeInTheDocument();
 
-    // The public npub is shown, unblurred, and equals the independently
-    // derived value.
-    const npubValue = screen.getByTestId("generated-npub-value");
-    expect(npubValue).toHaveTextContent(expectedNpub);
-    expect(npubValue.className).not.toContain("blur");
+    fireEvent(dialog, new Event("cancel", { cancelable: true }));
 
-    // The secret nsec is also shown (it carries the blur protection).
-    const nsecValue = screen.getByTestId("generated-nsec-value");
-    expect(nsecValue).toHaveTextContent(nsec);
-
-    // Per-field copy affordances exist for both.
-    expect(screen.getByRole("button", { name: /copy npub/i })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /copy nsec/i })).toBeInTheDocument();
+    expect(screen.queryByTestId("generated-nsec-value")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("dialog", { name: "Nostr private-key backup" }),
+    ).not.toBeInTheDocument();
+    expect(onConfirmSignerBackup).not.toHaveBeenCalled();
   });
+
+  it("blurs an imported key after 15 seconds and hides it after 60 seconds", () => {
+    vi.useFakeTimers();
+    render(
+      <Settings
+        activeCategory="nostr"
+        settings={settingsState({
+          signerMode: "nsec",
+          signerSource: "user-nsec",
+          canRevealLocalNsec: true,
+        })}
+        localNsecSecret="nsec-test-placeholder"
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /view nsec/i }));
+    fireEvent.click(screen.getByRole("button", { name: /i understand, show nsec/i }));
+    expect(screen.getByTestId("generated-nsec-value")).not.toHaveClass("blur-sm");
+    act(() => vi.advanceTimersByTime(15_000));
+    expect(screen.getByTestId("generated-nsec-value")).toHaveClass("blur-sm");
+    act(() => vi.advanceTimersByTime(45_000));
+    expect(screen.queryByTestId("generated-nsec-value")).not.toBeInTheDocument();
+  });
+
+  it.each(["implicit-generated", "user-nsec"] as const)(
+    "reveals matching npub and nsec only after confirmation for %s",
+    (signerSource) => {
+      // Derive a real keypair in-test so the npub assertion is meaningful:
+      // the modal must independently re-derive the same npub from the nsec.
+      const sk = generateSecretKey();
+      const nsec = nip19.nsecEncode(sk);
+      const expectedNpub = nip19.npubEncode(getPublicKey(sk));
+
+      render(
+        <Settings
+          activeCategory="nostr"
+          settings={settingsState({
+            signerMode: "nsec",
+            signerSource,
+            signerBackupState: "needs_backup",
+            canRevealLocalNsec: true,
+          })}
+          localNsecSecret={nsec}
+        />,
+      );
+
+      // Open the reveal modal, then accept the security warning.
+      fireEvent.click(screen.getByRole("button", { name: /view nsec/i }));
+      expect(screen.queryByTestId("generated-nsec-value")).not.toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: /i understand, show nsec/i }));
+
+      // The public npub is shown, unblurred, and equals the independently
+      // derived value.
+      const npubValue = screen.getByTestId("generated-npub-value");
+      expect(npubValue).toHaveTextContent(expectedNpub);
+      expect(npubValue.className).not.toContain("blur");
+
+      // The secret nsec is also shown (it carries the blur protection).
+      const nsecValue = screen.getByTestId("generated-nsec-value");
+      expect(nsecValue).toHaveTextContent(nsec);
+
+      // Per-field copy affordances exist for both.
+      expect(screen.getByRole("button", { name: /copy npub/i })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /copy nsec/i })).toBeInTheDocument();
+    },
+  );
 });
 
 describe("Settings wallet seed backup visibility", () => {
@@ -134,20 +182,42 @@ describe("Settings wallet seed backup visibility", () => {
     expect(screen.queryByRole("button", { name: /view seed phrase/i })).not.toBeInTheDocument();
   });
 
-  it("shows the seed confirmation flow for an existing wallet", () => {
+  it("acknowledges only after the seed is revealed and keeps backup confirmation separate", () => {
+    const onViewSeedPhrase = vi.fn();
+    const onConfirmWalletBackup = vi.fn();
     render(
-      <Settings activeCategory="cashu" settings={settingsState()} seedPhrase={walletSeedPhrase} />,
+      <Settings
+        activeCategory="cashu"
+        settings={settingsState()}
+        seedPhrase={walletSeedPhrase}
+        walletBackupState="needs_backup"
+        onViewSeedPhrase={onViewSeedPhrase}
+        onConfirmWalletBackup={onConfirmWalletBackup}
+      />,
     );
 
     fireEvent.click(screen.getByRole("button", { name: /view seed phrase/i }));
 
     expect(screen.getByRole("heading", { name: /security warning/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /i understand, show phrase/i })).toBeInTheDocument();
+    expect(onViewSeedPhrase).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(onViewSeedPhrase).not.toHaveBeenCalled();
+    expect(onConfirmWalletBackup).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: /view seed phrase/i }));
 
     fireEvent.click(screen.getByRole("button", { name: /i understand, show phrase/i }));
 
+    expect(onViewSeedPhrase).toHaveBeenCalledOnce();
+    expect(onConfirmWalletBackup).not.toHaveBeenCalled();
     expect(screen.getAllByText("abandon", { selector: "span" })).toHaveLength(11);
     expect(screen.getByText("about", { selector: "span" })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Done" }));
+    expect(onViewSeedPhrase).toHaveBeenCalledOnce();
+    expect(onConfirmWalletBackup).toHaveBeenCalledOnce();
   });
 
   it("hides the open seed modal when the wallet disappears", () => {

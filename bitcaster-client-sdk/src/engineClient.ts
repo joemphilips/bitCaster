@@ -39,9 +39,13 @@ import {
   type DurableRecipientDeliverySubmission,
 } from './durableRecipientDelivery.ts'
 import {
+  canonicalizePreviewFokOrderCapacityRequest,
   canonicalizePreviewFokOrderRequest,
+  decodePreviewFokOrderCapacityResponse,
   decodePreviewFokOrderResponse,
   FOK_PREVIEW_RESPONSE_BYTES_MAX,
+  type PreviewFokOrderCapacityRequest,
+  type PreviewFokOrderCapacityResponse,
   type PreviewFokOrderRequest,
   type PreviewFokOrderResponse,
 } from './fokOrderPreview.ts'
@@ -530,20 +534,24 @@ export class BitcasterEngineClient {
 
   async getPortfolio(
     queryInput: AssetMonitoringPortfolioQuery,
+    signal?: AbortSignal,
   ): Promise<AssetMonitoringPortfolioResponse> {
     const query = assetMonitoringPortfolioQueryString(
       decodeAssetMonitoringPortfolioQuery(queryInput),
     )
     const response = await this.request(
       `/api/v1/portfolio?${query}`,
-      {},
+      { signal },
       undefined,
       false,
       ASSET_MONITORING_ERROR_RESPONSE_BYTES_MAX,
     )
-    return decodeAssetMonitoringPortfolioResponse(
-      await readAllocationBoundedJsonResponse(response, ASSET_MONITORING_RESPONSE_BYTES_MAX),
+    const body = await readAllocationBoundedJsonResponse(
+      response,
+      ASSET_MONITORING_RESPONSE_BYTES_MAX,
     )
+    signal?.throwIfAborted()
+    return decodeAssetMonitoringPortfolioResponse(body)
   }
 
   async createSettlementCapability(
@@ -655,6 +663,30 @@ export class BitcasterEngineClient {
     return decodePreviewFokOrderResponse(
       await readAllocationBoundedJsonResponse(response, FOK_PREVIEW_RESPONSE_BYTES_MAX),
       request,
+    )
+  }
+
+  async previewFokOrderCapacity(
+    request: PreviewFokOrderCapacityRequest,
+    signal?: AbortSignal,
+  ): Promise<PreviewFokOrderCapacityResponse> {
+    const canonicalRequest = canonicalizePreviewFokOrderCapacityRequest(request)
+    const bodyText = JSON.stringify(canonicalRequest)
+    const response = await this.request(
+      '/api/v1/orders/capacity-preview',
+      {
+        method: 'POST',
+        body: bodyText,
+        headers: { 'content-type': 'application/json' },
+        signal,
+      },
+      bodyText,
+      false,
+      FOK_PREVIEW_RESPONSE_BYTES_MAX,
+    )
+    return decodePreviewFokOrderCapacityResponse(
+      await readAllocationBoundedJsonResponse(response, FOK_PREVIEW_RESPONSE_BYTES_MAX),
+      canonicalRequest,
     )
   }
 

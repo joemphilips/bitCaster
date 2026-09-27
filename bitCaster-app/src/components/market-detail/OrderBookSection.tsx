@@ -1,8 +1,9 @@
 import { useTranslation } from "react-i18next";
 import type { OrderBook } from "@/types/market-detail";
-import type { ProductMarketDivisibility } from "@/types/market";
+import type { Outcome, ProductMarketDivisibility } from "@/types/market";
+import { OutcomeLabel } from "@/components/shared/OutcomeLabel";
 import { formatPricePercent, normalizeMarketDivisibility } from "@bitcaster/client-sdk/marketUnits";
-import { buildOrderBookDepthRows } from "./orderBookViewModel";
+import { buildOrderBookDepthRows, computeExecutableBookMidpoint } from "./orderBookViewModel";
 
 interface OrderBookSectionProps {
   orderBook: OrderBook;
@@ -10,6 +11,7 @@ interface OrderBookSectionProps {
   outcomeOrderBooks?: Record<string, OrderBook>;
   onOutcomeChange?: (outcomeId: string) => void;
   outcomes?: Array<{ id: string; label: string }>;
+  outcome?: Pick<Outcome, "label" | "color">;
   baseAsset: "sat";
   divisibility: ProductMarketDivisibility;
   title?: string;
@@ -22,6 +24,7 @@ export function OrderBookSection({
   outcomeOrderBooks,
   onOutcomeChange,
   outcomes,
+  outcome,
   baseAsset,
   divisibility: divisibilityInput,
   title,
@@ -35,6 +38,11 @@ export function OrderBookSection({
     selectedOutcomeId && outcomeOrderBooks
       ? outcomeOrderBooks[selectedOutcomeId] || orderBook
       : orderBook;
+  const hasSelectedOutcomeBook =
+    selectedOutcomeId === undefined || outcomeOrderBooks?.[selectedOutcomeId] !== undefined;
+  const currentMidpoint = hasSelectedOutcomeBook
+    ? computeExecutableBookMidpoint(activeOrderBook, divisibilityInput)
+    : null;
   const depthLimit = 5;
   const visibleBids = [...activeOrderBook.bids]
     .sort((a, b) => b.price - a.price)
@@ -56,7 +64,15 @@ export function OrderBookSection({
     >
       <div className="flex items-center justify-between mb-4">
         <h3 className="text-lg font-semibold text-slate-900 dark:text-white">
-          {title ?? t("orderBook.title")}
+          {outcome ? (
+            <OutcomeLabel
+              outcome={outcome}
+              className="text-lg font-semibold"
+              labelClassName="text-slate-900 dark:text-white"
+            />
+          ) : (
+            (title ?? t("orderBook.title"))
+          )}
         </h3>
 
         {/* Outcome Selector for Categorical Markets */}
@@ -141,6 +157,23 @@ export function OrderBookSection({
             </span>
           </div>
 
+          {currentMidpoint !== null && (
+            <div
+              data-testid="order-book-midpoint"
+              className="flex items-center justify-between rounded-lg bg-white/80 dark:bg-slate-800/70 px-3 py-2"
+            >
+              <span className="text-[10px] uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                {t("orderBook.currentMidpoint")}
+              </span>
+              <span
+                data-testid="order-book-midpoint-price"
+                className="text-xs font-mono font-medium text-slate-700 dark:text-slate-300"
+              >
+                {formatMidpointPercentage(currentMidpoint, divisibility)}
+              </span>
+            </div>
+          )}
+
           <div className="flex min-h-[165px] flex-col space-y-1">
             <div className="flex items-center gap-1 px-3 pt-1">
               <div className="w-2 h-2 rounded-full bg-emerald-500" />
@@ -190,6 +223,17 @@ export function OrderBookSection({
         </div>
       </div>
     </div>
+  );
+}
+
+function formatMidpointPercentage(midpoint: number, divisibility: number): string {
+  const maximumFractionDigits = Math.min(8, Math.max(1, Math.ceil(Math.log10(divisibility)) - 1));
+  const percentage = (midpoint / divisibility) * 100;
+  return (
+    percentage.toLocaleString(undefined, {
+      minimumFractionDigits: 1,
+      maximumFractionDigits,
+    }) + "%"
   );
 }
 

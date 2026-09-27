@@ -84,6 +84,7 @@ export function MarketCreationPage() {
         onAddOutcome={state.onAddOutcome}
         onRemoveOutcome={state.onRemoveOutcome}
         onOutcomeLabelChange={state.onOutcomeLabelChange}
+        onOutcomeColorChange={state.onOutcomeColorChange}
         onLoBoundChange={state.onLoBoundChange}
         onHiBoundChange={state.onHiBoundChange}
         onPrecisionChange={state.onPrecisionChange}

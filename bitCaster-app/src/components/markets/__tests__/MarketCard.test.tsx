@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, it, expect, vi } from "vitest";
 import { MarketCard } from "../MarketCard";
@@ -37,7 +37,7 @@ const categoricalMarket: CategoricalMarket = {
   metaTags: [],
   outcomes: [
     { id: "a", label: "Team A", odds: 4_000 },
-    { id: "b", label: "Team B", odds: 3_500 },
+    { id: "b", label: "Team B", odds: 3_500, color: "#1A2B3C" },
     { id: "c", label: "Team C", odds: 250 },
   ],
   volume: 50000,
@@ -109,6 +109,9 @@ describe("MarketCard", () => {
     );
 
     expect(screen.getByText("Team B")).toBeInTheDocument();
+    expect(screen.getByTestId("outcome-color-swatch")).toHaveStyle({
+      backgroundColor: "#1A2B3C",
+    });
     expect(screen.queryByText("Chance")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Yes" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "No" })).not.toBeInTheDocument();
@@ -119,6 +122,20 @@ describe("MarketCard", () => {
 
     expect(screen.getByText("100 sats")).toBeInTheDocument();
     expect(screen.getByText("50 sats")).toBeInTheDocument();
+  });
+
+  it.each([
+    ["Volume", "Total traded volume so far"],
+    ["Total funding", "Total funds contributed to this market's bot"],
+  ])("explains %s across its icon and amount", async (label, description) => {
+    const user = userEvent.setup();
+    render(<MarketCard market={yesNoMarket} />);
+    const control = screen.getByRole("button", { name: new RegExp(label) });
+    await user.hover(control.querySelector("svg")!);
+    expect(screen.getByRole("tooltip")).toHaveTextContent(description);
+    await user.hover(within(control).getByRole("group"));
+    expect(control).toHaveAccessibleDescription(description);
+    expect(control.querySelector("[title]")).toBeNull();
   });
 
   it("shows zero bot budget for unfunded markets without inventing liquidity", () => {

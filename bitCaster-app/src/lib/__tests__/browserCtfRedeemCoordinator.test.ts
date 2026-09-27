@@ -3,6 +3,7 @@ import "fake-indexeddb/auto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CheckStateEnum, type Proof } from "@cashu/cashu-ts";
 import {
+  BrowserCtfClaimBoundaryError,
   commitBrowserCanonicalCtfRedeemResult,
   markBrowserCanonicalCtfRedeemTransportAttempted,
   recoverBrowserCanonicalCtfRedeemOperation,
@@ -61,7 +62,7 @@ describe("browser canonical CTF redeem binding", () => {
     const refused = await bind().then(
       () => false,
       (error: unknown) =>
-        error instanceof Error && /predecessor proof is not persisted/.test(error.message),
+        error instanceof BrowserCtfClaimBoundaryError && error.category === "profile-ownership",
     );
 
     expect(refused).toBe(true);
@@ -93,13 +94,10 @@ describe("browser canonical CTF redeem binding", () => {
     mocks.requireNewWritePermission.mockReset();
     mocks.requireNewWritePermission.mockRejectedValue(new Error("new writes are refused"));
 
-    const refused = await bind().then(
-      () => false,
-      (error: unknown) =>
-        error instanceof Error && /requires persisted recovery/.test(error.message),
-    );
-
-    expect(refused).toBe(true);
+    await expect(bind()).rejects.toMatchObject({
+      category: "persisted-recovery",
+      operationRef: expect.any(String),
+    });
     expect(mocks.requireNewWritePermission).not.toHaveBeenCalled();
     expect((await counters.reserve(REGULAR_KEYSET.id, 0)).start).toBe(1);
   });

@@ -54,7 +54,6 @@ vi.mock("../usePortfolioState", () => ({
     stats: {
       positionsValueSats: 0,
       totalValueSats: 0,
-      biggestWinSats: 0,
       predictionsCount: 0,
     },
     positions: mockPositions,
@@ -82,11 +81,7 @@ function closedPosition(overrides: Partial<Position>): Position {
     outcomeId: "A|B",
     outcomeLabel: "A|B",
     shares: 100,
-    avgBuyPrice: 0,
-    currentPrice: 0,
     currentValueSats: 0,
-    profitLossSats: 0,
-    profitLossPercent: -100,
     status: "closed",
     isWinner: false,
     isLoser: true,
@@ -143,6 +138,43 @@ describe("PortfolioPage — Remove lost position (P22 F2)", () => {
     expect(cashuMocks.addActivity).not.toHaveBeenCalled();
   });
 
+  it("shows the translated safe Claim category and opaque attempt reference", async () => {
+    mockPositions = [
+      closedPosition({
+        marketTitle: "Winning market",
+        outcomeId: "A",
+        outcomeLabel: "A",
+        isWinner: true,
+        isLoser: false,
+        canClaimPayout: true,
+      }),
+    ];
+    cashuMocks.claimPortfolioPosition.mockResolvedValue({
+      kind: "error",
+      committedPayoutAmount: 0,
+      committedLegs: 0,
+      losingLegs: 0,
+      pendingLegs: 0,
+      error: {
+        code: "claim-failed",
+        category: "counter-readiness",
+        message: "Wallet counter recovery is incomplete for the selected keyset.",
+        attemptRef: "claim-attempt-456",
+      },
+    });
+    const alert = vi.spyOn(window, "alert").mockImplementation(() => {});
+    try {
+      render(<PortfolioPage />);
+      await userEvent.click(screen.getByLabelText(/claim.*winning market/i));
+      expect(alert).toHaveBeenCalledWith(
+        expect.stringContaining("Wallet counter recovery for this keyset is incomplete."),
+      );
+      expect(alert).toHaveBeenCalledWith(expect.stringContaining("claim-attempt-456"));
+    } finally {
+      alert.mockRestore();
+    }
+  });
+
   it.each(["pending", "error"])(
     "records only the committed leg when Claim returns %s",
     async (kind) => {
@@ -156,7 +188,21 @@ describe("PortfolioPage — Remove lost position (P22 F2)", () => {
       ];
       cashuMocks.claimPortfolioPosition.mockImplementation(async ({ onCommittedLeg }) => {
         await onCommittedLeg({ keysetId: "winning-leg", payoutAmount: 125 });
-        return { kind, committedPayoutAmount: 125 };
+        return kind === "error"
+          ? {
+              kind,
+              committedPayoutAmount: 125,
+              committedLegs: 1,
+              losingLegs: 0,
+              pendingLegs: 0,
+              error: {
+                code: "claim-failed",
+                category: "counter-readiness",
+                message: "Wallet counter recovery is incomplete for the selected keyset.",
+                attemptRef: "claim-attempt-123",
+              },
+            }
+          : { kind, committedPayoutAmount: 125 };
       });
       const alert = vi.spyOn(window, "alert").mockImplementation(() => {});
       try {
@@ -172,6 +218,11 @@ describe("PortfolioPage — Remove lost position (P22 F2)", () => {
           }),
         );
         expect(alert).toHaveBeenCalledOnce();
+        if (kind === "error") {
+          expect(alert).toHaveBeenCalledWith(
+            expect.stringContaining("Claim reference: claim-attempt-123"),
+          );
+        }
       } finally {
         alert.mockRestore();
       }
@@ -195,6 +246,37 @@ describe("PortfolioPage — Remove lost position (P22 F2)", () => {
     expect(removeProofs).not.toHaveBeenCalled();
     expect(cashuMocks.claimPortfolioPosition).not.toHaveBeenCalled();
     confirmSpy.mockRestore();
+  });
+
+  it("shows the safe Claim category and reference when Remove composes a Claim failure", async () => {
+    mockPositions = [closedPosition({})];
+    cashuMocks.removePortfolioPosition.mockResolvedValue({
+      kind: "error",
+      committedPayoutAmount: 125,
+      error: {
+        code: "remove-failed",
+        message: "The claim could not finish.",
+        claimFailure: {
+          code: "claim-failed",
+          category: "counter-readiness",
+          message: "Wallet counter recovery is incomplete for the selected keyset.",
+          attemptRef: "remove-claim-attempt",
+        },
+      },
+    });
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    const alert = vi.spyOn(window, "alert").mockImplementation(() => {});
+    try {
+      render(<PortfolioPage />);
+      await userEvent.click(screen.getByLabelText(/remove.*lost market/i));
+      expect(alert).toHaveBeenCalledWith(
+        expect.stringContaining("Wallet counter recovery for this keyset is incomplete."),
+      );
+      expect(alert).toHaveBeenCalledWith(expect.stringContaining("remove-claim-attempt"));
+    } finally {
+      confirm.mockRestore();
+      alert.mockRestore();
+    }
   });
 
   it("reports a verified payout and stops when the displayed loser was stale", async () => {
@@ -248,8 +330,6 @@ describe("PortfolioPage — Remove lost position (P22 F2)", () => {
         isPending: true,
         currentValueSats: 100,
         valueKnown: false,
-        profitLossSats: 0,
-        profitLossPercent: 0,
       }),
     ];
 
@@ -257,7 +337,7 @@ describe("PortfolioPage — Remove lost position (P22 F2)", () => {
     // Pending shows neither Remove nor Claim.
     expect(screen.queryByLabelText(/remove.*awaiting market/i)).not.toBeInTheDocument();
     expect(screen.queryByLabelText(/claim.*awaiting market/i)).not.toBeInTheDocument();
-    expect(screen.getByText("Unvalued")).toBeInTheDocument();
+    expect(screen.getByText("Price estimate unavailable")).toBeInTheDocument();
     expect(removeProofs).not.toHaveBeenCalled();
   });
 
@@ -323,14 +403,14 @@ describe("PortfolioPage — Remove lost position (P22 F2)", () => {
         outcomeLabel: "A",
         isWinner: true,
         isLoser: false,
-        profitLossSats: 100,
-        profitLossPercent: 100,
-        currentValueSats: 100,
+        currentValueSats: 100_000,
       }),
     ];
 
     render(<PortfolioPage />);
     // Winner shows Claim, never Remove.
+    expect(screen.getByText("Won ☺")).toBeInTheDocument();
+    expect(screen.getByRole("group", { name: "100 sats" })).toBeInTheDocument();
     expect(screen.queryByLabelText(/remove.*won market/i)).not.toBeInTheDocument();
     expect(screen.getByLabelText(/claim.*won market/i)).toBeInTheDocument();
     expect(removeProofs).not.toHaveBeenCalled();

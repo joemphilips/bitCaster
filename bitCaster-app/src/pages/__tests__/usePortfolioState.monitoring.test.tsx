@@ -1,5 +1,4 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
-import { StrictMode, type ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
   AssetMonitoringAssetsResponse,
@@ -10,13 +9,25 @@ import {
   portfolioInvalidatedEvent,
   publishPortfolioInvalidation,
 } from "@/lib/portfolioInvalidation";
-import type { Fund, Position } from "@/types/portfolio";
+import type { ActivityItem, Fund, Position } from "@/types/portfolio";
 
 const mocks = vi.hoisted(() => ({
   getPortfolio: vi.fn(),
   getAssetMonitoringAssets: vi.fn(),
+  portfolioObservers: [] as Array<{
+    onRefresh: () => void;
+    conditionSets: string[][];
+    disposeCalls: number;
+  }>,
   readCustody: vi.fn(),
+  activeScopeId: "current-scope",
   localQueries: [] as (() => Promise<unknown>)[],
+  localQueryDependencies: [] as unknown[][],
+  positionSnapshot: null as null | {
+    positions: Position[];
+    marketCatalogue: Map<string, unknown>;
+  },
+  activityItems: [] as ActivityItem[],
   liveQueryCalls: 0,
   localFundsState: "available" as "available" | "null" | "undefined",
 }));
@@ -34,11 +45,7 @@ const localPosition: Position = {
   baseAsset: "sat",
   divisibility: 1_000,
   shares: 1,
-  avgBuyPrice: 0,
-  currentPrice: 0,
   currentValueSats: 4_000,
-  profitLossSats: 0,
-  profitLossPercent: 0,
   status: "active",
   isWinner: false,
   isLoser: false,
@@ -55,11 +62,12 @@ const localFund: Fund = {
 };
 
 vi.mock("dexie-react-hooks", () => ({
-  useLiveQuery: vi.fn((query: () => Promise<unknown>) => {
+  useLiveQuery: vi.fn((query: () => Promise<unknown>, dependencies: unknown[] = []) => {
     mocks.localQueries.push(query);
+    mocks.localQueryDependencies.push(dependencies);
     mocks.liveQueryCalls += 1;
     return mocks.liveQueryCalls % 2 === 1
-      ? [localPosition]
+      ? (mocks.positionSnapshot ?? { positions: [localPosition], marketCatalogue: new Map() })
       : mocks.localFundsState === "null"
         ? null
         : mocks.localFundsState === "undefined"
@@ -80,12 +88,13 @@ vi.mock("@/stores/settings", () => ({
   useSettingsStore: (selector: (state: object) => unknown) => selector({ nostrProfile: null }),
 }));
 vi.mock("@/stores/activity-log", () => ({
-  useActivityLogStore: (selector: (state: object) => unknown) => selector({ items: [] }),
+  useActivityLogStore: (selector: (state: object) => unknown) =>
+    selector({ items: mocks.activityItems }),
 }));
 vi.mock("@/lib/browserWalletProfile", () => ({
   browserWalletIdFromMnemonic: () => activeWalletId,
   browserWalletScopeIdFromMnemonic: () => "current-scope",
-  activeBrowserWalletScopeId: () => "current-scope",
+  activeBrowserWalletScopeId: () => mocks.activeScopeId,
 }));
 vi.mock("@/lib/markets", () => ({
   createAuthenticatedBrowserEngineClient: () => ({
@@ -93,14 +102,34 @@ vi.mock("@/lib/markets", () => ({
     getAssetMonitoringAssets: mocks.getAssetMonitoringAssets,
   }),
 }));
+vi.mock("@/lib/marketHub", () => ({
+  observePortfolioValuations: (onRefresh: () => void) => {
+    const observer = {
+      onRefresh,
+      conditionSets: [] as string[][],
+      disposeCalls: 0,
+    };
+    mocks.portfolioObservers.push(observer);
+    return {
+      replaceConditionIds: async (conditionIds: readonly string[]) => {
+        observer.conditionSets.push([...conditionIds]);
+      },
+      dispose: () => {
+        observer.disposeCalls += 1;
+      },
+    };
+  },
+}));
 
 import {
   appendMonitoringAssets,
   canonicalMonitoringAssetIdentity,
+  enrichPositionWithCatalogue,
   mapMonitoringPortfolio,
   mergeMonitoringPositions,
   usePortfolioState,
 } from "../usePortfolioState";
+import type { MarketCatalogueEntry } from "@/lib/markets";
 
 function portfolioResponse(
   timeframe: "1D" | "1W" | "1M" | "ALL" = "ALL",
@@ -170,6 +199,50 @@ function portfolioResponse(
   };
 }
 
+function completePortfolioResponse(
+  timeframe: "1D" | "1W" | "1M" | "ALL" = "ALL",
+  estimatedTotalValueMsat = 15_000,
+): AssetMonitoringPortfolioResponse {
+  const response = portfolioResponse(timeframe);
+  Object.assign(response.summary, {
+    estimatedTotalValueMsat,
+    unvaluedAssetCount: 0,
+    unvaluedAvailableSubunits: 0,
+    stale: false,
+    incomplete: false,
+    building: false,
+  });
+  Object.assign(response.assets, {
+    stale: false,
+    incomplete: false,
+    building: false,
+  });
+  Object.assign(response.history, {
+    stale: false,
+    incomplete: false,
+    building: false,
+    points: [{ asOf: "2026-08-09T00:00:00.000Z", estimatedTotalValueMsat }],
+  });
+  return response;
+}
+
+function buildingUnvaluedPortfolioResponse(): AssetMonitoringPortfolioResponse {
+  const response = completePortfolioResponse();
+  Object.assign(response.summary, {
+    estimatedTotalValueMsat: null,
+    unvaluedAssetCount: 1,
+    unvaluedAvailableSubunits: 5_000,
+    stale: true,
+    building: true,
+  });
+  response.assets.assets[1] = {
+    ...response.assets.assets[1]!,
+    estimatedValueMsat: null,
+    valuationStatus: "unvalued",
+  };
+  return response;
+}
+
 function deferred<T>() {
   let resolve: (value: T) => void;
   const promise = new Promise<T>((complete) => {
@@ -215,6 +288,30 @@ function conditionalAsset(outcome: string): AssetMonitoringAssetsResponse["asset
     valuationStatus: "valued",
     recoveryHint: null,
   };
+}
+
+function conditionalAssetForCondition(
+  conditionId: string,
+): AssetMonitoringAssetsResponse["assets"][number] {
+  const asset = conditionalAsset("YES");
+  if (asset.asset.kind !== "conditional") throw new Error("fixture must be conditional");
+  return {
+    ...asset,
+    asset: { ...asset.asset, conditionId },
+  };
+}
+
+function portfolioWithConditionalConditions(
+  conditionIds: readonly string[],
+  nextCursor: string | null,
+): AssetMonitoringPortfolioResponse {
+  const response = completePortfolioResponse();
+  response.assets.assets = conditionIds.map(conditionalAssetForCondition);
+  response.assets.nextCursor = nextCursor;
+  response.summary.unvaluedAssetCount = 0;
+  response.summary.estimatedTotalValueMsat = conditionIds.length * 2_000;
+  response.assets.incomplete = nextCursor !== null;
+  return response;
 }
 
 function conditionIdFor(index: number): string {
@@ -282,11 +379,20 @@ function stubCatalogue({
   return requests;
 }
 
-async function localPositionsAfterMonitoringFailure(): Promise<Position[]> {
+interface PortfolioPositionSnapshot {
+  positions: Position[];
+  marketCatalogue: Map<string, MarketCatalogueEntry>;
+}
+
+async function localPositionSnapshotAfterMonitoringFailure(): Promise<PortfolioPositionSnapshot> {
   mocks.getPortfolio.mockRejectedValue(new Error("signer unavailable"));
   const { result } = renderHook(() => usePortfolioState());
   await waitFor(() => expect(result.current.monitoring.error).toBe("unavailable"));
-  return (await mocks.localQueries.at(-2)!()) as Position[];
+  return (await mocks.localQueries.at(-2)!()) as PortfolioPositionSnapshot;
+}
+
+async function localPositionsAfterMonitoringFailure(): Promise<Position[]> {
+  return (await localPositionSnapshotAfterMonitoringFailure()).positions;
 }
 
 function conditionalMonitoringAsset(
@@ -307,18 +413,29 @@ function conditionalMonitoringAsset(
 
 describe("usePortfolioState monitoring facade", () => {
   afterEach(() => {
+    vi.useRealTimers();
     vi.unstubAllGlobals();
     mocks.getPortfolio.mockReset();
     mocks.getAssetMonitoringAssets.mockReset();
     mocks.readCustody.mockReset();
+    mocks.activeScopeId = "current-scope";
+    mocks.portfolioObservers.length = 0;
     mocks.localQueries.length = 0;
+    mocks.localQueryDependencies.length = 0;
+    mocks.positionSnapshot = null;
+    mocks.activityItems.length = 0;
     mocks.liveQueryCalls = 0;
     mocks.localFundsState = "available";
   });
 
-  it.each(["winner", "loser"])(
-    "merges canonical %s custody with monitoring without losing local actions",
-    async (outcome) => {
+  it.each(
+    ["winner", "loser"].flatMap((outcome) => [
+      { outcome, catalogueOutcomes: ["Alpha", "Beta"] },
+      { outcome, catalogueOutcomes: ["Beta", "Alpha"] },
+    ]),
+  )(
+    "merges canonical $outcome custody with catalogue order $catalogueOutcomes",
+    async ({ outcome, catalogueOutcomes }) => {
       mocks.getPortfolio.mockRejectedValue(new Error("signer unavailable"));
       mocks.readCustody.mockResolvedValue([
         {
@@ -342,7 +459,7 @@ describe("usePortfolioState monitoring facade", () => {
               markets: [
                 {
                   conditionId: monitoredConditionId,
-                  outcomes: ["Alpha", "Beta"],
+                  outcomes: catalogueOutcomes,
                   divisibility: 1000,
                   state: "closed",
                   finalOutcome: outcome === "winner" ? "Alpha" : "Beta",
@@ -355,7 +472,8 @@ describe("usePortfolioState monitoring facade", () => {
       );
       const { result } = renderHook(() => usePortfolioState());
       await waitFor(() => expect(result.current.monitoring.error).toBe("unavailable"));
-      const positions = (await mocks.localQueries.at(-2)!()) as Position[];
+      const positions = ((await mocks.localQueries.at(-2)!()) as PortfolioPositionSnapshot)
+        .positions;
       const monitoringIdentity = canonicalMonitoringAssetIdentity({
         kind: "conditional",
         canonicalMintUrl: "https://mint.example",
@@ -411,7 +529,7 @@ describe("usePortfolioState monitoring facade", () => {
       ]);
       renderHook(() => usePortfolioState());
 
-      const positions = (await mocks.localQueries[0]!()) as Position[];
+      const positions = ((await mocks.localQueries[0]!()) as PortfolioPositionSnapshot).positions;
 
       expect(mocks.readCustody).toHaveBeenCalledWith("current-scope");
       expect(positions.map(({ mintUrl, outcomeLabel }) => ({ mintUrl, outcomeLabel }))).toEqual([
@@ -517,6 +635,7 @@ describe("usePortfolioState monitoring facade", () => {
     expect(verifiedLoser.monitoringAssetIdentity).toBeUndefined();
     expect(missingMetadata).toMatchObject({
       status: "active",
+      side: "Outcome",
       isWinner: false,
       isLoser: false,
       isPending: false,
@@ -524,6 +643,7 @@ describe("usePortfolioState monitoring facade", () => {
       canClaimPayout: false,
     });
     expect(missingMetadata.monitoringAssetIdentity).toBeUndefined();
+    expect(missingMetadata.outcomeColor).toBeUndefined();
     expect(earlySibling).toMatchObject({ divisibility: 1_000, shares: 1 });
     expect(earlySibling.monitoringAssetIdentity).toBeDefined();
     expect(laterWinner).toMatchObject({
@@ -568,65 +688,658 @@ describe("usePortfolioState monitoring facade", () => {
     renderHook(() => usePortfolioState());
 
     await waitFor(() => expect(mocks.getPortfolio).toHaveBeenCalledTimes(1));
-    expect(mocks.getPortfolio).toHaveBeenCalledWith({
-      walletId: activeWalletId,
-      timeframe: "ALL",
-      pageSize: 200,
-    });
+    expect(mocks.getPortfolio).toHaveBeenCalledWith(
+      {
+        walletId: activeWalletId,
+        timeframe: "ALL",
+        pageSize: 200,
+      },
+      expect.any(AbortSignal),
+    );
     expect(fetchMock).not.toHaveBeenCalled();
     fetchMock.mockRestore();
   });
 
-  it("keeps the one facade request valid under React Strict Mode", async () => {
-    mocks.getPortfolio.mockResolvedValue(portfolioResponse());
-    const wrapper = ({ children }: { children: ReactNode }) => <StrictMode>{children}</StrictMode>;
+  it("subscribes to only first-page conditions and marks appended rows outside that coverage", async () => {
+    vi.useFakeTimers();
+    try {
+      const firstConditionIds = Array.from({ length: 200 }, (_, index) => conditionIdFor(index));
+      const laterConditionIds = Array.from({ length: 10 }, (_, index) =>
+        conditionIdFor(index + firstConditionIds.length),
+      );
+      mocks.getPortfolio.mockResolvedValue(
+        portfolioWithConditionalConditions(firstConditionIds, "cursor-1"),
+      );
+      mocks.getAssetMonitoringAssets.mockResolvedValue({
+        assets: laterConditionIds.map(conditionalAssetForCondition),
+        nextCursor: null,
+        valuationRevision: "revision-1",
+        stale: false,
+        incomplete: false,
+        building: false,
+      });
+      const { result } = renderHook(() => usePortfolioState());
+      const observer = mocks.portfolioObservers[0];
 
-    const { result } = renderHook(() => usePortfolioState(), { wrapper });
+      await act(async () => {});
+      expect(result.current.monitoring.incomplete).toBe(true);
+      expect(result.current.monitoring.hasMoreAssets).toBe(true);
+      expect(result.current.stats.totalValueSats).toBe(400_000);
+      expect(observer?.conditionSets).toEqual([[...firstConditionIds].sort()]);
+      expect(observer?.conditionSets[0]).toHaveLength(200);
 
-    await waitFor(() => expect(result.current.stats.totalValueSats).toBe(12_000));
-    expect(mocks.getPortfolio).toHaveBeenCalledTimes(1);
+      act(() => result.current.loadMoreAssets());
+      await act(async () => {});
+
+      expect(result.current.monitoring.hasMoreAssets).toBe(false);
+      expect(result.current.monitoring.liveUpdateCoverageLimited).toBe(true);
+      expect(result.current.positions).toHaveLength(211);
+      expect(observer?.conditionSets).toHaveLength(1);
+
+      act(() => observer?.onRefresh());
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(9_999);
+      });
+      expect(mocks.getPortfolio).toHaveBeenCalledTimes(1);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1);
+      });
+
+      expect(mocks.getPortfolio).toHaveBeenCalledTimes(2);
+      expect(observer?.conditionSets).toHaveLength(1);
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
   });
 
-  it("ignores invalid and inactive-wallet portfolio invalidations", async () => {
-    mocks.getPortfolio.mockResolvedValue(portfolioResponse());
-    renderHook(() => usePortfolioState());
+  it("batches local and paginated monitoring metadata by exact outcome identity", async () => {
+    const localCondition = conditionIdFor(800);
+    const firstMonitorCondition = conditionIdFor(801);
+    const laterMonitorCondition = conditionIdFor(802);
+    mocks.readCustody.mockResolvedValue([
+      canonicalConditionalCustody(localCondition, "YES"),
+      canonicalConditionalCustody(localCondition, "ALPHA|GAMMA"),
+    ]);
+    mocks.getPortfolio.mockResolvedValue(
+      portfolioWithConditionalConditions([firstMonitorCondition], "cursor-1"),
+    );
+    mocks.getAssetMonitoringAssets.mockResolvedValue({
+      assets: [conditionalAssetForCondition(laterMonitorCondition)],
+      nextCursor: null,
+      valuationRevision: "revision-1",
+      stale: false,
+      incomplete: false,
+      building: false,
+    });
+    const catalogueRequests: string[][] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string | URL) => {
+        const ids =
+          new URL(String(input), "http://localhost").searchParams.get("ids")?.split(",") ?? [];
+        catalogueRequests.push(ids);
+        return new Response(
+          JSON.stringify({
+            markets: ids.map((conditionId) => ({
+              conditionId,
+              outcomes:
+                conditionId === localCondition
+                  ? ["YES", "ALPHA", "GAMMA"]
+                  : conditionId === laterMonitorCondition
+                    ? ["NO", "YES", "ALPHA"]
+                    : ["NO", "YES"],
+              outcomeDetails:
+                conditionId === localCondition
+                  ? [
+                      { name: "GAMMA", color: "#CCCCCC" },
+                      { name: "YES", color: "#123ABC" },
+                      { name: "ALPHA", color: "#AABBCC" },
+                    ]
+                  : [{ name: "YES", color: "#FF00FF" }],
+              title: "Market " + conditionId.slice(0, 4),
+              divisibility: 1_000,
+              state: "open",
+            })),
+          }),
+          { status: 200 },
+        );
+      }),
+    );
 
-    await waitFor(() => expect(mocks.getPortfolio).toHaveBeenCalledTimes(1));
-    act(() => {
-      window.dispatchEvent(
-        new CustomEvent(portfolioInvalidatedEvent, { detail: { walletId: "b".repeat(64) } }),
-      );
-      window.dispatchEvent(
-        new CustomEvent(portfolioInvalidatedEvent, { detail: { walletId: "A".repeat(64) } }),
-      );
+    const { result, rerender } = renderHook(() => usePortfolioState());
+    await waitFor(() => expect(result.current.monitoring.hasMoreAssets).toBe(true));
+    act(() => result.current.loadMoreAssets());
+    await waitFor(() => expect(result.current.monitoring.hasMoreAssets).toBe(false));
+
+    const expectedConditionKey = [firstMonitorCondition, laterMonitorCondition].sort().join(",");
+    expect(mocks.localQueryDependencies.at(-2)).toContain(expectedConditionKey);
+    const snapshot = (await mocks.localQueries.at(-2)!()) as PortfolioPositionSnapshot;
+    expect(catalogueRequests).toHaveLength(1);
+    expect(new Set(catalogueRequests[0])).toEqual(
+      new Set([localCondition, firstMonitorCondition, laterMonitorCondition]),
+    );
+
+    const primitive = snapshot.positions.find((position) => position.outcomeId === "YES")!;
+    const composite = snapshot.positions.find((position) => position.outcomeId === "ALPHA|GAMMA")!;
+    expect(primitive).toMatchObject({ side: "Outcome", outcomeColor: "#123ABC" });
+    expect(composite).toMatchObject({ side: "Outcome", outcomeColor: undefined });
+
+    mocks.positionSnapshot = snapshot;
+    rerender();
+    const hookEnrichedMonitor = result.current.positions.find(
+      (position) => position.marketId === laterMonitorCondition,
+    )!;
+    expect(hookEnrichedMonitor).toMatchObject({
+      side: "Outcome",
+      outcomeColor: "#FF00FF",
+      marketTitle: "Market " + laterMonitorCondition.slice(0, 4),
+      canSell: false,
+      canClaimPayout: false,
+      canDiscard: false,
     });
 
-    await act(async () => {});
-    expect(mocks.getPortfolio).toHaveBeenCalledTimes(1);
+    const hookBinaryMonitor = result.current.positions.find(
+      (position) => position.marketId === firstMonitorCondition,
+    )!;
+    expect(hookBinaryMonitor).toMatchObject({
+      side: "yes",
+      outcomeColor: undefined,
+      canSell: false,
+      canClaimPayout: false,
+      canDiscard: false,
+    });
+
+    const monitorOnly = result.current.positions.find(
+      (position) => position.marketId === laterMonitorCondition,
+    )!;
+    const enrichedMonitorOnly = enrichPositionWithCatalogue(
+      monitorOnly,
+      snapshot.marketCatalogue.get(laterMonitorCondition),
+    );
+    expect(enrichedMonitorOnly).toMatchObject({
+      side: "Outcome",
+      outcomeColor: "#FF00FF",
+      canSell: false,
+      canClaimPayout: false,
+      canDiscard: false,
+      marketTitle: "Market " + laterMonitorCondition.slice(0, 4),
+    });
+
+    const matchingMonitor = {
+      ...monitorOnly,
+      monitoringAssetIdentity: primitive.monitoringAssetIdentity,
+      currentValueSats: 700,
+    };
+    const merged = mergeMonitoringPositions([matchingMonitor], [primitive]);
+    expect(merged[0]).toMatchObject({
+      outcomeColor: "#123ABC",
+      currentValueSats: 700,
+      canClaimPayout: false,
+      canDiscard: false,
+    });
   });
 
-  it("serializes coalesced refreshes and rejects the invalidated response", async () => {
-    const initial = deferred<AssetMonitoringPortfolioResponse>();
-    const refresh = deferred<AssetMonitoringPortfolioResponse>();
-    mocks.getPortfolio.mockReturnValueOnce(initial.promise).mockReturnValueOnce(refresh.promise);
+  it("keeps monitored rows visible while display catalogue enrichment is delayed or fails", async () => {
+    const conditionId = conditionIdFor(803);
+    mocks.readCustody.mockResolvedValue([canonicalConditionalCustody(conditionId)]);
+    mocks.getPortfolio.mockResolvedValue(portfolioWithConditionalConditions([conditionId], null));
     const { result } = renderHook(() => usePortfolioState());
-
-    await waitFor(() => expect(mocks.getPortfolio).toHaveBeenCalledTimes(1));
-    act(() => {
-      publishPortfolioInvalidation({ walletId: activeWalletId });
-      publishPortfolioInvalidation({ walletId: activeWalletId });
+    await waitFor(() =>
+      expect(result.current.positions.some((position) => position.marketId === conditionId)).toBe(
+        true,
+      ),
+    );
+    const remotePosition = result.current.positions.find(
+      (position) => position.marketId === conditionId,
+    )!;
+    const originalStats = result.current.stats;
+    expect(remotePosition).toMatchObject({
+      side: "Outcome",
+      canSell: false,
+      canClaimPayout: false,
+      canDiscard: false,
     });
+
+    let resolveCatalogue!: (response: Response) => void;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        () =>
+          new Promise<Response>((resolve) => {
+            resolveCatalogue = resolve;
+          }),
+      ),
+    );
+    const pendingRead = mocks.localQueries.at(-2)!();
+    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
+    expect(result.current.positions.some((position) => position.id === remotePosition.id)).toBe(
+      true,
+    );
+    expect(result.current.stats).toEqual(originalStats);
+    resolveCatalogue(new Response(null, { status: 503 }));
+    const snapshot = (await pendingRead) as PortfolioPositionSnapshot;
+    expect(snapshot.positions).toHaveLength(1);
+    expect(snapshot.positions[0]).toMatchObject({ side: "Outcome", outcomeColor: undefined });
+    expect(result.current.positions.some((position) => position.id === remotePosition.id)).toBe(
+      true,
+    );
+    expect(result.current.stats).toEqual(originalStats);
+  });
+
+  it("discards a catalogue result after the active wallet scope changes", async () => {
+    const conditionId = conditionIdFor(804);
+    mocks.readCustody.mockResolvedValue([canonicalConditionalCustody(conditionId)]);
+    mocks.getPortfolio.mockRejectedValue(new Error("signer unavailable"));
+    let resolveCatalogue!: (response: Response) => void;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        () =>
+          new Promise<Response>((resolve) => {
+            resolveCatalogue = resolve;
+          }),
+      ),
+    );
+    const { result } = renderHook(() => usePortfolioState());
+    await waitFor(() => expect(result.current.monitoring.error).toBe("unavailable"));
+    const pendingRead = mocks.localQueries.at(-2)!();
+    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
+
+    mocks.activeScopeId = "new-wallet-scope";
+    resolveCatalogue(
+      new Response(
+        JSON.stringify({
+          markets: [
+            {
+              conditionId,
+              outcomes: ["NO", "YES"],
+              divisibility: 1_000,
+              state: "open",
+            },
+          ],
+        }),
+        { status: 200 },
+      ),
+    );
+
+    await expect(pendingRead).resolves.toBeUndefined();
+  });
+
+  it("coalesces valuation events on the first fixed ten-second wake", async () => {
+    vi.useFakeTimers();
+    try {
+      mocks.getPortfolio.mockResolvedValue(completePortfolioResponse());
+      renderHook(() => usePortfolioState());
+
+      await act(async () => {});
+      const observer = mocks.portfolioObservers[0];
+      expect(observer?.conditionSets).toHaveLength(1);
+
+      act(() => observer?.onRefresh());
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(6_000);
+      });
+      act(() => observer?.onRefresh());
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(3_999);
+      });
+      expect(mocks.getPortfolio).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1);
+      });
+      expect(mocks.getPortfolio).toHaveBeenCalledTimes(2);
+      expect(observer?.conditionSets).toHaveLength(1);
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps one read in flight and drains a dirty trailing valuation wake", async () => {
+    vi.useFakeTimers();
+    try {
+      const inFlight = deferred<AssetMonitoringPortfolioResponse>();
+      const trailing = deferred<AssetMonitoringPortfolioResponse>();
+      mocks.getPortfolio
+        .mockResolvedValueOnce(completePortfolioResponse())
+        .mockReturnValueOnce(inFlight.promise)
+        .mockReturnValueOnce(trailing.promise);
+      const { result } = renderHook(() => usePortfolioState());
+
+      await act(async () => {});
+      const observer = mocks.portfolioObservers[0];
+      act(() => observer?.onRefresh());
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10_000);
+      });
+      expect(mocks.getPortfolio).toHaveBeenCalledTimes(2);
+
+      act(() => observer?.onRefresh());
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10_000);
+      });
+      expect(mocks.getPortfolio).toHaveBeenCalledTimes(2);
+
+      await act(async () => inFlight.resolve(completePortfolioResponse("ALL", 19_000)));
+      expect(mocks.getPortfolio).toHaveBeenCalledTimes(3);
+      await act(async () => trailing.resolve(completePortfolioResponse("ALL", 23_000)));
+
+      expect(result.current.stats.totalValueSats).toBe(23_000);
+      expect(mocks.getPortfolio).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it("refreshes a building unvalued portfolio and publishes the resolved total", async () => {
+    vi.useFakeTimers();
+    try {
+      mocks.getPortfolio
+        .mockResolvedValueOnce(buildingUnvaluedPortfolioResponse())
+        .mockResolvedValueOnce(completePortfolioResponse("ALL", 19_000));
+      const { result } = renderHook(() => usePortfolioState());
+
+      await act(async () => {});
+      expect(mocks.getPortfolio).toHaveBeenCalledTimes(1);
+      expect(result.current.stats.totalValueKnown).toBe(false);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10_000);
+      });
+
+      expect(mocks.getPortfolio).toHaveBeenCalledTimes(2);
+      expect(result.current.stats.totalValueKnown).toBe(true);
+      expect(result.current.stats.totalValueSats).toBe(19_000);
+      expect(result.current.monitoring.building).toBe(false);
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(["summary", "assets", "history"] as const)(
+    "refreshes when only %s reports building",
+    async (section) => {
+      vi.useFakeTimers();
+      try {
+        const building = completePortfolioResponse();
+        building[section].building = true;
+        mocks.getPortfolio
+          .mockResolvedValueOnce(building)
+          .mockResolvedValueOnce(completePortfolioResponse());
+        renderHook(() => usePortfolioState());
+
+        await act(async () => {});
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(10_000);
+        });
+
+        expect(mocks.getPortfolio).toHaveBeenCalledTimes(2);
+      } finally {
+        vi.clearAllTimers();
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it("limits a continuously building portfolio to three extra reads", async () => {
+    vi.useFakeTimers();
+    try {
+      mocks.getPortfolio.mockResolvedValue(buildingUnvaluedPortfolioResponse());
+      const { result } = renderHook(() => usePortfolioState());
+
+      await act(async () => {});
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(10_000);
+        });
+      }
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10_000);
+      });
+
+      expect(mocks.getPortfolio).toHaveBeenCalledTimes(4);
+      expect(result.current.monitoring.building).toBe(true);
+      expect(result.current.stats.totalValueKnown).toBe(false);
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(["stale", "incomplete", "unvalued"] as const)(
+    "does not refresh a non-building %s portfolio",
+    async (state) => {
+      vi.useFakeTimers();
+      try {
+        const response = completePortfolioResponse();
+        if (state === "stale") response.summary.stale = true;
+        if (state === "incomplete") response.summary.incomplete = true;
+        if (state === "unvalued") {
+          response.summary.estimatedTotalValueMsat = null;
+          response.summary.unvaluedAssetCount = 1;
+          response.assets.assets[1] = {
+            ...response.assets.assets[1]!,
+            estimatedValueMsat: null,
+            valuationStatus: "unvalued",
+          };
+        }
+        mocks.getPortfolio.mockResolvedValue(response);
+        renderHook(() => usePortfolioState());
+
+        await act(async () => {});
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(40_000);
+        });
+
+        expect(mocks.getPortfolio).toHaveBeenCalledTimes(1);
+      } finally {
+        vi.clearAllTimers();
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it("stops building refreshes after a failed read", async () => {
+    vi.useFakeTimers();
+    try {
+      mocks.getPortfolio
+        .mockResolvedValueOnce(buildingUnvaluedPortfolioResponse())
+        .mockRejectedValueOnce(new Error("rate limited"));
+      const { result } = renderHook(() => usePortfolioState());
+
+      await act(async () => {});
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10_000);
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(40_000);
+      });
+
+      expect(mocks.getPortfolio).toHaveBeenCalledTimes(2);
+      expect(result.current.monitoring.error).toBe("unavailable");
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it("cancels a building refresh when the timeframe changes", async () => {
+    vi.useFakeTimers();
+    try {
+      mocks.getPortfolio
+        .mockResolvedValueOnce(buildingUnvaluedPortfolioResponse())
+        .mockResolvedValueOnce(completePortfolioResponse("1D"));
+      const { result } = renderHook(() => usePortfolioState());
+
+      await act(async () => {});
+      act(() => result.current.setSelectedTimeRange("1D"));
+      await act(async () => {});
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(20_000);
+      });
+
+      expect(mocks.getPortfolio).toHaveBeenCalledTimes(2);
+      expect(mocks.getPortfolio).toHaveBeenLastCalledWith(
+        {
+          walletId: activeWalletId,
+          timeframe: "1D",
+          pageSize: 200,
+        },
+        expect.any(AbortSignal),
+      );
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it("cancels a building refresh when the hook unmounts", async () => {
+    vi.useFakeTimers();
+    try {
+      mocks.getPortfolio.mockResolvedValue(buildingUnvaluedPortfolioResponse());
+      const { unmount } = renderHook(() => usePortfolioState());
+
+      await act(async () => {});
+      unmount();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(20_000);
+      });
+
+      expect(mocks.getPortfolio).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it("coalesces wallet invalidations on the fixed wake and starts a new bounded cycle", async () => {
+    vi.useFakeTimers();
+    try {
+      mocks.getPortfolio.mockResolvedValue(buildingUnvaluedPortfolioResponse());
+      renderHook(() => usePortfolioState());
+
+      await act(async () => {});
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10_000);
+      });
+      expect(mocks.getPortfolio).toHaveBeenCalledTimes(2);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5_000);
+      });
+      act(() => publishPortfolioInvalidation({ walletId: activeWalletId }));
+      act(() => publishPortfolioInvalidation({ walletId: activeWalletId }));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(4_999);
+      });
+      expect(mocks.getPortfolio).toHaveBeenCalledTimes(2);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1);
+      });
+      expect(mocks.getPortfolio).toHaveBeenCalledTimes(3);
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(10_000);
+        });
+      }
+
+      expect(mocks.getPortfolio).toHaveBeenCalledTimes(6);
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it("retries an aborted initial read during React Strict Mode effect replay", async () => {
+    const firstRead = deferred<AssetMonitoringPortfolioResponse>();
+    mocks.getPortfolio
+      .mockReturnValueOnce(firstRead.promise)
+      .mockResolvedValueOnce(portfolioResponse());
+    const { result } = renderHook(() => usePortfolioState(), { reactStrictMode: true });
+
+    await waitFor(() => expect(mocks.getPortfolio).toHaveBeenCalledTimes(2));
+    expect(mocks.getPortfolio.mock.calls[0]?.[1]?.aborted).toBe(true);
+    expect(mocks.getPortfolio.mock.calls[1]?.[1]?.aborted).toBe(false);
+    await waitFor(() => expect(result.current.stats.totalValueSats).toBe(12_000));
     await act(async () =>
-      initial.resolve({
+      firstRead.resolve({
         ...portfolioResponse(),
         summary: { ...portfolioResponse().summary, estimatedTotalValueMsat: 1 },
       }),
     );
-    await waitFor(() => expect(mocks.getPortfolio).toHaveBeenCalledTimes(2));
-    await act(async () => refresh.resolve(portfolioResponse()));
-
-    await waitFor(() => expect(result.current.stats.totalValueSats).toBe(12_000));
+    expect(result.current.stats.totalValueSats).toBe(12_000);
     expect(mocks.getPortfolio).toHaveBeenCalledTimes(2);
+  });
+
+  it("ignores invalid and inactive-wallet portfolio invalidations", async () => {
+    vi.useFakeTimers();
+    mocks.getPortfolio.mockResolvedValue(completePortfolioResponse());
+    try {
+      renderHook(() => usePortfolioState());
+
+      await act(async () => {});
+      expect(mocks.getPortfolio).toHaveBeenCalledTimes(1);
+      act(() => {
+        window.dispatchEvent(
+          new CustomEvent(portfolioInvalidatedEvent, { detail: { walletId: "b".repeat(64) } }),
+        );
+        window.dispatchEvent(
+          new CustomEvent(portfolioInvalidatedEvent, { detail: { walletId: "A".repeat(64) } }),
+        );
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10_000);
+      });
+
+      expect(mocks.getPortfolio).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it("coalesces wallet invalidations without aborting an in-flight read", async () => {
+    vi.useFakeTimers();
+    try {
+      const initial = deferred<AssetMonitoringPortfolioResponse>();
+      const refresh = deferred<AssetMonitoringPortfolioResponse>();
+      mocks.getPortfolio.mockReturnValueOnce(initial.promise).mockReturnValueOnce(refresh.promise);
+      const { result } = renderHook(() => usePortfolioState());
+
+      await act(async () => {});
+      expect(mocks.getPortfolio).toHaveBeenCalledTimes(1);
+      act(() => {
+        publishPortfolioInvalidation({ walletId: activeWalletId });
+        publishPortfolioInvalidation({ walletId: activeWalletId });
+      });
+      await act(async () =>
+        initial.resolve({
+          ...portfolioResponse(),
+          summary: { ...portfolioResponse().summary, estimatedTotalValueMsat: 13_000 },
+        }),
+      );
+      expect(result.current.stats.totalValueSats).toBe(13_000);
+      expect(mocks.getPortfolio.mock.calls[0]?.[1]?.aborted).toBe(false);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(9_999);
+      });
+      expect(mocks.getPortfolio).toHaveBeenCalledTimes(1);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1);
+      });
+      expect(mocks.getPortfolio).toHaveBeenCalledTimes(2);
+      expect(mocks.getPortfolio.mock.calls[1]?.[1]?.aborted).toBe(false);
+      await act(async () => refresh.resolve(portfolioResponse()));
+
+      expect(result.current.stats.totalValueSats).toBe(12_000);
+      expect(mocks.getPortfolio).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
   });
 
   it("refreshes the active generation without waiting for an obsolete request", async () => {
@@ -638,18 +1351,28 @@ describe("usePortfolioState monitoring facade", () => {
     const { result } = renderHook(() => usePortfolioState());
 
     await waitFor(() => expect(mocks.getPortfolio).toHaveBeenCalledTimes(1));
+    vi.useFakeTimers();
     act(() => result.current.setSelectedTimeRange("1D"));
-    await waitFor(() => expect(result.current.stats.totalValueSats).toBe(12_000));
+    await act(async () => {});
+    expect(result.current.stats.totalValueSats).toBe(12_000);
     act(() => {
       publishPortfolioInvalidation({ walletId: activeWalletId });
     });
 
-    await waitFor(() => expect(mocks.getPortfolio).toHaveBeenCalledTimes(3));
+    expect(mocks.getPortfolio).toHaveBeenCalledTimes(2);
+    expect(mocks.getPortfolio.mock.calls[1]?.[1]?.aborted).toBe(false);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10_000);
+    });
+    vi.clearAllTimers();
+    vi.useRealTimers();
+
     expect(mocks.getPortfolio.mock.calls.map(([input]) => input.timeframe)).toEqual([
       "ALL",
       "1D",
       "1D",
     ]);
+    expect(mocks.getPortfolio.mock.calls[0]?.[1]?.aborted).toBe(true);
     await act(async () =>
       obsolete.resolve({
         ...portfolioResponse(),
@@ -662,9 +1385,12 @@ describe("usePortfolioState monitoring facade", () => {
   });
 
   it("resets appended pagination for a portfolio invalidation", async () => {
+    const portfolioWithMoreAssets = completePortfolioResponse();
+    portfolioWithMoreAssets.assets.nextCursor = "cursor-1";
+    portfolioWithMoreAssets.assets.incomplete = true;
     mocks.getPortfolio
-      .mockResolvedValueOnce(firstPage())
-      .mockResolvedValueOnce(portfolioResponse());
+      .mockResolvedValueOnce(portfolioWithMoreAssets)
+      .mockResolvedValueOnce(completePortfolioResponse());
     mocks.getAssetMonitoringAssets.mockResolvedValue(nextPage(conditionalAsset("NO")));
     const { result } = renderHook(() => usePortfolioState());
 
@@ -673,29 +1399,50 @@ describe("usePortfolioState monitoring facade", () => {
     await waitFor(() =>
       expect(result.current.positions.some((item) => item.outcomeId === "NO")).toBe(true),
     );
+    vi.useFakeTimers();
     act(() => {
       publishPortfolioInvalidation({ walletId: activeWalletId });
     });
 
-    await waitFor(() => expect(mocks.getPortfolio).toHaveBeenCalledTimes(2));
+    expect(mocks.getPortfolio).toHaveBeenCalledTimes(1);
+    expect(result.current.positions.some((item) => item.outcomeId === "NO")).toBe(true);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10_000);
+    });
+    vi.clearAllTimers();
+    vi.useRealTimers();
+
+    expect(mocks.getPortfolio).toHaveBeenCalledTimes(2);
     await waitFor(() => expect(result.current.monitoring.hasMoreAssets).toBe(false));
     expect(result.current.positions.some((item) => item.outcomeId === "NO")).toBe(false);
   });
 
   it("does not retry a failed portfolio invalidation refresh", async () => {
-    mocks.getPortfolio
-      .mockResolvedValueOnce(portfolioResponse())
-      .mockRejectedValueOnce(new Error("down"));
-    const { result } = renderHook(() => usePortfolioState());
+    vi.useFakeTimers();
+    try {
+      mocks.getPortfolio
+        .mockResolvedValueOnce(portfolioResponse())
+        .mockRejectedValueOnce(new Error("down"));
+      const { result } = renderHook(() => usePortfolioState());
 
-    await waitFor(() => expect(result.current.stats.totalValueSats).toBe(12_000));
-    act(() => {
-      publishPortfolioInvalidation({ walletId: activeWalletId });
-    });
+      await act(async () => {});
+      expect(result.current.stats.totalValueSats).toBe(12_000);
+      act(() => {
+        publishPortfolioInvalidation({ walletId: activeWalletId });
+      });
 
-    await waitFor(() => expect(result.current.monitoring.error).toBe("unavailable"));
-    await act(async () => {});
-    expect(mocks.getPortfolio).toHaveBeenCalledTimes(2);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10_000);
+      });
+      expect(result.current.monitoring.error).toBe("unavailable");
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(40_000);
+      });
+      expect(mocks.getPortfolio).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
   });
 
   it("uses server summary, history, and first asset page as display-only rows", () => {
@@ -722,6 +1469,36 @@ describe("usePortfolioState monitoring facade", () => {
       unvaluedAssetCount: 1,
       hasPendingOutgoing: false,
       pendingOutgoingValueMsat: 0,
+    });
+  });
+
+  it("preserves the server aggregate with available and pending values", () => {
+    const response = completePortfolioResponse("ALL", 12_000);
+    response.summary.availableValueMsat = 4_000;
+    response.summary.pendingOutgoingValueMsat = 8_000;
+    Object.assign(response.assets.assets[0]!, {
+      availableSubunits: 1_000,
+      pendingOutgoingSubunits: 2_000,
+      availableValueMsat: 1_000,
+      pendingOutgoingValueMsat: 2_000,
+      estimatedValueMsat: 3_000,
+    });
+    Object.assign(response.assets.assets[1]!, {
+      availableSubunits: 3_000,
+      pendingOutgoingSubunits: 6_000,
+      availableValueMsat: 3_000,
+      pendingOutgoingValueMsat: 6_000,
+      estimatedValueMsat: 9_000,
+    });
+
+    const mapped = mapMonitoringPortfolio(response);
+
+    expect(mapped.stats.totalValueSats).toBe(12_000);
+    expect(mapped.stats.positionsValueSats).toBe(9_000);
+    expect(mapped.funds[0]?.amount).toBe(1_000);
+    expect(mapped.monitoring).toMatchObject({
+      hasPendingOutgoing: true,
+      pendingOutgoingValueMsat: 8_000,
     });
   });
 
@@ -754,6 +1531,50 @@ describe("usePortfolioState monitoring facade", () => {
       valueKnown: true,
     });
   });
+
+  it.each([
+    ["priced", 720, 720],
+    ["missing current price", null, null],
+    ["missing historical price", 720, null],
+  ] as const)(
+    "preserves the server estimate for a No B-only portfolio: %s",
+    (_case, currentValue, historicalValue) => {
+      const response = portfolioResponse();
+      const holding = conditionalAsset("A|C");
+      if (holding.asset.kind !== "conditional") throw new Error("fixture must be conditional");
+      holding.asset.conditionId = monitoredConditionId;
+      holding.asset.outcomeUniverseDigest = computeAssetMonitoringOutcomeUniverseDigest([
+        "A",
+        "B",
+        "C",
+      ]);
+      holding.availableSubunits = 1_000;
+      holding.estimatedValueMsat = currentValue;
+      holding.valuationStatus = currentValue === null ? "unvalued" : "valued";
+      Object.assign(response.summary, {
+        availableValueMsat: currentValue ?? 0,
+        estimatedTotalValueMsat: currentValue ?? 0,
+        unvaluedAssetCount: currentValue === null ? 1 : 0,
+        unvaluedAvailableSubunits: currentValue === null ? 1_000 : 0,
+        stale: false,
+        incomplete: false,
+        building: false,
+      });
+      response.assets.assets = [holding];
+      response.assets.incomplete = false;
+      response.history.points[0].estimatedTotalValueMsat = historicalValue;
+
+      const mapped = mapMonitoringPortfolio(response);
+
+      expect(mapped.positions).toHaveLength(1);
+      expect(mapped.positions[0].valueKnown).toBe(currentValue !== null);
+      expect(mapped.stats.totalValueKnown).toBe(currentValue !== null);
+      expect(mapped.stats.positionsValueKnown).toBe(currentValue !== null);
+      if (currentValue !== null) expect(mapped.stats.totalValueSats).toBe(720);
+      expect(mapped.monitoring).toMatchObject({ stale: false, incomplete: false, building: false });
+      expect(mapped.chart).toHaveLength(historicalValue === null ? 0 : 1);
+    },
+  );
 
   it("keeps null valuations unknown instead of rendering them as zero", () => {
     const response = portfolioResponse();
@@ -881,13 +1702,38 @@ describe("usePortfolioState monitoring facade", () => {
     expect(mapped.chart).toEqual([]);
   });
 
-  it("keeps local rows when authentication or monitoring fails", async () => {
+  it("keeps local rows and activity but no chart history when monitoring fails", async () => {
+    mocks.activityItems.push(
+      {
+        id: "deposit-1",
+        type: "deposit",
+        amountSats: 5_000,
+        baseAsset: "sat",
+        date: "2026-09-23T00:00:00.000Z",
+        status: "completed",
+        txId: null,
+        lightningInvoice: null,
+      },
+      {
+        id: "payout-1",
+        type: "payout_claimed",
+        amountSats: 2_000,
+        baseAsset: "sat",
+        date: "2026-09-24T00:00:00.000Z",
+        status: "completed",
+        txId: null,
+        lightningInvoice: null,
+      },
+    );
     mocks.getPortfolio.mockRejectedValue(new Error("signer unavailable"));
     const { result } = renderHook(() => usePortfolioState());
 
     await waitFor(() => expect(result.current.monitoring.error).toBe("unavailable"));
     expect(result.current.positions).toEqual([localPosition]);
     expect(result.current.funds).toEqual([localFund]);
+    expect(result.current.activity).toHaveLength(2);
+    expect(result.current.stats.totalValueSats).toBe(6_000);
+    expect(result.current.plChartData).toEqual({ "1D": [], "1W": [], "1M": [], ALL: [] });
   });
 
   it.each(["null", "undefined"] as const)(

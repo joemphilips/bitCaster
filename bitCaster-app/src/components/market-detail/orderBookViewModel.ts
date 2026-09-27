@@ -44,6 +44,29 @@ export function computeSpreadMidpoint(orderBook: OrderBook | null | undefined): 
   return (bestBid + bestAsk) / 2;
 }
 
+export function computeExecutableBookMidpoint(
+  orderBook: OrderBook | null | undefined,
+  divisibilityInput: number,
+): number | null {
+  const divisibility = parseMarketDivisibility(divisibilityInput);
+  if (divisibility === null) return null;
+
+  const validBids =
+    orderBook?.bids.filter((order) => isPositiveExecutableOrder(order, divisibility)) ?? [];
+  const validAsks =
+    orderBook?.asks.filter((order) => isPositiveExecutableOrder(order, divisibility)) ?? [];
+  if (validBids.length === 0 || validAsks.length === 0) return null;
+
+  const bestBid = validBids.reduce<number>((best, order) => Math.max(best, order.price), 0);
+  const bestAsk = validAsks.reduce<number>(
+    (best, order) => Math.min(best, order.price),
+    divisibility,
+  );
+  if (bestBid > bestAsk) return null;
+
+  return (bestBid + bestAsk) / 2;
+}
+
 /**
  * Return whether a route has at least one order that can execute for a side.
  *

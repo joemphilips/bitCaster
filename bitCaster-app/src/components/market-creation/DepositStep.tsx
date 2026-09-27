@@ -54,6 +54,8 @@ interface DepositStepProps {
   divisibility: MarketDivisibility;
   /** Open the existing wallet setup chooser before a wallet-owned action. */
   onRequireWallet?: () => void;
+  /** Refresh live market snapshots after this session confirms a funding credit. */
+  onCredited?: () => void;
 }
 
 export function DepositStep({
@@ -63,6 +65,7 @@ export function DepositStep({
   divisibility: divisibilityInput,
   outcomeCount,
   onRequireWallet,
+  onCredited,
 }: DepositStepProps) {
   const { t } = useTranslation();
   const navigate = useNavigate();
@@ -73,12 +76,18 @@ export function DepositStep({
   const [deliveryProgress, setDeliveryProgress] = useState<MarketFundingDeliveryProgress | null>(
     null,
   );
+  const [showCreditedNotice, setShowCreditedNotice] = useState(false);
   const [fundingBusy, setFundingBusy] = useState(false);
   const [headTransferId, setHeadTransferId] = useState<string | null>(null);
   const [headReady, setHeadReady] = useState(false);
   const [headReadRevision, setHeadReadRevision] = useState(0);
   const generation = useRef(0);
   const inFlight = useRef(false);
+  // Keep callback identity changes out of receipt restoration after market refreshes.
+  const onCreditedRef = useRef(onCredited);
+  useEffect(() => {
+    onCreditedRef.current = onCredited;
+  }, [onCredited]);
   const [topUpStage, setTopUpStage] = useState<"closed" | "modal" | "overlay">("closed");
   const [error, setError] = useState<string | null>(null);
   const cashuUnit = defaultCollateralUnit(baseAsset);
@@ -99,11 +108,15 @@ export function DepositStep({
   );
   const fundingAmountInputError = fundingAmountSats.trim() !== "" && fundingAmountMsat === null;
 
-  const applyFundingResult = useCallback((result: BrowserMarketFundingDeliveryResult) => {
-    setHeadTransferId(result.transfer.transferId);
-    setFundingAmountSats(formatFundingInput(Number(result.transfer.requestedAmount)));
-    setDeliveryProgress(result.progress);
-  }, []);
+  const applyFundingResult = useCallback(
+    (result: BrowserMarketFundingDeliveryResult, showSuccess: boolean) => {
+      setHeadTransferId(result.transfer.transferId);
+      setFundingAmountSats(formatFundingInput(Number(result.transfer.requestedAmount)));
+      setDeliveryProgress(result.progress);
+      setShowCreditedNotice(showSuccess && result.progress === "credited");
+    },
+    [],
+  );
 
   useEffect(() => {
     const current = ++generation.current;
@@ -111,6 +124,7 @@ export function DepositStep({
     setHeadReady(false);
     setHeadTransferId(null);
     setDeliveryProgress(null);
+    setShowCreditedNotice(false);
     setError(null);
     inFlight.current = false;
     if (!walletMnemonic.trim() || !accountSubject) {
@@ -137,7 +151,9 @@ export function DepositStep({
             attempt: { kind: "resume", transferId: exactId },
           });
           if (cancelled || current !== generation.current) return;
-          applyFundingResult(result);
+          // Restoring a receipt must not announce an old payment as a new success.
+          applyFundingResult(result, false);
+          if (result.progress === "credited") onCreditedRef.current?.();
         }
         setHeadReady(true);
       } catch (err) {
@@ -176,11 +192,10 @@ export function DepositStep({
   }, [conditionId, navigate, presentation]);
 
   useEffect(() => {
-    if (presentation === "detail" || deliveryProgress !== "credited" || fundingBusy)
-      return undefined;
+    if (presentation === "detail" || !showCreditedNotice || fundingBusy) return undefined;
     const timer = window.setTimeout(continueToMarket, 5_000);
     return () => window.clearTimeout(timer);
-  }, [continueToMarket, deliveryProgress, presentation, fundingBusy]);
+  }, [continueToMarket, showCreditedNotice, presentation, fundingBusy]);
 
   const submitMarketFunding = useCallback(async () => {
     if (fundingBusy || inFlight.current) return;
@@ -215,6 +230,7 @@ export function DepositStep({
           };
     inFlight.current = true;
     setFundingBusy(true);
+    setShowCreditedNotice(false);
     try {
       if (!accountSubject) throw new Error("The active wallet identity is unavailable.");
       const result = await executeBrowserMarketFundingDelivery({
@@ -227,7 +243,10 @@ export function DepositStep({
         attempt,
         availableAmount: balance,
       });
-      if (current === generation.current) applyFundingResult(result);
+      if (current === generation.current) {
+        applyFundingResult(result, true);
+        if (result.progress === "credited") onCredited?.();
+      }
     } catch (err) {
       if (current !== generation.current) return;
       if (err instanceof BrowserMarketFundingInsufficientBalanceError) {
@@ -255,6 +274,7 @@ export function DepositStep({
     outcomeCount,
     fundingAmountMsat,
     fundingBusy,
+    onCredited,
     onRequireWallet,
     t,
     walletMnemonic,
@@ -305,7 +325,6 @@ export function DepositStep({
           type="text"
           inputMode="decimal"
           aria-invalid={fundingAmountInputError ? "true" : "false"}
-          aria-describedby="amm-funding-amount-hint"
           value={fundingAmountSats}
           disabled={fundingBusy || (headTransferId !== null && deliveryProgress !== "credited")}
           onChange={(event) => setFundingAmountSats(event.target.value)}
@@ -313,9 +332,6 @@ export function DepositStep({
             fundingAmountInputError ? "border-red-400" : "border-slate-700"
           }`}
         />
-        <span id="amm-funding-amount-hint" className="mt-2 block text-xs text-slate-400">
-          {t("marketCreation.ammFundingAmountHint")}
-        </span>
       </label>
 
       <div className="mb-4 flex gap-2 rounded-lg border border-slate-800 bg-slate-900 p-3 text-xs text-slate-300">
@@ -323,7 +339,7 @@ export function DepositStep({
         <p>{t("marketCreation.ammFundingDisclosure")}</p>
       </div>
 
-      {deliveryProgress && (
+      {deliveryProgress && (deliveryProgress !== "credited" || showCreditedNotice) && (
         <p className="mb-4 rounded-lg border border-emerald-400/30 bg-emerald-500/10 p-3 text-sm text-emerald-100">
           {deliveryProgress === "credited"
             ? t("marketCreation.statusPaymentCredited")

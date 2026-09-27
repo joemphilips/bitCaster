@@ -3,6 +3,10 @@ import type { components } from './generated/api.ts'
 export type PreviewFokOrderRequest = components['schemas']['PreviewFokOrderRequest']
 export type PreviewFokOrderResponse = components['schemas']['PreviewFokOrderResponse']
 export type FokPreviewReason = components['schemas']['FokPreviewReason']
+export type PreviewFokOrderCapacityRequest = components['schemas']['PreviewFokOrderCapacityRequest']
+export type PreviewFokOrderCapacityResponse =
+  components['schemas']['PreviewFokOrderCapacityResponse']
+export type FokCapacityPreviewStatus = components['schemas']['FokCapacityPreviewStatus']
 
 export const FOK_PREVIEW_RESPONSE_BYTES_MAX = 16 * 1_024
 
@@ -14,6 +18,11 @@ const FOK_PREVIEW_REASONS = [
   'market_unavailable',
   'temporarily_unavailable',
 ] as const satisfies readonly FokPreviewReason[]
+const FOK_CAPACITY_PREVIEW_STATUSES = [
+  'ready',
+  'market_unavailable',
+  'temporarily_unavailable',
+] as const satisfies readonly FokCapacityPreviewStatus[]
 
 /**
  * Build the public preview body from the generated request shape.
@@ -30,6 +39,52 @@ export function canonicalizePreviewFokOrderRequest(
     price: request.price,
     faceAmountSubunits: request.faceAmountSubunits,
   }
+}
+
+/** Build the public fields only. Omitted price means Auto; null is invalid. */
+export function canonicalizePreviewFokOrderCapacityRequest(
+  request: PreviewFokOrderCapacityRequest,
+): PreviewFokOrderCapacityRequest {
+  validateCapacityRequest(request, null)
+  return {
+    marketId: request.marketId,
+    side: request.side,
+    tokenSide: request.tokenSide,
+    ...(request.price === undefined ? {} : { price: request.price }),
+  }
+}
+
+export function decodePreviewFokOrderCapacityResponse(
+  value: unknown,
+  request: PreviewFokOrderCapacityRequest,
+): PreviewFokOrderCapacityResponse {
+  const record = exactCapacityPreviewRecord(value)
+  const status = record.status
+  if (!isCapacityPreviewStatus(status)) {
+    throw new Error('capacity preview status is invalid')
+  }
+
+  const response: PreviewFokOrderCapacityResponse = {
+    status,
+    referencePrice: nullablePrice(record.referencePrice, 'capacity preview reference price'),
+    effectiveLimitPrice: nullablePrice(
+      record.effectiveLimitPrice,
+      'capacity preview effective limit price',
+    ),
+    maxFaceAmountSubunits: nullableMonetary(
+      record.maxFaceAmountSubunits,
+      'capacity preview maximum face amount',
+    ),
+    quotePaymentSubunits: nullableMonetary(
+      record.quotePaymentSubunits,
+      'capacity preview quote payment',
+    ),
+    worstPrice: nullablePrice(record.worstPrice, 'capacity preview worst price'),
+    priceDenominator: nullablePriceDenominator(record.priceDenominator),
+    previewRevision: nullableBoundedString(record.previewRevision, 'capacity preview revision'),
+  }
+  validateCapacityPreviewResponse(response, request)
+  return response
 }
 
 export function decodePreviewFokOrderResponse(
@@ -166,8 +221,180 @@ function exactPreviewRecord(value: unknown): Record<string, unknown> {
   return record
 }
 
+function exactCapacityPreviewRecord(value: unknown): Record<string, unknown> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new Error('capacity preview response object is invalid')
+  }
+  const record = value as Record<string, unknown>
+  const required = [
+    'status',
+    'referencePrice',
+    'effectiveLimitPrice',
+    'maxFaceAmountSubunits',
+    'quotePaymentSubunits',
+    'worstPrice',
+    'priceDenominator',
+    'previewRevision',
+  ] as const
+  if (
+    required.some((key) => !Object.hasOwn(record, key)) ||
+    Object.keys(record).some((key) => !required.includes(key as (typeof required)[number]))
+  ) {
+    throw new Error('capacity preview response fields are invalid')
+  }
+  return record
+}
+
+function validateCapacityPreviewResponse(
+  response: PreviewFokOrderCapacityResponse,
+  request: PreviewFokOrderCapacityRequest,
+): void {
+  validateCapacityRequest(request, null)
+  switch (response.status) {
+    case 'market_unavailable':
+    case 'temporarily_unavailable':
+      if (
+        response.referencePrice !== null ||
+        response.effectiveLimitPrice !== null ||
+        response.maxFaceAmountSubunits !== null ||
+        response.quotePaymentSubunits !== null ||
+        response.worstPrice !== null ||
+        response.priceDenominator !== null ||
+        response.previewRevision !== null
+      ) {
+        throw new Error('unavailable capacity preview facts must be null')
+      }
+      return
+    case 'ready':
+      validateReadyCapacityPreview(response, request)
+      return
+    default:
+      return assertNever(response.status)
+  }
+}
+
+function validateReadyCapacityPreview(
+  response: PreviewFokOrderCapacityResponse,
+  request: PreviewFokOrderCapacityRequest,
+): void {
+  const {
+    referencePrice,
+    effectiveLimitPrice,
+    maxFaceAmountSubunits,
+    quotePaymentSubunits,
+    worstPrice,
+    priceDenominator,
+    previewRevision,
+  } = response
+  if (
+    priceDenominator === null ||
+    previewRevision === null ||
+    maxFaceAmountSubunits === null ||
+    quotePaymentSubunits === null
+  ) {
+    throw new Error('ready capacity preview facts are incomplete')
+  }
+  validateCapacityRequest(request, priceDenominator)
+  if (referencePrice !== null && referencePrice >= priceDenominator) {
+    throw new Error('capacity preview reference price is invalid')
+  }
+  if (effectiveLimitPrice !== null && effectiveLimitPrice >= priceDenominator) {
+    throw new Error('capacity preview effective limit price is invalid')
+  }
+  if (worstPrice !== null && worstPrice >= priceDenominator) {
+    throw new Error('capacity preview worst price is invalid')
+  }
+  if (maxFaceAmountSubunits % priceDenominator !== 0) {
+    throw new Error('capacity preview face amount is not a whole-share multiple')
+  }
+
+  if (referencePrice === null) {
+    if (maxFaceAmountSubunits !== 0 || quotePaymentSubunits !== 0 || worstPrice !== null) {
+      throw new Error('capacity preview without a reference must be empty')
+    }
+    if (request.price === undefined) {
+      if (effectiveLimitPrice !== null) {
+        throw new Error('automatic capacity limit requires a reference price')
+      }
+    } else if (effectiveLimitPrice !== request.price) {
+      throw new Error('custom capacity limit does not match the request')
+    }
+    return
+  }
+
+  if (effectiveLimitPrice === null) {
+    throw new Error('capacity preview reference requires an effective limit')
+  }
+  if (request.price === undefined) {
+    // Check approved arithmetic only. The server owns the book price source.
+    const expectedLimit = automaticCapacityLimit(request.side, priceDenominator, referencePrice)
+    if (effectiveLimitPrice !== expectedLimit) {
+      throw new Error('automatic capacity limit is inconsistent with its reference')
+    }
+  } else if (effectiveLimitPrice !== request.price) {
+    throw new Error('custom capacity limit does not match the request')
+  }
+
+  if (maxFaceAmountSubunits === 0) {
+    if (quotePaymentSubunits !== 0 || worstPrice !== null) {
+      throw new Error('zero capacity preview facts are inconsistent')
+    }
+    return
+  }
+  if (
+    quotePaymentSubunits === 0 ||
+    quotePaymentSubunits >= maxFaceAmountSubunits ||
+    worstPrice === null ||
+    !capacityPriceIsWithinBounds(request.side, referencePrice, worstPrice, effectiveLimitPrice)
+  ) {
+    throw new Error('positive capacity preview price facts are inconsistent')
+  }
+}
+
+function automaticCapacityLimit(
+  side: PreviewFokOrderCapacityRequest['side'],
+  priceDenominator: number,
+  referencePrice: number,
+): number {
+  const allowance = Math.floor((priceDenominator * 20) / 100)
+  const rawLimit = (() => {
+    switch (side) {
+      case 'Buy':
+        return referencePrice + allowance
+      case 'Sell':
+        return referencePrice - allowance
+      default:
+        return assertNever(side)
+    }
+  })()
+  return Math.max(1, Math.min(priceDenominator - 1, rawLimit))
+}
+
+function capacityPriceIsWithinBounds(
+  side: PreviewFokOrderCapacityRequest['side'],
+  referencePrice: number,
+  worstPrice: number,
+  effectiveLimitPrice: number,
+): boolean {
+  switch (side) {
+    case 'Buy':
+      return worstPrice >= referencePrice && worstPrice <= effectiveLimitPrice
+    case 'Sell':
+      return worstPrice <= referencePrice && worstPrice >= effectiveLimitPrice
+    default:
+      return assertNever(side)
+  }
+}
+
 function isFokPreviewReason(value: unknown): value is FokPreviewReason {
   return typeof value === 'string' && (FOK_PREVIEW_REASONS as readonly string[]).includes(value)
+}
+
+function isCapacityPreviewStatus(value: unknown): value is FokCapacityPreviewStatus {
+  return (
+    typeof value === 'string' &&
+    (FOK_CAPACITY_PREVIEW_STATUSES as readonly string[]).includes(value)
+  )
 }
 
 function nullableBoundedString(value: unknown, name: string): string | null {
@@ -216,20 +443,7 @@ function nullablePriceDenominator(value: unknown): number | null {
 }
 
 function validateRequest(request: PreviewFokOrderRequest, priceDenominator: number | null): void {
-  if (
-    typeof request.marketId !== 'string' ||
-    request.marketId.length < 3 ||
-    request.marketId.length > 256 ||
-    !/^[a-zA-Z0-9][a-zA-Z0-9-]*-[a-zA-Z0-9]+$/.test(request.marketId)
-  ) {
-    throw new Error('preview market id is invalid')
-  }
-  if (request.side !== 'Buy' && request.side !== 'Sell') {
-    throw new Error('preview side is invalid')
-  }
-  if (request.tokenSide !== 'Outcome' && request.tokenSide !== 'Complement') {
-    throw new Error('preview token side is invalid')
-  }
+  validatePreviewRouteFields(request.marketId, request.side, request.tokenSide)
   if (!Number.isSafeInteger(request.price) || request.price < 1 || request.price > 999_999) {
     throw new Error('preview request price is invalid')
   }
@@ -243,4 +457,51 @@ function validateRequest(request: PreviewFokOrderRequest, priceDenominator: numb
   if (priceDenominator !== null && request.price >= priceDenominator) {
     throw new Error('preview request price is invalid')
   }
+}
+
+function validateCapacityRequest(
+  request: PreviewFokOrderCapacityRequest,
+  priceDenominator: number | null,
+): void {
+  if (typeof request !== 'object' || request === null || Array.isArray(request)) {
+    throw new Error('capacity preview request is invalid')
+  }
+  validatePreviewRouteFields(request.marketId, request.side, request.tokenSide)
+  if (
+    request.price !== undefined &&
+    (typeof request.price !== 'number' ||
+      !Number.isSafeInteger(request.price) ||
+      request.price < 1 ||
+      request.price > 999_999)
+  ) {
+    throw new Error('capacity preview custom price is invalid')
+  }
+  if (
+    priceDenominator !== null &&
+    request.price !== undefined &&
+    request.price >= priceDenominator
+  ) {
+    throw new Error('capacity preview custom price is invalid')
+  }
+}
+
+function validatePreviewRouteFields(marketId: unknown, side: unknown, tokenSide: unknown): void {
+  if (
+    typeof marketId !== 'string' ||
+    marketId.length < 3 ||
+    marketId.length > 256 ||
+    !/^[a-zA-Z0-9][a-zA-Z0-9-]*-[a-zA-Z0-9]+$/.test(marketId)
+  ) {
+    throw new Error('preview market id is invalid')
+  }
+  if (side !== 'Buy' && side !== 'Sell') {
+    throw new Error('preview side is invalid')
+  }
+  if (tokenSide !== 'Outcome' && tokenSide !== 'Complement') {
+    throw new Error('preview token side is invalid')
+  }
+}
+
+function assertNever(value: never): never {
+  throw new Error(`unexpected capacity preview value: ${String(value)}`)
 }

@@ -1,6 +1,6 @@
 ---
-title: "Conditional Tokens"
-description: "What market positions represent, how payouts work, and what you must trust."
+title: 'Conditional Tokens'
+description: 'What market positions represent, how payouts work, and what you must trust.'
 sidebar:
   order: 1
 ---
@@ -32,6 +32,16 @@ exchanges ordinary ecash for conditional tokens. Selling exchanges a position
 for ordinary ecash if matching liquidity is available. You can submit a sell
 order before the event result is known. A sale is not guaranteed.
 
+The Sell form shows the shares available for the selected outcome. Shares
+already in use by a pending transaction are not available. Percentage buttons
+use this holding and round down to whole shares. The order still needs enough
+liquidity and funds for fees.
+
+Buying requires the selected trade cost and fees, not the full winning payout.
+If the cost check fails, use Retry. If you need to add funds but no minimum
+amount is shown, choose an amount. Then review the updated trade cost before
+confirming the order.
+
 After the mint accepts the oracle's signed result, winning tokens can be
 redeemed for ordinary ecash from that mint. Redemption is not a Lightning
 withdrawal. Fees and the mint's redemption period still apply.
@@ -41,6 +51,31 @@ does not guarantee a refund. Read [market resolution](/user-guide/core-concepts/
 for these conditions. Keep wallet records until a trade or redemption is
 confirmed. Losing tokens do not become ordinary ecash. Resolution alone does
 not authorize deleting your wallet records.
+
+## Estimated position values
+
+Portfolio uses confirmed trade prices to estimate position values. With two
+outcomes, the latest trade on either outcome updates both estimates. The other
+outcome uses 100% minus that price. For example, a latest Yes trade at 28%
+gives a No estimate of 72%; a latest No trade at 72% gives a Yes estimate of 28%. With
+three or more outcomes, a No position uses 100% minus its outcome's price. For example,
+if B last traded at 28%, No B is estimated at 72% of its winning payout.
+This estimate is not a guaranteed sale price. Use the Sell preview to check
+what an order can receive.
+
+A closed winning position shows its payout value, not profit. Portfolio does
+not report a profit amount or percentage because it does not have the purchase
+cost for that position.
+
+A position without a usable price stays visible. Its value and the complete
+portfolio total are unavailable, not zero. The app reports missing prices
+separately from data that is still updating. Missing historical prices can
+make the chart unavailable without hiding a valid current estimate.
+
+The first page updates after trades and market closure. Updates can be delayed.
+Positions loaded with **Load more** may not update automatically. Reload
+Portfolio and load those pages again to update their values. The page shows
+a note when loaded positions are outside its live-update coverage.
 
 ## What you must trust
 

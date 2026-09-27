@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import type { MarketDetail } from "@/types/market-detail";
 import { normalizeMarketBaseAsset } from "@bitcaster/client-sdk/marketUnits";
 import { InlineAmount } from "@/components/shared/InlineAmount";
+import { MetricExplanation } from "@/components/shared/MetricExplanation";
 
 interface MarketStatsProps {
   market: MarketDetail;
@@ -62,13 +63,28 @@ export function MarketStats({ market }: MarketStatsProps) {
     {
       icon: TrendingUp,
       label: t("market.volume"),
-      value: <InlineAmount amountSubunits={market.volumeLifetimeSubunits} baseAsset={baseAsset} />,
+      description: t("market.volumeDescription"),
+      value: (
+        <InlineAmount
+          amountSubunits={market.volumeLifetimeSubunits}
+          baseAsset={baseAsset}
+          showTitle={false}
+        />
+      ),
       color: "text-blue-500",
     },
     {
       icon: Droplets,
       label: t("market.botBudget"),
-      value: <InlineAmount amountSubunits={market.ammBotBudgetSubunits} baseAsset={baseAsset} />,
+      description: t("market.botFundingDescription"),
+      tooltipAlign: "right" as const,
+      value: (
+        <InlineAmount
+          amountSubunits={market.ammBotBudgetSubunits}
+          baseAsset={baseAsset}
+          showTitle={false}
+        />
+      ),
       color: "text-cyan-500",
       testId: "market-bot-budget",
     },
@@ -104,32 +120,49 @@ export function MarketStats({ market }: MarketStatsProps) {
       </h3>
 
       <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
-        {stats.map((stat) => (
-          <div
-            key={stat.label}
-            data-testid={stat.testId}
-            className={`relative p-3 rounded-xl ${
-              stat.highlight
-                ? "bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/30"
-                : "bg-slate-50 dark:bg-slate-900"
-            }`}
-          >
-            <div className="flex items-center gap-2 mb-1">
-              <span aria-label={stat.label} title={stat.label}>
-                <stat.icon className={`w-4 h-4 ${stat.color}`} />
+        {stats.map((stat) => {
+          const className = `relative p-3 rounded-xl ${
+            stat.highlight
+              ? "bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/30"
+              : "bg-slate-50 dark:bg-slate-900"
+          }`;
+          const content = (
+            <>
+              <span
+                className="flex items-center gap-2 mb-1"
+                aria-label={stat.description ? undefined : stat.label}
+                title={stat.description ? undefined : stat.label}
+              >
+                <stat.icon aria-hidden="true" className={`w-4 h-4 ${stat.color}`} />
               </span>
-            </div>
-            <p
-              className={`text-lg font-semibold ${
-                stat.highlight
-                  ? "text-amber-700 dark:text-amber-400"
-                  : "text-slate-900 dark:text-white"
-              }`}
+              <span
+                className={`block text-lg font-semibold ${
+                  stat.highlight
+                    ? "text-amber-700 dark:text-amber-400"
+                    : "text-slate-900 dark:text-white"
+                }`}
+              >
+                {stat.value}
+              </span>
+            </>
+          );
+          return stat.description ? (
+            <MetricExplanation
+              key={stat.label}
+              label={stat.label}
+              description={stat.description}
+              className={className}
+              testId={stat.testId}
+              align={stat.tooltipAlign}
             >
-              {stat.value}
-            </p>
-          </div>
-        ))}
+              {content}
+            </MetricExplanation>
+          ) : (
+            <div key={stat.label} data-testid={stat.testId} className={className}>
+              {content}
+            </div>
+          );
+        })}
       </div>
     </div>
   );

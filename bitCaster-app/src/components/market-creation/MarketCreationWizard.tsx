@@ -41,6 +41,7 @@ export function MarketCreationWizard(props: MarketCreationWizardProps) {
     onAddOutcome,
     onRemoveOutcome,
     onOutcomeLabelChange,
+    onOutcomeColorChange,
     onLoBoundChange,
     onHiBoundChange,
     onPrecisionChange,
@@ -231,6 +232,7 @@ export function MarketCreationWizard(props: MarketCreationWizardProps) {
             onAddOutcome={onAddOutcome}
             onRemoveOutcome={onRemoveOutcome}
             onOutcomeLabelChange={onOutcomeLabelChange}
+            onOutcomeColorChange={onOutcomeColorChange}
             onLoBoundChange={onLoBoundChange}
             onHiBoundChange={onHiBoundChange}
             onPrecisionChange={onPrecisionChange}

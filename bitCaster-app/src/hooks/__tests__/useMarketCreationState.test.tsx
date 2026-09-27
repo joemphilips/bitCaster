@@ -11,6 +11,7 @@ const {
   mockRegisterConditionWithFee,
   mockGetAvailableRegularBalanceSubunits,
   mockCreateMarket,
+  mockFetchEngineCatalogueEntry,
   mockCreateEnumAnnouncement,
   mockEnsureKormirNsec,
   mockGetOracleAnnouncementEventId,
@@ -21,6 +22,7 @@ const {
   mockRegisterConditionWithFee: vi.fn(),
   mockGetAvailableRegularBalanceSubunits: vi.fn(),
   mockCreateMarket: vi.fn(),
+  mockFetchEngineCatalogueEntry: vi.fn(),
   mockCreateEnumAnnouncement: vi.fn(),
   mockEnsureKormirNsec: vi.fn(),
   mockGetOracleAnnouncementEventId: vi.fn(),
@@ -50,8 +52,10 @@ vi.mock("react-router", async () => {
   return { ...actual, useNavigate: () => mockNavigate };
 });
 
-vi.mock("@/lib/markets", () => ({
+vi.mock("@/lib/markets", async () => ({
   createMarket: (...args: unknown[]) => mockCreateMarket(...args),
+  fetchEngineCatalogueEntry: (...args: unknown[]) => mockFetchEngineCatalogueEntry(...args),
+  CreateMarketError: (await import("@bitcaster/client-sdk")).CreateMarketError,
   requiredMarketCreationOutcomeCollections: (outcomes: readonly string[]) => outcomes,
   MintError: class MintError extends Error {
     constructor(
@@ -98,6 +102,10 @@ vi.mock("@/lib/kormir", () => ({
   getOracleAnnouncementEventId: (...args: unknown[]) => mockGetOracleAnnouncementEventId(...args),
 }));
 
+vi.mock("@/lib/identityOps", () => ({
+  resolveNsecIdentity: () => ({ publicKey: "a".repeat(64) }),
+}));
+
 vi.mock("@/lib/walletOps", () => ({
   refreshMintInfoWithoutActivating: (...args: unknown[]) =>
     mockRefreshMintInfoWithoutActivating(...args),
@@ -116,6 +124,7 @@ vi.mock("@/stores/wallet", () => ({
 // "0% fee" assertion can read the persisted entry. Mocked separately from
 // the store under test so the assertion sees real reads/writes.
 import { useCreatorMarketsStore } from "@/stores/creatorMarkets";
+import type { MarketCatalogueEntry } from "@/lib/markets";
 import type { WizardOutcome } from "@/types/market-creation";
 
 // Stub nip17 so the test does not pull in nostr-tools at module load time.
@@ -129,6 +138,7 @@ vi.mock("@/lib/nip17", () => ({
 
 // Must import after mocks and env stub
 const { useMarketCreationState } = await import("../useMarketCreationState");
+const { CreateMarketError } = await import("@/lib/markets");
 
 function wrapper({ children }: { children: ReactNode }) {
   return <MemoryRouter>{children}</MemoryRouter>;
@@ -144,9 +154,11 @@ beforeEach(() => {
   mockCreateMarket.mockResolvedValue({
     conditionId: "test-cond-id",
     marketsCreated: ["test-cond-id-Yes", "test-cond-id-No"],
+    outcomeDetails: [{ name: "Yes" }, { name: "No" }],
     thumbnailUrl: null,
     divisibility: 1_000,
   });
+  mockFetchEngineCatalogueEntry.mockResolvedValue(null);
   mockCreateEnumAnnouncement.mockResolvedValue("announcement-hex");
   mockEnsureKormirNsec.mockResolvedValue(undefined);
   mockGetOracleAnnouncementEventId.mockResolvedValue("c".repeat(64));
@@ -225,6 +237,42 @@ function setCategoricalOutcomes(outcomes: WizardOutcome[]) {
 
 function makeOutcome(id: string): WizardOutcome {
   return { id, label: id.toUpperCase(), description: "" };
+}
+
+function setCategoricalSubmissionDraft(outcomes: WizardOutcome[]) {
+  const future = new Date(Date.now() + 86400000).toISOString().slice(0, 16);
+  useMarketDraftStore.setState({
+    draft: {
+      ...defaultDraft(),
+      currentStep: 4,
+      stepGetStarted: { outcomeType: "categorical" },
+      stepBasicInfo: {
+        imageFile: null,
+        title: "Test Market",
+        categoryTags: [],
+        closingDate: future,
+      },
+      stepOutcomes: { outcomeType: "categorical", outcomes, baseAsset: "sat" },
+      stepReviewAndCreate: { description: "Test description" },
+    },
+    hasSavedDraft: true,
+  });
+}
+
+function catalogueMarket(overrides: Partial<MarketCatalogueEntry> = {}): MarketCatalogueEntry {
+  return {
+    conditionId: "test-cond-id",
+    creatorPubkey: "a".repeat(64),
+    outcomes: ["Yes", "No"],
+    outcomeDetails: [
+      { name: "Yes", color: "#112233" },
+      { name: "No", color: "#445566" },
+    ],
+    baseAsset: "sat",
+    divisibility: 1_000,
+    thumbnailUrl: "/api/v1/test-cond-id/thumbnail",
+    ...overrides,
+  } as unknown as MarketCatalogueEntry;
 }
 
 describe("useMarketCreationState – wizard navigation", () => {
@@ -333,6 +381,40 @@ describe("useMarketCreationState – categorical outcomes", () => {
       { id: "b", label: "B", description: "" },
       { id: expect.any(String), label: "", description: "" },
     ]);
+  });
+
+  it("preserves a selected color across label edits, Back, and draft resume", async () => {
+    setCategoricalOutcomes([makeOutcome("a"), makeOutcome("b")]);
+    const first = renderHook(() => useMarketCreationState(), { wrapper });
+
+    await act(async () => {
+      first.result.current.onOutcomeColorChange("a", "#123456");
+      first.result.current.onOutcomeLabelChange("a", "Alpha");
+      first.result.current.onBack();
+    });
+    expect(useMarketDraftStore.getState().draft.stepOutcomes?.outcomes?.[0]).toMatchObject({
+      id: "a",
+      label: "Alpha",
+      color: "#123456",
+    });
+
+    first.unmount();
+    const resumed = renderHook(() => useMarketCreationState(), { wrapper });
+    expect(resumed.result.current.draft.stepOutcomes?.outcomes?.[0].color).toBe("#123456");
+    await act(async () => {
+      resumed.result.current.onNext();
+    });
+    expect(resumed.result.current.draft.stepOutcomes?.outcomes?.[0].color).toBe("#123456");
+
+    await act(async () => {
+      resumed.result.current.onOutcomeColorChange("a", null);
+    });
+    expect(
+      Object.hasOwn(
+        useMarketDraftStore.getState().draft.stepOutcomes?.outcomes?.[0] ?? {},
+        "color",
+      ),
+    ).toBe(false);
   });
 });
 
@@ -613,6 +695,126 @@ describe("useMarketCreationState – onCreateMarket", () => {
     expect(mockNavigate).not.toHaveBeenCalled();
   });
 
+  it("adopts a matching committed market after a lost create response", async () => {
+    useCreatorMarketsStore.setState({ markets: [] });
+    const result = await setupDraftForSubmission();
+    const originalError = new CreateMarketError("connection was lost", null, true);
+    mockCreateMarket.mockRejectedValueOnce(originalError);
+    mockFetchEngineCatalogueEntry.mockResolvedValueOnce(
+      catalogueMarket({ thumbnailUrl: "/persisted-thumbnail", outcomeDetails: undefined }),
+    );
+
+    await act(async () => {
+      await result.current.onCreateMarket();
+    });
+
+    expect(mockCreateMarket).toHaveBeenCalledOnce();
+    expect(mockFetchEngineCatalogueEntry).toHaveBeenCalledOnce();
+    expect(mockFetchEngineCatalogueEntry).toHaveBeenCalledWith("test-cond-id");
+    expect(result.current.createdMarketConditionId).toBe("test-cond-id");
+    expect(result.current.submitError).toBeNull();
+    expect(
+      useCreatorMarketsStore
+        .getState()
+        .markets.find((market) => market.conditionId === "test-cond-id")?.thumbnailUrl,
+    ).toBe("/persisted-thumbnail");
+  });
+
+  it("adopts first-committed colors when details are reordered and retry colors differ", async () => {
+    useCreatorMarketsStore.setState({ markets: [] });
+    setCategoricalSubmissionDraft([
+      { id: "alpha", label: "Alpha", description: "", color: "#111111" },
+      { id: "beta", label: "Beta", description: "", color: "#222222" },
+    ]);
+    const { result } = renderHook(() => useMarketCreationState(), { wrapper });
+    mockCreateMarket.mockRejectedValueOnce(new CreateMarketError("already exists", 409, true));
+    mockFetchEngineCatalogueEntry.mockResolvedValueOnce(
+      catalogueMarket({
+        outcomes: ["Alpha", "Beta"],
+        outcomeDetails: [
+          { name: "Beta", color: "#ABCDEF" },
+          { name: "Alpha", color: "#FEDCBA" },
+        ],
+      }),
+    );
+
+    await act(async () => {
+      await result.current.onCreateMarket();
+    });
+
+    expect(mockCreateMarket).toHaveBeenCalledOnce();
+    expect(mockCreateMarket.mock.calls[0]?.[1].outcomes).toEqual([
+      { name: "Alpha", color: "#111111" },
+      { name: "Beta", color: "#222222" },
+    ]);
+    expect(mockFetchEngineCatalogueEntry).toHaveBeenCalledOnce();
+    expect(result.current.createdMarketConditionId).toBe("test-cond-id");
+    expect(result.current.submitError).toBeNull();
+  });
+
+  it.each([
+    { label: "unknown condition", overrides: { conditionId: "other-condition" } },
+    { label: "wrong owner", overrides: { creatorPubkey: "b".repeat(64) } },
+    { label: "wrong outcomes", overrides: { outcomes: ["Yes", "Gamma"] } },
+    { label: "duplicate outcomes", overrides: { outcomes: ["Yes", "Yes"] } },
+    { label: "wrong product units", overrides: { divisibility: 1_000_000 as const } },
+    {
+      label: "invalid persisted colors",
+      overrides: {
+        outcomeDetails: [
+          { name: "Yes", color: "red" },
+          { name: "No", color: "#445566" },
+        ],
+      },
+    },
+  ])("keeps the original error for a catalogue row with $label", async ({ overrides }) => {
+    const result = await setupDraftForSubmission();
+    const originalError = new CreateMarketError("create result is uncertain", 503, true);
+    mockCreateMarket.mockRejectedValueOnce(originalError);
+    mockFetchEngineCatalogueEntry.mockResolvedValueOnce(catalogueMarket(overrides));
+
+    await act(async () => {
+      await result.current.onCreateMarket();
+    });
+
+    expect(mockCreateMarket).toHaveBeenCalledOnce();
+    expect(mockFetchEngineCatalogueEntry).toHaveBeenCalledOnce();
+    expect(result.current.createdMarketConditionId).toBeNull();
+    expect(result.current.submitError).toBe(originalError.message);
+    expect(useMarketDraftStore.getState().hasSavedDraft).toBe(true);
+  });
+
+  it.each([400, 401, 403])("does not reconcile deterministic HTTP refusal %i", async (status) => {
+    const result = await setupDraftForSubmission();
+    mockCreateMarket.mockRejectedValueOnce(
+      new CreateMarketError("request rejected", status, false),
+    );
+
+    await act(async () => {
+      await result.current.onCreateMarket();
+    });
+
+    expect(mockFetchEngineCatalogueEntry).not.toHaveBeenCalled();
+    expect(result.current.submitError).toBe("request rejected");
+    expect(useMarketDraftStore.getState().hasSavedDraft).toBe(true);
+  });
+
+  it("keeps the original create error when catalogue reconciliation is unavailable", async () => {
+    const result = await setupDraftForSubmission();
+    const originalError = new CreateMarketError("engine response was lost", null, true);
+    mockCreateMarket.mockRejectedValueOnce(originalError);
+    mockFetchEngineCatalogueEntry.mockRejectedValueOnce(new Error("catalogue unavailable"));
+
+    await act(async () => {
+      await result.current.onCreateMarket();
+    });
+
+    expect(mockFetchEngineCatalogueEntry).toHaveBeenCalledOnce();
+    expect(mockCreateMarket).toHaveBeenCalledOnce();
+    expect(result.current.submitError).toBe(originalError.message);
+    expect(useMarketDraftStore.getState().hasSavedDraft).toBe(true);
+  });
+
   it("hands off to the deposit step on full success (does NOT navigate immediately)", async () => {
     const result = await setupDraftForSubmission();
 
@@ -621,6 +823,7 @@ describe("useMarketCreationState – onCreateMarket", () => {
     });
 
     expect(mockCreateMarket).toHaveBeenCalledOnce();
+    expect(mockFetchEngineCatalogueEntry).not.toHaveBeenCalled();
     // createMarket success transitions the wizard to the
     // deposit step rather than navigating to the market detail page. The
     // user funds the bot first; navigation happens from DepositStep once
@@ -651,6 +854,43 @@ describe("useMarketCreationState – onCreateMarket", () => {
     });
 
     expect(useMarketDraftStore.getState().hasSavedDraft).toBe(true);
+  });
+
+  it("submits chosen categorical colors by exact outcome name and omits automatic colors", async () => {
+    const future = new Date(Date.now() + 86400000).toISOString().slice(0, 16);
+    useMarketDraftStore.setState({
+      draft: {
+        ...defaultDraft(),
+        currentStep: 4,
+        stepGetStarted: { outcomeType: "categorical" },
+        stepBasicInfo: {
+          imageFile: null,
+          title: "Test Market",
+          categoryTags: [],
+          closingDate: future,
+        },
+        stepOutcomes: {
+          outcomeType: "categorical",
+          outcomes: [
+            { id: "alpha", label: "Alpha", description: "", color: "#123456" },
+            { id: "beta", label: "Beta", description: "" },
+          ],
+          baseAsset: "sat",
+        },
+        stepReviewAndCreate: { description: "Test description" },
+      },
+      hasSavedDraft: true,
+    });
+    const { result } = renderHook(() => useMarketCreationState(), { wrapper });
+
+    await act(async () => {
+      await result.current.onCreateMarket();
+    });
+
+    expect(mockCreateMarket.mock.calls[0][1].outcomes).toEqual([
+      { name: "Alpha", color: "#123456" },
+      { name: "Beta" },
+    ]);
   });
 
   it("stamps creatorFeePercent=0 (P7 §/creator: engine accrues no fees)", async () => {

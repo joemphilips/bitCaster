@@ -1,3 +1,5 @@
+import type { ReactNode } from "react";
+
 // =============================================================================
 // Deposit / Withdraw Types
 // =============================================================================
@@ -42,6 +44,12 @@ export interface DepositWithdrawProps {
 
   /** Current view in the flow */
   currentView: DepositWithdrawView;
+
+  /** Non-blocking reminder shown only by deposit entry views. */
+  depositReminder?: ReactNode;
+
+  /** Status shown in normal flow above the active entry controls. */
+  statusMessage?: ReactNode;
 
   /** Available mints to select from */
   mints: MintInfo[];

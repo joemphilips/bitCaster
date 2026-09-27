@@ -58,7 +58,6 @@ vi.mock("../usePortfolioState", () => ({
     stats: {
       positionsValueSats: 0,
       totalValueSats: 0,
-      biggestWinSats: 0,
       predictionsCount: 0,
     },
     positions: [],

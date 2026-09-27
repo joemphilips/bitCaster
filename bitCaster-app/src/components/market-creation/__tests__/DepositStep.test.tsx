@@ -27,14 +27,15 @@ vi.mock("@/stores/wallet", () => ({
   ),
 }));
 
-function renderStep(
-  options: {
-    presentation?: "creation" | "detail";
-    divisibility?: 1_000 | 1_000_000;
-    onRequireWallet?: () => void;
-  } = {},
-) {
-  return render(
+type DepositStepOptions = {
+  presentation?: "creation" | "detail";
+  divisibility?: 1_000 | 1_000_000;
+  onRequireWallet?: () => void;
+  onCredited?: () => void;
+};
+
+function stepTree(options: DepositStepOptions = {}) {
+  return (
     <MemoryRouter initialEntries={["/creator/new"]}>
       <Routes>
         <Route
@@ -52,8 +53,12 @@ function renderStep(
         />
         <Route path="/markets/:id" element={<div data-testid="market-detail-page" />} />
       </Routes>
-    </MemoryRouter>,
+    </MemoryRouter>
   );
+}
+
+function renderStep(options: DepositStepOptions = {}) {
+  return render(stepTree(options));
 }
 
 async function openFunding() {
@@ -102,12 +107,13 @@ describe("DepositStep", () => {
   it.each(["received", "credited"] as const)(
     "reload resumes %s; only credited permits an explicit next payment",
     async (progress) => {
+      const onCredited = vi.fn();
       readBrowserMarketFundingHeadId.mockResolvedValue("payment-1");
       executeBrowserMarketFundingDelivery.mockResolvedValue({
         progress,
         transfer: { transferId: "payment-1", requestedAmount: "100000" },
       });
-      renderStep({ presentation: "detail" });
+      renderStep({ presentation: "detail", onCredited });
       await waitFor(() => expect(screen.getByTestId("confirm-amm-funding")).toBeEnabled());
       expect(executeBrowserMarketFundingDelivery).toHaveBeenCalledTimes(1);
       expect(executeBrowserMarketFundingDelivery.mock.calls[0]![0].attempt).toEqual({
@@ -115,9 +121,19 @@ describe("DepositStep", () => {
         transferId: "payment-1",
       });
       expect(screen.getByTestId("amm-funding-custom-budget")).toHaveValue("100");
+      expect(
+        screen.queryByText("Payment credited — market funding complete."),
+      ).not.toBeInTheDocument();
+      expect(onCredited).toHaveBeenCalledTimes(progress === "credited" ? 1 : 0);
+      if (progress === "received") {
+        expect(
+          screen.getByText("Payment received — waiting for market credit…"),
+        ).toBeInTheDocument();
+      }
 
       await userEvent.setup().click(screen.getByTestId("confirm-amm-funding"));
       await waitFor(() => expect(executeBrowserMarketFundingDelivery).toHaveBeenCalledTimes(2));
+      expect(onCredited).toHaveBeenCalledTimes(progress === "credited" ? 2 : 0);
       expect(executeBrowserMarketFundingDelivery.mock.calls[1]![0].attempt).toEqual(
         progress === "credited"
           ? {
@@ -130,6 +146,70 @@ describe("DepositStep", () => {
       );
     },
   );
+
+  it("refreshes after credited receipt recovery without replaying success presentation", async () => {
+    readBrowserMarketFundingHeadId.mockResolvedValue("payment-1");
+    const transfer = { transferId: "payment-1", requestedAmount: "100000" };
+    let resolveResume!: (value: { progress: "credited"; transfer: typeof transfer }) => void;
+    executeBrowserMarketFundingDelivery.mockReturnValueOnce(
+      new Promise<{ progress: "credited"; transfer: typeof transfer }>((resolve) => {
+        resolveResume = resolve;
+      }),
+    );
+    const outdatedRefresh = vi.fn();
+    const currentRefresh = vi.fn();
+    const timeoutSpy = vi.spyOn(window, "setTimeout");
+    const view = renderStep({ onCredited: outdatedRefresh });
+
+    await waitFor(() => expect(executeBrowserMarketFundingDelivery).toHaveBeenCalledTimes(1));
+    const navigationTimerCount = timeoutSpy.mock.calls.filter(
+      ([, delay]) => delay === 5_000,
+    ).length;
+    expect(navigationTimerCount).toBe(1);
+    view.rerender(stepTree({ onCredited: currentRefresh }));
+    expect(executeBrowserMarketFundingDelivery).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      resolveResume({ progress: "credited", transfer });
+    });
+
+    await waitFor(() => expect(currentRefresh).toHaveBeenCalledTimes(1));
+    expect(outdatedRefresh).not.toHaveBeenCalled();
+    expect(executeBrowserMarketFundingDelivery).toHaveBeenCalledTimes(1);
+    expect(
+      screen.queryByText("Payment credited — market funding complete."),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByTestId("market-detail-page")).not.toBeInTheDocument();
+    expect(timeoutSpy.mock.calls.filter(([, delay]) => delay === 5_000)).toHaveLength(
+      navigationTimerCount,
+    );
+    timeoutSpy.mockRestore();
+  });
+
+  it("shows a resumed payment's new credit only until the funding form is remounted", async () => {
+    readBrowserMarketFundingHeadId.mockResolvedValue("payment-1");
+    const transfer = { transferId: "payment-1", requestedAmount: "100000" };
+    executeBrowserMarketFundingDelivery
+      .mockResolvedValueOnce({ progress: "received", transfer })
+      .mockResolvedValue({ progress: "credited", transfer });
+    const view = renderStep({ presentation: "detail" });
+    await screen.findByText("Payment received — waiting for market credit…");
+    await userEvent.setup().click(screen.getByTestId("confirm-amm-funding"));
+    await screen.findByText("Payment credited — market funding complete.");
+
+    view.unmount();
+    renderStep({ presentation: "detail" });
+    await waitFor(() => expect(screen.getByTestId("amm-funding-custom-budget")).toBeEnabled());
+    expect(screen.getByTestId("amm-funding-custom-budget")).toHaveValue("100");
+    expect(
+      screen.queryByText("Payment credited — market funding complete."),
+    ).not.toBeInTheDocument();
+    expect(executeBrowserMarketFundingDelivery).toHaveBeenCalledTimes(3);
+    expect(executeBrowserMarketFundingDelivery.mock.calls[2]![0].attempt).toEqual({
+      kind: "resume",
+      transferId: "payment-1",
+    });
+  });
 
   it("retries a failed head read without creating a payment", async () => {
     readBrowserMarketFundingHeadId.mockRejectedValueOnce(new Error("wallet read unavailable"));
@@ -180,6 +260,10 @@ describe("DepositStep", () => {
       screen.getByText("Enter the exact amount of sats to give the market maker, or skip for now."),
     ).toBeInTheDocument();
     expect(screen.queryByTestId("skip-amm-funding")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("Use up to three decimal places. The exact amount you enter is funded."),
+    ).not.toBeInTheDocument();
+    expect(screen.getByTestId("amm-funding-custom-budget")).not.toHaveAttribute("aria-describedby");
     expect(screen.queryByText("Market created!")).not.toBeInTheDocument();
     expect(timeoutSpy.mock.calls.some(([, delay]) => delay === 5_000)).toBe(false);
     timeoutSpy.mockRestore();
@@ -190,17 +274,19 @@ describe("DepositStep", () => {
     ["received", "Payment received — waiting for market credit…"],
     ["credited", "Payment credited — market funding complete."],
   ] as const)("renders %s funding progress honestly", async (progress, message) => {
+    const onCredited = vi.fn();
     executeBrowserMarketFundingDelivery.mockResolvedValueOnce({
       progress,
       transfer: { transferId: "payment-1", requestedAmount: "100000" },
     });
-    renderStep({ presentation: "detail" });
+    renderStep({ presentation: "detail", onCredited });
     const user = userEvent.setup();
     await enterFundingAmount(user);
 
     await user.click(screen.getByTestId("confirm-amm-funding"));
 
     await screen.findByText(message);
+    expect(onCredited).toHaveBeenCalledTimes(progress === "credited" ? 1 : 0);
   });
 
   it("uses the durable market-funding adapter without a legacy deposit request", async () => {

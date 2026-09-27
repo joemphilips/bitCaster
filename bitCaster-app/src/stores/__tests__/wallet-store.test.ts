@@ -80,6 +80,7 @@ beforeEach(() => {
     mnemonic: "",
     setupComplete: false,
     walletBackupState: "none",
+    walletSeedReminderAcknowledgedScopeId: null,
     mints: [],
     activeMintUrl: "http://localhost:8085",
     mintConnectionStatuses: {},
@@ -103,6 +104,22 @@ describe("useWalletStore", () => {
     );
     hydrate?.({ mnemonic: bip39.generate().join(" ") } as never, undefined);
     expect(persistenceMocks.request).not.toHaveBeenCalled();
+  });
+
+  it("stores seed-reminder acknowledgement for the active wallet without confirming backup", () => {
+    const mnemonic = bip39.generate().join(" ");
+    const scopeId = browserWalletScopeIdFromMnemonic(mnemonic);
+    expect(scopeId).not.toBeNull();
+    useWalletStore.setState({ mnemonic, walletBackupState: "needs_backup" });
+    setActiveBrowserWalletProfile(mnemonic);
+
+    useWalletStore.getState().acknowledgeWalletSeedReminder();
+
+    expect(useWalletStore.getState().walletSeedReminderAcknowledgedScopeId).toBe(scopeId);
+    expect(useWalletStore.getState().walletBackupState).toBe("needs_backup");
+    expect(
+      useWalletStore.persist.getOptions().partialize!(useWalletStore.getState()),
+    ).toHaveProperty("walletSeedReminderAcknowledgedScopeId", scopeId);
   });
 
   describe("generateMnemonic", () => {
@@ -164,14 +181,22 @@ describe("useWalletStore", () => {
 
       let mnemonicDuringActivation = "";
       let profileWasCurrentDuringHandoff = false;
-      let stateDuringPersistence: { mnemonic: string; walletBackupState: string } | undefined;
+      let stateDuringPersistence:
+        | {
+            mnemonic: string;
+            walletBackupState: string;
+            walletSeedReminderAcknowledgedScopeId: string | null;
+          }
+        | undefined;
       persistenceMocks.request.mockImplementationOnce(() => {
         const state = useWalletStore.getState();
         stateDuringPersistence = {
           mnemonic: state.mnemonic,
           walletBackupState: state.walletBackupState,
+          walletSeedReminderAcknowledgedScopeId: state.walletSeedReminderAcknowledgedScopeId,
         };
       });
+      useWalletStore.setState({ walletSeedReminderAcknowledgedScopeId: oldScopeId });
       seedHandoffMocks.handoff.mockImplementationOnce(
         async (input: {
           invalidateOldProfile: () => void;
@@ -205,6 +230,7 @@ describe("useWalletStore", () => {
       expect(stateDuringPersistence).toEqual({
         mnemonic: newWords.join(" "),
         walletBackupState: "confirmed",
+        walletSeedReminderAcknowledgedScopeId: null,
       });
       expect(persistenceMocks.request).toHaveBeenCalledOnce();
     });
@@ -230,12 +256,18 @@ describe("useWalletStore", () => {
     it("reopens the current seed without handing off or changing the profile", async () => {
       const words = bip39.generate();
       const mnemonic = words.join(" ");
-      useWalletStore.setState({ mnemonic });
+      const scopeId = browserWalletScopeIdFromMnemonic(mnemonic);
+      useWalletStore.setState({
+        mnemonic,
+        walletSeedReminderAcknowledgedScopeId: scopeId,
+      });
+      setActiveBrowserWalletProfile(mnemonic);
 
       await expect(useWalletStore.getState().recoverFromMnemonic(words)).resolves.toEqual({
         valid: true,
       });
       expect(seedHandoffMocks.handoff).not.toHaveBeenCalled();
+      expect(useWalletStore.getState().walletSeedReminderAcknowledgedScopeId).toBe(scopeId);
     });
   });
 

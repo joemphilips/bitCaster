@@ -243,6 +243,94 @@ describe("useMarketPrice", () => {
     expect(result.current.currentPrice).toBe(200);
   });
 
+  it.each([
+    { held: "A", latestRoute: "A", expected: 280 },
+    { held: "A", latestRoute: "B", expected: 720 },
+    { held: "B", latestRoute: "A", expected: 720 },
+    { held: "B", latestRoute: "B", expected: 280 },
+  ])(
+    "values a two-outcome categorical $held holding from the latest $latestRoute trade",
+    ({ held, latestRoute, expected }) => {
+      const olderRoute = latestRoute === "A" ? "B" : "A";
+      const { result } = renderHook(() =>
+        useMarketPrice({
+          market: makeMarket({
+            type: "categorical",
+            outcomes: [
+              { id: "A", label: "Alpha", odds: null },
+              { id: "B", label: "Beta", odds: null },
+            ],
+            registeredPrimitiveOutcomeIds: ["A", "B"],
+            latestConfirmedTrades: [
+              {
+                primitiveOutcomeId: olderRoute,
+                fillId: "older-fill",
+                executedAt: "2026-01-02T00:00:00Z",
+                eventOrder: "0001",
+                priceTick: 650,
+                divisibility: 1_000,
+                faceAmountSubunits: 100,
+              },
+              {
+                primitiveOutcomeId: latestRoute,
+                fillId: "latest-fill",
+                // Event order, not timestamp, chooses the latest confirmed fact.
+                executedAt: "2026-01-01T00:00:00Z",
+                eventOrder: "0002",
+                priceTick: 280,
+                divisibility: 1_000,
+                faceAmountSubunits: 100,
+              },
+            ],
+          } as Partial<MarketDetail>),
+          marketId: `condition-1-${held}`,
+          outcomeSetId: held,
+          orderBook: emptyBook,
+        }),
+      );
+
+      expect(result.current.currentPrice).toBe(expected);
+      expect(result.current.defaultOrderPrice).toBe(expected);
+    },
+  );
+
+  it.each([
+    { label: "no confirmed price", trades: [] },
+    {
+      label: "a latest trade for an unregistered primitive",
+      trades: [
+        {
+          primitiveOutcomeId: "OTHER",
+          fillId: "foreign-fill",
+          executedAt: "2026-01-01T00:00:00Z",
+          eventOrder: "0001",
+          priceTick: 280,
+          divisibility: 1_000,
+          faceAmountSubunits: 100,
+        },
+      ],
+    },
+  ])("leaves an exact two-outcome categorical holding unpriced for $label", ({ trades }) => {
+    const { result } = renderHook(() =>
+      useMarketPrice({
+        market: makeMarket({
+          type: "categorical",
+          outcomes: [
+            { id: "A", label: "Alpha", odds: null },
+            { id: "B", label: "Beta", odds: null },
+          ],
+          registeredPrimitiveOutcomeIds: ["A", "B"],
+          latestConfirmedTrades: trades,
+        } as Partial<MarketDetail>),
+        marketId: "condition-1-A",
+        outcomeSetId: "A",
+        orderBook: emptyBook,
+      }),
+    );
+
+    expect(result.current.currentPrice).toBeNull();
+  });
+
   it("rejects duplicate or unknown categorical complement routes", () => {
     const market = makeMarket({
       type: "categorical",

@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
@@ -97,5 +97,37 @@ describe("WalletSetupModal", () => {
     await userEvent.click(restoreButton);
 
     expect(onImportSeed).toHaveBeenCalledWith(validSeedPhrase.split(" "));
+  });
+
+  it("keeps the existing native cancel path available while creation is busy", () => {
+    const onClose = vi.fn();
+    render(
+      <WalletSetupModal
+        isCreating
+        onClose={onClose}
+        onCreateNew={vi.fn()}
+        onImportSeed={vi.fn()}
+      />,
+    );
+
+    fireEvent(
+      screen.getByRole("dialog", { name: "Wallet Setup" }),
+      new Event("cancel", { cancelable: true }),
+    );
+
+    expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  it("dismisses only when its layout backdrop is clicked", () => {
+    const onClose = vi.fn();
+    render(<WalletSetupModal onClose={onClose} onCreateNew={vi.fn()} onImportSeed={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole("heading", { name: "Wallet Setup" }));
+
+    expect(onClose).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByTestId("wallet-setup-dialog-backdrop"));
+
+    expect(onClose).toHaveBeenCalledOnce();
   });
 });

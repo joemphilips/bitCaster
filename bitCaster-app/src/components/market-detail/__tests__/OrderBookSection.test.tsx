@@ -8,6 +8,8 @@ describe("OrderBookSection", () => {
       <OrderBookSection
         baseAsset="sat"
         divisibility={1_000}
+        title="Alpha"
+        outcome={{ label: "Alpha", color: "#334455" }}
         orderBook={{
           bids: [{ price: 50, amount: 1_000, total: 1_000 }],
           asks: [{ price: 60, amount: 2_000, total: 2_000 }],
@@ -23,6 +25,10 @@ describe("OrderBookSection", () => {
     expect(screen.getByText("2 shares")).toBeInTheDocument();
     expect(screen.queryByText(/sats/)).not.toBeInTheDocument();
     expect(screen.queryByText(/\$/)).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Alpha" })).toBeInTheDocument();
+    expect(screen.getByTestId("outcome-color-swatch")).toHaveStyle({
+      backgroundColor: "#334455",
+    });
   });
 
   it("renders the fixed five-row display depth while preserving stable bounded sides", () => {
@@ -165,5 +171,141 @@ describe("OrderBookSection", () => {
     expect(askRows[0]).toHaveTextContent("2 shares");
     expect(screen.getAllByTestId("order-book-ask-depth-fill")[0]).toHaveStyle({ width: "100%" });
     expect(screen.getAllByTestId("order-book-ask-depth-fill")[0]).toHaveClass("left-0");
+  });
+
+  it.each([
+    [
+      "two-sided executable",
+      {
+        bids: [{ price: 50, amount: 1_000, total: 1_000 }],
+        asks: [{ price: 60, amount: 1_000, total: 1_000 }],
+        spread: 10,
+      },
+      "5.5%",
+    ],
+    [
+      "half-tick midpoint",
+      {
+        bids: [{ price: 50, amount: 1_000, total: 1_000 }],
+        asks: [{ price: 51, amount: 1_000, total: 1_000 }],
+        spread: 1,
+      },
+      "5.05%",
+    ],
+    [
+      "one-sided",
+      {
+        bids: [{ price: 50, amount: 1_000, total: 1_000 }],
+        asks: [],
+        spread: 0,
+      },
+      null,
+    ],
+    ["empty", { bids: [], asks: [], spread: 0 }, null],
+    [
+      "invalid price",
+      {
+        bids: [{ price: 1_000, amount: 1_000, total: 1_000 }],
+        asks: [{ price: 600, amount: 1_000, total: 1_000 }],
+        spread: 0,
+      },
+      null,
+    ],
+    [
+      "crossed",
+      {
+        bids: [{ price: 600, amount: 1_000, total: 1_000 }],
+        asks: [{ price: 500, amount: 1_000, total: 1_000 }],
+        spread: 0,
+      },
+      null,
+    ],
+  ] as const)("renders a midpoint only for a valid %s book", (_case, book, expected) => {
+    render(
+      <OrderBookSection
+        baseAsset="sat"
+        divisibility={1_000}
+        orderBook={{
+          ...book,
+          bids: book.bids.map((order) => ({ ...order })),
+          asks: book.asks.map((order) => ({ ...order })),
+        }}
+      />,
+    );
+
+    if (expected === null) {
+      expect(screen.queryByTestId("order-book-midpoint")).not.toBeInTheDocument();
+      return;
+    }
+
+    expect(screen.getByTestId("order-book-midpoint-price")).toHaveTextContent(expected);
+  });
+
+  it("uses the selected categorical route book for its midpoint", () => {
+    render(
+      <OrderBookSection
+        baseAsset="sat"
+        divisibility={1_000}
+        orderBook={{ bids: [], asks: [], spread: 0 }}
+        selectedOutcomeId="Alpha"
+        outcomeOrderBooks={{
+          Alpha: {
+            bids: [{ price: 200, amount: 1_000, total: 1_000 }],
+            asks: [{ price: 400, amount: 1_000, total: 1_000 }],
+            spread: 200,
+          },
+          Beta: {
+            bids: [{ price: 700, amount: 1_000, total: 1_000 }],
+            asks: [{ price: 900, amount: 1_000, total: 1_000 }],
+            spread: 200,
+          },
+        }}
+      />,
+    );
+
+    expect(screen.getByTestId("order-book-midpoint-price")).toHaveTextContent("30.0%");
+  });
+
+  it("does not show a fallback book midpoint for a missing categorical route", () => {
+    render(
+      <OrderBookSection
+        baseAsset="sat"
+        divisibility={1_000}
+        orderBook={{
+          bids: [{ price: 200, amount: 1_000, total: 1_000 }],
+          asks: [{ price: 400, amount: 1_000, total: 1_000 }],
+          spread: 200,
+        }}
+        selectedOutcomeId="Missing"
+        outcomeOrderBooks={{}}
+      />,
+    );
+
+    expect(screen.queryByTestId("order-book-midpoint")).not.toBeInTheDocument();
+  });
+
+  it("keeps a binary YES executable midpoint in selected-token price space", () => {
+    render(
+      <OrderBookSection
+        baseAsset="sat"
+        divisibility={1_000}
+        orderBook={{ bids: [], asks: [], spread: 0 }}
+        selectedOutcomeId="Yes"
+        outcomeOrderBooks={{
+          Yes: {
+            bids: [{ price: 400, amount: 1_000, total: 1_000 }],
+            asks: [{ price: 700, amount: 1_000, total: 1_000 }],
+            spread: 300,
+          },
+          No: {
+            bids: [{ price: 300, amount: 1_000, total: 1_000 }],
+            asks: [],
+            spread: 0,
+          },
+        }}
+      />,
+    );
+
+    expect(screen.getByTestId("order-book-midpoint-price")).toHaveTextContent("55.0%");
   });
 });

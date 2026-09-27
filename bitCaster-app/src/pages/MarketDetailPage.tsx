@@ -7,19 +7,28 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
-import { activeBrowserWalletScopeId } from "@/lib/browserWalletProfile";
+import { useLiveQuery } from "dexie-react-hooks";
+import {
+  activeBrowserWalletScopeId,
+  browserWalletScopeIdFromMnemonic,
+} from "@/lib/browserWalletProfile";
+import {
+  canonicalSellHoldingsIdentityKey as buildCanonicalSellHoldingsIdentityKey,
+  readCanonicalMarketSellHoldings,
+  sellHoldingsForCurrentIdentity,
+  type CanonicalSellHoldingsIdentity,
+} from "@/lib/canonicalSellHoldings";
 import { getNostrSignerRevision, subscribeToNostrSignerRevision } from "@/lib/nostr";
 import { useParams, useNavigate } from "react-router";
 import { useTranslation } from "react-i18next";
+import { normalizeUrl } from "@/lib/url";
 import { MarketDetail } from "@/components/market-detail";
 import { InsufficientBalanceModal } from "@/components/shared/InsufficientBalanceModal";
 import { NostrAuthRequiredModal } from "@/components/shared/NostrAuthRequiredModal";
 import { NostrAccountChooserModal } from "@/components/shared/NostrAccountChooserModal";
-import {
-  BackupSecretsReminderModal,
-  FundedActionBackupPromptModal,
-} from "@/components/shared/BackupSecretsReminderModal";
+import { BackupSecretsReminderModal } from "@/components/shared/BackupSecretsReminderModal";
 import { TopUpOverlay } from "@/components/market-detail/TopUpOverlay";
+import { db } from "@/stores/proof-db";
 import { useShareMarket } from "@/components/market-detail/useShareMarket";
 import {
   applyMarketComments,
@@ -53,35 +62,39 @@ import {
   resolveOutcomeSets,
 } from "@/lib/outcomeSets";
 import { useMarketStatusLive } from "@/hooks/useMarketStatusLive";
-import { defaultLimitPriceForDivisibility, useMarketPrice } from "@/hooks/useMarketPrice";
+import { mergeMarketFundingObservation } from "@/lib/marketFunding";
 import {
   applyConfirmedTradeDelta,
   joinMarket,
   leaveMarket,
+  onMarketFundingUpdated,
   onConfirmedTradeRecorded,
   onMarketRejoined,
   onOrderCancelled,
   onOrderBookUpdated,
+  refreshMarketSnapshot,
   type LatestConfirmedTrade,
   type MarketStatusChanged,
+  type MarketFundingUpdatedMessage,
 } from "@/lib/marketHub";
 import { BitcasterEngineClient } from "@bitcaster/client-sdk/engineClient";
-import type { PreviewFokOrderRequest } from "@bitcaster/client-sdk/fokOrderPreview";
+import type {
+  PreviewFokOrderCapacityRequest,
+  PreviewFokOrderRequest,
+} from "@bitcaster/client-sdk/fokOrderPreview";
 import { debounce } from "@/lib/debounce";
 import { refreshOrderBook } from "@/lib/orderBookRefresh";
-import { getBalance, getExactUnitBalance, useWalletStore } from "@/stores/wallet";
+import { getExactUnitBalance, useWalletStore } from "@/stores/wallet";
 import { useSettingsStore } from "@/stores/settings";
 import { usePendingTradesStore } from "@/stores/pendingTrades";
 import { useNotificationsStore } from "@/stores/notifications";
 import { createImplicitWalletAndNostrIdentity } from "@/lib/identityOps";
-import { canBackOrder } from "@bitcaster/client-sdk/tradingClient";
 import {
   cashuAmountToMarketSubunits,
   formatMarketSubunits,
   normalizeMarketBaseAsset,
   normalizeMarketDivisibility,
 } from "@bitcaster/client-sdk/marketUnits";
-import { buildIndexedDbTokenHoldings } from "@/lib/walletHoldings";
 import {
   BrowserCtfRangeScoreTopUpCancelledError,
   BrowserCtfRangeScoreTopUpRequiredError,
@@ -102,15 +115,11 @@ import type {
   Comment,
   RelatedMarket,
   Trade,
+  SellHoldingsState,
+  TradeFeasibilityReason,
 } from "@/types/market-detail";
-import type { SecretBackupState } from "@/types/settings";
 import { useFokOrderPreview } from "@/hooks/useFokOrderPreview";
-
-export { defaultLimitPriceForDivisibility };
-
-export function shouldPromptForFundedActionBackup(walletBackupState: SecretBackupState): boolean {
-  return walletBackupState === "needs_backup";
-}
+import { useFokOrderCapacityPreview } from "@/hooks/useFokOrderCapacityPreview";
 
 type TopUpStage = "closed" | "modal" | "overlay";
 type TopUpReason =
@@ -185,6 +194,40 @@ function isEngineMarketClosed(state: MarketDetailType["state"]): boolean {
   }
 }
 
+/**
+ * Labels a fee-preview refusal from the typed source shortfall. Only the
+ * offered asset differs by side: outcome tokens for Sell, sats for Buy.
+ */
+function rangeFeePreviewRefusalReason(
+  error: unknown,
+  tradeSide: TradeSide,
+): TradeFeasibilityReason {
+  if (!(error instanceof BrowserCtfRangeOrderError)) return "unavailable";
+  if (error.code === "insufficient-funds") {
+    switch (error.shortfall) {
+      case "offered":
+        switch (tradeSide) {
+          case "Buy":
+            return "funds";
+          case "Sell":
+            return "outcome-tokens";
+          default:
+            return assertNever(tradeSide);
+        }
+      case "collateral":
+        return "preparation-fee-cash";
+      case "mint-limits":
+        return "mint-limits";
+      case null:
+        // An untyped shortfall cannot name the missing asset.
+        return "unavailable";
+      default:
+        return assertNever(error.shortfall);
+    }
+  }
+  return "unavailable";
+}
+
 function isClosedForTrading(market: MarketDetailType): boolean {
   return isEngineMarketClosed(market.state);
 }
@@ -192,19 +235,6 @@ function isClosedForTrading(market: MarketDetailType): boolean {
 export function assertMarketAcceptsOrders(market: MarketDetailType): void {
   if (!isClosedForTrading(market)) return;
   throw new Error("This market is closed and no longer accepts orders.");
-}
-
-export function decideTradeCollateralGate(input: {
-  balance: number;
-  tradeFaceAmountSubunits: number;
-}):
-  | { kind: "top-up"; balance: number; required: number }
-  | { kind: "proceed"; balance: number; required: number } {
-  const required = input.tradeFaceAmountSubunits;
-  if (input.balance < required) {
-    return { kind: "top-up", balance: input.balance, required };
-  }
-  return { kind: "proceed", balance: input.balance, required };
 }
 
 export function tradeSelectionIntentKey(selection: TradeSelection): string {
@@ -225,7 +255,7 @@ export function buildPendingTopUpOrderIntent(input: {
   previewIdentityKey?: string | null;
 }): PendingTopUpOrderIntent | null {
   if (!input.market || !input.tradeSelection || input.tradeAmount <= 0) return null;
-  if (!Number.isFinite(input.required) || input.required <= 0) return null;
+  if (!Number.isFinite(input.required) || input.required < 0) return null;
   return {
     marketId: input.market.id,
     selectionKey: tradeSelectionIntentKey(input.tradeSelection),
@@ -393,6 +423,10 @@ export type MarketDetailDataState = {
 };
 
 export type MarketDetailDataAction =
+  | {
+      type: "marketFundingUpdated";
+      observation: MarketFundingUpdatedMessage;
+    }
   | {
       type: "routeChanged";
       routeId: string | null;
@@ -718,7 +752,7 @@ function applyConfirmedTradePrices(
   confirmedTrades: readonly LatestConfirmedTrade[],
 ): MarketDetailCore {
   // Keep the composed market's bounded trade representation in lockstep with
-  // the reducer overlay. Consumers such as useMarketPrice must see the same
+  // the reducer overlay. Trade-book consumers must see the same
   // monotonic state that the detail projections render.
   const withConfirmedTrades = {
     ...market,
@@ -838,7 +872,13 @@ function withSnapshotLoaded(
 
   return {
     ...state,
-    core: marketCoreFromDetail(detail),
+    core: {
+      ...marketCoreFromDetail(detail),
+      ...mergeMarketFundingObservation(state.core, {
+        ammBotBudgetSubunits: detail.ammBotBudgetSubunits,
+        fundingRevision: detail.fundingRevision ?? null,
+      }),
+    },
     confirmedTradesByConditionId,
     registeredPrimitiveOutcomeIdsByConditionId,
   };
@@ -849,6 +889,23 @@ export function marketDetailDataReducer(
   action: MarketDetailDataAction,
 ): MarketDetailDataState {
   switch (action.type) {
+    case "marketFundingUpdated": {
+      const { observation } = action;
+      const core = state.core;
+      if (
+        !core ||
+        state.activeRouteId !== observation.conditionId ||
+        state.marketId !== observation.conditionId
+      )
+        return state;
+      const funding = mergeMarketFundingObservation(core, observation);
+      if (
+        funding.ammBotBudgetSubunits === core.ammBotBudgetSubunits &&
+        funding.fundingRevision === (core.fundingRevision ?? null)
+      )
+        return state;
+      return { ...state, core: { ...core, ...funding } };
+    }
     case "routeChanged":
       return emptyMarketDetailDataStateForRoute(action.routeId);
     case "marketSnapshotLoaded": {
@@ -1151,7 +1208,6 @@ export function MarketDetailPage() {
     previewMarketRevisionRef.current += 1;
   }, []);
   const setupComplete = useWalletStore((s) => s.setupComplete);
-  const walletBackupState = useWalletStore((s) => s.walletBackupState);
   const activeMintUrl = useWalletStore((s) => s.activeMintUrl);
   const walletMnemonic = useWalletStore((s) => s.mnemonic);
   const signerRevision = useSyncExternalStore(
@@ -1162,7 +1218,6 @@ export function MarketDetailPage() {
   const addPendingTrade = usePendingTradesStore((s) => s.add);
   const nostrSignerMode = useSettingsStore((s) => s.nostrSignerMode);
   const nostrProfilePubkey = useSettingsStore((s) => s.nostrProfile?.pubkey ?? null);
-  const signerBackupState = useSettingsStore((s) => s.signerBackupState);
   // Data state
   const [marketData, dispatchMarketData] = useReducer(
     marketDetailDataReducer,
@@ -1191,17 +1246,31 @@ export function MarketDetailPage() {
   const [tradeAmount, setTradeAmount] = useState(0);
   const [tradeSide, setTradeSide] = useState<TradeSide>("Buy");
   const [orderType, setOrderType] = useState<OrderType>("market");
-  const [limitPrice, setLimitPrice] = useState(() =>
-    defaultLimitPriceForDivisibility(1_000, "sat"),
-  );
+  const [orderTypeContextKey, setOrderTypeContextKey] = useState<string | null>(null);
+  const [limitPrice, setLimitPrice] = useState(1);
   const [priceManuallyEdited, setPriceManuallyEdited] = useState(false);
   const [tradeSubmitStatus, setTradeSubmitStatus] = useState<{
     kind: "info" | "success" | "error";
     message: string;
   } | null>(null);
-  const [tradeFeasibility, setTradeFeasibility] = useState<{
+  const clearCompletedTradeNotice = useCallback(() => {
+    setTradeSubmitStatus((status) => {
+      if (status === null) return null;
+      switch (status.kind) {
+        case "success":
+          return null;
+        case "info":
+        case "error":
+          return status;
+        default:
+          return assertNever(status.kind);
+      }
+    });
+  }, []);
+  const [tradeFeasibilityResult, setTradeFeasibility] = useState<{
+    key: string;
     canBack: boolean;
-    reason?: "funds" | "outcome-tokens";
+    reason?: TradeFeasibilityReason;
     message?: string;
   } | null>(null);
   const [isTradeSubmitting, setIsTradeSubmitting] = useState(false);
@@ -1224,12 +1293,90 @@ export function MarketDetailPage() {
   const [lazySetupError, setLazySetupError] = useState<string | null>(null);
   const [lazySetupCreating, setLazySetupCreating] = useState(false);
   const [showBackupReminder, setShowBackupReminder] = useState(false);
-  const [showFundedActionBackupPrompt, setShowFundedActionBackupPrompt] = useState(false);
   const [pendingTopUpComment, setPendingTopUpComment] = useState<string | undefined>();
   const [pendingTopUpIntent, setPendingTopUpIntent] = useState<PendingTopUpOrderIntent | null>(
     null,
   );
   const walletReady = setupComplete && nostrSignerMode !== "none";
+
+  const activeScopeId = activeBrowserWalletScopeId();
+  const mnemonicScopeId = browserWalletScopeIdFromMnemonic(walletMnemonic);
+  const canonicalSellHoldingsIdentity: CanonicalSellHoldingsIdentity | null =
+    currentRouteId !== null &&
+    market !== null &&
+    activeMintUrl !== null &&
+    mnemonicScopeId !== null &&
+    mnemonicScopeId === activeScopeId
+      ? {
+          routeId: currentRouteId,
+          conditionId: market.id,
+          scopeId: mnemonicScopeId,
+          mintUrl: activeMintUrl,
+        }
+      : null;
+  const canonicalSellHoldingsIdentityKey = canonicalSellHoldingsIdentity
+    ? buildCanonicalSellHoldingsIdentityKey(canonicalSellHoldingsIdentity)
+    : null;
+  const canonicalSellHoldingsResult = useLiveQuery(
+    async () => {
+      if (!canonicalSellHoldingsIdentity || canonicalSellHoldingsIdentityKey === null) return null;
+      try {
+        return await readCanonicalMarketSellHoldings(canonicalSellHoldingsIdentity);
+      } catch {
+        return {
+          identityKey: canonicalSellHoldingsIdentityKey,
+          status: "unavailable" as const,
+        };
+      }
+    },
+    [canonicalSellHoldingsIdentityKey, walletMnemonic, activeScopeId, activeMintUrl],
+    null,
+  );
+  const sellHoldings: SellHoldingsState =
+    canonicalSellHoldingsIdentityKey === null
+      ? { status: "unavailable" }
+      : sellHoldingsForCurrentIdentity(
+          canonicalSellHoldingsResult,
+          canonicalSellHoldingsIdentityKey,
+        );
+  const selectableInventoryWakeIdentity =
+    activeScopeId !== null && mnemonicScopeId === activeScopeId && activeMintUrl !== null
+      ? { scopeId: activeScopeId, normalizedMint: normalizeUrl(activeMintUrl) }
+      : null;
+  const selectableInventoryWakeIdentityKey = selectableInventoryWakeIdentity
+    ? JSON.stringify([
+        selectableInventoryWakeIdentity.scopeId,
+        selectableInventoryWakeIdentity.normalizedMint,
+      ])
+    : null;
+  const selectableInventoryWakeResult = useLiveQuery(
+    async () => {
+      if (selectableInventoryWakeIdentity === null || selectableInventoryWakeIdentityKey === null) {
+        return null;
+      }
+      try {
+        await db.custodyProofs
+          .where("[scopeId+normalizedMint+unit+selectability]")
+          .equals([
+            selectableInventoryWakeIdentity.scopeId,
+            selectableInventoryWakeIdentity.normalizedMint,
+            "msat",
+            "selectable",
+          ])
+          .count();
+        return { identityKey: selectableInventoryWakeIdentityKey, wake: {} };
+      } catch {
+        return null;
+      }
+    },
+    [selectableInventoryWakeIdentityKey],
+    null,
+  );
+  const selectableInventoryWake =
+    selectableInventoryWakeIdentityKey !== null &&
+    selectableInventoryWakeResult?.identityKey === selectableInventoryWakeIdentityKey
+      ? selectableInventoryWakeResult.wake
+      : null;
 
   const invalidateProtectedTradeAttempt = useCallback(() => {
     invalidatePreviewForMarket();
@@ -1354,7 +1501,6 @@ export function MarketDetailPage() {
     setPendingTopUpIntent(null);
     setShowNostrAuthModal(false);
     setShowNostrChooser(false);
-    setShowFundedActionBackupPrompt(false);
     tradeSubmitInFlightRef.current = false;
 
     if (!currentRouteId) {
@@ -1439,6 +1585,23 @@ export function MarketDetailPage() {
   );
   useMarketStatusLive(market?.id ?? null, handleLiveStatus);
 
+  const handleFundingCredited = useCallback(() => {
+    const conditionId = market?.id;
+    const generation = routeGenerationRef.current;
+    if (!conditionId || !isCurrentRoute(conditionId, generation) || !market) return;
+
+    const outcomeSetIds = outcomeSetIdsForMarketBooks(market).slice(0, 8);
+    void Promise.all(
+      outcomeSetIds.map(async (outcomeSetId) => {
+        try {
+          await refreshMarketSnapshot(outcomeSetMarketId(conditionId, outcomeSetId));
+        } catch (err) {
+          console.warn("[MarketDetailPage] funding snapshot refresh failed:", err);
+        }
+      }),
+    );
+  }, [isCurrentRoute, market]);
+
   useEffect(() => {
     if (!id || !market) return;
     const generation = routeGenerationRef.current;
@@ -1448,6 +1611,13 @@ export function MarketDetailPage() {
 
     let cancelled = false;
     const cleanups: Array<() => void> = [];
+
+    cleanups.push(
+      onMarketFundingUpdated(id, (message) => {
+        if (cancelled || !isCurrentRoute(id, generation) || message.conditionId !== id) return;
+        dispatchMarketData({ type: "marketFundingUpdated", observation: message });
+      }),
+    );
 
     const reconcileOwnOrders = debounce(() => {
       void new BitcasterEngineClient({
@@ -1479,6 +1649,7 @@ export function MarketDetailPage() {
           trade: message.latestConfirmedTrade,
           expectedRouteId: id,
         });
+        refreshAuthoritativeMarket();
       }),
     );
 
@@ -1609,47 +1780,34 @@ export function MarketDetailPage() {
   const marketDivisibility = market
     ? normalizeMarketDivisibility(market.divisibility, marketBaseAsset)
     : 1_000;
-  const priceOutcomeSetId = useMemo(() => {
-    if (!market) return null;
-    if (tradeSelection) {
-      return (
-        resolveOutcomeSets(market, tradeSelection)?.selectedOutcomeSetId ??
-        primaryOutcomeSetId(market)
-      );
-    }
-    return primaryOutcomeSetId(market);
-  }, [market, tradeSelection]);
-  const priceOrderBook = useMemo(() => {
-    if (!market || !priceOutcomeSetId) return null;
-    const primary = primaryOutcomeSetId(market);
-    return (
-      market.outcomeOrderBooks?.[priceOutcomeSetId] ??
-      (priceOutcomeSetId === primary ? market.orderBook : null)
-    );
-  }, [market, priceOutcomeSetId]);
-  const marketPrice = useMarketPrice({
-    market,
-    marketId:
-      currentRouteId && priceOutcomeSetId
-        ? outcomeSetMarketId(currentRouteId, priceOutcomeSetId)
-        : null,
-    outcomeSetId: priceOutcomeSetId,
-    orderBook: priceOrderBook,
-  });
-
+  const priceTradeRoute =
+    market && tradeSelection ? resolveOutcomeSets(market, tradeSelection) : null;
+  const priceContextKey = JSON.stringify([
+    market?.id ?? null,
+    priceTradeRoute?.publicOutcomeSetId ?? null,
+    priceTradeRoute?.tokenSide ?? null,
+    tradeSide,
+  ]);
+  const activeOrderType = orderTypeContextKey === priceContextKey ? orderType : "market";
+  const [limitPriceContextKey, setLimitPriceContextKey] = useState<string | null>(null);
+  const hasCurrentLimitPrice = limitPriceContextKey === priceContextKey;
+  const customLimitPrice = hasCurrentLimitPrice ? limitPrice : null;
   useEffect(() => {
+    if (orderTypeContextKey === priceContextKey) return;
+    setOrderTypeContextKey(priceContextKey);
+    setOrderType("market");
     setPriceManuallyEdited(false);
-  }, [market?.id, priceOutcomeSetId]);
-
-  useEffect(() => {
-    if (priceManuallyEdited) return;
-    setLimitPrice(marketPrice.defaultOrderPrice);
-  }, [marketPrice.defaultOrderPrice, priceManuallyEdited]);
-
-  const handleLimitPriceChange = useCallback((price: number) => {
-    setPriceManuallyEdited(true);
-    setLimitPrice(price);
-  }, []);
+    setLimitPriceContextKey(null);
+  }, [orderTypeContextKey, priceContextKey]);
+  const handleLimitPriceChange = useCallback(
+    (price: number) => {
+      clearCompletedTradeNotice();
+      setLimitPriceContextKey(priceContextKey);
+      setPriceManuallyEdited(true);
+      setLimitPrice(price);
+    },
+    [priceContextKey, clearCompletedTradeNotice],
+  );
 
   const tradeFaceAmountSubunits = displaySharesToFaceSubunits(
     tradeAmount,
@@ -1657,42 +1815,6 @@ export function MarketDetailPage() {
     marketDivisibility,
   );
 
-  const currentTradeTicket = useMemo(() => {
-    if (!market || !tradeSelection || tradeAmount <= 0) return null;
-    try {
-      const tradeBooks = resolveTradeOrderBooks(market, tradeSelection);
-      return buildTradeTicket({
-        market,
-        selection: tradeSelection,
-        amountSubunits: tradeFaceAmountSubunits,
-        side: tradeSide,
-        orderType,
-        limitPrice,
-        orderBook: tradeBooks?.selectedBook,
-        complementaryOrderBook: tradeBooks?.complementBook,
-      });
-    } catch {
-      return null;
-    }
-  }, [
-    market,
-    tradeSelection,
-    tradeAmount,
-    tradeFaceAmountSubunits,
-    tradeSide,
-    orderType,
-    limitPrice,
-  ]);
-  const previewRequest = useMemo<PreviewFokOrderRequest | null>(() => {
-    if (currentTradeTicket === null) return null;
-    return {
-      marketId: currentTradeTicket.marketId,
-      side: currentTradeTicket.request.side,
-      tokenSide: currentTradeTicket.request.tokenSide,
-      price: currentTradeTicket.request.price,
-      faceAmountSubunits: currentTradeTicket.request.amountSubunits,
-    };
-  }, [currentTradeTicket]);
   const previewMarketRevision = previewMarketRevisionRef.current;
   const previewClient = useMemo(
     () =>
@@ -1705,11 +1827,113 @@ export function MarketDetailPage() {
     () => currentTradePreviewIdentityKey(currentRouteId ?? ""),
     [currentRouteId, nostrProfilePubkey, nostrSignerMode, signerRevision, walletMnemonic],
   );
+  const capacityRequest = useMemo<PreviewFokOrderCapacityRequest | null>(() => {
+    if (!market || !tradeSelection) return null;
+    const resolved = resolveOutcomeSets(market, tradeSelection);
+    if (!resolved) return null;
+    const request: PreviewFokOrderCapacityRequest = {
+      marketId: outcomeSetMarketId(market.id, resolved.publicOutcomeSetId),
+      side: tradeSide,
+      tokenSide: resolved.tokenSide,
+    };
+    if (activeOrderType === "limit" && customLimitPrice !== null) {
+      request.price = customLimitPrice;
+    }
+    return request;
+  }, [market, tradeSelection, tradeSide, activeOrderType, customLimitPrice]);
+  const capacityInvalidationKey = useMemo(
+    () => [previewIdentityKey, previewMarketRevision].join("\u0000"),
+    [previewIdentityKey, previewMarketRevision],
+  );
+  const capacityPreview = useFokOrderCapacityPreview({
+    client: previewClient,
+    request: isTradeSubmitting ? null : capacityRequest,
+    invalidationKey: capacityInvalidationKey,
+    debounceMs: 200,
+  });
+  const capacityResponse = capacityPreview.status === "ready" ? capacityPreview.response : null;
+  const automaticLimitPrice =
+    capacityRequest?.price === undefined && capacityResponse?.status === "ready"
+      ? capacityResponse.effectiveLimitPrice
+      : null;
+  useEffect(() => {
+    if (automaticLimitPrice === null) return;
+    if (!hasCurrentLimitPrice || !priceManuallyEdited) {
+      setLimitPrice(automaticLimitPrice);
+      setLimitPriceContextKey(priceContextKey);
+      setPriceManuallyEdited(false);
+    }
+  }, [automaticLimitPrice, hasCurrentLimitPrice, priceContextKey, priceManuallyEdited]);
+
+  const effectiveTradeLimitPrice =
+    activeOrderType === "market" ? automaticLimitPrice : customLimitPrice;
+  const currentTradeTicket = useMemo(() => {
+    if (!market || !tradeSelection || tradeAmount <= 0 || effectiveTradeLimitPrice === null) {
+      return null;
+    }
+    try {
+      const tradeBooks = resolveTradeOrderBooks(market, tradeSelection);
+      return buildTradeTicket({
+        market,
+        selection: tradeSelection,
+        amountSubunits: tradeFaceAmountSubunits,
+        side: tradeSide,
+        orderType: "limit",
+        limitPrice: effectiveTradeLimitPrice,
+        orderBook: tradeBooks?.selectedBook,
+        complementaryOrderBook: tradeBooks?.complementBook,
+      });
+    } catch {
+      return null;
+    }
+  }, [
+    market,
+    tradeSelection,
+    tradeAmount,
+    tradeFaceAmountSubunits,
+    tradeSide,
+    effectiveTradeLimitPrice,
+  ]);
+  const previewRequest = useMemo<PreviewFokOrderRequest | null>(() => {
+    if (currentTradeTicket === null) return null;
+    return {
+      marketId: currentTradeTicket.marketId,
+      side: currentTradeTicket.request.side,
+      tokenSide: currentTradeTicket.request.tokenSide,
+      price: currentTradeTicket.request.price,
+      faceAmountSubunits: currentTradeTicket.request.amountSubunits,
+    };
+  }, [currentTradeTicket]);
+  const selectedSellOutcomeSetId = useMemo(
+    () =>
+      market && tradeSelection
+        ? (resolveOutcomeSets(market, tradeSelection)?.selectedOutcomeSetId ?? null)
+        : null,
+    [market, tradeSelection],
+  );
+  const selectedSellHolding =
+    tradeSide === "Sell" && sellHoldings.status === "ready" && selectedSellOutcomeSetId !== null
+      ? (sellHoldings.byOutcomeSetId.get(selectedSellOutcomeSetId) ?? {
+          selectableSubunits: 0,
+          reservedSubunits: 0,
+        })
+      : null;
+  const selectedSellAvailableShares =
+    selectedSellHolding === null
+      ? null
+      : Math.floor(selectedSellHolding.selectableSubunits / marketDivisibility);
+  const selectedSellHoldingVersion = JSON.stringify([
+    sellHoldings.status,
+    selectedSellOutcomeSetId,
+    selectedSellHolding?.selectableSubunits ?? null,
+    selectedSellHolding?.reservedSubunits ?? null,
+  ]);
   const previewInvalidationKey = useMemo(() => {
     const confirmedTradeFacts = JSON.stringify(market?.latestConfirmedTrades ?? []);
     return [
       previewIdentityKey,
       previewMarketRevision,
+      selectedSellHoldingVersion,
       market?.latestConfirmedTradesValid === true ? "valid" : "invalid",
       confirmedTradeFacts,
     ].join("\u0000");
@@ -1718,6 +1942,7 @@ export function MarketDetailPage() {
     market?.latestConfirmedTradesValid,
     previewIdentityKey,
     previewMarketRevision,
+    selectedSellHoldingVersion,
   ]);
   const previewIdentityRef = useRef<string | null>(null);
   const previewIdentityIsCurrent = previewIdentityRef.current === previewIdentityKey;
@@ -1730,8 +1955,8 @@ export function MarketDetailPage() {
     invalidationKey: previewInvalidationKey,
     debounceMs: 200,
   });
-  const tradePreview = orderType === "market" ? fokPreview : null;
-  const limitOrderPreview = orderType === "limit" ? fokPreview : null;
+  const tradePreview = activeOrderType === "market" ? fokPreview : null;
+  const limitOrderPreview = activeOrderType === "limit" ? fokPreview : null;
   const protectedTradeTicket = useMemo(() => {
     if (
       currentTradeTicket === null ||
@@ -1747,7 +1972,7 @@ export function MarketDetailPage() {
         ticket: currentTradeTicket,
         previewRequest,
         previewResponse: fokPreview.response,
-        priceOverride: orderType === "limit" ? currentTradeTicket.request.price : null,
+        priceOverride: previewRequest.price,
       });
     } catch {
       return null;
@@ -1756,7 +1981,7 @@ export function MarketDetailPage() {
     currentTradeTicket,
     fokPreview.response,
     fokPreview.status,
-    orderType,
+    activeOrderType,
     previewIdentityIsCurrent,
     previewRequest,
   ]);
@@ -1768,13 +1993,24 @@ export function MarketDetailPage() {
             mintUrl: activeMintUrl,
             ticket: protectedTradeTicket,
             previewIdentityKey,
+            selectedSellHoldingVersion,
           })
         : null,
-    [activeMintUrl, market?.id, protectedTradeTicket, previewIdentityKey],
+    [
+      activeMintUrl,
+      market?.id,
+      protectedTradeTicket,
+      previewIdentityKey,
+      selectedSellHoldingVersion,
+    ],
   );
   const displayedTradeFeeFacts =
     rangeFeePreviewKey !== null && rangeFeePreview?.key === rangeFeePreviewKey
       ? rangeFeePreview.feeFacts
+      : null;
+  const tradeFeasibility =
+    rangeFeePreviewKey !== null && tradeFeasibilityResult?.key === rangeFeePreviewKey
+      ? tradeFeasibilityResult
       : null;
   const feeConsentCurrent = displayedTradeFeeFacts !== null;
 
@@ -1798,46 +2034,41 @@ export function MarketDetailPage() {
       setTradeFeasibility(null);
       return;
     }
+    if (tradeSide === "Sell") {
+      if (
+        sellHoldings.status !== "ready" ||
+        selectedSellAvailableShares === null ||
+        tradeAmount > selectedSellAvailableShares
+      ) {
+        setTradeFeasibility({
+          key: rangeFeePreviewKey,
+          canBack: false,
+          reason: "outcome-tokens",
+          message: "Insufficient selectable outcome tokens",
+        });
+        return;
+      }
+    }
     let cancelled = false;
+    setTradeFeasibility(null);
+    setRangeFeePreview(null);
     const evaluate = async () => {
       try {
-        const holdings = await buildIndexedDbTokenHoldings({
-          mintUrl: activeMintUrl ?? undefined,
-          conditionId: market.id,
-          baseAsset: market.baseAsset,
+        const feePreview = await previewBrowserCtfRangeOrderFees({
+          market,
+          ticket: protectedTradeTicket,
+          mintUrl: activeMintUrl,
         });
         if (cancelled || !isCurrentRoute(routeId, generation)) return;
-        const canBack = canBackOrder(
-          {
-            side: tradeSide === "Buy" ? "bid" : "ask",
-            sizeSubunits: protectedTradeTicket.request.amountSubunits,
-            shareFaceSubunits: marketDivisibility,
-          },
-          holdings,
-          {},
-          marketDivisibility,
-        ).canBack;
-        if (canBack) {
-          const feePreview = await previewBrowserCtfRangeOrderFees({
-            market,
-            ticket: protectedTradeTicket,
-            mintUrl: activeMintUrl,
-          });
-          if (cancelled || !isCurrentRoute(routeId, generation)) return;
-          setRangeFeePreview({
-            key: rangeFeePreviewKey,
-            feeFacts: feePreview,
-          });
-          setTradeFeasibility({ canBack: true });
-          return;
-        }
+        setRangeFeePreview({ key: rangeFeePreviewKey, feeFacts: feePreview });
+        setTradeFeasibility({ key: rangeFeePreviewKey, canBack: true });
+      } catch (error) {
+        if (cancelled || !isCurrentRoute(routeId, generation)) return;
         setTradeFeasibility({
+          key: rangeFeePreviewKey,
           canBack: false,
-          reason: tradeSide === "Sell" ? "outcome-tokens" : "funds",
-          message: tradeSide === "Sell" ? "Insufficient outcome tokens" : "Insufficient funds",
+          reason: rangeFeePreviewRefusalReason(error, tradeSide),
         });
-      } catch {
-        if (!cancelled && isCurrentRoute(routeId, generation)) setTradeFeasibility(null);
       }
     };
     void evaluate();
@@ -1850,15 +2081,19 @@ export function MarketDetailPage() {
     market,
     tradeSelection,
     tradeAmount,
+    tradeSide,
     marketDivisibility,
+    sellHoldings.status,
+    selectedSellAvailableShares,
     protectedTradeTicket,
     feeFactsRefreshGeneration,
     isCurrentRoute,
     rangeFeePreviewKey,
+    selectableInventoryWake,
   ]);
 
-  // Submit the order. Assumes wallet is set up and balance has been checked —
-  // callers that can't promise that must route through `handleTradeConfirm`.
+  // Reuse consent only for the same ticket and wallet. A new fee calculation
+  // needs confirmation; it must not silently authorize a changed cost.
   const placeOrder = useCallback(
     async (comment?: string, capturedTicket?: TradeTicket) => {
       if (!market || !tradeSelection || !tradeAmount) return;
@@ -1993,6 +2228,7 @@ export function MarketDetailPage() {
           mintUrl: activeMintUrl,
           ticket,
           previewIdentityKey: capturedPreviewIdentityKey,
+          selectedSellHoldingVersion,
         });
         let consentedFeeFacts =
           rangeFeePreview?.key === exactFeePreviewKey ? rangeFeePreview.feeFacts : null;
@@ -2036,7 +2272,7 @@ export function MarketDetailPage() {
               tradeSelection,
               tradeAmount,
               tradeSide,
-              orderType,
+              orderType: activeOrderType,
               limitPrice,
               comment,
               baseAsset: "sat",
@@ -2103,10 +2339,7 @@ export function MarketDetailPage() {
               ? "Order posted to the book."
               : `Order ${response.status.replace("_", " ")}.`,
         });
-        if (
-          useWalletStore.getState().walletBackupState === "needs_backup" ||
-          useSettingsStore.getState().signerBackupState === "needs_backup"
-        ) {
+        if (useSettingsStore.getState().signerBackupState === "needs_backup") {
           setShowBackupReminder(true);
         }
         loadMarket({ showLoading: false });
@@ -2149,7 +2382,7 @@ export function MarketDetailPage() {
       tradeSelection,
       tradeAmount,
       tradeSide,
-      orderType,
+      activeOrderType,
       limitPrice,
       protectedTradeTicket,
       previewIdentityKey,
@@ -2159,15 +2392,15 @@ export function MarketDetailPage() {
       cancelActiveScoreTopUp,
       isCurrentRoute,
       rangeFeePreview,
+      selectedSellHoldingVersion,
       previewClient,
       invalidatePreviewForMarket,
       t,
     ],
   );
 
-  // Gate the order submission on sufficient balance. Reads the balance at
-  // click-time (not via `useBalance`) so we don't race a stale live-query
-  // subscription after a top-up.
+  // Do not gate Buy on share payout or Sell on pooled collections. The source
+  // planner rechecks the selected asset and its fees when submission starts.
   const handleTradeConfirm = useCallback(
     async (comment?: string, capturedTicket?: TradeTicket) => {
       if (!market || !tradeSelection || !tradeAmount) return;
@@ -2191,10 +2424,6 @@ export function MarketDetailPage() {
         return true;
       };
       if (abortIfAttemptStale()) return;
-      if (shouldPromptForFundedActionBackup(useWalletStore.getState().walletBackupState)) {
-        setShowFundedActionBackupPrompt(true);
-        return;
-      }
       try {
         assertMarketAcceptsOrders(market);
       } catch (error) {
@@ -2208,81 +2437,6 @@ export function MarketDetailPage() {
         return;
       }
       if (tradeSubmitInFlightRef.current) return;
-      tradeSubmitInFlightRef.current = true;
-      setIsTradeSubmitting(true);
-      try {
-        const holdings = await buildIndexedDbTokenHoldings({
-          mintUrl: activeMintUrl ?? undefined,
-          conditionId: market.id,
-          baseAsset: market.baseAsset,
-        });
-        if (abortIfAttemptStale()) return;
-        const backing = canBackOrder(
-          {
-            side: tradeSide === "Buy" ? "bid" : "ask",
-            sizeSubunits: ticket.request.amountSubunits,
-            shareFaceSubunits: marketDivisibility,
-          },
-          holdings,
-          {},
-          marketDivisibility,
-        );
-        const current =
-          tradeSide === "Sell"
-            ? backing.maxShares * marketDivisibility
-            : await getBalance(activeMintUrl, { baseAsset: marketBaseAsset });
-        if (abortIfAttemptStale()) return;
-        const collateralGate = decideTradeCollateralGate({
-          balance: backing.canBack ? tradeFaceAmountSubunits : current,
-          tradeFaceAmountSubunits,
-        });
-        if (abortIfAttemptStale()) return;
-        if (collateralGate.kind === "top-up") {
-          setBalanceAtCheck(collateralGate.balance);
-          setPendingTopUpComment(comment?.trim() || undefined);
-          setPendingTopUpIntent(
-            buildPendingTopUpOrderIntent({
-              market,
-              tradeSelection,
-              tradeAmount,
-              tradeSide,
-              orderType,
-              limitPrice,
-              comment,
-              baseAsset: marketBaseAsset,
-              required: collateralGate.required,
-              protectedTicket: ticket,
-              previewIdentityKey,
-            }),
-          );
-          setTopUpReason({
-            kind: "collateral",
-            required: collateralGate.required,
-            baseAsset: marketBaseAsset,
-          });
-          setTopUpStage("modal");
-          return;
-        }
-      } catch (error) {
-        if (abortIfAttemptStale()) return;
-        if (error instanceof Error && error.message.includes("No Nostr signer configured")) {
-          setShowNostrAuthModal(true);
-          return;
-        }
-        setTradeSubmitStatus({
-          kind: "error",
-          message:
-            error instanceof Error
-              ? error.message
-              : "Could not check wallet balance before submitting the order.",
-        });
-        return;
-      } finally {
-        if (routeStillActive()) {
-          tradeSubmitInFlightRef.current = false;
-          setIsTradeSubmitting(false);
-        }
-      }
       if (abortIfAttemptStale()) return;
       await placeOrder(comment, ticket);
     },
@@ -2295,7 +2449,7 @@ export function MarketDetailPage() {
       tradeSide,
       activeMintUrl,
       marketDivisibility,
-      orderType,
+      activeOrderType,
       limitPrice,
       isCurrentRoute,
       placeOrder,
@@ -2376,7 +2530,7 @@ export function MarketDetailPage() {
           tradeSelection,
           tradeAmount,
           tradeSide,
-          orderType,
+          orderType: activeOrderType,
           limitPrice,
           previewIdentityKey,
         });
@@ -2470,7 +2624,7 @@ export function MarketDetailPage() {
         tradeSelection,
         tradeAmount,
         tradeSide,
-        orderType,
+        orderType: activeOrderType,
         limitPrice,
         previewIdentityKey,
       })
@@ -2488,15 +2642,15 @@ export function MarketDetailPage() {
       });
       return;
     }
-    const balance = await getBalance(activeMintUrl, { baseAsset: intent.baseAsset });
-    if (!isCurrentRoute(intent.marketId, routeGenerationRef.current)) return;
-    if (balance < intent.required) {
+    if (!market || !intent.protectedTicket) {
       setTradeSubmitStatus({
-        kind: "error",
-        message: t("trade.topUpStillInsufficient"),
+        kind: "info",
+        message: t("trade.topUpIntentChanged"),
       });
       return;
     }
+    // A balance total cannot prove that this asset's exact source plan is
+    // affordable. Reuse normal preparation and its fee-consent check.
     await handleTradeConfirm(
       intent.comment ?? pendingTopUpComment,
       intent.protectedTicket ?? undefined,
@@ -2507,7 +2661,7 @@ export function MarketDetailPage() {
     handleTradeConfirm,
     limitPrice,
     market,
-    orderType,
+    activeOrderType,
     pendingTopUpComment,
     pendingTopUpIntent,
     previewIdentityKey,
@@ -2539,7 +2693,7 @@ export function MarketDetailPage() {
         tradeSelection,
         tradeAmount,
         tradeSide,
-        orderType,
+        orderType: activeOrderType,
         limitPrice,
         previewIdentityKey,
       });
@@ -2568,7 +2722,7 @@ export function MarketDetailPage() {
     cancelActiveScoreTopUp,
     limitPrice,
     market,
-    orderType,
+    activeOrderType,
     pendingTopUpIntent,
     previewIdentityKey,
     isCurrentRoute,
@@ -2586,7 +2740,9 @@ export function MarketDetailPage() {
     (comment?: string) => {
       if (!market || !tradeSelection || tradeAmount <= 0) return;
       setBalanceAtCheck(0);
-      const required = tradeFaceAmountSubunits;
+      // New proofs change input fees. Do not invent an exact shortfall from
+      // the share payout; normal preparation checks the received funds.
+      const required = 0;
       const baseAsset = marketBaseAsset;
       setPendingTopUpComment(comment?.trim() || undefined);
       setPendingTopUpIntent(
@@ -2595,18 +2751,18 @@ export function MarketDetailPage() {
           tradeSelection,
           tradeAmount,
           tradeSide,
-          orderType,
+          orderType: activeOrderType,
           limitPrice,
           comment,
           baseAsset,
-          required: Math.max(required, 1),
+          required,
           protectedTicket: protectedTradeTicket,
           previewIdentityKey,
         }),
       );
       setTopUpReason({
         kind: "collateral",
-        required: Math.max(required, 1),
+        required,
         baseAsset,
       });
       setTopUpStage("overlay");
@@ -2615,7 +2771,7 @@ export function MarketDetailPage() {
       limitPrice,
       market,
       marketBaseAsset,
-      orderType,
+      activeOrderType,
       previewIdentityKey,
       protectedTradeTicket,
       tradeAmount,
@@ -2670,37 +2826,61 @@ export function MarketDetailPage() {
         chartTimeframe={chartTimeframe}
         tradeSelection={tradeSelection}
         tradeAmount={tradeAmount}
+        sellHoldings={sellHoldings}
         tradePreview={tradePreview}
         tradeFeeFacts={displayedTradeFeeFacts}
         feeConsentCurrent={feeConsentCurrent}
         tradeSide={tradeSide}
-        orderType={orderType}
+        orderType={activeOrderType}
         limitOrderPreview={limitOrderPreview}
         limitPrice={limitPrice}
+        tradeCapacityPreview={capacityPreview}
+        automaticLimitPrice={automaticLimitPrice}
+        onTradeCapacityRetry={capacityPreview.refresh}
         onTimeframeChange={handleTimeframeChange}
         onTradeSelect={(selection) => {
+          clearCompletedTradeNotice();
           setTradeSelection(selection);
         }}
         onTradeClear={() => {
+          clearCompletedTradeNotice();
           setTradeSelection(null);
           setTradeAmount(0);
         }}
         onAmountChange={(amount) => {
+          clearCompletedTradeNotice();
           setTradeAmount(amount);
         }}
         onTradeConfirm={handleTradeConfirm}
         tradeSubmitStatus={tradeSubmitStatus}
         onTradeSubmitStatusDismiss={() => setTradeSubmitStatus(null)}
         tradeFeasibility={tradeFeasibility}
+        onTradeFeasibilityRetry={() => setFeeFactsRefreshGeneration((current) => current + 1)}
         isTradeSubmitting={isTradeSubmitting}
         onShare={handleShare}
-        onTradeSideChange={setTradeSide}
-        onOrderTypeChange={setOrderType}
+        onTradeSideChange={(side) => {
+          clearCompletedTradeNotice();
+          setTradeSide(side);
+        }}
+        onOrderTypeChange={(type) => {
+          clearCompletedTradeNotice();
+          if (type === "limit") {
+            if (automaticLimitPrice === null) return;
+            setLimitPrice(automaticLimitPrice);
+            setLimitPriceContextKey(priceContextKey);
+          } else {
+            setLimitPriceContextKey(priceContextKey);
+          }
+          setPriceManuallyEdited(false);
+          setOrderTypeContextKey(priceContextKey);
+          setOrderType(type);
+        }}
         onLimitPriceChange={handleLimitPriceChange}
         onRelatedMarketClick={handleRelatedMarketClick}
         walletReady={walletReady}
         onWalletRequired={handleWalletRequired}
         onTopUpRequired={handleTradingPanelTopUp}
+        onFundingCredited={handleFundingCredited}
       />
       {topUpStage === "modal" && (
         <InsufficientBalanceModal
@@ -2712,7 +2892,7 @@ export function MarketDetailPage() {
           }
           formatAmount={(amount) =>
             topUpReason?.kind === "score"
-              ? t("insufficientBalance.sats", { count: amount })
+              ? formatMarketSubunits(Math.round(amount * 1_000), "sat")
               : formatMarketSubunits(amount, marketBaseAsset)
           }
           recoveryUnavailable={
@@ -2739,9 +2919,10 @@ export function MarketDetailPage() {
           minimumDescription={
             topUpReason?.kind === "score"
               ? t("topUp.scoreMinimumDesc", {
-                  sats: t("insufficientBalance.sats", {
-                    count: Math.max(topUpReason.required - (balanceAtCheck ?? 0), 0),
-                  }),
+                  sats: formatMarketSubunits(
+                    Math.round(Math.max(topUpReason.required - (balanceAtCheck ?? 0), 0) * 1_000),
+                    "sat",
+                  ),
                 })
               : undefined
           }
@@ -2763,16 +2944,8 @@ export function MarketDetailPage() {
       )}
       {showBackupReminder && (
         <BackupSecretsReminderModal
-          includeWallet={walletBackupState === "needs_backup"}
-          includeNostr={signerBackupState === "needs_backup"}
           onDismiss={() => setShowBackupReminder(false)}
           onOpenSettings={() => navigate("/settings?category=nostr")}
-        />
-      )}
-      {showFundedActionBackupPrompt && (
-        <FundedActionBackupPromptModal
-          onCancel={() => setShowFundedActionBackupPrompt(false)}
-          onGoToBackup={() => navigate("/settings?category=cashu")}
         />
       )}
     </>

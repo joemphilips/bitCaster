@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import type { Position } from "@/types/portfolio";
 import { normalizeMarketBaseAsset } from "@bitcaster/client-sdk/marketUnits";
 import { InlineAmount } from "@/components/shared/InlineAmount";
+import { OutcomeLabel } from "@/components/shared/OutcomeLabel";
 
 interface PositionRowProps {
   position: Position;
@@ -12,6 +13,12 @@ interface PositionRowProps {
   onDiscard?: (positionId: string) => void;
   onView?: (positionId: string) => void;
 }
+
+const activeSideColors: Record<Position["side"], string> = {
+  yes: "bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300",
+  no: "bg-rose-100 dark:bg-rose-900/40 text-rose-700 dark:text-rose-300",
+  Outcome: "bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-300",
+};
 
 function fallbackPositionLabel(position: Position, sideLabel: string): string {
   const explicit = position.outcomeLabel?.trim();
@@ -29,9 +36,6 @@ function fallbackPositionLabel(position: Position, sideLabel: string): string {
 
 export function PositionRow({ position, onSell, onClaim, onDiscard, onView }: PositionRowProps) {
   const { t } = useTranslation();
-  const isLoss =
-    position.profitLossSats < 0 ||
-    (position.profitLossSats === 0 && position.profitLossPercent < 0);
   // Single source-of-truth (P22 F1/F2/F3): the "Won"/"Lost" badge, the Claim
   // button, and the destructive "Remove" gate all read these flags, derived
   // once in usePortfolioState. They can never disagree, so the Remove button
@@ -44,6 +48,14 @@ export function PositionRow({ position, onSell, onClaim, onDiscard, onView }: Po
   const sideLabel = position.side.toUpperCase();
   const positionLabel = fallbackPositionLabel(position, sideLabel);
   const hasOutcomeLabel = Boolean(position.outcomeLabel?.trim());
+  const categoricalOutcomeLabel = (
+    <OutcomeLabel
+      outcome={{ label: positionLabel, color: position.outcomeColor }}
+      className="text-xs font-semibold px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-700"
+      labelClassName="text-slate-700 dark:text-slate-300"
+      swatchClassName="h-2.5 w-2.5"
+    />
+  );
   const handleView = () => onView?.(position.id);
   const handleViewKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (event.target !== event.currentTarget) return;
@@ -63,15 +75,7 @@ export function PositionRow({ position, onSell, onClaim, onDiscard, onView }: Po
       tabIndex={onView ? 0 : undefined}
       onClick={handleView}
       onKeyDown={onView ? handleViewKeyDown : undefined}
-      className={`w-full flex flex-col gap-3 p-3 rounded-lg transition-colors text-left sm:flex-row sm:items-center ${
-        isWinner
-          ? "bg-emerald-50 dark:bg-emerald-900/20 hover:bg-emerald-100 dark:hover:bg-emerald-900/30"
-          : isLoser
-            ? "bg-rose-50 dark:bg-rose-900/20 hover:bg-rose-100 dark:hover:bg-rose-900/30 opacity-80"
-            : isPending
-              ? "bg-amber-50 dark:bg-amber-900/10 hover:bg-amber-100 dark:hover:bg-amber-900/20"
-              : "hover:bg-slate-50 dark:hover:bg-slate-700/50"
-      }`}
+      className="w-full flex flex-col gap-3 p-3 rounded-lg transition-colors text-left sm:flex-row sm:items-center hover:bg-slate-50 dark:hover:bg-slate-700/50"
     >
       <div className="flex min-w-0 items-start gap-3 sm:contents">
         {/* Market Image */}
@@ -93,27 +97,39 @@ export function PositionRow({ position, onSell, onClaim, onDiscard, onView }: Po
           </p>
           <div className="flex flex-wrap items-center gap-2 mt-0.5">
             {isWinner ? (
-              <span className="text-xs font-semibold px-1.5 py-0.5 rounded bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300">
+              <span className="text-xs font-semibold px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-300">
                 {t("portfolio.won")} ☺
               </span>
             ) : isLoser ? (
-              <span className="text-xs font-semibold px-1.5 py-0.5 rounded bg-rose-100 dark:bg-rose-900/40 text-rose-700 dark:text-rose-300">
+              <span className="text-xs font-semibold px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-300">
                 {t("portfolio.lost")} 😭
               </span>
             ) : isPending ? (
-              <span className="text-xs font-semibold px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300">
+              <span className="text-xs font-semibold px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-300">
                 {t("portfolio.awaitingResolution")}
               </span>
+            ) : position.side === "Outcome" ? (
+              categoricalOutcomeLabel
             ) : (
-              <span className="text-xs font-semibold px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-300">
+              <span
+                className={`text-xs font-semibold px-1.5 py-0.5 rounded ${
+                  position.status === "active"
+                    ? activeSideColors[position.side]
+                    : activeSideColors.Outcome
+                }`}
+              >
                 {positionLabel}
               </span>
             )}
-            {hasOutcomeLabel && (isWinner || isLoser || isPending) && (
-              <span className="text-xs font-semibold px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-300">
-                {positionLabel}
-              </span>
-            )}
+            {hasOutcomeLabel &&
+              (isWinner || isLoser || isPending) &&
+              (position.side === "Outcome" ? (
+                categoricalOutcomeLabel
+              ) : (
+                <span className="text-xs font-semibold px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-300">
+                  {positionLabel}
+                </span>
+              ))}
             {position.shares !== undefined && (
               <span className="text-xs text-slate-400 dark:text-slate-500">
                 {position.shares.toLocaleString()} shares
@@ -123,7 +139,7 @@ export function PositionRow({ position, onSell, onClaim, onDiscard, onView }: Po
         </div>
       </div>
 
-      {/* Value & P/L */}
+      {/* Position value */}
       {position.claimRecoveryPending && (
         <p
           role="status"
@@ -143,20 +159,14 @@ export function PositionRow({ position, onSell, onClaim, onDiscard, onView }: Po
       <div className="flex w-full items-center justify-between gap-3 sm:contents">
         <div className="shrink-0 text-left sm:text-right">
           {position.valueKnown === false ? (
-            <div className="text-sm font-medium text-amber-600 dark:text-amber-300">
-              {t("portfolio.unvalued")}
+            <div className="max-w-48 text-slate-500 dark:text-slate-400">
+              <div className="text-sm font-medium">{t("portfolio.unvalued")}</div>
+              <p className="text-xs">{t("portfolio.unvaluedReason")}</p>
             </div>
           ) : (
-            <>
-              <div className="text-sm font-mono font-medium text-slate-900 dark:text-white">
-                <InlineAmount amountSubunits={position.currentValueSats} baseAsset={baseAsset} />
-              </div>
-              <div className={`text-xs font-mono ${isLoss ? "text-rose-500" : "text-emerald-500"}`}>
-                {position.profitLossSats > 0 ? "+" : ""}
-                <InlineAmount amountSubunits={position.profitLossSats} baseAsset={baseAsset} />
-                {` (${position.profitLossPercent > 0 ? "+" : ""}${position.profitLossPercent.toFixed(1)}%)`}
-              </div>
-            </>
+            <div className="text-sm font-mono font-medium text-slate-900 dark:text-white">
+              <InlineAmount amountSubunits={position.currentValueSats} baseAsset={baseAsset} />
+            </div>
           )}
         </div>
 

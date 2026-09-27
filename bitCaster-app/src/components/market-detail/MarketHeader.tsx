@@ -15,6 +15,7 @@ import { useNavigate } from "react-router";
 import type { MarketDetail } from "@/types/market-detail";
 import { normalizeMarketBaseAsset } from "@bitcaster/client-sdk/marketUnits";
 import { InlineAmount } from "@/components/shared/InlineAmount";
+import { MetricExplanation } from "@/components/shared/MetricExplanation";
 import { fetchPublicNostrProfile, type PublicNostrProfile } from "@/lib/nostr";
 import { getMintIconUrl } from "@/lib/mints";
 import { assertNever } from "@/lib/enumDiscipline";
@@ -328,25 +329,34 @@ export function MarketHeader({ market, onShare }: MarketHeaderProps) {
         <div
           className={`flex items-center justify-between text-xs pt-4 mt-4 border-t ${market.imageUrl ? "border-white/10 text-slate-300" : "border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400"}`}
         >
-          <div
+          <MetricExplanation
             className="flex items-center gap-1 font-mono font-semibold text-amber-600 dark:text-amber-400"
-            title={t("market.volume")}
-            aria-label={t("market.volume")}
+            label={t("market.volume")}
+            description={t("market.volumeDescription")}
           >
-            <TrendingUp className="w-3.5 h-3.5" />
-            <InlineAmount amountSubunits={market.volumeLifetimeSubunits} baseAsset={baseAsset} />
-          </div>
-          <div
+            <TrendingUp aria-hidden="true" className="w-3.5 h-3.5" />
+            <InlineAmount
+              amountSubunits={market.volumeLifetimeSubunits}
+              baseAsset={baseAsset}
+              showTitle={false}
+            />
+          </MetricExplanation>
+          <MetricExplanation
             className="flex items-center gap-1"
-            title={t("market.botBudgetLabel")}
-            aria-label={t("market.botBudgetLabel")}
-            data-testid="market-bot-budget"
+            label={t("market.botBudgetLabel")}
+            description={t("market.botFundingDescription")}
+            align="right"
+            testId="market-bot-budget"
           >
-            <Droplet className="w-3.5 h-3.5" />
+            <Droplet aria-hidden="true" className="w-3.5 h-3.5" />
             <span className="font-mono font-medium">
-              <InlineAmount amountSubunits={market.ammBotBudgetSubunits} baseAsset={baseAsset} />
+              <InlineAmount
+                amountSubunits={market.ammBotBudgetSubunits}
+                baseAsset={baseAsset}
+                showTitle={false}
+              />
             </span>
-          </div>
+          </MetricExplanation>
           <button
             onClick={() => toggleBookmark(market.id)}
             className={`flex items-center cursor-pointer transition-colors ${isBookmarked ? "text-rose-500" : market.imageUrl ? "text-slate-300 hover:text-rose-500" : "text-slate-600 dark:text-slate-400 hover:text-rose-500"}`}

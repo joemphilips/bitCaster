@@ -3,6 +3,8 @@ import { useTranslation } from "react-i18next";
 import uPlot from "uplot";
 import "uplot/dist/uPlot.min.css";
 import { canonicalizeOutcomeSet } from "@/lib/outcomeSets";
+import type { Outcome } from "@/types/market";
+import { normalizeOutcomeColor, OutcomeLabel } from "@/components/shared/OutcomeLabel";
 import type { PriceHistory, ChartTimeframe, Comment, PricePoint } from "@/types/market-detail";
 
 interface PriceChartProps {
@@ -10,7 +12,7 @@ interface PriceChartProps {
   chartTimeframe: ChartTimeframe;
   onTimeframeChange?: (timeframe: ChartTimeframe) => void;
   outcomePriceHistories?: Record<string, PriceHistory>;
-  outcomes?: Array<{ id: string; label: string; odds: number | null }>;
+  outcomes?: Outcome[];
   currentDisplay?: string;
   emptyDisplay?: string;
   comments?: Comment[];
@@ -35,17 +37,7 @@ const TIMEFRAME_LABELS: Record<ChartTimeframe, string> = {
   all: "ALL",
 };
 
-const OUTCOME_COLORS = [
-  "rgb(59, 130, 246)",
-  "rgb(16, 185, 129)",
-  "rgb(245, 158, 11)",
-  "rgb(239, 68, 68)",
-  "rgb(139, 92, 246)",
-  "rgb(236, 72, 153)",
-  "rgb(20, 184, 166)",
-  "rgb(244, 63, 94)",
-];
-
+const PRIMARY_SERIES_COLOR = "rgb(59, 130, 246)";
 const CHART_HEIGHT = 224;
 const MAX_PRICE_HISTORY_POINTS_PER_OUTCOME = 1000;
 
@@ -84,7 +76,7 @@ function buildSeries(input: {
   priceHistory: PriceHistory;
   timeframe: ChartTimeframe;
   outcomePriceHistories?: Record<string, PriceHistory>;
-  outcomes?: Array<{ id: string; label: string; odds: number | null }>;
+  outcomes?: Outcome[];
 }): Series[] {
   const isMultiLine = !!(
     input.outcomePriceHistories &&
@@ -95,10 +87,10 @@ function buildSeries(input: {
   if (isMultiLine && input.outcomePriceHistories && input.outcomes) {
     return input.outcomes
       .slice(0, 8)
-      .map((outcome, idx) => ({
+      .map((outcome) => ({
         id: outcome.id,
         label: outcome.label,
-        color: OUTCOME_COLORS[idx % OUTCOME_COLORS.length],
+        color: normalizeOutcomeColor(outcome.color),
         data: normalizeSeriesData(
           input.outcomePriceHistories?.[canonicalizeOutcomeSet([outcome.label])]?.data ?? [],
           input.timeframe,
@@ -111,7 +103,7 @@ function buildSeries(input: {
     {
       id: "primary",
       label: "",
-      color: OUTCOME_COLORS[0],
+      color: PRIMARY_SERIES_COLOR,
       data: normalizeSeriesData(input.priceHistory.data, input.timeframe),
     },
   ].filter((series) => series.data.length > 0);
@@ -310,10 +302,13 @@ export function PriceChart({
             <span
               key={latest.id}
               data-testid="latest-price-pill"
-              className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium text-white"
-              style={{ backgroundColor: latest.color }}
+              className="inline-flex items-center gap-1.5 rounded-md bg-slate-100 px-2 py-1 text-xs font-medium text-slate-700 dark:bg-slate-700 dark:text-slate-200"
             >
-              {latest.label && <span>{latest.label}</span>}
+              <OutcomeLabel
+                outcome={{ label: latest.label, color: latest.color }}
+                className="font-medium"
+                labelClassName="text-slate-700 dark:text-slate-200"
+              />
               <span>{formatPercent(latest.value)}</span>
             </span>
           ))}
@@ -322,13 +317,13 @@ export function PriceChart({
 
       {outcomes && outcomes.length > 0 && (
         <div className="flex flex-wrap gap-3 mb-4">
-          {outcomes.slice(0, 8).map((outcome, idx) => (
-            <div key={outcome.id} className="flex items-center gap-1.5">
-              <div
-                className="w-2 h-2 rounded-full"
-                style={{ backgroundColor: OUTCOME_COLORS[idx % OUTCOME_COLORS.length] }}
+          {outcomes.slice(0, 8).map((outcome) => (
+            <div key={outcome.id}>
+              <OutcomeLabel
+                outcome={outcome}
+                className="text-xs"
+                labelClassName="text-slate-600 dark:text-slate-400"
               />
-              <span className="text-xs text-slate-600 dark:text-slate-400">{outcome.label}</span>
             </div>
           ))}
         </div>

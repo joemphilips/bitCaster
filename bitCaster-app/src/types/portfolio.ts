@@ -45,7 +45,6 @@ export interface PortfolioStats {
   totalValueKnown?: boolean;
   positionsValueByUnit?: Array<{ unit: "sat"; amount: number }>;
   totalValueByUnit?: Array<{ unit: "sat"; amount: number }>;
-  biggestWinSats: number;
   predictionsCount: number;
 }
 
@@ -60,6 +59,7 @@ export interface PortfolioMonitoringState {
   assetPageError: "unavailable" | null;
   hasMoreAssets: boolean;
   loadingMoreAssets: boolean;
+  liveUpdateCoverageLimited: boolean;
 }
 
 // =============================================================================
@@ -77,6 +77,8 @@ export interface Position {
   side: PositionSide;
   outcomeId?: string;
   outcomeLabel?: string;
+  /** Persisted accent for one primitive categorical outcome. */
+  outcomeColor?: string;
   canClaimPayout?: boolean;
   claimRecoveryPending?: boolean;
   removalPending?: boolean;
@@ -90,20 +92,16 @@ export interface Position {
   divisibility?: import("./market").ProductMarketDivisibility;
   /** Exact share count when the client knows the market divisibility. */
   shares?: number;
-  avgBuyPrice: number;
-  currentPrice: number;
   currentValueSats: number;
   /** False when the display-only monitor cannot value this asset. */
   valueKnown?: boolean;
-  profitLossSats: number;
-  profitLossPercent: number;
   status: PositionStatus;
   /**
    * Single source-of-truth winner flag for a closed position (P22 Link F),
    * derived once in usePortfolioState via deriveWinner. A position is a winner
    * iff it holds >= 1 proof on a winning keyset (the attested outcome is a
    * member of the keyset's collection). The "Won" badge, Claim button,
-   * value/P&L, and the destructive "Remove" guard all read this same field so
+   * and the destructive "Remove" guard all read this same field so
    * they can never disagree. Always false while active.
    */
   isWinner: boolean;
@@ -225,7 +223,7 @@ export interface PortfolioProps {
   /** User profile information */
   profile: UserProfile;
 
-  /** P/L chart data for each time range */
+  /** Estimated portfolio-value history for each time range */
   plChartData: PLChartData;
 
   /** Portfolio statistics */

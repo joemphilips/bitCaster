@@ -1,6 +1,6 @@
 ---
-title: "AMM Liquidity for New Markets"
-description: "How post-creation LMSR AMM liquidity helps a new bitCaster market start trading."
+title: 'AMM Liquidity for New Markets'
+description: 'How post-creation LMSR AMM liquidity helps a new bitCaster market start trading.'
 sidebar:
   order: 3
 ---
@@ -56,21 +56,18 @@ creator preferences, or professional liquidity workflows better.
 
 ## Funding Choices
 
-After creating a market, the creator can choose **No liquidity**, a preset
-funding tier, or a custom budget. The creator can submit additional funding
-payments later. Any user can also fund the bot from the market detail
-`LIQUIDITY` tab. Choosing **No liquidity** leaves the market open for human
-orders, but bitCaster will not post automated quotes until an accepted payment
-activates the bot.
+After creating a market, the creator can skip funding or enter an amount in
+sats. Any user can make later funding payments from the market detail
+`LIQUIDITY` tab. The bot posts no quotes until an accepted payment activates it.
+Funding is non-refundable. Review the amount and any fee before confirming.
 
-Binary-market presets use round amounts: **10,000 / 100,000 / 500,000 sats**.
-Categorical markets scale the paid tiers by `log2(outcome count)`.
-
-The creation wizard previews the selected budget as estimated starting depth: the
-approximate number of price levels the bot can post per side and the approximate
-shares at each level. This helps creators compare thin and deep budgets before
-paying the non-refundable funding payment. The preview is before mint fees, so
-actual quoted depth may be lower.
+The opening bid/ask spread target is two percentage points when liquidity
+permits it. For example, a binary market can start with a 49% bid and 51% ask.
+Whole-share sizes, fees, or limited funding can require a wider spread.
+More funding can support deeper quotes, but it does not guarantee a specific
+spread or trade size. Use **Available at this limit** in the trade form to see
+the current executable shares for your selected side and price protection.
+This preview is not a reservation. Your wallet balance is a separate limit.
 
 Funded markets are displayed in sats. Internally and on public `*Subunits` wire
 fields, collateral is accounted in msat. The explicit base-asset and collateral-unit
@@ -87,7 +84,9 @@ order-book liquidity or remaining bot inventory.
 Funding does not establish a public market price. The latest confirmed trade is
 the public price authority. Before the first confirmed trade, the market has no
 price and clients show **No trades yet** or an em dash. A bid/ask midpoint is a
-separate order-entry reference only.
+separately labeled reference for the current two-sided book. It is not a
+confirmed trade price or a guaranteed execution price. An empty or one-sided
+book has no displayed midpoint.
 
 For the human and professional market-maker trading model, see
 [Trading Model & Human Market Makers](/technical/architecture/trading-model/).

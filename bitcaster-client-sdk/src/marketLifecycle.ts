@@ -12,7 +12,10 @@ import {
 
 export interface CreateMarketOutcome {
   name: string
+  color?: string
 }
+
+export type MarketOutcomeDetails = CreateMarketOutcome
 
 export interface CreateMarketRequest {
   title: string
@@ -34,6 +37,7 @@ export interface CreateMarketResponse {
   baseAsset: MarketBaseAsset
   thumbnailUrl?: string | null
   divisibility: MarketDivisibility
+  outcomeDetails?: MarketOutcomeDetails[]
 }
 
 export interface OracleNostrEvent {
@@ -82,6 +86,19 @@ export interface MarketThumbnailBytes {
   contentType?: string
 }
 
+/** A create request failed after dispatch or returned an unsuccessful HTTP status. */
+export class CreateMarketError extends Error {
+  readonly status: number | null
+  readonly mayHaveCommitted: boolean
+
+  constructor(message: string, status: number | null, mayHaveCommitted: boolean) {
+    super(message)
+    this.name = 'CreateMarketError'
+    this.status = status
+    this.mayHaveCommitted = mayHaveCommitted
+  }
+}
+
 interface EngineClientInternals {
   baseUrl: string
   fetchImpl: EngineFetch
@@ -125,15 +142,41 @@ export async function createMarketViaEngine(
     })
   }
 
-  const response = await fetchImpl(url, {
-    method: 'POST',
-    headers,
-    body: bodyBytes,
-  })
-  if (!response.ok) {
-    throw new Error(`[Matching Engine] Failed to create market: ${await readErrorDetail(response)}`)
+  let response: Response
+  try {
+    response = await fetchImpl(url, {
+      method: 'POST',
+      headers,
+      body: bodyBytes,
+    })
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : 'request failed'
+    throw new CreateMarketError(`[Matching Engine] Failed to create market: ${detail}`, null, true)
   }
-  return parseCreateMarketResponse(await response.json())
+  if (!response.ok) {
+    let detail: string
+    try {
+      detail = await readErrorDetail(response)
+    } catch {
+      detail = response.statusText || `HTTP ${response.status}`
+    }
+    const mayHaveCommitted = response.status === 409 || response.status >= 500
+    throw new CreateMarketError(
+      `[Matching Engine] Failed to create market: ${detail}`,
+      response.status,
+      mayHaveCommitted,
+    )
+  }
+  try {
+    return parseCreateMarketResponse(await response.json())
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : 'response could not be read'
+    throw new CreateMarketError(
+      `[Matching Engine] Failed to read create-market response: ${detail}`,
+      response.status,
+      true,
+    )
+  }
 }
 
 export function parseCreateMarketResponse(value: unknown): CreateMarketResponse {
@@ -170,13 +213,65 @@ export function parseCreateMarketResponse(value: unknown): CreateMarketResponse 
   if (response.thumbnailUrl !== undefined && thumbnailUrl === undefined) {
     throw new Error('create-market response had an invalid thumbnail URL')
   }
+  const outcomeDetails = parseMarketOutcomeDetails(
+    response.outcomeDetails,
+    conditionId,
+    marketsCreated,
+  )
   return {
     conditionId,
     marketsCreated,
     baseAsset,
     divisibility,
     ...(thumbnailUrl !== undefined ? { thumbnailUrl } : {}),
+    ...(outcomeDetails !== undefined ? { outcomeDetails } : {}),
   }
+}
+
+function parseMarketOutcomeDetails(
+  value: unknown,
+  conditionId: string,
+  marketsCreated: string[],
+): MarketOutcomeDetails[] | undefined {
+  if (value === undefined) return undefined
+  if (!Array.isArray(value) || value.length === 0 || value.length !== marketsCreated.length) {
+    throw new Error('create-market response had invalid outcome details')
+  }
+
+  const expectedNames = new Set<string>()
+  const marketPrefix = `${conditionId}-`
+  for (const marketId of marketsCreated) {
+    if (!marketId.startsWith(marketPrefix) || marketId.length === marketPrefix.length) {
+      throw new Error('create-market response had invalid outcome details')
+    }
+    expectedNames.add(marketId.slice(marketPrefix.length))
+  }
+  if (expectedNames.size !== marketsCreated.length) {
+    throw new Error('create-market response had invalid outcome details')
+  }
+
+  const names = new Set<string>()
+  return value.map((item): MarketOutcomeDetails => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) {
+      throw new Error('create-market response had invalid outcome details')
+    }
+    const detail = item as Record<string, unknown>
+    if (
+      typeof detail.name !== 'string' ||
+      detail.name.length === 0 ||
+      names.has(detail.name) ||
+      !expectedNames.has(detail.name)
+    ) {
+      throw new Error('create-market response had invalid outcome details')
+    }
+    names.add(detail.name)
+
+    const color = detail.color
+    if (color !== undefined && (typeof color !== 'string' || !/^#[0-9A-F]{6}$/.test(color))) {
+      throw new Error('create-market response had invalid outcome details')
+    }
+    return { name: detail.name, ...(color !== undefined ? { color } : {}) }
+  })
 }
 
 export async function submitOracleAttestationViaEngine(

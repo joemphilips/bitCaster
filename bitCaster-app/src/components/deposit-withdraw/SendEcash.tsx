@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { X, Lock, Bitcoin } from "lucide-react";
 import type { MintInfo } from "@/types/deposit-withdraw";
 import { MintSelector } from "./MintSelector";
@@ -8,6 +9,7 @@ import { useTranslation } from "react-i18next";
 interface SendEcashProps {
   mints: MintInfo[];
   selectedMintId: string;
+  statusMessage?: ReactNode;
   amountSats: number;
   amountFiat: string;
   fiatSymbol: string;
@@ -24,6 +26,7 @@ interface SendEcashProps {
 export function SendEcash({
   mints,
   selectedMintId,
+  statusMessage,
   amountSats,
   amountFiat,
   fiatSymbol,
@@ -55,44 +58,51 @@ export function SendEcash({
       </div>
 
       {/* Content */}
-      <div className="flex-1 flex flex-col max-w-md mx-auto w-full">
-        {/* Mint selector */}
-        <div className="px-5 pt-2">
-          <MintSelector mints={mints} selectedMintId={selectedMintId} onMintChange={onMintChange} />
-        </div>
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        <div className="mx-auto flex min-h-full w-full max-w-md flex-col">
+          {statusMessage && <div className="px-5 pt-2">{statusMessage}</div>}
+          {/* Mint selector */}
+          <div className="px-5 pt-2">
+            <MintSelector
+              mints={mints}
+              selectedMintId={selectedMintId}
+              onMintChange={onMintChange}
+            />
+          </div>
 
-        {/* Amount */}
-        <div className="flex-1 flex items-center justify-center">
-          <AmountDisplay
-            amountSats={amountSats}
-            amountFiat={amountFiat}
-            fiatSymbol={fiatSymbol}
-            showFiatPrimary={showFiatPrimary}
-            onToggleCurrency={onToggleCurrency}
-          />
-        </div>
+          {/* Amount */}
+          <div className="flex-1 flex items-center justify-center">
+            <AmountDisplay
+              amountSats={amountSats}
+              amountFiat={amountFiat}
+              fiatSymbol={fiatSymbol}
+              showFiatPrimary={showFiatPrimary}
+              onToggleCurrency={onToggleCurrency}
+            />
+          </div>
 
-        {/* Numpad */}
-        <Numpad onPress={onNumpadPress} />
+          {/* Numpad */}
+          <Numpad onPress={onNumpadPress} />
 
-        {/* Action button */}
-        <div className="px-5 py-6">
-          <button
-            onClick={() => onSendEcash?.()}
-            disabled={amountSats === 0}
-            className="w-full py-4 rounded-xl text-base font-bold uppercase tracking-wide transition-colors disabled:opacity-40 disabled:cursor-not-allowed bg-slate-200 text-slate-900 hover:bg-white active:bg-slate-300 disabled:hover:bg-slate-200"
-          >
-            Send
-          </button>
-          {hasPendingBearerReclaim ? (
+          {/* Action button */}
+          <div className="px-5 py-6">
             <button
-              type="button"
-              onClick={() => onReclaimEcash?.()}
-              className="mt-3 w-full rounded-xl border border-amber-400 py-3 text-sm font-bold text-amber-200 transition-colors hover:bg-amber-400/10"
+              onClick={() => onSendEcash?.()}
+              disabled={amountSats === 0}
+              className="w-full py-4 rounded-xl text-base font-bold uppercase tracking-wide transition-colors disabled:opacity-40 disabled:cursor-not-allowed bg-slate-200 text-slate-900 hover:bg-white active:bg-slate-300 disabled:hover:bg-slate-200"
             >
-              {t("deposit.reclaim")}
+              Send
             </button>
-          ) : null}
+            {hasPendingBearerReclaim ? (
+              <button
+                type="button"
+                onClick={() => onReclaimEcash?.()}
+                className="mt-3 w-full rounded-xl border border-amber-400 py-3 text-sm font-bold text-amber-200 transition-colors hover:bg-amber-400/10"
+              >
+                {t("deposit.reclaim")}
+              </button>
+            ) : null}
+          </div>
         </div>
       </div>
     </div>

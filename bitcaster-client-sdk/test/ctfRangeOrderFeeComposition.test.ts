@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { planBoundedProofConsolidation } from '../src/boundedProofConsolidation.ts'
+import type { CtfRangeCapabilitySourcePlan } from '../src/ctfRangeCapabilitySourcePlan.ts'
 import {
   planCtfRangeOrderAuthorization,
   type CtfRangeOrderAuthorizationPlan,
@@ -10,11 +10,12 @@ import {
   composeCtfRangeOrderFeeFacts,
   type CtfRangeOrderFeeFacts,
 } from '../src/ctfRangeOrderFeeComposition.ts'
+import type { CtfRangeSourceMode } from '../src/ctfRangeSourceOperation.ts'
+import type { DurableCtfRangeAsset } from '../src/durableCtfRangeOperation.ts'
 
 const KEYS = Object.fromEntries(
   Array.from({ length: 21 }, (_, exponent) => [String(2 ** exponent), `key-${exponent}`]),
 )
-
 const REGULAR_ASSET = { kind: 'regular', unit: 'msat' } as const
 const CONDITIONAL_ASSET = {
   kind: 'conditional',
@@ -22,71 +23,98 @@ const CONDITIONAL_ASSET = {
   conditionId: 'condition-1',
   outcomeCollection: 'YES',
 } as const
+const OTHER_CONDITIONAL_ASSET = { ...CONDITIONAL_ASSET, outcomeCollection: 'NO' } as const
 
-test('composes exact fees and excludes reserved buy headroom', () => {
-  const authorization = authorizationWithHeadroom()
-  const sourcePlan = sourcePlanWithFees()
-  const facts = composeCtfRangeOrderFeeFacts({
-    authorizationPlan: authorization,
-    sourcePlan,
-    settlementAsset: REGULAR_ASSET,
-    preparationAsset: REGULAR_ASSET,
-  })
+test('composes shared source fees and explicit asset facts', () => {
+  const cases = [
+    {
+      name: 'ordinary Buy',
+      sourcePlan: sameKeysetSourcePlan(1),
+      sourceMode: 'wallet-send',
+      sourcePreparationAsset: REGULAR_ASSET,
+      consolidationFeeSubunits: '0',
+      consolidationAsset: REGULAR_ASSET,
+      expectedSourceFeeSubunits: '1',
+    },
+    {
+      name: 'same-keyset Sell',
+      sourcePlan: sameKeysetSourcePlan(2),
+      sourceMode: 'conditional-keyset-swap',
+      sourcePreparationAsset: CONDITIONAL_ASSET,
+      consolidationFeeSubunits: '0',
+      consolidationAsset: CONDITIONAL_ASSET,
+      expectedSourceFeeSubunits: '2',
+    },
+    {
+      name: 'mixed Sell pays source fee in regular cash and consolidation fee in conditional value',
+      sourcePlan: mixedSourcePlan(3),
+      sourceMode: 'mixed-source-ctf-convert',
+      sourcePreparationAsset: REGULAR_ASSET,
+      consolidationFeeSubunits: '4',
+      consolidationAsset: CONDITIONAL_ASSET,
+      expectedSourceFeeSubunits: '3',
+    },
+  ] as const satisfies readonly {
+    name: string
+    sourcePlan: CtfRangeCapabilitySourcePlan
+    sourceMode: CtfRangeSourceMode
+    sourcePreparationAsset: DurableCtfRangeAsset
+    consolidationFeeSubunits: string
+    consolidationAsset: DurableCtfRangeAsset
+    expectedSourceFeeSubunits: string
+  }[]
 
-  assert.deepEqual(facts, {
-    settlementInputFeeSubunits: '3',
-    sourcePreparationFeeSubunits: '1',
-    consolidationFeeSubunits: '1',
-    settlementAsset: REGULAR_ASSET,
-    preparationAsset: REGULAR_ASSET,
-  })
-  assert.equal(Object.hasOwn(facts, 'reservedFeeHeadroom'), false)
+  for (const scenario of cases) {
+    const facts = composeCtfRangeOrderFeeFacts({
+      authorizationPlan: authorizationWithHeadroom(),
+      sourcePlan: scenario.sourcePlan,
+      sourceMode: scenario.sourceMode,
+      consolidationFeeSubunits: scenario.consolidationFeeSubunits,
+      settlementAsset: REGULAR_ASSET,
+      sourcePreparationAsset: scenario.sourcePreparationAsset,
+      consolidationAsset: scenario.consolidationAsset,
+    })
+
+    assert.deepEqual(
+      facts,
+      {
+        settlementInputFeeSubunits: '3',
+        sourcePreparationFeeSubunits: scenario.expectedSourceFeeSubunits,
+        consolidationFeeSubunits: scenario.consolidationFeeSubunits,
+        settlementAsset: REGULAR_ASSET,
+        sourcePreparationAsset: scenario.sourcePreparationAsset,
+        consolidationAsset: scenario.consolidationAsset,
+        sourceMode: scenario.sourceMode,
+      },
+      scenario.name,
+    )
+    assert.equal(Object.hasOwn(facts, 'reservedFeeHeadroom'), false)
+  }
 })
 
-test('accepts an unchanged consent after one consolidation payment', () => {
-  const facts = composeFacts()
-  const consented = { ...facts, consolidationFeeSubunits: '3' }
-  const current = { ...facts, consolidationFeeSubunits: '2' }
-
+test('accounts for consolidation fees already paid', () => {
   assert.doesNotThrow(() =>
     assertCtfRangeOrderFeeConsent({
-      consented,
-      current,
+      consented: composeFacts({ consolidationFeeSubunits: '3' }),
+      current: composeFacts({ consolidationFeeSubunits: '2' }),
       paidConsolidationFeeSubunits: '1',
     }),
   )
 })
 
-test('preserves valid long conditional asset identities', () => {
-  const longAsset = {
-    ...CONDITIONAL_ASSET,
-    outcomeCollection: 'Y'.repeat(257),
-  }
-  const facts = composeCtfRangeOrderFeeFacts({
-    authorizationPlan: authorizationForSell(),
-    sourcePlan: sourcePlanWithFees(),
-    settlementAsset: REGULAR_ASSET,
-    preparationAsset: longAsset,
-  })
-
-  assert.equal(facts.preparationAsset.kind, 'conditional')
-  assert.equal(facts.preparationAsset.outcomeCollection, longAsset.outcomeCollection)
-})
-
-test('rejects every changed consented fee fact', () => {
-  const facts = composeFacts()
-
-  for (const field of [
-    'settlementInputFeeSubunits',
-    'sourcePreparationFeeSubunits',
-    'consolidationFeeSubunits',
-  ] as const) {
-    const current = { ...facts, [field]: '2' }
+test('rejects changed numeric fees and settlement asset identity', () => {
+  const consented = composeFacts()
+  for (const change of [
+    { settlementInputFeeSubunits: '4' },
+    { sourcePreparationFeeSubunits: '2' },
+    { consolidationFeeSubunits: '2' },
+    { settlementAsset: CONDITIONAL_ASSET },
+  ]) {
     assert.throws(
       () =>
         assertCtfRangeOrderFeeConsent({
-          consented: facts,
-          current,
+          consented,
+          current: { ...consented, ...change },
           paidConsolidationFeeSubunits: '0',
         }),
       /^Error: CTF range fee consent does not match the current preparation plan$/,
@@ -94,80 +122,100 @@ test('rejects every changed consented fee fact', () => {
   }
 })
 
-test('rejects a changed settlement or preparation asset identity', () => {
-  const facts = composeFacts()
-
-  assert.throws(
-    () =>
-      assertCtfRangeOrderFeeConsent({
-        consented: facts,
-        current: { ...facts, settlementAsset: CONDITIONAL_ASSET },
-        paidConsolidationFeeSubunits: '0',
-      }),
-    /^Error: CTF range fee consent does not match the current preparation plan$/,
-  )
-  assert.throws(
-    () =>
-      assertCtfRangeOrderFeeConsent({
-        consented: facts,
-        current: {
-          ...facts,
-          preparationAsset: { ...CONDITIONAL_ASSET, outcomeCollection: 'NO' },
-        },
-        paidConsolidationFeeSubunits: '0',
-      }),
-    /^Error: CTF range fee consent does not match the current preparation plan$/,
-  )
-})
-
-test('accepts matching and rejects changed conditional asset identities', () => {
-  const consented = conditionalFacts()
+test('rejects equal totals when the source mode or a fee asset changes', () => {
   const cases = [
     {
-      name: 'matching conditional identity',
-      current: consented,
-      expected: 'accept',
+      name: 'source mode',
+      consented: composeFacts({
+        sourcePlan: mixedSourcePlan(1),
+        sourceMode: 'mixed-source-ctf-convert',
+        consolidationAsset: CONDITIONAL_ASSET,
+      }),
+      current: composeFacts({ consolidationAsset: CONDITIONAL_ASSET }),
     },
     {
-      name: 'changed condition identity',
-      current: {
-        ...consented,
-        preparationAsset: { ...CONDITIONAL_ASSET, conditionId: 'condition-2' },
-      },
-      expected: 'reject',
+      name: 'source fee asset',
+      consented: composeFacts({
+        sourceMode: 'conditional-keyset-swap',
+        sourcePreparationAsset: CONDITIONAL_ASSET,
+      }),
+      current: composeFacts({
+        sourceMode: 'conditional-keyset-swap',
+        sourcePreparationAsset: OTHER_CONDITIONAL_ASSET,
+      }),
     },
     {
-      name: 'changed outcome identity',
-      current: {
-        ...consented,
-        preparationAsset: { ...CONDITIONAL_ASSET, outcomeCollection: 'NO' },
-      },
-      expected: 'reject',
+      name: 'source fee condition',
+      consented: composeFacts({
+        sourceMode: 'conditional-keyset-swap',
+        sourcePreparationAsset: CONDITIONAL_ASSET,
+      }),
+      current: composeFacts({
+        sourceMode: 'conditional-keyset-swap',
+        sourcePreparationAsset: { ...CONDITIONAL_ASSET, conditionId: 'another-condition' },
+      }),
+    },
+    {
+      name: 'consolidation fee asset',
+      consented: composeFacts({
+        sourcePlan: mixedSourcePlan(1),
+        sourceMode: 'mixed-source-ctf-convert',
+        consolidationAsset: CONDITIONAL_ASSET,
+      }),
+      current: composeFacts({
+        sourcePlan: mixedSourcePlan(1),
+        sourceMode: 'mixed-source-ctf-convert',
+        consolidationAsset: REGULAR_ASSET,
+      }),
     },
   ] as const
 
   for (const scenario of cases) {
-    const assertConsent = () =>
-      assertCtfRangeOrderFeeConsent({
-        consented,
-        current: scenario.current,
-        paidConsolidationFeeSubunits: '0',
-      })
-
-    if (scenario.expected === 'accept') {
-      assert.doesNotThrow(assertConsent, scenario.name)
-    } else {
-      assert.throws(
-        assertConsent,
-        /^Error: CTF range fee consent does not match the current preparation plan$/,
-        scenario.name,
-      )
-    }
+    assert.equal(
+      scenario.consented.sourcePreparationFeeSubunits,
+      scenario.current.sourcePreparationFeeSubunits,
+    )
+    assert.equal(
+      scenario.consented.consolidationFeeSubunits,
+      scenario.current.consolidationFeeSubunits,
+    )
+    assert.throws(
+      () =>
+        assertCtfRangeOrderFeeConsent({
+          consented: scenario.consented,
+          current: scenario.current,
+          paidConsolidationFeeSubunits: '0',
+        }),
+      /^Error: CTF range fee consent does not match the current preparation plan$/,
+      scenario.name,
+    )
   }
 })
 
-test('rejects malformed, unsafe, and overpaid fee facts', () => {
+test('preserves conditional asset identity and rejects mismatched plans or assets', () => {
+  const longAsset = { ...CONDITIONAL_ASSET, outcomeCollection: 'Y'.repeat(257) }
+  const facts = composeFacts({
+    sourceMode: 'conditional-keyset-swap',
+    sourcePreparationAsset: longAsset,
+  })
+  assert.deepEqual(facts.sourcePreparationAsset, longAsset)
+
+  assert.throws(() =>
+    composeFacts({ sourcePlan: { kind: 'source-unavailable', shortfall: 'offered' } }),
+  )
+  assert.throws(() => composeFacts({ sourcePlan: mixedSourcePlan(1), sourceMode: 'wallet-send' }))
+  assert.throws(() =>
+    composeFacts({
+      sourcePlan: mixedSourcePlan(1),
+      sourceMode: 'mixed-source-ctf-convert',
+      sourcePreparationAsset: CONDITIONAL_ASSET,
+    }),
+  )
+})
+
+test('rejects malformed and overflowing fee facts', () => {
   const facts = composeFacts()
+  const maximumFee = ((1n << 64n) - 1n).toString()
 
   for (const value of ['', '-1', '01', '1.0', '1e3', 1, (1n << 64n).toString()]) {
     assert.throws(() =>
@@ -176,13 +224,19 @@ test('rejects malformed, unsafe, and overpaid fee facts', () => {
           ...authorizationWithHeadroom(),
           participantFeeAllocationUpperBound: value as string,
         },
-        sourcePlan: sourcePlanWithFees(),
+        sourcePlan: sameKeysetSourcePlan(1),
+        sourceMode: 'wallet-send',
+        consolidationFeeSubunits: '0',
         settlementAsset: REGULAR_ASSET,
-        preparationAsset: REGULAR_ASSET,
+        sourcePreparationAsset: REGULAR_ASSET,
+        consolidationAsset: REGULAR_ASSET,
       }),
     )
   }
-
+  for (const inputFee of [-1, 1.5, Number.MAX_SAFE_INTEGER + 1, Number.NaN]) {
+    assert.throws(() => composeFacts({ sourcePlan: sameKeysetSourcePlan(inputFee) }))
+  }
+  assert.throws(() => composeFacts({ consolidationFeeSubunits: '01' }))
   assert.throws(() =>
     assertCtfRangeOrderFeeConsent({
       consented: facts,
@@ -190,22 +244,34 @@ test('rejects malformed, unsafe, and overpaid fee facts', () => {
       paidConsolidationFeeSubunits: '2',
     }),
   )
+  assert.throws(() =>
+    assertCtfRangeOrderFeeConsent({
+      consented: { ...facts, consolidationFeeSubunits: maximumFee },
+      current: { ...facts, consolidationFeeSubunits: '1' },
+      paidConsolidationFeeSubunits: maximumFee,
+    }),
+  )
 })
 
-function composeFacts(): CtfRangeOrderFeeFacts {
+function composeFacts(
+  input: {
+    readonly sourcePlan?: CtfRangeCapabilitySourcePlan
+    readonly sourceMode?: CtfRangeSourceMode
+    readonly consolidationFeeSubunits?: string
+    readonly sourcePreparationAsset?: DurableCtfRangeAsset
+    readonly consolidationAsset?: DurableCtfRangeAsset
+  } = {},
+): CtfRangeOrderFeeFacts {
+  const sourceMode = input.sourceMode ?? 'wallet-send'
   return composeCtfRangeOrderFeeFacts({
     authorizationPlan: authorizationWithHeadroom(),
-    sourcePlan: sourcePlanWithFees(),
+    sourcePlan: input.sourcePlan ?? sameKeysetSourcePlan(1),
+    sourceMode,
+    consolidationFeeSubunits: input.consolidationFeeSubunits ?? '1',
     settlementAsset: REGULAR_ASSET,
-    preparationAsset: REGULAR_ASSET,
+    sourcePreparationAsset: input.sourcePreparationAsset ?? REGULAR_ASSET,
+    consolidationAsset: input.consolidationAsset ?? REGULAR_ASSET,
   })
-}
-
-function conditionalFacts(): CtfRangeOrderFeeFacts {
-  return {
-    ...composeFacts(),
-    preparationAsset: CONDITIONAL_ASSET,
-  }
 }
 
 function authorizationWithHeadroom(): CtfRangeOrderAuthorizationPlan {
@@ -220,30 +286,24 @@ function authorizationWithHeadroom(): CtfRangeOrderAuthorizationPlan {
   })
 }
 
-function authorizationForSell(): CtfRangeOrderAuthorizationPlan {
-  return planCtfRangeOrderAuthorization({
-    side: 'Sell',
-    priceNumerator: 420,
-    amountSubunits: 1_000,
-    divisibility: 1_000,
-    inputFeePpk: 2_500,
-    offerKeysetKeys: KEYS,
-    maxPoolEntries: 128,
-  })
+function sameKeysetSourcePlan(inputFee: number): CtfRangeCapabilitySourcePlan {
+  return {
+    kind: 'same-keyset-swap',
+    inputs: [],
+    inputFee,
+    authorizationAmounts: [10],
+    changeAmount: 0,
+  }
 }
 
-function sourcePlanWithFees() {
-  const plan = planBoundedProofConsolidation({
-    inventory: [
-      { amount: '4096', count: 2 },
-      { amount: '2', count: 3 },
-    ],
-    target: '8194',
-    inputFeePpk: 100,
-    maxInputs: 3,
-    maxRounds: 256,
-    keysetKeys: KEYS,
-  })
-  assert.equal(plan.kind, 'ready')
-  return plan
+function mixedSourcePlan(inputFee: number): CtfRangeCapabilitySourcePlan {
+  return {
+    kind: 'mixed-source-ctf-convert',
+    offeredInputs: [],
+    collateralInputs: [],
+    inputFee,
+    authorizationAmounts: [10],
+    offeredChangeAmounts: [],
+    collateralChangeAmounts: [],
+  }
 }

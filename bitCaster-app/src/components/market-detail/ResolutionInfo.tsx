@@ -1,12 +1,15 @@
 import { Info, AlertTriangle } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { ResolutionDetails } from "@/types/market-detail";
+import type { Outcome } from "@/types/market";
+import { OutcomeLabel } from "@/components/shared/OutcomeLabel";
 
 interface ResolutionInfoProps {
   resolution: ResolutionDetails;
+  outcomes?: Outcome[];
 }
 
-export function ResolutionInfo({ resolution }: ResolutionInfoProps) {
+export function ResolutionInfo({ resolution, outcomes }: ResolutionInfoProps) {
   const { t, i18n } = useTranslation();
 
   function formatDate(dateStr: string): string {
@@ -33,9 +36,21 @@ export function ResolutionInfo({ resolution }: ResolutionInfoProps) {
           <p className="text-xs text-emerald-600 dark:text-emerald-400 uppercase tracking-wider mb-1">
             {t("market.finalOutcome")}
           </p>
-          <p className="text-lg font-bold text-emerald-700 dark:text-emerald-300">
-            {resolution.finalOutcome}
-          </p>
+          {outcomes ? (
+            <OutcomeLabel
+              outcome={{
+                label: resolution.finalOutcome,
+                color: outcomes.find((outcome) => outcome.label === resolution.finalOutcome)?.color,
+              }}
+              className="text-lg font-bold"
+              labelClassName="text-slate-900 dark:text-white"
+              swatchClassName="h-3 w-3"
+            />
+          ) : (
+            <p className="text-lg font-bold text-emerald-700 dark:text-emerald-300">
+              {resolution.finalOutcome}
+            </p>
+          )}
         </div>
       )}
 

@@ -9,7 +9,7 @@ const signalrMock = vi.hoisted(() => {
     stop: vi.fn(async () => {
       connection.state = "Disconnected";
     }),
-    invoke: vi.fn(async () => undefined),
+    invoke: vi.fn(async (_method: string, ..._args: unknown[]) => undefined),
     on: vi.fn(),
     onreconnected: vi.fn((handler: () => void) => {
       connection.reconnectedHandler = handler;
@@ -49,10 +49,16 @@ import {
   disconnect,
   joinMarket,
   onConfirmedTradeRecorded,
+  onMarketFundingUpdated,
   onMarketRejoined,
+  observePortfolioValuations,
   parseConfirmedTradeRecorded,
+  parseMarketFundingUpdated,
+  refreshMarketSnapshot,
+  leaveMarket,
   type ConfirmedTradeRecordedMessage,
   type LatestConfirmedTrade,
+  type MarketFundingUpdatedMessage,
 } from "../marketHub";
 
 function confirmedTrade(overrides: Partial<LatestConfirmedTrade> = {}): LatestConfirmedTrade {
@@ -75,14 +81,38 @@ function tradeMessage(
   return { conditionId, latestConfirmedTrade: trade };
 }
 
+function fundingMessage(
+  overrides: Partial<MarketFundingUpdatedMessage> = {},
+): MarketFundingUpdatedMessage {
+  return {
+    conditionId: "cond",
+    ammBotBudgetSubunits: 5_000,
+    fundingRevision: "0001",
+    ...overrides,
+  };
+}
+
 const ALLOWED_OUTCOME_IDS = ["YES", "NO"] as const;
+
+async function flushMicrotasks(): Promise<void> {
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+}
+
+async function flushTaskQueue(): Promise<void> {
+  await flushMicrotasks();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  await flushMicrotasks();
+}
 
 beforeEach(async () => {
   await disconnect();
   signalrMock.connection.state = "Disconnected";
   signalrMock.connection.start.mockClear();
   signalrMock.connection.stop.mockClear();
-  signalrMock.connection.invoke.mockClear();
+  signalrMock.connection.invoke.mockReset();
+  signalrMock.connection.invoke.mockImplementation(async () => undefined);
   signalrMock.connection.on.mockClear();
   signalrMock.connection.onreconnected.mockClear();
   signalrMock.connection.reconnectedHandler = undefined;
@@ -123,6 +153,306 @@ describe("joinMarket reconnect recovery", () => {
 
     expect(signalrMock.connection.invoke).toHaveBeenCalledWith("JoinMarket", "cond-YES");
     expect(refreshMarket).toHaveBeenCalledTimes(1);
+  });
+
+  it("refreshes an existing group snapshot without incrementing the join reference count", async () => {
+    await joinMarket("cond-YES");
+    signalrMock.connection.invoke.mockClear();
+
+    await refreshMarketSnapshot("cond-YES");
+    await leaveMarket("cond-YES");
+
+    expect(signalrMock.connection.invoke.mock.calls).toEqual([
+      ["JoinMarket", "cond-YES"],
+      ["LeaveMarket", "cond-YES"],
+    ]);
+  });
+
+  it("drains each in-flight wake into a later snapshot without changing the subscription count", async () => {
+    await joinMarket("cond-YES");
+    signalrMock.connection.invoke.mockClear();
+    let resolveFirst: (() => void) | undefined;
+    let resolveSecond: (() => void) | undefined;
+    let invocation = 0;
+    signalrMock.connection.invoke.mockImplementation(async () => {
+      invocation += 1;
+      if (invocation === 1) {
+        await new Promise<undefined>((resolve) => {
+          resolveFirst = () => resolve(undefined);
+        });
+      } else if (invocation === 2) {
+        await new Promise<undefined>((resolve) => {
+          resolveSecond = () => resolve(undefined);
+        });
+      }
+      return undefined;
+    });
+
+    const first = refreshMarketSnapshot("cond-YES");
+    await Promise.resolve();
+    expect(signalrMock.connection.invoke).toHaveBeenCalledOnce();
+    const secondWake = refreshMarketSnapshot("cond-YES");
+    resolveFirst?.();
+    await flushMicrotasks();
+    expect(signalrMock.connection.invoke).toHaveBeenCalledTimes(2);
+    const thirdWake = refreshMarketSnapshot("cond-YES");
+    resolveSecond?.();
+    await Promise.all([first, secondWake, thirdWake]);
+    expect(signalrMock.connection.invoke.mock.calls).toEqual([
+      ["JoinMarket", "cond-YES"],
+      ["JoinMarket", "cond-YES"],
+      ["JoinMarket", "cond-YES"],
+    ]);
+    await leaveMarket("cond-YES");
+    expect(signalrMock.connection.invoke).toHaveBeenLastCalledWith("LeaveMarket", "cond-YES");
+  });
+
+  it("cancels a requested trailing snapshot when the last subscriber leaves", async () => {
+    await joinMarket("cond-YES");
+    signalrMock.connection.invoke.mockClear();
+    let resolveInvoke: (() => void) | undefined;
+    signalrMock.connection.invoke.mockImplementationOnce(
+      () =>
+        new Promise<undefined>((resolve) => {
+          resolveInvoke = () => resolve(undefined);
+        }),
+    );
+
+    const first = refreshMarketSnapshot("cond-YES");
+    await Promise.resolve();
+    const duplicate = refreshMarketSnapshot("cond-YES");
+    await leaveMarket("cond-YES");
+    resolveInvoke?.();
+    await Promise.all([first, duplicate]);
+
+    expect(signalrMock.connection.invoke.mock.calls).toEqual([
+      ["JoinMarket", "cond-YES"],
+      ["LeaveMarket", "cond-YES"],
+    ]);
+  });
+
+  it("does not create a group when asked to refresh a market this client did not join", async () => {
+    await refreshMarketSnapshot("cond-YES");
+
+    expect(signalrMock.connection.start).not.toHaveBeenCalled();
+    expect(signalrMock.connection.invoke).not.toHaveBeenCalled();
+  });
+});
+
+describe("Portfolio valuation subscriptions", () => {
+  it("sorts and deduplicates exact-case IDs on the condition-only hub method", async () => {
+    const onRefresh = vi.fn();
+    const observer = observePortfolioValuations(onRefresh);
+
+    await observer.replaceConditionIds(["b", "A", "b"]);
+
+    expect(signalrMock.connection.invoke.mock.calls).toEqual([
+      ["SetPortfolioValuationSubscriptions", ["A", "b"]],
+    ]);
+    expect(onRefresh).toHaveBeenCalledOnce();
+  });
+
+  it("accepts a 200-entry raw set and a 128-character hexadecimal ID", async () => {
+    const conditionIds = [
+      "F".repeat(128),
+      ...Array.from({ length: 199 }, (_, index) => (index + 1).toString(16)),
+    ];
+    const observer = observePortfolioValuations(vi.fn());
+
+    await observer.replaceConditionIds(conditionIds);
+
+    expect(signalrMock.connection.invoke).toHaveBeenCalledOnce();
+    expect(signalrMock.connection.invoke.mock.calls[0]?.[0]).toBe(
+      "SetPortfolioValuationSubscriptions",
+    );
+    expect(signalrMock.connection.invoke.mock.calls[0]?.[1]).toHaveLength(200);
+    expect(signalrMock.connection.invoke.mock.calls[0]?.[1]).toContain("F".repeat(128));
+  });
+
+  it("accepts an empty replacement and removes it when the current observer leaves", async () => {
+    const observer = observePortfolioValuations(vi.fn());
+
+    await observer.replaceConditionIds([]);
+    expect(signalrMock.connection.invoke.mock.calls).toEqual([
+      ["SetPortfolioValuationSubscriptions", []],
+    ]);
+
+    await observer.replaceConditionIds(["ab"]);
+    signalrMock.connection.invoke.mockClear();
+    observer.dispose();
+    await flushTaskQueue();
+
+    expect(signalrMock.connection.invoke.mock.calls).toEqual([
+      ["SetPortfolioValuationSubscriptions", []],
+    ]);
+  });
+
+  it("rejects oversized raw sets and malformed IDs before starting the connection", () => {
+    const observer = observePortfolioValuations(vi.fn());
+    const invalidSets = [
+      Array.from({ length: 201 }, () => "a"),
+      [""],
+      ["not-hex"],
+      ["a".repeat(129)],
+    ];
+
+    for (const conditionIds of invalidSets) {
+      expect(() => observer.replaceConditionIds(conditionIds)).toThrow();
+    }
+    expect(signalrMock.connection.start).not.toHaveBeenCalled();
+    expect(signalrMock.connection.invoke).not.toHaveBeenCalled();
+  });
+
+  it("serializes replacements and coalesces pending changes to the latest set", async () => {
+    let finishFirstInvoke: (() => void) | undefined;
+    let firstInvokeStarted!: () => void;
+    const firstStarted = new Promise<void>((resolve) => {
+      firstInvokeStarted = resolve;
+    });
+    signalrMock.connection.invoke.mockImplementationOnce(() => {
+      firstInvokeStarted();
+      return new Promise<undefined>((resolve) => {
+        finishFirstInvoke = () => resolve(undefined);
+      });
+    });
+    const onRefresh = vi.fn();
+    const observer = observePortfolioValuations(onRefresh);
+
+    const first = observer.replaceConditionIds(["a"]);
+    await firstStarted;
+    const second = observer.replaceConditionIds(["b"]);
+    const third = observer.replaceConditionIds(["cc"]);
+    finishFirstInvoke?.();
+    await Promise.all([first, second, third]);
+
+    expect(signalrMock.connection.invoke.mock.calls).toEqual([
+      ["SetPortfolioValuationSubscriptions", ["a"]],
+      ["SetPortfolioValuationSubscriptions", ["cc"]],
+    ]);
+    expect(onRefresh).toHaveBeenCalledOnce();
+  });
+
+  it("does not invoke or reconcile again for an unchanged set on the same connection", async () => {
+    const onRefresh = vi.fn();
+    const observer = observePortfolioValuations(onRefresh);
+    await observer.replaceConditionIds(["b", "A"]);
+    signalrMock.connection.invoke.mockClear();
+    onRefresh.mockClear();
+
+    await observer.replaceConditionIds(["A", "b", "A"]);
+
+    expect(signalrMock.connection.invoke).not.toHaveBeenCalled();
+    expect(onRefresh).not.toHaveBeenCalled();
+  });
+
+  it("resends the desired set and notifies after reconnect completion", async () => {
+    const onRefresh = vi.fn();
+    const observer = observePortfolioValuations(onRefresh);
+    await observer.replaceConditionIds(["a", "B"]);
+    signalrMock.connection.invoke.mockClear();
+    onRefresh.mockClear();
+
+    signalrMock.connection.reconnectedHandler?.();
+    await flushTaskQueue();
+
+    expect(signalrMock.connection.invoke.mock.calls).toEqual([
+      ["SetPortfolioValuationSubscriptions", ["B", "a"]],
+    ]);
+    expect(onRefresh).toHaveBeenCalledOnce();
+  });
+
+  it("reuses confirmed-trade and market-status handlers without joining order books", async () => {
+    const onRefresh = vi.fn();
+    const observer = observePortfolioValuations(onRefresh);
+    await observer.replaceConditionIds(["a"]);
+    signalrMock.connection.invoke.mockClear();
+    onRefresh.mockClear();
+
+    signalrMock.registeredHandlers.get("ConfirmedTradeRecorded")?.(
+      tradeMessage(confirmedTrade(), "a"),
+    );
+    signalrMock.registeredHandlers.get("MarketStatusChanged")?.({ conditionId: "a" });
+
+    expect(onRefresh).toHaveBeenCalledTimes(2);
+    expect(signalrMock.connection.invoke).not.toHaveBeenCalled();
+  });
+
+  it("ignores an older observer cleanup after a newer observer takes ownership", async () => {
+    const oldObserver = observePortfolioValuations(vi.fn());
+    await oldObserver.replaceConditionIds(["a"]);
+    const newRefresh = vi.fn();
+    const newObserver = observePortfolioValuations(newRefresh);
+    const replacement = newObserver.replaceConditionIds(["b"]);
+    oldObserver.dispose();
+    await replacement;
+    signalrMock.connection.invoke.mockClear();
+
+    newObserver.dispose();
+    await flushTaskQueue();
+
+    expect(signalrMock.connection.invoke.mock.calls).toEqual([
+      ["SetPortfolioValuationSubscriptions", []],
+    ]);
+    expect(newRefresh).toHaveBeenCalledOnce();
+  });
+
+  it("reuses an applied set when a new observer replaces a queued unsubscribe", async () => {
+    const oldObserver = observePortfolioValuations(vi.fn());
+    await oldObserver.replaceConditionIds(["a"]);
+    signalrMock.connection.invoke.mockClear();
+    oldObserver.dispose();
+
+    const newRefresh = vi.fn();
+    const newObserver = observePortfolioValuations(newRefresh);
+    await newObserver.replaceConditionIds(["a"]);
+    await flushTaskQueue();
+
+    expect(signalrMock.connection.invoke).not.toHaveBeenCalled();
+    expect(newRefresh).toHaveBeenCalledOnce();
+  });
+
+  it("reuses same-set membership when a new observer replaces a queued cleanup", async () => {
+    let finishFirstInvoke: (() => void) | undefined;
+    let firstInvokeStarted!: () => void;
+    const firstStarted = new Promise<void>((resolve) => {
+      firstInvokeStarted = resolve;
+    });
+    signalrMock.connection.invoke.mockImplementationOnce(() => {
+      firstInvokeStarted();
+      return new Promise<undefined>((resolve) => {
+        finishFirstInvoke = () => resolve(undefined);
+      });
+    });
+    const oldObserver = observePortfolioValuations(vi.fn());
+    const oldReplacement = oldObserver.replaceConditionIds(["a"]);
+    await firstStarted;
+    oldObserver.dispose();
+
+    const newRefresh = vi.fn();
+    const newObserver = observePortfolioValuations(newRefresh);
+    const newReplacement = newObserver.replaceConditionIds(["a"]);
+    finishFirstInvoke?.();
+    await Promise.all([oldReplacement, newReplacement]);
+    await flushTaskQueue();
+
+    expect(signalrMock.connection.invoke.mock.calls).toEqual([
+      ["SetPortfolioValuationSubscriptions", ["a"]],
+    ]);
+    expect(newRefresh).toHaveBeenCalledOnce();
+  });
+
+  it("rejects a failed current replacement without notifying the observer", async () => {
+    signalrMock.connection.invoke.mockRejectedValueOnce(new Error("subscription failed"));
+    const onRefresh = vi.fn();
+    const observer = observePortfolioValuations(onRefresh);
+
+    await expect(observer.replaceConditionIds(["a"])).rejects.toThrow("subscription failed");
+
+    expect(onRefresh).not.toHaveBeenCalled();
+    expect(signalrMock.connection.invoke).toHaveBeenCalledWith(
+      "SetPortfolioValuationSubscriptions",
+      ["a"],
+    );
   });
 });
 
@@ -307,5 +637,51 @@ describe("ConfirmedTradeRecorded live deltas", () => {
     expect(
       parseConfirmedTradeRecorded(tradeMessage(confirmedTrade({ eventOrder: "" }))),
     ).toBeNull();
+  });
+});
+
+describe("MarketFundingUpdated snapshots", () => {
+  it("dispatches a valid update only to handlers registered for its condition", async () => {
+    await joinMarket("cond-YES");
+    const handler = vi.fn();
+    onMarketFundingUpdated("cond", handler);
+    const update = fundingMessage();
+
+    signalrMock.registeredHandlers.get("MarketFundingUpdated")?.(update);
+    signalrMock.registeredHandlers.get("MarketFundingUpdated")?.(
+      fundingMessage({ conditionId: "other-condition" }),
+    );
+    signalrMock.registeredHandlers.get("MarketFundingUpdated")?.({
+      ...update,
+      fundingRevision: " ",
+    });
+
+    expect(handler).toHaveBeenCalledOnce();
+    expect(handler).toHaveBeenCalledWith(update);
+  });
+
+  it.each([
+    null,
+    [],
+    {},
+    { conditionId: " ", ammBotBudgetSubunits: 1, fundingRevision: "0001" },
+    { conditionId: "cond", ammBotBudgetSubunits: 0, fundingRevision: "0001" },
+    { conditionId: "cond", ammBotBudgetSubunits: -1, fundingRevision: "0001" },
+    { conditionId: "cond", ammBotBudgetSubunits: 1.5, fundingRevision: "0001" },
+    {
+      conditionId: "cond",
+      ammBotBudgetSubunits: Number.MAX_SAFE_INTEGER + 1,
+      fundingRevision: "0001",
+    },
+    { conditionId: "cond", ammBotBudgetSubunits: 1, fundingRevision: " " },
+    { conditionId: "cond", ammBotBudgetSubunits: 1, fundingRevision: null },
+    { conditionId: "cond", ammBotBudgetSubunits: 1, fundingRevision: "0001", extra: true },
+    { ConditionId: "cond", AmmBotBudgetSubunits: 1, FundingRevision: "0001" },
+  ])("rejects malformed funding event %#", (payload) => {
+    expect(parseMarketFundingUpdated(payload)).toBeNull();
+  });
+
+  it("parses a valid event as one total-and-revision observation", () => {
+    expect(parseMarketFundingUpdated(fundingMessage())).toEqual(fundingMessage());
   });
 });

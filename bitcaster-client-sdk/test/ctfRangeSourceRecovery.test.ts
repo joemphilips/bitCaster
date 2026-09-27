@@ -43,13 +43,11 @@ test('classifies completed and failed journals without mint effects', () => {
   )
 })
 
-test('replays only before expiry and releases exact unspent source inputs at the boundary', () => {
-  for (const [now, kind] of [
-    [99, 'replay-exact-persisted-operation'],
-    [100, 'release-exact-unspent-inputs'],
-    [101, 'release-exact-unspent-inputs'],
-  ] as const) {
-    assert.deepEqual(classifyCtfRangeSourceRecovery({ ...PREPARED_SOURCE, now }), { kind })
+test('replays exact unspent source inputs before, at, and after authorization expiry', () => {
+  for (const now of [99, 100, 101]) {
+    assert.deepEqual(classifyCtfRangeSourceRecovery({ ...PREPARED_SOURCE, now }), {
+      kind: 'replay-exact-persisted-operation',
+    })
   }
   assert.deepEqual(
     classifyCtfRangeSourceRecovery({

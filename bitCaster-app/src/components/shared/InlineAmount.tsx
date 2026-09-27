@@ -8,6 +8,7 @@ interface InlineAmountProps {
   amountSubunits: number;
   baseAsset: MarketBaseAsset;
   className?: string;
+  showTitle?: boolean;
 }
 
 interface FormattedAmountParts {
@@ -48,12 +49,22 @@ function splitFormattedAmount(
 }
 
 /** Render one compact sats amount without reimplementing SDK conversion. */
-export function InlineAmount({ amountSubunits, baseAsset, className }: InlineAmountProps) {
+export function InlineAmount({
+  amountSubunits,
+  baseAsset,
+  className,
+  showTitle = true,
+}: InlineAmountProps) {
   const formattedAmount = formatMarketSubunits(amountSubunits, baseAsset);
   const parts = splitFormattedAmount(formattedAmount, baseAsset);
 
   return (
-    <span className={className} role="group" aria-label={formattedAmount} title={formattedAmount}>
+    <span
+      className={className}
+      role="group"
+      aria-label={formattedAmount}
+      title={showTitle ? formattedAmount : undefined}
+    >
       <span aria-hidden="true">
         {parts.integer}
         {parts.fraction && <span className="text-[0.75em] align-baseline">{parts.fraction}</span>}

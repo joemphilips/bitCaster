@@ -29,6 +29,7 @@ export interface WizardOutcome {
   id: string;
   label: string;
   description: string;
+  color?: string;
   imageUrl?: string;
 }
 
@@ -165,6 +166,9 @@ export interface MarketCreationWizardProps {
 
   /** Called when user updates an outcome label */
   onOutcomeLabelChange?: (outcomeId: string, label: string) => void;
+
+  /** Called when user changes a categorical outcome color. Null means automatic. */
+  onOutcomeColorChange?: (outcomeId: string, color: string | null) => void;
 
   /** Called when user updates numeric low bound */
   onLoBoundChange?: (value: number) => void;

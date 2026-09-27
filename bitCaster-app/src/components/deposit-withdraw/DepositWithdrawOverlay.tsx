@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import type { DepositWithdrawMode } from "@/types/deposit-withdraw";
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router";
@@ -12,9 +13,9 @@ import { PaymentRequestDisplay } from "./PaymentRequestDisplay";
 import { SuccessView } from "./SuccessView";
 import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
 import { formatAmount } from "@/lib/formatAmount";
+import { activeBrowserWalletScopeId } from "@/lib/browserWalletProfile";
 import { useWalletStore } from "@/stores/wallet";
-
-const DEPOSIT_BACKUP_WARNING_DISMISSED_KEY = "bitcaster.depositBackupWarningDismissed";
+import { NativeDialog } from "@/components/shared/NativeDialog";
 
 interface DepositWithdrawOverlayProps {
   mode: DepositWithdrawMode;
@@ -25,33 +26,59 @@ export function DepositWithdrawOverlay({ mode, onClose }: DepositWithdrawOverlay
   const { t } = useTranslation();
   const navigate = useNavigate();
   const state = useDepositWithdrawState(mode, onClose);
-  const walletBackupState = useWalletStore((s) => s.walletBackupState);
-  const [backupWarningDismissed, setBackupWarningDismissed] = useState(
-    () => window.localStorage.getItem(DEPOSIT_BACKUP_WARNING_DISMISSED_KEY) === "true",
+  const walletMnemonic = useWalletStore((s) => s.mnemonic);
+  const walletSeedReminderAcknowledgedScopeId = useWalletStore(
+    (s) => s.walletSeedReminderAcknowledgedScopeId,
   );
+  const hasWalletSeed = walletMnemonic.trim().length > 0;
+  const walletSeedReminderAcknowledged =
+    walletSeedReminderAcknowledgedScopeId !== null &&
+    walletSeedReminderAcknowledgedScopeId === activeBrowserWalletScopeId();
+  const [backupWarningDismissed, setBackupWarningDismissed] = useState(false);
   const showBackupWarning =
-    mode === "deposit" && walletBackupState === "needs_backup" && !backupWarningDismissed;
+    mode === "deposit" &&
+    hasWalletSeed &&
+    !walletSeedReminderAcknowledged &&
+    !backupWarningDismissed;
+  const canDismiss = state.currentView !== "melt-confirm" || !state.meltIsPaying;
+  const dialog = (children: (dismiss: () => void) => ReactNode) => (
+    <NativeDialog
+      ariaLabel={mode === "deposit" ? t("deposit.title") : t("deposit.withdrawal")}
+      canDismiss={canDismiss}
+      onDismiss={state.onClose}
+    >
+      {children}
+    </NativeDialog>
+  );
 
   useEffect(() => {
-    if (mode !== "deposit" || walletBackupState !== "needs_backup") return;
-    window.localStorage.setItem(DEPOSIT_BACKUP_WARNING_DISMISSED_KEY, "false");
     setBackupWarningDismissed(false);
-  }, [mode, walletBackupState]);
+  }, [mode, walletMnemonic]);
 
   const dismissBackupWarning = () => {
-    window.localStorage.setItem(DEPOSIT_BACKUP_WARNING_DISMISSED_KEY, "true");
     setBackupWarningDismissed(true);
   };
 
-  // Error toast
-  const errorBanner = state.error ? (
+  const fixedErrorBanner = state.error ? (
     <div className="fixed top-4 left-1/2 -translate-x-1/2 z-[80] bg-red-900/90 border border-red-700 text-red-200 text-sm px-4 py-2 rounded-xl max-w-sm text-center">
       {state.error}
     </div>
   ) : null;
 
-  const backupWarningBanner = showBackupWarning ? (
-    <div className="fixed left-4 right-4 top-4 z-[79] mx-auto max-w-md rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 shadow-lg dark:border-amber-800/70 dark:bg-amber-950/90 dark:text-amber-100">
+  const statusMessage = state.error ? (
+    <div
+      data-testid="deposit-status-message"
+      className="rounded-xl border border-red-700 bg-red-900/90 px-4 py-2 text-center text-sm text-red-200"
+    >
+      {state.error}
+    </div>
+  ) : null;
+
+  const depositReminder = showBackupWarning ? (
+    <div
+      data-testid="deposit-seed-reminder"
+      className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-800/70 dark:bg-amber-950/40 dark:text-amber-100"
+    >
       <p className="font-medium">{t("backupSecrets.depositWarning")}</p>
       <div className="mt-3 flex gap-2">
         <button
@@ -73,100 +100,101 @@ export function DepositWithdrawOverlay({ mode, onClose }: DepositWithdrawOverlay
   ) : null;
 
   if (state.currentView === "success") {
-    return (
+    return dialog((dismiss) => (
       <SuccessView
         amountMsat={state.successAmountMsat}
         baseAsset={state.successBaseAsset}
         amountLabel={formatAmount(state.successAmountMsat, state.successBaseAsset)}
-        onClose={state.onClose}
+        onClose={dismiss}
       />
-    );
+    ));
   }
 
   if (state.currentView === "scanner") {
-    return (
+    return dialog(() => (
       <>
-        {backupWarningBanner}
-        {errorBanner}
+        {fixedErrorBanner}
         <QrScannerView onDecode={state.onScanResult} onClose={state.onBack} />
       </>
-    );
+    ));
   }
 
-  if (state.currentView === "payment-request-display" && state.paymentRequestEncoded) {
-    return (
+  const paymentRequestEncoded = state.paymentRequestEncoded;
+  if (state.currentView === "payment-request-display" && paymentRequestEncoded) {
+    return dialog((dismiss) => (
       <>
-        {backupWarningBanner}
-        {errorBanner}
+        {fixedErrorBanner}
         <PaymentRequestDisplay
-          paymentRequestEncoded={state.paymentRequestEncoded}
+          paymentRequestEncoded={paymentRequestEncoded}
           status={state.paymentRequestStatus}
           amountSats={state.amountSats}
-          onClose={state.onClose}
+          onClose={dismiss}
         />
       </>
-    );
+    ));
   }
 
-  if (state.currentView === "invoice-display" && state.bolt11) {
-    return (
+  const bolt11 = state.bolt11;
+  if (state.currentView === "invoice-display" && bolt11) {
+    return dialog((dismiss) => (
       <>
-        {backupWarningBanner}
-        {errorBanner}
+        {fixedErrorBanner}
         <InvoiceDisplay
-          bolt11={state.bolt11}
+          bolt11={bolt11}
           amountSats={state.amountSats}
           amountLabel={state.amountLabel}
           status={state.invoiceStatus}
           expiresAtSec={state.invoiceExpiresAtSec}
           errorMessage={state.error}
-          onClose={state.onClose}
+          onClose={dismiss}
           onRegenerate={state.onRegenerateInvoice}
         />
       </>
-    );
+    ));
   }
 
-  if (state.currentView === "token-display" && state.ecashToken && state.bearerWithdrawal?.token) {
-    return (
+  const bearerWithdrawal = state.bearerWithdrawal;
+  const ecashToken = state.ecashToken;
+  const bearerToken = bearerWithdrawal?.token;
+  if (state.currentView === "token-display" && ecashToken && bearerToken) {
+    return dialog((dismiss) => (
       <>
-        {backupWarningBanner}
-        {errorBanner}
+        {fixedErrorBanner}
         <TokenDisplay
-          token={state.ecashToken}
+          token={ecashToken}
           amountSats={state.amountSats}
-          proofCount={state.bearerWithdrawal.token.proofs.length}
-          onClose={state.onClose}
+          proofCount={bearerToken.proofs.length}
+          onClose={dismiss}
           onReclaim={state.onReclaimEcash}
         />
       </>
-    );
+    ));
   }
 
-  if (state.currentView === "melt-confirm" && state.meltQuote) {
-    return (
+  const meltQuote = state.meltQuote;
+  if (state.currentView === "melt-confirm" && meltQuote) {
+    return dialog((dismiss) => (
       <>
-        {backupWarningBanner}
-        {errorBanner}
+        {fixedErrorBanner}
         <MeltConfirmation
-          amountSats={amountToNumber(state.meltQuote.amount) / 1_000}
-          feeSats={amountToNumber(state.meltQuote.fee_reserve) / 1_000}
+          amountSats={amountToNumber(meltQuote.amount) / 1_000}
+          feeSats={amountToNumber(meltQuote.fee_reserve) / 1_000}
           invoice={state.lightningInput}
           isPaying={state.meltIsPaying}
           onConfirm={state.onConfirmMelt}
-          onClose={state.onClose}
+          onClose={dismiss}
         />
       </>
-    );
+    ));
   }
 
-  return (
+  return dialog((dismiss) => (
     <>
-      {backupWarningBanner}
-      {errorBanner}
       <DepositWithdraw
         mode={state.mode}
         currentView={state.currentView as Parameters<typeof DepositWithdraw>[0]["currentView"]}
+        depositReminder={depositReminder}
+        statusMessage={statusMessage}
         mints={state.mints}
         selectedMintId={state.selectedMintId}
         amountSats={state.amountSats}
@@ -192,8 +220,8 @@ export function DepositWithdrawOverlay({ mode, onClose }: DepositWithdrawOverlay
         onScanQR={state.onScanQR}
         onLightningInputChange={state.onLightningInputChange}
         onBack={state.onBack}
-        onClose={state.onClose}
+        onClose={dismiss}
       />
     </>
-  );
+  ));
 }

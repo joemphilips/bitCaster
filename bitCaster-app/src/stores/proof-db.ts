@@ -1235,12 +1235,15 @@ export async function restoreProofsAndAdvanceCounter(
     scopeId: input.scopeId,
     isCurrentProfile: input.isCurrentProfile,
   });
+  // Do not return a resolved async no-op when there are no rows to write.
+  const admitRestoredProofs: () => void | Promise<void> =
+    rows.length === 0 ? () => undefined : () => putNormalizedStoredProofRows(database, rows);
   return counters.restoreInContext(
     { mintUrl: input.mintUrl, unit: input.unit },
     input.keysetId,
     input.restoredNext,
     rows.length > 0,
-    () => putNormalizedStoredProofRows(database, rows),
+    admitRestoredProofs,
   );
 }
 

@@ -276,7 +276,7 @@ async function fetchCataloguePage(
     ) {
       throw new Error('asset-monitoring condition catalogue is invalid')
     }
-    const outcomes = record.outcomes as string[]
+    const outcomes = [...(record.outcomes as string[])].sort()
     computeAssetMonitoringOutcomeUniverseDigest(outcomes)
     seen.add(record.conditionId)
     return { conditionId: record.conditionId, outcomes }

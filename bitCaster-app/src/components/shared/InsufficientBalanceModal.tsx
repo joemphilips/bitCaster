@@ -1,5 +1,6 @@
 import { Zap } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import { NativeDialog } from "./NativeDialog";
 
 interface InsufficientBalanceModalProps {
   /** How many base-asset subunits the user has in the active mint. */
@@ -40,86 +41,94 @@ export function InsufficientBalanceModal({
     formatAmount ?? ((amount) => t("insufficientBalance.sats", { count: amount }));
 
   return (
-    <div className="fixed inset-0 z-[70] flex items-center justify-center">
-      <div className="absolute inset-0 bg-black/60" onClick={onCancel} />
+    <NativeDialog ariaLabel={title ?? t("insufficientBalance.title")} onDismiss={onCancel}>
+      {(dismiss) => (
+        <div
+          data-testid="insufficient-balance-dialog-backdrop"
+          className="flex min-h-full items-center justify-center"
+          onClick={(event) => {
+            if (event.target === event.currentTarget) dismiss();
+          }}
+        >
+          <div className="relative mx-4 max-w-sm rounded-2xl border border-slate-200 bg-white p-6 text-center dark:border-slate-700 dark:bg-slate-800">
+            <div className="w-16 h-16 rounded-full bg-amber-100 dark:bg-amber-900/30 flex items-center justify-center mx-auto mb-4">
+              <Zap className="w-8 h-8 text-[#f7931a]" />
+            </div>
 
-      <div className="relative bg-white dark:bg-slate-800 rounded-2xl border border-slate-200 dark:border-slate-700 p-6 max-w-sm mx-4 text-center">
-        <div className="w-16 h-16 rounded-full bg-amber-100 dark:bg-amber-900/30 flex items-center justify-center mx-auto mb-4">
-          <Zap className="w-8 h-8 text-[#f7931a]" />
-        </div>
+            <h2 className="text-xl font-bold text-slate-900 dark:text-white mb-2">
+              {title ?? t("insufficientBalance.title")}
+            </h2>
 
-        <h2 className="text-xl font-bold text-slate-900 dark:text-white mb-2">
-          {title ?? t("insufficientBalance.title")}
-        </h2>
-
-        <p className="text-slate-500 dark:text-slate-400 text-sm mb-1">
-          {requiredDescription ?? t("insufficientBalance.tradeNeeds")}{" "}
-          <span className="font-mono text-slate-700 dark:text-slate-200">
-            {renderAmount(required)}
-          </span>
-          .
-        </p>
-        <p className="text-slate-500 dark:text-slate-400 text-sm mb-6">
-          {balance === null
-            ? t("insufficientBalance.localBalanceUnavailable")
-            : t("insufficientBalance.youHave")}{" "}
-          <span className="font-mono text-slate-700 dark:text-slate-200">
-            {balance === null ? "" : renderAmount(balance)}
-          </span>
-          {deficit !== null && deficit > 0 && (
-            <>
-              {" "}
-              — {t("insufficientBalance.shortBy")}{" "}
+            <p className="text-slate-500 dark:text-slate-400 text-sm mb-1">
+              {requiredDescription ?? t("insufficientBalance.tradeNeeds")}{" "}
               <span className="font-mono text-slate-700 dark:text-slate-200">
-                {renderAmount(deficit)}
+                {renderAmount(required)}
               </span>
-            </>
-          )}
-          {balance === null ? null : "."}
-        </p>
+              .
+            </p>
+            <p className="text-slate-500 dark:text-slate-400 text-sm mb-6">
+              {balance === null
+                ? t("insufficientBalance.localBalanceUnavailable")
+                : t("insufficientBalance.youHave")}{" "}
+              <span className="font-mono text-slate-700 dark:text-slate-200">
+                {balance === null ? "" : renderAmount(balance)}
+              </span>
+              {deficit !== null && deficit > 0 && (
+                <>
+                  {" "}
+                  — {t("insufficientBalance.shortBy")}{" "}
+                  <span className="font-mono text-slate-700 dark:text-slate-200">
+                    {renderAmount(deficit)}
+                  </span>
+                </>
+              )}
+              {balance === null ? null : "."}
+            </p>
 
-        {recoveryUnavailable && (
-          <p
-            role="status"
-            className="mb-6 rounded-lg border border-amber-200 bg-amber-50 p-3 text-left text-sm text-amber-900 dark:border-amber-900/60 dark:bg-amber-900/20 dark:text-amber-100"
-          >
-            {t(
-              balance === null
-                ? "insufficientBalance.recoveryUnavailableUnknownBalance"
-                : "insufficientBalance.recoveryUnavailable",
+            {recoveryUnavailable && (
+              <p
+                role="status"
+                className="mb-6 rounded-lg border border-amber-200 bg-amber-50 p-3 text-left text-sm text-amber-900 dark:border-amber-900/60 dark:bg-amber-900/20 dark:text-amber-100"
+              >
+                {t(
+                  balance === null
+                    ? "insufficientBalance.recoveryUnavailableUnknownBalance"
+                    : "insufficientBalance.recoveryUnavailable",
+                )}
+              </p>
             )}
-          </p>
-        )}
 
-        <div className="flex flex-wrap gap-3">
-          <button
-            type="button"
-            data-testid="insufficient-balance-cancel"
-            onClick={onCancel}
-            className="flex-1 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 font-medium hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors"
-          >
-            {t("common.cancel")}
-          </button>
-          {recoveryUnavailable && onRetry && (
-            <button
-              type="button"
-              data-testid="insufficient-balance-retry"
-              onClick={onRetry}
-              className="flex-1 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 font-medium hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors"
-            >
-              {t("common.retry")}
-            </button>
-          )}
-          <button
-            type="button"
-            data-testid="insufficient-balance-top-up"
-            onClick={onTopUp}
-            className="flex-1 py-2.5 rounded-xl bg-[#f7931a] hover:bg-[#e8850f] text-white font-semibold transition-colors"
-          >
-            {t("insufficientBalance.topUp")}
-          </button>
+            <div className="flex flex-wrap gap-3">
+              <button
+                type="button"
+                data-testid="insufficient-balance-cancel"
+                onClick={dismiss}
+                className="flex-1 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 font-medium hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors"
+              >
+                {t("common.cancel")}
+              </button>
+              {recoveryUnavailable && onRetry && (
+                <button
+                  type="button"
+                  data-testid="insufficient-balance-retry"
+                  onClick={onRetry}
+                  className="flex-1 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 font-medium hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors"
+                >
+                  {t("common.retry")}
+                </button>
+              )}
+              <button
+                type="button"
+                data-testid="insufficient-balance-top-up"
+                onClick={onTopUp}
+                className="flex-1 py-2.5 rounded-xl bg-[#f7931a] hover:bg-[#e8850f] text-white font-semibold transition-colors"
+              >
+                {t("insufficientBalance.topUp")}
+              </button>
+            </div>
+          </div>
         </div>
-      </div>
-    </div>
+      )}
+    </NativeDialog>
   );
 }

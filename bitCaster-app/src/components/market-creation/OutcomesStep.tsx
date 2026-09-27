@@ -14,6 +14,7 @@ interface OutcomesStepProps {
   onAddOutcome?: () => void;
   onRemoveOutcome?: (outcomeId: string) => void;
   onOutcomeLabelChange?: (outcomeId: string, label: string) => void;
+  onOutcomeColorChange?: (outcomeId: string, color: string | null) => void;
   onLoBoundChange?: (value: number) => void;
   onHiBoundChange?: (value: number) => void;
   onPrecisionChange?: (value: number) => void;
@@ -31,6 +32,7 @@ export function OutcomesStep({
   onAddOutcome,
   onRemoveOutcome,
   onOutcomeLabelChange,
+  onOutcomeColorChange,
   onLoBoundChange,
   onHiBoundChange,
   onPrecisionChange,
@@ -206,29 +208,65 @@ export function OutcomesStep({
       <p className="text-sm text-slate-400 mb-8">{t("marketCreation.defineOutcomesDesc")}</p>
 
       <div className="space-y-3 mb-4">
-        {outcomes?.map((outcome) => (
-          <div key={outcome.id} className="p-4 rounded-lg bg-slate-900 border border-slate-700">
-            <div className="flex items-start gap-3">
-              <div className="flex-1 min-w-0">
-                <input
-                  data-outcome-label-input={outcome.id}
-                  type="text"
-                  value={outcome.label}
-                  onChange={(e) => onOutcomeLabelChange?.(outcome.id, e.target.value)}
-                  placeholder={t("marketCreation.outcomeLabelPlaceholder")}
-                  className="w-full px-3 py-2 rounded-lg bg-slate-800 border border-slate-700 text-white text-sm placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500/40 focus:border-blue-500 transition-colors"
-                />
-              </div>
+        {outcomes?.map((outcome) => {
+          const color =
+            typeof outcome.color === "string" && /^#[0-9A-Fa-f]{6}$/.test(outcome.color)
+              ? outcome.color
+              : null;
+          return (
+            <div key={outcome.id} className="p-4 rounded-lg bg-slate-900 border border-slate-700">
+              <div className="flex items-start gap-3">
+                <div className="flex-1 min-w-0">
+                  <input
+                    data-outcome-label-input={outcome.id}
+                    type="text"
+                    value={outcome.label}
+                    onChange={(e) => onOutcomeLabelChange?.(outcome.id, e.target.value)}
+                    placeholder={t("marketCreation.outcomeLabelPlaceholder")}
+                    className="w-full px-3 py-2 rounded-lg bg-slate-800 border border-slate-700 text-white text-sm placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500/40 focus:border-blue-500 transition-colors"
+                  />
+                </div>
 
-              <button
-                onClick={() => onRemoveOutcome?.(outcome.id)}
-                className="p-2 rounded-lg text-slate-500 hover:text-red-400 hover:bg-red-400/10 transition-colors"
-              >
-                <Trash2 className="w-4 h-4" strokeWidth={1.5} />
-              </button>
+                <div className="flex flex-col items-center gap-1">
+                  <label className="flex flex-col items-center gap-1 text-xs text-slate-400">
+                    <span>{t("marketCreation.outcomeColor")}</span>
+                    <input
+                      aria-label={t("marketCreation.outcomeColorFor", {
+                        outcome: outcome.label || t("common.unnamed"),
+                      })}
+                      type="color"
+                      value={color ?? "#808080"}
+                      onChange={(event) => onOutcomeColorChange?.(outcome.id, event.target.value)}
+                      className="h-8 w-10 cursor-pointer rounded border border-slate-600 bg-transparent p-0.5"
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    aria-label={t("marketCreation.useAutomaticOutcomeColorFor", {
+                      outcome: outcome.label || t("common.unnamed"),
+                    })}
+                    aria-pressed={!color}
+                    onClick={() => onOutcomeColorChange?.(outcome.id, null)}
+                    className={`rounded px-2 py-1 text-xs transition-colors ${
+                      color
+                        ? "text-slate-400 hover:bg-slate-800 hover:text-white"
+                        : "bg-slate-800 text-white ring-1 ring-blue-500/60"
+                    }`}
+                  >
+                    {t("marketCreation.outcomeColorAutomatic")}
+                  </button>
+                </div>
+
+                <button
+                  onClick={() => onRemoveOutcome?.(outcome.id)}
+                  className="p-2 rounded-lg text-slate-500 hover:text-red-400 hover:bg-red-400/10 transition-colors"
+                >
+                  <Trash2 className="w-4 h-4" strokeWidth={1.5} />
+                </button>
+              </div>
             </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
 
       <button

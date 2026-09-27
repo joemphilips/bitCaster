@@ -9,6 +9,7 @@
  */
 
 import {
+  Keyset as CashuKeyset,
   Mint as CashuMint,
   Wallet as CashuWallet,
   getEncodedTokenV4,
@@ -89,6 +90,7 @@ import { locateSeedDerivedProofLineage } from "@bitcaster/client-sdk/durableSeed
 import { assertCanonicalNut02V2KeysetId } from "@bitcaster/client-sdk/durableSeedDerivedOutputs";
 import { serializeDurableCustodyProofArtifact } from "@bitcaster/client-sdk/durableCustodyProofMaterial";
 import type { TokenImportContext } from "@bitcaster/client-sdk/tokenImportValidation";
+import type { ActiveCtfRangeMintKeyset } from "@bitcaster/client-sdk/ctfRangeOrderPreparation";
 import {
   listBrowserDurableOutgoingCashuDueMints,
   recoverBrowserDurableOutgoingCashuDuePage,
@@ -702,6 +704,228 @@ type RecoverableMintKeyset = {
   unit?: string | null;
 };
 
+type ConditionalCounterRecoveryKeyset = ActiveCtfRangeMintKeyset & {
+  conditionId: string;
+  outcomeCollection: string;
+  outcomeCollectionId: string;
+  registeredAt: number;
+};
+
+export class WalletKeysetCounterReadinessError extends Error {
+  constructor() {
+    super("Wallet counter recovery is incomplete for the selected keyset.");
+    this.name = "WalletKeysetCounterReadinessError";
+  }
+}
+
+const walletKeysetCounterReadiness = new Map<string, Promise<void>>();
+
+/** Ensure one preparation-selected keyset has completed counter recovery. */
+export function ensureWalletKeysetCounterReady(input: {
+  scopeId: string;
+  mintUrl: string;
+  unit: "msat";
+  keyset: ActiveCtfRangeMintKeyset;
+  conditionalAsset?: { conditionId: string; outcomeCollection: string };
+  profileLockHeld?: boolean;
+}): Promise<void> {
+  let url: string;
+  let conditionalKeyset: ConditionalCounterRecoveryKeyset | undefined;
+  try {
+    url = normalizeUrl(input.mintUrl);
+    conditionalKeyset = requireCounterRecoveryKeyset(
+      input.keyset,
+      url,
+      input.unit,
+      input.conditionalAsset,
+    );
+    const store = useWalletStore.getState();
+    const capturedScopeId = store.mnemonic
+      ? browserWalletScopeIdFromMnemonic(store.mnemonic)
+      : null;
+    if (
+      capturedScopeId === null ||
+      capturedScopeId !== input.scopeId ||
+      activeBrowserWalletScopeId() !== input.scopeId
+    ) {
+      throw new Error("wallet profile changed");
+    }
+  } catch {
+    return Promise.reject(new WalletKeysetCounterReadinessError());
+  }
+
+  // Held-lock and unlocked work must not share a promise. A held-lock caller
+  // cannot wait for an unlocked scan that must acquire the same lock to commit.
+  const coalescingKey = JSON.stringify([
+    input.scopeId,
+    url,
+    input.unit,
+    input.keyset.id,
+    conditionalKeyset?.conditionId ?? null,
+    conditionalKeyset?.outcomeCollection ?? null,
+    conditionalKeyset?.outcomeCollectionId ?? null,
+    conditionalKeyset?.registeredAt ?? null,
+    input.profileLockHeld === true,
+  ]);
+  const pending = walletKeysetCounterReadiness.get(coalescingKey);
+  if (pending !== undefined) return pending;
+
+  const promise = recoverSelectedKeysetCounterReadiness({
+    scopeId: input.scopeId,
+    mintUrl: url,
+    unit: input.unit,
+    keysetId: input.keyset.id,
+    conditionalKeyset,
+    profileLockHeld: input.profileLockHeld === true,
+  }).catch(() => {
+    throw new WalletKeysetCounterReadinessError();
+  });
+  walletKeysetCounterReadiness.set(coalescingKey, promise);
+  void promise
+    .finally(() => {
+      if (walletKeysetCounterReadiness.get(coalescingKey) === promise) {
+        walletKeysetCounterReadiness.delete(coalescingKey);
+      }
+    })
+    .catch(() => undefined);
+  return promise;
+}
+
+async function recoverSelectedKeysetCounterReadiness(input: {
+  scopeId: string;
+  mintUrl: string;
+  unit: "msat";
+  keysetId: string;
+  conditionalKeyset: ConditionalCounterRecoveryKeyset | undefined;
+  profileLockHeld: boolean;
+}): Promise<void> {
+  const result = await recoverKeysetCountersForMintCore(input.mintUrl, {
+    unit: input.unit,
+    keysetId: input.keysetId,
+    conditionalKeyset: input.conditionalKeyset,
+    profileLockHeld: input.profileLockHeld,
+  });
+  const ready =
+    result.complete &&
+    (result.scannedKeysets.includes(input.keysetId) ||
+      (await isWalletCounterRecoveryComplete({
+        scopeId: input.scopeId,
+        mintUrl: input.mintUrl,
+        unit: input.unit,
+        keysetId: input.keysetId,
+        isCurrentProfile: () => activeBrowserWalletScopeId() === input.scopeId,
+      })));
+  if (!ready || activeBrowserWalletScopeId() !== input.scopeId) {
+    throw new Error("counter recovery is incomplete");
+  }
+}
+
+function requireCounterRecoveryKeyset(
+  value: ActiveCtfRangeMintKeyset,
+  mintUrl: string,
+  unit: "msat",
+  expectedConditionalAsset: { conditionId: string; outcomeCollection: string } | undefined,
+): ConditionalCounterRecoveryKeyset | undefined {
+  const keyset = value as unknown as Record<string, unknown>;
+  if (
+    value.canonicalMintUrl !== mintUrl ||
+    value.unit !== unit ||
+    value.active !== true ||
+    typeof value.id !== "string" ||
+    (value.finalExpiry !== null &&
+      (!Number.isSafeInteger(value.finalExpiry) || value.finalExpiry <= 0))
+  ) {
+    throw new Error("counter recovery keyset is invalid");
+  }
+  assertCanonicalNut02V2KeysetId(value.id, "counter recovery keyset id");
+  const mintKeys = {
+    id: value.id,
+    unit,
+    keys: { ...value.keys },
+    input_fee_ppk: value.inputFeePpk,
+    ...(value.finalExpiry === null ? {} : { final_expiry: value.finalExpiry }),
+  };
+
+  const conditionalFields = [
+    "conditionId",
+    "outcomeCollection",
+    "outcomeCollectionId",
+    "registeredAt",
+  ] as const;
+  const hasAnyConditionalField = conditionalFields.some((field) => field in keyset);
+  if (expectedConditionalAsset === undefined) {
+    if (hasAnyConditionalField || !CashuKeyset.verifyKeysetId(mintKeys)) {
+      throw new Error("counter recovery regular keyset is invalid");
+    }
+    return undefined;
+  }
+  if (conditionalFields.some((field) => !(field in keyset))) {
+    throw new Error("counter recovery conditional keyset is incomplete");
+  }
+
+  const conditionId = keyset.conditionId;
+  const outcomeCollection = keyset.outcomeCollection;
+  const outcomeCollectionId = keyset.outcomeCollectionId;
+  const registeredAt = keyset.registeredAt;
+  if (
+    typeof conditionId !== "string" ||
+    typeof outcomeCollection !== "string" ||
+    outcomeCollection.length === 0 ||
+    typeof outcomeCollectionId !== "string" ||
+    !Number.isSafeInteger(registeredAt) ||
+    (registeredAt as number) < 0 ||
+    conditionId.toLowerCase() !== expectedConditionalAsset.conditionId.toLowerCase() ||
+    outcomeCollection !== expectedConditionalAsset.outcomeCollection
+  ) {
+    throw new Error("counter recovery conditional binding is invalid");
+  }
+  const conditionalMetadata = {
+    conditionId,
+    outcomeCollection,
+    outcomeCollectionId,
+    registeredAt: registeredAt as number,
+  };
+  if (!CashuKeyset.verifyConditionalKeysetId(mintKeys, conditionalMetadata)) {
+    throw new Error("counter recovery conditional keyset is invalid");
+  }
+  return {
+    ...value,
+    ...conditionalMetadata,
+  };
+}
+
+function registerCounterRecoveryConditionalKeyset(
+  wallet: CashuWallet,
+  authority: ConditionalCounterRecoveryKeyset,
+): void {
+  const conditional = {
+    conditionId: authority.conditionId,
+    outcomeCollection: authority.outcomeCollection,
+    outcomeCollectionId: authority.outcomeCollectionId,
+    registeredAt: authority.registeredAt,
+  };
+  const meta = {
+    id: authority.id,
+    unit: authority.unit,
+    active: authority.active,
+    input_fee_ppk: authority.inputFeePpk,
+    ...(authority.finalExpiry === null ? {} : { final_expiry: authority.finalExpiry }),
+    conditional,
+  };
+  const keys = {
+    ...meta,
+    keys: { ...authority.keys },
+  };
+  const registered = wallet.keyChain.registerConditionalKeyset(meta, keys);
+  if (
+    registered.id !== authority.id ||
+    registered.unit !== authority.unit ||
+    !registered.verify()
+  ) {
+    throw new Error("counter recovery conditional keyset registration failed");
+  }
+}
+
 const COUNTER_RECOVERY_DERIVATION_PAGE_SIZE = DURABLE_CUSTODY_RECOVERY_PAGE_LIMIT_MAX;
 
 function keysetCashuUnit(keyset: RecoverableMintKeyset): CashuProofUnit {
@@ -996,6 +1220,20 @@ export async function recoverKeysetCountersForMint(
     keysetId?: string;
   } = {},
 ): Promise<KeysetRecoveryResult> {
+  return recoverKeysetCountersForMintCore(mintUrl, opts);
+}
+
+async function recoverKeysetCountersForMintCore(
+  mintUrl: string,
+  opts: {
+    force?: boolean;
+    baseAsset?: MarketBaseAsset | string | null;
+    unit?: CashuProofUnit;
+    keysetId?: string;
+    conditionalKeyset?: ConditionalCounterRecoveryKeyset;
+    profileLockHeld?: boolean;
+  } = {},
+): Promise<KeysetRecoveryResult> {
   const url = normalizeUrl(mintUrl);
   const store = useWalletStore.getState();
   if (!store.mnemonic) return { scannedKeysets: [], complete: true };
@@ -1013,8 +1251,15 @@ export async function recoverKeysetCountersForMint(
   if ((opts.unit === undefined) !== (opts.keysetId === undefined)) {
     throw new Error("counter recovery selection is incomplete");
   }
-  if (opts.keysetId !== undefined && opts.force !== true) {
-    throw new Error("counter recovery selection requires forced repair");
+  if (
+    opts.conditionalKeyset !== undefined &&
+    (opts.keysetId === undefined ||
+      opts.unit === undefined ||
+      opts.conditionalKeyset.id !== opts.keysetId ||
+      opts.conditionalKeyset.unit !== opts.unit ||
+      opts.conditionalKeyset.canonicalMintUrl !== url)
+  ) {
+    throw new Error("counter recovery conditional selection is invalid");
   }
   const discoveryUnit = defaultCollateralUnit(requestedBaseAsset ?? DEFAULT_MARKET_BASE_ASSET);
   const discoveryWallet = (await store.getWalletForUnit(url, discoveryUnit)) as CashuWallet;
@@ -1025,8 +1270,30 @@ export async function recoverKeysetCountersForMint(
   // whatever keyset the wallet is actually trying to mint against right now.
   const fresh = await discoveryWallet.mint.getKeySets().catch(() => null);
   requireCapturedProfile();
-  const keysets: RecoverableMintKeyset[] =
+  const discoveredKeysets: RecoverableMintKeyset[] =
     fresh?.keysets ?? store.mints.find((m) => m.url === url)?.keysets ?? [];
+  if (
+    opts.keysetId !== undefined &&
+    opts.conditionalKeyset === undefined &&
+    !discoveredKeysets.some(
+      (keyset) => keyset.id === opts.keysetId && keysetCashuUnit(keyset) === opts.unit,
+    )
+  ) {
+    return { scannedKeysets: [], complete: false };
+  }
+  if (
+    opts.conditionalKeyset !== undefined &&
+    discoveredKeysets.some((keyset) => keyset.id === opts.conditionalKeyset?.id)
+  ) {
+    return { scannedKeysets: [], complete: false };
+  }
+  const keysets: RecoverableMintKeyset[] =
+    opts.conditionalKeyset === undefined
+      ? discoveredKeysets
+      : [
+          ...discoveredKeysets,
+          { id: opts.conditionalKeyset.id, unit: opts.conditionalKeyset.unit },
+        ];
   const units = Array.from(
     new Set(
       keysets
@@ -1041,7 +1308,8 @@ export async function recoverKeysetCountersForMint(
     ),
   );
   const scanned: string[] = [];
-  let complete = fresh !== null || keysets.length > 0;
+  let complete =
+    fresh !== null || discoveredKeysets.length > 0 || opts.conditionalKeyset !== undefined;
   for (const unit of units) {
     const wallet =
       unit === discoveryUnit
@@ -1053,6 +1321,9 @@ export async function recoverKeysetCountersForMint(
         (opts.keysetId === undefined || keyset.id === opts.keysetId),
     )) {
       try {
+        if (opts.conditionalKeyset !== undefined) {
+          registerCounterRecoveryConditionalKeyset(wallet, opts.conditionalKeyset);
+        }
         if (
           !opts.force &&
           (await isWalletCounterRecoveryComplete({
@@ -1100,7 +1371,7 @@ export async function recoverKeysetCountersForMint(
           stored.length === 0
             ? new Map<string, DurableWalletProofDerivationLocator>()
             : locateRecoveredProofs(seed, keyset.id, stored, lastCounterWithSignature ?? -1);
-        await withWalletProfileLock(scopeId, async () => {
+        const persistRecoveredKeyset = async () => {
           requireCapturedProfile();
           await db.transaction("rw", db.tables, async () => {
             requireCapturedProfile();
@@ -1187,7 +1458,12 @@ export async function recoverKeysetCountersForMint(
             });
             requireCapturedProfile();
           });
-        });
+        };
+        if (opts.profileLockHeld === true) {
+          await persistRecoveredKeyset();
+        } else {
+          await withWalletProfileLock(scopeId, persistRecoveredKeyset);
+        }
         scanned.push(keyset.id);
       } catch {
         // Best-effort: retry a failed keyset scan on the next startup.

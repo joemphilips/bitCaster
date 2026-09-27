@@ -3,6 +3,7 @@ import {
   type EncryptedWalletBackupV2AssetIdentity,
 } from "@bitcaster/client-sdk";
 import type {
+  BrowserCanonicalCtfPositionClaimError,
   BrowserCanonicalCtfPositionClaimContext,
   BrowserCanonicalCtfPositionClaimResult,
 } from "./browserCtfPositionClaim";
@@ -85,7 +86,11 @@ export interface BrowserPortfolioRemovePartial {
 export interface BrowserPortfolioRemoveError {
   readonly kind: "error";
   readonly committedPayoutAmount: number;
-  readonly error: { readonly code: "remove-failed"; readonly message: string };
+  readonly error: {
+    readonly code: "remove-failed";
+    readonly message: string;
+    readonly claimFailure?: BrowserCanonicalCtfPositionClaimError["error"];
+  };
 }
 
 type CompletedMarker = Extract<BrowserProofBackupAuthorityTableRow, { recordKind: string }>;
@@ -652,7 +657,7 @@ function claimOutcome(
       return {
         kind: "error",
         committedPayoutAmount: claim.committedPayoutAmount,
-        error: { code: "remove-failed", message: claim.error.message },
+        error: { code: "remove-failed", message: claim.error.message, claimFailure: claim.error },
       };
   }
   throw new Error("unknown CTF claim result");

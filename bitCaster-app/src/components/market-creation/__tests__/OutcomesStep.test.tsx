@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, it, expect, vi } from "vitest";
 import { OutcomesStep } from "../OutcomesStep";
@@ -67,6 +67,34 @@ describe("OutcomesStep market unit controls", () => {
     expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
     expect(screen.queryByText(/divisibility/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/price moves/i)).not.toBeInTheDocument();
+  });
+});
+
+describe("OutcomesStep outcome colors", () => {
+  it("supports explicit colors and an automatic reset for every categorical outcome", async () => {
+    const user = userEvent.setup();
+    const onOutcomeColorChange = vi.fn();
+    const outcomes = makeOutcomes(2).map((outcome, index) =>
+      index === 0 ? { ...outcome, color: "#123456" } : outcome,
+    );
+    render(
+      <OutcomesStep
+        outcomeType="categorical"
+        outcomes={outcomes}
+        onOutcomeColorChange={onOutcomeColorChange}
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText("Color for Outcome 1"), {
+      target: { value: "#A1B2C3" },
+    });
+    expect(onOutcomeColorChange).toHaveBeenCalledWith("o1", "#a1b2c3");
+
+    await user.click(screen.getByRole("button", { name: "Use automatic color for Outcome 0" }));
+    expect(onOutcomeColorChange).toHaveBeenLastCalledWith("o0", null);
+    expect(screen.getAllByRole("button", { name: /Use automatic color for Outcome/ })).toHaveLength(
+      2,
+    );
   });
 });
 

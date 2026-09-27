@@ -36,8 +36,13 @@ describe("isWinningCollection (per-keyset membership rule)", () => {
     expect(isWinningCollection("A|B", "C")).toBe(false);
   });
 
-  it("is case-insensitive and trims", () => {
-    expect(isWinningCollection("Alice", " alice ")).toBe(true);
+  it.each([
+    ["Alpha|Beta", "Alpha", true],
+    ["Alpha|Beta", "alpha", false],
+    ["Alpha|Beta", " Alpha ", false],
+    ["Alpha|beta", "Beta", false],
+  ])("matches collection %s against the exact outcome %s", (collection, outcome, expected) => {
+    expect(isWinningCollection(collection, outcome)).toBe(expected);
   });
 
   it("is losing when no final outcome is attested", () => {
@@ -59,14 +64,14 @@ describe("deriveWinner (P22 Link F single source-of-truth)", () => {
     ).toEqual({ status: "winner", claimableValue: 250 });
   });
 
-  it("is case-insensitive on the final outcome match", () => {
+  it.each(["alpha", " Alpha "])("does not normalize attested outcome %s", (finalOutcome) => {
     expect(
       deriveWinnerStatus({
         isClosed: true,
-        finalOutcome: "alice",
-        legs: [{ outcomeCollection: "Alice", amount: 1 }],
+        finalOutcome,
+        legs: [{ outcomeCollection: "Alpha", amount: 1 }],
       }),
-    ).toBe("winner");
+    ).toBe("loser");
   });
 
   // TEST 1 (the core P22 Link F HIGH bug): an UNCLAIMED composite "A|B"

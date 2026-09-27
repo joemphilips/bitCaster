@@ -14,6 +14,9 @@ import {
   deriveKeysetId,
   pointFromHex,
   selectCtfRangeAmounts,
+  hashToCurve,
+  type CtfConvertRequest,
+  type CtfConvertResponse,
   type MintKeys,
   type Proof,
   type SerializedBlindedMessage,
@@ -343,7 +346,7 @@ test('daemon does not consolidate fragmented order funds unless the caller opts 
   )
 })
 
-test('daemon releases a rejected consolidation in both stores and closes the failed preparation', async () => {
+test('daemon retains source-consolidation reservations after exact retry rejection', async () => {
   const proofs = [2, 2, 2, 2].map((amount) =>
     signedProof(OutputData.createRandomData(Amount.from(amount), mintKeys())[0]!),
   )
@@ -386,16 +389,18 @@ test('daemon releases a rejected consolidation in both stores and closes the fai
       }
       const recovered = await coordinator.recover(WALLET_SEED_HEX, client)
       assert.equal(replays, 1)
-      assert.equal(recovered.pending.length, 0)
-      assert.equal(
-        (await readState())?.wallet.proofs.filter(({ state }) => state === 'available').length,
-        4,
-      )
+      assert.equal(recovered.recovered.length, 0)
+      assert.equal(recovered.pending.length, 1)
+      assert.match(recovered.pending[0]!.error, /replay rejection remains pending/)
+      const state = await readState()
+      assert.ok(state?.wallet.proofs.some(({ state: proofState }) => proofState === 'reserved'))
       const database = await openDaemonStateSqlite(directory)
       try {
-        assert.equal(
-          database.prepare('SELECT count(*) AS count FROM custody_proof_reservations').get()?.count,
-          0,
+        assert.ok(
+          Number(
+            database.prepare('SELECT count(*) AS count FROM custody_proof_reservations').get()
+              ?.count,
+          ) > 0,
         )
         assert.equal(
           database
@@ -403,21 +408,17 @@ test('daemon releases a rejected consolidation in both stores and closes the fai
               "SELECT operation_state AS state FROM custody_operations WHERE semantic_kind = 'proof-consolidation'",
             )
             .get()?.state,
-          'aborted',
+          'dispatch-intent',
         )
         assert.equal(
           database
             .prepare('SELECT lifecycle_state AS state FROM daemon_ctf_range_preparations')
             .get()?.state,
-          'terminal',
+          'prepared',
         )
       } finally {
         database.close()
       }
-      assert.deepEqual(await coordinator.recover(WALLET_SEED_HEX, client), {
-        recovered: [],
-        pending: [],
-      })
     },
   )
 })
@@ -654,25 +655,36 @@ test('daemon keeps both reservations when an expired source replay is uncertain'
   )
 })
 
-test('daemon releases both source reservations only after definite replay rejection and fresh unspent evidence', async () => {
+test('daemon keeps source reservations after a definite exact replay rejection at expiry', async () => {
   const sourceProof = signedProof(OutputData.createRandomData(Amount.from(8_192), mintKeys())[0]!)
   await withDaemonProfile(
     {
-      prefix: 'bitcaster-range-expiry-',
-      incarnationId: 'range-expiry-test',
+      prefix: 'bitcaster-range-expiry-rejection-',
+      incarnationId: 'range-expiry-rejection-test',
       proofs: [sourceProof],
       asset: regularAsset(),
     },
     async ({ directory, fence }) => {
       let nowMs = 10_000
       const wallet = new FakeWallet([sourceProof], 'unspent')
+      const sourcePreviewDigests: string[] = []
+      let capabilityCalls = 0
       const client = fakeEngineClient(() => {
+        capabilityCalls += 1
         throw new Error('capability creation must not run for an uncommitted source')
       })
-      const ids = ['range-operation-expired', 'range-authorization-expired']
+      const ids = ['range-operation-expired-rejection', 'range-authorization-expired-rejection']
+      wallet.completeSwap = async (preview) => {
+        sourcePreviewDigests.push(swapPreviewDigest(preview))
+        if (sourcePreviewDigests.length === 1) throw new Error('mint swap acknowledgement lost')
+        throw new MintOperationError(11001, 'definite replay rejection')
+      }
+      wallet.checkProofsStates = async (proofs) =>
+        proofs.map(({ secret }) => ({ Y: secret, state: 'UNSPENT' as const }))
       const coordinator = new DaemonCtfRangeOrderCoordinator(directory, () => fence, {
-        createMint: () => fakeMint(64, 320),
+        createMint: () => fakeMint(64, 1_000),
         createWallet: () => wallet,
+        authorizationLifetimeSeconds: 20,
         now: () => nowMs,
         randomId: () => ids.shift()!,
       })
@@ -681,18 +693,21 @@ test('daemon releases both source reservations only after definite replay reject
         coordinator.prepare(orderRequest(), client),
         /mint swap acknowledgement lost/,
       )
-      nowMs = 31_000
-      let replayCalls = 0
-      wallet.completeSwap = async () => {
-        replayCalls += 1
-        throw new MintOperationError(11001, 'definite replay rejection')
-      }
-      assert.deepEqual(await coordinator.recover(WALLET_SEED_HEX, client), {
-        recovered: ['range-operation-expired:source'],
-        pending: [],
-      })
+      nowMs = 30_000
+      const recovery = await coordinator.recover(WALLET_SEED_HEX, client)
+      assert.equal(sourcePreviewDigests.length, 2)
+      assert.equal(sourcePreviewDigests[1], sourcePreviewDigests[0])
+      assert.deepEqual(recovery.recovered, [])
+      assert.equal(recovery.pending.length, 1)
+      assert.match(recovery.pending[0]!.error, /replay rejection remains pending/)
+      assert.equal(capabilityCalls, 0)
       const state = await readState()
-      assert.equal(replayCalls, 1)
+      assert.equal(state?.wallet.proofs[0]?.state, 'reserved')
+      assert.equal(
+        state?.proofOperations['range-operation-expired-rejection:source']?.state,
+        'prepared',
+      )
+      assert.deepEqual(state?.orders, {})
       const database = await openDaemonStateSqlite(directory)
       try {
         const custody = database
@@ -701,23 +716,232 @@ test('daemon releases both source reservations only after definite replay reject
           WHERE semantic_kind = 'ctf-range-regular-source'`,
           )
           .get()
-        assert.equal(custody?.state, 'aborted')
+        assert.notEqual(custody?.state, 'aborted')
         const reservations = database
           .prepare('SELECT count(*) AS count FROM custody_proof_reservations')
           .get()
-        assert.equal(reservations?.count, 0)
+        assert.equal(reservations?.count, 1)
+        const preparation = database
+          .prepare(
+            `SELECT lifecycle_state AS lifecycle FROM daemon_ctf_range_preparations
+             WHERE range_operation_id = ?`,
+          )
+          .get('range-operation-expired-rejection')
+        assert.equal(preparation?.lifecycle, 'prepared')
       } finally {
         database.close()
       }
-      assert.equal(
-        state?.wallet.proofs.find(({ proof }) => proof.secret === sourceProof.secret)?.state,
-        'available',
+    },
+  )
+})
+
+test('daemon applies a late exact source result and refunds locally without capability admission', async () => {
+  const sourceProof = signedProof(OutputData.createRandomData(Amount.from(8_192), mintKeys())[0]!)
+  await withDaemonProfile(
+    {
+      prefix: 'bitcaster-range-late-source-',
+      incarnationId: 'range-late-source-test',
+      proofs: [sourceProof],
+      asset: regularAsset(),
+    },
+    async ({ directory, fence }) => {
+      let nowMs = 10_000
+      let notifySourceStarted!: () => void
+      const sourceStarted = new Promise<void>((resolve) => {
+        notifySourceStarted = resolve
+      })
+      let completeOriginal!: (result: { keep: Proof[]; send: Proof[] }) => void
+      const originalResponse = new Promise<{ keep: Proof[]; send: Proof[] }>((resolve) => {
+        completeOriginal = resolve
+      })
+      const wallet = new FakeWallet([sourceProof])
+      let sourceCalls = 0
+      let originalPreview: SwapPreview | null = null
+      const sourcePreviewDigests: string[] = []
+      wallet.checkProofsStates = async (proofs) =>
+        proofs.map(({ secret }) => ({ Y: secret, state: 'UNSPENT' as const }))
+      wallet.completeSwap = async (preview) => {
+        sourceCalls += 1
+        sourcePreviewDigests.push(swapPreviewDigest(preview))
+        if (sourceCalls === 1) {
+          originalPreview = preview
+          notifySourceStarted()
+          return originalResponse
+        }
+        throw new MintOperationError(11001, 'exact retry lost race with original source request')
+      }
+      let capabilityCalls = 0
+      let orderCalls = 0
+      let beforeCapabilityCalls = 0
+      const client = fakeEngineClient(
+        (request) => {
+          capabilityCalls += 1
+          return boundCapability(request)
+        },
+        async () => {
+          orderCalls += 1
+          return submittedOrder()
+        },
       )
-      assert.equal(state?.proofOperations['range-operation-expired:source']?.state, 'Failed')
+      const ids = ['range-operation-late-source', 'range-authorization-late-source']
+      const coordinator = new DaemonCtfRangeOrderCoordinator(directory, () => fence, {
+        createMint: () => fakeMint(64, 1_000),
+        createWallet: () => wallet,
+        authorizationLifetimeSeconds: 20,
+        executeRefundSwap: async (_mintUrl, request) => ({
+          signatures: request.outputs.map(signBlindedOutput),
+        }),
+        now: () => nowMs,
+        randomId: () => ids.shift()!,
+      })
+
+      const preparing = coordinator
+        .prepare(orderRequest(), client, async () => {
+          beforeCapabilityCalls += 1
+        })
+        .then(
+          () => null,
+          (error) => error,
+        )
+      await sourceStarted
+      nowMs = 30_000
+      const uncertain = await coordinator.recover(WALLET_SEED_HEX, client)
+      assert.equal(sourceCalls, 2)
+      assert.equal(sourcePreviewDigests[1], sourcePreviewDigests[0])
+      assert.deepEqual(uncertain.recovered, [])
+      assert.equal(uncertain.pending.length, 1)
+      assert.match(uncertain.pending[0]!.error, /replay rejection remains pending/)
+      const pendingDatabase = await openDaemonStateSqlite(directory)
+      try {
+        assert.equal(
+          pendingDatabase.prepare('SELECT count(*) AS count FROM custody_proof_reservations').get()
+            ?.count,
+          1,
+        )
+        assert.equal(
+          pendingDatabase.prepare('SELECT selectability FROM custody_proofs').get()?.selectability,
+          'locked',
+        )
+      } finally {
+        pendingDatabase.close()
+      }
+
+      assert.ok(originalPreview)
+      completeOriginal({
+        send: (originalPreview.sendOutputs ?? []).map(signedProof),
+        keep: (originalPreview.keepOutputs ?? []).map(signedProof),
+      })
+      const prepareError = await preparing
+      assert.ok(prepareError instanceof Error)
+      assert.match(prepareError.message, /expired before capability admission/)
+      assert.equal(beforeCapabilityCalls, 0)
+      assert.equal(capabilityCalls, 0)
+      assert.equal(orderCalls, 0)
+
+      const state = await readState()
+      assert.equal(state?.proofOperations['range-operation-late-source:source']?.state, 'completed')
+      assert.ok(
+        Object.values(state?.proofOperations ?? {}).some(
+          ({ state: operationState, metadata }) =>
+            operationState === 'completed' && metadata.purpose === 'ctf-range-refund',
+        ),
+      )
+      assert.deepEqual(state?.orders, {})
+      const database = await openDaemonStateSqlite(directory)
+      try {
+        const terminal = database
+          .prepare(
+            `SELECT lifecycle_state AS lifecycle FROM daemon_ctf_range_preparations
+             WHERE range_operation_id = ?`,
+          )
+          .get('range-operation-late-source')
+        assert.equal(terminal?.lifecycle, 'terminal')
+      } finally {
+        database.close()
+      }
+    },
+  )
+})
+
+test('daemon routes an expired capability-requested journal to local refund without retrying admission', async () => {
+  const sourceProof = signedProof(OutputData.createRandomData(Amount.from(8_192), mintKeys())[0]!)
+  await withDaemonProfile(
+    {
+      prefix: 'bitcaster-range-expired-capability-',
+      incarnationId: 'range-expired-capability-test',
+      proofs: [sourceProof],
+      asset: regularAsset(),
+    },
+    async ({ directory, fence }) => {
+      let nowMs = 10_000
+      let crossExpiryDuringExactRequestRead = false
+      let recoveryFenceReads = 0
+      let capabilityCalls = 0
+      let orderCalls = 0
+      const client = fakeEngineClient(
+        () => {
+          capabilityCalls += 1
+          throw new Error('capability acknowledgement lost')
+        },
+        async () => {
+          orderCalls += 1
+          return submittedOrder()
+        },
+      )
+      const ids = ['range-operation-expired-capability', 'range-authorization-expired-capability']
+      const coordinator = new DaemonCtfRangeOrderCoordinator(
+        directory,
+        () => {
+          if (crossExpiryDuringExactRequestRead) {
+            recoveryFenceReads += 1
+            if (recoveryFenceReads === 2) nowMs = 30_000
+          }
+          return fence
+        },
+        {
+          createMint: () => fakeMint(64, 1_000),
+          createWallet: () => new FakeWallet([sourceProof]),
+          authorizationLifetimeSeconds: 20,
+          executeRefundSwap: async (_mintUrl, request) => ({
+            signatures: request.outputs.map(signBlindedOutput),
+          }),
+          now: () => nowMs,
+          randomId: () => ids.shift()!,
+        },
+      )
+
+      await assert.rejects(
+        coordinator.prepare(orderRequest(), client),
+        /capability acknowledgement lost/,
+      )
+      assert.equal(capabilityCalls, 1)
+      const pendingDatabase = await openDaemonStateSqlite(directory)
+      const pending = pendingDatabase
+        .prepare(
+          `SELECT lifecycle_state AS lifecycle FROM daemon_ctf_range_preparations
+           WHERE range_operation_id = ?`,
+        )
+        .get('range-operation-expired-capability')
+      pendingDatabase.close()
+      assert.equal(pending?.lifecycle, 'capability-requested')
+
+      nowMs = 29_000
+      crossExpiryDuringExactRequestRead = true
       assert.deepEqual(await coordinator.recover(WALLET_SEED_HEX, client), {
-        recovered: [],
+        recovered: ['range-operation-expired-capability:source'],
         pending: [],
       })
+      assert.ok(recoveryFenceReads >= 2)
+      assert.equal(capabilityCalls, 1)
+      assert.equal(orderCalls, 0)
+      const state = await readState()
+      assert.ok(
+        Object.values(state?.proofOperations ?? {}).some(
+          ({ state: operationState, metadata }) =>
+            operationState === 'completed' && metadata.purpose === 'ctf-range-refund',
+        ),
+      )
+      assert.deepEqual(state?.orders, {})
     },
   )
 })
@@ -1707,6 +1931,644 @@ test('daemon consolidates conditional CTF inventory with the same bounded source
   )
 })
 
+// A full held-share Sell spends exactly the held face. The wallet holds one
+// share of YES face (1,000 msat as six proofs), so shares cannot also pay the
+// conditional input fee. Seven source inputs at 100 ppk cost 1 msat of cash.
+const HELD_SHARE_FACE = 1_000
+
+test('daemon prepares a full held-share Sell from exact shares plus fee cash', async () => {
+  await withDaemonProfile(
+    {
+      prefix: 'bitcaster-range-full-exit-',
+      incarnationId: 'range-full-exit-test',
+      proofs: heldShareProofs(),
+      asset: outcomeAsset(),
+      cashProofs: [cashProof(64)],
+    },
+    async ({ directory, fence }) => {
+      const mint = mixedSourceMint()
+      let capabilityCalls = 0
+      const coordinator = new DaemonCtfRangeOrderCoordinator(directory, () => fence, {
+        createMint: () => mint,
+        createWallet: () => {
+          throw new Error('mixed preparation must not use the swap wallet')
+        },
+        now: () => 10_000,
+        randomId: randomIds('range-full-exit'),
+      })
+
+      await coordinator.prepare(
+        sellOneShareRequest(),
+        fakeEngineClient((request) => {
+          capabilityCalls += 1
+          return boundCapability(request)
+        }),
+      )
+
+      assert.equal(mint.convertRequests.length, 1)
+      assert.deepEqual(convertInputTotals(mint.convertRequests[0]!), { YES: 1_000, '*': 64 })
+      assert.equal(capabilityCalls, 1)
+      assert.deepEqual(await walletSummary(), {
+        availableShares: 0,
+        availableCash: 63,
+        reservedShares: 0,
+        reservedCash: 0,
+      })
+      await assertSourceCustodyIdentity(directory, 'ctf-range-conditional-source')
+    },
+  )
+})
+
+const LOST_SOURCE_RESPONSE_CASES = [
+  {
+    name: 'all-unspent inputs replay the exact conversion',
+    observe: () => 'UNSPENT' as const,
+    restore: 'unused' as const,
+    expected: {
+      conversions: 2,
+      pending: /unsubmitted range authorization remains unspent before expiry/,
+      sourceResult: 'applied',
+      wallet: { availableShares: 0, availableCash: 63, reservedShares: 0, reservedCash: 0 },
+    },
+  },
+  {
+    name: 'all-spent inputs restore the exact outputs',
+    observe: () => 'SPENT' as const,
+    restore: 'complete' as const,
+    expected: {
+      conversions: 1,
+      pending: /unsubmitted range authorization remains unspent before expiry/,
+      sourceResult: 'applied',
+      wallet: { availableShares: 0, availableCash: 63, reservedShares: 0, reservedCash: 0 },
+    },
+  },
+  {
+    name: 'all-spent inputs with a missing output stay pending',
+    observe: () => 'SPENT' as const,
+    restore: 'missing-output' as const,
+    expected: {
+      conversions: 1,
+      pending: /custody mint proof count is invalid/,
+      sourceResult: 'none',
+      wallet: { availableShares: 0, availableCash: 0, reservedShares: 1_000, reservedCash: 64 },
+    },
+  },
+  {
+    name: 'mixed input states stay pending',
+    observe: (index: number) => (index === 0 ? ('SPENT' as const) : ('UNSPENT' as const)),
+    restore: 'unused' as const,
+    expected: {
+      conversions: 1,
+      pending: /remains pending at the mint \(mixed-input-states\)/,
+      sourceResult: 'none',
+      wallet: { availableShares: 0, availableCash: 0, reservedShares: 1_000, reservedCash: 64 },
+    },
+  },
+  {
+    name: 'a pending input stays pending',
+    observe: (index: number) => (index === 0 ? ('PENDING' as const) : ('UNSPENT' as const)),
+    restore: 'unused' as const,
+    expected: {
+      conversions: 1,
+      pending: /remains pending at the mint \(pending-input-state\)/,
+      sourceResult: 'none',
+      wallet: { availableShares: 0, availableCash: 0, reservedShares: 1_000, reservedCash: 64 },
+    },
+  },
+]
+
+for (const scenario of LOST_SOURCE_RESPONSE_CASES) {
+  test(`daemon recovers a lost mixed source response after restart: ${scenario.name}`, async () => {
+    await withDaemonProfile(
+      {
+        prefix: 'bitcaster-range-mixed-lost-',
+        incarnationId: 'range-mixed-lost-test',
+        proofs: heldShareProofs(),
+        asset: outcomeAsset(),
+        cashProofs: [cashProof(64)],
+      },
+      async ({ directory, fence }) => {
+        const inputStates = new Map<string, SourceInputState>()
+        const conversions: string[] = []
+        const convert = async (request: CtfConvertRequest) => {
+          conversions.push(exactRequestJson(request))
+          if (conversions.length > 1) return signConvertRequest(request)
+          convertInputs(request).forEach((proof, index) =>
+            inputStates.set(proofY(proof), scenario.observe(index)),
+          )
+          throw new Error('mint convert response lost')
+        }
+        const client = fakeEngineClient(() => {
+          throw new Error('a prepared journal must not request a capability')
+        })
+        const first = new DaemonCtfRangeOrderCoordinator(directory, () => fence, {
+          createMint: () => mixedSourceMint({ convert, inputStates }),
+          now: () => 10_000,
+          randomId: randomIds('range-mixed-lost'),
+        })
+        await assert.rejects(first.prepare(sellOneShareRequest(), client), /response lost/)
+
+        const restartedMint = mixedSourceMint({ convert, inputStates })
+        const restarted = new DaemonCtfRangeOrderCoordinator(directory, () => fence, {
+          createMint: () => restartedMint,
+          createWallet: () => {
+            throw new Error('mixed source recovery must not load the swap wallet')
+          },
+          restoreOutputs: async (_mintUrl, groups) => restoredGroups(groups, scenario.restore),
+          now: () => 10_000,
+        })
+        const recovered = await restarted.recover(WALLET_SEED_HEX, client)
+
+        assert.deepEqual(recovered.recovered, [])
+        assert.equal(recovered.pending.length, 1)
+        assert.match(recovered.pending[0]!.error, scenario.expected.pending)
+        assert.equal(conversions.length, scenario.expected.conversions)
+        assert.equal(new Set(conversions).size, 1, 'a retry changed the exact conversion')
+        assert.equal(restartedMint.metadataCallsAtInputCheck[0], 0)
+        assert.equal(
+          (await mixedSourceCustody(directory)).sourceResult,
+          scenario.expected.sourceResult,
+        )
+        assert.deepEqual(await walletSummary(), scenario.expected.wallet)
+
+        // A second pass must not commit recovered successors again.
+        await restarted.recover(WALLET_SEED_HEX, client)
+        assert.equal(conversions.length, scenario.expected.conversions)
+        assert.deepEqual(await walletSummary(), scenario.expected.wallet)
+      },
+    )
+  })
+}
+
+for (const faultPhase of ['before-commit', 'after-commit'] as const) {
+  test(`daemon resumes a mixed source at the outer handoff ${faultPhase} without a new conversion`, async () => {
+    await withDaemonProfile(
+      {
+        prefix: 'bitcaster-range-mixed-handoff-',
+        incarnationId: 'range-mixed-handoff-test',
+        proofs: heldShareProofs(),
+        asset: outcomeAsset(),
+        cashProofs: [cashProof(64)],
+      },
+      async ({ directory, fence }) => {
+        const client = fakeEngineClient(() => {
+          throw new Error('recovery must not request a capability')
+        })
+        const mint = mixedSourceMint()
+        const first = new DaemonCtfRangeOrderCoordinator(directory, () => fence, {
+          createMint: () => mint,
+          injectRangeBindFault: (phase) => {
+            if (phase === faultPhase) throw new Error('binding interrupted')
+          },
+          now: () => 10_000,
+          randomId: randomIds('range-mixed-handoff'),
+        })
+        await assert.rejects(first.prepare(sellOneShareRequest(), client), /binding interrupted/)
+        assert.equal(mint.convertRequests.length, 1)
+
+        const restartedMint = mixedSourceMint({
+          convert: async () => {
+            throw new Error('handoff recovery must not convert again')
+          },
+        })
+        const restarted = new DaemonCtfRangeOrderCoordinator(directory, () => fence, {
+          createMint: () => restartedMint,
+          createWallet: () => {
+            throw new Error('handoff recovery must not load the swap wallet')
+          },
+          now: () => 10_000,
+        })
+        const result = await restarted.recover(WALLET_SEED_HEX, client)
+
+        assert.equal(result.pending.length, 1)
+        assert.match(result.pending[0]!.error, /unsubmitted range authorization remains unspent/)
+        assert.equal(restartedMint.convertRequests.length, 0)
+        assert.deepEqual(await walletSummary(), {
+          availableShares: 0,
+          availableCash: 63,
+          reservedShares: 0,
+          reservedCash: 0,
+        })
+        await assertSourceCustodyIdentity(directory, 'ctf-range-conditional-source')
+      },
+    )
+  })
+}
+
+test('daemon keeps both mixed reservations when a duplicate retry loses to the original conversion', async () => {
+  await withDaemonProfile(
+    {
+      prefix: 'bitcaster-range-mixed-race-',
+      incarnationId: 'range-mixed-race-test',
+      proofs: heldShareProofs(),
+      asset: outcomeAsset(),
+      cashProofs: [cashProof(64)],
+    },
+    async ({ directory, fence }) => {
+      let nowMs = 10_000
+      let notifyOriginalStarted!: () => void
+      const originalStarted = new Promise<void>((resolve) => {
+        notifyOriginalStarted = resolve
+      })
+      let releaseOriginal!: () => void
+      const originalReleased = new Promise<void>((resolve) => {
+        releaseOriginal = resolve
+      })
+      const conversions: string[] = []
+      const mint = mixedSourceMint({
+        convert: async (request) => {
+          conversions.push(exactRequestJson(request))
+          if (conversions.length > 1) {
+            throw new MintOperationError(11002, 'duplicate retry lost to the original request')
+          }
+          notifyOriginalStarted()
+          await originalReleased
+          return signConvertRequest(request)
+        },
+      })
+      let capabilityCalls = 0
+      let scoreCalls = 0
+      let orderCalls = 0
+      const client = fakeEngineClient(
+        (request) => {
+          capabilityCalls += 1
+          return boundCapability(request)
+        },
+        async () => {
+          orderCalls += 1
+          return submittedOrder()
+        },
+      )
+      const coordinator = new DaemonCtfRangeOrderCoordinator(directory, () => fence, {
+        createMint: () => mint,
+        authorizationLifetimeSeconds: 20,
+        executeRefundSwap: async (_mintUrl, request) => ({
+          signatures: request.outputs.map(signBlindedOutput),
+        }),
+        now: () => nowMs,
+        randomId: randomIds('range-mixed-race'),
+      })
+
+      const preparing = coordinator
+        .prepare(sellOneShareRequest(), client, async () => {
+          scoreCalls += 1
+        })
+        .then(
+          () => null,
+          (error: unknown) => error,
+        )
+      await originalStarted
+      nowMs = 30_000
+      const duplicate = await coordinator.recover(WALLET_SEED_HEX, client)
+
+      assert.deepEqual(duplicate.recovered, [])
+      assert.equal(duplicate.pending.length, 1)
+      assert.match(duplicate.pending[0]!.error, /replay rejection remains pending/)
+      assert.deepEqual(conversions, [conversions[0], conversions[0]])
+      assert.deepEqual(await walletSummary(), {
+        availableShares: 0,
+        availableCash: 0,
+        reservedShares: 1_000,
+        reservedCash: 64,
+      })
+      assert.deepEqual(await mixedSourceCustody(directory), {
+        sourceResult: 'none',
+        sourceOperation: 'dispatch-intent',
+        reservations: 7,
+        lifecycle: 'prepared',
+      })
+
+      releaseOriginal()
+      const prepareError = await preparing
+      assert.ok(prepareError instanceof Error)
+      assert.match(prepareError.message, /expired before capability admission/)
+      assert.equal(scoreCalls, 0)
+      assert.equal(capabilityCalls, 0)
+      assert.equal(orderCalls, 0)
+      assert.equal(conversions.length, 2)
+      assert.equal(await completedRefundCount(), 1)
+      assert.equal((await mixedSourceCustody(directory)).lifecycle, 'terminal')
+      assert.equal((await walletSummary()).availableCash, 63)
+    },
+  )
+})
+
+const EXPIRY_BOUNDARY_CASES = [
+  {
+    journal: 'prepared',
+    boundary: 'one millisecond before expiry',
+    recoveryAtMs: 29_999,
+    expected: {
+      capabilityCalls: 0,
+      recovered: false,
+      pending: /unsubmitted range authorization remains unspent before expiry/,
+      lifecycle: 'prepared',
+      refunds: 0,
+    },
+  },
+  {
+    journal: 'prepared',
+    boundary: 'at the exact expiry',
+    recoveryAtMs: 30_000,
+    expected: {
+      capabilityCalls: 0,
+      recovered: true,
+      pending: null,
+      lifecycle: 'terminal',
+      refunds: 1,
+    },
+  },
+  {
+    journal: 'capability-requested',
+    boundary: 'one millisecond before expiry',
+    recoveryAtMs: 29_999,
+    expected: {
+      capabilityCalls: 2,
+      recovered: true,
+      pending: null,
+      lifecycle: 'capability-bound',
+      refunds: 0,
+    },
+  },
+  {
+    journal: 'capability-requested',
+    boundary: 'at the exact expiry',
+    recoveryAtMs: 30_000,
+    expected: {
+      capabilityCalls: 1,
+      recovered: true,
+      pending: null,
+      lifecycle: 'terminal',
+      refunds: 1,
+    },
+  },
+] as const
+
+for (const scenario of EXPIRY_BOUNDARY_CASES) {
+  test(`daemon recovers a mixed ${scenario.journal} journal ${scenario.boundary}`, async () => {
+    await withDaemonProfile(
+      {
+        prefix: 'bitcaster-range-mixed-expiry-',
+        incarnationId: 'range-mixed-expiry-test',
+        proofs: heldShareProofs(),
+        asset: outcomeAsset(),
+        cashProofs: [cashProof(64)],
+      },
+      async ({ directory, fence }) => {
+        let nowMs = 10_000
+        let conversions = 0
+        const mint = mixedSourceMint({
+          convert: async (request) => {
+            conversions += 1
+            if (scenario.journal === 'prepared' && conversions === 1) {
+              throw new Error('mint convert response lost')
+            }
+            return signConvertRequest(request)
+          },
+        })
+        let capabilityCalls = 0
+        let orderCalls = 0
+        const client = fakeEngineClient(
+          (request) => {
+            capabilityCalls += 1
+            if (capabilityCalls === 1) throw new Error('capability acknowledgement lost')
+            return boundCapability(request)
+          },
+          async () => {
+            orderCalls += 1
+            return submittedOrder()
+          },
+        )
+        const coordinator = new DaemonCtfRangeOrderCoordinator(directory, () => fence, {
+          createMint: () => mint,
+          authorizationLifetimeSeconds: 20,
+          executeRefundSwap: async (_mintUrl, request) => ({
+            signatures: request.outputs.map(signBlindedOutput),
+          }),
+          now: () => nowMs,
+          randomId: randomIds('range-mixed-expiry'),
+        })
+        await assert.rejects(coordinator.prepare(sellOneShareRequest(), client), /lost/)
+        assert.equal((await mixedSourceCustody(directory)).lifecycle, scenario.journal)
+
+        nowMs = scenario.recoveryAtMs
+        const result = await coordinator.recover(WALLET_SEED_HEX, client)
+
+        assert.equal(result.recovered.length, scenario.expected.recovered ? 1 : 0)
+        if (scenario.expected.pending === null) assert.deepEqual(result.pending, [])
+        else assert.match(result.pending[0]?.error ?? '', scenario.expected.pending)
+        assert.equal(capabilityCalls, scenario.expected.capabilityCalls)
+        assert.equal(orderCalls, 0)
+        assert.equal((await mixedSourceCustody(directory)).lifecycle, scenario.expected.lifecycle)
+        assert.equal(await completedRefundCount(), scenario.expected.refunds)
+      },
+    )
+  })
+}
+
+const FRESH_SELECTION_RESTART_CASES = [
+  {
+    name: 'current mint metadata permits fresh mixed selection',
+    metadataAvailable: true,
+    expected: {
+      conversions: 1,
+      pending: /unsubmitted range authorization remains unspent before expiry/,
+      wallet: { availableShares: 0, availableCash: 63, reservedShares: 0, reservedCash: 0 },
+    },
+  },
+  {
+    name: 'unavailable current mint metadata refuses fresh selection',
+    metadataAvailable: false,
+    expected: {
+      conversions: 0,
+      pending: /current mint metadata is unavailable/,
+      wallet: { availableShares: 1_000, availableCash: 64, reservedShares: 0, reservedCash: 0 },
+    },
+  },
+]
+
+for (const scenario of FRESH_SELECTION_RESTART_CASES) {
+  test(`daemon selects a new source after restart only with current metadata: ${scenario.name}`, async () => {
+    await withDaemonProfile(
+      {
+        prefix: 'bitcaster-range-mixed-fresh-',
+        incarnationId: 'range-mixed-fresh-test',
+        proofs: heldShareProofs(),
+        asset: outcomeAsset(),
+      },
+      async ({ directory, fence }) => {
+        const client = fakeEngineClient(() => {
+          throw new Error('a prepared journal must not request a capability')
+        })
+        const first = new DaemonCtfRangeOrderCoordinator(directory, () => fence, {
+          createMint: () => mixedSourceMint(),
+          now: () => 10_000,
+          randomId: randomIds('range-mixed-fresh'),
+        })
+        await assert.rejects(
+          first.prepare(sellOneShareRequest(), client),
+          /needs ordinary sats to pay the range source preparation fee/,
+        )
+        assert.equal((await mixedSourceCustody(directory)).lifecycle, 'prepared')
+        await addAvailableProofs([cashProof(64)], regularAsset())
+
+        const restartedMint = mixedSourceMint({
+          metadataAvailable: scenario.metadataAvailable,
+        })
+        const restarted = new DaemonCtfRangeOrderCoordinator(directory, () => fence, {
+          createMint: () => restartedMint,
+          now: () => 10_000,
+        })
+        const result = await restarted.recover(WALLET_SEED_HEX, client)
+
+        assert.equal(result.pending.length, 1)
+        assert.match(result.pending[0]!.error, scenario.expected.pending)
+        assert.equal(restartedMint.convertRequests.length, scenario.expected.conversions)
+        if (scenario.metadataAvailable) {
+          assert.ok(restartedMint.metadataCallsAtConvert[0]! > 0)
+        }
+        assert.deepEqual(await walletSummary(), scenario.expected.wallet)
+      },
+    )
+  })
+}
+
+// Exact shares need six authorization outputs. Two msat of cash pays the
+// 1 msat fee and leaves one change output, so the conversion needs seven.
+// Consolidation is enabled in every row: a refusal must not spend a fee on it.
+const FEE_CASH_REFUSAL = /daemon wallet needs ordinary sats to pay the range source preparation fee/
+const MINT_LIMIT_REFUSAL =
+  /daemon range source needs more proofs than the mint accepts in one request/
+const SELECTION_BOUNDARY_CASES = [
+  {
+    name: 'at the advertised output limit',
+    cash: [2],
+    maxOutputs: 7,
+    expected: {
+      conversionOutputCounts: [7],
+      error: null,
+      proofOperations: 1,
+      consolidationFees: [],
+      wallet: { availableShares: 0, availableCash: 1, reservedShares: 0, reservedCash: 0 },
+    },
+  },
+  {
+    name: 'above the advertised output limit',
+    cash: [2],
+    maxOutputs: 6,
+    expected: {
+      conversionOutputCounts: [],
+      error: MINT_LIMIT_REFUSAL,
+      proofOperations: 0,
+      consolidationFees: [],
+      wallet: { availableShares: 1_000, availableCash: 2, reservedShares: 0, reservedCash: 0 },
+    },
+  },
+  {
+    // 62 x 16 + 2 x 4 = 1,000 fills all 64 inputs, so no cash input fits.
+    name: 'with cash for face and fee but held shares filling the input bound',
+    held: [...Array.from({ length: 62 }, () => 16), 4, 4],
+    cash: [2_048],
+    maxOutputs: 512,
+    expected: {
+      conversionOutputCounts: [],
+      error: MINT_LIMIT_REFUSAL,
+      proofOperations: 0,
+      consolidationFees: [],
+      wallet: { availableShares: 1_000, availableCash: 2_048, reservedShares: 0, reservedCash: 0 },
+    },
+  },
+  {
+    // The 64 largest of 62 x 16 + 12 x 4 = 1,040 still fill the input bound,
+    // but ten more held proofs exist. One bounded consolidation of those 64
+    // pays 7 msat of shares (64 x 100 ppk) and leaves room for fee cash. The
+    // mixed source then pays a 1 msat joint fee from the 2,048 msat cash; its
+    // 2,047 msat change needs 11 outputs beside the 6 authorization outputs.
+    name: 'after consolidating held shares beyond the input bound',
+    held: [...Array.from({ length: 62 }, () => 16), ...Array.from({ length: 12 }, () => 4)],
+    cash: [2_048],
+    maxOutputs: 512,
+    swapWallet: true,
+    expected: {
+      conversionOutputCounts: [17],
+      error: null,
+      proofOperations: 2,
+      consolidationFees: [7],
+      wallet: {
+        availableShares: 33,
+        availableCash: 2_047,
+        reservedShares: 0,
+        reservedCash: 0,
+      },
+    },
+  },
+  {
+    name: 'without ordinary cash for the fee',
+    cash: [],
+    maxOutputs: 512,
+    expected: {
+      conversionOutputCounts: [],
+      error: FEE_CASH_REFUSAL,
+      proofOperations: 0,
+      consolidationFees: [],
+      wallet: { availableShares: 1_000, availableCash: 0, reservedShares: 0, reservedCash: 0 },
+    },
+  },
+]
+
+for (const scenario of SELECTION_BOUNDARY_CASES) {
+  test(`daemon selects a mixed source ${scenario.name}`, async () => {
+    await withDaemonProfile(
+      {
+        prefix: 'bitcaster-range-mixed-outputs-',
+        incarnationId: 'range-mixed-outputs-test',
+        proofs: 'held' in scenario ? scenario.held.map(heldShareProof) : heldShareProofs(),
+        asset: outcomeAsset(),
+        cashProofs: scenario.cash.map(cashProof),
+      },
+      async ({ directory, fence }) => {
+        const mint = mixedSourceMint({ maxOutputs: scenario.maxOutputs })
+        let capabilityCalls = 0
+        const coordinator = new DaemonCtfRangeOrderCoordinator(directory, () => fence, {
+          createMint: () => mint,
+          createWallet: () => {
+            if ('swapWallet' in scenario) return new FakeWallet([])
+            throw new Error('mixed selection must not load the swap wallet')
+          },
+          now: () => 10_000,
+          randomId: randomIds('range-mixed-outputs'),
+        })
+        const preparing = coordinator.prepare(
+          { ...sellOneShareRequest(), consolidateProofs: true },
+          fakeEngineClient((request) => {
+            capabilityCalls += 1
+            return boundCapability(request)
+          }),
+        )
+
+        if (scenario.expected.error === null) await preparing
+        else await assert.rejects(preparing, scenario.expected.error)
+        assert.deepEqual(
+          mint.convertRequests.map((request) =>
+            Object.values(request.outputs).reduce((total, outputs) => total + outputs.length, 0),
+          ),
+          scenario.expected.conversionOutputCounts,
+        )
+        const operations = Object.values((await readState())?.proofOperations ?? {})
+        assert.equal(operations.length, scenario.expected.proofOperations)
+        assert.deepEqual(
+          operations
+            .filter(({ kind }) => kind === 'proof-consolidation')
+            .map(({ metadata }) => metadata.fees),
+          scenario.expected.consolidationFees,
+        )
+        assert.equal(capabilityCalls, scenario.expected.conversionOutputCounts.length)
+        assert.deepEqual(await walletSummary(), scenario.expected.wallet)
+      },
+    )
+  })
+}
+
 async function assertSourceCustodyIdentity(
   directory: string,
   semanticKind: 'ctf-range-regular-source' | 'ctf-range-conditional-source',
@@ -1751,6 +2613,8 @@ async function assertSourceCustodyIdentity(
             assert.equal(target, undefined)
             break
           case 'keep':
+          case 'offered-change':
+          case 'collateral-change':
             assert.equal(row.selectability, 'retained')
             assert.equal(target?.state, 'available')
             break
@@ -1799,6 +2663,7 @@ async function withDaemonProfile(
     readonly incarnationId: string
     readonly proofs: readonly Proof[]
     readonly asset: StoredProofAsset
+    readonly cashProofs?: readonly Proof[]
   },
   run: (context: { directory: string; fence: CustodyScopeFence }) => Promise<void>,
 ): Promise<void> {
@@ -1814,7 +2679,9 @@ async function withDaemonProfile(
       nostrSecretKeyHex: '22'.repeat(32),
       initializedAtMs: 1,
     })
-    await writeAvailableProofs(input.proofs, input.asset)
+    await writeState(emptyDaemonState())
+    await addAvailableProofs(input.proofs, input.asset)
+    await addAvailableProofs(input.cashProofs ?? [], regularAsset())
     const fence = await claimCustodyScopeLease(directory, {
       scopeId: testScopeId(),
       incarnationId: input.incarnationId,
@@ -1828,11 +2695,11 @@ async function withDaemonProfile(
   }
 }
 
-async function writeAvailableProofs(
+async function addAvailableProofs(
   proofs: readonly Proof[],
   asset: StoredProofAsset,
 ): Promise<void> {
-  const state = emptyDaemonState()
+  const state = (await readState()) ?? emptyDaemonState()
   state.wallet.proofs.push(
     ...proofs.map((proof) => ({
       proof,
@@ -2038,6 +2905,7 @@ function fakeMint(
   maxExpirySeconds = 1_000,
   restoredOutputs?: () => ReadonlySet<string>,
   includeRotatedRegularKeyset: () => boolean = () => false,
+  maxOutputs = 512,
 ) {
   const calls = {
     getInfo: 0,
@@ -2064,7 +2932,7 @@ function fakeMint(
             supported: true,
             partial_fill: true,
             max_inputs: maxInputs,
-            max_outputs: 512,
+            max_outputs: maxOutputs,
             max_request_bytes: 16 * 1_024 * 1_024,
             max_pool_entries: 32,
             max_expiry_seconds: maxExpirySeconds,
@@ -2517,6 +3385,189 @@ function exactProofSnapshot(proof: {
     witness: proof.witness ?? null,
     p2pk_e: proof.p2pk_e ?? null,
   }
+}
+
+type SourceInputState = 'UNSPENT' | 'PENDING' | 'SPENT'
+
+function sellOneShareRequest(): PrepareSettlementCapabilityInput {
+  return { ...orderRequest(), clientOrderId: 'client-order-full-exit', side: 'Sell' }
+}
+
+function heldShareProofs(): Proof[] {
+  return OutputData.createRandomData(Amount.from(HELD_SHARE_FACE), conditionalMintKeys()).map(
+    signedProof,
+  )
+}
+
+function heldShareProof(amount: number): Proof {
+  return signedProof(OutputData.createRandomData(Amount.from(amount), conditionalMintKeys())[0]!)
+}
+
+function cashProof(amount: number): Proof {
+  return signedProof(OutputData.createRandomData(Amount.from(amount), mintKeys())[0]!)
+}
+
+function randomIds(prefix: string): () => string {
+  const ids = [`${prefix}-operation`, `${prefix}-authorization`]
+  return () => {
+    const id = ids.shift()
+    if (id === undefined) throw new Error('fixture random ids are exhausted')
+    return id
+  }
+}
+
+function mixedSourceMint(
+  options: {
+    readonly maxOutputs?: number
+    readonly metadataAvailable?: boolean
+    readonly inputStates?: ReadonlyMap<string, SourceInputState>
+    readonly convert?: (request: CtfConvertRequest) => Promise<CtfConvertResponse>
+  } = {},
+) {
+  const base = fakeMint(64, 1_000, undefined, () => false, options.maxOutputs)
+  const metadataCalls = () =>
+    base.calls.getInfo +
+    base.calls.getKeySets +
+    base.calls.getConditionalKeysets +
+    base.calls.getCtfCondition +
+    base.calls.getKeys
+  const convertRequests: CtfConvertRequest[] = []
+  const metadataCallsAtConvert: number[] = []
+  const metadataCallsAtInputCheck: number[] = []
+  return {
+    ...base,
+    convertRequests,
+    metadataCallsAtConvert,
+    metadataCallsAtInputCheck,
+    getInfo: async () => {
+      if (options.metadataAvailable === false) {
+        base.calls.getInfo += 1
+        throw new Error('current mint metadata is unavailable')
+      }
+      return base.getInfo()
+    },
+    check: async ({ Ys }: { Ys: string[] }) => {
+      metadataCallsAtInputCheck.push(metadataCalls())
+      base.calls.check += 1
+      return {
+        states: Ys.map((Y) => ({
+          Y,
+          state: options.inputStates?.get(Y) ?? ('UNSPENT' as const),
+          witness: null,
+        })),
+      }
+    },
+    ctfConvert: async (request: CtfConvertRequest) => {
+      convertRequests.push(request)
+      metadataCallsAtConvert.push(metadataCalls())
+      return (options.convert ?? signConvertRequest)(request)
+    },
+  }
+}
+
+async function signConvertRequest(request: CtfConvertRequest): Promise<CtfConvertResponse> {
+  return {
+    signatures: Object.fromEntries(
+      Object.entries(request.outputs).map(([collection, outputs]) => [
+        collection,
+        outputs.map(signBlindedOutput),
+      ]),
+    ),
+  } as CtfConvertResponse
+}
+
+function convertInputs(request: CtfConvertRequest): Proof[] {
+  return Object.values(request.inputs).flat()
+}
+
+function convertInputTotals(request: CtfConvertRequest): Record<string, number> {
+  return Object.fromEntries(
+    Object.entries(request.inputs).map(([collection, proofs]) => [
+      collection,
+      proofs.reduce((total, proof) => total + amountToNumber(proof.amount), 0),
+    ]),
+  )
+}
+
+function exactRequestJson(request: CtfConvertRequest): string {
+  return JSON.stringify(request, (_key, value) =>
+    typeof value === 'bigint' ? value.toString() : value,
+  )
+}
+
+function proofY(proof: Pick<Proof, 'secret'>): string {
+  return hashToCurve(new TextEncoder().encode(proof.secret)).toHex(true)
+}
+
+function restoredGroups(
+  groups: Parameters<typeof deserializeOutputGroups>[0],
+  mode: 'unused' | 'complete' | 'missing-output',
+): Record<string, Proof[]> {
+  if (mode === 'unused') throw new Error('exact output restore must not run')
+  const restored = Object.fromEntries(
+    Object.entries(deserializeOutputGroups(groups)).map(([label, outputs]) => [
+      label,
+      outputs.map(signedProof),
+    ]),
+  )
+  if (mode === 'missing-output') restored.authorization = restored.authorization!.slice(1)
+  return restored
+}
+
+async function walletSummary() {
+  const proofs = (await readState())?.wallet.proofs ?? []
+  const total = (kind: StoredProofAsset['kind'], proofState: 'available' | 'reserved') =>
+    proofs
+      .filter(({ asset, state }) => asset.kind === kind && state === proofState)
+      .reduce((sum, { proof }) => sum + amountToNumber(proof.amount), 0)
+  return {
+    availableShares: total('Outcome', 'available'),
+    availableCash: total('sats', 'available'),
+    reservedShares: total('Outcome', 'reserved'),
+    reservedCash: total('sats', 'reserved'),
+  }
+}
+
+async function mixedSourceCustody(directory: string) {
+  const database = await openDaemonStateSqlite(directory)
+  try {
+    const source = database
+      .prepare(
+        `SELECT operation_state AS operationState, result_state AS resultState
+         FROM custody_operations WHERE semantic_kind = 'ctf-range-conditional-source'`,
+      )
+      .get() as { operationState: string; resultState: string } | undefined
+    const reservations = database
+      .prepare('SELECT count(*) AS count FROM custody_proof_reservations')
+      .get() as { count: number }
+    const preparation = database
+      .prepare('SELECT lifecycle_state AS lifecycle FROM daemon_ctf_range_preparations')
+      .get() as { lifecycle: string } | undefined
+    return {
+      sourceResult: source?.resultState ?? null,
+      sourceOperation: source?.operationState ?? null,
+      reservations: Number(reservations.count),
+      lifecycle: preparation?.lifecycle ?? null,
+    }
+  } finally {
+    database.close()
+  }
+}
+
+async function completedRefundCount(): Promise<number> {
+  const operations = Object.values((await readState())?.proofOperations ?? {})
+  return operations.filter(
+    ({ state, metadata }) => state === 'completed' && metadata.purpose === 'ctf-range-refund',
+  ).length
+}
+
+function swapPreviewDigest(preview: SwapPreview): string {
+  const exactPreview = JSON.stringify({
+    inputs: preview.inputs.map(exactProofSnapshot),
+    send: (preview.sendOutputs ?? []).map(OutputData.serialize),
+    keep: (preview.keepOutputs ?? []).map(OutputData.serialize),
+  })
+  return createHash('sha256').update(exactPreview).digest('hex')
 }
 
 async function assertSeedAbsentFromArtifacts(directory: string): Promise<void> {
