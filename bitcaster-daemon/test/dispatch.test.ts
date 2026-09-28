@@ -8,8 +8,10 @@ import {
   OutputData,
   createBlindSignature,
   createDLEQProof,
+  deriveConditionalKeysetId,
   deriveKeysetId,
   getEncodedToken,
+  hashToCurve,
   pointFromHex,
   type Proof,
 } from '@cashu/cashu-ts'
@@ -18,8 +20,10 @@ import { secp256k1 } from '@noble/curves/secp256k1.js'
 import { completedProofAuthorityDigest } from '@bitcaster-market/client-sdk/ctfSplit'
 import {
   deriveDurableCustodyScopeId,
+  deriveDurableCustodyProofId,
   deriveDurableCustodyWalletId,
 } from '@bitcaster-market/client-sdk'
+import { deriveRootCtfOutcomeCollectionId } from '@bitcaster-market/client-sdk/durableCtfRangeOperation'
 import { EngineClientError } from '@bitcaster-market/client-sdk/engineClient'
 import {
   decodeDurableRecipientDeliveryStatus,
@@ -36,12 +40,13 @@ import { createDaemonSecrets, readSecrets } from '../src/secrets.ts'
 import { bootstrapFreshDaemonProfile } from '../src/profileBootstrap.ts'
 import {
   emptyDaemonState,
+  readAvailableCanonicalWalletProofPageFromDatabase,
   readState,
   writeState as persistState,
   type DaemonState,
 } from '../src/state.ts'
 import { splitAvailableMsatProofsForCtfCollateral } from '../src/walletOps.ts'
-import { withDaemonStateSqliteTransaction } from '../src/stateSqlite.ts'
+import { withDaemonStateSqliteTransaction, type StateSqliteFaultPhase } from '../src/stateSqlite.ts'
 import { withDurableCustodyUnitOfWork } from '../src/durableCustodyUnitOfWork.ts'
 import { canonicalTestKeysetId } from './support/canonicalKeysetId.ts'
 
@@ -50,11 +55,27 @@ const CTF_KEYSET_ID = canonicalTestKeysetId('dispatch:ctf')
 import { createCustodyProofSqliteRow } from '../src/custodyProofSqliteRow.ts'
 import { DurableCustodySqliteStore } from '../src/durableCustodySqliteStore.ts'
 import { DaemonDurableOutgoingCashuCoordinator } from '../src/durableOutgoingCashuCoordinator.ts'
-import { claimCustodyScopeLease } from '../src/profileFencing.ts'
+import { claimCustodyScopeLease, releaseCustodyScopeLease } from '../src/profileFencing.ts'
 import { reserveDaemonKeysetCounter } from '../src/state.ts'
 
 const V2_KEYSET_ID = `01${'a'.repeat(64)}`
 const V1_KEYSET_ID = `00${'a'.repeat(14)}`
+const OUTCOME_CONDITION_ID = 'ab'.repeat(32)
+const OUTCOME_COLLECTION = 'YES'
+const OUTCOME_PRIVATE_KEY = Uint8Array.from([...new Uint8Array(31), 9])
+const OUTCOME_KEYS = {
+  '11': bytesToHex(secp256k1.getPublicKey(OUTCOME_PRIVATE_KEY, true)),
+}
+const OUTCOME_COLLECTION_ID = deriveRootCtfOutcomeCollectionId({
+  conditionId: OUTCOME_CONDITION_ID,
+  outcomeCollection: OUTCOME_COLLECTION,
+})
+const OUTCOME_KEYSET_ID = deriveConditionalKeysetId({
+  keys: OUTCOME_KEYS,
+  unit: 'msat',
+  conditionId: OUTCOME_CONDITION_ID,
+  outcomeCollectionId: OUTCOME_COLLECTION_ID,
+})
 
 async function writeState(state: DaemonState): Promise<void> {
   for (const record of state.wallet.proofs) {
@@ -569,78 +590,246 @@ test('daemon dispatch persists wallet and order state', async (t) => {
     )
 
     await t.test('wallet.receive can classify imported proofs as outcome tokens', async () => {
-      await writeState(emptyDaemonState())
-      const token = getEncodedToken({
-        mint: 'https://mint-a.example',
-        unit: 'msat',
-        proofs: [cashuProof(11, 'outcome-token-secret')],
-      })
-      const response = await dispatch(
+      const receiveState = emptyDaemonState()
+      const legacyOnlyProof = proofRecord(
+        'https://mint-a.example',
+        13,
+        'available',
         {
-          method: 'wallet.receive',
-          params: {
-            token,
-            conditionId: 'cond',
-            outcomeSetId: 'YES',
-          },
-        },
-        {
-          resolveTokenImportKeysets: tokenImportKeysetResolver('conditional', 'msat'),
-          resolveMintKeysetIds: async () => [V2_KEYSET_ID],
-          async resolveConditionKeysetIds(mintUrl, conditionId) {
-            assert.equal(mintUrl, 'https://mint-a.example')
-            assert.equal(conditionId, 'cond')
-            return [V2_KEYSET_ID]
-          },
-          createCashuWallet() {
-            return {
-              async loadMint() {},
-              async receive() {
-                throw new Error('receive unused for outcome imports')
-              },
-              async send() {
-                throw new Error('send unused')
-              },
-              async checkProofsStates(proofs) {
-                assert.deepEqual(proofs, [{ id: V2_KEYSET_ID, secret: 'outcome-token-secret' }])
-                return [
-                  {
-                    Y: 'proof-y',
-                    state: 'UNSPENT',
-                    witness: null,
-                  },
-                ]
-              },
-            }
-          },
-        },
-      )
-
-      assert.equal(response.ok, true)
-      assert.deepEqual(response.result, {
-        mintUrl: 'https://mint-a.example',
-        amountMsat: 11,
-        proofCount: 1,
-        asset: {
           kind: 'Outcome',
-          conditionId: 'cond',
-          outcomeSetId: 'YES',
+          conditionId: OUTCOME_CONDITION_ID,
+          outcomeSetId: OUTCOME_COLLECTION,
           baseAsset: 'sat',
           unit: 'msat',
         },
+        'legacy-only-outcome-secret',
+      )
+      legacyOnlyProof.proof.id = OUTCOME_KEYSET_ID
+      receiveState.wallet.proofs.push(legacyOnlyProof)
+      await writeState(receiveState)
+      const proof = signedOutcomeProof(11, 'outcome-token-secret')
+      const token = getEncodedToken({
+        mint: 'https://mint-a.example',
         unit: 'msat',
-        hasInactiveProofs: false,
+        proofs: [proof],
       })
-      const state = await readState()
-      assert.deepEqual(state?.wallet.proofs[0]?.asset, {
-        kind: 'Outcome',
-        conditionId: 'cond',
-        outcomeSetId: 'YES',
-        baseAsset: 'sat',
-        unit: 'msat',
-      })
-      assert.equal(state?.wallet.proofs[0]?.proof.secret, 'outcome-token-secret')
+      let beforeCommitCount = 0
+      let interruptionObserved = false
+      const simulatedInterruptedApply = (phase: StateSqliteFaultPhase) => {
+        if (phase !== 'before-commit') return
+        beforeCommitCount += 1
+        if (beforeCommitCount === 3) {
+          interruptionObserved = true
+          throw new Error('simulated interrupted proof import')
+        }
+      }
+      const { fence, dependencies } = await outcomeReceiveFixture(
+        secrets.walletSeedHex,
+        'UNSPENT',
+        simulatedInterruptedApply,
+      )
+      try {
+        const operationCountBefore = await genericReceiveOperationCount()
+        const canonicalProofId = deriveDurableCustodyProofId({
+          scopeId: fence.scopeId,
+          normalizedMint: 'https://mint-a.example',
+          unit: 'msat',
+          keysetId: OUTCOME_KEYSET_ID,
+          secret: proof.secret,
+        })
+        const request = {
+          method: 'wallet.receive',
+          params: { token, conditionId: OUTCOME_CONDITION_ID, outcomeSetId: OUTCOME_COLLECTION },
+        }
+        await assert.rejects(() => dispatch(request, dependencies()))
+        assert.ok(interruptionObserved)
+        const interruptedState = await readState()
+        assert.equal(interruptedState?.wallet.proofs.length, 1)
+        assert.equal(interruptedState?.wallet.proofs[0]?.proof.secret, 'legacy-only-outcome-secret')
+        const interruptedCanonical = await withDaemonStateSqliteTransaction(
+          profileDir(),
+          (database) =>
+            new DurableCustodySqliteStore(database).getProof(fence.scopeId, canonicalProofId),
+        )
+        assert.equal(interruptedCanonical, null)
+        assert.equal(await genericReceiveOperationCount(), operationCountBefore + 1)
+        const firstResponse = await dispatch(request, dependencies())
+        const replayResponse = await dispatch(request, dependencies())
+
+        assert.equal(firstResponse.ok, true)
+        assert.deepEqual(replayResponse, firstResponse)
+        assert.deepEqual(firstResponse.result, {
+          mintUrl: 'https://mint-a.example',
+          amountMsat: 11,
+          proofCount: 1,
+          asset: {
+            kind: 'Outcome',
+            conditionId: OUTCOME_CONDITION_ID,
+            outcomeSetId: OUTCOME_COLLECTION,
+            baseAsset: 'sat',
+            unit: 'msat',
+          },
+          unit: 'msat',
+          hasInactiveProofs: false,
+        })
+        const state = await readState()
+        assert.equal(state?.wallet.proofs.length, 2)
+        assert.deepEqual(state?.wallet.proofs[0]?.asset, {
+          kind: 'Outcome',
+          conditionId: OUTCOME_CONDITION_ID,
+          outcomeSetId: OUTCOME_COLLECTION,
+          baseAsset: 'sat',
+          unit: 'msat',
+        })
+        assert.ok(
+          state?.wallet.proofs.some(({ proof: item }) => item.secret === 'outcome-token-secret'),
+        )
+        const canonicalPage = await withDaemonStateSqliteTransaction(profileDir(), (database) =>
+          readAvailableCanonicalWalletProofPageFromDatabase(database, {
+            mintUrl: 'https://mint-a.example',
+            keysetId: OUTCOME_KEYSET_ID,
+            asset: {
+              kind: 'Outcome',
+              conditionId: OUTCOME_CONDITION_ID,
+              outcomeSetId: OUTCOME_COLLECTION,
+              baseAsset: 'sat',
+              unit: 'msat',
+            },
+            limit: 10,
+          }),
+        )
+        assert.deepEqual(
+          canonicalPage.proofs.map(({ proof: item }) => item.secret),
+          ['outcome-token-secret'],
+        )
+        const canonical = await withDaemonStateSqliteTransaction(profileDir(), (database) =>
+          new DurableCustodySqliteStore(database).getProof(fence.scopeId, canonicalProofId),
+        )
+        assert.equal(canonical?.signatureVerified, true)
+        assert.equal(canonical?.dleqState, 'verified')
+        assert.equal(canonical?.nut07State, 'UNSPENT')
+        assert.equal(canonical?.selectability, 'selectable')
+        assert.equal(await genericReceiveOperationCount(), operationCountBefore + 1)
+      } finally {
+        await releaseCustodyScopeLease(profileDir(), fence, Date.now())
+      }
     })
+
+    await t.test(
+      'wallet.receive preflights local conflicts across the complete paged outcome token',
+      async () => {
+        await writeState(emptyDaemonState())
+        const { fence, dependencies } = await outcomeReceiveFixture(secrets.walletSeedHex)
+        try {
+          const proofs = Array.from({ length: 33 }, (_, index) =>
+            signedDleqProof(
+              OutputData.createSingleData(
+                11,
+                OUTCOME_KEYSET_ID,
+                `paged-outcome-proof-${index}`,
+                BigInt(index + 1),
+              ),
+              OUTCOME_PRIVATE_KEY,
+              OUTCOME_KEYS,
+            ),
+          )
+          const lastProof = [...proofs].sort((left, right) => {
+            const proofId = (proof: Proof) =>
+              deriveDurableCustodyProofId({
+                scopeId: fence.scopeId,
+                normalizedMint: 'https://mint-a.example',
+                unit: 'msat',
+                keysetId: proof.id!,
+                secret: proof.secret,
+              })
+            return proofId(left).localeCompare(proofId(right))
+          })[proofs.length - 1]!
+          const wrongAsset = {
+            kind: 'Outcome' as const,
+            conditionId: OUTCOME_CONDITION_ID,
+            outcomeSetId: 'NO',
+            baseAsset: 'sat' as const,
+            unit: 'msat' as const,
+          }
+          const conflictState = await readState()
+          assert.ok(conflictState)
+          conflictState.wallet.proofs.push({
+            proof: lastProof,
+            mintUrl: 'https://mint-a.example',
+            state: 'available',
+            asset: wrongAsset,
+            createdAt: new Date(1).toISOString(),
+            updatedAt: new Date(1).toISOString(),
+          })
+          await writeState(conflictState)
+          await withDaemonStateSqliteTransaction(profileDir(), (database) => {
+            const store = new DurableCustodySqliteStore(database)
+            store.putProofCas(
+              createCustodyProofSqliteRow({
+                scopeId: fence.scopeId,
+                normalizedMint: 'https://mint-a.example',
+                unit: 'msat',
+                proof: {
+                  ...lastProof,
+                  dleq: lastProof.dleq ?? null,
+                  witness: lastProof.witness ?? null,
+                  p2pkE: lastProof.p2pk_e ?? null,
+                },
+                baseAsset: 'sat',
+                conditionId: OUTCOME_CONDITION_ID,
+                outcomeSetId: 'NO',
+                productBinding: null,
+                signatureVerified: true,
+                dleqState: 'verified',
+                nut07State: 'UNSPENT',
+                selectability: 'selectable',
+                storageClass: 'pinned-operation-bound-deterministic',
+                reservationOperationId: null,
+                revision: 0,
+                nowMs: 1,
+              }),
+              null,
+            )
+          })
+
+          const snapshot = () =>
+            withDaemonStateSqliteTransaction(profileDir(), (database) => ({
+              target: database
+                .prepare('SELECT * FROM target_wallet_proofs ORDER BY proof_id')
+                .all(),
+              canonical: database.prepare('SELECT * FROM custody_proofs ORDER BY proof_id').all(),
+            }))
+          const before = await snapshot()
+          const operationCountBefore = await genericReceiveOperationCount()
+          const token = getEncodedToken({
+            mint: 'https://mint-a.example',
+            unit: 'msat',
+            proofs,
+          })
+
+          await assert.rejects(
+            () =>
+              dispatch(
+                {
+                  method: 'wallet.receive',
+                  params: {
+                    token,
+                    conditionId: OUTCOME_CONDITION_ID,
+                    outcomeSetId: OUTCOME_COLLECTION,
+                  },
+                },
+                dependencies(),
+              ),
+            /conflicts with local wallet authority/,
+          )
+
+          assert.deepEqual(await snapshot(), before)
+          assert.equal(await genericReceiveOperationCount(), operationCountBefore)
+        } finally {
+          await releaseCustodyScopeLease(profileDir(), fence, Date.now())
+        }
+      },
+    )
 
     await t.test(
       'wallet.receive rejects non-V2 outcome proof keysets before wallet I/O',
@@ -680,54 +869,92 @@ test('daemon dispatch persists wallet and order state', async (t) => {
       'wallet.receive rejects spent outcome-token proofs before persistence',
       async () => {
         await writeState(emptyDaemonState())
+        const proof = signedOutcomeProof(11, 'spent-outcome-secret')
         const token = getEncodedToken({
           mint: 'https://mint-a.example',
           unit: 'msat',
-          proofs: [cashuProof(11, 'spent-outcome-secret')],
+          proofs: [proof],
         })
+        const { fence, dependencies } = await outcomeReceiveFixture(secrets.walletSeedHex, 'SPENT')
+        try {
+          await assert.rejects(
+            () =>
+              dispatch(
+                {
+                  method: 'wallet.receive',
+                  params: {
+                    token,
+                    conditionId: OUTCOME_CONDITION_ID,
+                    outcomeSetId: OUTCOME_COLLECTION,
+                  },
+                },
+                dependencies(),
+              ),
+            /cashu outcome proof is not spendable: SPENT/,
+          )
+          assert.deepEqual((await readState())?.wallet.proofs, [])
+          const canonicalProofId = deriveDurableCustodyProofId({
+            scopeId: fence.scopeId,
+            normalizedMint: 'https://mint-a.example',
+            unit: 'msat',
+            keysetId: OUTCOME_KEYSET_ID,
+            secret: proof.secret,
+          })
+          const canonical = await withDaemonStateSqliteTransaction(profileDir(), (database) =>
+            new DurableCustodySqliteStore(database).getProof(fence.scopeId, canonicalProofId),
+          )
+          assert.equal(canonical, null)
+        } finally {
+          await releaseCustodyScopeLease(profileDir(), fence, Date.now())
+        }
+      },
+    )
 
-        await assert.rejects(
-          () =>
-            dispatch(
-              {
-                method: 'wallet.receive',
-                params: {
-                  token,
-                  conditionId: 'cond',
-                  outcomeSetId: 'YES',
-                },
-              },
-              {
-                resolveTokenImportKeysets: tokenImportKeysetResolver('conditional', 'msat'),
-                resolveMintKeysetIds: async () => [V2_KEYSET_ID],
-                async resolveConditionKeysetIds() {
-                  return [V2_KEYSET_ID]
-                },
-                createCashuWallet() {
-                  return {
-                    async loadMint() {},
-                    async receive() {
-                      throw new Error('receive unused for outcome imports')
-                    },
-                    async send() {
-                      throw new Error('send unused')
-                    },
-                    async checkProofsStates() {
-                      return [
-                        {
-                          Y: 'proof-y',
-                          state: 'SPENT',
-                          witness: null,
-                        },
-                      ]
-                    },
-                  }
-                },
-              },
-            ),
-          /cashu outcome proof is not spendable: SPENT/,
+    await t.test(
+      'wallet.receive rejects outcome proofs without DLEQ before persistence',
+      async () => {
+        await writeState(emptyDaemonState())
+        const { dleq: _dleq, ...proofWithoutDleq } = signedOutcomeProof(
+          11,
+          'outcome-without-dleq-secret',
         )
-        assert.deepEqual((await readState())?.wallet.proofs, [])
+        const token = getEncodedToken({
+          mint: 'https://mint-a.example',
+          unit: 'msat',
+          proofs: [proofWithoutDleq as Proof],
+        })
+        const { fence, dependencies } = await outcomeReceiveFixture(secrets.walletSeedHex)
+        try {
+          await assert.rejects(
+            () =>
+              dispatch(
+                {
+                  method: 'wallet.receive',
+                  params: {
+                    token,
+                    conditionId: OUTCOME_CONDITION_ID,
+                    outcomeSetId: OUTCOME_COLLECTION,
+                  },
+                },
+                dependencies(),
+              ),
+            /cashu outcome proof cryptographic verification failed/,
+          )
+          assert.deepEqual((await readState())?.wallet.proofs, [])
+          const canonicalProofId = deriveDurableCustodyProofId({
+            scopeId: fence.scopeId,
+            normalizedMint: 'https://mint-a.example',
+            unit: 'msat',
+            keysetId: OUTCOME_KEYSET_ID,
+            secret: proofWithoutDleq.secret,
+          })
+          const canonical = await withDaemonStateSqliteTransaction(profileDir(), (database) =>
+            new DurableCustodySqliteStore(database).getProof(fence.scopeId, canonicalProofId),
+          )
+          assert.equal(canonical, null)
+        } finally {
+          await releaseCustodyScopeLease(profileDir(), fence, Date.now())
+        }
       },
     )
 
@@ -2632,6 +2859,105 @@ function signedDleqProof(
     p2pkE: null,
     witness: null,
   } as Proof
+}
+
+function signedOutcomeProof(amount: number, secret: string): Proof {
+  return signedDleqProof(
+    OutputData.createSingleData(amount, OUTCOME_KEYSET_ID, secret, BigInt(secret.length)),
+    OUTCOME_PRIVATE_KEY,
+    OUTCOME_KEYS,
+  )
+}
+
+async function outcomeReceiveFixture(
+  walletSeedHex: string,
+  state: 'UNSPENT' | 'SPENT' = 'UNSPENT',
+  injectFault?: (phase: StateSqliteFaultPhase) => void,
+) {
+  const scopeId = deriveDurableCustodyScopeId({
+    scopeKind: 'wallet',
+    walletId: deriveDurableCustodyWalletId(Buffer.from(walletSeedHex, 'hex')),
+  })
+  const fence = await claimCustodyScopeLease(profileDir(), {
+    scopeId,
+    incarnationId: 'wallet-receive-bind-test',
+    observedAtMs: Date.now(),
+  })
+  return {
+    fence,
+    dependencies: () => ({
+      getCustodyFence: () => fence,
+      ...(injectFault === undefined ? {} : { injectCustodyFault: injectFault }),
+      resolveTokenImportKeysets: async () => ({
+        freshness: 'fresh' as const,
+        regularKeysets: [],
+        conditionalKeysets: [{ keysetId: OUTCOME_KEYSET_ID, unit: 'msat', active: true }],
+      }),
+      resolveMintKeysetIds: async (mintUrl: string) => {
+        assert.equal(mintUrl, 'https://mint-a.example')
+        return [OUTCOME_KEYSET_ID]
+      },
+      async resolveConditionKeysetIds(mintUrl: string, conditionId: string) {
+        assert.equal(mintUrl, 'https://mint-a.example')
+        assert.equal(conditionId, OUTCOME_CONDITION_ID)
+        return [OUTCOME_KEYSET_ID]
+      },
+      async resolveDurableCustodyKeysets(
+        mintUrl: string,
+        keysetIds: string[],
+        conditionId: string,
+      ) {
+        assert.equal(mintUrl, 'https://mint-a.example')
+        assert.deepEqual(keysetIds, [OUTCOME_KEYSET_ID])
+        assert.equal(conditionId, OUTCOME_CONDITION_ID)
+        return [
+          {
+            canonicalMintUrl: mintUrl,
+            id: OUTCOME_KEYSET_ID,
+            unit: 'msat',
+            keys: OUTCOME_KEYS,
+            inputFeePpk: 0,
+            finalExpiry: null,
+            identity: {
+              kind: 'conditional' as const,
+              conditionId: OUTCOME_CONDITION_ID,
+              outcomeCollection: OUTCOME_COLLECTION,
+              outcomeCollectionId: OUTCOME_COLLECTION_ID,
+            },
+          },
+        ]
+      },
+      createCashuWallet() {
+        return {
+          async loadMint() {},
+          async receive() {
+            throw new Error('receive unused for outcome imports')
+          },
+          async send() {
+            throw new Error('send unused')
+          },
+          async checkProofsStates(proofs: Array<Pick<Proof, 'id' | 'secret'>>) {
+            return proofs.map((proof) => ({
+              Y: hashToCurve(new TextEncoder().encode(proof.secret)).toHex(true),
+              state,
+              witness: null,
+            }))
+          },
+        }
+      },
+    }),
+  }
+}
+
+async function genericReceiveOperationCount(): Promise<number> {
+  return withDaemonStateSqliteTransaction(profileDir(), (database) => {
+    const row = database
+      .prepare(
+        "SELECT COUNT(*) AS count FROM custody_operations WHERE semantic_kind = 'generic-receive'",
+      )
+      .get() as { count: number }
+    return row.count
+  })
 }
 
 function tokenImportKeysetResolver(registry: 'regular' | 'conditional', unit: 'sat' | 'msat') {

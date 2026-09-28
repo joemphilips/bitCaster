@@ -159,14 +159,29 @@ export async function ingressReceiveCashuToken(
   context.requireCapturedProfile();
   const registration = await ingressRegisterMint(mintUrl, source);
   context.requireCapturedProfile();
-  const proofs = await receiveAndStoreTokenRecoverably(
-    validated.encodedToken,
-    mintUrl,
-    baseAsset,
-    unit,
-    validated.context,
-    context,
-  );
+  let proofs: Proof[];
+  if (validated.context === "ctf-position-msat") {
+    proofs = await receiveAndStoreTokenRecoverably(
+      validated.encodedToken,
+      mintUrl,
+      baseAsset,
+      unit,
+      validated.context,
+      context,
+      validated,
+    );
+  } else if (validated.context === "ctf-collateral-msat") {
+    proofs = await receiveAndStoreTokenRecoverably(
+      validated.encodedToken,
+      mintUrl,
+      baseAsset,
+      unit,
+      validated.context,
+      context,
+    );
+  } else {
+    throw new Error("Wallet receive supports msat product tokens only");
+  }
   return {
     ...registration,
     proofs,

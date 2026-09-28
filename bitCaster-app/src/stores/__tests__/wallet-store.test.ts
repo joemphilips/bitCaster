@@ -2,12 +2,18 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 import "fake-indexeddb/auto";
 import { createBrowserWalletCounterSource, getExactUnitBalance, useWalletStore } from "../wallet";
 import * as bip39 from "@/lib/bip39";
+import { BrowserEncryptedWalletBackupV2SeedHandoffRefusal } from "@/lib/browserEncryptedWalletBackupV2SeedHandoff";
 import {
   activeBrowserWalletScopeId,
+  browserWalletIdFromMnemonic,
   browserWalletScopeIdFromMnemonic,
   setActiveBrowserWalletProfile,
 } from "@/lib/browserWalletProfile";
-import { activateBrowserWalletDatabase, db } from "../proof-db";
+import { activateBrowserWalletDatabase, BitcasterDB, db } from "../proof-db";
+import { registerBrowserEncryptedWalletBackupV2RuntimeDriver } from "@/lib/encryptedWalletBackupDriver";
+import { useToastStore } from "../toast";
+import { usePendingTradesStore } from "../pendingTrades";
+import i18n from "@/i18n";
 
 const cashuMocks = vi.hoisted(() => ({
   loadMint: vi.fn().mockResolvedValue(undefined),
@@ -22,6 +28,15 @@ vi.mock("@/lib/browserWalletStoragePersistence", () => ({
 }));
 
 vi.mock("@/lib/browserEncryptedWalletBackupV2SeedHandoff", () => ({
+  BrowserEncryptedWalletBackupV2SeedHandoffRefusal: class BrowserEncryptedWalletBackupV2SeedHandoffRefusal extends Error {
+    constructor(
+      readonly code: "active-wallet-work" | "backup-not-current" | "browser-lock-unavailable",
+      message: string,
+    ) {
+      super(message);
+      this.name = "BrowserEncryptedWalletBackupV2SeedHandoffRefusal";
+    }
+  },
   handoffBrowserEncryptedWalletBackupV2Seed: seedHandoffMocks.handoff,
 }));
 
@@ -71,10 +86,44 @@ vi.mock("@cashu/cashu-ts", () => {
 const initialAddMint = useWalletStore.getState()._addMint;
 const initialAddMintWithoutActivating = useWalletStore.getState()._addMintWithoutActivating;
 const KEYSET_ID = `01${"11".repeat(32)}`;
+type WalletSeedHandoffInput = {
+  readonly database: typeof db;
+  readonly scopeId: string;
+  readonly isCurrentProfile: () => boolean;
+  readonly assertNoPendingOrders: () => void;
+  readonly lockManager?: Pick<LockManager, "request">;
+  readonly invalidateOldProfile: () => void;
+  readonly activateNewProfile: () => Promise<void>;
+  readonly restoreOldProfile: () => Promise<void>;
+};
+
+async function invokeRealSeedHandoff(
+  input: WalletSeedHandoffInput,
+  lockManager: Pick<LockManager, "request"> = immediateLockManager(),
+): Promise<void> {
+  const handoffModule = await vi.importActual<
+    typeof import("@/lib/browserEncryptedWalletBackupV2SeedHandoff")
+  >("@/lib/browserEncryptedWalletBackupV2SeedHandoff");
+  await handoffModule.handoffBrowserEncryptedWalletBackupV2Seed({
+    ...input,
+    lockManager,
+  });
+}
+
+function immediateLockManager(): Pick<LockManager, "request"> {
+  return {
+    request: async <T>(_name: string, _options: LockOptions, callback: LockGrantedCallback<T>) =>
+      callback(null),
+  } as Pick<LockManager, "request">;
+}
 
 // Reset store state before each test
 beforeEach(() => {
+  vi.restoreAllMocks();
   vi.clearAllMocks();
+  window.localStorage.clear();
+  useToastStore.setState({ toasts: [] });
+  usePendingTradesStore.setState({ byOrderId: {} });
   seedHandoffMocks.handoff.mockResolvedValue(undefined);
   useWalletStore.setState({
     mnemonic: "",
@@ -140,6 +189,7 @@ describe("useWalletStore", () => {
       expect(result.valid).toBe(true);
       expect(useWalletStore.getState().mnemonic).toBe(words.join(" "));
       expect(persistenceMocks.request).toHaveBeenCalledOnce();
+      expect(useToastStore.getState().toasts).toHaveLength(0);
     });
 
     it("rejects invalid phrase", async () => {
@@ -199,11 +249,13 @@ describe("useWalletStore", () => {
       useWalletStore.setState({ walletSeedReminderAcknowledgedScopeId: oldScopeId });
       seedHandoffMocks.handoff.mockImplementationOnce(
         async (input: {
+          assertNoPendingOrders: () => void;
           invalidateOldProfile: () => void;
           activateNewProfile: () => Promise<void>;
           isCurrentProfile: () => boolean;
         }) => {
           profileWasCurrentDuringHandoff = input.isCurrentProfile();
+          input.assertNoPendingOrders();
           input.invalidateOldProfile();
           mnemonicDuringActivation = useWalletStore.getState().mnemonic;
           await input.activateNewProfile();
@@ -218,21 +270,142 @@ describe("useWalletStore", () => {
           database: oldDatabase,
           scopeId: oldScopeId,
           isCurrentProfile: expect.any(Function),
+          assertNoPendingOrders: expect.any(Function),
         }),
       );
       expect(profileWasCurrentDuringHandoff).toBe(true);
-      expect(mnemonicDuringActivation).toBe(oldMnemonic);
-      expect(useWalletStore.getState().mnemonic).toBe(newWords.join(" "));
+      expect(mnemonicDuringActivation === oldMnemonic).toBe(true);
+      expect(useWalletStore.getState().mnemonic === newWords.join(" ")).toBe(true);
       expect(useWalletStore.getState().walletBackupState).toBe("confirmed");
       expect(activeBrowserWalletScopeId()).toBe(
         browserWalletScopeIdFromMnemonic(newWords.join(" ")),
       );
-      expect(stateDuringPersistence).toEqual({
-        mnemonic: newWords.join(" "),
-        walletBackupState: "confirmed",
-        walletSeedReminderAcknowledgedScopeId: null,
-      });
+      expect(stateDuringPersistence?.mnemonic === newWords.join(" ")).toBe(true);
+      expect(stateDuringPersistence?.walletBackupState).toBe("confirmed");
+      expect(stateDuringPersistence?.walletSeedReminderAcknowledgedScopeId).toBeNull();
       expect(persistenceMocks.request).toHaveBeenCalledOnce();
+    });
+
+    it("restores seed state and profile when the replacement seed write fails", async () => {
+      const oldMnemonic = bip39.generate().join(" ");
+      const newMnemonic = bip39.generate().join(" ");
+      const oldScopeId = browserWalletScopeIdFromMnemonic(oldMnemonic);
+      expect(oldScopeId).not.toBeNull();
+      useWalletStore.setState({
+        mnemonic: oldMnemonic,
+        walletBackupState: "needs_backup",
+        walletSeedReminderAcknowledgedScopeId: oldScopeId,
+      });
+      setActiveBrowserWalletProfile(oldMnemonic);
+      activateBrowserWalletDatabase(oldScopeId!);
+      const oldDatabase = db;
+      const oldDatabaseName = oldDatabase.name;
+      await oldDatabase.proofs.put({
+        secret: "fake-old-cache-sentinel",
+        id: KEYSET_ID,
+        C: "fake-old-cache-commitment",
+        amount: 7,
+        mintUrl: "https://mint.example",
+        baseAsset: "sat",
+        unit: "msat",
+      });
+
+      const originalSetItem = Storage.prototype.setItem;
+      let rejectedNewSeedWrite = false;
+      vi.spyOn(Storage.prototype, "setItem").mockImplementation(function (
+        this: Storage,
+        key: string,
+        value: string,
+      ) {
+        if (key === "bitcaster-wallet" && value.includes(newMnemonic)) {
+          rejectedNewSeedWrite = true;
+          throw new Error("storage write failed");
+        }
+        return originalSetItem.call(this, key, value);
+      });
+      seedHandoffMocks.handoff.mockImplementationOnce((input: WalletSeedHandoffInput) =>
+        invokeRealSeedHandoff(input),
+      );
+
+      const result = await useWalletStore.getState().recoverFromMnemonic(newMnemonic.split(" "));
+      const restoredDatabase = db;
+      const persistedState = JSON.parse(
+        window.localStorage.getItem("bitcaster-wallet") ?? "{}",
+      ) as { state?: { mnemonic?: string; walletBackupState?: string } };
+
+      expect(result.valid).toBe(false);
+      expect(rejectedNewSeedWrite).toBe(true);
+      expect(useWalletStore.getState().mnemonic === oldMnemonic).toBe(true);
+      expect(useWalletStore.getState().walletBackupState).toBe("needs_backup");
+      expect(useWalletStore.getState().walletSeedReminderAcknowledgedScopeId).toBe(oldScopeId);
+      expect(activeBrowserWalletScopeId()).toBe(oldScopeId);
+      expect(persistedState.state?.mnemonic === oldMnemonic).toBe(true);
+      expect(persistedState.state?.walletBackupState).toBe("needs_backup");
+      expect(restoredDatabase.name).toBe(oldDatabaseName);
+      expect(
+        (await restoredDatabase.proofs.get("fake-old-cache-sentinel"))?.secret ===
+          "fake-old-cache-sentinel",
+      ).toBe(true);
+      expect((await restoredDatabase.proofs.get("fake-old-cache-sentinel"))?.amount).toBe(7);
+      expect(persistenceMocks.request).not.toHaveBeenCalled();
+
+      restoredDatabase.close();
+      await restoredDatabase.delete();
+      setActiveBrowserWalletProfile("");
+    });
+
+    it("keeps the new wallet committed when deleting the old cache fails", async () => {
+      const oldMnemonic = bip39.generate().join(" ");
+      const newMnemonic = bip39.generate().join(" ");
+      const oldScopeId = browserWalletScopeIdFromMnemonic(oldMnemonic);
+      const newScopeId = browserWalletScopeIdFromMnemonic(newMnemonic);
+      expect(oldScopeId).not.toBeNull();
+      expect(newScopeId).not.toBeNull();
+      useWalletStore.setState({
+        mnemonic: oldMnemonic,
+        walletBackupState: "confirmed",
+        walletSeedReminderAcknowledgedScopeId: oldScopeId,
+      });
+      setActiveBrowserWalletProfile(oldMnemonic);
+      activateBrowserWalletDatabase(oldScopeId!);
+      const oldDatabase = db;
+      await oldDatabase.proofs.put({
+        secret: "fake-old-cache-sentinel",
+        id: KEYSET_ID,
+        C: "fake-old-cache-commitment",
+        amount: 7,
+        mintUrl: "https://mint.example",
+        baseAsset: "sat",
+        unit: "msat",
+      });
+      const failOldCacheDeletion = vi
+        .spyOn(oldDatabase, "delete")
+        .mockRejectedValueOnce(new Error("old cache cleanup unavailable"));
+      seedHandoffMocks.handoff.mockImplementationOnce((input: WalletSeedHandoffInput) =>
+        invokeRealSeedHandoff(input),
+      );
+
+      const result = await useWalletStore.getState().recoverFromMnemonic(newMnemonic.split(" "));
+      const persistedState = JSON.parse(
+        window.localStorage.getItem("bitcaster-wallet") ?? "{}",
+      ) as { state?: { mnemonic?: string; walletBackupState?: string } };
+
+      expect(result.valid).toBe(true);
+      expect(failOldCacheDeletion).toHaveBeenCalledOnce();
+      expect(useWalletStore.getState().mnemonic === newMnemonic).toBe(true);
+      expect(activeBrowserWalletScopeId()).toBe(newScopeId);
+      expect(persistedState.state?.mnemonic === newMnemonic).toBe(true);
+      expect(persistedState.state?.walletBackupState).toBe("confirmed");
+      expect(persistenceMocks.request).toHaveBeenCalledOnce();
+
+      const retainedOldDatabase = new BitcasterDB(oldDatabase.name);
+      expect((await retainedOldDatabase.proofs.get("fake-old-cache-sentinel"))?.amount).toBe(7);
+      retainedOldDatabase.close();
+      await retainedOldDatabase.delete();
+      const activeDatabase = db;
+      activeDatabase.close();
+      await activeDatabase.delete();
+      setActiveBrowserWalletProfile("");
     });
 
     it("keeps the old Zustand mnemonic when the seed handoff rejects", async () => {
@@ -247,11 +420,181 @@ describe("useWalletStore", () => {
 
       const result = await useWalletStore.getState().recoverFromMnemonic(newWords);
 
-      expect(result).toEqual({ valid: false, error: "backup is incomplete" });
-      expect(useWalletStore.getState().mnemonic).toBe(oldMnemonic);
+      expect(result).toEqual({
+        valid: false,
+        error: i18n.t("wallet.replaceBlockedSafetyChecks"),
+      });
+      expect(useWalletStore.getState().mnemonic === oldMnemonic).toBe(true);
       expect(activeBrowserWalletScopeId()).toBe(oldScopeId);
       expect(persistenceMocks.request).not.toHaveBeenCalled();
     });
+
+    it("maps typed backup refusal to a safe localized message", async () => {
+      const oldMnemonic = bip39.generate().join(" ");
+      const oldScopeId = browserWalletScopeIdFromMnemonic(oldMnemonic);
+      useWalletStore.setState({ mnemonic: oldMnemonic, walletBackupState: "confirmed" });
+      setActiveBrowserWalletProfile(oldMnemonic);
+      seedHandoffMocks.handoff.mockRejectedValueOnce(
+        new BrowserEncryptedWalletBackupV2SeedHandoffRefusal(
+          "backup-not-current",
+          "opaque internal backup detail",
+        ),
+      );
+
+      const result = await useWalletStore.getState().recoverFromMnemonic(bip39.generate());
+
+      expect(result).toEqual({
+        valid: false,
+        error: i18n.t("wallet.replaceBlockedBackup"),
+      });
+      expect(useWalletStore.getState().mnemonic === oldMnemonic).toBe(true);
+      expect(activeBrowserWalletScopeId()).toBe(oldScopeId);
+    });
+
+    it("resumes the captured backup driver after a seed handoff guard refusal", async () => {
+      const oldMnemonic = bip39.generate().join(" ");
+      const newWords = bip39.generate();
+      const oldScopeId = browserWalletScopeIdFromMnemonic(oldMnemonic);
+      expect(oldScopeId).not.toBeNull();
+      useWalletStore.setState({ mnemonic: oldMnemonic, walletBackupState: "confirmed" });
+      setActiveBrowserWalletProfile(oldMnemonic);
+      activateBrowserWalletDatabase(oldScopeId!);
+      const driver = {
+        quiesceForSeedHandoff: vi.fn().mockResolvedValue(undefined),
+        resumeAfterSeedHandoff: vi.fn(),
+      };
+      const unregister = registerBrowserEncryptedWalletBackupV2RuntimeDriver(
+        oldScopeId!,
+        driver as never,
+      );
+      seedHandoffMocks.handoff.mockImplementationOnce(async () => {
+        expect(driver.quiesceForSeedHandoff).toHaveBeenCalledOnce();
+        throw new BrowserEncryptedWalletBackupV2SeedHandoffRefusal(
+          "active-wallet-work",
+          "handoff guard refusal",
+        );
+      });
+
+      try {
+        const result = await useWalletStore.getState().recoverFromMnemonic(newWords);
+
+        expect(result).toEqual({
+          valid: false,
+          error: i18n.t("wallet.replaceBlockedActiveWork"),
+        });
+        expect(driver.quiesceForSeedHandoff).toHaveBeenCalledOnce();
+        expect(driver.resumeAfterSeedHandoff).toHaveBeenCalledOnce();
+        expect(useWalletStore.getState().mnemonic).toBe(oldMnemonic);
+        expect(activeBrowserWalletScopeId()).toBe(oldScopeId);
+      } finally {
+        unregister();
+        setActiveBrowserWalletProfile("");
+        const activeDatabase = db;
+        activeDatabase.close();
+        await activeDatabase.delete();
+      }
+    });
+
+    it("does not resume the old backup driver after a committed seed replacement", async () => {
+      const oldMnemonic = bip39.generate().join(" ");
+      const newWords = bip39.generate();
+      const oldScopeId = browserWalletScopeIdFromMnemonic(oldMnemonic);
+      expect(oldScopeId).not.toBeNull();
+      useWalletStore.setState({ mnemonic: oldMnemonic, walletBackupState: "confirmed" });
+      setActiveBrowserWalletProfile(oldMnemonic);
+      activateBrowserWalletDatabase(oldScopeId!);
+      const oldDatabase = db;
+      const driver = {
+        quiesceForSeedHandoff: vi.fn().mockResolvedValue(undefined),
+        resumeAfterSeedHandoff: vi.fn(),
+      };
+      const unregister = registerBrowserEncryptedWalletBackupV2RuntimeDriver(
+        oldScopeId!,
+        driver as never,
+      );
+      seedHandoffMocks.handoff.mockImplementationOnce(async (input: WalletSeedHandoffInput) => {
+        expect(driver.quiesceForSeedHandoff).toHaveBeenCalledOnce();
+        input.invalidateOldProfile();
+        await input.activateNewProfile();
+      });
+
+      try {
+        const result = await useWalletStore.getState().recoverFromMnemonic(newWords);
+
+        expect(result).toEqual({ valid: true });
+        expect(driver.quiesceForSeedHandoff).toHaveBeenCalledOnce();
+        expect(driver.resumeAfterSeedHandoff).not.toHaveBeenCalled();
+        expect(useWalletStore.getState().mnemonic).toBe(newWords.join(" "));
+        expect(activeBrowserWalletScopeId()).toBe(
+          browserWalletScopeIdFromMnemonic(newWords.join(" ")),
+        );
+      } finally {
+        unregister();
+        oldDatabase.close();
+        await oldDatabase.delete();
+        setActiveBrowserWalletProfile("");
+        const activeDatabase = db;
+        activeDatabase.close();
+        await activeDatabase.delete();
+      }
+    });
+
+    it.each([
+      [
+        "wallet-scoped pending orders",
+        (walletId: string) => ({
+          "pending-order": {
+            orderId: "pending-order",
+            walletId,
+            marketId: "market",
+            submittedAt: 1,
+            baseAsset: "sat" as const,
+            divisibility: 1_000 as const,
+          },
+        }),
+        /unfinished orders/i,
+      ],
+      [
+        "legacy unscoped pending orders",
+        () => ({
+          "legacy-order": {
+            orderId: "legacy-order",
+            marketId: "market",
+            submittedAt: 1,
+            baseAsset: "sat" as const,
+            divisibility: 1_000 as const,
+          },
+        }),
+        /no wallet identity/i,
+      ],
+    ])(
+      "refuses replacement for %s without invalidating the old profile",
+      async (_name, makeOrders, errorPattern) => {
+        const oldMnemonic = bip39.generate().join(" ");
+        const newWords = bip39.generate();
+        const oldScopeId = browserWalletScopeIdFromMnemonic(oldMnemonic);
+        const oldWalletId = browserWalletIdFromMnemonic(oldMnemonic);
+        expect(oldScopeId).not.toBeNull();
+        expect(oldWalletId).not.toBeNull();
+        useWalletStore.setState({ mnemonic: oldMnemonic, walletBackupState: "confirmed" });
+        usePendingTradesStore.setState({ byOrderId: makeOrders(oldWalletId!) });
+        setActiveBrowserWalletProfile(oldMnemonic);
+        activateBrowserWalletDatabase(oldScopeId!);
+        seedHandoffMocks.handoff.mockImplementationOnce(
+          async (input: { assertNoPendingOrders: () => void }) => {
+            input.assertNoPendingOrders();
+          },
+        );
+
+        const result = await useWalletStore.getState().recoverFromMnemonic(newWords);
+
+        expect(result.valid).toBe(false);
+        expect(result.error).toMatch(errorPattern);
+        expect(useWalletStore.getState().mnemonic === oldMnemonic).toBe(true);
+        expect(activeBrowserWalletScopeId()).toBe(oldScopeId);
+        expect(persistenceMocks.request).not.toHaveBeenCalled();
+      },
+    );
 
     it("reopens the current seed without handing off or changing the profile", async () => {
       const words = bip39.generate();
@@ -416,6 +759,99 @@ describe("useWalletStore", () => {
   });
 
   describe("ensureImplicitWallet", () => {
+    it("shows one success message after the new seed is persisted", async () => {
+      useWalletStore.setState({
+        _addMint: vi.fn().mockResolvedValue(undefined),
+      } as Partial<ReturnType<typeof useWalletStore.getState>>);
+      await useWalletStore.getState().ensureImplicitWallet();
+
+      const mnemonic = useWalletStore.getState().mnemonic;
+      const storedWallet = JSON.parse(window.localStorage.getItem("bitcaster-wallet") ?? "{}") as {
+        state?: { mnemonic?: string };
+      };
+      expect(storedWallet.state?.mnemonic === mnemonic).toBe(true);
+      expect(useToastStore.getState().toasts).toEqual([
+        expect.objectContaining({ type: "success", message: i18n.t("wallet.created") }),
+      ]);
+
+      await useWalletStore.getState().ensureImplicitWallet();
+      expect(useToastStore.getState().toasts).toHaveLength(1);
+    });
+
+    it("retries seed creation after an initial persistence failure", async () => {
+      useWalletStore.setState({
+        _addMint: vi.fn().mockResolvedValue(undefined),
+      } as Partial<ReturnType<typeof useWalletStore.getState>>);
+      const activeScopeBeforeFailure = activeBrowserWalletScopeId();
+      const originalSetItem = Storage.prototype.setItem;
+      const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementation(function (
+        this: Storage,
+        key: string,
+        value: string,
+      ) {
+        if (key === "bitcaster-wallet") throw new Error("wallet storage write failed");
+        return originalSetItem.call(this, key, value);
+      });
+
+      try {
+        await expect(useWalletStore.getState().ensureImplicitWallet()).rejects.toThrow(
+          "wallet storage write failed",
+        );
+        expect(useWalletStore.getState().mnemonic === "").toBe(true);
+        expect(activeBrowserWalletScopeId()).toBe(activeScopeBeforeFailure);
+        expect(useToastStore.getState().toasts).toHaveLength(0);
+      } finally {
+        setItem.mockRestore();
+      }
+
+      expect(persistenceMocks.request).not.toHaveBeenCalled();
+      await useWalletStore.getState().ensureImplicitWallet();
+
+      const mnemonic = useWalletStore.getState().mnemonic;
+      const storedWallet = JSON.parse(window.localStorage.getItem("bitcaster-wallet") ?? "{}") as {
+        state?: { mnemonic?: string };
+      };
+      expect(storedWallet.state?.mnemonic === mnemonic).toBe(true);
+      expect(useToastStore.getState().toasts).toEqual([
+        expect.objectContaining({ type: "success", message: i18n.t("wallet.created") }),
+      ]);
+    });
+
+    it("keeps creation feedback when later setup persistence fails", async () => {
+      useWalletStore.setState({
+        _addMint: vi.fn().mockResolvedValue(undefined),
+      } as Partial<ReturnType<typeof useWalletStore.getState>>);
+      const originalSetItem = Storage.prototype.setItem;
+      let walletWrites = 0;
+      const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementation(function (
+        this: Storage,
+        key: string,
+        value: string,
+      ) {
+        if (key === "bitcaster-wallet" && ++walletWrites === 2) {
+          throw new Error("setup wallet storage write failed");
+        }
+        return originalSetItem.call(this, key, value);
+      });
+
+      try {
+        await expect(useWalletStore.getState().ensureImplicitWallet()).rejects.toThrow(
+          "setup wallet storage write failed",
+        );
+      } finally {
+        setItem.mockRestore();
+      }
+
+      const mnemonic = useWalletStore.getState().mnemonic;
+      const storedWallet = JSON.parse(window.localStorage.getItem("bitcaster-wallet") ?? "{}") as {
+        state?: { mnemonic?: string };
+      };
+      expect(storedWallet.state?.mnemonic === mnemonic).toBe(true);
+      expect(useToastStore.getState().toasts).toEqual([
+        expect.objectContaining({ type: "success", message: i18n.t("wallet.created") }),
+      ]);
+    });
+
     it("creates a mnemonic, marks backup needed, and completes setup when none exists", async () => {
       useWalletStore.setState({
         _addMint: vi.fn().mockResolvedValue(undefined),
@@ -446,6 +882,7 @@ describe("useWalletStore", () => {
       expect(state.walletBackupState).toBe("confirmed");
       expect(state.setupComplete).toBe(true);
       expect(state._addMint).not.toHaveBeenCalled();
+      expect(useToastStore.getState().toasts).toHaveLength(0);
     });
 
     it("registers the default mint without activating it when another mint is active", async () => {

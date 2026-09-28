@@ -1,31 +1,45 @@
 // @vitest-environment node
 import "fake-indexeddb/auto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { CheckStateEnum, hashToCurve, MintOperationError } from "@cashu/cashu-ts";
+import {
+  CheckStateEnum,
+  hashToCurve,
+  Keyset,
+  MintOperationError,
+  OutputData,
+  type Proof,
+  type ConditionalSwapOptions,
+  type ConditionalSwapPreview,
+} from "@cashu/cashu-ts";
 import type { RedeemWallet } from "@bitcaster/client-sdk/ctfRedeem";
 import {
-  createEncryptedWalletBackupV2AssetIdentity,
-  encryptedWalletBackupV2LocalAssetKey,
-} from "@bitcaster/client-sdk";
-import {
-  createBrowserCompletedLocalProofRemovalMarkerRow,
   createBrowserRemoteProofBackupAuthorityRow,
   createBrowserProofBackupAuthorityRow,
 } from "../../stores/browser-proof-backup-authority";
 import { createBrowserCustodyProofRow } from "../../stores/durable-custody-db";
-import type { BitcasterDB } from "../../stores/proof-db";
+import { addProofsIfMissing } from "../../stores/proof-db";
+import type { BitcasterDB, StoredProof } from "../../stores/proof-db";
 import {
   conditionalKeysetIdFor,
+  CONDITIONAL_KEYSET_ID,
   CONDITION,
   MINT,
   MINT_PUBLIC_KEY,
   OUTCOME,
+  OUTCOME_ID,
   REGULAR_KEYSET,
   SEED,
   fixture,
   immediateLockManager,
   signOutputs,
 } from "./fixtures/browserCtfRedeemFixture";
+import { browserWalletDatabaseName } from "../browserWalletProfile";
+import { browserWalletScope } from "../browserCtfRangeOrderSource";
+import type { BrowserEncryptedWalletBackupV2RuntimeDriver } from "../encryptedWalletBackupDriver";
+import {
+  receiveBrowserDurableWalletToken,
+  type BrowserDurableWalletReceiveWallet,
+} from "../browserDurableWalletReceive";
 
 const mocks = vi.hoisted(() => ({
   database: null as BitcasterDB | null,
@@ -33,7 +47,17 @@ const mocks = vi.hoisted(() => ({
   activeScopeId: "scope",
   claim: vi.fn(),
   remove: vi.fn(),
-  driver: null as { removeManagedProofs: (input: unknown) => Promise<unknown> } | null,
+  driver: null as {
+    removeManagedProofs: BrowserEncryptedWalletBackupV2RuntimeDriver["removeManagedProofs"];
+  } | null,
+  realCoordinatorEnabled: false,
+  failNextRealCoordinatorCommit: false,
+  beforeRealCoordinator: null as ((callIndex: number) => Promise<void>) | null,
+  realCoordinatorCalls: [] as Array<{
+    faultInjected: boolean;
+    targetProofIds: readonly string[];
+  }>,
+  mintRejectCalls: 0,
   lock: vi.fn(),
   requireNewWritePermission: vi.fn(),
 }));
@@ -49,9 +73,11 @@ vi.mock("../../stores/proof-db", async () => {
     },
   };
 });
-vi.mock("../browserWalletProfile", () => ({
-  activeBrowserWalletScopeId: () => mocks.activeScopeId,
-}));
+vi.mock("../browserWalletProfile", async () => {
+  const actual =
+    await vi.importActual<typeof import("../browserWalletProfile")>("../browserWalletProfile");
+  return { ...actual, activeBrowserWalletScopeId: () => mocks.activeScopeId };
+});
 vi.mock("../walletProfileLock", () => ({
   withWalletProfileLock: mocks.lock,
 }));
@@ -62,14 +88,42 @@ vi.mock("../../stores/wallet", () => ({
 vi.mock("../browserPortfolioClaim", () => ({
   claimPortfolioPosition: mocks.claim,
 }));
-vi.mock("../browserWalletNewWritePermission", () => ({
-  requireBrowserWalletNewWritePermission: mocks.requireNewWritePermission,
-}));
+vi.mock("../browserWalletNewWritePermission", async () => {
+  const actual = await vi.importActual<typeof import("../browserWalletNewWritePermission")>(
+    "../browserWalletNewWritePermission",
+  );
+  return {
+    ...actual,
+    requireBrowserWalletNewWritePermission: (
+      input: Parameters<typeof actual.requireBrowserWalletNewWritePermission>[0],
+    ) =>
+      mocks.realCoordinatorEnabled
+        ? actual.requireBrowserWalletNewWritePermission(input)
+        : mocks.requireNewWritePermission(input),
+  };
+});
 vi.mock("../browserCtfRemoveCoordinator", async () => {
   const actual = await vi.importActual<typeof import("../browserCtfRemoveCoordinator")>(
     "../browserCtfRemoveCoordinator",
   );
-  return { ...actual, startBrowserCtfRemove: mocks.remove };
+  return {
+    ...actual,
+    startBrowserCtfRemove: async (input: Parameters<typeof actual.startBrowserCtfRemove>[0]) => {
+      if (!mocks.realCoordinatorEnabled) return mocks.remove(input);
+
+      const callIndex = mocks.realCoordinatorCalls.length;
+      const faultInjected = mocks.failNextRealCoordinatorCommit;
+      mocks.failNextRealCoordinatorCommit = false;
+      mocks.realCoordinatorCalls.push({
+        faultInjected,
+        targetProofIds: input.targets.map(({ proofId }) => proofId),
+      });
+      await mocks.beforeRealCoordinator?.(callIndex);
+      return actual.startBrowserCtfRemove(
+        faultInjected ? { ...input, fault: "before-commit" } : input,
+      );
+    },
+  };
 });
 vi.mock("../encryptedWalletBackupDriver", async () => {
   const actual = await vi.importActual<typeof import("../encryptedWalletBackupDriver")>(
@@ -91,12 +145,18 @@ const position = {
 };
 
 const databases: BitcasterDB[] = [];
+const databasesToDelete = new Set<BitcasterDB>();
 
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.database = null;
   mocks.activeScopeId = mocks.scopeId;
   mocks.driver = null;
+  mocks.realCoordinatorEnabled = false;
+  mocks.failNextRealCoordinatorCommit = false;
+  mocks.beforeRealCoordinator = null;
+  mocks.realCoordinatorCalls = [];
+  mocks.mintRejectCalls = 0;
   mocks.requireNewWritePermission.mockResolvedValue(undefined);
   mocks.lock.mockImplementation(async (_scopeId: string, action: () => Promise<unknown>) =>
     action(),
@@ -112,12 +172,17 @@ beforeEach(() => {
   mocks.remove.mockResolvedValue({ kind: "completed", intentId: "completed-local-removal" });
 });
 
-afterEach(() => {
+afterEach(async () => {
   for (const database of databases.splice(0)) database.close();
+  for (const database of databasesToDelete) await database.delete();
+  databasesToDelete.clear();
 });
 
-async function useFixture(amounts: readonly number[] = [13015]) {
-  const entry = await fixture({ amounts });
+async function useFixture(
+  amounts: readonly number[] = [13015],
+  options: { counterSource?: "memory" | "browser"; databaseName?: string } = {},
+) {
+  const entry = await fixture({ amounts, ...options });
   databases.push(entry.database);
   mocks.database = entry.database;
   mocks.scopeId = entry.scope.scopeId;
@@ -138,6 +203,20 @@ async function makeManaged(entry: Awaited<ReturnType<typeof fixture>>, index = 0
   );
 }
 
+function expectSafeRemoveFailure(
+  failure: unknown,
+  stage: "capture" | "claim" | "managed-backup-removal" | "local-commit",
+) {
+  expect(failure).toMatchObject({
+    code: "remove-failed",
+    stage,
+    attemptRef: expect.stringMatching(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+    ),
+  });
+  expect(failure).not.toHaveProperty("message");
+}
+
 function losingWallet(): RedeemWallet {
   return {
     loadMint: async () => undefined,
@@ -148,12 +227,18 @@ function losingWallet(): RedeemWallet {
         witness: null,
       })),
     redeemOutcomeProofs: async () => {
+      mocks.mintRejectCalls += 1;
       throw new MintOperationError(13015, "Oracle has not attested to this outcome collection");
     },
   };
 }
 
-function runLosingClaim(entry: Awaited<ReturnType<typeof fixture>>, targets: readonly unknown[]) {
+function runLosingClaim(
+  entry: Awaited<ReturnType<typeof fixture>>,
+  targets: readonly unknown[],
+  owner = entry.owner,
+  observedAtMs = 5,
+) {
   return claimBrowserCanonicalCtfPosition({
     position: { conditionId: CONDITION, outcomeCollection: OUTCOME },
     targets: targets as never,
@@ -169,18 +254,88 @@ function runLosingClaim(entry: Awaited<ReturnType<typeof fixture>>, targets: rea
       counterSource: entry.counters,
       database: entry.database,
       adapter: entry.adapter,
-      owner: entry.owner,
+      owner,
       wallet: losingWallet(),
       restoreOutputs: async (_mintUrl, outputs) => ({
         regular: signOutputs(outputs.regular as never),
       }),
-      observedAtMs: 5,
+      observedAtMs,
       lockManager: immediateLockManager,
     },
   });
 }
 
+function conditionalReceiveWallet(): BrowserDurableWalletReceiveWallet {
+  const conditionalMetadata = {
+    conditionId: CONDITION,
+    outcomeCollection: OUTCOME,
+    outcomeCollectionId: OUTCOME_ID,
+    registeredAt: 0,
+  };
+  const conditionalKeyset = Keyset.fromMintApi(
+    {
+      id: CONDITIONAL_KEYSET_ID,
+      unit: "msat",
+      active: true,
+      input_fee_ppk: 0,
+      conditional: conditionalMetadata,
+    },
+    {
+      id: CONDITIONAL_KEYSET_ID,
+      unit: "msat",
+      active: true,
+      input_fee_ppk: 0,
+      keys: { "1": MINT_PUBLIC_KEY },
+      conditional: conditionalMetadata,
+    },
+  );
+
+  return {
+    prepareSwapToReceive: async () => {
+      throw new Error("unexpected regular receive in conditional claim regression");
+    },
+    completeSwap: async () => {
+      throw new Error("unexpected regular receive in conditional claim regression");
+    },
+    prepareConditionalSwap: async ({ keysetId, inputs, outputs }: ConditionalSwapOptions) => ({
+      keysetId: keysetId ?? inputs[0]!.id,
+      inputs: inputs as Proof[],
+      outputDataByLabel: Object.fromEntries(
+        outputs.map((group) => [group.label, group.kind === "custom" ? [...group.data] : []]),
+      ),
+    }),
+    completeConditionalSwap: async (preview: ConditionalSwapPreview) => ({
+      receive: signOutputs(preview.outputDataByLabel.receive ?? []),
+    }),
+    checkProofsStates: async (proofs) =>
+      proofs.map(({ secret }) => ({
+        Y: hashToCurve(new TextEncoder().encode(secret)).toHex(true),
+        state: CheckStateEnum.UNSPENT,
+        witness: null,
+      })),
+    keyChain: {
+      loadConditionalKeyset: async () => conditionalKeyset,
+      registerConditionalKeyset: () => conditionalKeyset,
+    },
+    getKeyset: () => conditionalKeyset,
+    mint: { restore: async () => ({ outputs: [], signatures: [] }) },
+  };
+}
+
 describe("Portfolio remove entry point", () => {
+  it("reports capture failures with a redacted stage and attempt reference", async () => {
+    await useFixture();
+    const sentinel = "raw-proof-seed-backup-sentinel";
+    mocks.lock.mockRejectedValue(new Error(sentinel));
+
+    const result = await removePortfolioPosition(position);
+
+    expect(result.kind).toBe("error");
+    if (result.kind !== "error") throw new Error("expected a removal error");
+    expectSafeRemoveFailure(result.error, "capture");
+    expect(JSON.stringify(result)).not.toContain(sentinel);
+  });
+
   it("captures canonical selectable proof identities before removing a 13015 proof", async () => {
     const entry = await useFixture([1]);
     const onCommittedLeg = vi.fn();
@@ -259,6 +414,277 @@ describe("Portfolio remove entry point", () => {
     );
   });
 
+  it.each([1, 8])(
+    "terminalizes a losing claim after a real conditional receive with acknowledged backup intent (%i outputs)",
+    async (proofCount) => {
+      const databaseName = browserWalletDatabaseName(browserWalletScope(SEED).scopeId);
+      const entry = await useFixture([1], {
+        databaseName,
+      });
+      databasesToDelete.add(entry.database);
+      await entry.adapter.releaseScope(entry.scope, { ...entry.owner, observedAtMs: 4 });
+      await entry.database.custodyProofs.clear();
+      await entry.database.custodyProofBackupAuthorities.clear();
+      await entry.database.proofs.clear();
+      await entry.database.walletCounterAssociations.put({
+        scopeId: entry.scope.scopeId,
+        normalizedMint: MINT,
+        unit: "msat",
+        keysetId: CONDITIONAL_KEYSET_ID,
+        recoveryComplete: true,
+      });
+
+      const inputProofs = Array.from(
+        { length: proofCount },
+        (_, index) =>
+          signOutputs([
+            OutputData.createSingleData(
+              1,
+              CONDITIONAL_KEYSET_ID,
+              `claim-regression-input-${index}`,
+              BigInt(27 + index),
+            ),
+          ])[0]!,
+      );
+      const wallet = conditionalReceiveWallet();
+      let time = 1_000;
+      let nextId = 0;
+      const received = await receiveBrowserDurableWalletToken({
+        token: "cashuB-conditional-token",
+        mintUrl: MINT,
+        unit: "msat",
+        asset: "conditional",
+        conditionalInputProofs: inputProofs,
+        ensureConditionalCounterReady: async () => undefined,
+        wallet,
+        context: {
+          seed: entry.seed,
+          database: entry.database,
+          now: () => ++time,
+          randomId: () => `claim-regression-${++nextId}`,
+          lockManager: immediateLockManager,
+          requireCapturedProfile: () => undefined,
+        },
+      });
+
+      await addProofsIfMissing(
+        received.map(
+          (proof): StoredProof => ({
+            ...proof,
+            mintUrl: MINT,
+            baseAsset: "sat",
+            unit: "msat",
+            conditionId: CONDITION,
+            outcomeCollection: OUTCOME,
+            marketId: `${CONDITION}-${OUTCOME}`,
+          }),
+        ),
+        entry.database,
+      );
+
+      expect(received).toHaveLength(proofCount);
+      const legacyProofs = await entry.database.proofs.toArray();
+      expect(legacyProofs).toHaveLength(received.length);
+      expect(
+        legacyProofs.every(
+          ({ conditionId, outcomeCollection, marketId }) =>
+            conditionId === CONDITION &&
+            outcomeCollection === OUTCOME &&
+            marketId === `${CONDITION}-${OUTCOME}`,
+        ),
+      ).toBe(true);
+      // Model legacy counter-recovered rows that predate conditional metadata.
+      // The durable custody rows remain the canonical source for reconciliation.
+      for (const legacyProof of legacyProofs) {
+        const legacyProofWithoutConditionalMetadata = { ...legacyProof };
+        delete legacyProofWithoutConditionalMetadata.conditionId;
+        delete legacyProofWithoutConditionalMetadata.outcomeCollection;
+        await entry.database.proofs.put(legacyProofWithoutConditionalMetadata);
+      }
+      const receivedRows = await entry.database.custodyProofs.toArray();
+      expect(receivedRows).toHaveLength(received.length);
+      const receiveOperations = await entry.database.custodyOperations.toArray();
+      const receiveOperation = receiveOperations.find(
+        ({ record }) => record.operation.semanticKind === "generic-receive",
+      );
+      if (!receiveOperation) throw new Error("conditional receive operation was not persisted");
+      const authorities = await entry.database.custodyProofBackupAuthorities.toArray();
+      expect(authorities).toHaveLength(receivedRows.length);
+      for (const authority of authorities) {
+        expect(authority).toMatchObject({
+          backupState: "local-only",
+          admissionOperationId: receiveOperation.operationId,
+          derivationLocator: {
+            kind: "nut13",
+            keysetId: CONDITIONAL_KEYSET_ID,
+          },
+        });
+      }
+
+      const desiredRows = await entry.database.encryptedWalletBackupV2DesiredAssets.toArray();
+      expect(desiredRows).toHaveLength(1);
+      expect(desiredRows[0]).toMatchObject({
+        activeProofCount: receivedRows.length,
+        desiredAction: "replace",
+        syncState: "pending",
+      });
+      await entry.database.encryptedWalletBackupV2DesiredAssets.put({
+        ...desiredRows[0]!,
+        syncState: "acknowledged",
+      });
+
+      const owner = await entry.adapter.claimScope(entry.scope, {
+        incarnationId: "claim-after-conditional-receive",
+        observedAtMs: 3_000,
+        leaseExpiresAtMs: 100_000,
+      });
+      const result = await runLosingClaim(
+        entry,
+        receivedRows.map(({ proofId, revision, proofFingerprint }) => ({
+          proofId,
+          revision,
+          proofFingerprint,
+        })),
+        owner,
+        3_001,
+      );
+
+      const operations = await entry.database.custodyOperations.toArray();
+      const claimOperations = operations.filter(
+        ({ record }) => record.operation.semanticKind === "ctf-redeem",
+      );
+      const claimOperation = claimOperations[0]?.record.operation;
+      const proofsAfterClaim = await entry.database.custodyProofs.toArray();
+      const desiredAfterClaim = await entry.database.encryptedWalletBackupV2DesiredAssets.toArray();
+      const legacyProofsAfterClaim = await entry.database.proofs.toArray();
+      expect({
+        resultKind: result.kind,
+        resultErrorCategory: result.kind === "error" ? result.error.category : null,
+        claimOperationCount: claimOperations.length,
+        claimOperationState: claimOperation?.state ?? "missing",
+        claimResultState: claimOperation?.result.state ?? "missing",
+        hasTerminalMintRejection:
+          claimOperation?.terminalMintRejection !== null &&
+          claimOperation?.terminalMintRejection !== undefined,
+        proofStates: proofsAfterClaim.map(({ selectability }) => selectability),
+        terminalLegacyProofs: legacyProofsAfterClaim.map(
+          ({ conditionId, outcomeCollection, terminalOperationId, marketId }) => ({
+            conditionId,
+            outcomeCollection,
+            terminalOperationId,
+            marketId,
+          }),
+        ),
+        desiredSyncState: desiredAfterClaim[0]?.syncState ?? "missing",
+      }).toEqual({
+        resultKind: "completed",
+        resultErrorCategory: null,
+        claimOperationCount: 1,
+        claimOperationState: "aborted",
+        claimResultState: "none",
+        hasTerminalMintRejection: true,
+        proofStates: receivedRows.map(() => "verified-losing"),
+        terminalLegacyProofs: legacyProofs.map(() => ({
+          conditionId: CONDITION,
+          outcomeCollection: OUTCOME,
+          terminalOperationId: claimOperation?.operationId,
+          marketId: `${CONDITION}-${OUTCOME}`,
+        })),
+        desiredSyncState: "pending",
+      });
+    },
+  );
+
+  it("retains a 13015 proof after local commit refusal and retries without removing a new arrival", async () => {
+    const entry = await useFixture([1], {
+      databaseName: browserWalletDatabaseName(browserWalletScope(SEED).scopeId),
+    });
+    mocks.claim.mockImplementation(async ({ targets }: { targets: readonly unknown[] }) =>
+      runLosingClaim(entry, targets),
+    );
+    mocks.realCoordinatorEnabled = true;
+    mocks.failNextRealCoordinatorCommit = true;
+
+    const first = await removePortfolioPosition({ ...position, observedAtMs: 6 });
+
+    expect(first).toMatchObject({
+      kind: "partial",
+      reason: "local-removal-error",
+      committedPayoutAmount: 0,
+      error: { code: "remove-failed" },
+    });
+    if (first.kind !== "partial" || first.error === null) {
+      throw new Error("expected a local commit diagnostic");
+    }
+    expectSafeRemoveFailure(first.error, "local-commit");
+    expect(JSON.stringify(first)).not.toContain(entry.proof.proofId);
+    expect(JSON.stringify(first)).not.toContain(entry.proof.proofFingerprint);
+    const retained = await entry.adapter.readProof(entry.scope.scopeId, entry.proof.proofId);
+    expect(retained).toMatchObject({
+      proofId: entry.proof.proofId,
+      proofFingerprint: entry.proof.proofFingerprint,
+      revision: entry.proof.revision + 2,
+      selectability: "verified-losing",
+    });
+    expect(mocks.mintRejectCalls).toBe(1);
+
+    const arrivingProof: {
+      value: Awaited<ReturnType<typeof createBrowserCustodyProofRow>> | null;
+    } = { value: null };
+    mocks.beforeRealCoordinator = async (callIndex) => {
+      if (callIndex !== 1) return;
+      const arriving = await createBrowserCustodyProofRow({
+        scopeId: entry.scope.scopeId,
+        normalizedMint: MINT,
+        unit: "msat",
+        proof: {
+          id: conditionalKeysetIdFor(3),
+          amount: 99 as never,
+          secret: "arriving-proof-during-retry",
+          C: MINT_PUBLIC_KEY,
+        },
+        asset: { kind: "conditional", conditionId: CONDITION, outcomeCollection: OUTCOME },
+        receivedAtMs: 7,
+      });
+      arrivingProof.value = arriving;
+      await entry.database.custodyProofs.put(arriving);
+      await entry.database.custodyProofBackupAuthorities.put(
+        createBrowserProofBackupAuthorityRow(arriving, 8, null, "ctf-arrival"),
+      );
+    };
+
+    await expect(removePortfolioPosition({ ...position, observedAtMs: 9 })).resolves.toEqual({
+      kind: "completed",
+      committedPayoutAmount: 0,
+    });
+
+    expect(mocks.claim).toHaveBeenCalledTimes(1);
+    expect(mocks.mintRejectCalls).toBe(1);
+    expect(mocks.realCoordinatorCalls).toEqual([
+      { faultInjected: true, targetProofIds: [entry.proof.proofId] },
+      { faultInjected: false, targetProofIds: [entry.proof.proofId] },
+    ]);
+    expect(await entry.adapter.readProof(entry.scope.scopeId, entry.proof.proofId)).toBeNull();
+    expect(
+      await entry.database.custodyProofBackupAuthorities.get([
+        entry.scope.scopeId,
+        entry.proof.proofId,
+      ]),
+    ).toMatchObject({ recordKind: "completed-local-removal" });
+    const arriving = await entry.database.custodyProofs
+      .where("[scopeId+conditionId+outcomeCollection+selectability]")
+      .equals([entry.scope.scopeId, CONDITION, OUTCOME, "selectable"])
+      .first();
+    const expectedArrival = arrivingProof.value;
+    if (expectedArrival === null) throw new Error("test arrival was not created");
+    expect(arriving).toMatchObject({
+      proofId: expectedArrival.proofId,
+      proofFingerprint: expectedArrival.proofFingerprint,
+      revision: expectedArrival.revision,
+      selectability: "selectable",
+    });
+  });
+
   it("retains exact proofs when canonical claim recovery is pending", async () => {
     await useFixture();
     mocks.claim.mockResolvedValue({
@@ -296,15 +722,17 @@ describe("Portfolio remove entry point", () => {
       error: claimFailure,
     });
 
-    await expect(removePortfolioPosition(position)).resolves.toEqual({
-      kind: "error",
-      committedPayoutAmount: 9,
-      error: {
-        code: "remove-failed",
-        message: claimFailure.message,
-        claimFailure,
-      },
+    const result = await removePortfolioPosition(position);
+
+    expect(result).toMatchObject({ kind: "error", committedPayoutAmount: 9 });
+    if (result.kind !== "error") throw new Error("expected a composed claim diagnostic");
+    expectSafeRemoveFailure(result.error, "claim");
+    expect(result.error.claimFailure).toEqual({
+      code: "claim-failed",
+      category: "counter-readiness",
+      attemptRef: claimFailure.attemptRef,
     });
+    expect(JSON.stringify(result)).not.toContain(claimFailure.message);
     expect(mocks.remove).not.toHaveBeenCalled();
     expect(
       (await entry.adapter.readProof(entry.scope.scopeId, entry.proof.proofId))?.selectability,
@@ -360,39 +788,35 @@ describe("Portfolio remove entry point", () => {
     expect(mocks.remove).not.toHaveBeenCalled();
   });
 
-  it("continues the exact local subset after managed completion without including a new arrival", async () => {
+  it("reports managed-backup refusal without exposing the driver error", async () => {
+    const entry = await useFixture([1]);
+    await makeManaged(entry);
+    mocks.claim.mockImplementation(async ({ targets }: { targets: readonly unknown[] }) =>
+      runLosingClaim(entry, targets),
+    );
+    const sentinel = "raw-managed-backup-body-proof-secret";
+    mocks.driver = {
+      removeManagedProofs: vi.fn().mockRejectedValue(new Error(sentinel)),
+    };
+
+    const result = await removePortfolioPosition(position);
+
+    expect(result.kind).toBe("error");
+    if (result.kind !== "error") throw new Error("expected a managed removal diagnostic");
+    expectSafeRemoveFailure(result.error, "managed-backup-removal");
+    expect(JSON.stringify(result)).not.toContain(sentinel);
+    expect(JSON.stringify(result)).not.toContain(entry.proof.proofId);
+    expect(mocks.remove).not.toHaveBeenCalled();
+  });
+
+  it("passes the exact local subset once with managed removal and excludes a new arrival", async () => {
     const entry = await useFixture([1, 2]);
     await makeManaged(entry, 0);
-    const managedLocalAssetKey = encryptedWalletBackupV2LocalAssetKey(
-      createEncryptedWalletBackupV2AssetIdentity({
-        mintUrl: MINT,
-        unit: "msat",
-        asset: {
-          kind: "ctf",
-          conditionId: CONDITION,
-          outcomeLabel: OUTCOME,
-          outcomeCollectionId: "bb".repeat(32),
-          registeredAt: 1,
-          finalExpiry: null,
-        },
-      }),
-    );
+    const removeManagedProofs = vi
+      .fn<BrowserEncryptedWalletBackupV2RuntimeDriver["removeManagedProofs"]>()
+      .mockResolvedValue({ kind: "started", intentId: "pending" });
     mocks.driver = {
-      removeManagedProofs: vi.fn().mockImplementation(async () => {
-        await entry.database.custodyProofs.delete([entry.scope.scopeId, entry.proofs[0]!.proofId]);
-        await entry.database.custodyProofBackupAuthorities.put(
-          createBrowserCompletedLocalProofRemovalMarkerRow({
-            scopeId: entry.scope.scopeId,
-            proofId: entry.proofs[0]!.proofId,
-            proofFingerprint: entry.proofs[0]!.proofFingerprint,
-            proofRevision: entry.proofs[0]!.revision + 2,
-            localAssetKey: managedLocalAssetKey,
-            terminalOperationId: "managed-remove",
-            completedAtMs: 6,
-          }),
-        );
-        return { kind: "completed", intentId: "done" };
-      }),
+      removeManagedProofs,
     };
     mocks.claim.mockImplementation(async ({ targets }: { targets: readonly unknown[] }) => {
       const result = await runLosingClaim(entry, targets);
@@ -416,13 +840,20 @@ describe("Portfolio remove entry point", () => {
       return result;
     });
 
-    await expect(removePortfolioPosition(position)).resolves.toEqual({
-      kind: "completed",
-      committedPayoutAmount: 0,
+    await expect(removePortfolioPosition(position)).resolves.toMatchObject({
+      kind: "pending",
+      reason: "managed-removal-pending",
     });
-    expect(mocks.remove).toHaveBeenCalledWith(
+    expect(mocks.driver.removeManagedProofs).toHaveBeenCalledWith(
       expect.objectContaining({
         targets: [
+          {
+            proofId: entry.proofs[0]!.proofId,
+            proofFingerprint: entry.proofs[0]!.proofFingerprint,
+            proofRevision: entry.proofs[0]!.revision + 2,
+          },
+        ],
+        localTargets: [
           {
             proofId: entry.proofs[1]!.proofId,
             proofFingerprint: entry.proofs[1]!.proofFingerprint,
@@ -431,7 +862,11 @@ describe("Portfolio remove entry point", () => {
         ],
       }),
     );
-    expect(mocks.remove.mock.calls[0]![0].targets).not.toContainEqual(
+    expect(mocks.remove).not.toHaveBeenCalled();
+    expect(
+      await entry.database.custodyProofs.get([entry.scope.scopeId, entry.proofs[1]!.proofId]),
+    ).toMatchObject({ selectability: "verified-losing" });
+    expect(removeManagedProofs.mock.calls[0]![0].targets).not.toContainEqual(
       expect.objectContaining({ proofId: "arriving-proof" }),
     );
   });

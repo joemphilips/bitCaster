@@ -35,7 +35,6 @@ import { normalizeUrl } from "./url";
 import { toSeed } from "./bip39";
 import { withWalletProfileLock } from "./walletProfileLock";
 
-const ERROR_MESSAGE_LIMIT = 160;
 const REMOVE_PROOF_CHUNK_LIMIT = 512;
 
 export interface BrowserPortfolioRemoveInput {
@@ -80,17 +79,29 @@ export interface BrowserPortfolioRemovePartial {
   readonly kind: "partial";
   readonly reason: "local-removal-pending" | "local-removal-error";
   readonly committedPayoutAmount: number;
-  readonly error: { readonly code: "remove-failed"; readonly message: string } | null;
+  readonly error: BrowserPortfolioRemoveFailure | null;
 }
 
 export interface BrowserPortfolioRemoveError {
   readonly kind: "error";
   readonly committedPayoutAmount: number;
-  readonly error: {
-    readonly code: "remove-failed";
-    readonly message: string;
-    readonly claimFailure?: BrowserCanonicalCtfPositionClaimError["error"];
-  };
+  readonly error: BrowserPortfolioRemoveFailure;
+}
+
+export type BrowserPortfolioRemoveFailureStage =
+  | "capture"
+  | "claim"
+  | "managed-backup-removal"
+  | "local-commit";
+
+export interface BrowserPortfolioRemoveFailure {
+  readonly code: "remove-failed";
+  readonly stage: BrowserPortfolioRemoveFailureStage;
+  readonly attemptRef: string;
+  readonly claimFailure?: Pick<
+    BrowserCanonicalCtfPositionClaimError["error"],
+    "code" | "category" | "attemptRef" | "operationRef"
+  >;
 }
 
 type CompletedMarker = Extract<BrowserProofBackupAuthorityTableRow, { recordKind: string }>;
@@ -120,22 +131,26 @@ interface CapturedTargetSet {
 export async function removePortfolioPosition(
   input: BrowserPortfolioRemoveInput,
 ): Promise<BrowserPortfolioRemoveResult> {
-  const mnemonic = useWalletStore.getState().mnemonic;
-  if (!mnemonic) return removeError(0, "The wallet profile is unavailable.");
-  const requestedTargets = input.targets === undefined ? undefined : validateTargets(input.targets);
-  const seed = toSeed(mnemonic.trim().split(/\s+/));
-  const scope = browserWalletScope(seed);
-  const database = db;
-  const mintUrl = normalizeUrl(input.mintUrl);
-  const asset = ctfAsset(mintUrl, input.conditionId, input.outcomeCollection);
-  const requireProfile = () => {
-    if (activeBrowserWalletScopeId() !== scope.scopeId || db !== database) {
-      throw new Error("The wallet profile changed during removal.");
-    }
-  };
+  const attemptRef = createBrowserPortfolioRemoveAttemptRef();
   let committedPayoutAmount = 0;
+  let stage: BrowserPortfolioRemoveFailureStage = "capture";
 
   try {
+    const mnemonic = useWalletStore.getState().mnemonic;
+    if (!mnemonic) return removeError(0, stage, attemptRef);
+    const requestedTargets =
+      input.targets === undefined ? undefined : validateTargets(input.targets);
+    const seed = toSeed(mnemonic.trim().split(/\s+/));
+    const scope = browserWalletScope(seed);
+    const database = db;
+    const mintUrl = normalizeUrl(input.mintUrl);
+    const asset = ctfAsset(mintUrl, input.conditionId, input.outcomeCollection);
+    const requireProfile = () => {
+      if (activeBrowserWalletScopeId() !== scope.scopeId || db !== database) {
+        throw new BrowserPortfolioProfileChangedError();
+      }
+    };
+
     requireProfile();
     const captured = await withWalletProfileLock(scope.scopeId, async () => {
       requireProfile();
@@ -156,6 +171,7 @@ export async function removePortfolioPosition(
     const targets = captured.snapshots.map(({ target }) => target);
 
     if (captured.claimRequired) {
+      stage = "claim";
       const claimTargets = captured.snapshots
         .filter(({ row }) => row?.selectability === "selectable" || row?.selectability === "locked")
         .map(({ target }) => target);
@@ -168,9 +184,10 @@ export async function removePortfolioPosition(
         onCommittedLeg: input.onCommittedLeg,
       });
       committedPayoutAmount = claim.committedPayoutAmount;
-      const claimResult = claimOutcome(claim);
+      const claimResult = claimOutcome(claim, attemptRef);
       if (claimResult !== null) return claimResult;
       requireProfile();
+      stage = "capture";
     }
 
     const terminal = await withWalletProfileLock(scope.scopeId, async () => {
@@ -182,6 +199,7 @@ export async function removePortfolioPosition(
     }
 
     if (terminal.managedTargets.length > 0) {
+      stage = "managed-backup-removal";
       const driver = activeBrowserEncryptedWalletBackupV2RuntimeDriver(scope.scopeId);
       if (driver === null) {
         return {
@@ -194,9 +212,10 @@ export async function removePortfolioPosition(
         driver,
         asset,
         terminal.managedTargets,
+        terminal.localTargets,
       );
       if (managedResult.kind === "error") {
-        return removeError(committedPayoutAmount, managedResult.message);
+        return removeError(committedPayoutAmount, stage, attemptRef);
       }
       if (managedResult.kind === "pending") {
         return {
@@ -206,52 +225,49 @@ export async function removePortfolioPosition(
         };
       }
 
+      stage = "capture";
       requireProfile();
       const afterManaged = await withWalletProfileLock(scope.scopeId, async () => {
         requireProfile();
         return readTerminalTargets({ database, scopeId: scope.scopeId, asset, targets });
       });
-      if (afterManaged.pending || afterManaged.managedTargets.length > 0) {
+      if (
+        afterManaged.pending ||
+        afterManaged.managedTargets.length > 0 ||
+        afterManaged.localTargets.length > 0
+      ) {
         return {
           kind: "pending",
           reason: "managed-removal-pending",
           committedPayoutAmount,
         };
       }
-      if (afterManaged.localTargets.length === 0) {
-        return { kind: "completed", committedPayoutAmount };
-      }
-      return completeLocalRemoval({
-        database,
-        scopeId: scope.scopeId,
-        asset,
-        targets: afterManaged.localTargets,
-        committedPayoutAmount,
-        observedAtMs: input.observedAtMs,
-        requireProfile,
-      });
+      return { kind: "completed", committedPayoutAmount };
     }
 
     if (terminal.localTargets.length === 0) {
       return { kind: "completed", committedPayoutAmount };
     }
+    stage = "local-commit";
     return completeLocalRemoval({
       database,
       scopeId: scope.scopeId,
       asset,
       targets: terminal.localTargets,
       committedPayoutAmount,
+      attemptRef,
       observedAtMs: input.observedAtMs,
       requireProfile,
     });
   } catch (error) {
-    const message = boundedErrorMessage(error);
-    if (message === "The wallet profile changed during removal.") {
+    if (error instanceof BrowserPortfolioProfileChangedError) {
       return { kind: "pending", reason: "profile-changed", committedPayoutAmount: 0 };
     }
-    return removeError(0, message);
+    return removeError(0, stage, attemptRef);
   }
 }
+
+class BrowserPortfolioProfileChangedError extends Error {}
 
 function validateTargets(
   targets: readonly BrowserCanonicalCtfPositionClaimTarget[],
@@ -561,6 +577,7 @@ async function completeLocalRemoval(input: {
   readonly asset: EncryptedWalletBackupV2AssetIdentity;
   readonly targets: readonly BrowserCtfRemoveTarget[];
   readonly committedPayoutAmount: number;
+  readonly attemptRef: string;
   readonly observedAtMs: number | undefined;
   readonly requireProfile: () => void;
 }): Promise<BrowserPortfolioRemoveResult> {
@@ -585,12 +602,12 @@ async function completeLocalRemoval(input: {
         committedPayoutAmount: input.committedPayoutAmount,
         error: null,
       };
-    } catch (error) {
+    } catch {
       return {
         kind: "partial",
         reason: "local-removal-error",
         committedPayoutAmount: input.committedPayoutAmount,
-        error: { code: "remove-failed", message: boundedErrorMessage(error) },
+        error: removeFailure("local-commit", input.attemptRef),
       };
     }
   }
@@ -605,21 +622,26 @@ async function removeManagedProofsInChunks(
     removeManagedProofs(input: {
       readonly asset: EncryptedWalletBackupV2AssetIdentity;
       readonly targets: readonly BrowserCtfRemoveTarget[];
+      readonly localTargets?: readonly BrowserCtfRemoveTarget[];
     }): Promise<BrowserCtfRemoveResult>;
   },
   asset: EncryptedWalletBackupV2AssetIdentity,
   targets: readonly BrowserCtfRemoveTarget[],
+  localTargets: readonly BrowserCtfRemoveTarget[],
 ): Promise<
-  | { readonly kind: "completed" }
-  | { readonly kind: "pending" }
-  | { readonly kind: "error"; readonly message: string }
+  { readonly kind: "completed" } | { readonly kind: "pending" } | { readonly kind: "error" }
 > {
-  for (const chunk of chunkTargets(targets)) {
+  const chunks = chunkTargets(targets);
+  for (const [index, chunk] of chunks.entries()) {
     try {
-      const result = await driver.removeManagedProofs({ asset, targets: chunk });
+      const result = await driver.removeManagedProofs({
+        asset,
+        targets: chunk,
+        ...(index === 0 && localTargets.length > 0 ? { localTargets } : {}),
+      });
       if (result.kind !== "completed") return { kind: "pending" };
-    } catch (error) {
-      return { kind: "error", message: boundedErrorMessage(error) };
+    } catch {
+      return { kind: "error" };
     }
   }
   return { kind: "completed" };
@@ -637,6 +659,7 @@ function chunkTargets(
 
 function claimOutcome(
   claim: BrowserCanonicalCtfPositionClaimResult,
+  attemptRef: string,
 ): BrowserPortfolioRemoveResult | null {
   switch (claim.kind) {
     case "completed":
@@ -657,23 +680,44 @@ function claimOutcome(
       return {
         kind: "error",
         committedPayoutAmount: claim.committedPayoutAmount,
-        error: { code: "remove-failed", message: claim.error.message, claimFailure: claim.error },
+        error: removeFailure("claim", attemptRef, {
+          code: claim.error.code,
+          category: claim.error.category,
+          attemptRef: claim.error.attemptRef,
+          ...(claim.error.operationRef === undefined
+            ? {}
+            : { operationRef: claim.error.operationRef }),
+        }),
       };
   }
   throw new Error("unknown CTF claim result");
 }
 
-function removeError(committedPayoutAmount: number, message: string): BrowserPortfolioRemoveError {
+function removeError(
+  committedPayoutAmount: number,
+  stage: BrowserPortfolioRemoveFailureStage,
+  attemptRef: string,
+): BrowserPortfolioRemoveError {
   return {
     kind: "error",
     committedPayoutAmount,
-    error: { code: "remove-failed", message },
+    error: removeFailure(stage, attemptRef),
   };
 }
 
-function boundedErrorMessage(error: unknown): string {
-  const message = error instanceof Error ? error.message : "Portfolio removal failed.";
-  return message.length > ERROR_MESSAGE_LIMIT
-    ? `${message.slice(0, ERROR_MESSAGE_LIMIT - 1)}…`
-    : message;
+function removeFailure(
+  stage: BrowserPortfolioRemoveFailureStage,
+  attemptRef: string,
+  claimFailure?: BrowserPortfolioRemoveFailure["claimFailure"],
+): BrowserPortfolioRemoveFailure {
+  return {
+    code: "remove-failed",
+    stage,
+    attemptRef,
+    ...(claimFailure === undefined ? {} : { claimFailure }),
+  };
+}
+
+function createBrowserPortfolioRemoveAttemptRef(): string {
+  return globalThis.crypto.randomUUID();
 }

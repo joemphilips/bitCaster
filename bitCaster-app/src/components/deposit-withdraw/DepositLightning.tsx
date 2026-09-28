@@ -12,12 +12,8 @@ interface DepositLightningProps {
   statusMessage?: ReactNode;
   amountSats: number;
   amountLabel?: string;
-  amountFiat: string;
-  fiatSymbol: string;
-  showFiatPrimary: boolean;
   onMintChange?: (mintId: string) => void;
   onNumpadPress?: (key: string) => void;
-  onToggleCurrency?: () => void;
   onCreateInvoice?: () => void;
   onClose?: () => void;
 }
@@ -29,12 +25,8 @@ export function DepositLightning({
   statusMessage,
   amountSats,
   amountLabel,
-  amountFiat,
-  fiatSymbol,
-  showFiatPrimary,
   onMintChange,
   onNumpadPress,
-  onToggleCurrency,
   onCreateInvoice,
   onClose,
 }: DepositLightningProps) {
@@ -71,15 +63,7 @@ export function DepositLightning({
 
           {/* Amount */}
           <div className="flex flex-1 items-center justify-center">
-            <AmountDisplay
-              amountSats={amountSats}
-              amountLabel={amountLabel}
-              amountFiat={amountFiat}
-              fiatSymbol={fiatSymbol}
-              showFiatPrimary={showFiatPrimary}
-              showFiatToggle
-              onToggleCurrency={onToggleCurrency}
-            />
+            <AmountDisplay amountSats={amountSats} amountLabel={amountLabel} />
           </div>
 
           {/* Numpad */}

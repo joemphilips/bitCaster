@@ -135,6 +135,7 @@ export function Settings({
   onAddMint,
   onRemoveMint,
   onViewSeedPhrase,
+  onReplaceWallet,
   onMintClick,
   onSignerModeChange,
   onNsecSubmit,
@@ -585,6 +586,20 @@ export function Settings({
               <Eye className="w-4 h-4" />
               View Seed Phrase
             </button>
+            {onReplaceWallet && (
+              <>
+                <button
+                  type="button"
+                  onClick={onReplaceWallet}
+                  className="mt-3 flex items-center gap-2 rounded-lg border border-slate-300 px-4 py-2.5 text-sm font-medium text-slate-800 transition-colors hover:bg-slate-100 dark:border-slate-600 dark:text-slate-100 dark:hover:bg-slate-700"
+                >
+                  {t("wallet.replaceWallet")}
+                </button>
+                <p className="mt-2 text-sm text-slate-600 dark:text-slate-400">
+                  {t("wallet.replaceWalletHint")}
+                </p>
+              </>
+            )}
           </div>
         )}
       </CategoryCard>

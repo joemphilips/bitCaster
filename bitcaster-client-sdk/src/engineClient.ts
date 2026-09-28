@@ -397,11 +397,7 @@ export interface QueryMarketsResponse {
 
 export type PriceHistoryTimeframe = '1h' | '24h' | '7d' | '30d' | 'all'
 
-export interface MarketPriceHistoryPoint {
-  timestamp: string
-  price: number
-  volumeSubunits: number
-}
+export type MarketPriceHistoryPoint = components['schemas']['MarketPriceHistoryPoint']
 
 export interface MarketOutcomePriceHistory {
   outcomeId: string

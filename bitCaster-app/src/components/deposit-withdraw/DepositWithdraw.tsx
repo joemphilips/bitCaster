@@ -48,12 +48,8 @@ export function DepositWithdraw(props: DepositWithdrawProps) {
           statusMessage={statusMessage}
           amountSats={props.amountSats}
           amountLabel={props.amountLabel}
-          amountFiat={props.amountFiat}
-          fiatSymbol={props.fiatSymbol}
-          showFiatPrimary={props.showFiatPrimary}
           onMintChange={props.onMintChange}
           onNumpadPress={props.onNumpadPress}
-          onToggleCurrency={props.onToggleCurrency}
           onCreateInvoice={props.onCreateInvoice}
           onClose={props.onClose}
         />
@@ -66,12 +62,8 @@ export function DepositWithdraw(props: DepositWithdrawProps) {
           selectedMintId={props.selectedMintId}
           statusMessage={statusMessage}
           amountSats={props.amountSats}
-          amountFiat={props.amountFiat}
-          fiatSymbol={props.fiatSymbol}
-          showFiatPrimary={props.showFiatPrimary}
           onMintChange={props.onMintChange}
           onNumpadPress={props.onNumpadPress}
-          onToggleCurrency={props.onToggleCurrency}
           onSendEcash={props.onSendEcash}
           onReclaimEcash={props.onReclaimEcash}
           hasPendingBearerReclaim={props.hasPendingBearerReclaim}

@@ -26,6 +26,26 @@ afterEach(() => {
 });
 
 describe("TokenDisplay NUT-16 QR presentation", () => {
+  it("keeps the token visible until handoff is explicitly acknowledged", async () => {
+    nut16Mock.selectNut16QrPresentation.mockReturnValue({ kind: "static", encodedBytes: 12 });
+    const onAcknowledgeHandoff = vi.fn();
+    const onClose = vi.fn();
+    render(
+      <TokenDisplay
+        token="cashuB-static"
+        amountSats={1.001}
+        proofCount={1}
+        onClose={onClose}
+        onAcknowledgeHandoff={onAcknowledgeHandoff}
+      />,
+    );
+    expect(screen.getByTestId("token-qr")).toHaveAttribute("data-value", "cashuB-static");
+    expect(screen.getByText("1.001 sats")).toBeInTheDocument();
+    expect(onAcknowledgeHandoff).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole("button", { name: "I saved or sent the token" }));
+    expect(onAcknowledgeHandoff).toHaveBeenCalledOnce();
+    expect(onClose).not.toHaveBeenCalled();
+  });
   it("uses static presentation without constructing an animated encoder", () => {
     nut16Mock.selectNut16QrPresentation.mockReturnValue({ kind: "static", encodedBytes: 12 });
 

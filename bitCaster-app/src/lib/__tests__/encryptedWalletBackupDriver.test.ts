@@ -23,21 +23,33 @@ import {
 } from "@bitcaster/client-sdk/durableCustody";
 import { BitcasterDB } from "../../stores/proof-db";
 import { browserWalletDatabaseName } from "../browserWalletProfile";
-import { createEncryptedWalletBackupV2DesiredAssetRow } from "../../stores/browser-encrypted-wallet-backup-v2-desired-asset";
+import {
+  createEncryptedWalletBackupV2DesiredAssetRow,
+  createEncryptedWalletBackupV2RemovalIntent,
+} from "../../stores/browser-encrypted-wallet-backup-v2-desired-asset";
 import { EncryptedWalletBackupV2DexieAuthorityStore } from "../../stores/encrypted-wallet-backup-v2-db";
 import { encodeCanonicalBackupCbor } from "@bitcaster/client-sdk/encryptedWalletBackupCbor";
 import {
   createBrowserEncryptedWalletBackupV2RuntimeDriver,
   encryptedWalletBackupDriverFailureSite,
   encryptedWalletBackupV2CurrentInventoryUrl,
+  encryptedWalletBackupV2WalletLockName,
   resolveEncryptedWalletBackupV2EnrollmentEpoch,
 } from "../encryptedWalletBackupDriver";
-import type { BrowserEncryptedWalletBackupV2RecoveryInput } from "../encryptedWalletBackupDriver";
+import type {
+  BrowserEncryptedWalletBackupV2RecoveryCallback,
+  BrowserEncryptedWalletBackupV2RecoveryInput,
+} from "../encryptedWalletBackupDriver";
 import {
   beginBrowserWalletBackupAuthenticationSession,
   BrowserWalletRecoveryRequiredError,
   requireBrowserWalletNewWritePermission,
 } from "../browserWalletNewWritePermission";
+import {
+  BrowserEncryptedWalletBackupV2SeedHandoffRefusal,
+  handoffBrowserEncryptedWalletBackupV2Seed,
+} from "../browserEncryptedWalletBackupV2SeedHandoff";
+import { withWalletProfileLock } from "../walletProfileLock";
 
 const configuration = {
   realm: "backup.example",
@@ -54,12 +66,471 @@ const configuration = {
 const databases: BitcasterDB[] = [];
 let nextSeedByte = 8;
 
+type TestLockRequest = {
+  readonly name: string;
+  readonly options: LockOptions;
+  readonly callback: LockGrantedCallback<unknown>;
+  readonly resolve: (value: unknown) => void;
+  readonly reject: (error: unknown) => void;
+  abort?: () => void;
+};
+
+class SharedTestLockManager implements Pick<LockManager, "request"> {
+  readonly #held = new Set<string>();
+  readonly #queued = new Map<string, TestLockRequest[]>();
+  readonly #grantCounts = new Map<string, number>();
+  readonly #queueCounts = new Map<string, number>();
+  readonly #grantWaiters = new Map<
+    string,
+    { readonly count: number; readonly resolve: () => void }[]
+  >();
+  readonly #queueWaiters = new Map<
+    string,
+    { readonly count: number; readonly resolve: () => void }[]
+  >();
+
+  request<T>(name: string, callback: LockGrantedCallback<T>): Promise<T>;
+  request<T>(name: string, options: LockOptions, callback: LockGrantedCallback<T>): Promise<T>;
+  request<T>(
+    name: string,
+    optionsOrCallback: LockOptions | LockGrantedCallback<T>,
+    callback?: LockGrantedCallback<T>,
+  ): Promise<T> {
+    const options = typeof optionsOrCallback === "function" ? {} : optionsOrCallback;
+    const grant = typeof optionsOrCallback === "function" ? optionsOrCallback : callback;
+    if (grant === undefined) return Promise.reject(new Error("lock grant callback is required"));
+    return new Promise<T>((resolve, reject) => {
+      const request: TestLockRequest = {
+        name,
+        options,
+        callback: async (lock) => grant(lock),
+        resolve: (value) => resolve(value as T),
+        reject,
+      };
+      if (options.signal?.aborted) {
+        reject(new DOMException("Lock request was aborted", "AbortError"));
+      } else if (options.ifAvailable && this.#held.has(name)) {
+        void Promise.resolve(grant(null)).then(resolve, reject);
+      } else if (this.#held.has(name)) {
+        this.#enqueue(request);
+      } else {
+        this.#grant(request);
+      }
+    });
+  }
+
+  grantCount(name: string): number {
+    return this.#grantCounts.get(name) ?? 0;
+  }
+
+  isHeld(name: string): boolean {
+    return this.#held.has(name);
+  }
+
+  async waitForGrantWithin(name: string, count: number, timeoutMs: number): Promise<boolean> {
+    if (this.grantCount(name) >= count) return true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        new Promise<boolean>((resolve) => {
+          const waiters = this.#grantWaiters.get(name) ?? [];
+          waiters.push({ count, resolve: () => resolve(true) });
+          this.#grantWaiters.set(name, waiters);
+        }),
+        new Promise<boolean>((resolve) => {
+          timer = setTimeout(() => resolve(false), timeoutMs);
+        }),
+      ]);
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
+  }
+
+  async waitForQueuedWithin(name: string, count: number, timeoutMs: number): Promise<boolean> {
+    if ((this.#queueCounts.get(name) ?? 0) >= count) return true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        new Promise<boolean>((resolve) => {
+          const waiters = this.#queueWaiters.get(name) ?? [];
+          waiters.push({ count, resolve: () => resolve(true) });
+          this.#queueWaiters.set(name, waiters);
+        }),
+        new Promise<boolean>((resolve) => {
+          timer = setTimeout(() => resolve(false), timeoutMs);
+        }),
+      ]);
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
+  }
+
+  #enqueue(request: TestLockRequest): void {
+    const queue = this.#queued.get(request.name) ?? [];
+    queue.push(request);
+    this.#queued.set(request.name, queue);
+    const queueCount = (this.#queueCounts.get(request.name) ?? 0) + 1;
+    this.#queueCounts.set(request.name, queueCount);
+    const waiters = this.#queueWaiters.get(request.name) ?? [];
+    for (const waiter of waiters.filter(({ count }) => count <= queueCount)) waiter.resolve();
+    this.#queueWaiters.set(
+      request.name,
+      waiters.filter(({ count }) => count > queueCount),
+    );
+    if (request.options.signal !== undefined) {
+      request.abort = () => {
+        const pending = this.#queued.get(request.name);
+        if (pending === undefined) return;
+        const index = pending.indexOf(request);
+        if (index >= 0) pending.splice(index, 1);
+        request.reject(new DOMException("Lock request was aborted", "AbortError"));
+      };
+      request.options.signal.addEventListener("abort", request.abort, { once: true });
+    }
+  }
+
+  #grant(request: TestLockRequest): void {
+    if (request.options.signal?.aborted) {
+      request.reject(new DOMException("Lock request was aborted", "AbortError"));
+      return;
+    }
+    const { name, options } = request;
+    this.#held.add(name);
+    const grantCount = this.grantCount(name) + 1;
+    this.#grantCounts.set(name, grantCount);
+    const waiters = this.#grantWaiters.get(name) ?? [];
+    for (const waiter of waiters.filter(({ count }) => count <= grantCount)) waiter.resolve();
+    this.#grantWaiters.set(
+      name,
+      waiters.filter(({ count }) => count > grantCount),
+    );
+    if (request.abort !== undefined) {
+      options.signal?.removeEventListener("abort", request.abort);
+    }
+    const lock = { name, mode: options.mode ?? "exclusive" } as Lock;
+    void Promise.resolve()
+      .then(() => request.callback(lock))
+      .then(request.resolve, request.reject)
+      .finally(() => {
+        this.#held.delete(name);
+        const queue = this.#queued.get(name);
+        const next = queue?.shift();
+        if (queue?.length === 0) this.#queued.delete(name);
+        if (next !== undefined) this.#grant(next);
+      });
+  }
+}
+
 afterEach(async () => {
   vi.restoreAllMocks();
   vi.unstubAllEnvs();
   for (const database of databases.splice(0)) {
     database.close();
     await database.delete();
+  }
+});
+
+it("quiesces an active backup leader before seed handoff requests its wallet lock", async () => {
+  const fixture = await enrollmentFixture();
+  await persistReadyHead(fixture);
+  const lockManager = new SharedTestLockManager();
+  const walletLockName = encryptedWalletBackupV2WalletLockName({
+    realm: configuration.realm,
+    walletId: fixture.keyHandle.walletId,
+  });
+  const driver = createRuntime(
+    fixture,
+    vi.fn().mockResolvedValue({ kind: "idle" }),
+    runtimeRemote(),
+    () => true,
+    undefined,
+    {
+      hold: async (name, signal, onLeader) =>
+        lockManager.request(name, { mode: "exclusive", signal }, async () => {
+          if (!signal.aborted) await onLeader();
+        }),
+    },
+  );
+  let handoff: Promise<void> | undefined;
+
+  try {
+    expect(await lockManager.waitForGrantWithin(walletLockName, 1, 1_000)).toBe(true);
+    await driver.quiesceForSeedHandoff();
+    expect(lockManager.isHeld(walletLockName)).toBe(false);
+    handoff = handoffBrowserEncryptedWalletBackupV2Seed({
+      database: fixture.database,
+      scopeId: fixture.scopeId,
+      isCurrentProfile: () => true,
+      assertNoPendingOrders: () => undefined,
+      lockManager,
+      invalidateOldProfile: () => undefined,
+      activateNewProfile: async () => undefined,
+      restoreOldProfile: async () => undefined,
+    });
+
+    expect(await lockManager.waitForGrantWithin(walletLockName, 2, 250)).toBe(true);
+    await expect(handoff).resolves.toBeUndefined();
+  } finally {
+    driver.stop();
+    await handoff?.catch(() => undefined);
+  }
+});
+
+it("cancels recovery waiting for the profile lock before releasing leadership", async () => {
+  const fixture = await enrollmentFixture();
+  await persistHead(fixture, "recovery-required", "genuine-conflict", 0);
+  const lockManager = new SharedTestLockManager();
+  const profileLockName = `bitcaster:wallet-profile:${fixture.scopeId}`;
+  const walletLockName = encryptedWalletBackupV2WalletLockName({
+    realm: configuration.realm,
+    walletId: fixture.keyHandle.walletId,
+  });
+  const releaseProfileLock = deferred<void>();
+  const profileOperation = lockManager.request(
+    profileLockName,
+    { mode: "exclusive" },
+    () => releaseProfileLock.promise,
+  );
+  const recoveryStarted = deferred<void>();
+  const driver = createRuntime(
+    fixture,
+    vi.fn().mockResolvedValue({ kind: "idle" }),
+    runtimeRemote(),
+    () => true,
+    undefined,
+    {
+      hold: async (name, signal, onLeader) =>
+        lockManager.request(name, { mode: "exclusive", signal }, async () => {
+          if (!signal.aborted) await onLeader();
+        }),
+    },
+    undefined,
+    async ({ signal }) => {
+      recoveryStarted.resolve();
+      await withWalletProfileLock(fixture.scopeId, async () => undefined, lockManager, signal);
+    },
+  );
+
+  try {
+    expect(await lockManager.waitForGrantWithin(profileLockName, 1, 1_000)).toBe(true);
+    expect(await lockManager.waitForGrantWithin(walletLockName, 1, 1_000)).toBe(true);
+    await recoveryStarted.promise;
+    expect(await lockManager.waitForQueuedWithin(profileLockName, 1, 1_000)).toBe(true);
+
+    await driver.quiesceForSeedHandoff();
+
+    expect(lockManager.isHeld(walletLockName)).toBe(false);
+    expect(lockManager.isHeld(profileLockName)).toBe(true);
+  } finally {
+    driver.stop();
+    releaseProfileLock.resolve();
+    await profileOperation;
+  }
+});
+
+it("drains a queued removeManagedProofs call before releasing leadership", async () => {
+  const fixture = await readyEnrolledFixture();
+  const lockManager = new SharedTestLockManager();
+  const profileLockName = `bitcaster:wallet-profile:${fixture.scopeId}`;
+  const walletLockName = encryptedWalletBackupV2WalletLockName({
+    realm: configuration.realm,
+    walletId: fixture.keyHandle.walletId,
+  });
+  const releaseProfileLock = deferred<void>();
+  const profileOperation = lockManager.request(
+    profileLockName,
+    { mode: "exclusive" },
+    () => releaseProfileLock.promise,
+  );
+  const removeQueued = deferred<void>();
+  const removeStart = vi
+    .spyOn(removeCoordinator, "startBrowserCtfRemove")
+    .mockImplementation(async (input) => {
+      removeQueued.resolve();
+      await withWalletProfileLock(input.scopeId, async () => undefined, lockManager, input.signal);
+      return { kind: "started", intentId: "test-remove" };
+    });
+  const driver = createRuntime(
+    fixture,
+    vi.fn().mockResolvedValue({ kind: "idle" }),
+    runtimeRemote(),
+    () => true,
+    undefined,
+    {
+      hold: async (name, signal, onLeader) =>
+        lockManager.request(name, { mode: "exclusive", signal }, async () => {
+          if (!signal.aborted) await onLeader();
+        }),
+    },
+    undefined,
+    undefined,
+    lockManager,
+  );
+  const asset = createEncryptedWalletBackupV2AssetIdentity({
+    mintUrl: "https://mint.example",
+    unit: "msat",
+    asset: {
+      kind: "ctf",
+      conditionId: "11".repeat(32),
+      outcomeLabel: "Alpha",
+      outcomeCollectionId: "22".repeat(32),
+      registeredAt: 1,
+      finalExpiry: 2,
+    },
+  });
+  const removal = driver.removeManagedProofs({
+    asset,
+    targets: [{ proofId: "33".repeat(32), proofFingerprint: "44".repeat(32), proofRevision: 1 }],
+  });
+  const removalResult = removal.then(
+    () => undefined,
+    (error: unknown) => error,
+  );
+
+  try {
+    expect(await lockManager.waitForGrantWithin(profileLockName, 1, 1_000)).toBe(true);
+    expect(await lockManager.waitForGrantWithin(walletLockName, 1, 1_000)).toBe(true);
+    await removeQueued.promise;
+    expect(await lockManager.waitForQueuedWithin(profileLockName, 1, 1_000)).toBe(true);
+
+    await driver.quiesceForSeedHandoff();
+
+    expect(lockManager.isHeld(walletLockName)).toBe(false);
+    expect(lockManager.isHeld(profileLockName)).toBe(true);
+    await expect(removalResult).resolves.toMatchObject({ name: "AbortError" });
+    expect(removeStart).toHaveBeenCalledOnce();
+  } finally {
+    driver.stop();
+    releaseProfileLock.resolve();
+    await profileOperation;
+    await removalResult;
+  }
+});
+
+it("cancels queued CTF removal finalization before releasing leadership", async () => {
+  const fixture = await readyEnrolledFixture();
+  const desiredAsset = await putRemovalDesired(fixture, "acknowledged");
+  const rawDesired = await fixture.database.encryptedWalletBackupV2DesiredAssets.get([
+    fixture.scopeId,
+    desiredAsset.localAssetKey,
+  ]);
+  if (rawDesired === undefined) throw new Error("test desired asset is absent");
+  await fixture.database.encryptedWalletBackupV2DesiredAssets.put({
+    ...rawDesired,
+    removalIntent: createEncryptedWalletBackupV2RemovalIntent({
+      intentId: "queued-finalization",
+      createdAtMs: 1,
+      realm: configuration.realm,
+      walletId: fixture.keyHandle.walletId,
+      enrollmentEpoch: 1,
+      expectedHeadVersion: 0,
+      expectedActiveSetDigest: "aa".repeat(32),
+      targetCustodyRevision: rawDesired.custodyRevision,
+      proofs: [
+        {
+          proofId: "55".repeat(32),
+          proofFingerprint: "66".repeat(32),
+          proofRevision: 1,
+          proofCommitment: "77".repeat(32),
+        },
+      ],
+      acknowledgedExclusionEvidence: {
+        kind: "current-head",
+        headVersion: 0,
+        activeSetDigest: "aa".repeat(32),
+        bundleId: null,
+        bundleDescriptorDigest: null,
+        acknowledgedAtMs: 1,
+      },
+    }),
+  });
+  const lockManager = new SharedTestLockManager();
+  const profileLockName = `bitcaster:wallet-profile:${fixture.scopeId}`;
+  const walletLockName = encryptedWalletBackupV2WalletLockName({
+    realm: configuration.realm,
+    walletId: fixture.keyHandle.walletId,
+  });
+  const releaseProfileLock = deferred<void>();
+  const profileOperation = lockManager.request(
+    profileLockName,
+    { mode: "exclusive" },
+    () => releaseProfileLock.promise,
+  );
+  const worker = vi.fn().mockResolvedValue({ kind: "idle" });
+  const driver = createRuntime(
+    fixture,
+    worker,
+    runtimeRemote(),
+    () => true,
+    undefined,
+    {
+      hold: async (name, signal, onLeader) =>
+        lockManager.request(name, { mode: "exclusive", signal }, async () => {
+          if (!signal.aborted) await onLeader();
+        }),
+    },
+    undefined,
+    undefined,
+    lockManager,
+  );
+
+  try {
+    expect(await lockManager.waitForGrantWithin(profileLockName, 1, 1_000)).toBe(true);
+    expect(await lockManager.waitForGrantWithin(walletLockName, 1, 1_000)).toBe(true);
+    await vi.waitFor(() => expect(worker).toHaveBeenCalled());
+    expect(await lockManager.waitForQueuedWithin(profileLockName, 1, 1_000)).toBe(true);
+
+    await driver.quiesceForSeedHandoff();
+
+    expect(lockManager.isHeld(walletLockName)).toBe(false);
+    expect(lockManager.isHeld(profileLockName)).toBe(true);
+  } finally {
+    driver.stop();
+    releaseProfileLock.resolve();
+    await profileOperation;
+  }
+});
+
+it("refuses a seed handoff when another tab holds a wallet lock", async () => {
+  const fixture = await enrollmentFixture();
+  await persistReadyHead(fixture);
+  const lockManager = new SharedTestLockManager();
+  const walletLockName = encryptedWalletBackupV2WalletLockName({
+    realm: configuration.realm,
+    walletId: fixture.keyHandle.walletId,
+  });
+  const releaseOtherTab = deferred<void>();
+  const otherTabWork = lockManager.request(
+    walletLockName,
+    { mode: "exclusive" },
+    () => releaseOtherTab.promise,
+  );
+  expect(await lockManager.waitForGrantWithin(walletLockName, 1, 1_000)).toBe(true);
+  const handoff = handoffBrowserEncryptedWalletBackupV2Seed({
+    database: fixture.database,
+    scopeId: fixture.scopeId,
+    isCurrentProfile: () => true,
+    assertNoPendingOrders: () => undefined,
+    lockManager,
+    invalidateOldProfile: () => undefined,
+    activateNewProfile: async () => undefined,
+    restoreOldProfile: async () => undefined,
+  });
+
+  try {
+    const result = await Promise.race([
+      handoff.then(
+        () => null,
+        (error: unknown) => error,
+      ),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 250)),
+    ]);
+    expect(result).toBeInstanceOf(BrowserEncryptedWalletBackupV2SeedHandoffRefusal);
+    expect(result).toMatchObject({ code: "active-wallet-work" });
+  } finally {
+    releaseOtherTab.resolve();
+    await otherTabWork;
+    await handoff.catch(() => undefined);
   }
 });
 
@@ -1875,6 +2346,8 @@ function createRuntime(
     hold: (name: string, signal: AbortSignal, task: () => Promise<void>) => Promise<void>;
   } = immediateLeadership,
   scheduleManagedRemoveTimeout?: (task: () => void, delayMilliseconds: number) => () => void,
+  recovery?: BrowserEncryptedWalletBackupV2RecoveryCallback,
+  lockManager?: Pick<LockManager, "request">,
 ) {
   return createBrowserEncryptedWalletBackupV2RuntimeDriver({
     configuration,
@@ -1887,6 +2360,8 @@ function createRuntime(
     scheduleRetry,
     scheduleManagedRemoveTimeout,
     leadership,
+    recovery,
+    lockManager,
   });
 }
 

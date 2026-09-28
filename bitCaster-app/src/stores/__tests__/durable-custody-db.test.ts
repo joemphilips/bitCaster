@@ -599,67 +599,146 @@ describe("browser durable custody adapter", () => {
     expect(await database.custodyProofs.get([scope.scopeId, refund.proofId])).toBeUndefined();
   });
 
-  it("commits authenticated losing CTF evidence with retained proof, cache, and backup revision", async () => {
-    const { database, adapter, scope, owner, source, predecessor } =
-      await terminalFixture("losing");
-    const terminalOwner = observedOwner(owner, 20);
-    const exactRejection = terminalRejection(source);
-    const operationId = source.record.operation.operationId;
+  it.each(["exact", "missing"] as const)(
+    "commits authenticated losing CTF evidence with retained proof, %s cache metadata, and backup revision",
+    async (cacheMetadata) => {
+      const { database, adapter, scope, owner, source, predecessor } = await terminalFixture(
+        "losing",
+        cacheMetadata,
+      );
+      const terminalOwner = observedOwner(owner, 20);
+      const exactRejection = terminalRejection(source);
+      const operationId = source.record.operation.operationId;
 
-    await adapter.transact(selection(scope, terminalOwner, operationId, 0), (transaction) =>
-      transaction.reconcileAuthenticatedTerminalMintRejection!({
-        operationId,
-        expectedRevision: 0,
-        authorization: terminalOwner,
-        rejectionHandle: `terminal:${exactRejection.fingerprint}`,
-        rejectionFingerprint: exactRejection.fingerprint,
-        exactRejection,
-        code: 13015,
-        predecessorDisposition: "retain",
-      }),
-    );
+      await adapter.transact(selection(scope, terminalOwner, operationId, 0), (transaction) =>
+        transaction.reconcileAuthenticatedTerminalMintRejection!({
+          operationId,
+          expectedRevision: 0,
+          authorization: terminalOwner,
+          rejectionHandle: `terminal:${exactRejection.fingerprint}`,
+          rejectionFingerprint: exactRejection.fingerprint,
+          exactRejection,
+          code: 13015,
+          predecessorDisposition: "retain",
+        }),
+      );
 
-    const retained = await adapter.readProof(scope.scopeId, predecessor.proofId);
-    expect(retained).toMatchObject({
-      selectability: "verified-losing",
-      reservationOperationId: null,
-      revision: 2,
-    });
-    expect(retained?.proofFingerprint).toBe(predecessor.proofFingerprint);
-    expect(retained?.proofBody.byteLength).toBe(predecessor.proofBody.byteLength);
-    expect(await database.custodyReservations.count()).toBe(0);
-    expect((await adapter.readOperation(scope, operationId))?.operation.state).toBe("aborted");
-    const snapshot = await adapter.readOperationSnapshot(scope, operationId);
-    expect(
-      snapshot?.artifacts.some(
-        ({ reference }) => reference.fingerprint === exactRejection.fingerprint,
-      ),
-    ).toBe(true);
-    expect(
-      await database.custodyProofBackupAuthorities.get([scope.scopeId, predecessor.proofId]),
-    ).toMatchObject({
-      proofState: "verified-losing",
-      terminalOperationId: operationId,
-      updatedAtMs: 20,
-    });
-    expect(await database.proofs.get(source.operation.inputs[0]!.secret)).toMatchObject({
-      terminalOperationId: operationId,
-    });
-    expect(
-      (await database.proofs.get(source.operation.inputs[0]!.secret))?.reservedBy,
-    ).toBeUndefined();
-    expect(await database.encryptedWalletBackupV2DesiredAssets.toArray()).toMatchObject([
-      { custodyRevision: "2", activeProofCount: 1, desiredAction: "replace" },
-    ]);
-    const databaseName = database.name;
-    database.close();
-    const reopenedDatabase = new BitcasterDB(databaseName);
-    openDatabases.splice(openDatabases.indexOf(database), 1, reopenedDatabase);
-    const reopened = new BrowserDurableCustodyAdapter(reopenedDatabase);
-    expect((await reopened.readProof(scope.scopeId, predecessor.proofId))?.selectability).toBe(
-      "verified-losing",
-    );
-  });
+      const retained = await adapter.readProof(scope.scopeId, predecessor.proofId);
+      expect(retained).toMatchObject({
+        selectability: "verified-losing",
+        reservationOperationId: null,
+        revision: 2,
+      });
+      expect(retained?.proofFingerprint).toBe(predecessor.proofFingerprint);
+      expect(retained?.proofBody.byteLength).toBe(predecessor.proofBody.byteLength);
+      expect(await database.custodyReservations.count()).toBe(0);
+      expect((await adapter.readOperation(scope, operationId))?.operation.state).toBe("aborted");
+      const snapshot = await adapter.readOperationSnapshot(scope, operationId);
+      expect(
+        snapshot?.artifacts.some(
+          ({ reference }) => reference.fingerprint === exactRejection.fingerprint,
+        ),
+      ).toBe(true);
+      expect(
+        await database.custodyProofBackupAuthorities.get([scope.scopeId, predecessor.proofId]),
+      ).toMatchObject({
+        proofState: "verified-losing",
+        terminalOperationId: operationId,
+        updatedAtMs: 20,
+      });
+      expect(await database.proofs.get(source.operation.inputs[0]!.secret)).toMatchObject({
+        id: source.operation.inputs[0]!.id,
+        amount: source.operation.inputs[0]!.amount,
+        secret: source.operation.inputs[0]!.secret,
+        C: source.operation.inputs[0]!.C,
+        conditionId: TERMINAL_CONDITION,
+        outcomeCollection: "YES",
+        terminalOperationId: operationId,
+      });
+      expect(
+        (await database.proofs.get(source.operation.inputs[0]!.secret))?.reservedBy,
+      ).toBeUndefined();
+      expect(await database.encryptedWalletBackupV2DesiredAssets.toArray()).toMatchObject([
+        { custodyRevision: "2", activeProofCount: 1, desiredAction: "replace" },
+      ]);
+      const databaseName = database.name;
+      database.close();
+      const reopenedDatabase = new BitcasterDB(databaseName);
+      openDatabases.splice(openDatabases.indexOf(database), 1, reopenedDatabase);
+      const reopened = new BrowserDurableCustodyAdapter(reopenedDatabase);
+      expect((await reopened.readProof(scope.scopeId, predecessor.proofId))?.selectability).toBe(
+        "verified-losing",
+      );
+    },
+  );
+
+  it.each([
+    { label: "partial metadata", cacheMetadata: "partial" as const },
+    { label: "conflicting metadata", cacheMetadata: "conflicting" as const },
+    {
+      label: "missing metadata and a foreign amount",
+      cacheMetadata: "missing" as const,
+      mismatch: "amount" as const,
+    },
+    {
+      label: "missing metadata and a foreign reservation",
+      cacheMetadata: "missing" as const,
+      mismatch: "reservedBy" as const,
+    },
+    {
+      label: "missing metadata and a foreign terminal owner",
+      cacheMetadata: "missing" as const,
+      mismatch: "terminalOperationId" as const,
+    },
+  ])(
+    "keeps a locked predecessor when terminal legacy cache has $label",
+    async ({ cacheMetadata, mismatch }) => {
+      const { database, adapter, scope, owner, source, predecessor } = await terminalFixture(
+        `invalid-cache-${cacheMetadata}`,
+        cacheMetadata,
+      );
+      const operationId = source.record.operation.operationId;
+      const proofSecret = source.operation.inputs[0]!.secret;
+      if (mismatch !== undefined) {
+        const cached = await database.proofs.get(proofSecret);
+        if (!cached) throw new Error("terminal legacy cache fixture is missing");
+        const foreignCache =
+          mismatch === "amount"
+            ? { ...cached, amount: cached.amount + 1 }
+            : mismatch === "reservedBy"
+              ? { ...cached, reservedBy: "foreign-operation" }
+              : { ...cached, terminalOperationId: "foreign-operation" };
+        await database.proofs.put(foreignCache);
+      }
+      const cachedBefore = await database.proofs.get(proofSecret);
+      const terminalOwner = observedOwner(owner, 20);
+      const exactRejection = terminalRejection(source);
+
+      await expect(
+        adapter.transact(selection(scope, terminalOwner, operationId, 0), (transaction) =>
+          transaction.reconcileAuthenticatedTerminalMintRejection!({
+            operationId,
+            expectedRevision: 0,
+            authorization: terminalOwner,
+            rejectionHandle: `terminal:${exactRejection.fingerprint}`,
+            rejectionFingerprint: exactRejection.fingerprint,
+            exactRejection,
+            code: 13015,
+            predecessorDisposition: "retain",
+          }),
+        ),
+      ).rejects.toThrow();
+
+      expect(await database.proofs.get(proofSecret)).toEqual(cachedBefore);
+      expect((await adapter.readProof(scope.scopeId, predecessor.proofId))?.selectability).toBe(
+        "locked",
+      );
+      expect((await adapter.readOperation(scope, operationId))?.operation.state).toBe(
+        "dispatch-intent",
+      );
+      expect(await database.custodyReservations.count()).toBe(1);
+    },
+  );
 
   it("replays a remote-sealed losing CTF proof without a local keyset", async () => {
     const fixture = await keysetFreeSuccessorReplayFixture("verified-losing", "remote-terminal");
@@ -2027,7 +2106,10 @@ async function stageSourceResult(
   return { source, predecessor, authorizationProof, successor, resultFingerprint };
 }
 
-async function terminalFixture(suffix: string) {
+async function terminalFixture(
+  suffix: string,
+  cacheMetadata: "exact" | "missing" | "partial" | "conflicting" = "exact",
+) {
   const database = createDatabase();
   const adapter = new BrowserDurableCustodyAdapter(database);
   const scope = walletScope();
@@ -2096,17 +2178,28 @@ async function terminalFixture(suffix: string) {
       activeProofCount: 1,
     }),
   );
+  const cacheMetadataFields =
+    cacheMetadata === "missing"
+      ? {}
+      : cacheMetadata === "conflicting"
+        ? { conditionId: "bb".repeat(32), outcomeCollection: "YES" }
+        : { conditionId: TERMINAL_CONDITION, outcomeCollection: "YES" };
   await database.proofs.put(
     storedProofRow({
       ...(source.operation.inputs[0] as Proof),
       mintUrl: MINT,
       unit: "msat",
       baseAsset: "sat",
-      conditionId: TERMINAL_CONDITION,
-      outcomeCollection: "YES",
+      ...cacheMetadataFields,
       reservedBy: source.record.operation.operationId,
     }),
   );
+  if (cacheMetadata === "partial") {
+    const cached = await database.proofs.get(source.operation.inputs[0]!.secret);
+    if (!cached) throw new Error("terminal legacy cache fixture is missing");
+    delete cached.outcomeCollection;
+    await database.proofs.put(cached);
+  }
   await adapter.transact(
     selection(scope, owner, source.record.operation.operationId, null),
     (transaction) => bindDurableCustodyProofOperation(transaction, source.record, source.artifacts),

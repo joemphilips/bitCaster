@@ -34,6 +34,20 @@ to your wallet by paying a Lightning invoice or importing a Cashu token from
 that mint. You can withdraw ordinary ecash by paying a Lightning invoice
 through the mint. Check the amount and estimated fees before confirmation.
 
+The success screen appears after a confirmed receipt or Lightning payment.
+A pending or failed payment is not a success.
+
+When you import a conditional token, the wallet asks the mint to replace it
+with tokens for the same market position. Mint fees can reduce the amount
+received. Pasting the token alone does not complete receipt. Keep browser
+data while receipt is pending so the wallet can recover an uncertain result.
+
+To send ecash, copy or save the displayed token before you acknowledge the
+handoff. The token screen does not close automatically. Acknowledging the
+handoff does not prove that the recipient redeemed the token. It does not
+clear the wallet's pending-send recovery record. Treat the token as cash:
+share it only with the intended recipient.
+
 Adding funds to your wallet is not the same as funding a market's bot.
 [Bot funding](/user-guide/core-concepts/funding-bot-liquidity/) is a separate,
 non-refundable subsidy. It does not add to your spendable wallet balance.

@@ -9,13 +9,13 @@ The `/api/v1/markets/query` endpoint returns the public market catalogue used by
 
 The catalogue exposes lifetime/display metrics for market cards and discovery pages:
 
-| Field                    | Type    | Meaning                                                                                                                                                                                                                                                                                    |
-| ------------------------ | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `ammBotBudgetSubunits`   | `int64` | Total confirmed post-creation funding after receive fees, in msat. Clients display it as **Total funding**. New confirmed payments increase it. Trades do not reduce it. It is not current order-book liquidity, remaining bot inventory, a depositor position, or a withdrawable balance. |
-| `fundingRevision`        | `string \| null` | Exact event order that produced `ammBotBudgetSubunits`. It is null before the first confirmed funding payment. |
-| `liquiditySubunits`      | `int64` | Total face amount of currently resting orders across the market's order books, denominated in msat.                                                                                                                                                                                        |
-| `traderCount`            | `int32` | Number of distinct traders that have settled a trade in this market.                                                                                                                                                                                                                       |
-| `volumeLifetimeSubunits` | `int64` | Cumulative settled collateral face amount of all fills in the market's history, in collateral subunits.                                                                                                                                                                                    |
+| Field                    | Type             | Meaning                                                                                                                                                                                                                                                                                    |
+| ------------------------ | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `ammBotBudgetSubunits`   | `int64`          | Total confirmed post-creation funding after receive fees, in msat. Clients display it as **Total funding**. New confirmed payments increase it. Trades do not reduce it. It is not current order-book liquidity, remaining bot inventory, a depositor position, or a withdrawable balance. |
+| `fundingRevision`        | `string \| null` | Exact event order that produced `ammBotBudgetSubunits`. It is null before the first confirmed funding payment.                                                                                                                                                                             |
+| `liquiditySubunits`      | `int64`          | Total face amount of currently resting orders across the market's order books, denominated in msat.                                                                                                                                                                                        |
+| `traderCount`            | `int32`          | Number of distinct traders that have settled a trade in this market.                                                                                                                                                                                                                       |
+| `volumeLifetimeSubunits` | `int64`          | Cumulative settled collateral face amount of all fills in the market's history, in collateral subunits.                                                                                                                                                                                    |
 
 The response also includes `volume24hSubunits` and `volume30dSubunits` for rolling-volume views and sorting. Use `volumeLifetimeSubunits`, `ammBotBudgetSubunits`, and `traderCount` to show Volume, Total funding, and Traders. `liquiditySubunits` summarizes resting orders. Do not label it as Total funding.
 
@@ -44,7 +44,13 @@ price. Clients should show `No trades yet` or an em dash. Do not use a
 registration value, funding value, uniform default, or bid/ask midpoint as the
 market price. A midpoint is an order-entry reference only.
 
-Price-history points expose `volumeSubunits`. Market metadata snapshots expose
+Price-history points expose `volumeSubunits` and `eventOrder`.
+The opaque `eventOrder` value identifies canonical trade order. Compare it with
+ordinal string ordering. A greater value means a newer event, even when two
+timestamps are equal. Use it when merging history and confirmed live trades.
+Do not use response arrival order to choose the latest trade.
+
+Market metadata snapshots expose
 `totalVolumeSubunits` and `totalLiquiditySubunits`.
 The metadata field `totalLiquiditySubunits` is always zero. It does not report
 bot funding, custody, or executable order-book depth.

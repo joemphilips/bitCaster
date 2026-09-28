@@ -55,6 +55,7 @@ import {
   type CashuProofUnit,
   type MarketBaseAsset,
 } from "@bitcaster/client-sdk/marketUnits";
+import type { ActiveCtfRangeMintKeyset } from "@bitcaster/client-sdk/ctfRangeOrderPreparation";
 import {
   admitBrowserReceivedProofs,
   admitBrowserReceivedProofsWithHeldProfileLock,
@@ -89,8 +90,12 @@ import {
 import { locateSeedDerivedProofLineage } from "@bitcaster/client-sdk/durableSeedDerivedProofLineage";
 import { assertCanonicalNut02V2KeysetId } from "@bitcaster/client-sdk/durableSeedDerivedOutputs";
 import { serializeDurableCustodyProofArtifact } from "@bitcaster/client-sdk/durableCustodyProofMaterial";
-import type { TokenImportContext } from "@bitcaster/client-sdk/tokenImportValidation";
-import type { ActiveCtfRangeMintKeyset } from "@bitcaster/client-sdk/ctfRangeOrderPreparation";
+import {
+  decodeTokenImportLocally,
+  type TokenImportContext,
+  type ValidatedTokenImport,
+} from "@bitcaster/client-sdk/tokenImportValidation";
+import type { CtfRangeConditionalMintKeyset } from "@bitcaster/client-sdk/ctfRangeOrderProtocol";
 import {
   listBrowserDurableOutgoingCashuDueMints,
   recoverBrowserDurableOutgoingCashuDuePage,
@@ -1361,12 +1366,24 @@ async function recoverKeysetCountersForMintCore(
               );
         const safe = proofs.filter((proof) => unspentSecrets.has(proof.secret));
         requireCapturedProfile();
-        const stored: StoredProof[] = safe.map((proof) => ({
-          ...proof,
-          mintUrl: url,
-          baseAsset: COLLATERAL_UNIT_REGISTRY[unit].baseAsset,
-          unit,
-        }));
+        const stored: StoredProof[] = safe.map((proof) => {
+          const recoveredProof: StoredProof = {
+            ...proof,
+            mintUrl: url,
+            baseAsset: COLLATERAL_UNIT_REGISTRY[unit].baseAsset,
+            unit,
+          };
+          const asset = counterRecoveryProofAsset(wallet, keyset.id, recoveredProof);
+          return {
+            ...recoveredProof,
+            ...(asset.kind === "conditional"
+              ? {
+                  conditionId: asset.conditionId,
+                  outcomeCollection: asset.outcomeCollection,
+                }
+              : {}),
+          };
+        });
         const locators =
           stored.length === 0
             ? new Map<string, DurableWalletProofDerivationLocator>()
@@ -1595,7 +1612,25 @@ function skipValue(b: Uint8Array, i: number): number {
   throw new Error("CBOR major " + major);
 }
 
-/** Receive one validated bearer token through its matching durable path. */
+/** Receive one validated conditional bearer through its matching durable path. */
+export function receiveAndStoreTokenRecoverably(
+  tokenStr: string,
+  mintUrl: string,
+  baseAsset: MarketBaseAsset | string | null,
+  unitValue: CashuProofUnit | string,
+  importContext: "ctf-position-msat",
+  persistenceContext: ReturnType<typeof captureBrowserMintPersistenceContext> | undefined,
+  validatedImport: ValidatedTokenImport,
+): Promise<StoredProof[]>;
+/** Receive regular product-wallet tokens without changing their decode path. */
+export function receiveAndStoreTokenRecoverably(
+  tokenStr: string,
+  mintUrl: string,
+  baseAsset: MarketBaseAsset | string | null,
+  unitValue: CashuProofUnit | string,
+  importContext: Exclude<TokenImportContext, "ctf-position-msat">,
+  persistenceContext?: ReturnType<typeof captureBrowserMintPersistenceContext>,
+): Promise<StoredProof[]>;
 export async function receiveAndStoreTokenRecoverably(
   tokenStr: string,
   mintUrl: string,
@@ -1603,6 +1638,7 @@ export async function receiveAndStoreTokenRecoverably(
   unitValue: CashuProofUnit | string,
   importContext: TokenImportContext,
   persistenceContext?: ReturnType<typeof captureBrowserMintPersistenceContext>,
+  validatedImport?: ValidatedTokenImport,
 ): Promise<StoredProof[]> {
   const unit = requireCashuProofUnit(unitValue);
   if (unit !== "msat") {
@@ -1611,10 +1647,7 @@ export async function receiveAndStoreTokenRecoverably(
   const normalizedMintUrl = normalizeUrl(mintUrl);
   normalizeMarketBaseAsset(baseAsset);
   const context = persistenceContext ?? captureBrowserMintPersistenceContext();
-  if (importContext === "ctf-position-msat") {
-    return importConditionalTokenDirectly(tokenStr, normalizedMintUrl, unit, context);
-  }
-  if (importContext !== "ctf-collateral-msat") {
+  if (importContext !== "ctf-position-msat" && importContext !== "ctf-collateral-msat") {
     throw new Error("Cashu token import context does not match its unit");
   }
   const wallet = (await getWalletForMnemonicUnit(
@@ -1623,6 +1656,60 @@ export async function receiveAndStoreTokenRecoverably(
     context.mnemonic,
   )) as import("@/lib/browserDurableWalletReceive").BrowserDurableWalletReceiveWallet;
   context.requireCapturedProfile();
+  if (importContext === "ctf-position-msat") {
+    if (validatedImport === undefined) {
+      throw new Error("Conditional Cashu receive requires validated keyset resolution");
+    }
+    const conditionalInputProofs = decodeValidatedConditionalInputProofs({
+      validatedImport,
+      tokenStr,
+      mintUrl: normalizedMintUrl,
+      unit,
+    });
+    context.requireCapturedProfile();
+    const proofs = await receiveBrowserDurableWalletToken({
+      token: tokenStr,
+      mintUrl: normalizedMintUrl,
+      unit,
+      asset: "conditional",
+      conditionalInputProofs,
+      ensureConditionalCounterReady: async (authority) => {
+        const keyset: CtfRangeConditionalMintKeyset = {
+          canonicalMintUrl: authority.normalizedMint,
+          id: authority.keysetId,
+          unit: "msat",
+          keys: { ...authority.denominationPublicKeys },
+          inputFeePpk: authority.inputFeePpk,
+          finalExpiry: authority.finalExpiryUnixSeconds,
+          active: true,
+          conditionId: authority.conditionId,
+          outcomeCollection: authority.outcomeCollection,
+          outcomeCollectionId: authority.outcomeCollectionId,
+          registeredAt: authority.registeredAtUnixSeconds,
+        };
+        await ensureWalletKeysetCounterReady({
+          scopeId: context.scopeId,
+          mintUrl: normalizedMintUrl,
+          unit: "msat",
+          keyset,
+          conditionalAsset: {
+            conditionId: authority.conditionId,
+            outcomeCollection: authority.outcomeCollection,
+          },
+          profileLockHeld: true,
+        });
+      },
+      wallet,
+      context,
+    });
+    context.requireCapturedProfile();
+    const stored = proofs.map((proof) =>
+      conditionalStoredProof(wallet as CashuWallet, proof, normalizedMintUrl),
+    );
+    await addProofsIfMissing(stored, context.database);
+    context.requireCapturedProfile();
+    return stored;
+  }
   const proofs = await receiveBrowserDurableWalletToken({
     token: tokenStr,
     mintUrl: normalizedMintUrl,
@@ -1642,63 +1729,47 @@ export async function receiveAndStoreTokenRecoverably(
   return stored;
 }
 
-async function importConditionalTokenDirectly(
-  token: string,
-  mintUrl: string,
-  unit: CashuProofUnit,
-  context: ReturnType<typeof captureBrowserMintPersistenceContext>,
-): Promise<StoredProof[]> {
-  if (unit !== "msat") throw new Error("Conditional Cashu token must use msat");
-  const decoded = await decodeToken(token);
-  context.requireCapturedProfile();
+function decodeValidatedConditionalInputProofs(input: {
+  validatedImport: ValidatedTokenImport;
+  tokenStr: string;
+  mintUrl: string;
+  unit: CashuProofUnit;
+}): Proof[] {
+  const { validatedImport, tokenStr, mintUrl, unit } = input;
   if (
-    normalizeUrl(decoded.mint) !== mintUrl ||
-    decoded.unit !== unit ||
-    decoded.proofs.length === 0
+    validatedImport.encodedToken !== tokenStr ||
+    validatedImport.context !== "ctf-position-msat" ||
+    validatedImport.unit !== unit ||
+    validatedImport.canonicalMintUrls.length !== 1 ||
+    validatedImport.canonicalMintUrls[0] !== mintUrl
   ) {
     throw new Error("Conditional Cashu token authority does not match the validated import");
   }
-  decoded.proofs.forEach(({ id }) =>
-    assertCanonicalNut02V2KeysetId(id, "Conditional Cashu token keyset id"),
-  );
-  const wallet = await getWalletForMnemonicUnit(mintUrl, unit, context.mnemonic);
-  context.requireCapturedProfile();
-  verifyProofsForReceive(decoded.proofs, (keysetId) => wallet.getKeyset(keysetId), {
-    requireDleq: true,
-  });
-  const states = await wallet.groupProofsByState(decoded.proofs);
-  context.requireCapturedProfile();
+
+  const decoded = decodeTokenImportLocally(validatedImport.encodedToken);
   if (
-    states.unspent.length !== decoded.proofs.length ||
-    states.pending.length !== 0 ||
-    states.spent.length !== 0 ||
-    !sameProofSecrets(states.unspent, decoded.proofs)
+    normalizeUrl(decoded.mint) !== mintUrl ||
+    decoded.unit !== unit ||
+    decoded.proofs.length === 0 ||
+    decoded.proofs.length !== validatedImport.proofs.length
   ) {
-    throw new Error("Conditional Cashu token is not fully unspent");
+    throw new Error("Conditional Cashu token authority does not match the validated import");
   }
-  const stored = decoded.proofs.map((proof) => conditionalStoredProof(wallet, proof, mintUrl));
-  await withWalletProfileLock(context.scopeId, async () => {
-    context.requireCapturedProfile();
-    await requireBrowserWalletNewWritePermission({
-      database: context.database,
-      scopeId: context.scopeId,
-    });
-    context.requireCapturedProfile();
-    await admitBrowserReceivedProofsWithHeldProfileLock({
-      seed: context.seed,
-      sourceOperationId: conditionalImportOperationId(mintUrl, unit, decoded.proofs),
-      mintUrl,
-      unit,
-      wallet,
-      proofs: stored,
-      derivationAuthority: null,
-      database: context.database,
-    });
-    context.requireCapturedProfile();
-    await addProofsIfMissing(stored, context.database);
-    context.requireCapturedProfile();
+
+  return decoded.proofs.map((proof, proofIndex) => {
+    const resolution = validatedImport.proofs[proofIndex];
+    if (
+      resolution === undefined ||
+      resolution.tokenIndex !== 0 ||
+      resolution.proofIndex !== proofIndex ||
+      resolution.canonicalMintUrl !== mintUrl ||
+      resolution.encodedKeysetId !== proof.id ||
+      resolution.source !== "conditional"
+    ) {
+      throw new Error("Conditional Cashu token proof does not match its validated keyset");
+    }
+    return { ...proof, id: resolution.resolvedKeysetId };
   });
-  return stored;
 }
 
 function conditionalStoredProof(wallet: CashuWallet, proof: Proof, mintUrl: string): StoredProof {
@@ -1714,26 +1785,6 @@ function conditionalStoredProof(wallet: CashuWallet, proof: Proof, mintUrl: stri
     outcomeCollection: conditional.outcomeCollection,
     marketId: `${conditional.conditionId}-${conditional.outcomeCollection}`,
   };
-}
-
-function conditionalImportOperationId(
-  mintUrl: string,
-  unit: CashuProofUnit,
-  proofs: readonly Proof[],
-): string {
-  const fingerprint = deriveDurableCustodyArtifactFingerprint({
-    schemaVersion: 1,
-    kind: "conditional-token-import",
-    mintUrl,
-    unit,
-    proofs: proofs.map(serializeDurableCustodyProofArtifact),
-  });
-  return `conditional-token-import:${fingerprint}`;
-}
-
-function sameProofSecrets(left: readonly Proof[], right: readonly Proof[]): boolean {
-  const expected = new Set(right.map(({ secret }) => secret));
-  return expected.size === right.length && left.every(({ secret }) => expected.delete(secret));
 }
 
 /** Recover persisted ordinary receives and repair the non-authoritative GUI cache. */

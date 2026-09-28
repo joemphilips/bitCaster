@@ -124,6 +124,7 @@ describe("MarketCreationPage", () => {
     expect(screen.queryByRole("heading", { name: /wallet setup/i })).not.toBeInTheDocument();
     expect(screen.getByTestId("draft-title")).toHaveTextContent("Market");
     expect(mockCreateMarket).not.toHaveBeenCalled();
+    expect(walletState.ensureImplicitWallet).not.toHaveBeenCalled();
   });
 
   it("completes explicit wallet setup without automatically creating the market", async () => {

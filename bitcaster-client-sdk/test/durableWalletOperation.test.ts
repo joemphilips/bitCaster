@@ -9,6 +9,7 @@ import {
   type ProofState,
   type MintPreview,
   type SwapPreview,
+  type ConditionalSwapPreview,
 } from '@cashu/cashu-ts'
 import {
   decodeDurableWalletOperation,
@@ -32,6 +33,7 @@ import {
   type DurableWalletSendOperationStore,
 } from '../src/durableWalletOperation.ts'
 import { serializeDurableCustodyOutput } from '../src/durableCustodyProofOperation.ts'
+import { requireDurableWalletProofTransition } from '../src/durableWalletProofTransition.ts'
 
 const KEYSET_ID = `01${'aa'.repeat(32)}`
 const V3_KEYSET_ID = `02${'aa'.repeat(32)}`
@@ -721,6 +723,111 @@ test('wallet receive binds its exact deterministic derivation range', () => {
   )
 })
 
+test('conditional wallet receive persists and submits only its exact fee-conserving output group', async () => {
+  const operation = conditionalReceiveOperation('exact')
+  const proofs = receiveResult(operation)
+  const harness = receiveHarness({ operation, conditionalSwap: { receive: proofs } })
+
+  const result = await runReceive(operation, harness, 'execute')
+  const custody = toDurableCustodyProofOperationInput(operation)
+  const transition = requireDurableWalletProofTransition(custody.metadata ?? {}, ['receive'])
+
+  assert.equal(operation.asset, 'conditional')
+  assert.equal(operation.unit, 'msat')
+  assert.equal(operation.preview.amount, '10')
+  assert.equal(operation.preview.fees, '1')
+  assert.equal(operation.preview.keepOutputs[0]?.blindedMessage.amount, '9')
+  assert.equal(operation.derivationRange?.counterCount, 1)
+  assert.equal(harness.conditionalSwapCalls, 1)
+  assert.equal(harness.calls.swaps, 0)
+  assert.equal(harness.completedConditionalPreview?.keysetId, KEYSET_ID)
+  assert.equal(
+    new TextDecoder().decode(
+      harness.completedConditionalPreview?.outputDataByLabel.receive[0]?.secret as Uint8Array,
+    ),
+    operation.preview.keepOutputs[0]?.secret,
+  )
+  assert.equal(transition.resultGroups.receive?.kind, 'wallet')
+  assert.equal(
+    transition.resultGroups.receive?.kind === 'wallet'
+      ? transition.resultGroups.receive.asset
+      : null,
+    'conditional',
+  )
+  assert.equal(result.state, 'completed')
+})
+
+test('conditional wallet receive refuses unsafe fee, asset, range, and output plans', () => {
+  const preview = conditionalReceivePreview()
+  const base = {
+    operationId: 'wallet-receive-conditional-invalid',
+    mintUrl: 'https://mint.example',
+    unit: 'msat',
+    asset: 'conditional' as const,
+    preview,
+    inputFeePpk: 100,
+    derivationRange: { keysetId: KEYSET_ID, counterStart: 0, counterCount: 1 },
+  }
+
+  assert.throws(
+    () => serializeDurableWalletReceiveOperation({ ...base, inputFeePpk: 10_000 }),
+    /fee consumes/,
+  )
+  assert.throws(
+    () => serializeDurableWalletReceiveOperation({ ...base, unit: 'sat' }),
+    /requires msat/,
+  )
+  assert.throws(
+    () => serializeDurableWalletReceiveOperation({ ...base, derivationRange: null }),
+    /derivation range/,
+  )
+  assert.throws(
+    () =>
+      serializeDurableWalletReceiveOperation({
+        ...base,
+        preview: {
+          ...preview,
+          outputDataByLabel: {
+            receive: preview.outputDataByLabel.receive,
+            change: preview.outputDataByLabel.receive,
+          },
+        },
+      }),
+    /foreign output groups/,
+  )
+  const valid = conditionalReceiveOperation('decode')
+  assert.throws(
+    () => decodeDurableWalletOperation({ ...valid, asset: 'unknown' }),
+    /asset is invalid/,
+  )
+})
+
+test('conditional wallet receive retry reuses its persisted deterministic outputs', async () => {
+  const operation = conditionalReceiveOperation('retry')
+  const harness = receiveHarness({
+    operation,
+    inputState: CheckStateEnum.UNSPENT,
+    conditionalSwap: { receive: receiveResult(operation) },
+  })
+
+  const result = await runReceive(operation, harness, 'recover')
+
+  assert.equal(result.state, 'completed')
+  assert.equal(harness.conditionalSwapCalls, 1)
+  assert.deepEqual(
+    harness.completedConditionalPreview?.outputDataByLabel.receive.map((output) => ({
+      secret: new TextDecoder().decode(output.secret),
+      B_: output.blindedMessage.B_,
+      amount: output.blindedMessage.amount.toString(),
+    })),
+    operation.preview.keepOutputs.map((output) => ({
+      secret: output.secret,
+      B_: output.blindedMessage.B_,
+      amount: output.blindedMessage.amount,
+    })),
+  )
+})
+
 test('wallet receive rejects 513 proofs or outputs before durable or mint effects', async () => {
   const base = receivePreview(1)
   const proof = base.inputs[0]!
@@ -1155,6 +1262,36 @@ function receivePreview(inputCount: number, outputCount = 1, keysetId = KEYSET_I
   }
 }
 
+function conditionalReceivePreview(): ConditionalSwapPreview {
+  return {
+    keysetId: KEYSET_ID,
+    inputs: [
+      {
+        id: KEYSET_ID,
+        amount: Amount.from(10),
+        secret: 'conditional-input',
+        C: 'conditional-input-signature',
+      },
+    ],
+    outputDataByLabel: {
+      receive: [OutputData.createSingleData(9, KEYSET_ID, 'conditional-output', 17n)],
+    },
+  }
+}
+
+function conditionalReceiveOperation(suffix: string) {
+  const preview = conditionalReceivePreview()
+  return serializeDurableWalletReceiveOperation({
+    operationId: `wallet-receive-conditional-${suffix}`,
+    mintUrl: 'https://mint.example',
+    unit: 'msat',
+    asset: 'conditional',
+    preview,
+    inputFeePpk: 100,
+    derivationRange: { keysetId: preview.keysetId, counterStart: 12, counterCount: 1 },
+  })
+}
+
 function receiveOperation(suffix: string, inputCount = 1, outputCount = 1, keysetId = KEYSET_ID) {
   return serializeDurableWalletReceiveOperation({
     operationId: `wallet-receive-${suffix}`,
@@ -1209,6 +1346,7 @@ function receiveHarness(input: {
   states?: ProofState[]
   swap?: Proof[]
   send?: Proof[]
+  conditionalSwap?: Record<string, Proof[]>
   restore?: Proof[]
 }) {
   const calls = effectCounters()
@@ -1218,6 +1356,8 @@ function receiveHarness(input: {
     result: input.result ?? null,
   }
   let completedPreview: SwapPreview | null = null
+  let completedConditionalPreview: ConditionalSwapPreview | null = null
+  let conditionalSwapCalls = 0
   let restoredPreview: readonly { secret: string }[] | null = null
   const store: DurableWalletReceiveOperationStore = {
     loadOperation: async () => {
@@ -1248,6 +1388,11 @@ function receiveHarness(input: {
         completedPreview = preview
         return { keep: input.swap ?? [], send: input.send ?? [] }
       },
+      completeConditionalSwap: async (preview: ConditionalSwapPreview) => {
+        conditionalSwapCalls += 1
+        completedConditionalPreview = preview
+        return input.conditionalSwap ?? {}
+      },
     },
     restoreExactOutputs: async (request: { outputs: readonly { secret: string }[] }) => {
       calls.restores += 1
@@ -1256,6 +1401,12 @@ function receiveHarness(input: {
     },
     get completedPreview() {
       return completedPreview
+    },
+    get completedConditionalPreview() {
+      return completedConditionalPreview
+    },
+    get conditionalSwapCalls() {
+      return conditionalSwapCalls
     },
     get restoredPreview() {
       return restoredPreview

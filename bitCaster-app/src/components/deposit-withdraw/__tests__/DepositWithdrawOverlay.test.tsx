@@ -47,9 +47,6 @@ vi.mock("@/pages/useDepositWithdrawState", () => ({
     amountLabel: "0 sats",
     selectedUnit: "sat",
     unitOptions: ["sat"],
-    amountFiat: "$0.00",
-    fiatSymbol: "$",
-    showFiatPrimary: false,
     lightningInput: "",
   }),
 }));

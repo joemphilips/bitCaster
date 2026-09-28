@@ -122,6 +122,7 @@ export interface SettingsProps {
   onAddMint?: (url: string) => Promise<void>;
   onRemoveMint?: (url: string) => void;
   onViewSeedPhrase?: () => void;
+  onReplaceWallet?: () => void;
   onMintClick?: (url: string) => void;
 
   // Nostr callbacks

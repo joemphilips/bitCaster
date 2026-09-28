@@ -68,11 +68,16 @@ export const BROWSER_CTF_REMOVE_ACKNOWLEDGEMENT_DEADLINE_MILLISECONDS = 10_000;
 export interface BrowserEncryptedWalletBackupV2RuntimeDriver {
   readonly recoveryReason: BrowserEncryptedWalletBackupV2ConflictRecoveryIncompleteReason | null;
   stop(): void;
+  /** Releases this tab's wallet leadership before seed handoff takes the profile lock. */
+  quiesceForSeedHandoff(): Promise<void>;
+  /** Restarts leadership when a seed handoff refuses and the captured profile remains current. */
+  resumeAfterSeedHandoff(): void;
   /** Rechecks durable refusal after an explicit recovery completion. */
   resumeAfterRecovery(): void;
   removeManagedProofs(input: {
     readonly asset: EncryptedWalletBackupV2AssetIdentity;
     readonly targets: readonly BrowserCtfRemoveTarget[];
+    readonly localTargets?: readonly BrowserCtfRemoveTarget[];
   }): Promise<BrowserCtfRemoveResult>;
   recoverTargetedAsset(input: {
     readonly asset: EncryptedWalletBackupV2AssetIdentity;
@@ -204,6 +209,12 @@ class BrowserEncryptedWalletBackupV2RuntimeDriverImpl implements BrowserEncrypte
   readonly #remote: BackupRemote;
   readonly #runWorkerCycle: typeof runBrowserEncryptedWalletBackupV2WorkerCycle;
   readonly #lifetimeSignal: AbortSignal;
+  #leadershipSignal: AbortSignal;
+  #leadershipController: AbortController | undefined;
+  #leadershipTask: Promise<void> | undefined;
+  #quiesceTask: Promise<void> | undefined;
+  #quiesced = false;
+  readonly #idleWaiters = new Set<() => void>();
   #subscription: Subscription | undefined;
   readonly #cleanup = new AbortController();
   #keyHandle: EncryptedWalletBackupV2KeyHandle | undefined;
@@ -217,6 +228,7 @@ class BrowserEncryptedWalletBackupV2RuntimeDriverImpl implements BrowserEncrypte
   #leader = false;
   #terminal = false;
   #running = false;
+  #activeDriverCalls = 0;
   #cycleQueued = false;
   #cancelTimer: (() => void) | undefined;
   #timerKind: "retry" | "quota" | undefined;
@@ -236,6 +248,7 @@ class BrowserEncryptedWalletBackupV2RuntimeDriverImpl implements BrowserEncrypte
     this.#remote = input.remote ?? createRemote(input.configuration);
     this.#runWorkerCycle = input.runWorkerCycle ?? runBrowserEncryptedWalletBackupV2WorkerCycle;
     this.#lifetimeSignal = AbortSignal.any([input.signal, this.#cleanup.signal]);
+    this.#leadershipSignal = this.#lifetimeSignal;
     this.#keyHandlePromise = createEncryptedWalletBackupV2KeyHandle({
       seed: input.seed,
       realm: input.configuration.realm,
@@ -244,18 +257,45 @@ class BrowserEncryptedWalletBackupV2RuntimeDriverImpl implements BrowserEncrypte
   }
 
   start(): this {
-    this.#authenticationSession = beginBrowserWalletBackupAuthenticationSession({
-      database: this.#input.database,
-      scopeId: this.#input.scopeId,
-      realm: this.#input.configuration.realm,
-    });
-    void this.#acquireLeadership();
+    this.#startLeadership();
     return this;
   }
 
   stop(): void {
     this.#cleanup.abort();
-    this.#stopLeader();
+    this.#leadershipController?.abort();
+    this.#clearTimer();
+    if (this.#leadershipTask === undefined) this.#stopLeader();
+  }
+
+  async quiesceForSeedHandoff(): Promise<void> {
+    if (this.#quiesceTask !== undefined) return this.#quiesceTask;
+    if (this.#lifetimeSignal.aborted || !this.#input.isCurrentProfile()) return;
+    this.#quiesced = true;
+    this.#cycleQueued = false;
+    this.#clearTimer();
+    this.#leadershipController?.abort();
+    const task = (async () => {
+      await this.#leadershipTask;
+      await this.#waitForDriverIdle();
+    })();
+    this.#quiesceTask = task.finally(() => {
+      this.#quiesceTask = undefined;
+    });
+    return this.#quiesceTask;
+  }
+
+  resumeAfterSeedHandoff(): void {
+    if (
+      !this.#quiesced ||
+      this.#terminal ||
+      this.#lifetimeSignal.aborted ||
+      !this.#input.isCurrentProfile()
+    ) {
+      return;
+    }
+    this.#quiesced = false;
+    this.#startLeadership();
   }
 
   get recoveryReason(): BrowserEncryptedWalletBackupV2ConflictRecoveryIncompleteReason | null {
@@ -265,6 +305,15 @@ class BrowserEncryptedWalletBackupV2RuntimeDriverImpl implements BrowserEncrypte
   async removeManagedProofs(input: {
     readonly asset: EncryptedWalletBackupV2AssetIdentity;
     readonly targets: readonly BrowserCtfRemoveTarget[];
+    readonly localTargets?: readonly BrowserCtfRemoveTarget[];
+  }): Promise<BrowserCtfRemoveResult> {
+    return this.#withDriverCall(() => this.#removeManagedProofs(input));
+  }
+
+  async #removeManagedProofs(input: {
+    readonly asset: EncryptedWalletBackupV2AssetIdentity;
+    readonly targets: readonly BrowserCtfRemoveTarget[];
+    readonly localTargets?: readonly BrowserCtfRemoveTarget[];
   }): Promise<BrowserCtfRemoveResult> {
     if (!this.#isActive()) throw new Error("The wallet backup profile is unavailable");
     const keyHandle = await this.#keyHandlePromise;
@@ -284,8 +333,12 @@ class BrowserEncryptedWalletBackupV2RuntimeDriverImpl implements BrowserEncrypte
       asset: input.asset,
       assetLocator,
       targets: input.targets,
+      ...(input.localTargets === undefined || input.localTargets.length === 0
+        ? {}
+        : { localTargets: input.localTargets }),
       isCurrentProfile: () => this.#isActive(),
       lockManager: this.#input.lockManager,
+      signal: this.#leadershipSignal,
     };
     let result = await startBrowserCtfRemove(removalInput);
     if (result.kind === "pending") {
@@ -331,14 +384,14 @@ class BrowserEncryptedWalletBackupV2RuntimeDriverImpl implements BrowserEncrypte
         settled = true;
         cancelTimeout?.();
         subscription?.unsubscribe();
-        this.#lifetimeSignal.removeEventListener("abort", onAbort);
+        this.#leadershipSignal.removeEventListener("abort", onAbort);
         this.#removeReadinessWaiters.delete(onRefusal);
         resolve(ready);
       };
       const onAbort = () => finish(false);
       const onRefusal = () => finish(false);
       this.#removeReadinessWaiters.add(onRefusal);
-      this.#lifetimeSignal.addEventListener("abort", onAbort, { once: true });
+      this.#leadershipSignal.addEventListener("abort", onAbort, { once: true });
       cancelTimeout = (this.#input.scheduleManagedRemoveTimeout ?? scheduleTimeout)(
         () => finish(false),
         BROWSER_CTF_REMOVE_ACKNOWLEDGEMENT_DEADLINE_MILLISECONDS,
@@ -411,6 +464,16 @@ class BrowserEncryptedWalletBackupV2RuntimeDriverImpl implements BrowserEncrypte
     readonly readExactMonitoringRecovery: () => Promise<BrowserTargetedAssetRecoveryMonitoring | null>;
     readonly lockManager?: Pick<LockManager, "request">;
   }): Promise<TargetedAssetRecoveryOutcome> {
+    return this.#withDriverCall(() => this.#recoverTargetedAsset(input));
+  }
+
+  async #recoverTargetedAsset(input: {
+    readonly asset: EncryptedWalletBackupV2AssetIdentity;
+    readonly requiredAmount: bigint;
+    readonly loadWallet: () => Promise<CashuWallet>;
+    readonly readExactMonitoringRecovery: () => Promise<BrowserTargetedAssetRecoveryMonitoring | null>;
+    readonly lockManager?: Pick<LockManager, "request">;
+  }): Promise<TargetedAssetRecoveryOutcome> {
     try {
       if (!this.#isActive()) return { kind: "persistent-error" };
       const keyHandle = await this.#keyHandlePromise;
@@ -439,7 +502,7 @@ class BrowserEncryptedWalletBackupV2RuntimeDriverImpl implements BrowserEncrypte
         nowUnixSeconds,
         completedAtUnixMilliseconds: Date.now,
         runtime: this.#runtime,
-        signal: this.#lifetimeSignal,
+        signal: this.#leadershipSignal,
         isCurrentProfile: () => this.#isActive(),
         lockManager: input.lockManager,
       });
@@ -448,7 +511,34 @@ class BrowserEncryptedWalletBackupV2RuntimeDriverImpl implements BrowserEncrypte
     }
   }
 
-  async #acquireLeadership(): Promise<void> {
+  #startLeadership(): void {
+    if (
+      this.#leadershipTask !== undefined ||
+      this.#quiesced ||
+      this.#lifetimeSignal.aborted ||
+      !this.#input.isCurrentProfile()
+    ) {
+      return;
+    }
+    const controller = new AbortController();
+    const signal = AbortSignal.any([this.#lifetimeSignal, controller.signal]);
+    this.#leadershipController = controller;
+    this.#leadershipSignal = signal;
+    this.#authenticationSession = beginBrowserWalletBackupAuthenticationSession({
+      database: this.#input.database,
+      scopeId: this.#input.scopeId,
+      realm: this.#input.configuration.realm,
+    });
+    const task = this.#acquireLeadership(signal);
+    const leadershipTask = task.finally(() => {
+      if (this.#leadershipController === controller) this.#leadershipController = undefined;
+      if (this.#leadershipTask === leadershipTask) this.#leadershipTask = undefined;
+      this.#notifyIdleWaiters();
+    });
+    this.#leadershipTask = leadershipTask;
+  }
+
+  async #acquireLeadership(signal: AbortSignal): Promise<void> {
     try {
       this.#setDiagnosticState("key-handle");
       this.#keyHandle = await this.#keyHandlePromise;
@@ -456,14 +546,15 @@ class BrowserEncryptedWalletBackupV2RuntimeDriverImpl implements BrowserEncrypte
       this.#setDiagnosticState("leadership-wait");
       await (this.#input.leadership ?? browserLeadership()).hold(
         encryptedWalletBackupV2WalletLockName(requireKeyHandle(this.#keyHandle)),
-        this.#lifetimeSignal,
+        signal,
         async () => {
           if (!this.#isActive()) return;
           this.#leader = true;
           this.#setDiagnosticState("leadership-active");
           this.#startLeader();
           await this.#resumeOrInitialize();
-          await waitForAbort(this.#lifetimeSignal);
+          await waitForAbort(signal);
+          await this.#waitForDriverIdle();
         },
       );
     } catch (error) {
@@ -492,13 +583,41 @@ class BrowserEncryptedWalletBackupV2RuntimeDriverImpl implements BrowserEncrypte
     this.#authenticationSession?.stop();
     this.#subscription?.unsubscribe();
     this.#subscription = undefined;
-    this.#cancelTimer?.();
-    this.#cancelTimer = undefined;
-    this.#timerKind = undefined;
+    this.#clearTimer();
     this.#recoveryAttempted = false;
     this.#recoveryPaused = false;
     this.#recoveryWakeQueued = false;
     this.#recoveryReason = null;
+  }
+
+  #waitForDriverIdle(): Promise<void> {
+    if (!this.#initializing && !this.#running && this.#activeDriverCalls === 0) {
+      return Promise.resolve();
+    }
+    return new Promise((resolve) => this.#idleWaiters.add(resolve));
+  }
+
+  #notifyIdleWaiters(): void {
+    if (this.#initializing || this.#running || this.#activeDriverCalls > 0) return;
+    for (const resolve of this.#idleWaiters) resolve();
+    this.#idleWaiters.clear();
+  }
+
+  #withDriverCall<T>(operation: () => Promise<T>): Promise<T> {
+    if (!this.#isActive()) return operation();
+    this.#activeDriverCalls += 1;
+    let result: Promise<T>;
+    try {
+      result = operation();
+    } catch (error) {
+      this.#activeDriverCalls -= 1;
+      this.#notifyIdleWaiters();
+      return Promise.reject(error);
+    }
+    return result.finally(() => {
+      this.#activeDriverCalls -= 1;
+      this.#notifyIdleWaiters();
+    });
   }
 
   async #resumeOrInitialize(): Promise<void> {
@@ -520,7 +639,7 @@ class BrowserEncryptedWalletBackupV2RuntimeDriverImpl implements BrowserEncrypte
         this.#setDiagnosticState("retry");
       return;
     }
-    void this.#initialize();
+    await this.#initialize();
   }
 
   async #pendingDesiredAssetCountQuery(): Promise<readonly PendingDesiredAssetWake[]> {
@@ -591,6 +710,7 @@ class BrowserEncryptedWalletBackupV2RuntimeDriverImpl implements BrowserEncrypte
         this.#recoveryWakeQueued = false;
         this.resumeAfterRecovery();
       }
+      this.#notifyIdleWaiters();
     }
   }
 
@@ -604,7 +724,7 @@ class BrowserEncryptedWalletBackupV2RuntimeDriverImpl implements BrowserEncrypte
       keyHandle,
       remote: this.#remote,
       runtime: this.#runtime,
-      signal: this.#lifetimeSignal,
+      signal: this.#leadershipSignal,
       authorizationPort: this.#input.authorizationPort,
       isCurrentProfile: () => this.#isActive(),
     }).then((epoch) => {
@@ -647,22 +767,22 @@ class BrowserEncryptedWalletBackupV2RuntimeDriverImpl implements BrowserEncrypte
       if (this.#recoveryWakeQueued) {
         this.#recoveryWakeQueued = false;
         this.resumeAfterRecovery();
-        return;
-      }
-      if (
+      } else if (
         this.#cycleQueued &&
         !this.#timerScheduling &&
         this.#cancelTimer === undefined &&
         this.#isLeaderActive()
-      )
+      ) {
         void this.#runCycles();
+      }
+      this.#notifyIdleWaiters();
     }
   }
 
   async #runOneCycle(): Promise<void> {
     const keyHandle = requireKeyHandle(this.#keyHandle);
     if (!(await this.#allowOrdinaryWrites(keyHandle))) return;
-    const signal = createEncryptedWalletBackupBackgroundCycleSignal(this.#lifetimeSignal);
+    const signal = createEncryptedWalletBackupBackgroundCycleSignal(this.#leadershipSignal);
     const authenticatingStartup = !this.#sessionAuthenticated;
     this.#setDiagnosticState(authenticatingStartup ? "startup" : "authenticated");
     try {
@@ -725,7 +845,7 @@ class BrowserEncryptedWalletBackupV2RuntimeDriverImpl implements BrowserEncrypte
         await this.#clearRetrySchedule();
       }
     } catch (error) {
-      if (signal.aborted && !this.#lifetimeSignal.aborted) {
+      if (signal.aborted && !this.#lifetimeSignal.aborted && !this.#quiesced) {
         throw new EncryptedWalletBackupV2HttpTransportError("deadline-exceeded");
       }
       throw error;
@@ -803,7 +923,7 @@ class BrowserEncryptedWalletBackupV2RuntimeDriverImpl implements BrowserEncrypte
   }
 
   #isActive(): boolean {
-    return !this.#lifetimeSignal.aborted && this.#input.isCurrentProfile();
+    return !this.#quiesced && !this.#lifetimeSignal.aborted && this.#input.isCurrentProfile();
   }
 
   #isLeaderActive(): boolean {
@@ -847,7 +967,7 @@ class BrowserEncryptedWalletBackupV2RuntimeDriverImpl implements BrowserEncrypte
         localRecoveryReason: permission.localRecoveryReason,
         localRecoveryVersion: permission.localRecoveryVersion,
       },
-      signal: this.#lifetimeSignal,
+      signal: this.#leadershipSignal,
       isCurrentProfile: () => this.#isLeaderActive(),
       authority,
     });
@@ -910,7 +1030,7 @@ class BrowserEncryptedWalletBackupV2RuntimeDriverImpl implements BrowserEncrypte
   }
 
   async #recoverPreparedBackup(keyHandle: EncryptedWalletBackupV2KeyHandle): Promise<boolean> {
-    const signal = createEncryptedWalletBackupBackgroundCycleSignal(this.#lifetimeSignal);
+    const signal = createEncryptedWalletBackupBackgroundCycleSignal(this.#leadershipSignal);
     try {
       const result = await this.#runWorkerCycle({ ...this.#workerInput(keyHandle), signal });
       if (!this.#isLeaderActive()) return false;
@@ -962,7 +1082,7 @@ class BrowserEncryptedWalletBackupV2RuntimeDriverImpl implements BrowserEncrypte
           : requestUrl(this.#input.configuration, keyHandle, kind, value),
       nowUnixSeconds,
       runtime: this.#runtime,
-      signal: this.#lifetimeSignal,
+      signal: this.#leadershipSignal,
       isCurrentProfile: () => this.#isLeaderActive(),
       lockManager: this.#input.lockManager,
     };
@@ -974,6 +1094,8 @@ class BrowserEncryptedWalletBackupV2RuntimeDriverImpl implements BrowserEncrypte
       scopeId: this.#input.scopeId,
       keyHandle: requireKeyHandle(this.#keyHandle),
       enrollmentEpoch: requireEnrollmentEpoch(this.#enrollmentEpoch),
+      signal: this.#leadershipSignal,
+      lockManager: this.#input.lockManager,
       isCurrentProfile: () => this.#isLeaderActive(),
     });
   }

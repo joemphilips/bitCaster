@@ -6,14 +6,16 @@ import { NativeDialog } from "./NativeDialog";
 import { validate, validateWord } from "@/lib/bip39";
 
 interface WalletSetupModalProps {
+  mode?: "setup" | "replace";
   isCreating?: boolean;
   error?: string | null;
   onClose: () => void;
   onCreateNew: () => void;
-  onImportSeed: (words: string[]) => void;
+  onImportSeed: (words: string[]) => void | Promise<void>;
 }
 
 export function WalletSetupModal({
+  mode = "setup",
   isCreating = false,
   error,
   onClose,
@@ -21,7 +23,7 @@ export function WalletSetupModal({
   onImportSeed,
 }: WalletSetupModalProps) {
   const { t } = useTranslation();
-  const [showImport, setShowImport] = useState(false);
+  const [showImport, setShowImport] = useState(mode === "replace");
   const [seedPhrase, setSeedPhrase] = useState("");
 
   const words = seedPhrase
@@ -41,29 +43,35 @@ export function WalletSetupModal({
           ? t("wallet.seedphraseChecksumError")
           : null;
   const seedPhraseIsValid = hasSeedPhraseInput && !seedPhraseError;
+  const canDismiss = mode !== "replace" || !isCreating;
 
   return (
-    <NativeDialog ariaLabel={t("wallet.setupTitle")} onDismiss={onClose}>
+    <NativeDialog
+      ariaLabel={t(mode === "replace" ? "wallet.replaceWalletTitle" : "wallet.setupTitle")}
+      canDismiss={canDismiss}
+      onDismiss={onClose}
+    >
       {(dismiss) => (
         <div
           data-testid="wallet-setup-dialog-backdrop"
           className="flex min-h-full items-center justify-center p-4"
           onClick={(event) => {
-            if (event.target === event.currentTarget) dismiss();
+            if (canDismiss && event.target === event.currentTarget) dismiss();
           }}
         >
           <div className="relative w-full max-w-md rounded-2xl border border-slate-200 bg-white p-5 shadow-2xl dark:border-slate-700 dark:bg-slate-800">
             <div className="mb-4 flex items-start justify-between gap-4">
               <div>
                 <h2 className="text-lg font-semibold text-slate-900 dark:text-white">
-                  {t("wallet.setupTitle")}
+                  {t(mode === "replace" ? "wallet.replaceWalletTitle" : "wallet.setupTitle")}
                 </h2>
                 <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
-                  {t("wallet.setupDesc")}
+                  {t(mode === "replace" ? "wallet.replaceWalletDesc" : "wallet.setupDesc")}
                 </p>
               </div>
               <button
                 onClick={dismiss}
+                disabled={!canDismiss}
                 className="rounded-lg p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700 dark:hover:bg-slate-700 dark:hover:text-white"
                 aria-label={t("common.close")}
               >
@@ -77,22 +85,32 @@ export function WalletSetupModal({
               </div>
             )}
 
+            {mode === "replace" && (
+              <p className="mb-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-300">
+                {t("wallet.replaceWalletWarning")}
+              </p>
+            )}
+
             <div className="space-y-3">
-              <button
-                onClick={onCreateNew}
-                disabled={isCreating}
-                className="flex w-full items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 py-3 text-sm font-semibold text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {isCreating && !showImport && <Loader2 className="h-4 w-4 animate-spin" />}
-                {t("wallet.createNewWallet")}
-              </button>
-              <button
-                type="button"
-                onClick={() => setShowImport(true)}
-                className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-900 transition-colors hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-white dark:hover:bg-slate-700"
-              >
-                {t("wallet.importExistingWallet")}
-              </button>
+              {mode === "setup" && (
+                <>
+                  <button
+                    onClick={onCreateNew}
+                    disabled={isCreating}
+                    className="flex w-full items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 py-3 text-sm font-semibold text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {isCreating && !showImport && <Loader2 className="h-4 w-4 animate-spin" />}
+                    {t("wallet.createNewWallet")}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowImport(true)}
+                    className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-900 transition-colors hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-white dark:hover:bg-slate-700"
+                  >
+                    {t("wallet.importExistingWallet")}
+                  </button>
+                </>
+              )}
 
               {showImport && (
                 <div className="space-y-2 rounded-xl border border-slate-200 bg-slate-50 p-3 text-left dark:border-slate-700 dark:bg-slate-900/60">
@@ -126,12 +144,12 @@ export function WalletSetupModal({
                   )}
                   <button
                     type="button"
-                    onClick={() => onImportSeed(words)}
+                    onClick={() => void onImportSeed(words)}
                     disabled={isCreating || !seedPhraseIsValid}
                     className="flex w-full items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 py-3 text-sm font-semibold text-white transition-colors hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
                   >
                     {isCreating && showImport && <Loader2 className="h-4 w-4 animate-spin" />}
-                    {t("wallet.restoreWallet")}
+                    {t(mode === "replace" ? "wallet.replaceWallet" : "wallet.restoreWallet")}
                   </button>
                 </div>
               )}

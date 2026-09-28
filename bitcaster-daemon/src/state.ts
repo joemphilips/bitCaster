@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import type { DatabaseSync } from 'node:sqlite'
+import type { DatabaseSync, StatementSync } from 'node:sqlite'
 import { isDeepStrictEqual } from 'node:util'
 import type { Proof } from '@cashu/cashu-ts'
 import {
@@ -16,6 +16,7 @@ import {
   normalizeMarketDivisibility,
 } from '@bitcaster-market/client-sdk/marketUnits'
 import { amountToNumber } from '@bitcaster-market/client-sdk/proofSelection'
+import { createDurableCustodyProofMaterialRecord } from '@bitcaster-market/client-sdk/durableCustodyProofMaterial'
 import { assertCanonicalNut02V2KeysetId } from '@bitcaster-market/client-sdk/durableSeedDerivedOutputs'
 import type {
   ManagedConditionInventoryBinding,
@@ -1257,6 +1258,38 @@ export function admitExactAvailableWalletProofsFromDatabase(
       createdAt: timestamp,
       updatedAt: timestamp,
     })
+  }
+}
+
+/** Rejects conflicts in the full incoming token before its bounded pages commit. */
+export function assertAvailableWalletProofImportHasNoConflictsFromDatabase(
+  database: DatabaseSync,
+  input: {
+    readonly mintUrl: string
+    readonly proofs: readonly CashuProofRecord[]
+    readonly asset: StoredProofAsset
+  },
+): void {
+  const scopeId = readScopeId(database)
+  const expectedAsset = normalizeProofAsset(input.asset)
+  const findExisting = database.prepare(
+    `SELECT * FROM target_wallet_proofs
+     WHERE scope_id = ? AND normalized_mint = ? AND secret = ?`,
+  )
+  for (const proof of input.proofs) {
+    const normalizedProof = normalizeCashuProofRecord(proof)
+    const raw = findExisting.get(scopeId, input.mintUrl, normalizedProof.secret) as
+      | Record<string, unknown>
+      | undefined
+    if (raw === undefined) continue
+    const existing = decodeWalletProofRow(raw)
+    if (
+      existing.state !== 'available' ||
+      !isDeepStrictEqual(existing.proof, normalizedProof) ||
+      !isDeepStrictEqual(normalizeProofAsset(existing.asset), expectedAsset)
+    ) {
+      throw new Error('cashu outcome proof conflicts with local wallet authority')
+    }
   }
 }
 
@@ -2733,6 +2766,74 @@ export async function readAvailableWalletProofPage(input: {
   })
 }
 
+export function readAvailableCanonicalWalletProofPageFromDatabase(
+  database: DatabaseSync,
+  input: {
+    readonly mintUrl: string
+    readonly keysetId: string
+    readonly asset: StoredProofAsset
+    readonly after?: WalletProofPageCursor
+    readonly limit: number
+  },
+): AvailableWalletProofPage {
+  const limit = boundedPageLimit(input.limit)
+  const asset = normalizeProofAsset(input.asset)
+  const scopeId = readScopeId(database)
+  const canonicalProofQuery = database.prepare(
+    `SELECT proof_id, scope_id, normalized_mint, unit, keyset_id, amount,
+            base_asset, condition_id, outcome_set_id, product_binding,
+            proof_body, proof_fingerprint, signature_verified, dleq_state,
+            nut07_state, selectability, storage_class, reservation_operation_id,
+            EXISTS (
+              SELECT 1 FROM custody_proof_reservations AS reservations
+              WHERE reservations.scope_id = custody_proofs.scope_id
+                AND reservations.proof_id = custody_proofs.proof_id
+            ) AS has_reservation
+     FROM custody_proofs WHERE scope_id = ? AND proof_id = ?`,
+  )
+  const accepted: Array<{
+    readonly proof: StoredProofRecord
+    readonly cursor: WalletProofPageCursor
+  }> = []
+  let after = input.after
+  while (true) {
+    const page = readAvailableWalletProofRowsFromDatabase(database, {
+      mintUrl: input.mintUrl,
+      keysetId: input.keysetId,
+      asset,
+      ...(after === undefined ? {} : { after }),
+      limit: 256,
+    })
+    for (const row of page.rows) {
+      if (
+        !isCanonicalAvailableWalletProof(
+          canonicalProofQuery,
+          scopeId,
+          row.proof,
+          input.mintUrl,
+          asset,
+        )
+      ) {
+        continue
+      }
+      accepted.push(row)
+      if (accepted.length > limit) {
+        return {
+          proofs: accepted.slice(0, limit).map(({ proof }) => proof),
+          nextCursor: accepted[limit - 1]!.cursor,
+        }
+      }
+    }
+    if (page.nextCursor === null) {
+      return {
+        proofs: accepted.map(({ proof }) => proof),
+        nextCursor: null,
+      }
+    }
+    after = page.nextCursor
+  }
+}
+
 export async function readAvailableWalletProofGroupPage(input: {
   readonly after?: WalletProofGroupCursor
   readonly limit: number
@@ -2802,6 +2903,29 @@ function readAvailableWalletProofPageFromDatabase(
     readonly limit: number
   },
 ): AvailableWalletProofPage {
+  const page = readAvailableWalletProofRowsFromDatabase(database, input)
+  return {
+    proofs: page.rows.map(({ proof }) => proof),
+    nextCursor: page.nextCursor,
+  }
+}
+
+function readAvailableWalletProofRowsFromDatabase(
+  database: DatabaseSync,
+  input: {
+    readonly mintUrl: string
+    readonly keysetId: string
+    readonly asset: StoredProofAsset
+    readonly after?: WalletProofPageCursor
+    readonly limit: number
+  },
+): {
+  readonly rows: Array<{
+    readonly proof: StoredProofRecord
+    readonly cursor: WalletProofPageCursor
+  }>
+  readonly nextCursor: WalletProofPageCursor | null
+} {
   const afterClause =
     input.after === undefined ? '' : 'AND (amount < ? OR (amount = ? AND proof_id > ?))'
   const bindings: Array<string | number | null> = [
@@ -2832,7 +2956,13 @@ function readAvailableWalletProofPageFromDatabase(
   const rows = fetched.slice(0, input.limit)
   const last = rows.at(-1)
   return {
-    proofs: rows.map(decodeWalletProofRow),
+    rows: rows.map((raw) => ({
+      proof: decodeWalletProofRow(raw),
+      cursor: {
+        amount: requireInteger(raw.amount, 'proof page amount'),
+        proofId: requireText(raw.proof_id, 'proof page id'),
+      },
+    })),
     nextCursor:
       fetched.length > input.limit && last !== undefined
         ? {
@@ -2841,6 +2971,56 @@ function readAvailableWalletProofPageFromDatabase(
           }
         : null,
   }
+}
+
+function isCanonicalAvailableWalletProof(
+  canonicalProofQuery: StatementSync,
+  scopeId: string,
+  record: StoredProofRecord,
+  mintUrl: string,
+  asset: StoredProofAsset,
+): boolean {
+  const proof = normalizeCashuProofRecord(record.proof)
+  if (proof.id === undefined) return false
+  const material = createDurableCustodyProofMaterialRecord({
+    scopeId,
+    normalizedMint: mintUrl,
+    unit: asset.unit,
+    proof: {
+      id: proof.id,
+      amount: amountToNumber(proof.amount),
+      secret: proof.secret,
+      C: proof.C,
+      dleq: proof.dleq ?? null,
+      p2pkE: proof.p2pk_e ?? null,
+      witness: proof.witness ?? null,
+    },
+  })
+  const raw = canonicalProofQuery.get(scopeId, material.proofId) as
+    | Record<string, unknown>
+    | undefined
+  return (
+    raw !== undefined &&
+    raw.proof_id === material.proofId &&
+    raw.normalized_mint === mintUrl &&
+    raw.unit === asset.unit &&
+    raw.keyset_id === proof.id &&
+    raw.amount === material.amount &&
+    raw.base_asset === asset.baseAsset &&
+    raw.condition_id === (asset.kind === 'Outcome' ? asset.conditionId : null) &&
+    raw.outcome_set_id === (asset.kind === 'Outcome' ? asset.outcomeSetId : null) &&
+    raw.product_binding === null &&
+    isDeepStrictEqual(raw.proof_body, material.proofBody) &&
+    raw.proof_fingerprint === material.proofFingerprint &&
+    raw.signature_verified === 1 &&
+    raw.dleq_state === 'verified' &&
+    raw.nut07_state === 'UNSPENT' &&
+    (raw.selectability === 'selectable' || raw.selectability === 'retained') &&
+    (raw.storage_class === 'pinned-operation-bound-deterministic' ||
+      raw.storage_class === 'terminal-replay-retained') &&
+    raw.reservation_operation_id === null &&
+    raw.has_reservation === 0
+  )
 }
 
 export async function readProofOperationsByPurposePage(input: {

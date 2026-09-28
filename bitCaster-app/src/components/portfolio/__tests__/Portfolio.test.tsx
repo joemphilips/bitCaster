@@ -110,9 +110,10 @@ const mockFunds: Fund[] = [
 const mockActivity: ActivityItem[] = [
   {
     id: "act-001",
+    walletId: "a".repeat(64),
     type: "deposit",
     baseAsset: "sat",
-    amountSats: 500000,
+    amountSubunits: 500000,
     date: "2025-08-15T09:35:00Z",
     status: "completed",
     txId: "a1b2c3d4e5f6789012345678901234567890abcd",
@@ -120,9 +121,10 @@ const mockActivity: ActivityItem[] = [
   },
   {
     id: "act-002",
+    walletId: "a".repeat(64),
     type: "Buy",
     baseAsset: "sat",
-    amountSats: 93600,
+    amountSubunits: 93600,
     date: "2025-09-20T10:30:00Z",
     status: "completed",
     txId: null,
@@ -365,6 +367,24 @@ describe("Portfolio", () => {
   });
 
   describe("Monitoring status", () => {
+    it.each([true, false])("shows value-level loading only during a request: %s", (loading) => {
+      renderPortfolio({
+        stats: {
+          ...mockStats,
+          totalValueKnown: false,
+          positionsValueKnown: false,
+          totalValueLoading: loading,
+          positionsValueLoading: loading,
+        },
+      });
+      expect(screen.queryAllByRole("status", { name: /Total Value: Loading/ })).toHaveLength(
+        loading ? 2 : 0,
+      );
+      expect(screen.queryAllByRole("status", { name: /Positions Value: Loading/ })).toHaveLength(
+        loading ? 1 : 0,
+      );
+      expect(screen.getAllByText("—").length).toBeGreaterThanOrEqual(2);
+    });
     it.each([null, 1_000])("does not add a banner for pending outgoing value %s", (value) => {
       renderPortfolio({
         monitoring: {
@@ -388,7 +408,7 @@ describe("Portfolio", () => {
 
     it.each([
       ["complete", false, false, false, null],
-      ["building", true, false, false, "Updating your portfolio."],
+      ["building", true, false, false, null],
       ["stale", false, true, false, "Portfolio data may be out of date."],
       ["incomplete", false, false, true, "Some portfolio records are missing."],
     ] as const)(
@@ -422,7 +442,7 @@ describe("Portfolio", () => {
         const status = screen.getByRole("status");
         expect(status).toHaveTextContent("One position has no price estimate yet.");
         if (notice) expect(status).toHaveTextContent(notice);
-        if (!building) expect(status).not.toHaveTextContent("Updating");
+        expect(status).not.toHaveTextContent("Updating");
         expect(screen.getByText("Unpriced position")).toBeInTheDocument();
         expect(
           screen.getByText("A current price is not available for this position."),

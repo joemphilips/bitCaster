@@ -5,7 +5,7 @@ import type {
 import {
   assertTokenImportResolverRequestLive,
   readBoundedTokenImportJsonResponse,
-  selectTokenImportKeysetCandidates,
+  selectPagedTokenImportKeysetCandidates,
 } from "@bitcaster/client-sdk/tokenImportValidation";
 
 const TOKEN_IMPORT_KEYSET_RESPONSE_BYTES_MAX = 1_048_576;
@@ -19,16 +19,15 @@ const TOKEN_IMPORT_KEYSET_RESPONSE_BYTES_MAX = 1_048_576;
  */
 export const resolveTokenImportKeysets: ResolveTokenImportKeysets = async (request) => {
   assertTokenImportResolverRequestLive(request);
-  const conditionalUrl = mintEndpoint(request.canonicalMintUrl, "conditional_keysets");
-  const [regular, conditional] = await Promise.all([
-    fetchKeysets(mintEndpoint(request.canonicalMintUrl, "keysets"), request),
-    fetchKeysets(conditionalUrl, request),
-  ]);
-  assertTokenImportResolverRequestLive(request);
-  return selectTokenImportKeysetCandidates({
+  return selectPagedTokenImportKeysetCandidates({
     request,
-    regularResponse: regular,
-    conditionalResponse: conditional,
+    regularResponse: fetchKeysets(mintEndpoint(request.canonicalMintUrl, "keysets"), request),
+    fetchConditionalPage: ({ limit, since }) => {
+      const conditionalUrl = mintEndpoint(request.canonicalMintUrl, "conditional_keysets");
+      conditionalUrl.searchParams.set("limit", String(limit));
+      if (since !== undefined) conditionalUrl.searchParams.set("since", String(since));
+      return fetchKeysets(conditionalUrl, request);
+    },
   });
 };
 

@@ -1,11 +1,5 @@
 import type { CurrentOdds, LatestConfirmedTrade, Market, FilterState } from "@/types/market";
-import type {
-  MarketDetail,
-  OrderBook,
-  Order,
-  PriceHistory,
-  PricePoint,
-} from "@/types/market-detail";
+import type { MarketDetail, OrderBook, Order, PriceHistory } from "@/types/market-detail";
 import type { MarketSort } from "@/hooks/useMarketSort";
 import type { Proof, SerializedBlindedMessage, SerializedBlindedSignature } from "@cashu/cashu-ts";
 import type { components } from "@/generated/api";
@@ -23,6 +17,8 @@ import {
 } from "@bitcaster/client-sdk/marketUnits";
 import { getNdk } from "@/lib/nostr";
 import { resolveApiSigningUrl } from "@/lib/hubUrl";
+import { windowPriceHistory } from "@/lib/priceHistory";
+export { windowPriceHistory } from "@/lib/priceHistory";
 import { NDKEvent, type NDKSigner } from "@nostr-dev-kit/ndk";
 import { bytesToHex } from "nostr-tools/utils";
 import { toWireAmountBearing } from "@bitcaster/client-sdk/ctfRegistration";
@@ -742,57 +738,6 @@ export function applyMarketComments(
   };
 }
 
-const MAX_PRICE_HISTORY_POINTS_PER_OUTCOME = 1000;
-
-// Width of each timeframe window in milliseconds. The chart X-axis scale is
-// derived from the visible point span, so trimming the series to the active
-// window keeps the date ticks proportional to the selected timeframe instead
-// of always spanning the full retained history. `all` keeps the newest capped
-// retained points so live tabs cannot grow without bound.
-const TIMEFRAME_WINDOW_MS: Record<PriceHistory["timeframe"], number | null> = {
-  "1h": 60 * 60 * 1000,
-  "24h": 24 * 60 * 60 * 1000,
-  "7d": 7 * 24 * 60 * 60 * 1000,
-  "30d": 30 * 24 * 60 * 60 * 1000,
-  all: null,
-};
-
-/**
- * Trim a price series to the active timeframe window. Anchored on the newest
- * sample (not wall-clock now) so a series whose latest point is older than the
- * window still renders. One pre-window point is retained so the step line has a
- * defined starting value at the left edge of the window.
- */
-export function windowPriceHistory(history: PriceHistory): PriceHistory {
-  const windowMs = TIMEFRAME_WINDOW_MS[history.timeframe];
-  if (history.data.length === 0) return history;
-  const byTimestamp = new Map<string, PricePoint>();
-  for (const point of history.data) byTimestamp.set(point.timestamp, point);
-  const sorted = [...byTimestamp.values()].sort(
-    (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime(),
-  );
-  if (windowMs === null) {
-    return {
-      ...history,
-      data: sorted.slice(-MAX_PRICE_HISTORY_POINTS_PER_OUTCOME),
-    };
-  }
-  const newest = new Date(sorted[sorted.length - 1].timestamp).getTime();
-  const cutoff = newest - windowMs;
-  const firstInWindow = sorted.findIndex((p) => new Date(p.timestamp).getTime() >= cutoff);
-  if (firstInWindow <= 0) {
-    return {
-      ...history,
-      data: sorted.slice(-MAX_PRICE_HISTORY_POINTS_PER_OUTCOME),
-    };
-  }
-  // Keep one point before the cutoff so the line has a left-edge value.
-  return {
-    ...history,
-    data: sorted.slice(firstInWindow - 1).slice(-MAX_PRICE_HISTORY_POINTS_PER_OUTCOME),
-  };
-}
-
 export function priceNumeratorToPercent(price: number, divisibility: number): number {
   if (!Number.isFinite(price)) return 0;
   const normalizedDivisibility = normalizeMarketDivisibility(divisibility, "sat");
@@ -804,25 +749,12 @@ function normalizePricePoint(
   divisibility: number,
 ) {
   return {
+    eventOrder: point.eventOrder,
     timestamp: point.timestamp,
     price: priceNumeratorToPercent(point.price, divisibility),
     volume: point.volumeSubunits,
     source: point.source,
   };
-}
-
-export function appendLivePricePoint(
-  history: PriceHistory,
-  point: { timestamp: string; price: number; volume?: number },
-): PriceHistory {
-  const byTimestamp = new Map(history.data.map((p) => [p.timestamp, p]));
-  byTimestamp.set(point.timestamp, point);
-  return windowPriceHistory({
-    ...history,
-    data: [...byTimestamp.values()].sort(
-      (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime(),
-    ),
-  });
 }
 
 export function applyMarketPriceHistory(
@@ -850,14 +782,21 @@ export function applyMarketPriceHistory(
       return [outcomeId, toPriceHistory(outcome.data)] as const;
     }),
   );
-  const semanticYesOutcomeId = market.outcomes?.find(
-    (outcome) => outcome.id.toLowerCase() === "yes",
-  )?.id;
   const primary =
     market.type === "yesno"
-      ? semanticYesOutcomeId
-        ? histories[semanticYesOutcomeId]
-        : histories[Object.keys(histories)[0]]
+      ? windowPriceHistory({
+          timeframe: response.timeframe as PriceHistory["timeframe"],
+          data: response.outcomes.flatMap((outcome) =>
+            outcome.data.map((point) => {
+              return normalizePricePoint(
+                outcome.outcomeId.toLowerCase() === "no"
+                  ? { ...point, price: market.divisibility - point.price }
+                  : point,
+                market.divisibility,
+              );
+            }),
+          ),
+        })
       : histories[Object.keys(histories)[0]];
 
   if (market.type === "categorical") {

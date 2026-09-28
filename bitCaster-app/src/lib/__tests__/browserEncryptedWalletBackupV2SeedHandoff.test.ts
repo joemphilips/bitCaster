@@ -30,6 +30,7 @@ import { createBrowserCustodyProofRow } from "../../stores/durable-custody-db";
 import { createEncryptedWalletBackupV2DesiredAssetRow } from "../../stores/browser-encrypted-wallet-backup-v2-desired-asset";
 import { browserWalletDatabaseName } from "../browserWalletProfile";
 import {
+  BrowserEncryptedWalletBackupV2SeedHandoffRefusal,
   handoffBrowserEncryptedWalletBackupV2Seed,
   listBrowserEncryptedWalletBackupV2CacheRemovalEligibleAssets,
   listBrowserEncryptedWalletBackupV2EvictedAssetMonitoringFacts,
@@ -98,6 +99,7 @@ it("rejects sat before cache removal or seed handoff deletion", async () => {
       database,
       scopeId,
       isCurrentProfile: () => true,
+      assertNoPendingOrders: () => undefined,
       lockManager: immediateLockManager(),
       invalidateOldProfile: invalidate,
       activateNewProfile: activate,
@@ -124,17 +126,48 @@ it("blocks seed handoff when an asset is not acknowledged", async () => {
   });
   await database.encryptedWalletBackupV2DesiredAssets.put(desired);
 
+  const refusal = await handoffBrowserEncryptedWalletBackupV2Seed({
+    database,
+    scopeId,
+    isCurrentProfile: () => true,
+    assertNoPendingOrders: () => undefined,
+    lockManager: immediateLockManager(),
+    invalidateOldProfile: vi.fn(),
+    activateNewProfile: vi.fn(),
+    restoreOldProfile: vi.fn(),
+  }).catch((error: unknown) => error);
+  expect(refusal).toBeInstanceOf(BrowserEncryptedWalletBackupV2SeedHandoffRefusal);
+  expect(refusal).toMatchObject({ code: "backup-not-current" });
+  expect(refusal instanceof Error && refusal.message.includes("uncovered desired assets")).toBe(
+    true,
+  );
+});
+
+it("checks app-level pending orders immediately before invalidating the old profile", async () => {
+  const { database, scopeId } = fixture();
+  const assertNoPendingOrders = vi.fn(() => {
+    throw new Error("wallet has pending orders");
+  });
+  const invalidate = vi.fn();
+  const remove = vi.spyOn(database, "delete");
+
   await expect(
     handoffBrowserEncryptedWalletBackupV2Seed({
       database,
       scopeId,
       isCurrentProfile: () => true,
+      assertNoPendingOrders,
       lockManager: immediateLockManager(),
-      invalidateOldProfile: vi.fn(),
+      invalidateOldProfile: invalidate,
       activateNewProfile: vi.fn(),
       restoreOldProfile: vi.fn(),
     }),
-  ).rejects.toThrow(/uncovered desired assets/);
+  ).rejects.toThrow(/pending orders/);
+
+  expect(assertNoPendingOrders).toHaveBeenCalledOnce();
+  expect(invalidate).not.toHaveBeenCalled();
+  expect(remove).not.toHaveBeenCalled();
+  expect(database.isOpen()).toBe(true);
 });
 
 it("blocks seed handoff while a proof operation is prepared", async () => {
@@ -151,17 +184,48 @@ it("blocks seed handoff while a proof operation is prepared", async () => {
     updatedAt: 1,
   });
 
+  const refusal = await handoffBrowserEncryptedWalletBackupV2Seed({
+    database,
+    scopeId,
+    isCurrentProfile: () => true,
+    assertNoPendingOrders: () => undefined,
+    lockManager: immediateLockManager(),
+    invalidateOldProfile: vi.fn(),
+    activateNewProfile: vi.fn(),
+    restoreOldProfile: vi.fn(),
+  }).catch((error: unknown) => error);
+  expect(refusal).toBeInstanceOf(BrowserEncryptedWalletBackupV2SeedHandoffRefusal);
+  expect(refusal).toMatchObject({ code: "active-wallet-work" });
+  expect(refusal instanceof Error && refusal.message.includes("prepared proof operation")).toBe(
+    true,
+  );
+});
+
+it("preserves unexpected desired-row read failures as generic safety errors", async () => {
+  const { database, scopeId } = fixture();
+  const readFailure = new Error("injected IndexedDB desired-row read failure");
+  vi.spyOn(database.encryptedWalletBackupV2DesiredAssets, "where").mockImplementation(() => {
+    throw readFailure;
+  });
+  const invalidate = vi.fn();
+  const remove = vi.spyOn(database, "delete");
+
   await expect(
     handoffBrowserEncryptedWalletBackupV2Seed({
       database,
       scopeId,
       isCurrentProfile: () => true,
+      assertNoPendingOrders: () => undefined,
       lockManager: immediateLockManager(),
-      invalidateOldProfile: vi.fn(),
+      invalidateOldProfile: invalidate,
       activateNewProfile: vi.fn(),
       restoreOldProfile: vi.fn(),
     }),
-  ).rejects.toThrow(/prepared proof operation/);
+  ).rejects.toBe(readFailure);
+
+  expect(invalidate).not.toHaveBeenCalled();
+  expect(remove).not.toHaveBeenCalled();
+  expect(database.isOpen()).toBe(true);
 });
 
 it("returns a fully acknowledged non-empty asset and rejects a revision replacement", async () => {
@@ -439,6 +503,7 @@ it("blocks a seed handoff when active custody has an untracked proof", async () 
       database: covered.database,
       scopeId: covered.scopeId,
       isCurrentProfile: () => true,
+      assertNoPendingOrders: () => undefined,
       lockManager: immediateLockManager(),
       invalidateOldProfile: vi.fn(),
       activateNewProfile: vi.fn(),
@@ -741,7 +806,7 @@ it("does not block seed handoff for more than 256 terminal CTF preparations", as
   await expect(handoff(current)).resolves.toBeUndefined();
 });
 
-it("deletes the captured database before activating the new profile", async () => {
+it("activates the new profile before deleting the captured database", async () => {
   const { database, scopeId } = fixture();
   const events: string[] = [];
   const close = database.close.bind(database);
@@ -754,6 +819,7 @@ it("deletes the captured database before activating the new profile", async () =
     database,
     scopeId,
     isCurrentProfile: () => true,
+    assertNoPendingOrders: () => undefined,
     lockManager: immediateLockManager(),
     invalidateOldProfile: () => events.push("invalidate"),
     activateNewProfile: async () => {
@@ -765,8 +831,8 @@ it("deletes the captured database before activating the new profile", async () =
   });
 
   expect(events[0]).toBe("invalidate");
-  expect(events).toContain("close");
-  expect(events.at(-1)).toBe("activate");
+  expect(events[1]).toBe("activate");
+  expect(events.indexOf("close")).toBeGreaterThan(events.indexOf("activate"));
 });
 
 it("rechecks custody after the wallet lock admits a competing update", async () => {
@@ -784,7 +850,7 @@ it("rechecks custody after the wallet lock admits a competing update", async () 
           syncState: "pending",
         });
       }
-      return callback(null);
+      return callback({ name, mode: _options.mode } as Lock);
     },
   } as Pick<LockManager, "request">;
 
@@ -793,6 +859,7 @@ it("rechecks custody after the wallet lock admits a competing update", async () 
       database: covered.database,
       scopeId: covered.scopeId,
       isCurrentProfile: () => true,
+      assertNoPendingOrders: () => undefined,
       lockManager,
       invalidateOldProfile: vi.fn(),
       activateNewProfile: vi.fn(),
@@ -801,6 +868,38 @@ it("rechecks custody after the wallet lock admits a competing update", async () 
   ).rejects.toThrow(/uncovered desired assets/);
   expect(locks[0]).toContain("wallet-profile");
   expect(locks[1]).toContain("encrypted-wallet-backup/v2");
+  expect(covered.database.isOpen()).toBe(true);
+});
+
+it("refuses seed handoff when an accepted wallet lock is unavailable", async () => {
+  const covered = await coveredFixture();
+  const lockRequests: { name: string; options: LockOptions }[] = [];
+  const lockManager = {
+    request: async <T>(name: string, options: LockOptions, callback: LockGrantedCallback<T>) => {
+      lockRequests.push({ name, options });
+      if (name.includes("encrypted-wallet-backup/v2")) return callback(null);
+      return callback({ name, mode: options.mode } as Lock);
+    },
+  } as Pick<LockManager, "request">;
+  const invalidateOldProfile = vi.fn();
+  const remove = vi.spyOn(covered.database, "delete");
+
+  const refusal = await handoffBrowserEncryptedWalletBackupV2Seed({
+    database: covered.database,
+    scopeId: covered.scopeId,
+    isCurrentProfile: () => true,
+    assertNoPendingOrders: () => undefined,
+    lockManager,
+    invalidateOldProfile,
+    activateNewProfile: vi.fn(),
+    restoreOldProfile: vi.fn(),
+  }).catch((error: unknown) => error);
+
+  expect(refusal).toBeInstanceOf(BrowserEncryptedWalletBackupV2SeedHandoffRefusal);
+  expect(refusal).toMatchObject({ code: "active-wallet-work" });
+  expect(lockRequests.at(-1)?.options).toMatchObject({ mode: "exclusive", ifAvailable: true });
+  expect(invalidateOldProfile).not.toHaveBeenCalled();
+  expect(remove).not.toHaveBeenCalled();
   expect(covered.database.isOpen()).toBe(true);
 });
 
@@ -817,8 +916,9 @@ it("uses the scoped active-proof index without reading spent history", async () 
   await expect(handoff(covered)).resolves.toBeUndefined();
 });
 
-it("restores the old activation when deletion or activation fails", async () => {
+it("keeps the committed new activation when old-cache deletion fails", async () => {
   const { database, scopeId } = fixture();
+  const activateNewProfile = vi.fn(async () => undefined);
   const restoreOldProfile = vi.fn(async () => undefined);
   vi.spyOn(database, "delete").mockRejectedValueOnce(new Error("delete failed"));
 
@@ -827,13 +927,15 @@ it("restores the old activation when deletion or activation fails", async () => 
       database,
       scopeId,
       isCurrentProfile: () => true,
+      assertNoPendingOrders: () => undefined,
       lockManager: immediateLockManager(),
       invalidateOldProfile: vi.fn(),
-      activateNewProfile: vi.fn(),
+      activateNewProfile,
       restoreOldProfile,
     }),
-  ).rejects.toThrow(/delete failed/);
-  expect(restoreOldProfile).toHaveBeenCalledOnce();
+  ).resolves.toBeUndefined();
+  expect(activateNewProfile).toHaveBeenCalledOnce();
+  expect(restoreOldProfile).not.toHaveBeenCalled();
 });
 
 it("restores the old activation when new-profile activation fails", async () => {
@@ -844,6 +946,7 @@ it("restores the old activation when new-profile activation fails", async () => 
       database,
       scopeId,
       isCurrentProfile: () => true,
+      assertNoPendingOrders: () => undefined,
       lockManager: immediateLockManager(),
       invalidateOldProfile: vi.fn(),
       activateNewProfile: vi.fn(async () => {
@@ -879,8 +982,8 @@ function fixture() {
 
 function immediateLockManager(): Pick<LockManager, "request"> {
   return {
-    request: async <T>(_name: string, _options: LockOptions, callback: LockGrantedCallback<T>) =>
-      callback(null),
+    request: async <T>(name: string, options: LockOptions, callback: LockGrantedCallback<T>) =>
+      callback({ name, mode: options.mode } as Lock),
   } as Pick<LockManager, "request">;
 }
 
@@ -888,6 +991,7 @@ function handoff(input: { readonly database: BitcasterDB; readonly scopeId: stri
   return handoffBrowserEncryptedWalletBackupV2Seed({
     ...input,
     isCurrentProfile: () => true,
+    assertNoPendingOrders: () => undefined,
     lockManager: immediateLockManager(),
     invalidateOldProfile: vi.fn(),
     activateNewProfile: vi.fn(),

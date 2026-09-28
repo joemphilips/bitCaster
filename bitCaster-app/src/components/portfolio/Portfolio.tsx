@@ -28,9 +28,8 @@ function MonitoringStatus({
   const { t } = useTranslation();
   if (!monitoring) return null;
   const error = monitoring.error ?? monitoring.assetPageError;
-  const needsAttention = error || monitoring.stale || monitoring.incomplete || monitoring.building;
+  const needsAttention = error || monitoring.stale || monitoring.incomplete;
   const states = [
-    monitoring.building && t("portfolio.monitoringUpdating"),
     monitoring.stale && t("portfolio.monitoringStale"),
     monitoring.incomplete && t("portfolio.monitoringIncomplete"),
     monitoring.unvaluedAssetCount > 0 &&
@@ -181,6 +180,7 @@ export function Portfolio(props: PortfolioProps) {
             selectedTimeRange={props.selectedTimeRange}
             totalValueSats={props.stats.totalValueSats}
             totalValueKnown={props.stats.totalValueKnown}
+            totalValueLoading={props.stats.totalValueLoading}
             onTimeRangeChange={props.onTimeRangeChange}
           />
         </div>

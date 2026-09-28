@@ -38,9 +38,9 @@ price and fees before you confirm. Price protection sets a maximum buy price
 or a minimum sell price. Auto allows 20 percentage points from the current
 best executable price. A Buy price of 10% gives a 30% cap, not 12%.
 Choose Custom to change the limit. Review the actual quote before confirming.
-`Available at this limit` shows the current maximum quantity from matching
-orders. It is not your wallet balance or reserved liquidity. The form still
-checks your entered quantity and its fees. Your order fills in full
+The form checks your entered quantity and its fees. It warns when the current
+orders cannot fill that quantity within your price limit. A preview does not
+reserve liquidity. Your order fills in full
 within the limit or does not fill. It does not stay on the order book for later.
 Markets can have two outcomes, such as Yes and No, or up to eight named
 outcomes. You can fund your wallet through a Lightning invoice or with an
@@ -50,6 +50,12 @@ show these digits in smaller text. The amount stays exact.
 
 Check the selected outcome before confirming. In the example above, Alpha
 means that Alpha wins. Not Alpha means that Beta or Gamma wins.
+
+After settlement, Activity shows each confirmed fill for the active wallet.
+Each entry shows Buy or Sell, the outcome, the number of shares, and the trade
+value before fees. This value is not the net change in your wallet balance.
+An order with several fills can create several entries. A pending or failed
+order does not appear as a completed trade.
 
 ### Create your own market
 
@@ -117,6 +123,12 @@ Before your first wallet action, choose Create wallet or Restore wallet.
 A new wallet is generated locally in your browser. To restore a wallet, enter
 a valid 12-word recovery phrase. Setup does not submit a payment automatically.
 Recovery-phrase and backup controls are available only when a wallet exists.
+
+To use another wallet, open the wallet section in Settings and import its
+recovery phrase. This replaces the active wallet; it does not add a second
+named profile. Save the current recovery phrase first. Unfinished wallet work
+or an incomplete backup can block replacement. Your Nostr account does not
+change. Activity stays associated with the wallet that performed it.
 
 Your Nostr signing key is a separate secret. Back up both the wallet recovery
 phrase and any Nostr secret key shown in the app. If you already use a Nostr

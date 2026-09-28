@@ -3,7 +3,6 @@ import {
   Mint as CashuMint,
   Wallet as CashuWallet,
   MintOperationError,
-  CheckStateEnum,
   OutputData,
   getDecodedToken,
   verifyProofsForReceive,
@@ -95,7 +94,6 @@ import {
   participationScoreDeliveryIntent,
 } from '@bitcaster-market/client-sdk/participationScoreDelivery'
 import {
-  addAvailableProofs,
   advanceDaemonKeysetCounter,
   ensureState,
   getProofOperation,
@@ -130,6 +128,7 @@ import { DurableCustodyTransactionSqlite } from './durableCustodyTransactionSqli
 import type { WalletConsolidationProofSummary, WalletConsolidationResult } from './protocol.ts'
 import { createDaemonTokenImportKeysetResolver } from './tokenImportKeysetResolver.ts'
 import { DaemonDurableWalletReceiveCoordinator } from './durableWalletReceiveCoordinator.ts'
+import { DurableWalletProofImportCoordinator } from './durableWalletProofImportCoordinator.ts'
 import { DaemonDurableOutgoingCashuCoordinator } from './durableOutgoingCashuCoordinator.ts'
 
 export interface CashuWalletLike {
@@ -2470,7 +2469,7 @@ function blindedMessageKey(output: SerializedBlindedMessage): string {
 async function receiveOutcomeToken(
   proofs: Proof[],
   mintUrl: string,
-  asset: StoredProofAsset,
+  asset: Extract<StoredProofAsset, { kind: 'Outcome' }>,
   secrets: WalletOpsSecrets,
   deps: WalletOpsDependencies,
   hasInactiveProofs: boolean,
@@ -2481,19 +2480,35 @@ async function receiveOutcomeToken(
       throw new Error('cashu outcome receive supports only V2 keysets')
     }
   }
+  if (!deps.getCustodyFence) {
+    throw new Error('daemon outcome receive requires custody authority')
+  }
+  const keysetIds = [...new Set(proofs.map((proof) => proof.id).filter(Boolean))]
+  const keysets = await resolveDurableCustodyKeysetAuthorities(
+    mintUrl,
+    keysetIds,
+    asset.conditionId,
+    deps,
+    [[asset.outcomeSetId, proofs]],
+    [],
+  )
   const wallet = createWallet(mintUrl, secrets, deps, asset.baseAsset, asset.unit)
   await wallet.loadMint()
   if (!wallet.checkProofsStates) {
     throw new Error('cashu wallet does not support proof-state checks')
   }
-  const proofStates = await wallet.checkProofsStates(
-    proofs.map((proof) => ({ id: proof.id, secret: proof.secret })),
-  )
-  const firstBlocked = proofStates.find((state) => state.state !== CheckStateEnum.UNSPENT)
-  if (firstBlocked) {
-    throw new Error(`cashu outcome proof is not spendable: ${firstBlocked.state}`)
-  }
-  await addAvailableProofs(mintUrl, proofs, asset)
+  await new DurableWalletProofImportCoordinator(
+    profileDir(),
+    deps.getCustodyFence,
+    Date.now,
+    deps.injectCustodyFault,
+  ).importOutcomeProofs({
+    mintUrl,
+    asset,
+    proofs,
+    keysets,
+    checkProofsStates: (items) => wallet.checkProofsStates!([...items]),
+  })
   return {
     mintUrl,
     amountMsat: sumProofs(proofs),

@@ -3,6 +3,13 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { useDepositWithdrawState } from "../useDepositWithdrawState";
 import { useWalletStore } from "@/stores/wallet";
 import { useActivityLogStore } from "@/stores/activity-log";
+import { usePaymentRequestInbox } from "@/stores/paymentRequestInbox";
+import { useToastStore } from "@/stores/toast";
+import {
+  browserWalletScopeIdFromMnemonic,
+  browserWalletIdFromMnemonic,
+  setActiveBrowserWalletProfile,
+} from "@/lib/browserWalletProfile";
 
 // Mock cashu.ts — we don't want real mint calls
 vi.mock("@/lib/cashu", () => ({
@@ -116,6 +123,8 @@ beforeEach(() => {
     activeMintUrl: "http://localhost:8085",
     mintConnectionStatuses: {},
   });
+  setActiveBrowserWalletProfile(useWalletStore.getState().mnemonic);
+  useToastStore.setState({ toasts: [] });
 });
 
 describe("useDepositWithdrawState", () => {
@@ -240,17 +249,6 @@ describe("useDepositWithdrawState", () => {
     });
   });
 
-  describe("onToggleCurrency", () => {
-    it("toggles showFiatPrimary", () => {
-      const { result } = renderHook(() => useDepositWithdrawState("deposit", onDismiss));
-      expect(result.current.showFiatPrimary).toBe(false);
-      act(() => result.current.onToggleCurrency());
-      expect(result.current.showFiatPrimary).toBe(true);
-      act(() => result.current.onToggleCurrency());
-      expect(result.current.showFiatPrimary).toBe(false);
-    });
-  });
-
   describe("onBack", () => {
     it("returns to chooser view", () => {
       const { result } = renderHook(() => useDepositWithdrawState("deposit", onDismiss));
@@ -333,15 +331,35 @@ describe("useDepositWithdrawState", () => {
   });
 
   describe("request feature", () => {
-    it("onRequest creates payment request and shows display", async () => {
-      const { result } = renderHook(() => useDepositWithdrawState("deposit", onDismiss));
-      await act(async () => {
-        await result.current.onRequest();
-      });
-      expect(result.current.currentView).toBe("payment-request-display");
-      expect(result.current.paymentRequestEncoded).toBeTruthy();
-      expect(result.current.paymentRequestStatus).toBe("waiting");
-    });
+    it.each([true, false])(
+      "shows confirmed request receipt only for the active wallet: %s",
+      async (sameWallet) => {
+        const { result } = renderHook(() => useDepositWithdrawState("deposit", onDismiss));
+        await act(async () => {
+          await result.current.onRequest();
+        });
+        expect(result.current.currentView).toBe("payment-request-display");
+        expect(result.current.paymentRequestEncoded).toBeTruthy();
+        expect(result.current.paymentRequestStatus).toBe("waiting");
+        const scope = browserWalletScopeIdFromMnemonic(useWalletStore.getState().mnemonic)!;
+        const receivedScope = sameWallet
+          ? scope
+          : browserWalletScopeIdFromMnemonic(
+              "legal winner thank year wave sausage worth useful legal winner thank yellow",
+            )!;
+        usePaymentRequestInbox
+          .getState()
+          .registerPending("req1", "http://localhost:8085", receivedScope);
+        act(() =>
+          usePaymentRequestInbox.getState().markReceived("req1", 1_001, "sat", receivedScope),
+        );
+        expect(result.current.currentView).toBe(sameWallet ? "success" : "payment-request-display");
+        expect(result.current.successAmountMsat).toBe(sameWallet ? 1_001 : 0);
+        expect(onDismiss).not.toHaveBeenCalled();
+        expect(usePaymentRequestInbox.getState().entries.req1 !== undefined).toBe(!sameWallet);
+        usePaymentRequestInbox.getState().clear("req1");
+      },
+    );
   });
 
   describe("onMintChange", () => {
@@ -405,7 +423,8 @@ describe("useDepositWithdrawState", () => {
       expect(result.current.currentView).toBe("success");
       expect(useActivityLogStore.getState().items[0]).toMatchObject({
         type: "deposit",
-        amountSats: 10_000,
+        amountSubunits: 10_000,
+        walletId: expect.stringMatching(/^[0-9a-f]{64}$/),
       });
     });
 
@@ -485,10 +504,65 @@ describe("useDepositWithdrawState", () => {
       expect(result.current.successAmountMsat).toBe(50_000);
       expect(result.current.error).toBeNull();
       expect(useActivityLogStore.getState().items[0]).toMatchObject({
-        amountSats: 50_000,
+        amountSubunits: 50_000,
+        walletId: expect.stringMatching(/^[0-9a-f]{64}$/),
         baseAsset: "sat",
       });
     });
+
+    it.each(["paste", "scan"] as const)(
+      "retains a completed %s receive under its captured wallet but suppresses stale presentation",
+      async (source) => {
+        const walletOps = await import("@/lib/walletOps");
+        let finishIngress!: (value: never) => void;
+        vi.mocked(walletOps.ingressReceiveCashuToken).mockImplementationOnce(
+          () => new Promise((resolve) => (finishIngress = resolve)) as never,
+        );
+        const capturedWalletId = browserWalletIdFromMnemonic(useWalletStore.getState().mnemonic);
+        const { result } = renderHook(() => useDepositWithdrawState("deposit", onDismiss));
+        act(() => result.current.onSelectMethod("ecash"));
+        let paste!: Promise<void>;
+        await act(async () => {
+          if (source === "paste") {
+            Object.defineProperty(navigator, "clipboard", {
+              configurable: true,
+              value: { readText: vi.fn().mockResolvedValue("cashuB-token") },
+            });
+            paste = result.current.onPaste() as unknown as Promise<void>;
+          } else {
+            paste = result.current.onScanResult("cashuB-token") as unknown as Promise<void>;
+          }
+          await Promise.resolve();
+        });
+        const newMnemonic =
+          "legal winner thank year wave sausage worth useful legal winner thank yellow";
+        act(() => useWalletStore.setState({ mnemonic: newMnemonic }));
+        setActiveBrowserWalletProfile(newMnemonic);
+        await act(async () => {
+          finishIngress({
+            added: true,
+            mintUrl: "http://localhost:8085",
+            source,
+            unit: "msat",
+            amountSubunits: 42_000,
+            baseAsset: "sat",
+            proofs: [],
+          } as never);
+          await paste;
+        });
+
+        expect(useActivityLogStore.getState().items).toEqual([
+          expect.objectContaining({ walletId: capturedWalletId, amountSubunits: 42_000 }),
+        ]);
+        expect(
+          useToastStore
+            .getState()
+            .toasts.some((toast) => toast.message.startsWith("Added new mint:")),
+        ).toBe(false);
+        expect(result.current.currentView).toBe("deposit-ecash");
+        expect(result.current.isLoading).toBe(false);
+      },
+    );
 
     it("reports the durable receiver unit in the success state", async () => {
       const walletOps = await import("@/lib/walletOps");
@@ -514,7 +588,8 @@ describe("useDepositWithdrawState", () => {
 
       expect(result.current.successBaseAsset).toBe("sat");
       expect(useActivityLogStore.getState().items[0]).toMatchObject({
-        amountSats: 23,
+        amountSubunits: 23,
+        walletId: expect.stringMatching(/^[0-9a-f]{64}$/),
         baseAsset: "sat",
       });
     });
@@ -613,6 +688,14 @@ describe("useDepositWithdrawState", () => {
       expect(result.current.ecashToken).toBe("cashuAtoken123");
       expect(result.current.amountSats).toBe(amountSats);
       expect(executeBrowserBearerWithdrawal).not.toHaveBeenCalled();
+      expect(result.current.currentView).toBe("token-display");
+      const pendingTransfer = result.current.bearerWithdrawal;
+      act(() => result.current.onAcknowledgeEcashHandoff());
+      expect(result.current.currentView).toBe("success");
+      expect(result.current.successAmountMsat).toBe(Number(requestedAmount));
+      expect(result.current.bearerWithdrawal).toBe(pendingTransfer);
+      expect(result.current.ecashToken).toBe("cashuAtoken123");
+      expect(reclaimBrowserBearerWithdrawal).not.toHaveBeenCalled();
     });
 
     it("does not present a stale resumed token after the mint changes", async () => {
@@ -648,44 +731,60 @@ describe("useDepositWithdrawState", () => {
       expect(result.current.currentView).toBe("send-ecash");
     });
 
-    it("lets the melt boundary select canonical msat proofs when paying lightning", async () => {
-      const proofDb = await import("@/stores/proof-db");
-      const cashu = await import("@/lib/cashu");
-      vi.mocked(cashu.createMeltQuote).mockResolvedValueOnce({
-        quote: "q1",
-        amount: 1000,
-        fee_reserve: 10,
-        state: "UNPAID",
-        expiry: 0,
-        payment_preimage: null,
-      } as never);
-      vi.mocked(cashu.meltProofs).mockResolvedValueOnce({
-        paid: true,
-        change: [{ amount: 100, secret: "melt-change", id: "keyset", C: "point" }],
-      } as never);
+    it.each(["paid", "unpaid", "error"] as const)(
+      "shows melt success only for confirmed payment: %s",
+      async (outcome) => {
+        const proofDb = await import("@/stores/proof-db");
+        const cashu = await import("@/lib/cashu");
+        vi.mocked(cashu.createMeltQuote).mockResolvedValueOnce({
+          quote: "q1",
+          amount: 1000,
+          fee_reserve: 10,
+          state: "UNPAID",
+          expiry: 0,
+          payment_preimage: null,
+        } as never);
+        if (outcome === "error") {
+          vi.mocked(cashu.meltProofs).mockRejectedValueOnce(
+            new Error("Payment status unavailable"),
+          );
+        } else {
+          vi.mocked(cashu.meltProofs).mockResolvedValueOnce({
+            paid: outcome === "paid",
+            change: [],
+          } as never);
+        }
 
-      const { result } = renderHook(() => useDepositWithdrawState("withdraw", onDismiss));
-      act(() => result.current.onSelectMethod("lightning"));
-      await act(async () => {
-        await result.current.onLightningInputChange("lnbc100n1pexample");
-      });
-      await act(async () => {
-        await result.current.onConfirmMelt();
-      });
+        const { result } = renderHook(() => useDepositWithdrawState("withdraw", onDismiss));
+        act(() => result.current.onSelectMethod("lightning"));
+        await act(async () => {
+          await result.current.onLightningInputChange("lnbc100n1pexample");
+        });
+        await act(async () => {
+          await result.current.onConfirmMelt();
+        });
 
-      expect(proofDb.getCanonicalSelectableProofs).not.toHaveBeenCalled();
-      expect(proofDb.addProofs).not.toHaveBeenCalled();
-      expect(proofDb.removeProofs).not.toHaveBeenCalled();
-      expect(result.current.currentView).toBe("success");
-      expect(result.current.successAmountMsat).toBe(1_000);
-      expect(result.current.successBaseAsset).toBe("sat");
-      expect(useActivityLogStore.getState().items[0]).toMatchObject({
-        type: "withdrawal",
-        amountSats: 1_000,
-        baseAsset: "sat",
-      });
-      expect(cashu.meltProofs).toHaveBeenCalledWith(expect.any(Object), "http://localhost:8085");
-    });
+        expect(proofDb.getCanonicalSelectableProofs).not.toHaveBeenCalled();
+        expect(proofDb.addProofs).not.toHaveBeenCalled();
+        expect(proofDb.removeProofs).not.toHaveBeenCalled();
+        expect(result.current.currentView).toBe(outcome === "paid" ? "success" : "melt-confirm");
+        expect(result.current.successAmountMsat).toBe(outcome === "paid" ? 1_000 : 0);
+        expect(result.current.successBaseAsset).toBe("sat");
+        expect(useActivityLogStore.getState().items).toEqual(
+          outcome === "paid"
+            ? [
+                expect.objectContaining({
+                  type: "withdrawal",
+                  amountSubunits: 1_000,
+                  walletId: expect.stringMatching(/^[0-9a-f]{64}$/),
+                  baseAsset: "sat",
+                }),
+              ]
+            : [],
+        );
+        expect(cashu.meltProofs).toHaveBeenCalledWith(expect.any(Object), "http://localhost:8085");
+      },
+    );
   });
 });
 
@@ -694,6 +793,7 @@ function bearerTransfer(): {
 } & Record<string, unknown> {
   return {
     transferId: "bearer-withdrawal:test",
+    walletScopeId: browserWalletScopeIdFromMnemonic(useWalletStore.getState().mnemonic),
     mintUrl: "http://localhost:8085",
     unit: "msat",
     requestedAmount: "50000",

@@ -177,6 +177,7 @@ export async function recoverBrowserEncryptedWalletBackupV2Conflict(
           },
         }),
       input.lockManager,
+      input.signal,
     );
     return {
       kind: "completed",
@@ -391,6 +392,7 @@ async function reconcileAbsentAsset(
       requireCurrent(input);
     },
     input.lockManager,
+    input.signal,
   );
   return null;
 }
@@ -457,6 +459,7 @@ async function retireLocalOnlyPredecessors(
       requireCurrent(input);
     },
     input.lockManager,
+    input.signal,
   );
   return null;
 }

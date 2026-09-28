@@ -2718,9 +2718,12 @@ components:
           maximum: 999999
           description: >
             Latest confirmed primitive-route displayed trade-price numerator.
-            Null when the market has no confirmed trade or no authoritative
-            snapshot. This is a display price, not a selected-token execution
-            price.
+            For two outcomes, use the newest confirmed trade from either
+            primitive route in the captured preview. Map the opposite route
+            as priceDenominator minus its price. For more than two outcomes,
+            use only the requested primitive route. Null when that price or
+            an authoritative snapshot is unavailable. This is a display price,
+            not a selected-token execution price.
         projectedFinalPrice:
           type: [integer, 'null']
           format: int32
@@ -3824,7 +3827,16 @@ components:
         - price
         - volumeSubunits
         - source
+        - eventOrder
       properties:
+        eventOrder:
+          type: string
+          minLength: 1
+          description: >
+            Opaque canonical ordering identity for this confirmed trade.
+            Compare values with ordinal string ordering. The greater value
+            identifies the newer event, including when timestamps are equal.
+            Use this value when merging history with confirmed live trades.
         timestamp:
           type: string
           format: date-time

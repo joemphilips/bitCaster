@@ -45,6 +45,13 @@ only when `subsidyMayHelp` is true. Funding and trading require separate consent
 `averagePrice` and `worstPrice` describe the selected token. The current
 `currentLatestTradePrice` and projected `projectedFinalPrice` describe the
 primitive outcome route. Prices use `priceDenominator`. The projected price is
+based on the captured preview. For a binary market, `currentLatestTradePrice`
+uses the newest confirmed trade from either route in that same preview.
+An opposite-route trade maps to `priceDenominator - price`.
+For a categorical market with more than two outcomes, only the requested
+primitive route supplies this price. A trade in another outcome does not
+update it. Clients convert primitive-route prices to the selected token's
+price at the display boundary. The projected price is
 not a confirmed trade. Execution estimates are `null` when the full amount
 cannot fill. The current price is `null` when no confirmed trade exists.
 Funding does not create a market-price point.
@@ -63,8 +70,10 @@ that limit. Send `marketId`, `side`, and `tokenSide`. Omit `price` for Auto.
 Send an integer `price` for Custom. Explicit `null` is invalid.
 Auto uses `floor(D * 20 / 100)` ticks and clamps the limit to `1..D-1`.
 The result includes all eligible makers, not only the bot.
-The form shows this result as `Available at this limit: N shares`.
-It excludes wallet balance and fees. It does not reserve liquidity.
+This API remains available to clients. The browser form does not display a
+maximum-capacity number. It checks the entered quantity and explains refusals.
+The capacity result excludes wallet balance and fees. It does not reserve
+liquidity.
 
 A `ready` result contains `referencePrice`, `effectiveLimitPrice`,
 `maxFaceAmountSubunits`, `quotePaymentSubunits`, `worstPrice`,

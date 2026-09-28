@@ -1,6 +1,6 @@
 ---
-title: "Market Resolution"
-description: "Who determines the outcome, when winnings can be claimed, and what can delay a claim."
+title: 'Market Resolution'
+description: 'Who determines the outcome, when winnings can be claimed, and what can delay a claim.'
 sidebar:
   order: 3
 ---
@@ -81,6 +81,10 @@ wallet keeps that payment and stops removal.
 Removal can take time when encrypted backup is enabled. The position stays
 visible while removal is pending. Keep your wallet data until it finishes.
 Removal does not erase copies that you exported or kept in another browser.
+
+If removal fails, keep the removal reference shown in the message. It identifies
+the failed step and the attempt. Include that reference when you report the
+problem. Do not share your recovery phrase, private key, or ecash tokens.
 
 ### Using the CLI
 

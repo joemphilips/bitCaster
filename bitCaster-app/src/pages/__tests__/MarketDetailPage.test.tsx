@@ -4,6 +4,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { Amount } from "@cashu/cashu-ts";
 import { createDurableCustodyProofMaterialRecord } from "@bitcaster/client-sdk/durableCustodyProofMaterial";
 import type { CtfRangeMintMetadata } from "@bitcaster/client-sdk/ctfRangeMintMetadata";
+import type { PriceHistory } from "@/types/market-detail";
 import {
   assertMarketAcceptsOrders,
   booksByOutcomeSetFromDetail,
@@ -18,6 +19,7 @@ import {
 import { MarketDetailPage } from "@/pages/MarketDetailPage";
 import {
   activeBrowserWalletScopeId,
+  browserWalletIdFromMnemonic,
   browserWalletScopeIdFromMnemonic,
 } from "@/lib/browserWalletProfile";
 import {
@@ -25,6 +27,8 @@ import {
   fetchMarketPriceHistory,
   fetchOrderBook,
   MarketDetailUnavailableError,
+  type MarketCatalogueEntry,
+  type MarketPriceHistoryResponse,
 } from "@/lib/markets";
 import {
   previewBrowserCtfRangeOrderFees,
@@ -33,8 +37,10 @@ import {
 import { BrowserCtfRangeOrderError } from "@/lib/browserCtfRangeOrderCoordinator";
 import { decodeBrowserCustodyProofRow } from "@/stores/durable-custody-types";
 import { db } from "@/stores/proof-db";
+import { usePendingTradesStore } from "@/stores/pendingTrades";
 import {
   joinMarket,
+  onConfirmedTradeRecorded,
   onMarketFundingUpdated,
   refreshMarketSnapshot,
   type LatestConfirmedTrade,
@@ -81,6 +87,24 @@ const mocks = vi.hoisted(() => ({
   confirmedTradeHandlers: [] as Array<
     (message: { conditionId: string; latestConfirmedTrade: LatestConfirmedTrade }) => void
   >,
+  signalr: (() => {
+    const registeredHandlers = new Map<string, (payload: unknown) => void>();
+    const connection = {
+      state: "Disconnected" as "Disconnected" | "Connected" | "Reconnecting",
+      start: vi.fn(async () => {
+        connection.state = "Connected";
+      }),
+      stop: vi.fn(async () => {
+        connection.state = "Disconnected";
+      }),
+      invoke: vi.fn(async (_method: string, ..._args: unknown[]) => undefined),
+      on: vi.fn((eventName: string, handler: (payload: unknown) => void) => {
+        registeredHandlers.set(eventName, handler);
+      }),
+      onreconnected: vi.fn((_handler: () => void) => undefined),
+    };
+    return { connection, registeredHandlers };
+  })(),
   fundingHandlers: [] as Array<{
     conditionId: string;
     handler: (message: MarketFundingUpdatedMessage) => void;
@@ -99,10 +123,26 @@ const mocks = vi.hoisted(() => ({
   } | null,
   liveStatusHandlers: [] as Array<(status: MarketStatusChanged) => void>,
   orderBookHandlers: new Map<string, (snapshot: OrderBookSnapshot) => void>(),
-  windowPriceHistory: vi.fn((history: { timeframe: string; data: Array<unknown> }) => ({
-    ...history,
-    data: history.data.slice(-1000),
-  })),
+  windowPriceHistory: vi.fn<(history: PriceHistory) => PriceHistory>(),
+}));
+
+vi.mock("@microsoft/signalr", () => ({
+  HubConnectionBuilder: class {
+    withUrl() {
+      return this;
+    }
+    withAutomaticReconnect() {
+      return this;
+    }
+    build() {
+      return mocks.signalr.connection;
+    }
+  },
+  HubConnectionState: {
+    Connected: "Connected",
+    Disconnected: "Disconnected",
+    Reconnecting: "Reconnecting",
+  },
 }));
 
 vi.mock("react-router", () => ({
@@ -111,7 +151,22 @@ vi.mock("react-router", () => ({
 }));
 
 vi.mock("@/components/market-detail/PriceChart", () => ({
-  PriceChart: () => <div data-testid="price-chart" />,
+  PriceChart: ({
+    priceHistory,
+    currentDisplay,
+  }: {
+    priceHistory: PriceHistory;
+    currentDisplay?: string;
+  }) => {
+    const latestPrice = priceHistory.data.at(-1)?.price.toFixed(2);
+    return (
+      <div data-testid="price-chart">
+        <span data-testid="chart-latest-price">{latestPrice ?? "empty"}%</span>
+        {latestPrice !== undefined && <span data-testid="latest-price-pill">{latestPrice}%</span>}
+        <span data-testid="chart-headline">{currentDisplay}</span>
+      </div>
+    );
+  },
 }));
 
 vi.mock("@/components/market-detail/TopUpOverlay", () => ({
@@ -198,33 +253,12 @@ vi.mock("@/lib/marketHub", async () => ({
 
 vi.mock("@/lib/markets", async () => {
   const actual = await vi.importActual<typeof import("@/lib/markets")>("@/lib/markets");
+  mocks.windowPriceHistory.mockImplementation(actual.windowPriceHistory);
   return {
     ...actual,
     validateLatestConfirmedTrades: actual.validateLatestConfirmedTrades,
-    deriveYesNoOdds: (trades: LatestConfirmedTrade[], allowed: readonly string[]) => {
-      const latest = [...trades].sort((a, b) => a.eventOrder.localeCompare(b.eventOrder)).at(-1);
-      if (!latest) return { yes: null, no: null };
-      const yes = allowed.find((id) => id.toLowerCase() === "yes");
-      const no = allowed.find((id) => id.toLowerCase() === "no");
-      if (!yes || !no) return { yes: null, no: null };
-      return {
-        yes:
-          latest.primitiveOutcomeId === yes
-            ? latest.priceTick
-            : latest.divisibility - latest.priceTick,
-        no:
-          latest.primitiveOutcomeId === no
-            ? latest.priceTick
-            : latest.divisibility - latest.priceTick,
-      };
-    },
-    deriveCategoricalOdds: (trades: LatestConfirmedTrade[], outcomes: readonly string[]) =>
-      Object.fromEntries(
-        outcomes.map((outcome) => [
-          outcome,
-          trades.find((trade) => trade.primitiveOutcomeId === outcome)?.priceTick ?? null,
-        ]),
-      ),
+    deriveYesNoOdds: actual.deriveYesNoOdds,
+    deriveCategoricalOdds: actual.deriveCategoricalOdds,
     fetchMarketDetail: vi.fn(),
     fetchMarketComments: vi.fn().mockResolvedValue({ comments: [] }),
     fetchMarketPriceHistory: vi.fn().mockResolvedValue({ outcomes: [], timeframe: "7d" }),
@@ -244,7 +278,7 @@ vi.mock("@/lib/markets", async () => {
       spread: snapshot.spread ?? 0,
       depthLimit: snapshot.depthLimit,
     }),
-    priceNumeratorToPercent: (price: number, divisibility = 100) => (price / divisibility) * 100,
+    priceNumeratorToPercent: actual.priceNumeratorToPercent,
     signTradeComment: vi.fn(),
     windowPriceHistory: mocks.windowPriceHistory,
   };
@@ -738,6 +772,7 @@ describe("fetchMarketDetailWithBooks", () => {
     mocks.confirmedTradeHandlers.length = 0;
     mocks.routeParams.id = "condition-yesno";
     mocks.walletScopeId = browserWalletScopeIdFromMnemonic(mocks.walletState.mnemonic)!;
+    usePendingTradesStore.setState({ byOrderId: {} });
     mocks.signerRevision = 0;
   });
 
@@ -814,6 +849,7 @@ describe("MarketDetailPage live market status", () => {
     mocks.orderBookHandlers.clear();
     mocks.routeParams.id = "condition-yesno";
     mocks.walletScopeId = browserWalletScopeIdFromMnemonic(mocks.walletState.mnemonic)!;
+    usePendingTradesStore.setState({ byOrderId: {} });
     mocks.signerRevision = 0;
     mocks.navigate.mockReset();
     mocks.walletState.setupComplete = false;
@@ -826,6 +862,261 @@ describe("MarketDetailPage live market status", () => {
     mocks.createImplicitWalletAndNostrIdentity.mockReset();
     mocks.topUpOverlayProps = null;
   });
+
+  it("renders a published NO fill on the binary YES-basis chart through the SignalR parser", async () => {
+    const actualHub = await vi.importActual<typeof import("@/lib/marketHub")>("@/lib/marketHub");
+    await actualHub.disconnect();
+    mocks.signalr.connection.state = "Disconnected";
+    mocks.signalr.connection.start.mockClear();
+    mocks.signalr.connection.stop.mockClear();
+    mocks.signalr.connection.invoke.mockClear();
+    mocks.signalr.connection.on.mockClear();
+    mocks.signalr.registeredHandlers.clear();
+    vi.mocked(joinMarket).mockImplementation(actualHub.joinMarket);
+    vi.mocked(onConfirmedTradeRecorded).mockImplementation((conditionId, handler) =>
+      actualHub.onConfirmedTradeRecorded(conditionId, handler),
+    );
+
+    const buyTrade: LatestConfirmedTrade = {
+      primitiveOutcomeId: "Yes",
+      fillId: "00000000-0000-0000-0000-000000000001",
+      executedAt: "2026-09-27T16:38:42.318Z",
+      eventOrder: "0001",
+      priceTick: 510,
+      divisibility: 1_000,
+      faceAmountSubunits: 1_000,
+    };
+    const market = yesNoMarket({
+      registeredPrimitiveOutcomeIds: ["Yes", "No"],
+      outcomes: [
+        { id: "Yes", label: "Yes", odds: 510 },
+        { id: "No", label: "No", odds: 490 },
+      ],
+      latestConfirmedTradesValid: true,
+      latestConfirmedTrades: [buyTrade],
+      priceHistory: {
+        timeframe: "7d",
+        data: [
+          {
+            timestamp: "2026-09-27T16:38:42.318Z",
+            eventOrder: buyTrade.eventOrder,
+            price: 51,
+            volume: buyTrade.faceAmountSubunits,
+            source: "fill",
+          },
+        ],
+      },
+    });
+    mocks.routeParams.id = market.id;
+    vi.mocked(fetchMarketDetail).mockResolvedValue(market);
+    vi.mocked(fetchOrderBook).mockResolvedValue(emptyBook);
+    const view = render(<MarketDetailPage />);
+
+    try {
+      await screen.findByRole("heading", { name: "Will it happen?" });
+      await waitFor(() =>
+        expect(mocks.signalr.connection.invoke).toHaveBeenCalledWith(
+          "JoinMarket",
+          `${market.id}-Yes`,
+        ),
+      );
+      expect(mocks.signalr.connection.invoke).toHaveBeenCalledWith("JoinMarket", `${market.id}-No`);
+      expect(screen.getByTestId("chart-latest-price")).toHaveTextContent("51.00%");
+      expect(screen.getByTestId("latest-price-pill")).toHaveTextContent("51.00%");
+      expect(screen.getByTestId("chart-headline")).toHaveTextContent("51.0%");
+
+      const confirmedTradeRecorded = mocks.signalr.registeredHandlers.get("ConfirmedTradeRecorded");
+      expect(confirmedTradeRecorded).toBeDefined();
+      const sellTrade: LatestConfirmedTrade = {
+        primitiveOutcomeId: "No",
+        fillId: "00000000-0000-0000-0000-000000000002",
+        executedAt: "2026-09-27T16:39:16.998Z",
+        eventOrder: "0002",
+        priceTick: 510,
+        divisibility: 1_000,
+        faceAmountSubunits: 1_000,
+      };
+      const staleHistoryResponse = {
+        conditionId: market.id,
+        timeframe: "7d",
+        outcomes: [
+          {
+            outcomeId: "Yes",
+            data: [
+              {
+                timestamp: buyTrade.executedAt,
+                eventOrder: buyTrade.eventOrder,
+                price: buyTrade.priceTick,
+                volumeSubunits: buyTrade.faceAmountSubunits,
+                source: "fill",
+              },
+            ],
+          },
+        ],
+      } satisfies Awaited<ReturnType<typeof fetchMarketPriceHistory>>;
+      let resolveStaleHistory!: (response: typeof staleHistoryResponse) => void;
+      vi.mocked(fetchMarketDetail).mockResolvedValue(market);
+      vi.mocked(fetchMarketPriceHistory).mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            resolveStaleHistory = resolve;
+          }),
+      );
+      // This is the camel-case SignalR form of ConfirmedTradeNotificationPublisher.ToMessage.
+      act(() =>
+        confirmedTradeRecorded?.({
+          conditionId: market.id,
+          latestConfirmedTrade: sellTrade,
+        }),
+      );
+
+      await waitFor(() => {
+        expect(screen.getByTestId("chart-latest-price")).toHaveTextContent("49.00%");
+        expect(screen.getByTestId("latest-price-pill")).toHaveTextContent("49.00%");
+        expect(screen.getByTestId("chart-headline")).toHaveTextContent("49.0%");
+        expect(resolveStaleHistory).toBeDefined();
+      });
+      await act(async () => {
+        resolveStaleHistory(staleHistoryResponse);
+      });
+      await waitFor(() => {
+        expect(screen.getByTestId("latest-price-pill")).toHaveTextContent("49.00%");
+        expect(screen.getByTestId("chart-headline")).toHaveTextContent("49.0%");
+      });
+    } finally {
+      view.unmount();
+      await actualHub.disconnect();
+      mocks.signalr.registeredHandlers.clear();
+      vi.mocked(joinMarket).mockResolvedValue(undefined);
+      vi.mocked(onConfirmedTradeRecorded).mockImplementation((_conditionId, handler) => {
+        mocks.confirmedTradeHandlers.push(handler);
+        return () => {
+          const index = mocks.confirmedTradeHandlers.indexOf(handler);
+          if (index >= 0) mocks.confirmedTradeHandlers.splice(index, 1);
+        };
+      });
+    }
+  });
+
+  it.each([
+    { buyPrice: 510, sellPrice: 510, expectedYesPrice: "49.00%", expectedHeadline: "49.0%" },
+    { buyPrice: 490, sellPrice: 490, expectedYesPrice: "51.00%", expectedHeadline: "51.0%" },
+  ])(
+    "cold-mounts a full canonical binary snapshot and 7d history on the YES basis (%#)",
+    async ({ buyPrice, sellPrice, expectedYesPrice, expectedHeadline }) => {
+      const actualMarkets = await vi.importActual<typeof import("@/lib/markets")>("@/lib/markets");
+      const conditionId = `cold-binary-${sellPrice}`;
+      const buyExecutedAt = "2026-09-27T20:03:00.000Z";
+      const sellExecutedAt = "2026-09-27T20:04:41.774Z";
+      const buyTrade: LatestConfirmedTrade = {
+        primitiveOutcomeId: "Yes",
+        fillId: "00000000-0000-0000-0000-000000000101",
+        executedAt: buyExecutedAt,
+        eventOrder: "0001",
+        priceTick: buyPrice,
+        divisibility: 1_000,
+        faceAmountSubunits: 1_000,
+      };
+      const sellTrade: LatestConfirmedTrade = {
+        primitiveOutcomeId: "No",
+        fillId: "00000000-0000-0000-0000-000000000102",
+        executedAt: sellExecutedAt,
+        eventOrder: "0002",
+        priceTick: sellPrice,
+        divisibility: 1_000,
+        faceAmountSubunits: 1_000,
+      };
+      const catalogueEntry: MarketCatalogueEntry = {
+        conditionId,
+        outcomes: ["Yes", "No"],
+        title: "Will it happen?",
+        state: "open",
+        createdAt: "2026-09-27T20:00:00.000Z",
+        volume24hSubunits: 2_000,
+        volume30dSubunits: 2_000,
+        liquiditySubunits: 0,
+        ammBotBudgetSubunits: 0,
+        fundingRevision: null,
+        volumeLifetimeSubunits: 2_000,
+        baseAsset: "sat",
+        divisibility: 1_000,
+        // The public snapshot is in canonical primitive-outcome order.
+        latestConfirmedTrades: [sellTrade, buyTrade],
+        categoryTags: [],
+        lastSuccessfulRefreshAt: sellExecutedAt,
+      };
+      const historyResponse: MarketPriceHistoryResponse = {
+        conditionId,
+        timeframe: "7d",
+        outcomes: [
+          {
+            outcomeId: "No",
+            data: [
+              {
+                timestamp: sellExecutedAt,
+                eventOrder: sellTrade.eventOrder,
+                price: sellPrice,
+                volumeSubunits: sellTrade.faceAmountSubunits,
+                source: "fill",
+              },
+            ],
+          },
+          {
+            outcomeId: "Yes",
+            data: [
+              {
+                timestamp: buyExecutedAt,
+                eventOrder: buyTrade.eventOrder,
+                price: buyPrice,
+                volumeSubunits: buyTrade.faceAmountSubunits,
+                source: "fill",
+              },
+            ],
+          },
+        ],
+      };
+      const fetchStub = vi.fn((input: RequestInfo | URL) => {
+        const url = new URL(input.toString(), window.location.origin);
+        if (url.pathname === "/api/v1/markets/query") {
+          return Promise.resolve(
+            new Response(JSON.stringify({ markets: [catalogueEntry] }), {
+              headers: { "Content-Type": "application/json" },
+            }),
+          );
+        }
+        if (url.pathname === `/api/v1/markets/${conditionId}/price-history`) {
+          return Promise.resolve(
+            new Response(JSON.stringify(historyResponse), {
+              headers: { "Content-Type": "application/json" },
+            }),
+          );
+        }
+        return Promise.resolve(new Response("not found", { status: 404 }));
+      });
+
+      vi.stubGlobal("fetch", fetchStub);
+      vi.mocked(fetchMarketDetail).mockImplementation(actualMarkets.fetchMarketDetail);
+      vi.mocked(fetchMarketPriceHistory).mockImplementation(actualMarkets.fetchMarketPriceHistory);
+      vi.mocked(fetchOrderBook).mockResolvedValue(emptyBook);
+      mocks.routeParams.id = conditionId;
+      const view = render(<MarketDetailPage />);
+
+      try {
+        await screen.findByRole("heading", { name: "Will it happen?" });
+        await waitFor(() => {
+          expect(screen.getByTestId("chart-latest-price")).toHaveTextContent(expectedYesPrice);
+          expect(screen.getByTestId("latest-price-pill")).toHaveTextContent(expectedYesPrice);
+          expect(screen.getByTestId("chart-headline")).toHaveTextContent(expectedHeadline);
+        });
+        expect(fetchStub.mock.calls.map(([input]) => String(input))).toContain(
+          `/api/v1/markets/${conditionId}/price-history?timeframe=7d`,
+        );
+      } finally {
+        view.unmount();
+        vi.unstubAllGlobals();
+      }
+    },
+  );
 
   it("applies a MarketStatusChanged close push to the detail page and removes trading", async () => {
     vi.mocked(fetchMarketDetail).mockResolvedValue(yesNoMarket({ state: "open" }));
@@ -875,10 +1166,13 @@ describe("MarketDetailPage live market status", () => {
       target: { value: "1" },
     });
     await waitFor(() =>
-      expect(screen.getByTestId("trade-capacity-available")).toHaveTextContent(
-        "Available at this limit: 10 shares",
+      expect(screen.getByTestId("trade-protected-price")).toHaveAttribute(
+        "data-price-numerator",
+        "600",
       ),
     );
+    expect(screen.queryByTestId("trade-capacity-available")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("trade-capacity-status")).not.toBeInTheDocument();
     const capacityCallsAfterBuy = mocks.previewFokOrderCapacity.mock.calls.length;
 
     fireEvent.change(screen.getAllByTestId("trade-amount-input")[0], {
@@ -905,8 +1199,9 @@ describe("MarketDetailPage live market status", () => {
       target: { value: "1" },
     });
     await waitFor(() =>
-      expect(screen.getByTestId("trade-capacity-available")).toHaveTextContent(
-        "Available at this limit: 10 shares",
+      expect(screen.getByTestId("trade-protected-price")).toHaveAttribute(
+        "data-price-numerator",
+        "400",
       ),
     );
     const capacityCallsAfterSellSelection = mocks.previewFokOrderCapacity.mock.calls.length;
@@ -921,7 +1216,7 @@ describe("MarketDetailPage live market status", () => {
     view.rerender(<MarketDetailPage />);
     await waitFor(() =>
       expect(screen.getByTestId("trade-outcome-yes-availability")).toHaveTextContent(
-        "2 shares available",
+        "You have 2 shares",
       ),
     );
     await act(async () => {
@@ -1750,6 +2045,11 @@ describe("MarketDetailPage live market status", () => {
       expect(screen.queryByText("Insufficient funds")).not.toBeInTheDocument();
       fireEvent.click(screen.getAllByTestId("trade-confirm")[0]);
       await waitFor(() => expect(submitBrowserCtfRangeOrder).toHaveBeenCalledTimes(1));
+      await waitFor(() =>
+        expect(usePendingTradesStore.getState().get("order-auto-1")?.walletId).toBe(
+          browserWalletIdFromMnemonic(mocks.walletState.mnemonic),
+        ),
+      );
       if (nostrReminder) {
         expect(await screen.findByText("Nostr private key")).toBeInTheDocument();
         expect(screen.queryByText("Cashu recovery phrase")).not.toBeInTheDocument();
@@ -3309,7 +3609,13 @@ describe("marketDetailDataReducer", () => {
     };
     const action = { type: "confirmedTradeRecorded" as const, conditionId: initial.id, trade };
     const live = marketDetailDataReducer(createMarketDetailDataState(initial), action);
-    const point = { timestamp: trade.executedAt, price: 62, volume: 1_000, source: "fill" };
+    const point = {
+      eventOrder: trade.eventOrder,
+      timestamp: trade.executedAt,
+      price: 62,
+      volume: 1_000,
+      source: "fill",
+    };
     expect(composeMarketDetail(live, "7d")?.priceHistory.data).toContainEqual(point);
     expect(composeMarketDetail(live, "24h")?.priceHistory.data).toContainEqual(point);
     expect(marketDetailDataReducer(live, action)).toBe(live);
@@ -3335,6 +3641,102 @@ describe("marketDetailDataReducer", () => {
     expect(composeMarketDetail(switched, "24h")?.priceHistory.data).toContainEqual(point);
   });
 
+  it.each([
+    ["YES", 490],
+    ["NO", 510],
+  ] as const)(
+    "backfills a snapshot-confirmed %s fill when chart history still ends at the prior fill",
+    (primitiveOutcomeId, priceTick) => {
+      const previousTimestamp = "2026-08-17T23:59:00Z";
+      const sellTimestamp = "2026-08-18T00:00:00Z";
+      const sellTrade: LatestConfirmedTrade = {
+        primitiveOutcomeId,
+        fillId: "00000000-0000-0000-0000-000000000002",
+        executedAt: sellTimestamp,
+        eventOrder: "0002",
+        priceTick,
+        divisibility: 1_000,
+        faceAmountSubunits: 1_000,
+      };
+      const initial = yesNoMarket({
+        latestConfirmedTradesValid: true,
+        latestConfirmedTrades: [sellTrade],
+        priceHistory: {
+          timeframe: "7d",
+          data: [{ timestamp: previousTimestamp, eventOrder: "0001", price: 51 }],
+        },
+      });
+      const state = createMarketDetailDataState(initial);
+      const event = {
+        type: "confirmedTradeRecorded" as const,
+        conditionId: initial.id,
+        // A SignalR parser creates a fresh object for a duplicate receipt.
+        trade: { ...sellTrade },
+      };
+
+      const reconciled = marketDetailDataReducer(state, event);
+
+      expect(composeMarketDetail(reconciled, "7d")?.priceHistory.data).toEqual([
+        expect.objectContaining({
+          eventOrder: "0001",
+          timestamp: previousTimestamp,
+          price: 51,
+        }),
+        expect.objectContaining({
+          eventOrder: "0002",
+          timestamp: sellTimestamp,
+          price: 49,
+          volume: 1_000,
+          source: "fill",
+        }),
+      ]);
+      expect(marketDetailDataReducer(reconciled, event)).toBe(reconciled);
+      expect(
+        marketDetailDataReducer(reconciled, {
+          ...event,
+          trade: { ...sellTrade, priceTick: 500 },
+        }),
+      ).toBe(reconciled);
+    },
+  );
+
+  it.each([
+    ["YES", "NO"],
+    ["NO", "YES"],
+  ])("keeps live NO trades on YES chart basis with %s-first registration", (first, second) => {
+    const timestamp = "2026-08-18T00:00:00Z";
+    const initial = yesNoMarket({
+      registeredPrimitiveOutcomeIds: [first, second],
+      outcomes: [first, second].map((id) => ({ id, label: id, odds: null })),
+      priceHistory: { timeframe: "7d", data: [{ timestamp, eventOrder: "0001", price: 40 }] },
+    });
+    const trade: LatestConfirmedTrade = {
+      primitiveOutcomeId: "NO",
+      fillId: "00000000-0000-0000-0000-000000000001",
+      executedAt: timestamp,
+      eventOrder: "0002",
+      priceTick: 450,
+      divisibility: 1_000,
+      faceAmountSubunits: 1_000,
+    };
+    const action = { type: "confirmedTradeRecorded" as const, conditionId: initial.id, trade };
+    const live = marketDetailDataReducer(createMarketDetailDataState(initial), action);
+    expect(composeMarketDetail(live, "7d")?.priceHistory.data.map((point) => point.price)).toEqual([
+      expect.closeTo(55, 10),
+    ]);
+    expect(marketDetailDataReducer(live, action)).toBe(live);
+
+    const staleRest = marketDetailDataReducer(live, {
+      type: "historyLoaded",
+      marketId: initial.id,
+      timeframe: "7d",
+      historiesByOutcomeSetId: { [first]: initial.priceHistory },
+    });
+    expect(
+      composeMarketDetail(staleRest, "7d")?.priceHistory.data.map((point) => point.price),
+    ).toEqual([expect.closeTo(55, 10)]);
+  });
+
   it("rejects a snapshot whose expected route differs from the active route", () => {
     const initial = createMarketDetailDataState(yesNoMarket());
     const routeB = marketDetailDataReducer(initial, {
@@ -3356,7 +3758,14 @@ describe("marketDetailDataReducer", () => {
   it("preserves yes/no chart history and comments across submit refresh", () => {
     const history = {
       timeframe: "7d" as const,
-      data: [{ timestamp: "2026-01-01T00:00:00Z", price: 51, volume: 10 }],
+      data: [
+        {
+          eventOrder: "2026-01-01T00:00:00Z",
+          timestamp: "2026-01-01T00:00:00Z",
+          price: 51,
+          volume: 10,
+        },
+      ],
     };
     const initial = yesNoMarket({
       priceHistory: history,
@@ -3396,7 +3805,14 @@ describe("marketDetailDataReducer", () => {
       currentOdds: { yes: 50, no: 50 },
       priceHistory: {
         timeframe: "7d",
-        data: [{ timestamp: "2026-01-01T00:00:00Z", price: 80, source: "fill" }],
+        data: [
+          {
+            eventOrder: "2026-01-01T00:00:00Z",
+            timestamp: "2026-01-01T00:00:00Z",
+            price: 80,
+            source: "fill",
+          },
+        ],
       },
     });
 
@@ -3417,20 +3833,48 @@ describe("marketDetailDataReducer", () => {
     ];
     initial.priceHistory = {
       timeframe: "7d",
-      data: [{ timestamp: "2026-01-01T00:00:00Z", price: 80, source: "fill" }],
+      data: [
+        {
+          eventOrder: "2026-01-01T00:00:00Z",
+          timestamp: "2026-01-01T00:00:00Z",
+          price: 80,
+          source: "fill",
+        },
+      ],
     };
     initial.outcomePriceHistories = {
       Alice: {
         timeframe: "7d",
-        data: [{ timestamp: "2026-01-01T00:00:00Z", price: 80, source: "fill" }],
+        data: [
+          {
+            eventOrder: "2026-01-01T00:00:00Z",
+            timestamp: "2026-01-01T00:00:00Z",
+            price: 80,
+            source: "fill",
+          },
+        ],
       },
       Bob: {
         timeframe: "7d",
-        data: [{ timestamp: "2026-01-01T00:00:00Z", price: 10, source: "fill" }],
+        data: [
+          {
+            eventOrder: "2026-01-01T00:00:00Z",
+            timestamp: "2026-01-01T00:00:00Z",
+            price: 10,
+            source: "fill",
+          },
+        ],
       },
       Carol: {
         timeframe: "7d",
-        data: [{ timestamp: "2026-01-01T00:00:00Z", price: 10, source: "fill" }],
+        data: [
+          {
+            eventOrder: "2026-01-01T00:00:00Z",
+            timestamp: "2026-01-01T00:00:00Z",
+            price: 10,
+            source: "fill",
+          },
+        ],
       },
     };
 
@@ -3480,17 +3924,38 @@ describe("marketDetailDataReducer", () => {
     const initial = categoricalMarket() as CategoricalMarketDetail;
     initial.priceHistory = {
       timeframe: "7d",
-      data: [{ timestamp: "2026-01-01T00:00:00Z", price: 34, volume: 1 }],
+      data: [
+        {
+          eventOrder: "2026-01-01T00:00:00Z",
+          timestamp: "2026-01-01T00:00:00Z",
+          price: 34,
+          volume: 1,
+        },
+      ],
     };
     initial.outcomePriceHistories = {
       Alice: initial.priceHistory,
       Bob: {
         timeframe: "7d",
-        data: [{ timestamp: "2026-01-01T00:00:00Z", price: 33, volume: 1 }],
+        data: [
+          {
+            eventOrder: "2026-01-01T00:00:00Z",
+            timestamp: "2026-01-01T00:00:00Z",
+            price: 33,
+            volume: 1,
+          },
+        ],
       },
       Carol: {
         timeframe: "7d",
-        data: [{ timestamp: "2026-01-01T00:00:00Z", price: 33, volume: 1 }],
+        data: [
+          {
+            eventOrder: "2026-01-01T00:00:00Z",
+            timestamp: "2026-01-01T00:00:00Z",
+            price: 33,
+            volume: 1,
+          },
+        ],
       },
     };
     initial.comments = [loadedComment];
@@ -3526,7 +3991,14 @@ describe("marketDetailDataReducer", () => {
   it("updates live books without erasing history or comments", () => {
     const history = {
       timeframe: "7d" as const,
-      data: [{ timestamp: "2026-01-01T00:00:00Z", price: 49, volume: 4 }],
+      data: [
+        {
+          eventOrder: "2026-01-01T00:00:00Z",
+          timestamp: "2026-01-01T00:00:00Z",
+          price: 49,
+          volume: 4,
+        },
+      ],
     };
     const initial = yesNoMarket({
       priceHistory: history,

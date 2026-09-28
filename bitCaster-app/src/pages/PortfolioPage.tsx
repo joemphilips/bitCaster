@@ -9,7 +9,11 @@ import { useSettingsStore } from "@/stores/settings";
 import { useActivityLogStore } from "@/stores/activity-log";
 import { useWalletStore } from "@/stores/wallet";
 import { claimPortfolioPosition } from "@/lib/browserPortfolioClaim";
-import { removePortfolioPosition } from "@/lib/browserPortfolioRemove";
+import {
+  removePortfolioPosition,
+  type BrowserPortfolioRemoveFailure,
+} from "@/lib/browserPortfolioRemove";
+import { browserWalletIdFromMnemonic, isActiveBrowserWalletId } from "@/lib/browserWalletProfile";
 import type { BrowserCtfClaimFailureCategory } from "@/lib/browserCtfRedeemCoordinator";
 import type { PLTimeSelector } from "@/types/portfolio";
 import type { DepositWithdrawMode } from "@/types/deposit-withdraw";
@@ -33,6 +37,11 @@ const CLAIM_FAILURE_TRANSLATION_KEYS = {
   "local-commit": "portfolio.claimFailureLocalCommit",
 } as const satisfies Record<BrowserCtfClaimFailureCategory, string>;
 
+function isCurrentWallet(walletId: string): boolean {
+  const mnemonic = useWalletStore.getState().mnemonic;
+  return isActiveBrowserWalletId(walletId, mnemonic);
+}
+
 export function PortfolioPage() {
   const navigate = useNavigate();
   const { t } = useTranslation();
@@ -44,6 +53,30 @@ export function PortfolioPage() {
   const [walletSetupCreating, setWalletSetupCreating] = useState(false);
   const [walletSetupError, setWalletSetupError] = useState<string | null>(null);
   const addActivity = useActivityLogStore((s) => s.addActivity);
+
+  const removeFailureMessage = useCallback(
+    (failure: BrowserPortfolioRemoveFailure) =>
+      [
+        t("portfolio.removeFailed"),
+        t("portfolio.removeAttemptReference", {
+          reference: `${failure.stage}: ${failure.attemptRef}`,
+        }),
+        ...(failure.claimFailure
+          ? [
+              t(CLAIM_FAILURE_TRANSLATION_KEYS[failure.claimFailure.category]),
+              t("portfolio.claimAttemptReference", { reference: failure.claimFailure.attemptRef }),
+              ...(failure.claimFailure.operationRef
+                ? [
+                    t("portfolio.claimOperationReference", {
+                      reference: failure.claimFailure.operationRef,
+                    }),
+                  ]
+                : []),
+            ]
+          : []),
+      ].join("\n"),
+    [t],
+  );
 
   const handleGetStarted = useCallback(() => {
     setWalletSetupError(null);
@@ -146,6 +179,8 @@ export function PortfolioPage() {
       ) {
         return;
       }
+      const walletId = browserWalletIdFromMnemonic(useWalletStore.getState().mnemonic);
+      if (walletId === null || !isCurrentWallet(walletId)) return;
 
       setClaimingPositionId(positionId);
       try {
@@ -158,15 +193,17 @@ export function PortfolioPage() {
           outcomeCollection,
           onCommittedLeg: ({ payoutAmount }) => {
             addActivity({
+              walletId,
               type: "payout_claimed",
               baseAsset: position.baseAsset,
-              amountSats: payoutAmount,
+              amountSubunits: payoutAmount,
               status: "completed",
               marketId: position.marketId,
               marketTitle: position.marketTitle,
             });
           },
         });
+        if (!isCurrentWallet(walletId)) return;
         if (result.kind === "pending") window.alert(t("portfolio.claimPending"));
         if (result.kind === "error") {
           window.alert(
@@ -181,7 +218,7 @@ export function PortfolioPage() {
           );
         }
       } catch {
-        window.alert(t("portfolio.claimFailed"));
+        if (isCurrentWallet(walletId)) window.alert(t("portfolio.claimFailed"));
       } finally {
         setClaimingPositionId(null);
       }
@@ -195,6 +232,8 @@ export function PortfolioPage() {
       const position = state.positions.find((p) => p.id === positionId);
       if (!position || !position.isLoser || position.isWinner || position.isPending) return;
       if (!window.confirm(t("portfolio.discardLostPositionConfirm"))) return;
+      const walletId = browserWalletIdFromMnemonic(useWalletStore.getState().mnemonic);
+      if (walletId === null || !isCurrentWallet(walletId)) return;
       setRemovingPositionId(positionId);
       try {
         const conditionId = toPortfolioMarketDetailId(position.marketId, position.outcomeId);
@@ -207,15 +246,17 @@ export function PortfolioPage() {
           outcomeCollection,
           onCommittedLeg: ({ payoutAmount }) => {
             addActivity({
+              walletId,
               type: "payout_claimed",
               baseAsset: position.baseAsset,
-              amountSats: payoutAmount,
+              amountSubunits: payoutAmount,
               status: "completed",
               marketId: position.marketId,
               marketTitle: position.marketTitle,
             });
           },
         });
+        if (!isCurrentWallet(walletId)) return;
         switch (result.kind) {
           case "completed":
             break;
@@ -226,36 +267,21 @@ export function PortfolioPage() {
             window.alert(t("portfolio.removePayout"));
             break;
           case "partial":
-            window.alert(t("portfolio.removeFailed"));
+            window.alert(
+              result.error ? removeFailureMessage(result.error) : t("portfolio.removePending"),
+            );
             break;
           case "error":
-            window.alert(
-              result.error.claimFailure
-                ? [
-                    t("portfolio.removeFailed"),
-                    t(CLAIM_FAILURE_TRANSLATION_KEYS[result.error.claimFailure.category]),
-                    t("portfolio.claimAttemptReference", {
-                      reference: result.error.claimFailure.attemptRef,
-                    }),
-                    ...(result.error.claimFailure.operationRef
-                      ? [
-                          t("portfolio.claimOperationReference", {
-                            reference: result.error.claimFailure.operationRef,
-                          }),
-                        ]
-                      : []),
-                  ].join("\n")
-                : t("portfolio.removeFailed"),
-            );
+            window.alert(removeFailureMessage(result.error));
             break;
         }
       } catch {
-        window.alert(t("portfolio.removeFailed"));
+        if (isCurrentWallet(walletId)) window.alert(t("portfolio.removeFailed"));
       } finally {
         setRemovingPositionId(null);
       }
     },
-    [addActivity, claimingPositionId, removingPositionId, state.positions, t],
+    [addActivity, claimingPositionId, removingPositionId, state.positions, t, removeFailureMessage],
   );
 
   const handlePositionsTabChange = useCallback(

@@ -1,3 +1,5 @@
+import type { components } from "@/generated/api";
+
 // =============================================================================
 // Wallet & Currency Types
 // =============================================================================
@@ -43,6 +45,8 @@ export interface PortfolioStats {
   totalValueSats: number;
   positionsValueKnown?: boolean;
   totalValueKnown?: boolean;
+  positionsValueLoading?: boolean;
+  totalValueLoading?: boolean;
   positionsValueByUnit?: Array<{ unit: "sat"; amount: number }>;
   totalValueByUnit?: Array<{ unit: "sat"; amount: number }>;
   predictionsCount: number;
@@ -155,10 +159,20 @@ export type ActivityType =
   | "creator_fee_claimed";
 export type ActivityStatus = "pending" | "completed" | "Failed";
 
+export interface TradeActivityDetails {
+  fillId: string;
+  outcomeId: string;
+  tokenSide: components["schemas"]["TokenSide"];
+  faceAmountSubunits: number;
+  divisibility: import("./market").ProductMarketDivisibility;
+}
+
 export interface ActivityItem {
   id: string;
+  /** Missing only on legacy history whose wallet cannot be inferred. */
+  walletId?: string;
   type: ActivityType;
-  amountSats: number;
+  amountSubunits: number;
   baseAsset: "sat";
   date: string;
   status: ActivityStatus;
@@ -168,6 +182,8 @@ export interface ActivityItem {
   marketId?: string;
   marketTitle?: string;
   positionId?: string;
+  /** Exact confirmed fill values. Old manually added Buy/Sell rows may omit them. */
+  tradeDetails?: TradeActivityDetails;
 }
 
 // =============================================================================

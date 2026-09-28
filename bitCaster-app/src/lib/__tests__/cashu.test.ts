@@ -1,4 +1,7 @@
+import "fake-indexeddb/auto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { Amount, getEncodedTokenV4, type Proof } from "@cashu/cashu-ts";
+import { BitcasterDB } from "@/stores/proof-db";
 import { useWalletStore } from "@/stores/wallet";
 import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
 
@@ -47,6 +50,136 @@ it("rejects product sat minting before mint I/O", async () => {
   await expect(mintProofsForUnit(1, {} as never, "https://mint.example", "sat")).rejects.toThrow(
     /requires msat/,
   );
+});
+
+it("receives a multi-proof conditional v4 token through real ingress and validation", async () => {
+  vi.resetModules();
+  const database = new BitcasterDB(`cashu-conditional-receive-${crypto.randomUUID()}`);
+  const mint = "https://conditional-mint.example";
+  const conditionId = "ab".repeat(32);
+  const outcomeCollection = "YES";
+  const keysetId = `01${"cd".repeat(32)}`;
+  const sourceProofs = Array.from({ length: 5 }, (_, index) => {
+    const byte = (index + 17).toString(16).padStart(2, "0");
+    return {
+      id: keysetId,
+      amount: Amount.from(1),
+      secret: `conditional-token-input-${index}`,
+      C: `02${byte.repeat(32)}`,
+      dleq: {
+        e: (index + 33).toString(16).padStart(2, "0").repeat(32),
+        s: (index + 49).toString(16).padStart(2, "0").repeat(32),
+        r: (index + 65).toString(16).padStart(2, "0").repeat(32),
+      },
+    } as Proof;
+  });
+  const successors = sourceProofs.map((proof, index) => ({
+    ...proof,
+    secret: `conditional-token-output-${index}`,
+  }));
+  const token = getEncodedTokenV4({ mint, unit: "msat", proofs: sourceProofs });
+  const originalFetch = globalThis.fetch;
+  const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url === `${mint}/v1/keysets`) {
+      return new Response(JSON.stringify({ keysets: [] }), { status: 200 });
+    }
+    if (url === `${mint}/v1/conditional_keysets`) {
+      return new Response(
+        JSON.stringify({
+          keysets: [{ id: keysetId, unit: "msat", active: true, condition_id: conditionId }],
+        }),
+        { status: 200 },
+      );
+    }
+    throw new Error(`unexpected conditional import fetch: ${url}`);
+  });
+  globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
+  const wallet = {
+    getKeyset: vi.fn(() => ({
+      conditional: { conditionId, outcomeCollection },
+    })),
+  };
+  const walletModule = await import("@/stores/wallet");
+  const addMintWithoutActivating = vi.fn().mockResolvedValue(undefined);
+  walletModule.useWalletStore.setState({
+    activeMintUrl: mint,
+    mints: [],
+    _addMintWithoutActivating: addMintWithoutActivating as never,
+  });
+  const receiveModule = await import("@/lib/browserDurableWalletReceive");
+  const getWallet = vi
+    .spyOn(walletModule, "getWalletForMnemonicUnit")
+    .mockResolvedValue(wallet as never);
+  const receive = vi
+    .spyOn(receiveModule, "receiveBrowserDurableWalletToken")
+    .mockResolvedValue(successors);
+  const seed = new Uint8Array(64).fill(7);
+  const context = {
+    activeMintUrl: mint,
+    database,
+    mnemonic:
+      "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+    seed,
+    scopeId: "wallet-conditional-import",
+    requireCapturedProfile: () => undefined,
+  };
+  let restoreCapture: (() => void) | undefined;
+
+  try {
+    const { decodeTokenImportLocally } =
+      await import("@bitcaster/client-sdk/tokenImportValidation");
+    const shortKeysetId = keysetId.slice(0, 16);
+    expect(decodeTokenImportLocally(token).proofs.map((proof) => proof.id)).toEqual(
+      Array.from({ length: 5 }, () => shortKeysetId),
+    );
+    const cashu = await import("@/lib/cashu");
+    const capture = vi
+      .spyOn(cashu, "captureBrowserMintPersistenceContext")
+      .mockReturnValue(context as never);
+    restoreCapture = () => capture.mockRestore();
+    const walletOps = await import("@/lib/walletOps");
+    const received = await walletOps.ingressReceiveCashuToken(token, "paste");
+
+    expect(capture).toHaveBeenCalledOnce();
+    expect(addMintWithoutActivating).toHaveBeenCalledWith(mint);
+    expect(getWallet).toHaveBeenCalledOnce();
+    expect(receive).toHaveBeenCalledOnce();
+    expect(fetchMock.mock.calls.map(([url]) => String(url))).toEqual([
+      `${mint}/v1/keysets`,
+      `${mint}/v1/conditional_keysets`,
+    ]);
+    expect(receive).toHaveBeenCalledWith(
+      expect.objectContaining({
+        token,
+        mintUrl: mint,
+        unit: "msat",
+        asset: "conditional",
+        conditionalInputProofs: sourceProofs.map((proof) =>
+          expect.objectContaining({
+            id: keysetId,
+            secret: proof.secret,
+            dleq: proof.dleq,
+          }),
+        ),
+        ensureConditionalCounterReady: expect.any(Function),
+        wallet,
+        context,
+      }),
+    );
+    expect(received.amountSubunits).toBe(5);
+    expect(received.proofs).toHaveLength(5);
+    expect(received.proofs.map(({ secret }) => secret)).toEqual(
+      successors.map(({ secret }) => secret),
+    );
+  } finally {
+    restoreCapture?.();
+    receive.mockRestore();
+    getWallet.mockRestore();
+    globalThis.fetch = originalFetch;
+    database.close();
+    await database.delete();
+  }
 });
 
 describe("decodeToken real v4 fixture", () => {

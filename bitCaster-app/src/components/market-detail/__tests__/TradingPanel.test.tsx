@@ -303,11 +303,9 @@ describe("TradingPanel", () => {
       "data-price-numerator",
       "600",
     );
-    expect(screen.getByTestId("trade-capacity-available")).toHaveTextContent(
-      "Available at this limit: 2 shares",
-    );
+    expect(screen.queryByTestId("trade-capacity-available")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Snapshot only/)).not.toBeInTheDocument();
     expect(screen.getByText(/20 percentage points/)).toBeInTheDocument();
-    expect(screen.getByText(/not reserved/)).toBeInTheDocument();
 
     await user.click(screen.getByTestId("trade-price-protection-toggle"));
 
@@ -350,91 +348,9 @@ describe("TradingPanel", () => {
     }
 
     render(<Harness />);
-    expect(screen.getByTestId("trade-capacity-available")).toHaveTextContent(
-      "Available at this limit: 0 shares",
-    );
+    expect(screen.queryByTestId("trade-capacity-available")).not.toBeInTheDocument();
     await user.click(screen.getByTestId("trade-price-protection-toggle"));
     expect(screen.getByTestId("limit-price-input")).toBeEnabled();
-  });
-
-  it("distinguishes no eligible reference from an unavailable market", () => {
-    const noReference = readyCapacityPreview({
-      referencePrice: null,
-      effectiveLimitPrice: null,
-      maxFaceAmountSubunits: 0,
-      quotePaymentSubunits: 0,
-      worstPrice: null,
-    });
-    const view = renderSellPanel({
-      tradeSelection: { side: "yes" },
-      tradeCapacityPreview: noReference,
-    });
-    expect(screen.getByTestId("trade-capacity-status")).toHaveTextContent(
-      "No eligible reference price.",
-    );
-
-    view.rerender(
-      <TradingPanel
-        market={makeMarket()}
-        tradeSelection={{ side: "yes" }}
-        tradeAmount={0}
-        tradePreview={null}
-        tradeSide="Sell"
-        orderType="market"
-        tradeCapacityPreview={{
-          ...noReference,
-          response: {
-            status: "market_unavailable",
-            referencePrice: null,
-            effectiveLimitPrice: null,
-            maxFaceAmountSubunits: null,
-            quotePaymentSubunits: null,
-            worstPrice: null,
-            priceDenominator: null,
-            previewRevision: null,
-          },
-        }}
-      />,
-    );
-    expect(screen.getByTestId("trade-capacity-status")).toHaveTextContent(
-      "Market is unavailable; available shares cannot be checked.",
-    );
-  });
-
-  it("allows retry when a capacity snapshot is temporarily unavailable", async () => {
-    const user = userEvent.setup();
-    const onTradeCapacityRetry = vi.fn();
-    const capacityPreview = readyCapacityPreview();
-    render(
-      <TradingPanel
-        market={makeMarket()}
-        tradeSelection={{ side: "yes" }}
-        tradeAmount={0}
-        tradePreview={null}
-        tradeSide="Buy"
-        orderType="market"
-        tradeCapacityPreview={{
-          ...capacityPreview,
-          response: {
-            status: "temporarily_unavailable",
-            referencePrice: null,
-            effectiveLimitPrice: null,
-            maxFaceAmountSubunits: null,
-            quotePaymentSubunits: null,
-            worstPrice: null,
-            priceDenominator: null,
-            previewRevision: null,
-          },
-        }}
-        onTradeCapacityRetry={onTradeCapacityRetry}
-      />,
-    );
-
-    expect(screen.getByTestId("trade-capacity-status")).toHaveTextContent(
-      "Available shares could not be checked.",
-    );
-    await user.click(screen.getByRole("button", { name: "Retry" }));
-    expect(onTradeCapacityRetry).toHaveBeenCalledOnce();
   });
 
   it("does not block trading controls when the local book is empty", async () => {
@@ -974,13 +890,37 @@ describe("TradingPanel", () => {
     );
     expect(screen.getByTestId("trade-outcome-no")).toBeEnabled();
     expect(screen.getByTestId("trade-outcome-no-availability")).toHaveTextContent(
-      "2 shares available",
+      "You have 2 shares",
     );
     expect(screen.getByTestId("trade-outcome-no")).toHaveAttribute(
       "aria-describedby",
       "trade-outcome-no-availability",
     );
-    expect(screen.getByText("Balance: 2 shares")).toBeInTheDocument();
+    expect(screen.getByText("Held: 2 shares")).toBeInTheDocument();
+  });
+
+  it("shows owned shares separately from the selectable Sell limit", () => {
+    const onAmountChange = vi.fn();
+    renderSellPanel({
+      tradeSelection: { side: "yes" },
+      tradeAmount: 2,
+      sellHoldings: sellHoldings({
+        Yes: { selectableSubunits: 1_000, reservedSubunits: 9_000 },
+      }),
+      onAmountChange,
+    });
+
+    expect(screen.getByTestId("trade-outcome-yes-availability")).toHaveTextContent(
+      "You have 10 shares; 1 can be sold.",
+    );
+    expect(screen.getByText("Held: 10 shares")).toBeInTheDocument();
+    expect(screen.getByTestId("sell-holding-status")).toHaveTextContent(
+      "The selected amount exceeds the shares available to sell.",
+    );
+    expect(screen.getByTestId("trade-confirm")).toBeDisabled();
+
+    fireEvent.click(screen.getByTestId("trade-sell-percentage-100"));
+    expect(onAmountChange).toHaveBeenCalledWith(1);
   });
 
   it("keeps all Sell choices disabled when the canonical holdings are zero", async () => {
@@ -1086,8 +1026,8 @@ describe("TradingPanel", () => {
       }),
     });
 
-    expect(screen.getByTestId("sell-holding-no-outcome-0")).toHaveTextContent("2 shares available");
-    expect(screen.getByText("Balance: 2 shares")).toBeInTheDocument();
+    expect(screen.getByTestId("sell-holding-no-outcome-0")).toHaveTextContent("You have 2 shares");
+    expect(screen.getByText("Held: 2 shares")).toBeInTheDocument();
     expect(screen.getByTestId("buy-no-Alice")).toHaveAttribute(
       "aria-describedby",
       "sell-holding-no-0",
@@ -1374,6 +1314,9 @@ describe("TradingPanel", () => {
     expect(screen.getByTestId("fok-preview-subsidy")).toHaveTextContent(
       "Additional condition funding may help.",
     );
+    expect(screen.getByTestId("fok-preview-subsidy")).toHaveTextContent(
+      "non-refundable and cannot guarantee this order will fill",
+    );
     expect(screen.queryByTestId("fok-preview-ready")).not.toBeInTheDocument();
     expect(screen.queryByTestId("trade-quote-payment")).not.toBeInTheDocument();
     expect(screen.queryByText(/0\.000 sats/)).not.toBeInTheDocument();
@@ -1422,7 +1365,7 @@ describe("TradingPanel", () => {
       );
 
       expect(screen.getByTestId("fok-preview-nonfillable")).toHaveTextContent(
-        "Reduce the share amount or deliberately change the price limit.",
+        "This purchase would exceed your maximum price. Try fewer shares or review your price protection.",
       );
       expect(screen.queryByTestId("fok-preview-subsidy")).not.toBeInTheDocument();
 
@@ -1436,6 +1379,128 @@ describe("TradingPanel", () => {
       expect(details).toHaveTextContent("Maximum buy price: 70.0%");
     },
   );
+
+  it.each([
+    [
+      "Buy",
+      "There aren't enough sell orders for this purchase. Try fewer shares or wait for more liquidity.",
+    ],
+    [
+      "Sell",
+      "There aren't enough buy orders for this sale. Try fewer shares or wait for more liquidity.",
+    ],
+  ] as const)("gives an actionable %s liquidity refusal", (tradeSide, message) => {
+    render(
+      <TradingPanel
+        market={makeMarket()}
+        tradeSelection={{ side: "yes" }}
+        tradeAmount={50}
+        tradePreview={nonfillablePreview("insufficient_liquidity", false)}
+        tradeSide={tradeSide}
+        orderType="market"
+      />,
+    );
+
+    expect(screen.getByTestId("fok-preview-nonfillable")).toHaveTextContent(message);
+    expect(screen.queryByTestId("fok-preview-subsidy")).not.toBeInTheDocument();
+  });
+
+  it("gives a Sell price-limit refusal in minimum-price terms", () => {
+    render(
+      <TradingPanel
+        market={makeMarket()}
+        tradeSelection={{ side: "yes" }}
+        tradeAmount={5}
+        tradePreview={nonfillablePreview("price_limit", true)}
+        tradeSide="Sell"
+        orderType="market"
+      />,
+    );
+
+    expect(screen.getByTestId("fok-preview-nonfillable")).toHaveTextContent(
+      "This sale would go below your minimum price. Try fewer shares or review your price protection.",
+    );
+    expect(screen.queryByTestId("fok-preview-subsidy")).not.toBeInTheDocument();
+  });
+
+  it.each([
+    ["request_too_large", "This order size exceeds the supported preview limit. Try fewer shares."],
+    ["market_unavailable", "This market is not available for trading."],
+    ["temporarily_unavailable", "The market preview is temporarily unavailable."],
+  ] as const)("explains the %s refusal distinctly", (reason, message) => {
+    render(
+      <TradingPanel
+        market={makeMarket()}
+        tradeSelection={{ side: "yes" }}
+        tradeAmount={50}
+        tradePreview={nonfillablePreview(reason, false)}
+        tradeSide="Buy"
+        orderType="market"
+      />,
+    );
+
+    expect(screen.getByTestId("fok-preview-nonfillable")).toHaveTextContent(message);
+  });
+
+  it("offers a retry for a temporarily unavailable response", () => {
+    const refresh = vi.fn();
+    const preview = nonfillablePreview("temporarily_unavailable", false);
+    preview.refresh = refresh;
+    render(
+      <TradingPanel
+        market={makeMarket()}
+        tradeSelection={{ side: "yes" }}
+        tradeAmount={50}
+        tradePreview={preview}
+        tradeSide="Buy"
+        orderType="market"
+      />,
+    );
+
+    fireEvent.click(screen.getByTestId("fok-preview-response-retry"));
+    expect(refresh).toHaveBeenCalledOnce();
+  });
+
+  it("complements only confirmed and projected prices for categorical No B", () => {
+    const categoricalMarket = {
+      ...makeMarket(),
+      type: "categorical" as const,
+      outcomes: [
+        { id: "outcome-a", label: "A", odds: null },
+        { id: "outcome-b", label: "B", odds: null },
+      ],
+      outcomePriceHistories: {},
+      outcomeOrderBooks: {},
+    } as unknown as CategoricalMarketDetail;
+
+    render(
+      <TradingPanel
+        market={categoricalMarket}
+        tradeSelection={{ side: "no", outcomeId: "outcome-b" }}
+        tradeAmount={50}
+        tradePreview={readyPreview({
+          quotePaymentSubunits: 23_500,
+          averagePrice: 470,
+          worstPrice: 480,
+          currentLatestTradePrice: 400,
+          projectedFinalPrice: 450,
+          priceDenominator: 1_000,
+        })}
+        tradeFeeFacts={feeFacts()}
+        feeConsentCurrent
+        tradeSide="Buy"
+        orderType="market"
+      />,
+    );
+
+    expect(screen.getByTestId("trade-average-execution-price")).toHaveTextContent(
+      "0.47 sats (47.0%)",
+    );
+    expect(screen.getByTestId("trade-worst-price")).toHaveTextContent("0.48 sats (48.0%)");
+    expect(screen.getByTestId("trade-current-latest-price")).toHaveTextContent("60.0%");
+    expect(screen.getByTestId("trade-projected-final-price")).toHaveTextContent("55.0%");
+    expect(screen.getByTestId("trade-quote-payment")).toHaveTextContent("23.500 sats");
+  });
 
   it("renders a missing confirmed price as no trades rather than zero", () => {
     render(

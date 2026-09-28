@@ -10,6 +10,7 @@ interface TokenDisplayProps {
   proofCount: number;
   onClose?: () => void;
   onReclaim?: () => void;
+  onAcknowledgeHandoff?: () => void;
 }
 
 export function TokenDisplay({
@@ -18,6 +19,7 @@ export function TokenDisplay({
   proofCount,
   onClose,
   onReclaim,
+  onAcknowledgeHandoff,
 }: TokenDisplayProps) {
   const { t } = useTranslation();
   const [copied, setCopied] = useState(false);
@@ -87,7 +89,7 @@ export function TokenDisplay({
 
         {/* Amount */}
         <div className="mt-6 text-2xl font-bold text-white font-mono">
-          ₿{amountSats.toLocaleString()}
+          {amountSats.toLocaleString(undefined, { maximumFractionDigits: 3 })} sats
         </div>
 
         {/* Token text + copy */}
@@ -117,6 +119,15 @@ export function TokenDisplay({
             {t("deposit.reclaim")}
           </button>
         ) : null}
+        {onAcknowledgeHandoff && (
+          <button
+            type="button"
+            onClick={onAcknowledgeHandoff}
+            className="mt-5 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-500"
+          >
+            {t("deposit.acknowledgeTokenHandoff")}
+          </button>
+        )}
       </div>
     </div>
   );

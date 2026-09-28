@@ -238,6 +238,22 @@ describe("walletOps facade", () => {
       "msat",
       "ctf-position-msat",
       mockCaptureBrowserMintPersistenceContext.mock.results[0]?.value,
+      expect.objectContaining({
+        encodedToken: token,
+        context: "ctf-position-msat",
+        unit: "msat",
+        canonicalMintUrls: ["https://conditional.mint"],
+        proofs: [
+          expect.objectContaining({
+            tokenIndex: 0,
+            proofIndex: 0,
+            canonicalMintUrl: "https://conditional.mint",
+            encodedKeysetId: VALID_KEYSET_ID,
+            resolvedKeysetId: VALID_KEYSET_ID,
+            source: "conditional",
+          }),
+        ],
+      }),
     );
 
     expect(result.proofs).toEqual([

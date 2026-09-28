@@ -26,7 +26,7 @@ describe("PLChart", () => {
     expect(screen.getAllByText("—")).toHaveLength(2);
   });
 
-  it("labels monitoring deltas as estimated portfolio-value changes that include cash flows", () => {
+  it("keeps the value-change chart without the explanatory caveat", () => {
     render(
       <PLChart
         chartData={{
@@ -45,10 +45,10 @@ describe("PLChart", () => {
     );
 
     expect(
-      screen.getByText(
+      screen.queryByText(
         "Estimated portfolio value change. Cash flows are included. This is not investment return.",
       ),
-    ).toBeInTheDocument();
+    ).not.toBeInTheDocument();
     expect(document.querySelector("svg")).toBeInTheDocument();
   });
 });

@@ -387,11 +387,52 @@ describe("browser V2 backup worker", () => {
 
   it("default worker seals committed local losing proof before upload", async () => {
     const fixture = await terminalWorkerFixture();
+    const initialDesiredRows =
+      await fixture.database.encryptedWalletBackupV2DesiredAssets.toArray();
+    expect(initialDesiredRows).toHaveLength(1);
+    const initialDesired = initialDesiredRows[0];
+    if (initialDesired === undefined) throw new Error("test desired asset is missing");
+    expect(initialDesired).toMatchObject({
+      activeProofCount: 2,
+      desiredAction: "replace",
+      syncState: "pending",
+    });
+
+    const initialAuthorities = await fixture.database.custodyProofBackupAuthorities.toArray();
+    expect(initialAuthorities).toHaveLength(2);
+    const initialAuthorityByProofId = new Map<
+      string,
+      { readonly admissionOperationId: string; readonly derivationLocator: unknown }
+    >();
+    for (const authority of initialAuthorities) {
+      if (!("backupState" in authority) || authority.backupState !== "local-only") {
+        throw new Error("test authority is not a local proof authority");
+      }
+      expect(authority.derivationLocator).toMatchObject({
+        kind: "nut13",
+        keysetId: CTF_KEYSET,
+      });
+      initialAuthorityByProofId.set(authority.proofId, {
+        admissionOperationId: authority.admissionOperationId,
+        derivationLocator: authority.derivationLocator,
+      });
+    }
+    expect(initialAuthorityByProofId.size).toBe(2);
 
     await expect(runBrowserEncryptedWalletBackupV2WorkerCycle(fixture.input)).resolves.toEqual({
       kind: "committed",
     });
     expect(fixture.remote.mutations).toHaveLength(1);
+    const acknowledgedDesiredRows =
+      await fixture.database.encryptedWalletBackupV2DesiredAssets.toArray();
+    expect(acknowledgedDesiredRows).toHaveLength(1);
+    expect(acknowledgedDesiredRows[0]).toMatchObject({
+      localAssetKey: initialDesired.localAssetKey,
+      activeProofCount: 2,
+      desiredAction: "replace",
+      syncState: "acknowledged",
+    });
+
     const group = decodeEncryptedWalletBackupV2UploadGroup({
       bytes: fixture.remote.mutations[0]!.bytes,
       expectedRequestAuthPublicKey: fixture.input.keyHandle.requestAuthPublicKey,
@@ -416,6 +457,20 @@ describe("browser V2 backup worker", () => {
     expect(restored.proofs.filter(({ terminalSeal }) => terminalSeal !== undefined)).toHaveLength(
       1,
     );
+
+    const acknowledgedAuthorities = await fixture.database.custodyProofBackupAuthorities.toArray();
+    expect(acknowledgedAuthorities).toHaveLength(2);
+    for (const authority of acknowledgedAuthorities) {
+      if (!("backupState" in authority) || authority.backupState !== "local-only") {
+        throw new Error("acknowledged authority is not a local proof authority");
+      }
+      const initialAuthority = initialAuthorityByProofId.get(authority.proofId);
+      if (initialAuthority === undefined) {
+        throw new Error("acknowledged proof authority is not from the local receive");
+      }
+      expect(authority.admissionOperationId).toBe(initialAuthority.admissionOperationId);
+      expect(authority.derivationLocator).toEqual(initialAuthority.derivationLocator);
+    }
     expect(fixture.remote.appliedMutations).toBe(1);
   });
 

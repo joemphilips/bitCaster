@@ -73,6 +73,7 @@ export interface OrderBook {
 // =============================================================================
 
 export interface PricePoint {
+  eventOrder: string;
   timestamp: string;
   price: number; // 0-100
   volume?: number;
@@ -396,9 +397,6 @@ export interface MarketDetailProps {
 
   /** The server-derived Auto price limit for the selected route and side. */
   automaticLimitPrice?: number | null;
-
-  /** Retry the read-only capacity request. */
-  onTradeCapacityRetry?: () => void;
 
   /** Called when user changes limit price */
   onLimitPriceChange?: (price: number) => void;

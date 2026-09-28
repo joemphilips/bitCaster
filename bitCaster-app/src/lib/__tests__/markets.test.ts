@@ -1226,6 +1226,7 @@ describe("fetchMarketDetail (engine merge — ADR-009 Amendment 2026-05-04)", ()
 
 describe("windowPriceHistory (P22 Link D timeframe windowing)", () => {
   const makePoint = (timestamp: string, price: number) => ({
+    eventOrder: timestamp,
     timestamp,
     price,
   });
@@ -1304,6 +1305,7 @@ describe("price history normalization", () => {
             {
               timestamp: "2026-05-25T10:00:00Z",
               price: 500,
+              eventOrder: "001",
               volumeSubunits: 10,
               source: "fill",
             },
@@ -1352,6 +1354,7 @@ describe("price history normalization", () => {
             {
               timestamp: "2026-05-25T10:00:00Z",
               price: 250,
+              eventOrder: "001",
               volumeSubunits: 10,
               source: "fill",
             },
@@ -1363,6 +1366,7 @@ describe("price history normalization", () => {
             {
               timestamp: "2026-05-25T10:00:00Z",
               price: 750,
+              eventOrder: "002",
               volumeSubunits: 20,
               source: "fill",
             },
@@ -1376,13 +1380,14 @@ describe("price history normalization", () => {
     expect(updated.priceHistory.data[0].price).toBe(75);
   });
 
-  it("does not replace the semantic Yes history when the response contains only No", () => {
+  it("maps newer No-only history to the semantic Yes price", () => {
     const priorYesHistory = {
       timeframe: "7d" as const,
       data: [
         {
           timestamp: "2026-05-25T09:00:00Z",
-          price: 70,
+          price: 40,
+          eventOrder: "001",
           volume: 15,
           source: "fill" as const,
         },
@@ -1406,7 +1411,8 @@ describe("price history normalization", () => {
           data: [
             {
               timestamp: "2026-05-25T10:00:00Z",
-              price: 25,
+              price: 450,
+              eventOrder: "002",
               volumeSubunits: 10,
               source: "fill",
             },
@@ -1417,7 +1423,15 @@ describe("price history normalization", () => {
 
     expect(updated.outcomes?.map((outcome) => outcome.id)).toEqual(["YeS", "nO"]);
     expect(updated.outcomes?.map((outcome) => outcome.label)).toEqual(["YeS", "nO"]);
-    expect(updated.priceHistory).toEqual(priorYesHistory);
+    expect(updated.priceHistory.data).toEqual([
+      {
+        timestamp: "2026-05-25T10:00:00Z",
+        eventOrder: "002",
+        price: expect.closeTo(55, 10),
+        volume: 10,
+        source: "fill",
+      },
+    ]);
   });
 });
 

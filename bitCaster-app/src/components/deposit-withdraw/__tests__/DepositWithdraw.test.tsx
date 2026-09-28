@@ -15,9 +15,6 @@ function renderDepositWithdraw(overrides: Partial<DepositWithdrawProps> = {}) {
     mints: baseMints,
     selectedMintId: "mint-1",
     amountSats: 0,
-    amountFiat: "$0.00",
-    fiatSymbol: "$",
-    showFiatPrimary: false,
     lightningInput: "",
     ...overrides,
   };
@@ -25,6 +22,15 @@ function renderDepositWithdraw(overrides: Partial<DepositWithdrawProps> = {}) {
 }
 
 describe("DepositWithdraw", () => {
+  it.each(["deposit-lightning", "send-ecash"] as const)(
+    "%s displays fractional sats without a fiat toggle",
+    (currentView) => {
+      renderDepositWithdraw({ currentView, amountSats: 1.001 });
+      expect(screen.getByText("1.001 sats")).toBeInTheDocument();
+      expect(screen.queryByText(/\$/)).not.toBeInTheDocument();
+    },
+  );
+
   describe("MethodChooser view", () => {
     it("shows Deposit title when mode is deposit", () => {
       renderDepositWithdraw({ mode: "deposit", currentView: "chooser" });

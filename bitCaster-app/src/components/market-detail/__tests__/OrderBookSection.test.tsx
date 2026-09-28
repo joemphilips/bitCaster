@@ -18,7 +18,7 @@ describe("OrderBookSection", () => {
       />,
     );
 
-    expect(screen.getByText("1.0%")).toBeInTheDocument();
+    expect(screen.getByText("1 percentage point")).toBeInTheDocument();
     expect(screen.getByText("5.0%")).toBeInTheDocument();
     expect(screen.getByText("6.0%")).toBeInTheDocument();
     expect(screen.getByText("1 share")).toBeInTheDocument();
@@ -31,7 +31,7 @@ describe("OrderBookSection", () => {
     });
   });
 
-  it("renders the fixed five-row display depth while preserving stable bounded sides", () => {
+  it("renders only available levels without placeholder rows", () => {
     render(
       <OrderBookSection
         baseAsset="sat"
@@ -61,8 +61,8 @@ describe("OrderBookSection", () => {
     expect(screen.getByText("93.0%")).toBeInTheDocument();
     expect(screen.getByText("60.0%")).toBeInTheDocument();
     expect(screen.getByText("94.0%")).toBeInTheDocument();
-    expect(screen.queryAllByTestId("order-book-bid-placeholder")).toHaveLength(1);
-    expect(screen.queryAllByTestId("order-book-ask-placeholder")).toHaveLength(1);
+    expect(screen.queryAllByTestId("order-book-bid-placeholder")).toHaveLength(0);
+    expect(screen.queryAllByTestId("order-book-ask-placeholder")).toHaveLength(0);
   });
 
   it("renders asks and bids in descending price order with closest prices around the spread", () => {
@@ -169,6 +169,9 @@ describe("OrderBookSection", () => {
     expect(askRows[0]).toHaveAttribute("data-depth-side", "ask");
     expect(askRows[0]).toHaveTextContent("54.0%");
     expect(askRows[0]).toHaveTextContent("2 shares");
+    expect(
+      screen.getAllByTestId("order-book-total-shares").map((cell) => cell.textContent),
+    ).toEqual(["3", "1", "1", "2"]);
     expect(screen.getAllByTestId("order-book-ask-depth-fill")[0]).toHaveStyle({ width: "100%" });
     expect(screen.getAllByTestId("order-book-ask-depth-fill")[0]).toHaveClass("left-0");
   });
@@ -181,16 +184,16 @@ describe("OrderBookSection", () => {
         asks: [{ price: 60, amount: 1_000, total: 1_000 }],
         spread: 10,
       },
-      "5.5%",
+      "1 percentage point",
     ],
     [
-      "half-tick midpoint",
+      "one-tick spread",
       {
         bids: [{ price: 50, amount: 1_000, total: 1_000 }],
         asks: [{ price: 51, amount: 1_000, total: 1_000 }],
         spread: 1,
       },
-      "5.05%",
+      "0.1 percentage points",
     ],
     [
       "one-sided",
@@ -220,7 +223,7 @@ describe("OrderBookSection", () => {
       },
       null,
     ],
-  ] as const)("renders a midpoint only for a valid %s book", (_case, book, expected) => {
+  ] as const)("shows an honest spread for a %s book", (_case, book, expected) => {
     render(
       <OrderBookSection
         baseAsset="sat"
@@ -233,15 +236,13 @@ describe("OrderBookSection", () => {
       />,
     );
 
-    if (expected === null) {
-      expect(screen.queryByTestId("order-book-midpoint")).not.toBeInTheDocument();
-      return;
-    }
-
-    expect(screen.getByTestId("order-book-midpoint-price")).toHaveTextContent(expected);
+    expect(screen.queryByTestId("order-book-midpoint")).not.toBeInTheDocument();
+    expect(screen.getByTestId("order-book-spread-row")).toHaveTextContent(
+      expected ?? "Unavailable",
+    );
   });
 
-  it("uses the selected categorical route book for its midpoint", () => {
+  it("uses the selected categorical route book for its spread", () => {
     render(
       <OrderBookSection
         baseAsset="sat"
@@ -263,10 +264,10 @@ describe("OrderBookSection", () => {
       />,
     );
 
-    expect(screen.getByTestId("order-book-midpoint-price")).toHaveTextContent("30.0%");
+    expect(screen.getByTestId("order-book-spread-row")).toHaveTextContent("20 percentage points");
   });
 
-  it("does not show a fallback book midpoint for a missing categorical route", () => {
+  it("does not show another route's depth or spread for a missing categorical route", () => {
     render(
       <OrderBookSection
         baseAsset="sat"
@@ -281,10 +282,12 @@ describe("OrderBookSection", () => {
       />,
     );
 
-    expect(screen.queryByTestId("order-book-midpoint")).not.toBeInTheDocument();
+    expect(screen.getByTestId("order-book-spread-row")).toHaveTextContent("Unavailable");
+    expect(screen.queryAllByTestId("order-book-bid-row")).toHaveLength(0);
+    expect(screen.queryAllByTestId("order-book-ask-row")).toHaveLength(0);
   });
 
-  it("keeps a binary YES executable midpoint in selected-token price space", () => {
+  it("uses both sides of the selected binary book for spread", () => {
     render(
       <OrderBookSection
         baseAsset="sat"
@@ -306,6 +309,41 @@ describe("OrderBookSection", () => {
       />,
     );
 
-    expect(screen.getByTestId("order-book-midpoint-price")).toHaveTextContent("55.0%");
+    expect(screen.getByTestId("order-book-spread-row")).toHaveTextContent("30 percentage points");
+  });
+
+  it("bounds each side to ten nearest levels and reflects updated depth", () => {
+    const book = {
+      bids: Array.from({ length: 12 }, (_, i) => ({
+        price: 490 - i * 10,
+        amount: 1_000,
+        total: (i + 1) * 1_000,
+      })),
+      asks: Array.from({ length: 12 }, (_, i) => ({
+        price: 510 + i * 10,
+        amount: 1_000,
+        total: (i + 1) * 1_000,
+      })),
+      spread: 20,
+    };
+    const { rerender } = render(
+      <OrderBookSection baseAsset="sat" divisibility={1_000} orderBook={book} />,
+    );
+    expect(screen.getAllByTestId("order-book-bid-row")).toHaveLength(10);
+    expect(screen.getAllByTestId("order-book-ask-row")).toHaveLength(10);
+    expect(screen.getAllByTestId("order-book-bid-row").at(-1)).toHaveTextContent("40.0%");
+    expect(screen.getAllByTestId("order-book-ask-row")[0]).toHaveTextContent("60.0%");
+    expect(screen.queryByText("39.0%")).not.toBeInTheDocument();
+    expect(screen.queryByText("61.0%")).not.toBeInTheDocument();
+    rerender(
+      <OrderBookSection
+        baseAsset="sat"
+        divisibility={1_000}
+        orderBook={{ ...book, bids: [], asks: [] }}
+      />,
+    );
+    expect(screen.queryAllByTestId("order-book-bid-row")).toHaveLength(0);
+    expect(screen.queryAllByTestId("order-book-ask-row")).toHaveLength(0);
+    expect(screen.getByTestId("order-book-spread-row")).toHaveTextContent("Unavailable");
   });
 });

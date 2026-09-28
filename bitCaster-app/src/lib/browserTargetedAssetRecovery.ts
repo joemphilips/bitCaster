@@ -556,6 +556,7 @@ async function admitExactMintProofs(
     input.scopeId,
     () => commitExactMintProofs(input, wallet, recovery, attemptKey, request, stored, locators),
     input.lockManager,
+    input.signal,
   );
 }
 

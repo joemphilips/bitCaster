@@ -50,6 +50,7 @@ vi.mock("@/stores/wallet", () => ({
 }));
 
 vi.mock("../browserWalletProfile", () => ({
+  browserWalletIdFromMnemonic: () => "a".repeat(64),
   browserWalletScopeIdFromMnemonic: (mnemonic: string) => (mnemonic ? `scope:${mnemonic}` : null),
   activeBrowserWalletScopeId: () => mocks.activeScope,
 }));
@@ -182,6 +183,13 @@ describe("nip17-listener", () => {
       { mintUrl: "http://mint.example" },
     );
     expect(mocks.encodeToken).toHaveBeenCalledWith(payload.proofs, "http://mint.example", "msat");
+    expect(mocks.addActivitySpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        walletId: "a".repeat(64),
+        type: "deposit",
+        amountSubunits: 42_000,
+      }),
+    );
     expect(mocks.markReceivedSpy).toHaveBeenCalledWith("req-1", 42_000, "sat", "scope:wallet-a");
   });
 
@@ -366,7 +374,7 @@ describe("nip17-listener", () => {
     expect(mocks.markReceivedSpy).not.toHaveBeenCalled();
   });
 
-  it("does not update activity or the inbox when a receive completes after profile exit", async () => {
+  it("records a completed receive for its captured wallet but does not update the new inbox", async () => {
     const completion = deferred<{
       added: boolean;
       mintUrl: string;
@@ -403,7 +411,13 @@ describe("nip17-listener", () => {
     await receiving;
     await ingressSettled.promise;
 
-    expect(mocks.addActivitySpy).not.toHaveBeenCalled();
+    expect(mocks.addActivitySpy).toHaveBeenCalledExactlyOnceWith({
+      walletId: "a".repeat(64),
+      type: "deposit",
+      amountSubunits: 42,
+      baseAsset: "sat",
+      status: "completed",
+    });
     expect(mocks.markReceivedSpy).not.toHaveBeenCalled();
   });
 

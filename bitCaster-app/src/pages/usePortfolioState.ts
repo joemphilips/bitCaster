@@ -528,6 +528,7 @@ export function usePortfolioState(): PortfolioState & {
     value: AssetMonitoringPortfolioResponse;
   } | null>(null);
   const [monitoringError, setMonitoringError] = useState<"unavailable" | null>(null);
+  const [loadingMonitoringKey, setLoadingMonitoringKey] = useState<string | null>(null);
   const [monitoringAssets, setMonitoringAssets] = useState<{
     key: string;
     generation: number;
@@ -577,13 +578,17 @@ export function usePortfolioState(): PortfolioState & {
     };
   }, [localProfile, nostrProfile]);
 
-  const activity = useActivityLogStore((s) => s.items);
+  const activityItems = useActivityLogStore((s) => s.items);
   const [createdMarkets] = useState<CreatedMarket[]>([]);
   // Positions and funds are both wallet-local. CTF proofs are market
   // positions; base proofs are spendable ecash funds.
   const storeMints = useWalletStore((s) => s.mints);
   const walletMnemonic = useWalletStore((s) => s.mnemonic);
   const walletId = useMemo(() => browserWalletIdFromMnemonic(walletMnemonic), [walletMnemonic]);
+  const activity = useMemo(
+    () => activityItems.filter((item) => walletId !== null && item.walletId === walletId),
+    [activityItems, walletId],
+  );
   const monitoringKey =
     walletState === "ready" && walletId !== null ? `${walletId}:${selectedTimeRange}` : null;
   const monitoringReady = monitoringResponse?.key === monitoringKey;
@@ -599,6 +604,7 @@ export function usePortfolioState(): PortfolioState & {
     const read = activePortfolioRead.current;
     if (!read) return;
     activePortfolioRead.current = null;
+    setLoadingMonitoringKey(null);
     if (requestedMonitoringKey.current === read.requestKey) {
       requestedMonitoringKey.current = null;
     }
@@ -720,6 +726,7 @@ export function usePortfolioState(): PortfolioState & {
     const controller = new AbortController();
     const read = { monitoringKey, requestKey, requestId, controller };
     activePortfolioRead.current = read;
+    setLoadingMonitoringKey(monitoringKey);
     activeAssetPageRequest.current += 1;
     assetPageInFlight.current = false;
     setMonitoringUnavailable(false);
@@ -789,6 +796,7 @@ export function usePortfolioState(): PortfolioState & {
       .finally(() => {
         if (activePortfolioRead.current !== read) return;
         activePortfolioRead.current = null;
+        setLoadingMonitoringKey(null);
         if (automaticRefreshScheduled.current) {
           automaticRefreshScheduled.current = false;
           automaticRefreshScheduledKind.current = null;
@@ -852,11 +860,7 @@ export function usePortfolioState(): PortfolioState & {
     }
   }, [firstPageConditionIds]);
 
-  const visibleAssets =
-    monitoringAssets?.key === monitoringKey &&
-    monitoringAssets.generation === activeMonitoringRequest.current
-      ? monitoringAssets
-      : null;
+  const visibleAssets = monitoringAssets?.key === monitoringKey ? monitoringAssets : null;
   const visibleMonitoringConditionIdsKey = useMemo(() => {
     const ids = visibleAssets?.assets.flatMap((asset) =>
       asset.asset.kind === "conditional" ? [asset.asset.conditionId] : [],
@@ -875,7 +879,13 @@ export function usePortfolioState(): PortfolioState & {
     );
 
   const loadMoreAssets = useCallback(() => {
-    if (!visibleAssets || walletId === null || loadingMoreAssets || assetPageInFlight.current)
+    if (
+      !visibleAssets ||
+      visibleAssets.generation !== activeMonitoringRequest.current ||
+      walletId === null ||
+      loadingMoreAssets ||
+      assetPageInFlight.current
+    )
       return;
     const cursor = visibleAssets.nextCursor;
     if (cursor === null) return;
@@ -1084,7 +1094,7 @@ export function usePortfolioState(): PortfolioState & {
         })
       : null;
   const funds = visibleMonitoring?.funds ?? localFunds;
-  const stats = visibleMonitoring?.stats
+  const currentStats = visibleMonitoring?.stats
     ? visibleMonitoring.stats
     : localFundsUnavailable || localPositionsUnavailable
       ? {
@@ -1094,6 +1104,12 @@ export function usePortfolioState(): PortfolioState & {
           positionsValueKnown: !localPositionsUnavailable && localStats.positionsValueKnown,
         }
       : localStats;
+  const valuesLoading = monitoringKey !== null && loadingMonitoringKey === monitoringKey;
+  const stats = {
+    ...currentStats,
+    totalValueLoading: valuesLoading,
+    positionsValueLoading: valuesLoading,
+  };
   const visiblePositions = visibleMonitoring
     ? mergeMonitoringPositions(
         visibleMonitoring.positions.map((position) =>
@@ -1123,7 +1139,9 @@ export function usePortfolioState(): PortfolioState & {
         ? "unavailable"
         : null),
     assetPageError: visibleAssetPageError ? "unavailable" : null,
-    hasMoreAssets: visibleAssets?.nextCursor != null,
+    hasMoreAssets:
+      visibleAssets?.nextCursor != null &&
+      visibleAssets.generation === activeMonitoringRequest.current,
     loadingMoreAssets: visibleAssets !== null && loadingMoreAssets,
   };
   const selectTimeRange = useCallback((range: PLTimeSelector) => {

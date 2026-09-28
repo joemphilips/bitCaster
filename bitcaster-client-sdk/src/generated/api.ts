@@ -1086,7 +1086,7 @@ export interface components {
       worstPrice: number | null
       /**
        * Format: int32
-       * @description Latest confirmed primitive-route displayed trade-price numerator. Null when the market has no confirmed trade or no authoritative snapshot. This is a display price, not a selected-token execution price.
+       * @description Latest confirmed primitive-route displayed trade-price numerator. For two outcomes, use the newest confirmed trade from either primitive route in the captured preview. Map the opposite route as priceDenominator minus its price. For more than two outcomes, use only the requested primitive route. Null when that price or an authoritative snapshot is unavailable. This is a display price, not a selected-token execution price.
        */
       currentLatestTradePrice: number | null
       /**
@@ -1571,6 +1571,8 @@ export interface components {
       divisibility: 1000 | 1000000
     }
     MarketPriceHistoryPoint: {
+      /** @description Opaque canonical ordering identity for this confirmed trade. Compare values with ordinal string ordering. The greater value identifies the newer event, including when timestamps are equal. Use this value when merging history with confirmed live trades. */
+      eventOrder: string
       /** Format: date-time */
       timestamp: string
       /** @description Market price numerator `k`. Valid range is `1 <= k <= D - 1`, where `D` is the market's immutable `divisibility`. Current yes/no and categorical markets use D=1000 (0.1% price precision). Numeric market creation and trading are currently disabled. */

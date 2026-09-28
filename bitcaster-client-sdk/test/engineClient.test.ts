@@ -280,6 +280,7 @@ test('BitcasterEngineClient.getMarketPriceHistory reads primitive series', async
               data: [
                 {
                   timestamp: '2026-05-25T10:00:00Z',
+                  eventOrder: '00000000000000000042',
                   price: 42,
                   volumeSubunits: 100,
                 },
@@ -299,6 +300,7 @@ test('BitcasterEngineClient.getMarketPriceHistory reads primitive series', async
 
   assert.equal(history.outcomes[0].outcomeId, 'YES')
   assert.equal(history.outcomes[0].data[0].price, 42)
+  assert.equal(history.outcomes[0].data[0].eventOrder, '00000000000000000042')
   assert.deepEqual(requests, [
     'https://engine.example/api/v1/markets/condition-1/price-history?timeframe=24h',
   ])

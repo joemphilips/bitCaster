@@ -11,6 +11,7 @@ import {
   type Proof,
   type ProofState,
   type SwapPreview,
+  type ConditionalSwapPreview,
 } from '@cashu/cashu-ts'
 import {
   DURABLE_CUSTODY_BLINDED_OUTPUT_LIMIT_MAX,
@@ -94,6 +95,7 @@ export type DurableWalletMintOperation = DurableWalletCommon & {
 }
 export type DurableWalletReceiveOperation = DurableWalletCommon & {
   kind: 'wallet-receive'
+  asset: 'regular' | 'conditional'
   preview: DurableWalletSwapPreview
   derivationRange: {
     keysetId: string
@@ -191,6 +193,7 @@ export interface DurableWalletReceiveExecutionInput {
   readonly wallet: {
     checkProofsStates(proofs: Array<Pick<Proof, 'id' | 'secret'>>): Promise<readonly ProofState[]>
     completeSwap(preview: SwapPreview): Promise<{ readonly keep: Proof[]; readonly send: Proof[] }>
+    completeConditionalSwap?(preview: ConditionalSwapPreview): Promise<Record<string, Proof[]>>
   }
   /** Restore and verify only the supplied output plan. */
   readonly restoreExactOutputs: (input: {
@@ -268,7 +271,7 @@ export function decodeDurableWalletOperation(value: unknown): DurableWalletOpera
     'mintUrl',
     'unit',
     'preview',
-    ...(operation.kind === 'wallet-receive' ? ['derivationRange'] : []),
+    ...(operation.kind === 'wallet-receive' ? ['asset', 'derivationRange'] : []),
   ])
   if (operation.schemaVersion !== DURABLE_WALLET_OPERATION_SCHEMA_VERSION) {
     throw new Error('durable wallet operation schema is unsupported')
@@ -288,9 +291,15 @@ export function decodeDurableWalletOperation(value: unknown): DurableWalletOpera
       decodeSwapPreview(operation.preview)
       break
     case 'wallet-receive':
+      if (operation.asset !== 'regular' && operation.asset !== 'conditional') {
+        throw new Error('durable wallet receive asset is invalid')
+      }
       decodeSwapPreview(operation.preview, DURABLE_WALLET_RECEIVE_PROOF_LIMIT_MAX)
       requireReceivePreview(operation.preview)
       decodeReceiveDerivationRange(operation.derivationRange, operation.preview)
+      if (operation.asset === 'conditional') {
+        requireConditionalReceiveOperation(operation)
+      }
       break
     case 'wallet-mint':
       decodeMintPreview(operation.preview)
@@ -321,7 +330,7 @@ export function toDurableCustodyProofOperationInput(
         inputSource: 'external',
         plannedOutputLabels: ['receive'],
         resultGroups: {
-          receive: { kind: 'wallet', asset: 'regular', reservedBy: null },
+          receive: { kind: 'wallet', asset: operation.asset, reservedBy: null },
         },
       })
       return {
@@ -454,25 +463,43 @@ export function deriveDurableWalletOperationAuthority(
   }
 }
 
-export function serializeDurableWalletReceiveOperation(input: {
+type DurableWalletReceiveOperationInputBase = {
   readonly operationId: string
   readonly mintUrl: string
   readonly unit: string
-  readonly preview: SwapPreview
   readonly derivationRange?: {
     readonly keysetId: string
     readonly counterStart: number
     readonly counterCount: number
   } | null
-}): DurableWalletReceiveOperation {
+}
+
+export type DurableWalletReceiveOperationInput = DurableWalletReceiveOperationInputBase &
+  (
+    | { readonly asset?: 'regular'; readonly preview: SwapPreview }
+    | {
+        readonly asset: 'conditional'
+        readonly preview: ConditionalSwapPreview
+        readonly inputFeePpk: number
+      }
+  )
+
+export function serializeDurableWalletReceiveOperation(
+  input: DurableWalletReceiveOperationInput,
+): DurableWalletReceiveOperation {
+  const preview =
+    input.asset === 'conditional'
+      ? serializeConditionalReceivePreview(input.preview, input.inputFeePpk)
+      : serializeReceivePreview(input.preview)
   return requireReceiveOperation(
     decodeDurableWalletOperation({
       schemaVersion: DURABLE_WALLET_OPERATION_SCHEMA_VERSION,
       operationId: input.operationId,
       kind: 'wallet-receive',
+      asset: input.asset ?? 'regular',
       mintUrl: input.mintUrl,
       unit: input.unit,
-      preview: serializeReceivePreview(input.preview),
+      preview,
       derivationRange: input.derivationRange ?? null,
     }),
   )
@@ -754,6 +781,49 @@ function serializeReceivePreview(preview: SwapPreview): DurableWalletSwapPreview
   }
 }
 
+function serializeConditionalReceivePreview(
+  preview: ConditionalSwapPreview,
+  inputFeePpk: number,
+): DurableWalletSwapPreview {
+  if (!Number.isSafeInteger(inputFeePpk) || inputFeePpk < 0) {
+    throw new Error('durable conditional receive keyset fee is invalid')
+  }
+  const groups = Object.keys(preview.outputDataByLabel)
+  const outputs = preview.outputDataByLabel.receive
+  if (
+    groups.length !== 1 ||
+    groups[0] !== 'receive' ||
+    outputs === undefined ||
+    outputs.length === 0
+  ) {
+    throw new Error('durable conditional receive preview has foreign output groups')
+  }
+  const inputTotal = Amount.sum(preview.inputs.map(({ amount }) => amount))
+  const fees = Amount.from((BigInt(preview.inputs.length) * BigInt(inputFeePpk) + 999n) / 1000n)
+  if (fees.greaterThanOrEqual(inputTotal)) {
+    throw new Error('durable conditional receive fee consumes the input value')
+  }
+  const outputTotal = Amount.sum(outputs.map(({ blindedMessage }) => blindedMessage.amount))
+  if (!outputTotal.equals(inputTotal.subtract(fees))) {
+    throw new Error('durable conditional receive outputs do not conserve value after fees')
+  }
+  if (
+    preview.inputs.some(({ id }) => id !== preview.keysetId) ||
+    outputs.some(({ blindedMessage }) => blindedMessage.id !== preview.keysetId)
+  ) {
+    throw new Error('durable conditional receive keyset does not match its preview')
+  }
+  return {
+    amount: inputTotal.toString(),
+    fees: fees.toString(),
+    keysetId: preview.keysetId,
+    inputs: preview.inputs.map(serializeDurableWalletProof),
+    sendOutputs: [],
+    keepOutputs: outputs.map(serializeOutput),
+    unselectedProofs: [],
+  }
+}
+
 function serializeSendPreview(preview: SwapPreview): DurableWalletSwapPreview {
   const serialized: DurableWalletSwapPreview = {
     amount: Amount.from(preview.amount).toString(),
@@ -781,6 +851,22 @@ function hydrateDurableWalletReceivePreview(input: DurableWalletReceiveOperation
     sendOutputs: [],
     keepOutputs: operation.preview.keepOutputs.map(hydrateOutput),
     unselectedProofs: [],
+  }
+}
+
+function hydrateDurableConditionalReceivePreview(
+  input: DurableWalletReceiveOperation,
+): ConditionalSwapPreview {
+  const operation = requireReceiveOperation(decodeDurableWalletOperation(input))
+  if (operation.asset !== 'conditional') {
+    throw new Error('durable wallet receive asset is not conditional')
+  }
+  return {
+    keysetId: operation.preview.keysetId,
+    inputs: operation.preview.inputs.map(hydrateDurableWalletProof),
+    outputDataByLabel: {
+      receive: operation.preview.keepOutputs.map(hydrateOutput),
+    },
   }
 }
 
@@ -1093,6 +1179,18 @@ async function submitPersistedReceive(
   input: DurableWalletReceiveExecutionInput,
   operation: DurableWalletReceiveOperation,
 ): Promise<DurableWalletReceiveExecutionResult> {
+  if (operation.asset === 'conditional') {
+    if (input.wallet.completeConditionalSwap === undefined) {
+      throw new Error('durable conditional wallet receive is unavailable')
+    }
+    const result = await input.wallet.completeConditionalSwap(
+      hydrateDurableConditionalReceivePreview(operation),
+    )
+    if (Object.keys(result).length !== 1 || !Array.isArray(result.receive)) {
+      throw new Error('durable conditional wallet receive result has foreign groups')
+    }
+    return persistExactReceiveResult(input.store, operation, result)
+  }
   const result = await input.wallet.completeSwap(hydrateDurableWalletReceivePreview(operation))
   if (result.send.length !== 0) {
     throw new Error('durable wallet receive mint result contains a foreign send group')
@@ -1233,6 +1331,28 @@ function requireReceivePreview(value: Record<string, unknown>): void {
     )
   ) {
     throw new Error('durable wallet receive blinding factor is invalid')
+  }
+}
+
+function requireConditionalReceiveOperation(operation: Record<string, unknown>): void {
+  if (operation.unit !== 'msat') {
+    throw new Error('durable conditional wallet receive requires msat')
+  }
+  const preview = operation.preview as DurableWalletSwapPreview
+  const range = operation.derivationRange as DurableWalletReceiveOperation['derivationRange']
+  if (range === null || range.keysetId !== preview.keysetId) {
+    throw new Error('durable conditional wallet receive derivation range is missing')
+  }
+  if (preview.inputs.some(({ id }) => id !== preview.keysetId)) {
+    throw new Error('durable conditional wallet receive inputs use a foreign keyset')
+  }
+  const inputTotal = Amount.sum(preview.inputs.map(({ amount }) => amount))
+  const outputTotal = Amount.sum(
+    preview.keepOutputs.map(({ blindedMessage }) => blindedMessage.amount),
+  )
+  const fees = Amount.from(preview.fees)
+  if (fees.greaterThanOrEqual(inputTotal) || !outputTotal.equals(inputTotal.subtract(fees))) {
+    throw new Error('durable conditional wallet receive preview does not conserve value')
   }
 }
 

@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { Position } from "@/types/portfolio";
@@ -10,6 +10,7 @@ const cashuMocks = vi.hoisted(() => ({
   claimPortfolioPosition: vi.fn(),
   removePortfolioPosition: vi.fn(),
   addActivity: vi.fn(),
+  walletState: { mnemonic: "fresh fake wallet seed" },
 }));
 
 vi.mock("@/stores/proof-db", () => ({
@@ -39,6 +40,18 @@ vi.mock("@/stores/settings", () => ({
 vi.mock("@/stores/activity-log", () => ({
   useActivityLogStore: (selector: (s: unknown) => unknown) =>
     selector({ items: [], addActivity: cashuMocks.addActivity }),
+}));
+
+vi.mock("@/stores/wallet", () => ({
+  useWalletStore: { getState: () => cashuMocks.walletState },
+}));
+
+vi.mock("@/lib/browserWalletProfile", () => ({
+  browserWalletIdFromMnemonic: (mnemonic: string) =>
+    mnemonic === "other fake wallet seed" ? "b".repeat(64) : "a".repeat(64),
+  isActiveBrowserWalletId: (walletId: string, mnemonic: string) =>
+    mnemonic === cashuMocks.walletState.mnemonic &&
+    walletId === (mnemonic === "other fake wallet seed" ? "b".repeat(64) : "a".repeat(64)),
 }));
 
 // usePortfolioState is heavy (Dexie live queries + fetch); supply fixed state.
@@ -94,6 +107,7 @@ function closedPosition(overrides: Partial<Position>): Position {
 
 describe("PortfolioPage — Remove lost position (P22 F2)", () => {
   beforeEach(() => {
+    cashuMocks.walletState.mnemonic = "fresh fake wallet seed";
     cashuMocks.claimPortfolioPosition.mockReset();
     cashuMocks.claimPortfolioPosition.mockResolvedValue({
       kind: "completed",
@@ -108,6 +122,62 @@ describe("PortfolioPage — Remove lost position (P22 F2)", () => {
     removeProofs.mockReset();
     removeProofs.mockResolvedValue(undefined);
   });
+
+  it.each(["claim", "remove"] as const)(
+    "keeps a committed %s payout under its captured owner and suppresses stale alerts",
+    async (operation) => {
+      mockPositions = [
+        closedPosition({
+          marketTitle: "Late payout",
+          isWinner: operation === "claim",
+          isLoser: operation === "remove",
+          canClaimPayout: operation === "claim",
+        }),
+      ];
+      const run =
+        operation === "claim"
+          ? cashuMocks.claimPortfolioPosition
+          : cashuMocks.removePortfolioPosition;
+      let commitLeg!: (leg: { keysetId: string; payoutAmount: number }) => void;
+      let finish!: (result: { kind: "pending"; committedPayoutAmount: number }) => void;
+      run.mockImplementationOnce(({ onCommittedLeg }) => {
+        commitLeg = onCommittedLeg;
+        return new Promise((resolve) => {
+          finish = resolve;
+        });
+      });
+      const alert = vi.spyOn(window, "alert").mockImplementation(() => {});
+      const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+      try {
+        render(<PortfolioPage />);
+        const action = userEvent.click(
+          screen.getByLabelText(
+            operation === "claim" ? /claim.*late payout/i : /remove.*late payout/i,
+          ),
+        );
+        await waitFor(() => expect(commitLeg).toBeTypeOf("function"));
+        cashuMocks.walletState.mnemonic = "other fake wallet seed";
+        await act(async () => {
+          commitLeg({ keysetId: "winning-leg", payoutAmount: 125 });
+          finish({ kind: "pending", committedPayoutAmount: 125 });
+          await action;
+        });
+
+        expect(cashuMocks.addActivity).toHaveBeenCalledWith(
+          expect.objectContaining({
+            walletId: "a".repeat(64),
+            type: "payout_claimed",
+            amountSubunits: 125,
+            status: "completed",
+          }),
+        );
+        expect(alert).not.toHaveBeenCalled();
+      } finally {
+        alert.mockRestore();
+        confirm.mockRestore();
+      }
+    },
+  );
 
   it("claims a local winner even when monitoring cannot value it", async () => {
     mockPositions = [
@@ -213,7 +283,8 @@ describe("PortfolioPage — Remove lost position (P22 F2)", () => {
         expect(cashuMocks.addActivity).toHaveBeenCalledWith(
           expect.objectContaining({
             type: "payout_claimed",
-            amountSats: 125,
+            walletId: "a".repeat(64),
+            amountSubunits: 125,
             status: "completed",
           }),
         );
@@ -255,7 +326,8 @@ describe("PortfolioPage — Remove lost position (P22 F2)", () => {
       committedPayoutAmount: 125,
       error: {
         code: "remove-failed",
-        message: "The claim could not finish.",
+        stage: "claim",
+        attemptRef: "remove-attempt",
         claimFailure: {
           code: "claim-failed",
           category: "counter-readiness",
@@ -273,6 +345,7 @@ describe("PortfolioPage — Remove lost position (P22 F2)", () => {
         expect.stringContaining("Wallet counter recovery for this keyset is incomplete."),
       );
       expect(alert).toHaveBeenCalledWith(expect.stringContaining("remove-claim-attempt"));
+      expect(alert).toHaveBeenCalledWith(expect.stringContaining("claim: remove-attempt"));
     } finally {
       confirm.mockRestore();
       alert.mockRestore();
@@ -304,7 +377,11 @@ describe("PortfolioPage — Remove lost position (P22 F2)", () => {
 
     expect(removeProofs).not.toHaveBeenCalled();
     expect(cashuMocks.addActivity).toHaveBeenCalledWith(
-      expect.objectContaining({ amountSats: 60, type: "payout_claimed" }),
+      expect.objectContaining({
+        walletId: "a".repeat(64),
+        amountSubunits: 60,
+        type: "payout_claimed",
+      }),
     );
     expect(alert).toHaveBeenCalledWith(expect.stringContaining("Removal stopped"));
     alert.mockRestore();
@@ -366,30 +443,47 @@ describe("PortfolioPage — Remove lost position (P22 F2)", () => {
   });
 
   it.each([
-    ["pending", "Removal is not finished"],
-    ["partial", "Removal could not finish"],
-    ["error", "Removal could not finish"],
-  ])("shows a safe message for %s removal without recording a payout", async (kind, message) => {
-    mockPositions = [closedPosition({})];
-    cashuMocks.removePortfolioPosition.mockResolvedValue({
-      kind,
-      committedPayoutAmount: 0,
-      error: { message: "private protocol material" },
-    });
-    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
-    const alert = vi.spyOn(window, "alert").mockImplementation(() => {});
-    try {
-      render(<PortfolioPage />);
-      await userEvent.click(screen.getByLabelText(/remove.*lost market/i));
-      expect(alert).toHaveBeenCalledWith(expect.stringContaining(message!));
-      expect(alert).not.toHaveBeenCalledWith(expect.stringContaining("private protocol material"));
-      expect(cashuMocks.addActivity).not.toHaveBeenCalled();
-      expect(removeProofs).not.toHaveBeenCalled();
-    } finally {
-      confirm.mockRestore();
-      alert.mockRestore();
-    }
-  });
+    ["pending", false, "Removal is not finished"],
+    ["partial", false, "Removal is not finished"],
+    ["partial", true, "Removal could not finish"],
+    ["error", true, "Removal could not finish"],
+  ] as const)(
+    "shows a safe message for %s removal (failure=%s) without recording a payout",
+    async (kind, failed, message) => {
+      mockPositions = [closedPosition({})];
+      cashuMocks.removePortfolioPosition.mockResolvedValue({
+        kind,
+        committedPayoutAmount: 0,
+        error: failed
+          ? {
+              code: "remove-failed",
+              stage: "local-commit",
+              attemptRef: "remove-attempt",
+              message: "private protocol material",
+            }
+          : null,
+      });
+      const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+      const alert = vi.spyOn(window, "alert").mockImplementation(() => {});
+      try {
+        render(<PortfolioPage />);
+        await userEvent.click(screen.getByLabelText(/remove.*lost market/i));
+        expect(alert).toHaveBeenCalledWith(expect.stringContaining(message!));
+        expect(alert).not.toHaveBeenCalledWith(
+          expect.stringContaining("private protocol material"),
+        );
+        if (failed)
+          expect(alert).toHaveBeenCalledWith(
+            expect.stringContaining("local-commit: remove-attempt"),
+          );
+        expect(cashuMocks.addActivity).not.toHaveBeenCalled();
+        expect(removeProofs).not.toHaveBeenCalled();
+      } finally {
+        confirm.mockRestore();
+        alert.mockRestore();
+      }
+    },
+  );
 
   it("never deletes proofs for a winner even if the handler is invoked", async () => {
     // A winner has no Remove button, but defence-in-depth: the handler bails

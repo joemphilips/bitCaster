@@ -11,12 +11,8 @@ interface SendEcashProps {
   selectedMintId: string;
   statusMessage?: ReactNode;
   amountSats: number;
-  amountFiat: string;
-  fiatSymbol: string;
-  showFiatPrimary: boolean;
   onMintChange?: (mintId: string) => void;
   onNumpadPress?: (key: string) => void;
-  onToggleCurrency?: () => void;
   onSendEcash?: () => void;
   onReclaimEcash?: () => void;
   hasPendingBearerReclaim?: boolean;
@@ -28,12 +24,8 @@ export function SendEcash({
   selectedMintId,
   statusMessage,
   amountSats,
-  amountFiat,
-  fiatSymbol,
-  showFiatPrimary,
   onMintChange,
   onNumpadPress,
-  onToggleCurrency,
   onSendEcash,
   onReclaimEcash,
   hasPendingBearerReclaim,
@@ -72,13 +64,7 @@ export function SendEcash({
 
           {/* Amount */}
           <div className="flex-1 flex items-center justify-center">
-            <AmountDisplay
-              amountSats={amountSats}
-              amountFiat={amountFiat}
-              fiatSymbol={fiatSymbol}
-              showFiatPrimary={showFiatPrimary}
-              onToggleCurrency={onToggleCurrency}
-            />
+            <AmountDisplay amountSats={amountSats} />
           </div>
 
           {/* Numpad */}

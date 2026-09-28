@@ -1,8 +1,14 @@
 import {
+  Amount,
+  splitAmount,
+  verifyProofsForReceive,
   type OperationCounters,
   type Proof,
   type ProofState,
   type SwapPreview,
+  type ConditionalSwapPreview,
+  type ConditionalSwapOptions,
+  type Keyset,
 } from "@cashu/cashu-ts";
 import {
   assertDurableCustodyMintOperationAuthority,
@@ -14,6 +20,9 @@ import {
 import {
   prepareDurableCustodyExactArtifact,
   decodeDurableCustodyRecord,
+  DURABLE_CUSTODY_BLINDED_OUTPUT_LIMIT_MAX,
+  DURABLE_CUSTODY_INPUT_PROOF_LIMIT_MAX,
+  deriveDurableCustodyArtifactFingerprint,
   type DurableCustodyOwnerAuthorization,
   type DurableCustodyRecord,
   type DurableCustodyScope,
@@ -21,13 +30,19 @@ import {
 import { createDurableCustodyProofOperation } from "@bitcaster/client-sdk/durableCustodyProofOperationRecord";
 import {
   deserializeDurableCustodyOutput,
+  serializeDurableCustodyOutput,
   type DurableCustodyProofOperationInput,
 } from "@bitcaster/client-sdk/durableCustodyProofOperation";
 import { locateSeedDerivedProofLineage } from "@bitcaster/client-sdk/durableSeedDerivedProofLineage";
-import { assertCanonicalNut02V2KeysetId } from "@bitcaster/client-sdk/durableSeedDerivedOutputs";
 import {
+  assertCanonicalNut02V2KeysetId,
+  reserveAndConstructDurableSeedDerivedOutputs,
+} from "@bitcaster/client-sdk/durableSeedDerivedOutputs";
+import {
+  deriveDurableWalletProofY,
   requireDurableWalletOperationFromCustody,
   runDurableWalletReceiveOperation,
+  serializeDurableWalletProof,
   serializeDurableWalletReceiveOperation,
   toDurableCustodyProofOperationInput,
   type DurableWalletReceiveOperation,
@@ -37,11 +52,16 @@ import { decodeDurableOutgoingCashuTransfer } from "@bitcaster/client-sdk/durabl
 import { requireBrowserWalletNewWritePermission } from "./browserWalletNewWritePermission";
 import { withWalletProfileLock } from "./walletProfileLock";
 import { browserWalletScope } from "./browserCtfRangeOrderSource";
+import { BrowserWalletCounterSource } from "../stores/browser-wallet-counter-db";
 import {
   BrowserDurableCustodyAdapter,
   createBrowserCustodyProofRow,
   decodeBrowserCustodyProofRow,
 } from "../stores/durable-custody-db";
+import {
+  decodeBrowserCustodyConditionalKeysetAuthority,
+  type BrowserCustodyConditionalKeysetAuthority,
+} from "../stores/durable-custody-types";
 import {
   db,
   storedProofFromCustodyRow,
@@ -56,6 +76,20 @@ const PROOF_ID_MIN = "";
 const PROOF_ID_MAX = "\uffff";
 const PRODUCT_MSAT_ERROR = "browser wallet receive requires msat";
 
+type BrowserReceiveKeyset = Pick<
+  Keyset,
+  "id" | "unit" | "keys" | "fee" | "expiry" | "isActive" | "conditional" | "verify"
+>;
+
+interface BrowserReceiveConditionalKeysetMeta {
+  readonly id: string;
+  readonly unit: string;
+  readonly active: boolean;
+  readonly input_fee_ppk: number;
+  readonly final_expiry?: number;
+  readonly conditional: Required<NonNullable<Keyset["conditional"]>>;
+}
+
 export interface BrowserDurableWalletReceiveWallet {
   prepareSwapToReceive(
     token: string,
@@ -63,7 +97,18 @@ export interface BrowserDurableWalletReceiveWallet {
     outputConfig?: unknown,
   ): Promise<SwapPreview>;
   completeSwap(preview: SwapPreview): Promise<{ readonly keep: Proof[]; readonly send: Proof[] }>;
+  prepareConditionalSwap?(input: ConditionalSwapOptions): Promise<ConditionalSwapPreview>;
+  completeConditionalSwap?(preview: ConditionalSwapPreview): Promise<Record<string, Proof[]>>;
   checkProofsStates(proofs: Array<Pick<Proof, "id" | "secret">>): Promise<readonly ProofState[]>;
+  keyChain?: {
+    loadConditionalKeyset(keysetId: string): Promise<BrowserReceiveKeyset>;
+    registerConditionalKeyset(
+      meta: BrowserReceiveConditionalKeysetMeta,
+      keys: BrowserReceiveConditionalKeysetMeta & {
+        readonly keys: Readonly<Record<string, string>>;
+      },
+    ): BrowserReceiveKeyset;
+  };
   mint: {
     restore(input: {
       outputs: Array<{ amount: import("@cashu/cashu-ts").Amount; id: string; B_: string }>;
@@ -72,15 +117,7 @@ export interface BrowserDurableWalletReceiveWallet {
       signatures: Array<unknown>;
     }>;
   };
-  getKeyset(keysetId?: string): {
-    id: string;
-    unit: string;
-    keys: Readonly<Record<string, string>>;
-    fee: number;
-    expiry?: number;
-    conditional?: unknown;
-    verify(): boolean;
-  };
+  getKeyset(keysetId?: string): BrowserReceiveKeyset;
 }
 
 export interface BrowserDurableWalletReceiveContext {
@@ -113,6 +150,14 @@ export interface BrowserDurableWalletReceiveInput {
   readonly token: string;
   readonly mintUrl: string;
   readonly unit: "sat" | "msat";
+  /** Existing bearer inputs default to regular asset. */
+  readonly asset?: "regular" | "conditional";
+  /** The decoded token proofs for conditional import. */
+  readonly conditionalInputProofs?: readonly Proof[];
+  /** Run conditional keyset counter recovery while the profile lock is held. */
+  readonly ensureConditionalCounterReady?: (
+    keyset: BrowserCustodyConditionalKeysetAuthority,
+  ) => Promise<void>;
   readonly wallet: BrowserDurableWalletReceiveWallet;
   readonly context: BrowserDurableWalletReceiveContext;
 }
@@ -155,6 +200,10 @@ export async function receiveBrowserDurableWalletToken(
           input.preparedOperation ??
           (await prepareBrowserDurableWalletReceiveOperation(input, randomId));
         requireProductMsatUnit(operation.unit);
+        const requestedAsset = input.asset ?? input.preparedOperation?.asset ?? "regular";
+        if (operation.asset !== requestedAsset) {
+          throw new Error("browser wallet receive asset conflicts with its prepared operation");
+        }
         if (input.operationId !== undefined && operation.operationId !== input.operationId) {
           throw new Error("browser wallet receive operation identity conflicts");
         }
@@ -204,6 +253,9 @@ export async function prepareBrowserDurableWalletReceiveOperation(
 ): Promise<DurableWalletReceiveOperation> {
   requireProductMsatUnit(input.unit);
   input.context.requireCapturedProfile();
+  if (input.asset === "conditional") {
+    return prepareBrowserConditionalWalletReceiveOperation(input, randomId);
+  }
   let range: OperationCounters | undefined;
   const preview = await input.wallet.prepareSwapToReceive(
     input.token,
@@ -224,6 +276,189 @@ export async function prepareBrowserDurableWalletReceiveOperation(
       counterStart: range.start,
       counterCount: range.count,
     },
+  });
+}
+
+async function prepareBrowserConditionalWalletReceiveOperation(
+  input: BrowserDurableWalletReceiveInput,
+  randomId: () => string,
+): Promise<DurableWalletReceiveOperation> {
+  const proofs = input.conditionalInputProofs;
+  if (
+    proofs === undefined ||
+    proofs.length === 0 ||
+    proofs.length > DURABLE_CUSTODY_INPUT_PROOF_LIMIT_MAX
+  ) {
+    throw new Error("browser conditional wallet receive input proof count is invalid");
+  }
+  if (input.ensureConditionalCounterReady === undefined) {
+    throw new Error("browser conditional wallet receive counter readiness is unavailable");
+  }
+  if (input.wallet.prepareConditionalSwap === undefined) {
+    throw new Error("browser conditional wallet receive is unavailable");
+  }
+  const keysetId = proofs[0]?.id;
+  if (
+    typeof keysetId !== "string" ||
+    proofs.some(({ id }) => id !== keysetId) ||
+    new Set(proofs.map(({ secret }) => secret)).size !== proofs.length
+  ) {
+    throw new Error("browser conditional wallet receive inputs are not one unique keyset group");
+  }
+  assertCanonicalNut02V2KeysetId(keysetId, "browser conditional wallet receive keyset id");
+  const keyset = await input.wallet.keyChain?.loadConditionalKeyset(keysetId);
+  input.context.requireCapturedProfile();
+  if (
+    keyset === undefined ||
+    keyset.id !== keysetId ||
+    keyset.unit !== "msat" ||
+    !keyset.isActive ||
+    !keyset.verify() ||
+    keyset.conditional === undefined ||
+    !Number.isSafeInteger(keyset.fee) ||
+    keyset.fee < 0 ||
+    !Number.isSafeInteger(keyset.conditional.registeredAt) ||
+    (keyset.conditional.registeredAt as number) < 0
+  ) {
+    throw new Error("browser conditional wallet receive keyset is invalid");
+  }
+  verifyProofsForReceive(
+    [...proofs],
+    (id) => {
+      if (id !== keyset.id) throw new Error("browser conditional wallet receive keyset is foreign");
+      return keyset;
+    },
+    { requireDleq: true },
+  );
+  const proofStates = await input.wallet.checkProofsStates(
+    proofs.map(({ id, secret }) => ({ id, secret })),
+  );
+  input.context.requireCapturedProfile();
+  requireExactUnspentConditionalInputs(proofs, proofStates);
+
+  const amount = Amount.sum(proofs.map(({ amount }) => amount));
+  const fees = Amount.from((BigInt(proofs.length) * BigInt(keyset.fee) + 999n) / 1000n);
+  if (fees.greaterThanOrEqual(amount)) {
+    throw new Error("browser conditional wallet receive fee consumes input value");
+  }
+  const amounts = splitAmount(amount.subtract(fees), { ...keyset.keys }).map((part) =>
+    part.toNumber(),
+  );
+  if (
+    amounts.length === 0 ||
+    amounts.length > DURABLE_CUSTODY_BLINDED_OUTPUT_LIMIT_MAX ||
+    amounts.some((part) => !Number.isSafeInteger(part) || part <= 0)
+  ) {
+    throw new Error("browser conditional wallet receive output plan is unsupported");
+  }
+  const appAuthority = conditionalReceiveKeysetAuthority(input.mintUrl, keyset);
+  await input.ensureConditionalCounterReady(appAuthority);
+  input.context.requireCapturedProfile();
+  const scope = browserWalletScope(input.context.seed);
+  const counterSource = new BrowserWalletCounterSource(
+    {
+      database: input.context.database ?? db,
+      scopeId: scope.scopeId,
+      isCurrentProfile: () => {
+        input.context.requireCapturedProfile();
+        return true;
+      },
+    },
+    { mintUrl: input.mintUrl, unit: "msat" },
+  );
+  const reserved = await reserveAndConstructDurableSeedDerivedOutputs({
+    seed: input.context.seed,
+    counterSource,
+    keyset: { id: keyset.id, keys: keyset.keys },
+    amounts,
+  });
+  input.context.requireCapturedProfile();
+  const preview = await input.wallet.prepareConditionalSwap({
+    keysetId: keyset.id,
+    inputs: [...proofs],
+    outputs: [{ label: "receive", kind: "custom", data: [...reserved.outputData] }],
+  });
+  input.context.requireCapturedProfile();
+  requireExactConditionalPreview(preview, proofs, keyset.id, reserved.outputData);
+  return serializeDurableWalletReceiveOperation({
+    operationId: input.operationId ?? `wallet-receive:${randomId()}`,
+    mintUrl: input.mintUrl,
+    unit: "msat",
+    asset: "conditional",
+    preview,
+    inputFeePpk: keyset.fee,
+    derivationRange: {
+      keysetId: reserved.plan.keysetId,
+      counterStart: reserved.plan.counterStart,
+      counterCount: reserved.plan.counterCount,
+    },
+  });
+}
+
+function requireExactUnspentConditionalInputs(
+  proofs: readonly Proof[],
+  states: readonly ProofState[],
+): void {
+  const expectedYs = proofs.map((proof) =>
+    deriveDurableWalletProofY(serializeDurableWalletProof(proof)),
+  );
+  if (states.length !== expectedYs.length) {
+    throw new Error("browser conditional wallet receive proof-state response is incomplete");
+  }
+  const observed = new Map(states.map((state) => [state.Y, state.state]));
+  if (observed.size !== states.length || expectedYs.some((Y) => observed.get(Y) !== "UNSPENT")) {
+    throw new Error("browser conditional wallet receive inputs are not exactly unspent");
+  }
+}
+
+function requireExactConditionalPreview(
+  preview: ConditionalSwapPreview,
+  inputs: readonly Proof[],
+  keysetId: string,
+  outputs: readonly import("@cashu/cashu-ts").OutputData[],
+): void {
+  const labels = Object.keys(preview.outputDataByLabel);
+  const receiveOutputs = preview.outputDataByLabel.receive;
+  if (
+    preview.keysetId !== keysetId ||
+    labels.length !== 1 ||
+    labels[0] !== "receive" ||
+    receiveOutputs === undefined ||
+    deriveDurableCustodyArtifactFingerprint(preview.inputs.map(serializeDurableWalletProof)) !==
+      deriveDurableCustodyArtifactFingerprint(inputs.map(serializeDurableWalletProof)) ||
+    deriveDurableCustodyArtifactFingerprint(receiveOutputs.map(serializeDurableCustodyOutput)) !==
+      deriveDurableCustodyArtifactFingerprint(outputs.map(serializeDurableCustodyOutput))
+  ) {
+    throw new Error("browser conditional wallet receive preview conflicts with its exact plan");
+  }
+}
+
+function conditionalReceiveKeysetAuthority(
+  mintUrl: string,
+  keyset: BrowserReceiveKeyset,
+): BrowserCustodyConditionalKeysetAuthority {
+  const conditional = keyset.conditional;
+  if (
+    conditional === undefined ||
+    conditional.registeredAt === undefined ||
+    !Number.isSafeInteger(conditional.registeredAt) ||
+    conditional.registeredAt < 0
+  ) {
+    throw new Error("browser conditional wallet receive keyset authority is incomplete");
+  }
+  return decodeBrowserCustodyConditionalKeysetAuthority({
+    schemaVersion: 1,
+    normalizedMint: mintUrl,
+    unit: keyset.unit,
+    keysetId: keyset.id,
+    denominationPublicKeys: { ...keyset.keys },
+    inputFeePpk: keyset.fee,
+    conditionId: conditional.conditionId,
+    outcomeCollection: conditional.outcomeCollection,
+    outcomeCollectionId: conditional.outcomeCollectionId,
+    registeredAtUnixSeconds: conditional.registeredAt,
+    finalExpiryUnixSeconds: keyset.expiry ?? null,
+    curve: "secp256k1",
   });
 }
 
@@ -451,9 +686,20 @@ function createReceiveBinding(
   wallet: BrowserDurableWalletReceiveWallet,
 ) {
   const custodyOperation = toDurableCustodyProofOperationInput(operation);
+  const applicationAuthority =
+    operation.asset === "conditional"
+      ? conditionalReceiveKeysetAuthority(
+          operation.mintUrl,
+          wallet.getKeyset(operation.preview.keysetId),
+        )
+      : null;
+  if (operation.asset === "conditional") {
+    requireConditionalReceiveFee(operation, applicationAuthority!);
+  }
   const authority = prepareDurableCustodyMintOperationAuthority({
     operation: custodyOperation,
-    keysets: receiveKeysets(custodyOperation, wallet),
+    keysets: receiveKeysets(custodyOperation, wallet, operation.asset),
+    applicationAuthority,
   });
   return {
     record: createDurableCustodyProofOperation({
@@ -476,6 +722,109 @@ function createReceiveBinding(
       privateMaterial: authority.exactAuthority,
     },
   };
+}
+
+function requireConditionalReceiveFee(
+  operation: DurableWalletReceiveOperation,
+  authority: BrowserCustodyConditionalKeysetAuthority,
+): void {
+  if (operation.asset !== "conditional") {
+    throw new Error("browser wallet receive is not conditional");
+  }
+  const fee =
+    (BigInt(operation.preview.inputs.length) * BigInt(authority.inputFeePpk) + 999n) / 1000n;
+  if (operation.unit !== "msat" || operation.preview.fees !== fee.toString()) {
+    throw new Error("browser conditional wallet receive fee conflicts with keyset authority");
+  }
+}
+
+function validateReceiveOperationAuthority(
+  operation: DurableWalletReceiveOperation,
+  authority: ReturnType<typeof assertDurableCustodyMintOperationAuthority>,
+  wallet?: BrowserDurableWalletReceiveWallet,
+): BrowserCustodyConditionalKeysetAuthority | undefined {
+  if (operation.asset === "regular") {
+    if (authority.applicationAuthority !== null) {
+      throw new Error("browser regular wallet receive has conditional authority");
+    }
+    return undefined;
+  }
+  const appAuthority = decodeBrowserCustodyConditionalKeysetAuthority(
+    authority.applicationAuthority,
+  );
+  const keyset = authority.keysets[0];
+  if (
+    authority.keysets.length !== 1 ||
+    keyset === undefined ||
+    keyset.identity.kind !== "conditional" ||
+    appAuthority.normalizedMint !== operation.mintUrl ||
+    appAuthority.unit !== operation.unit ||
+    appAuthority.keysetId !== operation.preview.keysetId ||
+    keyset.canonicalMintUrl !== appAuthority.normalizedMint ||
+    keyset.unit !== appAuthority.unit ||
+    keyset.id !== appAuthority.keysetId ||
+    keyset.inputFeePpk !== appAuthority.inputFeePpk ||
+    keyset.finalExpiry !== appAuthority.finalExpiryUnixSeconds ||
+    keyset.identity.conditionId !== appAuthority.conditionId ||
+    keyset.identity.outcomeCollection !== appAuthority.outcomeCollection ||
+    keyset.identity.outcomeCollectionId !== appAuthority.outcomeCollectionId ||
+    !samePublicKeys(keyset.keys, appAuthority.denominationPublicKeys)
+  ) {
+    throw new Error("browser conditional wallet receive keyset authority conflicts");
+  }
+  requireConditionalReceiveFee(operation, appAuthority);
+  if (wallet !== undefined) registerPersistedConditionalKeyset(wallet, appAuthority);
+  return appAuthority;
+}
+
+function samePublicKeys(
+  left: Readonly<Record<string, string>>,
+  right: Readonly<Record<string, string>>,
+): boolean {
+  const leftKeys = Object.keys(left).sort();
+  const rightKeys = Object.keys(right).sort();
+  return (
+    leftKeys.length === rightKeys.length &&
+    leftKeys.every((key, index) => key === rightKeys[index] && left[key] === right[key])
+  );
+}
+
+function registerPersistedConditionalKeyset(
+  wallet: BrowserDurableWalletReceiveWallet,
+  authority: BrowserCustodyConditionalKeysetAuthority,
+): void {
+  const register = wallet.keyChain?.registerConditionalKeyset;
+  if (register === undefined) {
+    throw new Error("browser conditional wallet receive keyset registry is unavailable");
+  }
+  const conditional = {
+    conditionId: authority.conditionId,
+    outcomeCollection: authority.outcomeCollection,
+    outcomeCollectionId: authority.outcomeCollectionId,
+    registeredAt: authority.registeredAtUnixSeconds,
+  };
+  const meta: BrowserReceiveConditionalKeysetMeta = {
+    id: authority.keysetId,
+    unit: authority.unit,
+    active: true,
+    input_fee_ppk: authority.inputFeePpk,
+    ...(authority.finalExpiryUnixSeconds === null
+      ? {}
+      : { final_expiry: authority.finalExpiryUnixSeconds }),
+    conditional,
+  };
+  const registered = register.call(wallet.keyChain, meta, {
+    ...meta,
+    keys: { ...authority.denominationPublicKeys },
+  });
+  if (
+    registered.id !== authority.keysetId ||
+    registered.unit !== authority.unit ||
+    registered.fee !== authority.inputFeePpk ||
+    !registered.verify()
+  ) {
+    throw new Error("browser conditional wallet receive keyset registration failed");
+  }
 }
 
 async function bindReceiveOperation(
@@ -539,7 +888,11 @@ async function loadReceiveOperation(runtime: BrowserReceiveRuntime, requestedOpe
   );
   runtime.context.requireCapturedProfile();
   if (snapshot === null) return null;
-  const operation = receiveOperationFromSnapshot(snapshot.record, snapshot.artifacts);
+  const operation = receiveOperationFromSnapshot(
+    snapshot.record,
+    snapshot.artifacts,
+    runtime.wallet,
+  );
   if (operation.operationId !== requestedOperationId) {
     throw new Error("browser wallet receive operation identity is foreign");
   }
@@ -691,7 +1044,16 @@ async function applyStagedReceive(
     exactAuthority: exactAuthority(snapshot.record, snapshot.artifacts),
     exactResult: exactResult(snapshot.record, snapshot.artifacts),
   });
-  const successors = createReceiveSuccessors(input, verified.proofs);
+  const mintAuthority = assertDurableCustodyMintOperationAuthority(
+    snapshot.record,
+    exactAuthority(snapshot.record, snapshot.artifacts),
+  );
+  const conditionalKeyset = validateReceiveOperationAuthority(
+    input.operation,
+    mintAuthority,
+    input.wallet,
+  );
+  const successors = createReceiveSuccessors(input, verified.proofs, conditionalKeyset);
   const authorization = ownerAt(input.owner, (input.context.now ?? Date.now)());
   await input.adapter.transact(
     selection(input.scope, authorization, snapshot.record),
@@ -729,20 +1091,32 @@ function createReceiveSuccessors(
     operation: DurableWalletReceiveOperation;
   },
   proofs: ReturnType<typeof readDurableCustodyVerifiedMintResult>["proofs"],
+  conditionalKeyset?: BrowserCustodyConditionalKeysetAuthority,
 ) {
   const observedAtMs = (input.context.now ?? Date.now)();
   const locators = receiveProofLocators(input.operation, proofs, input.context.seed);
+  if (input.operation.asset === "conditional" && conditionalKeyset === undefined) {
+    throw new Error("browser conditional wallet receive keyset authority is missing");
+  }
   return proofs.map(({ proof }) => ({
     proof: createBrowserCustodyProofRow({
       scopeId: input.scope.scopeId,
       normalizedMint: input.operation.mintUrl,
       unit: input.operation.unit as "sat" | "msat",
       proof,
-      asset: { kind: "regular" },
+      asset:
+        input.operation.asset === "conditional"
+          ? {
+              kind: "conditional",
+              conditionId: conditionalKeyset!.conditionId,
+              outcomeCollection: conditionalKeyset!.outcomeCollection,
+            }
+          : { kind: "regular" },
       receivedAtMs: observedAtMs,
     }),
     expectedRevision: null,
     derivationLocator: requiredReceiveProofLocator(locators, proof.secret),
+    ...(conditionalKeyset === undefined ? {} : { conditionalKeyset }),
   }));
 }
 
@@ -790,6 +1164,7 @@ function selection(
 function receiveOperationFromSnapshot(
   record: DurableCustodyRecord,
   artifacts: readonly { reference: { artifactId: string }; artifact: { artifact: unknown } }[],
+  wallet?: BrowserDurableWalletReceiveWallet,
 ): DurableWalletReceiveOperation {
   const authority = assertDurableCustodyMintOperationAuthority(
     record,
@@ -803,6 +1178,7 @@ function receiveOperationFromSnapshot(
   ) {
     throw new Error("browser wallet receive authority is foreign");
   }
+  validateReceiveOperationAuthority(operation, authority, wallet);
   return operation;
 }
 
@@ -837,6 +1213,7 @@ function requiredArtifact(
 function receiveKeysets(
   operation: DurableCustodyProofOperationInput,
   wallet: BrowserDurableWalletReceiveWallet,
+  asset: DurableWalletReceiveOperation["asset"],
 ) {
   const ids = new Set([
     ...operation.inputs.map(({ id }) => id),
@@ -847,13 +1224,12 @@ function receiveKeysets(
   return [...ids].map((id) => {
     assertCanonicalNut02V2KeysetId(id, "browser wallet receive keyset id");
     const keyset = wallet.getKeyset(id);
-    if (
-      keyset.id !== id ||
-      keyset.unit !== operation.metadata?.unit ||
-      !keyset.verify() ||
-      keyset.conditional
-    ) {
+    if (keyset.id !== id || keyset.unit !== operation.metadata?.unit || !keyset.verify()) {
       throw new Error("browser wallet receive keyset is invalid");
+    }
+    const conditional = asset === "conditional";
+    if (conditional !== (keyset.conditional !== undefined)) {
+      throw new Error("browser wallet receive keyset asset is foreign");
     }
     return {
       canonicalMintUrl: operation.mintUrl,
@@ -862,7 +1238,14 @@ function receiveKeysets(
       keys: Object.fromEntries(Object.entries(keyset.keys)),
       inputFeePpk: keyset.fee,
       finalExpiry: keyset.expiry ?? null,
-      identity: { kind: "regular" as const },
+      identity: conditional
+        ? {
+            kind: "conditional" as const,
+            conditionId: keyset.conditional!.conditionId,
+            outcomeCollection: keyset.conditional!.outcomeCollection,
+            outcomeCollectionId: keyset.conditional!.outcomeCollectionId,
+          }
+        : { kind: "regular" as const },
     };
   });
 }

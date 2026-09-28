@@ -83,7 +83,6 @@ export function MarketDetail({
   limitPrice,
   tradeCapacityPreview,
   automaticLimitPrice,
-  onTradeCapacityRetry,
   onTimeframeChange,
   onTradeSelect,
   onTradeClear,
@@ -187,7 +186,6 @@ export function MarketDetail({
       limitPrice={limitPrice}
       tradeCapacityPreview={tradeCapacityPreview}
       automaticLimitPrice={automaticLimitPrice}
-      onTradeCapacityRetry={onTradeCapacityRetry}
       onTradeSelect={onTradeSelect}
       onTradeClear={onTradeClear}
       onAmountChange={onAmountChange}

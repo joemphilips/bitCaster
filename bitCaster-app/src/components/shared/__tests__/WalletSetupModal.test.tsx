@@ -16,6 +16,31 @@ function renderWalletSetupModal() {
 }
 
 describe("WalletSetupModal", () => {
+  it("shows a warning and only the replacement seed action in replace mode", async () => {
+    const onImportSeed = vi.fn();
+    render(
+      <WalletSetupModal
+        mode="replace"
+        onClose={vi.fn()}
+        onCreateNew={vi.fn()}
+        onImportSeed={onImportSeed}
+      />,
+    );
+
+    expect(screen.getByRole("dialog", { name: "Replace This Wallet" })).toBeInTheDocument();
+    expect(screen.getByText(/does not change your nostr signer/i)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /create new wallet/i })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /import existing wallet/i }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Replace Wallet" })).toBeDisabled();
+
+    await userEvent.type(screen.getByLabelText(/enter your seedphrase/i), validSeedPhrase);
+    await userEvent.click(screen.getByRole("button", { name: "Replace Wallet" }));
+
+    expect(onImportSeed).toHaveBeenCalledWith(validSeedPhrase.split(" "));
+  });
+
   it("keeps an empty or incomplete phrase from being imported", async () => {
     renderWalletSetupModal();
 

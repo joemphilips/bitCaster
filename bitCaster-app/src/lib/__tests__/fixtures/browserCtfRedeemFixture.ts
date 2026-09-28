@@ -95,6 +95,7 @@ export async function fixture(
   input: {
     readonly amounts?: readonly number[];
     readonly counterSource?: "memory" | "browser";
+    readonly databaseName?: string;
     readonly seed?: Uint8Array;
   } = {},
 ): Promise<BrowserCtfRedeemFixture> {
@@ -102,9 +103,10 @@ export async function fixture(
   const seed = input.seed ?? SEED;
   const scope = browserWalletScope(seed);
   const database = new BitcasterDB(
-    input.counterSource === "browser"
-      ? browserWalletDatabaseName(scope.scopeId)
-      : `ctf-redeem-bind-${crypto.randomUUID()}`,
+    input.databaseName ??
+      (input.counterSource === "browser"
+        ? browserWalletDatabaseName(scope.scopeId)
+        : `ctf-redeem-bind-${crypto.randomUUID()}`),
   );
   const proofs = amounts.map((amount, index) =>
     createBrowserCustodyProofRow({

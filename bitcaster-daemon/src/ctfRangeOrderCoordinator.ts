@@ -136,7 +136,7 @@ import {
   prepareCtfConsolidationProofOperationWithExactReservation,
   prepareProofOperationWithExactReservation,
   prepareCtfRangeRefundProofOperationFromDatabase,
-  readAvailableWalletProofPage,
+  readAvailableCanonicalWalletProofPageFromDatabase,
   recordDiscoveredOrder,
   recordOrderStatus,
   type CashuProofRecord,
@@ -254,6 +254,7 @@ interface PreparedMintAuthority {
    */
   readonly loadedSourceLimits: SourceSelectionLimits | null
   readonly consolidateProofs: boolean
+  readonly storage: DaemonStateSqliteSession
   readonly mutation: () => FencedStateMutation
 }
 
@@ -454,6 +455,7 @@ export class DaemonCtfRangeOrderCoordinator {
       walletSeedHex,
       this.#createMint(preparationInput.mintUrl),
       preparationRecord.consolidateProofs,
+      this.#storage,
       this.#mutation.bind(this),
     )
     const sourceResult = await this.#prepareWalletSource(authority, walletSeedHex)
@@ -644,6 +646,7 @@ export class DaemonCtfRangeOrderCoordinator {
         request.walletSeedHex,
         this.#createMint(persisted.mintUrl),
         request.consolidateProofs,
+        this.#storage,
         this.#mutation.bind(this),
       )
     }
@@ -682,6 +685,7 @@ export class DaemonCtfRangeOrderCoordinator {
       metadata,
       mint,
       request.consolidateProofs,
+      this.#storage,
       this.#mutation.bind(this),
     )
   }
@@ -1400,6 +1404,7 @@ function preparedMintAuthority(
   metadata: LoadedMintMetadata,
   mint: CtfRangeMintLike,
   consolidateProofs: boolean,
+  storage: DaemonStateSqliteSession,
   mutation: () => FencedStateMutation,
 ): PreparedMintAuthority {
   return {
@@ -1418,6 +1423,7 @@ function preparedMintAuthority(
       maxOutputs: metadata.maxOutputs,
     },
     consolidateProofs,
+    storage,
     mutation,
   }
 }
@@ -1478,6 +1484,7 @@ function persistedMintAuthority(
   walletSeedHex: string,
   mint: CtfRangeMintLike,
   consolidateProofs: boolean,
+  storage: DaemonStateSqliteSession,
   mutation: () => FencedStateMutation,
 ): PreparedMintAuthority {
   const preparation = prepareCtfRangeOrderAuthorization({
@@ -1494,6 +1501,7 @@ function persistedMintAuthority(
     mint,
     loadedSourceLimits: null,
     consolidateProofs,
+    storage,
     mutation,
   }
 }
@@ -1884,7 +1892,7 @@ async function availableSourceProofs(
 ): Promise<{ readonly proofs: Proof[]; readonly hasMore: boolean }> {
   const preparation = authority.preparationInput
   const keyset = group === 'offered' ? preparation.offerKeyset : preparation.receiveKeyset
-  const page = await readAvailableWalletProofPage({
+  const page = await readCanonicalAvailableWalletProofPage(authority, {
     mintUrl: authority.preparation.mintUrl,
     keysetId: keyset.id,
     asset: assetForKeyset(keyset),
@@ -1896,14 +1904,27 @@ async function availableSourceProofs(
   }
 }
 
+async function readCanonicalAvailableWalletProofPage(
+  authority: PreparedMintAuthority,
+  input: Parameters<typeof readAvailableCanonicalWalletProofPageFromDatabase>[1],
+) {
+  const mutation = authority.mutation()
+  return withDurableCustodyFencedRead(
+    authority.storage,
+    mutation.fence,
+    mutation.observedAtMs,
+    (database) => readAvailableCanonicalWalletProofPageFromDatabase(database, input),
+  )
+}
+
 async function planSourceConsolidation(
   authority: PreparedMintAuthority,
   maxRounds: number,
 ): Promise<BoundedProofConsolidationPlan> {
   const counts = new Map<number, number>()
-  let after: Parameters<typeof readAvailableWalletProofPage>[0]['after']
+  let after: Parameters<typeof readAvailableCanonicalWalletProofPageFromDatabase>[1]['after']
   do {
-    const page = await readAvailableWalletProofPage({
+    const page = await readCanonicalAvailableWalletProofPage(authority, {
       mintUrl: authority.preparation.mintUrl,
       keysetId: authority.preparation.offerKeysetId,
       asset: authority.offerAsset,

@@ -1430,7 +1430,7 @@ namespace BitCaster.MatchingEngine.Contracts
         public int? WorstPrice { get; }
 
         /// <summary>
-        /// Latest confirmed primitive-route displayed trade-price numerator. Null when the market has no confirmed trade or no authoritative snapshot. This is a display price, not a selected-token execution price.
+        /// Latest confirmed primitive-route displayed trade-price numerator. For two outcomes, use the newest confirmed trade from either primitive route in the captured preview. Map the opposite route as priceDenominator minus its price. For more than two outcomes, use only the requested primitive route. Null when that price or an authoritative snapshot is unavailable. This is a display price, not a selected-token execution price.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("currentLatestTradePrice")]
@@ -3079,13 +3079,21 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class MarketPriceHistoryPoint
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public MarketPriceHistoryPoint(int @price, MarketPriceHistoryPointSource @source, System.DateTimeOffset @timestamp, long @volumeSubunits)
+        public MarketPriceHistoryPoint(string @eventOrder, int @price, MarketPriceHistoryPointSource @source, System.DateTimeOffset @timestamp, long @volumeSubunits)
         {
+            this.EventOrder = @eventOrder;
             this.Timestamp = @timestamp;
             this.Price = @price;
             this.VolumeSubunits = @volumeSubunits;
             this.Source = @source;
         }
+
+        /// <summary>
+        /// Opaque canonical ordering identity for this confirmed trade. Compare values with ordinal string ordering. The greater value identifies the newer event, including when timestamps are equal. Use this value when merging history with confirmed live trades.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("eventOrder")]
+        public string EventOrder { get; }
 
         [System.Text.Json.Serialization.JsonPropertyName("timestamp")]
         public System.DateTimeOffset Timestamp { get; }

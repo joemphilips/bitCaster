@@ -5,16 +5,20 @@ import { secp256k1 } from "@noble/curves/secp256k1.js";
 import {
   Amount,
   CheckStateEnum,
+  Keyset,
   OutputData,
   createBlindSignature,
   createDLEQProof,
+  deriveConditionalKeysetId,
   deriveKeysetId,
   getEncodedTokenV4,
   hashToCurve,
   pointFromHex,
   type Proof,
   type SwapPreview,
+  type ConditionalSwapPreview,
 } from "@cashu/cashu-ts";
+import { deriveRootCtfOutcomeCollectionId } from "@bitcaster/client-sdk/durableCtfRangeOperation";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   abortPreparedBrowserDurableWalletReceive,
@@ -38,6 +42,7 @@ import {
   deriveDurableWalletProofY,
   hydrateDurableWalletProof,
   serializeDurableWalletProof,
+  serializeDurableWalletReceiveOperation,
   serializeDurableWalletSendOperation,
 } from "@bitcaster/client-sdk/durableWalletOperation";
 import { deriveDurableCustodyArtifactFingerprint } from "@bitcaster/client-sdk/durableCustody";
@@ -48,6 +53,7 @@ import {
   createBrowserCustodyProofRow,
 } from "../../stores/durable-custody-db";
 import { browserWalletScope } from "../browserCtfRangeOrderSource";
+import { browserWalletDatabaseName } from "../browserWalletProfile";
 
 const requireNewWritePermission = vi.hoisted(() => vi.fn(async () => undefined));
 
@@ -59,6 +65,32 @@ const MINT = "https://mint.example";
 const PRIVATE_KEY = Uint8Array.from([...new Uint8Array(31), 7]);
 const KEYS = { "1": bytesToHex(secp256k1.getPublicKey(PRIVATE_KEY, true)) };
 const KEYSET_ID = deriveKeysetId(KEYS, { unit: "msat", versionByte: 1 });
+const CONDITION_ID = "ab".repeat(32);
+const OUTCOME_COLLECTION = "YES";
+const OUTCOME_COLLECTION_ID = deriveRootCtfOutcomeCollectionId({
+  conditionId: CONDITION_ID,
+  outcomeCollection: OUTCOME_COLLECTION,
+});
+const CONDITIONAL_KEYS = {
+  "1": KEYS["1"]!,
+  "2": KEYS["1"]!,
+  "4": KEYS["1"]!,
+  "8": KEYS["1"]!,
+  "10": KEYS["1"]!,
+};
+const CONDITIONAL_KEYSET_ID = deriveConditionalKeysetId({
+  keys: CONDITIONAL_KEYS,
+  unit: "msat",
+  input_fee_ppk: 100,
+  conditionId: CONDITION_ID,
+  outcomeCollectionId: OUTCOME_COLLECTION_ID,
+});
+const CONDITIONAL_METADATA = {
+  conditionId: CONDITION_ID,
+  outcomeCollection: OUTCOME_COLLECTION,
+  outcomeCollectionId: OUTCOME_COLLECTION_ID,
+  registeredAt: 1,
+};
 const seed = new Uint8Array(64).fill(1);
 const databases: BitcasterDB[] = [];
 
@@ -72,6 +104,239 @@ afterEach(async () => {
 });
 
 describe("browser durable ordinary receive", () => {
+  it("rejects a V3 conditional input before keyset loading or funds mutation", async () => {
+    const database = createConditionalDatabase();
+    const proof = { ...conditionalInputProof(), id: `02${"aa".repeat(32)}` };
+    const receiveWallet = conditionalWallet(proof);
+    const ensureCounterReady = vi.fn(async () => undefined);
+
+    await expect(
+      receiveBrowserDurableWalletToken({
+        token: "cashuB-conditional-token",
+        mintUrl: MINT,
+        unit: "msat",
+        asset: "conditional",
+        conditionalInputProofs: [proof],
+        ensureConditionalCounterReady: ensureCounterReady,
+        wallet: receiveWallet,
+        context: receiveContext(database),
+      }),
+    ).rejects.toThrow(/canonical NUT-02 V2 keyset id/);
+
+    expect(receiveWallet.keyChain!.loadConditionalKeyset).not.toHaveBeenCalled();
+    expect(receiveWallet.prepareConditionalSwap).not.toHaveBeenCalled();
+    expect(receiveWallet.completeConditionalSwap).not.toHaveBeenCalled();
+    expect(receiveWallet.checkProofsStates).not.toHaveBeenCalled();
+    expect(ensureCounterReady).not.toHaveBeenCalled();
+    expect(await database.custodyOperations.count()).toBe(0);
+    expect(await database.custodyProofs.count()).toBe(0);
+    expect(await database.walletCounterCursors.count()).toBe(0);
+  });
+
+  it("receives conditional proofs through one durable fee-conserving operation", async () => {
+    const database = createConditionalDatabase();
+    const inputProof = conditionalInputProof();
+    const receiveWallet = conditionalWallet(inputProof);
+    const context = receiveContext(database);
+    await markConditionalCounterReady(database);
+    const readiness = vi.fn(async () => {
+      expect(await database.walletCounterCursors.count()).toBe(0);
+    });
+
+    const received = await receiveBrowserDurableWalletToken({
+      token: "cashuB-conditional-token",
+      mintUrl: MINT,
+      unit: "msat",
+      asset: "conditional",
+      conditionalInputProofs: [inputProof],
+      ensureConditionalCounterReady: readiness,
+      wallet: receiveWallet,
+      context,
+    });
+
+    expect(readiness).toHaveBeenCalledOnce();
+    expect(receiveWallet.prepareConditionalSwap).toHaveBeenCalledOnce();
+    expect(receiveWallet.completeConditionalSwap).toHaveBeenCalledOnce();
+    expect(receiveWallet.completeSwap).not.toHaveBeenCalled();
+    expect(received).toHaveLength(2);
+    const rows = await database.custodyProofs.toArray();
+    expect(rows).toHaveLength(2);
+    expect(rows.every((row) => row.assetKind === "conditional")).toBe(true);
+    expect(rows.every((row) => row.conditionId === CONDITION_ID)).toBe(true);
+    expect(rows.every((row) => row.outcomeCollection === OUTCOME_COLLECTION)).toBe(true);
+    expect(await database.custodyConditionalKeysets.count()).toBe(1);
+    const operations = await database.custodyOperations.toArray();
+    expect(operations).toHaveLength(1);
+    const receiveOperation = operations[0]!;
+    expect(receiveOperation.record.operation.semanticKind).toBe("generic-receive");
+    expect(receiveOperation.operationId).toBe(receiveOperation.record.operation.operationId);
+
+    const desiredRows = await database.encryptedWalletBackupV2DesiredAssets.toArray();
+    expect(desiredRows).toHaveLength(1);
+    expect(desiredRows[0]).toMatchObject({
+      mintUrl: MINT,
+      unit: "msat",
+      assetIdentity: `ctf:${CONDITION_ID}:${OUTCOME_COLLECTION_ID}`,
+      activeProofCount: 2,
+      desiredAction: "replace",
+      syncState: "pending",
+    });
+
+    const receivedProofIds = new Set(rows.map((row) => row.proofId));
+    const authorities = await database.custodyProofBackupAuthorities.toArray();
+    expect(authorities).toHaveLength(2);
+    expect(receivedProofIds.size).toBe(2);
+    for (const authority of authorities) {
+      if (!("backupState" in authority)) {
+        throw new Error("received conditional proof authority is not a proof row");
+      }
+      expect(receivedProofIds.has(authority.proofId)).toBe(true);
+      expect(authority.backupState).toBe("local-only");
+      expect(authority.admissionOperationId).toBe(receiveOperation.operationId);
+      expect(authority.derivationLocator).toMatchObject({
+        kind: "nut13",
+        keysetId: CONDITIONAL_KEYSET_ID,
+      });
+    }
+
+    expect(
+      await database.walletCounterCursors.get([
+        browserWalletScope(seed).scopeId,
+        CONDITIONAL_KEYSET_ID,
+      ]),
+    ).toMatchObject({ next: 2 });
+  });
+
+  it("rejects a self-consistent conditional fee plan that conflicts with the verified keyset fee", async () => {
+    const database = createConditionalDatabase();
+    const inputProof = conditionalInputProof();
+    const receiveWallet = conditionalWallet(inputProof);
+    const output = OutputData.createSingleData(8, CONDITIONAL_KEYSET_ID, "wrong-fee-output", 31n);
+    const preparedOperation = serializeDurableWalletReceiveOperation({
+      operationId: "wallet-receive:wrong-conditional-fee",
+      mintUrl: MINT,
+      unit: "msat",
+      asset: "conditional",
+      inputFeePpk: 2_000,
+      preview: {
+        keysetId: CONDITIONAL_KEYSET_ID,
+        inputs: [inputProof],
+        outputDataByLabel: { receive: [output] },
+      },
+      derivationRange: {
+        keysetId: CONDITIONAL_KEYSET_ID,
+        counterStart: 0,
+        counterCount: 1,
+      },
+    });
+
+    await expect(
+      receiveBrowserDurableWalletToken({
+        token: "cashuB-conditional-token",
+        mintUrl: MINT,
+        unit: "msat",
+        asset: "conditional",
+        preparedOperation,
+        wallet: receiveWallet,
+        context: receiveContext(database),
+      }),
+    ).rejects.toThrow(/fee conflicts with keyset authority/);
+
+    expect(receiveWallet.completeConditionalSwap).not.toHaveBeenCalled();
+    expect(await database.custodyOperations.count()).toBe(0);
+    expect(await database.custodyProofs.count()).toBe(0);
+    expect(await database.walletCounterCursors.count()).toBe(0);
+  });
+
+  it.each([
+    ["background", "empty"],
+    ["background", "partial"],
+    ["direct", "empty"],
+    ["direct", "partial"],
+  ] as const)(
+    "keeps conditional %s recovery with %s restore unresolved without outgoing abort authority",
+    async (entryPoint, restoreShape) => {
+      const database = createConditionalDatabase();
+      const inputProof = conditionalInputProof();
+      const first = conditionalWallet(inputProof);
+      vi.mocked(first.completeConditionalSwap!).mockRejectedValueOnce(
+        new Error("simulated conditional receive interruption"),
+      );
+      const context = receiveContext(database);
+      await markConditionalCounterReady(database);
+      const preparedOperation = await prepareBrowserDurableWalletReceiveOperation(
+        {
+          token: "cashuB-conditional-token",
+          mintUrl: MINT,
+          unit: "msat",
+          asset: "conditional",
+          conditionalInputProofs: [inputProof],
+          ensureConditionalCounterReady: async () => undefined,
+          wallet: first,
+          context,
+        },
+        () => "conditional-recovery-entry-point",
+      );
+      await expect(
+        receiveBrowserDurableWalletToken({
+          token: "cashuB-conditional-token",
+          mintUrl: MINT,
+          unit: "msat",
+          asset: "conditional",
+          conditionalInputProofs: [inputProof],
+          preparedOperation,
+          ensureConditionalCounterReady: async () => undefined,
+          wallet: first,
+          context,
+        }),
+      ).rejects.toThrow("simulated conditional receive interruption");
+      const operation = (await database.custodyOperations.toArray())[0];
+      if (!operation) throw new Error("conditional receive operation was not persisted");
+      expect(operation.record.operation.result.state).toBe("none");
+      const restart = conditionalWallet(inputProof);
+      vi.mocked(restart.checkProofsStates).mockResolvedValue(
+        statesForProofs([inputProof], CheckStateEnum.SPENT) as never,
+      );
+      if (restoreShape === "empty") {
+        vi.mocked(restart.mint.restore).mockResolvedValue({ outputs: [], signatures: [] });
+      } else {
+        vi.mocked(restart.mint.restore).mockImplementation(async ({ outputs }) => ({
+          outputs: [outputs[0]!],
+          signatures: [{ substituted: "partial" }],
+        }));
+      }
+
+      if (entryPoint === "background") {
+        const recovered = await recoverBrowserDurableWalletReceives({
+          context,
+          walletForMint: async () => restart,
+        });
+        expect(recovered).toMatchObject({ pending: 1, repaired: [] });
+      } else {
+        await expect(
+          receiveBrowserDurableWalletToken({
+            token: "cashuB-conditional-token",
+            mintUrl: MINT,
+            unit: "msat",
+            preparedOperation,
+            skipBind: true,
+            recoveryMode: "recover",
+            wallet: restart,
+            context,
+          }),
+        ).rejects.toThrow(
+          restoreShape === "empty"
+            ? "wallet receive inputs were spent elsewhere"
+            : "wallet receive did not reach a terminal state",
+        );
+      }
+      expect(restart.completeConditionalSwap).not.toHaveBeenCalled();
+      expect(await database.custodyOperations.count()).toBe(1);
+      expect(await database.custodyProofs.count()).toBe(0);
+      expect(await database.proofs.count()).toBe(0);
+    },
+  );
+
   it("rejects sat before mint, custody, or counter writes", async () => {
     const database = createDatabase();
     const preview = receivePreview();
@@ -816,6 +1081,12 @@ function createDatabase(): BitcasterDB {
   return database;
 }
 
+function createConditionalDatabase(): BitcasterDB {
+  const database = new BitcasterDB(browserWalletDatabaseName(browserWalletScope(seed).scopeId));
+  databases.push(database);
+  return database;
+}
+
 function receiveContext(
   database: BitcasterDB,
   injectFault?: "before-commit" | "after-commit",
@@ -837,6 +1108,75 @@ function receiveContext(
     requireCapturedProfile: () => undefined,
     ...(injectFault === undefined ? {} : { injectFault }),
   };
+}
+
+function conditionalInputProof(): Proof {
+  return proofForOutput(
+    OutputData.createSingleData(10, CONDITIONAL_KEYSET_ID, "conditional-import-input", 27n),
+  );
+}
+
+function conditionalWallet(inputProof: Proof): BrowserDurableWalletReceiveWallet {
+  const conditionalKeyset = Keyset.fromMintApi(
+    {
+      id: CONDITIONAL_KEYSET_ID,
+      unit: "msat",
+      active: true,
+      input_fee_ppk: 100,
+      conditional: CONDITIONAL_METADATA,
+    },
+    {
+      id: CONDITIONAL_KEYSET_ID,
+      unit: "msat",
+      active: true,
+      input_fee_ppk: 100,
+      keys: CONDITIONAL_KEYS,
+      conditional: CONDITIONAL_METADATA,
+    },
+  );
+  const regularPreview = receivePreview();
+  const regularWallet = wallet(regularPreview, proofForOutput(regularPreview.keepOutputs![0]!));
+  return {
+    ...regularWallet,
+    prepareConditionalSwap: vi.fn(
+      async ({ keysetId, inputs, outputs }: import("@cashu/cashu-ts").ConditionalSwapOptions) => ({
+        keysetId: keysetId ?? inputs[0]!.id,
+        inputs: inputs as Proof[],
+        outputDataByLabel: Object.fromEntries(
+          outputs.map((group) => [group.label, group.kind === "custom" ? [...group.data] : []]),
+        ),
+      }),
+    ),
+    completeConditionalSwap: vi.fn(async (preview: ConditionalSwapPreview) => ({
+      receive: (preview.outputDataByLabel.receive ?? []).map(proofForOutput),
+    })),
+    checkProofsStates: vi.fn(
+      async () => statesForProofs([inputProof], CheckStateEnum.UNSPENT) as never,
+    ),
+    keyChain: {
+      loadConditionalKeyset: vi.fn(async () => conditionalKeyset),
+      registerConditionalKeyset: vi.fn(() => conditionalKeyset),
+    },
+    getKeyset: vi.fn((keysetId?: string) => {
+      if (keysetId !== undefined && keysetId !== CONDITIONAL_KEYSET_ID) {
+        throw new Error("unexpected conditional receive keyset");
+      }
+      return conditionalKeyset;
+    }),
+    mint: {
+      restore: vi.fn(async () => ({ outputs: [], signatures: [] })),
+    },
+  };
+}
+
+async function markConditionalCounterReady(database: BitcasterDB): Promise<void> {
+  await database.walletCounterAssociations.put({
+    scopeId: browserWalletScope(seed).scopeId,
+    normalizedMint: MINT,
+    unit: "msat",
+    keysetId: CONDITIONAL_KEYSET_ID,
+    recoveryComplete: true,
+  });
 }
 
 function admittedBearerTransfer(scopeId: string): DurableOutgoingCashuTransfer {
@@ -962,6 +1302,10 @@ function wallet(
   counterStart = 0,
 ): BrowserDurableWalletReceiveWallet {
   const restoreSignature = signatureForOutput(preview.keepOutputs![0]!);
+  const regularKeyset = Keyset.fromMintApi(
+    { id: KEYSET_ID, unit: "msat", active: true },
+    { id: KEYSET_ID, unit: "msat", active: true, keys: KEYS },
+  );
   return {
     prepareSwapToReceive: vi.fn(async (_token, options) => {
       options?.onCountersReserved?.({
@@ -982,13 +1326,7 @@ function wallet(
         }),
       ),
     },
-    getKeyset: vi.fn(() => ({
-      id: KEYSET_ID,
-      unit: "msat",
-      keys: KEYS,
-      fee: 0,
-      verify: () => true,
-    })),
+    getKeyset: vi.fn(() => regularKeyset),
   };
 }
 
@@ -996,11 +1334,11 @@ function signatureForOutput(output: OutputData) {
   const signature = createBlindSignature(
     pointFromHex(output.blindedMessage.B_),
     PRIVATE_KEY,
-    KEYSET_ID,
+    output.blindedMessage.id,
   );
   const dleq = createDLEQProof(pointFromHex(output.blindedMessage.B_), PRIVATE_KEY);
   return {
-    id: KEYSET_ID,
+    id: output.blindedMessage.id,
     amount: output.blindedMessage.amount,
     C_: signature.C_.toHex(true),
     dleq: { e: bytesToHex(dleq.e), s: bytesToHex(dleq.s) },
@@ -1008,11 +1346,18 @@ function signatureForOutput(output: OutputData) {
 }
 
 function proofForOutput(output: OutputData): Proof {
-  return output.toProof(signatureForOutput(output), { id: KEYSET_ID, keys: KEYS });
+  return output.toProof(signatureForOutput(output), {
+    id: output.blindedMessage.id,
+    keys: output.blindedMessage.id === CONDITIONAL_KEYSET_ID ? CONDITIONAL_KEYS : KEYS,
+  });
 }
 
 function statesFor(preview: SwapPreview, state: CheckStateEnum | "UNKNOWN") {
-  return preview.inputs.map((proof) => ({
+  return statesForProofs(preview.inputs, state);
+}
+
+function statesForProofs(proofs: readonly Proof[], state: CheckStateEnum | "UNKNOWN") {
+  return proofs.map((proof) => ({
     Y: hashToCurve(new TextEncoder().encode(proof.secret)).toHex(true),
     state,
     witness: null,

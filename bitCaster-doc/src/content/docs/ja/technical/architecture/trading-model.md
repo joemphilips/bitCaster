@@ -37,7 +37,13 @@ NIP-98 認証は任意です。認証済み subject は、subject ごとの rate
 `quotePaymentSubunits` は手数料を含まない正確な msat 単位の支払額です。
 `averagePrice` と `worstPrice` は選択したトークンの価格です。
 現在の `currentLatestTradePrice` と予測値の `projectedFinalPrice` は primitive
-outcome route の価格です。価格の分母は `priceDenominator` です。予測値は確定済み
+outcome route の価格です。価格の分母は `priceDenominator` です。
+予測値は取得済みのプレビューに基づきます。二値マーケットの
+`currentLatestTradePrice` は、同じプレビュー内の両ルートから最新の確定取引を使います。
+反対側のルートの価格は `priceDenominator - price` に変換します。
+アウトカムが3つ以上の場合、要求した primitive route の取引価格だけを使います。
+別のアウトカムの取引では更新しません。クライアントは表示時に primitive route の
+価格を選択したトークンの価格に変換します。予測値は確定済み
 取引ではありません。全量を約定できない場合、執行見積もりは `null` です。
 確定済み取引がない場合、現在価格は `null` です。資金提供は市場価格の記録を作りません。
 
@@ -55,8 +61,9 @@ Sell は 20 パーセントポイントを減算します。たとえば、Buy �
 Custom では整数の `price` を送信します。明示的な `null` は無効です。
 Auto は `floor(D * 20 / 100)` tick を使い、制限を `1..D-1` に収めます。
 対象はボットだけでなく、条件に合うすべての注文です。
-フォームには `Available at this limit: N shares` と表示します。
-ウォレット残高と手数料は含みません。流動性を予約するものではありません。
+クライアントは引き続きこの API を利用できます。
+ブラウザのフォームは最大数量を表示せず、入力数量を確認して拒否理由を表示します。
+この API の数量にはウォレット残高と手数料を含みません。流動性を予約するものではありません。
 
 `ready` の結果には `referencePrice`、`effectiveLimitPrice`、
 `maxFaceAmountSubunits`、`quotePaymentSubunits`、`worstPrice`、

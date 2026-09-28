@@ -54,13 +54,17 @@ import { bootstrapFreshDaemonProfile } from '../src/profileBootstrap.ts'
 import { claimCustodyScopeLease, type CustodyScopeFence } from '../src/profileFencing.ts'
 import {
   emptyDaemonState,
+  readAvailableCanonicalWalletProofPageFromDatabase,
   readState,
   recordSubmittedOrder,
   writeState,
   type StoredProofAsset,
 } from '../src/state.ts'
 import { openDaemonStateSqlite } from '../src/stateSqlite.ts'
-import { DurableCustodySqliteStore } from '../src/durableCustodySqliteStore.ts'
+import {
+  DurableCustodySqliteStore,
+  type CustodyProofSqliteRow,
+} from '../src/durableCustodySqliteStore.ts'
 import { createCustodyProofSqliteRow } from '../src/custodyProofSqliteRow.ts'
 import type { EngineClientLike, PrepareSettlementCapabilityInput } from '../src/server.ts'
 import { deserializeOutputGroups } from '../src/walletOps.ts'
@@ -1931,6 +1935,113 @@ test('daemon consolidates conditional CTF inventory with the same bounded source
   )
 })
 
+test('daemon prepares a real retained successor through a fresh range preparation', async () => {
+  const sourceProofs = OutputData.createRandomData(Amount.from(20_000), conditionalMintKeys()).map(
+    signedProof,
+  )
+  await withDaemonProfile(
+    {
+      prefix: 'bitcaster-range-retained-follow-up-',
+      incarnationId: 'range-retained-follow-up-test',
+      proofs: sourceProofs,
+      asset: outcomeAsset(),
+    },
+    async ({ directory, fence }) => {
+      const wallet = new FakeWallet(sourceProofs)
+      const ids = [
+        'range-retained-producer',
+        'authorization-retained-producer',
+        'range-retained-follow-up',
+        'authorization-retained-follow-up',
+      ]
+      const coordinator = new DaemonCtfRangeOrderCoordinator(directory, () => fence, {
+        createMint: () => fakeMint(8),
+        createWallet: () => wallet,
+        now: () => 10_000,
+        randomId: () => ids.shift()!,
+      })
+      let capabilityIndex = 0
+      const engine = fakeEngineClient((request) => {
+        capabilityIndex += 1
+        return {
+          ...boundCapability(request),
+          orderId: `00000000-0000-8000-8000-${String(capabilityIndex).padStart(12, '0')}`,
+        }
+      })
+
+      await coordinator.prepare(
+        {
+          ...orderRequest(),
+          clientOrderId: 'client-retained-producer',
+          side: 'Sell',
+          amountSubunits: 5_000,
+          minimumFillAmountSubunits: 5_000,
+        },
+        engine,
+      )
+      const firstSource = (await readState())?.proofOperations['range-retained-producer:source']
+      assert.equal(firstSource?.state, 'completed')
+      const retainedSuccessors = firstSource?.resultProofs?.keep ?? []
+      assert.ok(retainedSuccessors.length > 0)
+      await assertSourceCustodyIdentity(
+        directory,
+        'ctf-range-conditional-source',
+        'range-retained-producer:source',
+      )
+      const beforeFollowUp = await retainedSuccessorRows(directory, retainedSuccessors)
+      assert.ok(
+        beforeFollowUp.every(
+          ({ selectability, targetState }) =>
+            selectability === 'retained' && targetState === 'available',
+        ),
+      )
+
+      let checkedFollowUpReservation = false
+      wallet.beforeCompleteConditionalSwap = async () => {
+        const preparedState = await readState()
+        const preparedSource = preparedState?.proofOperations['range-retained-follow-up:source']
+        assert.equal(preparedSource?.state, 'prepared')
+        const retainedSecrets = new Set(retainedSuccessors.map(({ secret }) => secret))
+        assert.ok(
+          preparedSource?.inputs.some(({ secret }) => retainedSecrets.has(secret)),
+          'follow-up preparation must select a retained successor before mint completion',
+        )
+        await assertExactTargetAndCanonicalReservations(
+          directory,
+          'range-retained-follow-up:source',
+          preparedSource!.inputs,
+        )
+        checkedFollowUpReservation = true
+      }
+
+      await coordinator.prepare(
+        {
+          ...orderRequest(),
+          clientOrderId: 'client-retained-follow-up',
+          side: 'Sell',
+          amountSubunits: 10_000,
+          minimumFillAmountSubunits: 10_000,
+        },
+        engine,
+      )
+      const followUpSource = (await readState())?.proofOperations['range-retained-follow-up:source']
+      assert.equal(followUpSource?.state, 'completed')
+      assert.equal(checkedFollowUpReservation, true)
+      const retainedSecrets = new Set(retainedSuccessors.map(({ secret }) => secret))
+      assert.ok(
+        followUpSource?.inputs.some(({ secret }) => retainedSecrets.has(secret)),
+        'the second preparation must consume a successor created by the first preparation',
+      )
+      await assertSourceCustodyIdentity(
+        directory,
+        'ctf-range-conditional-source',
+        'range-retained-follow-up:source',
+      )
+      assert.equal(wallet.completeCalls, 2)
+    },
+  )
+})
+
 // A full held-share Sell spends exactly the held face. The wallet holds one
 // share of YES face (1,000 msat as six proofs), so shares cannot also pay the
 // conditional input fee. Seven source inputs at 100 ppk cost 1 msat of cash.
@@ -2569,23 +2680,139 @@ for (const scenario of SELECTION_BOUNDARY_CASES) {
   })
 }
 
+test('daemon range selection accepts verified retained proofs only from available wallet projection', async () => {
+  const proof = heldShareProof(HELD_SHARE_FACE)
+  await withDaemonProfile(
+    {
+      prefix: 'bitcaster-range-retained-source-availability-',
+      incarnationId: 'range-retained-source-availability-test',
+      proofs: [proof],
+      asset: outcomeAsset(),
+    },
+    async ({ directory }) => {
+      await updateCanonicalProofRow(directory, proof, (row) => ({
+        ...row,
+        selectability: 'retained',
+        storageClass: 'pinned-operation-bound-deterministic',
+      }))
+      assert.deepEqual(
+        (await readCanonicalSourceCandidates(directory, proof)).proofs.map(
+          ({ proof: candidate }) => candidate.secret,
+        ),
+        [proof.secret],
+      )
+
+      const stateWithoutAvailableProjection = await readState()
+      assert.ok(stateWithoutAvailableProjection)
+      const target = stateWithoutAvailableProjection.wallet.proofs.find(
+        ({ proof: candidate }) => candidate.secret === proof.secret,
+      )
+      assert.ok(target)
+      target.state = 'locked'
+      target.reservedBy = 'foreign-target-reservation'
+      await writeState(stateWithoutAvailableProjection)
+      assert.deepEqual((await readCanonicalSourceCandidates(directory, proof)).proofs, [])
+
+      target.state = 'available'
+      delete target.reservedBy
+      await writeState(stateWithoutAvailableProjection)
+
+      await updateCanonicalProofRow(directory, proof, (row) => ({
+        ...row,
+        selectability: 'locked',
+        reservationOperationId: 'foreign-canonical-reservation',
+      }))
+      assert.deepEqual((await readCanonicalSourceCandidates(directory, proof)).proofs, [])
+
+      await updateCanonicalProofRow(directory, proof, (row) => ({
+        ...row,
+        nut07State: 'SPENT',
+        selectability: 'spent',
+        reservationOperationId: null,
+      }))
+      assert.deepEqual((await readCanonicalSourceCandidates(directory, proof)).proofs, [])
+
+      await updateCanonicalProofRow(directory, proof, (row) => ({
+        ...row,
+        selectability: 'retained',
+        storageClass: 'pinned-operation-bound-deterministic',
+        reservationOperationId: 'foreign-canonical-reservation',
+      }))
+      assert.deepEqual((await readCanonicalSourceCandidates(directory, proof)).proofs, [])
+    },
+  )
+})
+
+async function updateCanonicalProofRow(
+  directory: string,
+  proof: Proof,
+  update: (row: CustodyProofSqliteRow) => CustodyProofSqliteRow,
+): Promise<void> {
+  assert.ok(proof.id)
+  const database = await openDaemonStateSqlite(directory)
+  try {
+    const scopeId = testScopeId()
+    const store = new DurableCustodySqliteStore(database)
+    const proofId = deriveDurableCustodyProofId({
+      scopeId,
+      normalizedMint: MINT_URL,
+      unit: 'msat',
+      keysetId: proof.id,
+      secret: proof.secret,
+    })
+    const current = store.getProof(scopeId, proofId)
+    assert.ok(current)
+    const updated = update(current)
+    store.putProofCas(
+      {
+        ...updated,
+        revision: current.revision + 1,
+        updatedAtMs: Math.max(current.updatedAtMs, Date.now()),
+      },
+      current.revision,
+    )
+  } finally {
+    database.close()
+  }
+}
+
+async function readCanonicalSourceCandidates(directory: string, proof: Proof) {
+  assert.ok(proof.id)
+  const database = await openDaemonStateSqlite(directory)
+  try {
+    return readAvailableCanonicalWalletProofPageFromDatabase(database, {
+      mintUrl: MINT_URL,
+      keysetId: proof.id,
+      asset: outcomeAsset(),
+      limit: 10,
+    })
+  } finally {
+    database.close()
+  }
+}
+
 async function assertSourceCustodyIdentity(
   directory: string,
   semanticKind: 'ctf-range-regular-source' | 'ctf-range-conditional-source',
+  sourceOperationId?: string,
 ): Promise<void> {
   const state = await readState()
   const source = Object.values(state?.proofOperations ?? {}).find(
-    ({ metadata }) => metadata.purpose === 'ctf-range-authorization-source',
+    ({ operationId, metadata }) =>
+      metadata.purpose === 'ctf-range-authorization-source' &&
+      (sourceOperationId === undefined || operationId === sourceOperationId),
   )
   assert.ok(source?.resultProofs)
+  const custodyOperationId = source.metadata.custodySourceOperationId
+  assert.equal(typeof custodyOperationId, 'string')
   const database = await openDaemonStateSqlite(directory)
   try {
     const rows = database
       .prepare(
         `SELECT wallet_stage AS stage, result_state AS resultState
-        FROM custody_operations WHERE semantic_kind = ?`,
+        FROM custody_operations WHERE semantic_kind = ? AND operation_id = ?`,
       )
-      .all(semanticKind)
+      .all(semanticKind, custodyOperationId)
     assert.equal(rows.length, 1)
     assert.equal(rows[0]!.stage, 'capability-preparation')
     assert.equal(rows[0]!.resultState, 'applied')
@@ -2651,6 +2878,127 @@ async function assertSourceCustodyIdentity(
         semanticKind === 'ctf-range-regular-source' ? null : CONDITION_ID,
       )
       assert.equal(row.outcomeSetId, semanticKind === 'ctf-range-regular-source' ? null : 'YES')
+    }
+  } finally {
+    database.close()
+  }
+}
+
+async function retainedSuccessorRows(
+  directory: string,
+  proofs: readonly Proof[],
+): Promise<Array<{ selectability: string; targetState: string }>> {
+  const database = await openDaemonStateSqlite(directory)
+  try {
+    const custody = new DurableCustodySqliteStore(database)
+    return proofs.map((proof) => {
+      assert.ok(proof.id)
+      const proofId = deriveDurableCustodyProofId({
+        scopeId: testScopeId(),
+        normalizedMint: MINT_URL,
+        unit: 'msat',
+        keysetId: proof.id,
+        secret: proof.secret,
+      })
+      const canonical = custody.getProof(testScopeId(), proofId)
+      const target = database
+        .prepare(
+          `SELECT state AS targetState FROM target_wallet_proofs
+           WHERE scope_id = ? AND normalized_mint = ? AND secret = ?`,
+        )
+        .get(testScopeId(), MINT_URL, proof.secret) as { targetState: string } | undefined
+      assert.ok(canonical)
+      assert.ok(target)
+      return { selectability: canonical.selectability, targetState: target.targetState }
+    })
+  } finally {
+    database.close()
+  }
+}
+
+async function assertExactTargetAndCanonicalReservations(
+  directory: string,
+  sourceOperationId: string,
+  inputs: readonly { readonly id?: string; readonly secret: string }[],
+): Promise<void> {
+  const state = await readState()
+  const source = state?.proofOperations[sourceOperationId]
+  assert.ok(source)
+  const custodyOperationId = source.metadata.custodySourceOperationId
+  const reservationId = source.metadata.reservationId
+  assert.equal(typeof custodyOperationId, 'string')
+  assert.equal(typeof reservationId, 'string')
+  const expectedInputs = inputs.map((proof) => {
+    assert.ok(proof.id)
+    return {
+      proofId: deriveDurableCustodyProofId({
+        scopeId: testScopeId(),
+        normalizedMint: MINT_URL,
+        unit: 'msat',
+        keysetId: proof.id,
+        secret: proof.secret,
+      }),
+      secret: proof.secret,
+    }
+  })
+
+  const database = await openDaemonStateSqlite(directory)
+  try {
+    const operation = database
+      .prepare(
+        `SELECT reservation_id AS reservationId FROM custody_operations
+         WHERE scope_id = ? AND operation_id = ?
+           AND semantic_kind = 'ctf-range-conditional-source'`,
+      )
+      .get(testScopeId(), custodyOperationId) as { reservationId: string } | undefined
+    assert.ok(operation)
+    assert.equal(operation.reservationId, reservationId)
+    const operationInputs = database
+      .prepare(
+        `SELECT proof_id AS proofId FROM custody_operation_inputs
+         WHERE scope_id = ? AND operation_id = ? ORDER BY input_position`,
+      )
+      .all(testScopeId(), custodyOperationId) as Array<{ proofId: string }>
+    assert.deepEqual(
+      operationInputs.map(({ proofId }) => proofId).sort(),
+      expectedInputs.map(({ proofId }) => proofId).sort(),
+    )
+
+    const readReservation = database.prepare(
+      `SELECT proofs.selectability,
+         proofs.reservation_operation_id AS proofReservationOperationId,
+         reservations.operation_id AS reservationOperationId,
+         reservations.reservation_id AS reservationId
+       FROM custody_proofs AS proofs
+       JOIN custody_proof_reservations AS reservations
+         ON reservations.scope_id = proofs.scope_id AND reservations.proof_id = proofs.proof_id
+       WHERE proofs.scope_id = ? AND proofs.proof_id = ?`,
+    )
+    const readTargetReservation = database.prepare(
+      `SELECT state AS targetState, reserved_by AS targetReservationId
+       FROM target_wallet_proofs
+       WHERE scope_id = ? AND normalized_mint = ? AND secret = ?`,
+    )
+    for (const { proofId, secret } of expectedInputs) {
+      const row = readReservation.get(testScopeId(), proofId) as
+        | {
+            selectability: string
+            proofReservationOperationId: string | null
+            reservationOperationId: string
+            reservationId: string
+          }
+        | undefined
+      assert.ok(row)
+      assert.equal(row.selectability, 'locked')
+      assert.equal(row.proofReservationOperationId, custodyOperationId)
+      assert.equal(row.reservationOperationId, custodyOperationId)
+      assert.equal(row.reservationId, reservationId)
+      const target = readTargetReservation.get(testScopeId(), MINT_URL, secret) as
+        | { targetState: string; targetReservationId: string | null }
+        | undefined
+      assert.ok(target)
+      assert.equal(target.targetState, 'reserved')
+      assert.equal(target.targetReservationId, reservationId)
     }
   } finally {
     database.close()
@@ -2733,8 +3081,8 @@ async function addAvailableProofs(
           signatureVerified: true,
           dleqState: proof.dleq == null ? 'not-present' : 'verified',
           nut07State: 'UNSPENT',
-          selectability: 'retained',
-          storageClass: 'terminal-replay-retained',
+          selectability: 'selectable',
+          storageClass: 'pinned-operation-bound-deterministic',
           reservationOperationId: null,
           revision: 0,
           nowMs: 1,
@@ -2784,6 +3132,7 @@ function outcomeAsset(): StoredProofAsset {
 class FakeWallet {
   readonly #lostAcknowledgementState: 'SPENT' | 'UNSPENT' | null
   completeCalls = 0
+  beforeCompleteConditionalSwap?: () => Promise<void>
   #observedStateAfterLostAcknowledgement: 'SPENT' | 'UNSPENT' | null = null
 
   constructor(
@@ -2879,6 +3228,7 @@ class FakeWallet {
     outputDataByLabel: Record<string, OutputData[]>
   }): Promise<Record<string, Proof[]>> {
     this.completeCalls += 1
+    await this.beforeCompleteConditionalSwap?.()
     return Object.fromEntries(
       Object.entries(preview.outputDataByLabel).map(([label, outputs]) => [
         label,

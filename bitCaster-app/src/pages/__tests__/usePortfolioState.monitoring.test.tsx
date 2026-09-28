@@ -1008,13 +1008,21 @@ describe("usePortfolioState monitoring facade", () => {
         .mockReturnValueOnce(trailing.promise);
       const { result } = renderHook(() => usePortfolioState());
 
+      expect(result.current.stats.totalValueLoading).toBe(true);
+      expect(result.current.stats.positionsValueLoading).toBe(true);
       await act(async () => {});
+      const previousTotal = result.current.stats.totalValueSats;
+      expect(result.current.stats.totalValueLoading).toBe(false);
       const observer = mocks.portfolioObservers[0];
       act(() => observer?.onRefresh());
       await act(async () => {
         await vi.advanceTimersByTimeAsync(10_000);
       });
       expect(mocks.getPortfolio).toHaveBeenCalledTimes(2);
+      expect(result.current.stats.totalValueLoading).toBe(true);
+      expect(result.current.stats.positionsValueLoading).toBe(true);
+      expect(result.current.stats.totalValueKnown).toBe(true);
+      expect(result.current.stats.totalValueSats).toBe(previousTotal);
 
       act(() => observer?.onRefresh());
       await act(async () => {
@@ -1027,6 +1035,8 @@ describe("usePortfolioState monitoring facade", () => {
       await act(async () => trailing.resolve(completePortfolioResponse("ALL", 23_000)));
 
       expect(result.current.stats.totalValueSats).toBe(23_000);
+      expect(result.current.stats.totalValueLoading).toBe(false);
+      expect(result.current.stats.positionsValueLoading).toBe(false);
       expect(mocks.getPortfolio).toHaveBeenCalledTimes(3);
     } finally {
       vi.clearAllTimers();
@@ -1161,6 +1171,8 @@ describe("usePortfolioState monitoring facade", () => {
 
       expect(mocks.getPortfolio).toHaveBeenCalledTimes(2);
       expect(result.current.monitoring.error).toBe("unavailable");
+      expect(result.current.stats.totalValueLoading).toBe(false);
+      expect(result.current.stats.positionsValueLoading).toBe(false);
     } finally {
       vi.clearAllTimers();
       vi.useRealTimers();
@@ -1706,8 +1718,9 @@ describe("usePortfolioState monitoring facade", () => {
     mocks.activityItems.push(
       {
         id: "deposit-1",
+        walletId: activeWalletId,
         type: "deposit",
-        amountSats: 5_000,
+        amountSubunits: 5_000,
         baseAsset: "sat",
         date: "2026-09-23T00:00:00.000Z",
         status: "completed",
@@ -1716,10 +1729,32 @@ describe("usePortfolioState monitoring facade", () => {
       },
       {
         id: "payout-1",
+        walletId: activeWalletId,
         type: "payout_claimed",
-        amountSats: 2_000,
+        amountSubunits: 2_000,
         baseAsset: "sat",
         date: "2026-09-24T00:00:00.000Z",
+        status: "completed",
+        txId: null,
+        lightningInvoice: null,
+      },
+      {
+        id: "previous-wallet-deposit",
+        walletId: "b".repeat(64),
+        type: "deposit",
+        amountSubunits: 7_000,
+        baseAsset: "sat",
+        date: "2026-09-25T00:00:00.000Z",
+        status: "completed",
+        txId: null,
+        lightningInvoice: null,
+      },
+      {
+        id: "legacy-deposit",
+        type: "deposit",
+        amountSubunits: 8_000,
+        baseAsset: "sat",
+        date: "2026-09-26T00:00:00.000Z",
         status: "completed",
         txId: null,
         lightningInvoice: null,

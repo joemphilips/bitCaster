@@ -23,12 +23,14 @@ reminder.
 Your Nostr private key (`nsec`) is separate from your wallet recovery phrase.
 The phrase does not restore this key.
 
-For a key stored in this browser, open Settings, then Nostr, then **View nsec**.
-This works for both a key created by the app and a key you imported.
+For a key created by the app, open Settings, then Nostr, then **View nsec**.
 You can back up the key even if your relay profile does not load.
 Confirm the warning before you view the key. Use **Copy nsec** only in private.
 The app blurs the key after 15 seconds and hides it after 60 seconds.
 Keep the copy safe. Do not share it with support or other users.
+
+For an imported key, keep your original backup. Settings does not show backup
+controls for imported keys.
 
 If you use a NIP-07 external signer, back up the key in that signer.
 bitCaster cannot display its private key.

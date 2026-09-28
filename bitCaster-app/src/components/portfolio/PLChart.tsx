@@ -1,6 +1,7 @@
-import { useTranslation } from "react-i18next";
 import type { PLChartData, PLTimeSelector } from "@/types/portfolio";
 import { InlineAmount } from "@/components/shared/InlineAmount";
+import { useTranslation } from "react-i18next";
+import { LoaderCircle } from "lucide-react";
 
 const TIME_RANGES: PLTimeSelector[] = ["1D", "1W", "1M", "ALL"];
 
@@ -9,6 +10,7 @@ interface PLChartProps {
   selectedTimeRange: PLTimeSelector;
   totalValueSats?: number;
   totalValueKnown?: boolean;
+  totalValueLoading?: boolean;
   onTimeRangeChange?: (range: PLTimeSelector) => void;
 }
 
@@ -17,6 +19,7 @@ export function PLChart({
   selectedTimeRange,
   totalValueSats,
   totalValueKnown,
+  totalValueLoading,
   onTimeRangeChange,
 }: PLChartProps) {
   const { t } = useTranslation();
@@ -52,6 +55,13 @@ export function PLChart({
     <div>
       {/* Current portfolio value and selected-range change */}
       <div className="mb-3">
+        {totalValueLoading && (
+          <LoaderCircle
+            role="status"
+            aria-label={`${t("portfolio.totalValue")}: ${t("common.loading")}`}
+            className="size-4 animate-spin motion-reduce:animate-none"
+          />
+        )}
         {totalValueKnown === false ? (
           <div className="text-2xl font-bold text-amber-600 dark:text-amber-300">—</div>
         ) : totalValueSats != null ? (
@@ -65,9 +75,6 @@ export function PLChart({
         )}
         {valuationKnown && data.length > 0 && (
           <div className="text-sm">
-            <div className="text-xs text-slate-500 dark:text-slate-400">
-              {t("portfolio.estimatedValueChange")}
-            </div>
             <div className={`font-mono ${periodPositive ? "text-emerald-500" : "text-rose-500"}`}>
               {periodPositive ? "+" : ""}
               <InlineAmount amountSubunits={periodChange} baseAsset="sat" />

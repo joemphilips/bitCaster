@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { resolveNsecIdentity } from "@/lib/identityOps";
 import { fetchNip78ActivityLog, publishNip78ActivityLog } from "@/lib/nip78ActivityLog";
-import { activityLogsEqual, useActivityLogStore } from "./activity-log";
+import { activityItemIdentityKey, activityLogsEqual, useActivityLogStore } from "./activity-log";
 import { useSettingsStore } from "./settings";
 import type { ActivityItem } from "@/types/portfolio";
 
@@ -13,7 +13,7 @@ function mergeActivityLogs(
 ): ActivityItem[] {
   const byId = new Map<string, ActivityItem>();
   for (const item of [...remote, ...local]) {
-    byId.set(item.id, item);
+    byId.set(activityItemIdentityKey(item), item);
   }
   return Array.from(byId.values())
     .sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0))

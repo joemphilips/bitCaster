@@ -55,7 +55,6 @@ interface TradingPanelProps {
   limitPrice?: number;
   tradeCapacityPreview?: UseFokOrderCapacityPreviewResult | null;
   automaticLimitPrice?: number | null;
-  onTradeCapacityRetry?: () => void;
   sellHoldings?: SellHoldingsState;
   tradeSubmitStatus?: {
     kind: "info" | "success" | "error";
@@ -96,8 +95,8 @@ const QUICK_SELL_PERCENTAGES = [25, 50, 75, 100];
 
 type SellOutcomeAvailability =
   | { status: "loading" | "unavailable" }
-  | { status: "zero"; reserved: boolean }
-  | { status: "available"; shares: number };
+  | { status: "zero"; reserved: boolean; ownedShares: number | null }
+  | { status: "available"; shares: number; ownedShares: number | null };
 
 function sellOutcomeAvailability(
   market: MarketDetail,
@@ -116,15 +115,19 @@ function sellOutcomeAvailability(
   };
   const divisibility = parseMarketDivisibility(market.divisibility);
   if (divisibility === null) return { status: "unavailable" };
-  const shares = Math.floor(holding.selectableSubunits / divisibility);
-  return shares > 0
-    ? { status: "available", shares }
-    : { status: "zero", reserved: holding.reservedSubunits > 0 };
+  const sharesAvailableToSell = Math.floor(holding.selectableSubunits / divisibility);
+  const wholeOwnedShares =
+    (BigInt(holding.selectableSubunits) + BigInt(holding.reservedSubunits)) / BigInt(divisibility);
+  const ownedShares =
+    wholeOwnedShares <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(wholeOwnedShares) : null;
+  return sharesAvailableToSell > 0
+    ? { status: "available", shares: sharesAvailableToSell, ownedShares }
+    : { status: "zero", reserved: holding.reservedSubunits > 0, ownedShares };
 }
 
 function sellAvailabilityMessage(availability: SellOutcomeAvailability): {
   key: string;
-  options?: { formattedCount: string };
+  options?: Record<string, string>;
 } {
   switch (availability.status) {
     case "loading":
@@ -136,9 +139,18 @@ function sellAvailabilityMessage(availability: SellOutcomeAvailability): {
         key: availability.reserved ? "trade.sellHoldingsReserved" : "trade.sellHoldingsZero",
       };
     case "available":
+      if (availability.ownedShares === null) {
+        return {
+          key: "trade.sellHoldingsSelectableOnly",
+          options: { formattedCount: availability.shares.toLocaleString() },
+        };
+      }
       return {
         key: "trade.sellHoldingsAvailable",
-        options: { formattedCount: availability.shares.toLocaleString() },
+        options: {
+          ownedCount: availability.ownedShares.toLocaleString(),
+          selectableCount: availability.shares.toLocaleString(),
+        },
       };
   }
 }
@@ -511,59 +523,25 @@ function PriceProtectionSection({
   isSell,
   limitPrice,
   automaticLimitPrice,
-  capacityPreview,
   baseAsset,
   divisibility,
   onEnabledChange,
   onLimitPriceChange,
-  onCapacityRetry,
   disabled = false,
 }: {
   enabled: boolean;
   isSell: boolean;
   limitPrice: number;
   automaticLimitPrice: number | null;
-  capacityPreview: UseFokOrderCapacityPreviewResult | null;
   baseAsset: MarketBaseAsset;
   divisibility: number;
   onEnabledChange?: (enabled: boolean) => void;
   onLimitPriceChange?: (price: number) => void;
-  onCapacityRetry?: () => void;
   disabled?: boolean;
 }) {
   const { t } = useTranslation();
   const protectedPrice = enabled ? limitPrice : automaticLimitPrice;
   const priceLabel = isSell ? t("trade.minimumSellPrice") : t("trade.maximumBuyPrice");
-  const capacityResponse = capacityPreview?.status === "ready" ? capacityPreview.response : null;
-  const availableShares =
-    capacityResponse?.status === "ready" && capacityResponse.referencePrice !== null
-      ? Math.floor(capacityResponse.maxFaceAmountSubunits! / capacityResponse.priceDenominator!)
-      : null;
-  const capacityMessage = (() => {
-    if (capacityPreview?.status === "loading" || capacityPreview?.status === "idle") {
-      return t("trade.capacityChecking");
-    }
-    if (capacityPreview?.status === "error") return t("trade.capacityUnavailable");
-    if (capacityResponse?.status === "market_unavailable") {
-      return t("trade.capacityMarketUnavailable");
-    }
-    if (capacityResponse?.status === "temporarily_unavailable") {
-      return t("trade.capacityUnavailable");
-    }
-    if (capacityResponse?.status === "ready" && capacityResponse.referencePrice === null) {
-      return t("trade.capacityNoReference");
-    }
-    if (availableShares !== null) {
-      return t("trade.capacityAvailableAtLimit", {
-        formattedCount: availableShares.toLocaleString(),
-      });
-    }
-    return t("trade.capacityChecking");
-  })();
-  const capacityCanRetry =
-    capacityPreview?.status === "error" ||
-    capacityResponse?.status === "temporarily_unavailable" ||
-    capacityResponse?.status === "market_unavailable";
 
   return (
     <div
@@ -624,24 +602,6 @@ function PriceProtectionSection({
           </span>
         </div>
       )}
-      <div className="mt-2 flex items-center justify-between gap-2 text-xs text-slate-500 dark:text-slate-400">
-        <p
-          data-testid={
-            availableShares === null ? "trade-capacity-status" : "trade-capacity-available"
-          }
-          aria-live="polite"
-        >
-          {capacityMessage}
-        </p>
-        {capacityCanRetry && onCapacityRetry && (
-          <button type="button" className="underline" onClick={onCapacityRetry}>
-            {t("trade.retry")}
-          </button>
-        )}
-      </div>
-      <p className="mt-1 text-xs text-slate-400 dark:text-slate-500">
-        {t("trade.capacitySnapshotNote")}
-      </p>
     </div>
   );
 }
@@ -716,8 +676,25 @@ function formatFeeAmount(
   return asset.kind === "regular" ? amount : `${amount} (${feeAssetLabel(asset)})`;
 }
 
-function previewReasonKey(reason: string): string {
+function previewReasonKey(reason: string, isSell: boolean): string {
+  if (reason === "insufficient_liquidity") {
+    return isSell
+      ? "trade.previewReason.sellInsufficientLiquidity"
+      : "trade.previewReason.buyInsufficientLiquidity";
+  }
+  if (reason === "price_limit") {
+    return isSell ? "trade.previewReason.sellPriceLimit" : "trade.previewReason.buyPriceLimit";
+  }
   return `trade.previewReason.${reason}`;
+}
+
+function displayedSelectedTokenPrice(
+  price: number | null,
+  priceDenominator: number,
+  isComplement: boolean,
+): number | null {
+  if (price === null || !isComplement) return price;
+  return priceDenominator - price;
 }
 
 function cashFeeSubunits(value: string, asset: TradeFeeFacts["settlementAsset"]): bigint {
@@ -740,6 +717,7 @@ function FokOrderPreviewSection({
   feeConsentCurrent,
   feeCheckFailed,
   isSell,
+  isComplement,
 }: {
   preview: FokOrderPreviewState | null;
   capacityPreview: UseFokOrderCapacityPreviewResult | null;
@@ -749,6 +727,7 @@ function FokOrderPreviewSection({
   feeConsentCurrent: boolean;
   feeCheckFailed: boolean;
   isSell: boolean;
+  isComplement: boolean;
 }) {
   const { t } = useTranslation();
   if (preview == null || preview.status === "idle") return null;
@@ -810,7 +789,9 @@ function FokOrderPreviewSection({
         className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-300"
       >
         <p>
-          {t(previewReasonKey(response.reason), { defaultValue: t("trade.previewNotFillable") })}
+          {t(previewReasonKey(response.reason, isSell), {
+            defaultValue: t("trade.previewNotFillable"),
+          })}
         </p>
         {priceLimitFacts !== null && (
           <div data-testid="fok-preview-price-limit-details" className="mt-2 space-y-1">
@@ -836,11 +817,31 @@ function FokOrderPreviewSection({
             {t("trade.previewSubsidyMayHelp")}
           </p>
         )}
+        {response.reason === "temporarily_unavailable" && (
+          <button
+            type="button"
+            data-testid="fok-preview-response-retry"
+            className="mt-3 underline"
+            onClick={preview.refresh}
+          >
+            {t("trade.previewRetry")}
+          </button>
+        )}
       </div>
     );
   }
 
   const previewDenominator = response.priceDenominator ?? divisibility;
+  const currentSelectedTokenPrice = displayedSelectedTokenPrice(
+    response.currentLatestTradePrice,
+    previewDenominator,
+    isComplement,
+  );
+  const projectedSelectedTokenPrice = displayedSelectedTokenPrice(
+    response.projectedFinalPrice,
+    previewDenominator,
+    isComplement,
+  );
   const hasRegularSettlementAsset = feeFacts?.settlementAsset.kind === "regular";
   const hasRegularPreparationAsset = feeFacts?.sourcePreparationAsset.kind === "regular";
   const hasRegularConsolidationAsset = feeFacts?.consolidationAsset.kind === "regular";
@@ -903,15 +904,15 @@ function FokOrderPreviewSection({
       </div>
       <div className="flex justify-between text-sm">
         <span className="text-slate-500 dark:text-slate-400">
-          {t("trade.confirmedPrimitivePrice")}
+          {t("trade.confirmedSelectedTokenPrice")}
         </span>
         <span
           data-testid="trade-current-latest-price"
           className="font-medium text-slate-600 dark:text-slate-300"
         >
-          {response.currentLatestTradePrice == null
+          {currentSelectedTokenPrice == null
             ? t("trade.noTrades")
-            : formatPricePercentage(response.currentLatestTradePrice, previewDenominator)}
+            : formatPricePercentage(currentSelectedTokenPrice, previewDenominator)}
         </span>
       </div>
       <div className="flex justify-between text-sm">
@@ -920,9 +921,9 @@ function FokOrderPreviewSection({
           data-testid="trade-projected-final-price"
           className="font-medium text-slate-600 dark:text-slate-300"
         >
-          {response.projectedFinalPrice == null
+          {projectedSelectedTokenPrice == null
             ? "—"
-            : formatPricePercentage(response.projectedFinalPrice, previewDenominator)}
+            : formatPricePercentage(projectedSelectedTokenPrice, previewDenominator)}
         </span>
       </div>
       <div className="border-t border-slate-200 pt-2 dark:border-slate-700">
@@ -1036,7 +1037,6 @@ export function TradingPanel({
   limitPrice = 50,
   tradeCapacityPreview = null,
   automaticLimitPrice = null,
-  onTradeCapacityRetry,
   onTradeSelect,
   onTradeClear,
   onAmountChange,
@@ -1085,11 +1085,9 @@ export function TradingPanel({
       ? sellOutcomeAvailability(market, sellHoldings, tradeSelection)
       : null;
   const userHoldingShares =
-    selectedSellAvailability?.status === "available"
-      ? selectedSellAvailability.shares
-      : selectedSellAvailability?.status === "zero"
-        ? 0
-        : null;
+    selectedSellAvailability?.status === "available" || selectedSellAvailability?.status === "zero"
+      ? selectedSellAvailability.ownedShares
+      : null;
   const sellShareLimit =
     selectedSellAvailability?.status === "available" ? selectedSellAvailability.shares : null;
   const selectedSellAmountUnavailable =
@@ -1114,6 +1112,9 @@ export function TradingPanel({
   })();
   const tradingDisabled = disabled;
   const previewResponse = (isLimit ? limitOrderPreview : tradePreview)?.response ?? null;
+  const selectedTokenIsComplement =
+    tradeSelection !== null &&
+    resolveOutcomeSets(market, tradeSelection)?.tokenSide === "Complement";
   const previewIsFillable =
     (isLimit ? limitOrderPreview : tradePreview)?.status === "ready" &&
     previewResponse?.fullFillAvailable === true &&
@@ -1422,12 +1423,10 @@ export function TradingPanel({
             isSell={isSell}
             limitPrice={limitPrice}
             automaticLimitPrice={automaticLimitPrice}
-            capacityPreview={tradeCapacityPreview}
             baseAsset={baseAsset}
             divisibility={divisibility}
             onEnabledChange={(enabled) => onOrderTypeChange?.(enabled ? "limit" : "market")}
             onLimitPriceChange={onLimitPriceChange}
-            onCapacityRetry={onTradeCapacityRetry}
             disabled={tradingDisabled}
           />
 
@@ -1442,6 +1441,7 @@ export function TradingPanel({
               feeConsentCurrent={feeConsentCurrent}
               feeCheckFailed={tradeFeasibility?.canBack === false}
               isSell={isSell}
+              isComplement={selectedTokenIsComplement}
             />
           )}
 

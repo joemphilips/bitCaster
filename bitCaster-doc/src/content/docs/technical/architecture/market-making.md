@@ -65,9 +65,10 @@ The opening bid/ask spread target is two percentage points when liquidity
 permits it. For example, a binary market can start with a 49% bid and 51% ask.
 Whole-share sizes, fees, or limited funding can require a wider spread.
 More funding can support deeper quotes, but it does not guarantee a specific
-spread or trade size. Use **Available at this limit** in the trade form to see
-the current executable shares for your selected side and price protection.
-This preview is not a reservation. Your wallet balance is a separate limit.
+spread or trade size. Enter a quantity in the trade form to check whether the
+current orders can fill it within your price limit. The form explains a
+refusal. The preview does not reserve liquidity. Your wallet balance and
+fees also limit the trade.
 
 Funded markets are displayed in sats. Internally and on public `*Subunits` wire
 fields, collateral is accounted in msat. The explicit base-asset and collateral-unit

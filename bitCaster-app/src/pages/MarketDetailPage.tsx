@@ -10,6 +10,7 @@ import {
 import { useLiveQuery } from "dexie-react-hooks";
 import {
   activeBrowserWalletScopeId,
+  browserWalletIdFromMnemonic,
   browserWalletScopeIdFromMnemonic,
 } from "@/lib/browserWalletProfile";
 import {
@@ -111,7 +112,6 @@ import type {
   OrderType,
   OrderBook,
   PriceHistory,
-  PricePoint,
   Comment,
   RelatedMarket,
   Trade,
@@ -614,17 +614,10 @@ function mergeBookUpdates(
 function mergePriceHistory(
   current: PriceHistory | undefined,
   incoming: PriceHistory,
-  currentSource: CanonicalSliceSource | undefined,
 ): PriceHistory {
-  if (!current) return windowPriceHistory(incoming);
-  const byTimestamp = new Map<string, PricePoint>();
-  const first = currentSource === "live" ? incoming.data : current.data;
-  const second = currentSource === "live" ? current.data : incoming.data;
-  for (const point of first) byTimestamp.set(point.timestamp, point);
-  for (const point of second) byTimestamp.set(point.timestamp, point);
   return windowPriceHistory({
     timeframe: incoming.timeframe,
-    data: [...byTimestamp.values()].sort((a, b) => a.timestamp.localeCompare(b.timestamp)),
+    data: [...(current?.data ?? []), ...incoming.data],
   });
 }
 
@@ -641,7 +634,7 @@ function mergeHistoryUpdates(
   const sources = { ...currentSources };
   for (const [outcomeSetId, history] of Object.entries(incomingHistories)) {
     const previousSource = sources[outcomeSetId];
-    histories[outcomeSetId] = mergePriceHistory(histories[outcomeSetId], history, previousSource);
+    histories[outcomeSetId] = mergePriceHistory(histories[outcomeSetId], history);
     sources[outcomeSetId] = previousSource === "live" && source === "rest" ? "live" : source;
   }
   return { histories, sources };
@@ -654,6 +647,32 @@ function commentsFromResponse(
   return applyMarketComments(market, response).comments;
 }
 
+function confirmedTradeChartPoint(
+  state: MarketDetailDataState,
+  conditionId: string,
+  trade: LatestConfirmedTrade,
+): { historyKey: string; point: PriceHistory["data"][number] } | null {
+  const binaryMarket =
+    state.core?.id === conditionId && state.core.type === "yesno" ? state.core : null;
+  const historyKey = binaryMarket ? primaryOutcomeSetId(binaryMarket) : trade.primitiveOutcomeId;
+  if (!historyKey) return null;
+  return {
+    historyKey,
+    point: {
+      eventOrder: trade.eventOrder,
+      timestamp: trade.executedAt,
+      price: priceNumeratorToPercent(
+        binaryMarket && trade.primitiveOutcomeId.toLowerCase() === "no"
+          ? trade.divisibility - trade.priceTick
+          : trade.priceTick,
+        trade.divisibility,
+      ),
+      volume: trade.faceAmountSubunits,
+      source: "fill",
+    },
+  };
+}
+
 function appendConfirmedTradeHistory(
   state: MarketDetailDataState,
   conditionId: string,
@@ -661,34 +680,52 @@ function appendConfirmedTradeHistory(
 ): Pick<MarketDetailDataState, "historiesByMarketId" | "historySourcesByMarketId"> {
   const histories = { ...state.historiesByMarketId[conditionId] };
   const sources = { ...state.historySourcesByMarketId[conditionId] };
+  const chartPoint = confirmedTradeChartPoint(state, conditionId, trade);
+  if (!chartPoint)
+    return {
+      historiesByMarketId: state.historiesByMarketId,
+      historySourcesByMarketId: state.historySourcesByMarketId,
+    };
   // A newly selected timeframe can also receive a lagging REST response.
   const timeframes: ChartTimeframe[] = ["1h", "24h", "7d", "30d", "all"];
   for (const timeframe of timeframes) {
     const current = histories[timeframe] ?? {};
     histories[timeframe] = {
       ...current,
-      [trade.primitiveOutcomeId]: mergePriceHistory(
-        current[trade.primitiveOutcomeId],
-        {
-          timeframe,
-          data: [
-            {
-              timestamp: trade.executedAt,
-              price: priceNumeratorToPercent(trade.priceTick, trade.divisibility),
-              volume: trade.faceAmountSubunits,
-              source: "fill",
-            },
-          ],
-        },
-        undefined,
-      ),
+      [chartPoint.historyKey]: mergePriceHistory(current[chartPoint.historyKey], {
+        timeframe,
+        data: [chartPoint.point],
+      }),
     };
-    sources[timeframe] = { ...sources[timeframe], [trade.primitiveOutcomeId]: "live" };
+    sources[timeframe] = { ...sources[timeframe], [chartPoint.historyKey]: "live" };
   }
   return {
     historiesByMarketId: { ...state.historiesByMarketId, [conditionId]: histories },
     historySourcesByMarketId: { ...state.historySourcesByMarketId, [conditionId]: sources },
   };
+}
+
+function confirmedTradeHistoryIsPresent(
+  state: MarketDetailDataState,
+  conditionId: string,
+  trade: LatestConfirmedTrade,
+): boolean {
+  const histories = state.historiesByMarketId[conditionId] ?? {};
+  const chartPoint = confirmedTradeChartPoint(state, conditionId, trade);
+  if (!chartPoint) return true;
+  const loadedTimeframes = Object.values(histories);
+  return (
+    loadedTimeframes.length > 0 &&
+    loadedTimeframes.every((historiesForTimeframe) =>
+      historiesForTimeframe[chartPoint.historyKey]?.data.some(
+        (point) =>
+          point.eventOrder === chartPoint.point.eventOrder &&
+          point.timestamp === chartPoint.point.timestamp &&
+          point.price === chartPoint.point.price &&
+          point.volume === chartPoint.point.volume,
+      ),
+    )
+  );
 }
 
 function compareConfirmedTradeOrder(
@@ -1078,6 +1115,20 @@ export function marketDetailDataReducer(
         state.core?.divisibility ?? 0,
       );
       if (incomingValidated.length !== 1 || incomingValidated[0] !== action.trade) return state;
+      const acceptedDuplicate = current.find((trade) =>
+        confirmedTradeFactsEqual(trade, action.trade),
+      );
+      if (acceptedDuplicate) {
+        // A snapshot can publish a new trade before its historical projection
+        // includes the matching chart point. Backfill only an exact accepted
+        // receipt; conflicting reuse of a fill ID remains rejected below.
+        if (confirmedTradeHistoryIsPresent(state, action.conditionId, acceptedDuplicate))
+          return state;
+        return {
+          ...state,
+          ...appendConfirmedTradeHistory(state, action.conditionId, acceptedDuplicate),
+        };
+      }
       const next = applyConfirmedTradeDelta(
         action.conditionId,
         allowedPrimitiveOutcomeIds,
@@ -1099,13 +1150,9 @@ export function marketDetailDataReducer(
         state.core?.divisibility ?? 0,
       );
       if (validated.length !== canonicalNext.length) return state;
-      // Append only an accepted new receipt. Duplicate and stale messages
-      // must not alter chart history or trigger reconciliation requests.
-      if (
-        !validated.includes(action.trade) ||
-        current.some((trade) => confirmedTradeFactsEqual(trade, action.trade))
-      )
-        return state;
+      // Exact duplicates may backfill missing chart history above. Append
+      // only newly accepted receipts here; stale or conflicting facts stop.
+      if (!validated.includes(action.trade)) return state;
       return {
         ...state,
         ...appendConfirmedTradeHistory(state, action.conditionId, action.trade),
@@ -2222,6 +2269,8 @@ export function MarketDetailPage() {
           : undefined;
         if (abortIfAttemptStale()) return;
         const walletState = useWalletStore.getState();
+        const submittedWalletId = browserWalletIdFromMnemonic(walletState.mnemonic);
+        if (submittedWalletId === null) throw new Error("The active wallet is unavailable.");
         if (!activeMintUrl) throw new Error("The active mint is unavailable.");
         const exactFeePreviewKey = JSON.stringify({
           conditionId: latestMarket.id,
@@ -2301,7 +2350,6 @@ export function MarketDetailPage() {
             }
           },
         });
-        if (!routeStillActive()) return;
         const acceptedBaseAsset = normalizeMarketBaseAsset(response.baseAsset);
         const acceptedDivisibility = normalizeMarketDivisibility(
           response.divisibility,
@@ -2311,6 +2359,7 @@ export function MarketDetailPage() {
         // Otherwise we accumulate orphaned keys on every failed submission.
         addPendingTrade({
           orderId: response.orderId,
+          walletId: submittedWalletId,
           marketId: ticket.marketId,
           clientOrderId,
           baseAsset: acceptedBaseAsset,
@@ -2321,6 +2370,12 @@ export function MarketDetailPage() {
           amountSubunits: ticket.request.amountSubunits,
           submittedAt: Date.now(),
         });
+        if (
+          !routeStillActive() ||
+          browserWalletIdFromMnemonic(useWalletStore.getState().mnemonic) !== submittedWalletId
+        ) {
+          return;
+        }
         addOrderSubmitNotifications({
           add: useNotificationsStore.getState().add,
           orderId: response.orderId,
@@ -2836,7 +2891,6 @@ export function MarketDetailPage() {
         limitPrice={limitPrice}
         tradeCapacityPreview={capacityPreview}
         automaticLimitPrice={automaticLimitPrice}
-        onTradeCapacityRetry={capacityPreview.refresh}
         onTimeframeChange={handleTimeframeChange}
         onTradeSelect={(selection) => {
           clearCompletedTradeNotice();

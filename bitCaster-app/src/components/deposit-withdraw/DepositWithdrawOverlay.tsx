@@ -166,6 +166,7 @@ export function DepositWithdrawOverlay({ mode, onClose }: DepositWithdrawOverlay
           proofCount={bearerToken.proofs.length}
           onClose={dismiss}
           onReclaim={state.onReclaimEcash}
+          onAcknowledgeHandoff={state.onAcknowledgeEcashHandoff}
         />
       </>
     ));
@@ -199,14 +200,10 @@ export function DepositWithdrawOverlay({ mode, onClose }: DepositWithdrawOverlay
         selectedMintId={state.selectedMintId}
         amountSats={state.amountSats}
         amountLabel={state.amountLabel}
-        amountFiat={state.amountFiat}
-        fiatSymbol={state.fiatSymbol}
-        showFiatPrimary={state.showFiatPrimary}
         lightningInput={state.lightningInput}
         onSelectMethod={state.onSelectMethod}
         onNumpadPress={state.onNumpadPress}
         onMintChange={state.onMintChange}
-        onToggleCurrency={state.onToggleCurrency}
         onCreateInvoice={state.onCreateInvoice}
         onSendEcash={state.onSendEcash}
         onReclaimEcash={state.onReclaimEcash}

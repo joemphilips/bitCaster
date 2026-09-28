@@ -48,6 +48,22 @@ export function computeExecutableBookMidpoint(
   orderBook: OrderBook | null | undefined,
   divisibilityInput: number,
 ): number | null {
+  const prices = executableBookPrices(orderBook, divisibilityInput);
+  return prices === null ? null : (prices.bid + prices.ask) / 2;
+}
+
+export function computeExecutableBookSpread(
+  orderBook: OrderBook | null | undefined,
+  divisibilityInput: number,
+): number | null {
+  const prices = executableBookPrices(orderBook, divisibilityInput);
+  return prices === null ? null : prices.ask - prices.bid;
+}
+
+function executableBookPrices(
+  orderBook: OrderBook | null | undefined,
+  divisibilityInput: number,
+): { bid: number; ask: number } | null {
   const divisibility = parseMarketDivisibility(divisibilityInput);
   if (divisibility === null) return null;
 
@@ -64,7 +80,7 @@ export function computeExecutableBookMidpoint(
   );
   if (bestBid > bestAsk) return null;
 
-  return (bestBid + bestAsk) / 2;
+  return { bid: bestBid, ask: bestAsk };
 }
 
 /**

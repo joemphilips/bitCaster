@@ -6,9 +6,75 @@ import { resolveApiSigningUrl } from "@/lib/hubUrl";
 import { BitcasterEngineClient } from "@bitcaster/client-sdk/engineClient";
 import { normalizeMarketBaseAsset } from "@bitcaster/client-sdk/marketUnits";
 import type { ProductMarketDivisibility } from "@/types/market";
+import type { ActivityItem } from "@/types/portfolio";
 
 export type OrderStatusResponse = components["schemas"]["OrderStatusResponse"];
 export type OrderStatus = components["schemas"]["OrderLifecycleStatus"];
+
+export interface ConfirmedTradeActivityContext {
+  walletId: string;
+  orderId: string;
+  marketId: string;
+}
+
+const CANONICAL_WALLET_ID = /^[0-9a-f]{64}$/;
+
+/** Map only exact, committed fills from the authenticated owner-order response. */
+export function mapConfirmedTradeActivities(
+  status: OrderStatusResponse,
+  context: ConfirmedTradeActivityContext,
+): ActivityItem[] {
+  if (
+    !CANONICAL_WALLET_ID.test(context.walletId) ||
+    status.orderId !== context.orderId ||
+    status.marketId !== context.marketId ||
+    status.baseAsset !== "sat" ||
+    (status.side !== "Buy" && status.side !== "Sell")
+  ) {
+    return [];
+  }
+
+  return status.fills.flatMap((fill): ActivityItem[] => {
+    if (
+      fill.status !== "Filled" ||
+      (fill.takerOrderId !== context.orderId && fill.makerOrderId !== context.orderId) ||
+      fill.baseAsset !== status.baseAsset ||
+      fill.divisibility !== status.divisibility ||
+      (fill.divisibility !== 1_000 && fill.divisibility !== 1_000_000) ||
+      fill.tokenSide !== status.tokenSide ||
+      !Number.isSafeInteger(fill.quotePaymentSubunits) ||
+      fill.quotePaymentSubunits < 0 ||
+      !Number.isSafeInteger(fill.outcomeFaceAmountSubunits) ||
+      fill.outcomeFaceAmountSubunits <= 0 ||
+      !Number.isFinite(Date.parse(fill.filledAt))
+    ) {
+      return [];
+    }
+
+    const divisibility = fill.divisibility as ProductMarketDivisibility;
+    return [
+      {
+        id: `trade:${context.walletId}:${fill.id}`,
+        walletId: context.walletId,
+        type: status.side,
+        amountSubunits: fill.quotePaymentSubunits,
+        baseAsset: "sat",
+        date: fill.filledAt,
+        status: "completed",
+        txId: null,
+        lightningInvoice: null,
+        marketId: status.marketId,
+        tradeDetails: {
+          fillId: fill.id,
+          outcomeId: status.outcomeId,
+          tokenSide: fill.tokenSide,
+          faceAmountSubunits: fill.outcomeFaceAmountSubunits,
+          divisibility,
+        },
+      },
+    ];
+  });
+}
 
 function notificationKindForTerminalStatus(status: OrderLifecycleStatus): NotificationKind {
   switch (status) {

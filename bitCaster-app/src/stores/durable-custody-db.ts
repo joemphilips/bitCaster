@@ -1171,14 +1171,19 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
       const cached = storedProofFromRow(raw);
       const retainedOperationKey = transaction.operations.get(classification.operationId)?.operation
         .retainedOperationKey;
+      const cachedConditionalMetadataMissing =
+        proof.assetKind === "conditional" &&
+        cached.conditionId === undefined &&
+        cached.outcomeCollection === undefined;
       if (
         cached.mintUrl !== proof.normalizedMint ||
         cached.unit !== proof.unit ||
         cached.id !== proof.keysetId ||
         cached.C !== material.C ||
         Number(cached.amount) !== proof.amount ||
-        cached.conditionId !== proof.conditionId ||
-        cached.outcomeCollection !== proof.outcomeCollection ||
+        (!cachedConditionalMetadataMissing &&
+          (cached.conditionId !== proof.conditionId ||
+            cached.outcomeCollection !== proof.outcomeCollection)) ||
         (cached.reservedBy !== undefined &&
           cached.reservedBy !== classification.operationId &&
           cached.reservedBy !== retainedOperationKey) ||
@@ -1187,9 +1192,16 @@ export class BrowserDurableCustodyAdapter implements DurableCustodyPageStore {
       )
         throw new Error("browser terminal legacy cache proof is foreign");
       const { reservedBy: _reservedBy, ...unreserved } = cached;
+      const conditionalMetadata = cachedConditionalMetadataMissing
+        ? {
+            conditionId: proof.conditionId!,
+            outcomeCollection: proof.outcomeCollection!,
+          }
+        : {};
       await this.#database.proofs.put(
         storedProofRow({
           ...unreserved,
+          ...conditionalMetadata,
           terminalOperationId: classification.operationId,
         }),
       );
