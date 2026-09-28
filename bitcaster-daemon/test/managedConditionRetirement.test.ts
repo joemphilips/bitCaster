@@ -3,26 +3,45 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { after, test } from 'node:test'
-import { schnorr } from '@noble/curves/secp256k1.js'
+import { schnorr, secp256k1 } from '@noble/curves/secp256k1.js'
 import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToHex, concatBytes, utf8ToBytes } from '@noble/hashes/utils.js'
-import { CheckStateEnum, MintOperationError, type MintKeys, type Proof } from '@cashu/cashu-ts'
+import {
+  CheckStateEnum,
+  MintOperationError,
+  deriveKeysetId,
+  hashToCurve,
+  type MintKeys,
+  type Proof,
+} from '@cashu/cashu-ts'
 import { ORACLE_NOT_ATTESTED_OUTCOME_CODE } from '@bitcaster-market/client-sdk/ctfRedeem'
+import { createCtfProofOperationCompletion } from '@bitcaster-market/client-sdk/ctfSplit'
 import { deriveDlcConditionId } from '@bitcaster-market/client-sdk/managedConditionInventory'
 import { bootstrapFreshDaemonProfile } from '../src/profileBootstrap.ts'
 import { claimCustodyScopeLease } from '../src/profileFencing.ts'
 import {
   addAvailableProofs,
+  completeDurableOutgoingWalletSendFromDatabase,
+  completeManagedConditionRedeemFenced,
   prepareProofOperationWithExactReservation,
   readState,
 } from '../src/state.ts'
 import { retireDaemonConditionInventory } from '../src/managedConditionRetirement.ts'
+import { withDurableCustodyUnitOfWork } from '../src/durableCustodyUnitOfWork.ts'
 import { readProfile } from '../src/profile.ts'
 import { canonicalTestKeysetId } from './support/canonicalKeysetId.ts'
 
 const roots: string[] = []
 const CTF_KEYSET_ID = canonicalTestKeysetId('managed-retirement:ctf')
-const REGULAR_KEYSET_ID = canonicalTestKeysetId('managed-retirement:regular')
+const REGULAR_KEY = bytesToHex(
+  secp256k1.getPublicKey(Uint8Array.from([...new Uint8Array(31), 1]), true),
+)
+const REGULAR_KEYS = { 1: REGULAR_KEY, 2: REGULAR_KEY, 4: REGULAR_KEY }
+const REGULAR_KEYSET_ID = deriveKeysetId(REGULAR_KEYS, {
+  unit: 'msat',
+  versionByte: 1,
+  input_fee_ppk: 0,
+})
 after(async () => Promise.all(roots.map((root) => rm(root, { recursive: true, force: true }))))
 
 test('daemon previews then atomically retires one verified condition inventory', async () => {
@@ -139,6 +158,7 @@ test('daemon previews then atomically retires one verified condition inventory',
     ),
     true,
   )
+  await assertManagedRedeemCompletionIsTerminal({ directory, fence, state })
   await assert.rejects(
     addAvailableProofs('https://mint.example', [proof(CTF_KEYSET_ID, 'late-proof', 1)], {
       kind: 'Outcome',
@@ -192,6 +212,37 @@ test('daemon previews then atomically retires one verified condition inventory',
   )
   assert.equal(retained?.state, 'locked')
   assert.equal(retained?.asset.kind, 'Outcome')
+  const failedRedeem = Object.values(afterLosing!.proofOperations).find(
+    (operation) =>
+      operation.kind === 'ctf-redeem' &&
+      operation.state === 'Failed' &&
+      operation.inputs.some(({ secret }) => secret === losingInput.secret),
+  )
+  assert.ok(failedRedeem)
+  await assert.rejects(
+    completeManagedConditionRedeemFenced(
+      failedRedeem.operationId,
+      createCtfProofOperationCompletion('ctf-redeem', {
+        regular: [proof(REGULAR_KEYSET_ID, 'forged-failed-result', 5)],
+      }),
+      { fence, observedAtMs: Date.now() },
+    ),
+    /not prepared for completion/,
+  )
+  const afterFailedCompletion = await readState()
+  assert.equal(afterFailedCompletion?.proofOperations[failedRedeem.operationId]?.state, 'Failed')
+  assert.equal(
+    afterFailedCompletion?.wallet.proofs.find(
+      ({ proof: candidate }) => candidate.secret === losingInput.secret,
+    )?.state,
+    'locked',
+  )
+  assert.equal(
+    afterFailedCompletion?.wallet.proofs.some(
+      ({ proof: candidate }) => candidate.secret === 'forged-failed-result',
+    ),
+    false,
+  )
 
   const retryEventId = 'daemon-retirement-restart-test'
   const retryConditionId = deriveDlcConditionId({
@@ -305,6 +356,69 @@ test('daemon previews then atomically retires one verified condition inventory',
   )
 })
 
+async function assertManagedRedeemCompletionIsTerminal(input: {
+  directory: string
+  fence: Awaited<ReturnType<typeof claimCustodyScopeLease>>
+  state: NonNullable<Awaited<ReturnType<typeof readState>>>
+}): Promise<void> {
+  const operation = Object.values(input.state.proofOperations).find(
+    (candidate) =>
+      candidate.kind === 'ctf-redeem' &&
+      candidate.state === 'completed' &&
+      candidate.metadata.purpose === 'managed-condition-retirement',
+  )
+  assert.ok(operation)
+  const payout = operation.resultProofs?.regular?.[0]
+  assert.ok(payout)
+  const spendOperationId = 'spend-managed-redeem-payout'
+  await prepareProofOperationWithExactReservation(
+    {
+      operationId: spendOperationId,
+      kind: 'wallet-send',
+      mintUrl: operation.mintUrl,
+      inputs: [payout],
+      outputs: { keep: [], send: [] },
+      metadata: { reservationId: spendOperationId, unit: 'msat' },
+      reservationId: spendOperationId,
+      asset: { kind: 'sats', baseAsset: 'sat', unit: 'msat' },
+    },
+    { fence: input.fence, observedAtMs: Date.now() },
+  )
+  await withDurableCustodyUnitOfWork(input.directory, input.fence, Date.now(), (database) =>
+    completeDurableOutgoingWalletSendFromDatabase(database, {
+      operationId: spendOperationId,
+      reservationId: spendOperationId,
+      unit: 'msat',
+      keepProofs: [],
+      sendProofs: [proof(REGULAR_KEYSET_ID, 'external-recipient', Number(payout.amount))],
+      nowMs: Date.now(),
+    }),
+  )
+  const exactCompletion = createCtfProofOperationCompletion('ctf-redeem', {
+    regular: [payout],
+  })
+  await completeManagedConditionRedeemFenced(operation.operationId, exactCompletion, {
+    fence: input.fence,
+    observedAtMs: Date.now(),
+  })
+  assert.equal(
+    (await readState())?.wallet.proofs.some(
+      ({ proof: candidate }) => candidate.secret === payout.secret,
+    ),
+    false,
+  )
+  await assert.rejects(
+    completeManagedConditionRedeemFenced(
+      operation.operationId,
+      createCtfProofOperationCompletion('ctf-redeem', {
+        regular: [proof(REGULAR_KEYSET_ID, 'different-result', Number(payout.amount))],
+      }),
+      { fence: input.fence, observedAtMs: Date.now() },
+    ),
+    /completed with a different result/,
+  )
+}
+
 class FakeRetirementWallet {
   redeemCalls = 0
   private readonly error: unknown
@@ -313,6 +427,7 @@ class FakeRetirementWallet {
     this.error = error
   }
   readonly mint = {
+    getKeySets: async () => ({ keysets: [regularKeyset(), outcomeKeyset()] }),
     getKeys: async (keysetId?: string) => ({
       keysets: [keysetId === CTF_KEYSET_ID ? outcomeKeyset() : regularKeyset()],
     }),
@@ -333,8 +448,12 @@ class FakeRetirementWallet {
     return [proof(REGULAR_KEYSET_ID, `regular-result:${options.inputs[0]?.secret}`, amount)]
   }
 
-  async checkProofsStates() {
-    return [{ state: CheckStateEnum.UNSPENT, secret: 'conditional-restart' }]
+  async checkProofsStates(proofs: Array<Pick<Proof, 'secret'>>) {
+    return proofs.map(({ secret }) => ({
+      Y: hashToCurve(new TextEncoder().encode(secret)).toHex(true),
+      state: CheckStateEnum.UNSPENT,
+      witness: null,
+    }))
   }
 }
 
@@ -348,7 +467,7 @@ function regularKeyset(): MintKeys {
     unit: 'msat',
     active: true,
     input_fee_ppk: 0,
-    keys: { 1: '02'.repeat(33), 2: '03'.repeat(33), 4: '04'.repeat(33) },
+    keys: REGULAR_KEYS,
   } as unknown as MintKeys
 }
 

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { nip19 } from "nostr-tools";
 import { getPublicKey } from "nostr-tools/pure";
@@ -35,6 +35,7 @@ import { getNotificationPermission } from "@/lib/webNotifications";
 import { getRelayUrlValidationError } from "@/lib/walletOps";
 import { safeHostname } from "@/lib/url";
 import { AddMintForm } from "@/components/shared/AddMintForm";
+import { NativeDialog } from "@/components/shared/NativeDialog";
 
 //─── Segmented Control ──────────────────────────────────────────────────────
 
@@ -127,13 +128,14 @@ export function Settings({
   settings,
   seedPhrase,
   walletBackupState,
-  generatedNsecSecret,
+  localNsecSecret,
   onCategoryToggle,
   onThemeChange,
   onLikedMarketCloseNotificationsChange,
   onAddMint,
   onRemoveMint,
   onViewSeedPhrase,
+  onReplaceWallet,
   onMintClick,
   onSignerModeChange,
   onNsecSubmit,
@@ -173,22 +175,32 @@ export function Settings({
   const seedClipboardClearRef = useRef<number | null>(null);
   const nsecClipboardClearRef = useRef<number | null>(null);
 
+  const dismissSeedConfirm = useCallback(() => {
+    setShowSeedConfirm(false);
+    setShowSeedPhrase(false);
+    setCopied(false);
+  }, []);
+
+  const dismissGeneratedNsecConfirm = useCallback(() => {
+    setShowGeneratedNsecConfirm(false);
+    setShowGeneratedNsecSecret(false);
+    setGeneratedNsecBlurred(false);
+    setGeneratedNsecCopied(false);
+    setGeneratedNpubCopied(false);
+  }, []);
+
   useEffect(() => {
     if (!showGeneratedNsecSecret) return;
     setGeneratedNsecBlurred(false);
     const blurTimer = window.setTimeout(() => setGeneratedNsecBlurred(true), 15_000);
     const hideTimer = window.setTimeout(() => {
-      setShowGeneratedNsecSecret(false);
-      setShowGeneratedNsecConfirm(false);
-      setGeneratedNsecBlurred(false);
-      setGeneratedNsecCopied(false);
-      setGeneratedNpubCopied(false);
+      dismissGeneratedNsecConfirm();
     }, 60_000);
     return () => {
       window.clearTimeout(blurTimer);
       window.clearTimeout(hideTimer);
     };
-  }, [showGeneratedNsecSecret]);
+  }, [dismissGeneratedNsecConfirm, showGeneratedNsecSecret]);
 
   useEffect(() => {
     return () => {
@@ -218,6 +230,12 @@ export function Settings({
   };
 
   const displaySeedPhrase = seedPhrase ?? "";
+  const hasWallet = Boolean(displaySeedPhrase.trim());
+
+  useEffect(() => {
+    if (hasWallet) return;
+    dismissSeedConfirm();
+  }, [dismissSeedConfirm, hasWallet]);
 
   const handleCopySeed = () => {
     void navigator.clipboard.writeText(displaySeedPhrase);
@@ -246,16 +264,16 @@ export function Settings({
    * rather than throw inside render.
    */
   const generatedNpub = useMemo(() => {
-    if (!generatedNsecSecret) return null;
+    if (!localNsecSecret) return null;
     try {
-      const decoded = nip19.decode(generatedNsecSecret);
+      const decoded = nip19.decode(localNsecSecret);
       if (decoded.type !== "nsec") return null;
       const pubkeyHex = getPublicKey(decoded.data);
       return nip19.npubEncode(pubkeyHex);
     } catch {
       return null;
     }
-  }, [generatedNsecSecret]);
+  }, [localNsecSecret]);
 
   const handleCopyGeneratedNpub = () => {
     if (!generatedNpub) return;
@@ -266,8 +284,8 @@ export function Settings({
   };
 
   const handleCopyGeneratedNsec = () => {
-    if (!generatedNsecSecret) return;
-    void navigator.clipboard.writeText(generatedNsecSecret);
+    if (!localNsecSecret) return;
+    void navigator.clipboard.writeText(localNsecSecret);
     if (nsecClipboardClearRef.current != null) {
       window.clearTimeout(nsecClipboardClearRef.current);
     }
@@ -275,7 +293,7 @@ export function Settings({
       void navigator.clipboard
         .readText()
         .then((value) => {
-          if (value === generatedNsecSecret) void navigator.clipboard.writeText("");
+          if (value === localNsecSecret) void navigator.clipboard.writeText("");
         })
         .catch(() => {});
     }, 60_000);
@@ -546,28 +564,44 @@ export function Settings({
           </div>
         </div>
 
-        {/* Seed Backup */}
-        <div>
-          <h3 className="text-sm font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-2">
-            Seed Backup
-          </h3>
-          <p className="text-sm text-slate-600 dark:text-slate-400 mb-3">
-            Back up your wallet seed phrase. Anyone with this phrase can access your funds.
-          </p>
-          {walletBackupState === "needs_backup" && (
-            <div className="mb-3 flex items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:border-amber-700/50 dark:bg-amber-900/20 dark:text-amber-300">
-              <AlertTriangle className="h-4 w-4 shrink-0" />
-              Save this phrase before relying on this browser.
-            </div>
-          )}
-          <button
-            onClick={() => setShowSeedConfirm(true)}
-            className="flex items-center gap-2 px-4 py-2.5 rounded-lg bg-slate-100 dark:bg-slate-700 hover:bg-slate-200 dark:hover:bg-slate-600 text-slate-900 dark:text-white text-sm font-medium transition-colors border border-slate-200 dark:border-slate-600"
-          >
-            <Eye className="w-4 h-4" />
-            View Seed Phrase
-          </button>
-        </div>
+        {hasWallet && (
+          <div>
+            {/* Seed Backup */}
+            <h3 className="text-sm font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-2">
+              Seed Backup
+            </h3>
+            <p className="text-sm text-slate-600 dark:text-slate-400 mb-3">
+              Back up your wallet seed phrase. Anyone with this phrase can access your funds.
+            </p>
+            {walletBackupState === "needs_backup" && (
+              <div className="mb-3 flex items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:border-amber-700/50 dark:bg-amber-900/20 dark:text-amber-300">
+                <AlertTriangle className="h-4 w-4 shrink-0" />
+                Save this phrase before relying on this browser.
+              </div>
+            )}
+            <button
+              onClick={() => setShowSeedConfirm(true)}
+              className="flex items-center gap-2 px-4 py-2.5 rounded-lg bg-slate-100 dark:bg-slate-700 hover:bg-slate-200 dark:hover:bg-slate-600 text-slate-900 dark:text-white text-sm font-medium transition-colors border border-slate-200 dark:border-slate-600"
+            >
+              <Eye className="w-4 h-4" />
+              View Seed Phrase
+            </button>
+            {onReplaceWallet && (
+              <>
+                <button
+                  type="button"
+                  onClick={onReplaceWallet}
+                  className="mt-3 flex items-center gap-2 rounded-lg border border-slate-300 px-4 py-2.5 text-sm font-medium text-slate-800 transition-colors hover:bg-slate-100 dark:border-slate-600 dark:text-slate-100 dark:hover:bg-slate-700"
+                >
+                  {t("wallet.replaceWallet")}
+                </button>
+                <p className="mt-2 text-sm text-slate-600 dark:text-slate-400">
+                  {t("wallet.replaceWalletHint")}
+                </p>
+              </>
+            )}
+          </div>
+        )}
       </CategoryCard>
 
       {/* ════════════════════════════════════════════════════════════════════ */}
@@ -766,13 +800,13 @@ export function Settings({
                 Disconnect
               </button>
             </div>
-            {nostr.canRevealGeneratedNsec && (
+            {nostr.canRevealLocalNsec && (
               <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 p-3 dark:border-amber-700/50 dark:bg-amber-900/20">
                 <div className="flex items-start gap-3">
                   <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-amber-600 dark:text-amber-400" />
                   <div className="min-w-0 flex-1">
                     <h4 className="text-sm font-semibold text-amber-900 dark:text-amber-200">
-                      Generated Nostr key
+                      {t("settings.localNostrKey")}
                     </h4>
                     <p className="mt-1 text-sm text-amber-800 dark:text-amber-300">
                       Back up this nsec if you want to recover this Nostr identity outside this
@@ -783,11 +817,16 @@ export function Settings({
                       className="mt-3 inline-flex items-center gap-2 rounded-lg bg-amber-600 px-3 py-2 text-sm font-semibold text-white transition-colors hover:bg-amber-700"
                     >
                       <Eye className="h-4 w-4" />
-                      View generated nsec
+                      {t("settings.viewNsec")}
                     </button>
                   </div>
                 </div>
               </div>
+            )}
+            {nostr.signerMode === "nip07" && (
+              <p className="mt-4 text-sm text-slate-600 dark:text-slate-400">
+                {t("settings.externalSignerBackup")}
+              </p>
             )}
           </div>
         )}
@@ -864,231 +903,240 @@ export function Settings({
       </CategoryCard>
 
       {/* ── Seed Phrase Confirmation Modal ──────────────────────────────── */}
-      {showSeedConfirm && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
-          <div className="w-full max-w-md bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 shadow-2xl p-6">
-            <div className="flex items-center gap-3 mb-4">
-              <div className="w-10 h-10 rounded-full bg-amber-100 dark:bg-amber-900/30 flex items-center justify-center">
-                <Shield className="w-5 h-5 text-amber-600 dark:text-amber-400" />
-              </div>
-              <h3 className="text-lg font-semibold text-slate-900 dark:text-white">
-                Security Warning
-              </h3>
-            </div>
-            <p className="text-sm text-slate-600 dark:text-slate-400 mb-6">
-              Your seed phrase is the master key to your wallet. Never share it with anyone. Make
-              sure no one is looking at your screen before proceeding.
-            </p>
+      {showSeedConfirm && hasWallet && (
+        <NativeDialog
+          ariaLabel={t("settings.seedBackupDialogLabel")}
+          dismissOnBackdrop={false}
+          onDismiss={dismissSeedConfirm}
+        >
+          {(dismiss) => (
+            <div className="flex min-h-full items-center justify-center p-4">
+              <div className="max-h-full w-full max-w-md overflow-y-auto rounded-xl border border-slate-200 bg-white p-6 shadow-2xl dark:border-slate-700 dark:bg-slate-800">
+                <div className="mb-4 flex items-center gap-3">
+                  <div className="flex h-10 w-10 items-center justify-center rounded-full bg-amber-100 dark:bg-amber-900/30">
+                    <Shield className="h-5 w-5 text-amber-600 dark:text-amber-400" />
+                  </div>
+                  <h3 className="text-lg font-semibold text-slate-900 dark:text-white">
+                    Security Warning
+                  </h3>
+                </div>
+                <p className="mb-6 text-sm text-slate-600 dark:text-slate-400">
+                  Your seed phrase is the master key to your wallet. Never share it with anyone.
+                  Make sure no one is looking at your screen before proceeding.
+                </p>
 
-            {!showSeedPhrase ? (
-              <div className="flex gap-3">
-                <button
-                  onClick={() => setShowSeedConfirm(false)}
-                  className="flex-1 py-2.5 rounded-lg bg-slate-100 dark:bg-slate-700 hover:bg-slate-200 dark:hover:bg-slate-600 text-slate-700 dark:text-slate-300 text-sm font-medium transition-colors"
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={() => {
-                    setShowSeedPhrase(true);
-                    onViewSeedPhrase?.();
-                  }}
-                  className="flex-1 py-2.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium transition-colors"
-                >
-                  I Understand, Show Phrase
-                </button>
-              </div>
-            ) : (
-              <>
-                <div className="grid grid-cols-3 gap-2 mb-4">
-                  {displaySeedPhrase.split(" ").map((word, i) => (
-                    <div
-                      key={i}
-                      className="flex items-center gap-2 px-3 py-2 rounded-lg bg-slate-50 dark:bg-slate-700/50 border border-slate-200 dark:border-slate-600"
+                {!showSeedPhrase ? (
+                  <div className="flex gap-3">
+                    <button
+                      onClick={dismiss}
+                      className="flex-1 rounded-lg bg-slate-100 py-2.5 text-sm font-medium text-slate-700 transition-colors hover:bg-slate-200 dark:bg-slate-700 dark:text-slate-300 dark:hover:bg-slate-600"
                     >
-                      <span className="text-xs text-slate-400 dark:text-slate-500 w-4 text-right">
-                        {i + 1}
-                      </span>
-                      <span className="font-mono text-sm text-slate-900 dark:text-white">
-                        {word}
-                      </span>
+                      Cancel
+                    </button>
+                    <button
+                      onClick={() => {
+                        setShowSeedPhrase(true);
+                        onViewSeedPhrase?.();
+                      }}
+                      className="flex-1 rounded-lg bg-blue-600 py-2.5 text-sm font-medium text-white transition-colors hover:bg-blue-700"
+                    >
+                      I Understand, Show Phrase
+                    </button>
+                  </div>
+                ) : (
+                  <>
+                    <div className="mb-4 grid grid-cols-3 gap-2">
+                      {displaySeedPhrase.split(" ").map((word, i) => (
+                        <div
+                          key={i}
+                          className="flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 dark:border-slate-600 dark:bg-slate-700/50"
+                        >
+                          <span className="w-4 text-right text-xs text-slate-400 dark:text-slate-500">
+                            {i + 1}
+                          </span>
+                          <span className="font-mono text-sm text-slate-900 dark:text-white">
+                            {word}
+                          </span>
+                        </div>
+                      ))}
                     </div>
-                  ))}
-                </div>
-                <div className="flex gap-3">
-                  <button
-                    onClick={handleCopySeed}
-                    className="flex items-center justify-center gap-2 flex-1 py-2.5 rounded-lg bg-slate-100 dark:bg-slate-700 hover:bg-slate-200 dark:hover:bg-slate-600 text-slate-700 dark:text-slate-300 text-sm font-medium transition-colors"
-                  >
-                    {copied ? (
-                      <>
-                        <Check className="w-4 h-4 text-green-500" />
-                        Copied
-                      </>
-                    ) : (
-                      <>
-                        <Copy className="w-4 h-4" />
-                        Copy to Clipboard
-                      </>
-                    )}
-                  </button>
-                  <button
-                    onClick={() => {
-                      setShowSeedConfirm(false);
-                      setShowSeedPhrase(false);
-                      setCopied(false);
-                      onConfirmWalletBackup?.();
-                    }}
-                    className="flex-1 py-2.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium transition-colors"
-                  >
-                    Done
-                  </button>
-                </div>
-              </>
-            )}
-          </div>
-        </div>
+                    <div className="flex gap-3">
+                      <button
+                        onClick={handleCopySeed}
+                        className="flex flex-1 items-center justify-center gap-2 rounded-lg bg-slate-100 py-2.5 text-sm font-medium text-slate-700 transition-colors hover:bg-slate-200 dark:bg-slate-700 dark:text-slate-300 dark:hover:bg-slate-600"
+                      >
+                        {copied ? (
+                          <>
+                            <Check className="h-4 w-4 text-green-500" />
+                            Copied
+                          </>
+                        ) : (
+                          <>
+                            <Copy className="h-4 w-4" />
+                            Copy to Clipboard
+                          </>
+                        )}
+                      </button>
+                      <button
+                        onClick={() => {
+                          dismissSeedConfirm();
+                          onConfirmWalletBackup?.();
+                        }}
+                        className="flex-1 rounded-lg bg-blue-600 py-2.5 text-sm font-medium text-white transition-colors hover:bg-blue-700"
+                      >
+                        Done
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
+          )}
+        </NativeDialog>
       )}
 
       {/* ── Generated nsec Confirmation Modal ───────────────────────────── */}
-      {showGeneratedNsecConfirm && nostr.canRevealGeneratedNsec && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
-          <div className="w-full max-w-md bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 shadow-2xl p-6">
-            <div className="flex items-center gap-3 mb-4">
-              <div className="w-10 h-10 rounded-full bg-amber-100 dark:bg-amber-900/30 flex items-center justify-center">
-                <Shield className="w-5 h-5 text-amber-600 dark:text-amber-400" />
-              </div>
-              <h3 className="text-lg font-semibold text-slate-900 dark:text-white">
-                Security Warning
-              </h3>
-            </div>
-            <p className="text-sm text-slate-600 dark:text-slate-400 mb-6">
-              This nsec controls your generated Nostr identity. Never share it with anyone. Make
-              sure no one is looking at your screen before proceeding.
-            </p>
+      {showGeneratedNsecConfirm && nostr.canRevealLocalNsec && (
+        <NativeDialog
+          ariaLabel={t("settings.nostrKeyBackupDialogLabel")}
+          dismissOnBackdrop={false}
+          onDismiss={dismissGeneratedNsecConfirm}
+        >
+          {(dismiss) => (
+            <div className="flex min-h-full items-center justify-center p-4">
+              <div className="max-h-full w-full max-w-md overflow-y-auto rounded-xl border border-slate-200 bg-white p-6 shadow-2xl dark:border-slate-700 dark:bg-slate-800">
+                <div className="flex items-center gap-3 mb-4">
+                  <div className="w-10 h-10 rounded-full bg-amber-100 dark:bg-amber-900/30 flex items-center justify-center">
+                    <Shield className="w-5 h-5 text-amber-600 dark:text-amber-400" />
+                  </div>
+                  <h3 className="text-lg font-semibold text-slate-900 dark:text-white">
+                    Security Warning
+                  </h3>
+                </div>
+                <p className="text-sm text-slate-600 dark:text-slate-400 mb-6">
+                  {t("settings.nsecRevealWarning")}
+                </p>
 
-            {!showGeneratedNsecSecret ? (
-              <div className="flex gap-3">
-                <button
-                  onClick={() => setShowGeneratedNsecConfirm(false)}
-                  className="flex-1 py-2.5 rounded-lg bg-slate-100 dark:bg-slate-700 hover:bg-slate-200 dark:hover:bg-slate-600 text-slate-700 dark:text-slate-300 text-sm font-medium transition-colors"
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={() => {
-                    onRevealGeneratedNsec?.();
-                    setShowGeneratedNsecSecret(true);
-                  }}
-                  className="flex-1 py-2.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium transition-colors"
-                >
-                  I Understand, Show nsec
-                </button>
-              </div>
-            ) : (
-              <>
-                {/* ── Public key (npub) — safe to share, never blurred ──── */}
-                {generatedNpub && (
-                  <div className="mb-4">
+                {!showGeneratedNsecSecret ? (
+                  <div className="flex gap-3">
+                    <button
+                      onClick={dismiss}
+                      className="flex-1 py-2.5 rounded-lg bg-slate-100 dark:bg-slate-700 hover:bg-slate-200 dark:hover:bg-slate-600 text-slate-700 dark:text-slate-300 text-sm font-medium transition-colors"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      onClick={() => {
+                        onRevealGeneratedNsec?.();
+                        setShowGeneratedNsecSecret(true);
+                      }}
+                      className="flex-1 py-2.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium transition-colors"
+                    >
+                      I Understand, Show nsec
+                    </button>
+                  </div>
+                ) : (
+                  <>
+                    {/* ── Public key (npub) — safe to share, never blurred ──── */}
+                    {generatedNpub && (
+                      <div className="mb-4">
+                        <div className="mb-1.5 flex items-center gap-1.5">
+                          <span className="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                            {t("settings.publicKeyNpubLabel")}
+                          </span>
+                          <span className="rounded-full bg-green-100 px-2 py-0.5 text-[10px] font-semibold text-green-700 dark:bg-green-900/30 dark:text-green-400">
+                            {t("settings.npubSafeToShare")}
+                          </span>
+                        </div>
+                        <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 dark:border-slate-600 dark:bg-slate-700/50">
+                          <div
+                            data-testid="generated-npub-value"
+                            className="break-all font-mono text-sm text-slate-900 dark:text-white"
+                          >
+                            {generatedNpub}
+                          </div>
+                        </div>
+                        <button
+                          onClick={handleCopyGeneratedNpub}
+                          aria-label={t("settings.copyNpub")}
+                          className="mt-2 flex w-full items-center justify-center gap-2 rounded-lg bg-slate-100 py-2 text-sm font-medium text-slate-700 transition-colors hover:bg-slate-200 dark:bg-slate-700 dark:text-slate-300 dark:hover:bg-slate-600"
+                        >
+                          {generatedNpubCopied ? (
+                            <>
+                              <Check className="h-4 w-4 text-green-500" />
+                              Copied
+                            </>
+                          ) : (
+                            <>
+                              <Copy className="h-4 w-4" />
+                              {t("settings.copyNpub")}
+                            </>
+                          )}
+                        </button>
+                      </div>
+                    )}
+
+                    {/* ── Secret key (nsec) — blurred / auto-hidden / clipboard-cleared ── */}
                     <div className="mb-1.5 flex items-center gap-1.5">
                       <span className="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
-                        {t("settings.publicKeyNpubLabel")}
+                        {t("settings.secretKeyNsecLabel")}
                       </span>
-                      <span className="rounded-full bg-green-100 px-2 py-0.5 text-[10px] font-semibold text-green-700 dark:bg-green-900/30 dark:text-green-400">
-                        {t("settings.npubSafeToShare")}
+                      <span className="rounded-full bg-red-100 px-2 py-0.5 text-[10px] font-semibold text-red-700 dark:bg-red-900/30 dark:text-red-400">
+                        {t("settings.nsecKeepPrivate")}
                       </span>
                     </div>
-                    <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 dark:border-slate-600 dark:bg-slate-700/50">
+                    <div className="mb-4 rounded-lg border border-slate-200 bg-slate-50 p-3 dark:border-slate-600 dark:bg-slate-700/50">
                       <div
-                        data-testid="generated-npub-value"
-                        className="break-all font-mono text-sm text-slate-900 dark:text-white"
+                        data-testid="generated-nsec-value"
+                        className={`break-all font-mono text-sm text-slate-900 transition-[filter] dark:text-white ${
+                          generatedNsecBlurred ? "blur-sm select-none" : ""
+                        }`}
                       >
-                        {generatedNpub}
+                        {localNsecSecret ?? ""}
                       </div>
-                    </div>
-                    <button
-                      onClick={handleCopyGeneratedNpub}
-                      aria-label={t("settings.copyNpub")}
-                      className="mt-2 flex w-full items-center justify-center gap-2 rounded-lg bg-slate-100 py-2 text-sm font-medium text-slate-700 transition-colors hover:bg-slate-200 dark:bg-slate-700 dark:text-slate-300 dark:hover:bg-slate-600"
-                    >
-                      {generatedNpubCopied ? (
-                        <>
-                          <Check className="h-4 w-4 text-green-500" />
-                          Copied
-                        </>
-                      ) : (
-                        <>
-                          <Copy className="h-4 w-4" />
-                          {t("settings.copyNpub")}
-                        </>
+                      {generatedNsecBlurred && (
+                        <button
+                          onClick={() => setGeneratedNsecBlurred(false)}
+                          className="mt-3 text-sm font-semibold text-blue-600 hover:text-blue-700 dark:text-blue-400"
+                        >
+                          Show again
+                        </button>
                       )}
-                    </button>
-                  </div>
+                    </div>
+                    <div className="flex gap-3">
+                      <button
+                        onClick={handleCopyGeneratedNsec}
+                        aria-label={t("settings.copyNsec")}
+                        className="flex items-center justify-center gap-2 flex-1 py-2.5 rounded-lg bg-slate-100 dark:bg-slate-700 hover:bg-slate-200 dark:hover:bg-slate-600 text-slate-700 dark:text-slate-300 text-sm font-medium transition-colors"
+                      >
+                        {generatedNsecCopied ? (
+                          <>
+                            <Check className="w-4 h-4 text-green-500" />
+                            Copied
+                          </>
+                        ) : (
+                          <>
+                            <Copy className="w-4 h-4" />
+                            {t("settings.copyNsec")}
+                          </>
+                        )}
+                      </button>
+                      <button
+                        onClick={() => {
+                          dismissGeneratedNsecConfirm();
+                          onConfirmSignerBackup?.();
+                        }}
+                        className="flex-1 py-2.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium transition-colors"
+                      >
+                        Done
+                      </button>
+                    </div>
+                  </>
                 )}
-
-                {/* ── Secret key (nsec) — blurred / auto-hidden / clipboard-cleared ── */}
-                <div className="mb-1.5 flex items-center gap-1.5">
-                  <span className="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
-                    {t("settings.secretKeyNsecLabel")}
-                  </span>
-                  <span className="rounded-full bg-red-100 px-2 py-0.5 text-[10px] font-semibold text-red-700 dark:bg-red-900/30 dark:text-red-400">
-                    {t("settings.nsecKeepPrivate")}
-                  </span>
-                </div>
-                <div className="mb-4 rounded-lg border border-slate-200 bg-slate-50 p-3 dark:border-slate-600 dark:bg-slate-700/50">
-                  <div
-                    data-testid="generated-nsec-value"
-                    className={`break-all font-mono text-sm text-slate-900 transition-[filter] dark:text-white ${
-                      generatedNsecBlurred ? "blur-sm select-none" : ""
-                    }`}
-                  >
-                    {generatedNsecSecret ?? ""}
-                  </div>
-                  {generatedNsecBlurred && (
-                    <button
-                      onClick={() => setGeneratedNsecBlurred(false)}
-                      className="mt-3 text-sm font-semibold text-blue-600 hover:text-blue-700 dark:text-blue-400"
-                    >
-                      Show again
-                    </button>
-                  )}
-                </div>
-                <div className="flex gap-3">
-                  <button
-                    onClick={handleCopyGeneratedNsec}
-                    aria-label={t("settings.copyNsec")}
-                    className="flex items-center justify-center gap-2 flex-1 py-2.5 rounded-lg bg-slate-100 dark:bg-slate-700 hover:bg-slate-200 dark:hover:bg-slate-600 text-slate-700 dark:text-slate-300 text-sm font-medium transition-colors"
-                  >
-                    {generatedNsecCopied ? (
-                      <>
-                        <Check className="w-4 h-4 text-green-500" />
-                        Copied
-                      </>
-                    ) : (
-                      <>
-                        <Copy className="w-4 h-4" />
-                        {t("settings.copyNsec")}
-                      </>
-                    )}
-                  </button>
-                  <button
-                    onClick={() => {
-                      setShowGeneratedNsecConfirm(false);
-                      setShowGeneratedNsecSecret(false);
-                      setGeneratedNsecBlurred(false);
-                      setGeneratedNsecCopied(false);
-                      setGeneratedNpubCopied(false);
-                      onConfirmSignerBackup?.();
-                    }}
-                    className="flex-1 py-2.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium transition-colors"
-                  >
-                    Done
-                  </button>
-                </div>
-              </>
-            )}
-          </div>
-        </div>
+              </div>
+            </div>
+          )}
+        </NativeDialog>
       )}
     </div>
   );

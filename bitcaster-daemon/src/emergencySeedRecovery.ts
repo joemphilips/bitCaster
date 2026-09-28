@@ -122,6 +122,7 @@ const CUSTODY_LEASE_RENEW_INTERVAL_MS = 20_000
 export async function runOfflineDaemonSeedRecovery(
   input: OfflineDaemonSeedRecoveryInput,
 ): Promise<WalletSeedRecoveryResult> {
+  assertProductRecoveryUnit(input.unit)
   if (!input.disclosureAcknowledged) {
     throw new Error('seed recovery requires explicit disclosure acknowledgement')
   }
@@ -210,6 +211,7 @@ export async function runExplicitEmergencySeedRecovery(input: {
   store: SeedRecoverySqliteStore
   batches: readonly ExplicitSeedRecoveryBatch[]
 }): Promise<EmergencySeedRecoveryCursor> {
+  assertProductRecoveryUnit(input.unit)
   if (!input.disclosureAcknowledged) {
     throw new Error('seed recovery requires explicit disclosure acknowledgement')
   }
@@ -274,6 +276,7 @@ export async function recoverAllDaemonWalletFromSeed(
     readonly storage?: DaemonStateSqliteSession
   },
 ): Promise<WalletSeedRecoveryResult> {
+  assertProductRecoveryUnit(input.unit)
   assertWalletSeedHex(input.walletSeedHex)
   const seed = Uint8Array.from(Buffer.from(input.walletSeedHex, 'hex'))
   try {
@@ -896,6 +899,12 @@ function createAllKeysetRecoveryTransport(
 function assertWalletSeedHex(walletSeedHex: string): void {
   if (!/^[0-9a-f]{128}$/.test(walletSeedHex)) {
     throw new Error('wallet seed must be a 64-byte lowercase hex value')
+  }
+}
+
+function assertProductRecoveryUnit(unit: string): asserts unit is 'msat' {
+  if (unit !== 'msat') {
+    throw new Error('seed recovery supports only the msat product unit')
   }
 }
 

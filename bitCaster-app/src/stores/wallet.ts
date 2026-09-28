@@ -12,19 +12,23 @@ import { useLiveQuery } from "dexie-react-hooks";
 import * as bip39 from "@/lib/bip39";
 import {
   activeBrowserWalletScopeId,
+  browserWalletIdFromMnemonic,
   browserWalletScopeIdFromMnemonic,
   setActiveBrowserWalletProfile,
 } from "@/lib/browserWalletProfile";
 import { normalizeUrl } from "@/lib/url";
 import { requestBrowserWalletStoragePersistence } from "@/lib/browserWalletStoragePersistence";
-import { handoffBrowserEncryptedWalletBackupV2Seed } from "@/lib/browserEncryptedWalletBackupV2SeedHandoff";
+import { activeBrowserEncryptedWalletBackupV2RuntimeDriver } from "@/lib/encryptedWalletBackupDriver";
+import i18n from "@/i18n";
+import {
+  BrowserEncryptedWalletBackupV2SeedHandoffRefusal,
+  handoffBrowserEncryptedWalletBackupV2Seed,
+} from "@/lib/browserEncryptedWalletBackupV2SeedHandoff";
 import {
   activateBrowserWalletDatabase,
   db,
-  getProofs,
-  getUnitProofs,
+  getCanonicalSelectableProofs,
   isCtfProof,
-  type StoredProof,
 } from "./proof-db";
 import { createActiveBrowserWalletCounterSource } from "./browser-wallet-counter-db";
 import type { MintConnectionTestStatus } from "@/types/wallet";
@@ -37,6 +41,8 @@ import {
   type MarketBaseAsset,
 } from "@bitcaster/client-sdk/marketUnits";
 import type { SecretBackupState } from "@/types/settings";
+import { useToastStore } from "./toast";
+import { usePendingTradesStore } from "./pendingTrades";
 
 const BROWSER_MINT_REQUEST_TIMEOUT_MS = 60_000;
 setGlobalRequestOptions({ requestTimeout: BROWSER_MINT_REQUEST_TIMEOUT_MS });
@@ -52,6 +58,7 @@ interface WalletState {
   mnemonic: string;
   setupComplete: boolean;
   walletBackupState: SecretBackupState;
+  walletSeedReminderAcknowledgedScopeId: string | null;
   mints: StoredMint[];
   activeMintUrl: string;
   mintConnectionStatuses: Record<string, MintConnectionTestStatus>;
@@ -59,6 +66,7 @@ interface WalletState {
   generateMnemonic: () => void;
   ensureImplicitWallet: () => Promise<void>;
   markWalletBackupConfirmed: () => void;
+  acknowledgeWalletSeedReminder: () => void;
   recoverFromMnemonic: (words: string[]) => Promise<{ valid: boolean; error?: string }>;
   testMintConnection: (url: string) => Promise<MintConnectionTestStatus>;
   /**
@@ -123,6 +131,34 @@ function requestWalletStoragePersistence(mnemonic: string): void {
   if (scopeId !== null) requestBrowserWalletStoragePersistence(scopeId);
 }
 
+class WalletReplacementRefusal extends Error {
+  constructor(readonly code: "pending-orders" | "unscoped-pending-orders") {
+    super(code);
+    this.name = "WalletReplacementRefusal";
+  }
+}
+
+const WALLET_REPLACEMENT_REFUSAL_I18N_KEYS: Record<
+  WalletReplacementRefusal["code"] | BrowserEncryptedWalletBackupV2SeedHandoffRefusal["code"],
+  string
+> = {
+  "pending-orders": "wallet.replaceBlockedPendingOrders",
+  "unscoped-pending-orders": "wallet.replaceBlockedUnscopedOrders",
+  "active-wallet-work": "wallet.replaceBlockedActiveWork",
+  "backup-not-current": "wallet.replaceBlockedBackup",
+  "browser-lock-unavailable": "wallet.replaceBlockedBrowserLock",
+};
+
+function walletReplacementErrorMessage(error: unknown): string {
+  if (
+    error instanceof WalletReplacementRefusal ||
+    error instanceof BrowserEncryptedWalletBackupV2SeedHandoffRefusal
+  ) {
+    return i18n.t(WALLET_REPLACEMENT_REFUSAL_I18N_KEYS[error.code]);
+  }
+  return i18n.t("wallet.replaceBlockedSafetyChecks");
+}
+
 /** Create a counter source that stays bound to one active wallet profile. */
 export function createBrowserWalletCounterSource(
   scopeId: string,
@@ -177,28 +213,53 @@ export const useWalletStore = create<WalletState>()(
       mnemonic: "",
       setupComplete: false,
       walletBackupState: "none",
+      walletSeedReminderAcknowledgedScopeId: null,
       mints: [],
       activeMintUrl: DEFAULT_MINT_URL,
       mintConnectionStatuses: {},
 
       generateMnemonic: () => {
-        if (get().mnemonic) {
+        const previousWallet = get();
+        if (previousWallet.mnemonic) {
           throw new Error("Seed switching requires an acknowledged encrypted backup.");
         }
         const words = bip39.generate();
         const mnemonic = words.join(" ");
+
+        try {
+          set({
+            mnemonic,
+            walletBackupState: "needs_backup",
+            walletSeedReminderAcknowledgedScopeId: null,
+          });
+        } catch (error) {
+          // Zustand updates memory before localStorage. Restore only the seed
+          // fields so a failed initial write leaves creation retryable.
+          try {
+            set({
+              mnemonic: previousWallet.mnemonic,
+              walletBackupState: previousWallet.walletBackupState,
+              walletSeedReminderAcknowledgedScopeId:
+                previousWallet.walletSeedReminderAcknowledgedScopeId,
+            });
+          } catch {
+            // The rollback setter changes memory before its storage attempt.
+          }
+          throw error;
+        }
+
         _walletCache = new Map();
         activateWalletProfile(mnemonic);
         requestWalletStoragePersistence(mnemonic);
-        set({
-          mnemonic,
-          walletBackupState: "needs_backup",
-        });
       },
 
       ensureImplicitWallet: async () => {
         if (!get().mnemonic) {
           get().generateMnemonic();
+          useToastStore.getState().addToast({
+            type: "success",
+            message: i18n.t("wallet.created"),
+          });
         } else if (get().walletBackupState === "none") {
           set({ walletBackupState: "needs_backup" });
         }
@@ -220,6 +281,13 @@ export const useWalletStore = create<WalletState>()(
 
       markWalletBackupConfirmed: () => set({ walletBackupState: "confirmed" }),
 
+      acknowledgeWalletSeedReminder: () => {
+        const { mnemonic } = get();
+        const scopeId = browserWalletScopeIdFromMnemonic(mnemonic);
+        if (scopeId === null || activeBrowserWalletScopeId() !== scopeId) return;
+        set({ walletSeedReminderAcknowledgedScopeId: scopeId });
+      },
+
       recoverFromMnemonic: async (words: string[]) => {
         if (words.length !== 12) {
           return { valid: false, error: "Seed phrase must be 12 words" };
@@ -236,32 +304,81 @@ export const useWalletStore = create<WalletState>()(
           return { valid: true };
         }
         if (currentMnemonic) {
+          const previousWalletBackupState = get().walletBackupState;
+          const previousSeedReminderAcknowledgement = get().walletSeedReminderAcknowledgedScopeId;
           const oldScopeId = browserWalletScopeIdFromMnemonic(currentMnemonic);
           if (oldScopeId === null) {
             return { valid: false, error: "The wallet profile is unavailable." };
           }
           const oldDatabase = db;
+          const oldWalletId = browserWalletIdFromMnemonic(currentMnemonic);
+          if (oldWalletId === null) {
+            return { valid: false, error: i18n.t("wallet.replaceBlockedSafetyChecks") };
+          }
+          const backupDriver = activeBrowserEncryptedWalletBackupV2RuntimeDriver(oldScopeId);
+          let replacementCommitted = false;
           try {
+            await backupDriver?.quiesceForSeedHandoff();
             await handoffBrowserEncryptedWalletBackupV2Seed({
               database: oldDatabase,
               scopeId: oldScopeId,
               isCurrentProfile: () => activeBrowserWalletScopeId() === oldScopeId,
+              assertNoPendingOrders: () => {
+                const pendingTrades = usePendingTradesStore.getState();
+                if (pendingTrades.hasUnscopedPending()) {
+                  throw new WalletReplacementRefusal("unscoped-pending-orders");
+                }
+                if (pendingTrades.hasPendingForWallet(oldWalletId)) {
+                  throw new WalletReplacementRefusal("pending-orders");
+                }
+              },
               invalidateOldProfile: () => setActiveBrowserWalletProfile(""),
-              activateNewProfile: async () => activateWalletProfile(mnemonic),
-              restoreOldProfile: async () => activateWalletProfile(currentMnemonic),
+              activateNewProfile: async () => {
+                activateWalletProfile(mnemonic);
+                set({
+                  mnemonic,
+                  walletBackupState: "confirmed",
+                  walletSeedReminderAcknowledgedScopeId: null,
+                });
+              },
+              restoreOldProfile: async () => {
+                activateWalletProfile(currentMnemonic);
+                try {
+                  set({
+                    mnemonic: currentMnemonic,
+                    walletBackupState: previousWalletBackupState,
+                    walletSeedReminderAcknowledgedScopeId: previousSeedReminderAcknowledgement,
+                  });
+                } catch {
+                  // Zustand restores in-memory state before its synchronous storage write.
+                }
+              },
             });
+            replacementCommitted = true;
           } catch (error) {
             return {
               valid: false,
-              error: error instanceof Error ? error.message : "The wallet profile is unavailable.",
+              error: walletReplacementErrorMessage(error),
             };
+          } finally {
+            if (
+              !replacementCommitted &&
+              backupDriver !== null &&
+              activeBrowserWalletScopeId() === oldScopeId &&
+              activeBrowserEncryptedWalletBackupV2RuntimeDriver(oldScopeId) === backupDriver
+            ) {
+              backupDriver.resumeAfterSeedHandoff();
+            }
           }
+          requestWalletStoragePersistence(mnemonic);
+          return { valid: true };
         } else {
           activateWalletProfile(mnemonic);
         }
         set({
           mnemonic,
           walletBackupState: "confirmed",
+          walletSeedReminderAcknowledgedScopeId: null,
         });
         requestWalletStoragePersistence(mnemonic);
         return { valid: true };
@@ -376,6 +493,7 @@ export const useWalletStore = create<WalletState>()(
         mnemonic: state.mnemonic,
         setupComplete: state.setupComplete,
         walletBackupState: state.walletBackupState,
+        walletSeedReminderAcknowledgedScopeId: state.walletSeedReminderAcknowledgedScopeId,
         mints: state.mints,
         activeMintUrl: state.activeMintUrl,
         // Persist connection statuses so the Settings green/grey indicator
@@ -420,9 +538,17 @@ export function useBalance(
   const mnemonic = useWalletStore((state) => state.mnemonic);
   const balance = useLiveQuery(
     async () => {
-      const proofs = await getProofs(normalized);
+      const scopeId = browserWalletScopeIdFromMnemonic(mnemonic);
+      if (scopeId === null) return 0;
+      const proofs = await getCanonicalSelectableProofs(scopeId);
+      if (proofs === null) throw new Error("Canonical wallet custody is unavailable");
       return proofs
-        .filter((p) => !isCtfProof(p) && normalizeMarketBaseAsset(p.baseAsset) === baseAsset)
+        .filter(
+          (p) =>
+            (!normalized || p.mintUrl === normalized) &&
+            !isCtfProof(p) &&
+            normalizeMarketBaseAsset(p.baseAsset) === baseAsset,
+        )
         .reduce((sum, p) => {
           const unit = parseCashuProofUnit(p.unit);
           return unit ? sum + cashuAmountToMarketSubunits(amountToNumber(p.amount), unit) : sum;
@@ -438,8 +564,29 @@ export async function getBalance(
   mintUrl?: string,
   options: { baseAsset?: MarketBaseAsset | string | null } = {},
 ): Promise<number> {
-  const proofs = await getUnitProofs(mintUrl, { unit: defaultCollateralUnit(options.baseAsset) });
-  return proofs.reduce((sum: number, p: StoredProof) => sum + amountToNumber(p.amount), 0);
+  return getExactUnitBalance(mintUrl, defaultCollateralUnit(options.baseAsset));
+}
+
+/** Read the spendable balance for one exact Cashu unit. */
+export async function getExactUnitBalance(
+  mintUrl: string | undefined,
+  unit: string,
+): Promise<number> {
+  const scopeId = activeBrowserWalletScopeId();
+  if (scopeId === null) throw new Error("The wallet profile is unavailable");
+  const proofs = await getCanonicalSelectableProofs(scopeId);
+  if (proofs === null) throw new Error("Canonical wallet custody is unavailable");
+  const normalizedMint = mintUrl ? normalizeUrl(mintUrl) : undefined;
+  const exactUnit = parseCashuProofUnit(unit);
+  if (!exactUnit) throw new Error(`Unsupported Cashu proof unit '${unit}'`);
+  return proofs
+    .filter(
+      (proof) =>
+        (!normalizedMint || proof.mintUrl === normalizedMint) &&
+        !isCtfProof(proof) &&
+        proof.unit === exactUnit,
+    )
+    .reduce((sum, proof) => sum + amountToNumber(proof.amount), 0);
 }
 
 /**

@@ -3,7 +3,6 @@ import { test } from 'node:test'
 import {
   completedProofAuthorityDigest,
   computeGrossCtfInputAmountSubunits,
-  computeGrossCtfInputAmountSats,
   createCtfProofOperationCompletion,
   normalizeProof,
   normalizeProofArray,
@@ -42,17 +41,14 @@ import {
   type SwapPreview,
 } from '@cashu/cashu-ts'
 
-test('computeGrossCtfInputAmountSats is the exported sat alias for gross CTF planning', () => {
+test('computeGrossCtfInputAmountSubunits plans in native proof subunits', () => {
   const keyset = {
     id: 'keyset-fee',
     keys: { 1: 'pubkey-1', 2: 'pubkey-2', 4: 'pubkey-4', 8: 'pubkey-8' },
     input_fee_ppk: 501,
   }
 
-  assert.equal(
-    computeGrossCtfInputAmountSats({ faceAmountSats: 10, keyset }),
-    computeGrossCtfInputAmountSubunits({ faceAmountSubunits: 10, keyset }),
-  )
+  assert.equal(computeGrossCtfInputAmountSubunits({ faceAmountSubunits: 10, keyset }), 12)
 })
 
 test('proof normalization helpers are exported for wallet-service sharing', () => {
@@ -2059,7 +2055,7 @@ test('completed BLS CTF replay accepts a canonical secp P2BK ephemeral point', a
 
 test('selectCompleteSetMergeInputs selects equal gross inputs across a complete partition', () => {
   const selection = selectCompleteSetMergeInputs({
-    desiredOutputSats: 8,
+    desiredOutputSubunits: 8,
     inputFeePpkByKeyset: {
       'keyset-alpha': 1_000,
       'keyset-beta': 1_000,
@@ -2077,20 +2073,20 @@ test('selectCompleteSetMergeInputs selects equal gross inputs across a complete 
     'Beta',
     'Gamma',
   ])
-  assert.equal(selection?.grossInputSats, 11)
-  assert.equal(selection?.convertFeeSats, 3)
+  assert.equal(selection?.grossInputSubunits, 11)
+  assert.equal(selection?.convertFeeSubunits, 3)
   assert.equal(selection?.outputAmountSubunits, 8)
 })
 
 test('selectCompleteSetMergeInputs fails closed for uneven complete-set buckets', () => {
   const selection = selectCompleteSetMergeInputs({
-    desiredOutputSats: 8,
+    desiredOutputSubunits: 8,
     inputFeePpkByKeyset: {
       'keyset-alpha': 0,
       'keyset-beta': 0,
       'keyset-gamma': 0,
     },
-    maxScanExtraSats: 2,
+    maxScanExtraSubunits: 2,
     conditionalProofsByCollection: {
       Alpha: [proof('keyset-alpha', 8, 'alpha')],
       Beta: [proof('keyset-beta', 9, 'beta')],

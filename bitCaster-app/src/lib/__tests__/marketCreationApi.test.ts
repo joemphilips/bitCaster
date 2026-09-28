@@ -148,13 +148,9 @@ describe("requiredMarketCreationOutcomeCollections", () => {
 const createMarketParams = {
   title: "Test Market",
   description: "Test description",
-  outcomes: [
-    { name: "Yes", probability: 50 },
-    { name: "No", probability: 50 },
-  ],
-  liquiditySats: 10000,
+  outcomes: [{ name: "Yes" }, { name: "No" }],
   baseAsset: "sat" as const,
-  divisibility: 10_000,
+  divisibility: 1_000,
   categoryTags: ["crypto"],
 };
 
@@ -201,14 +197,16 @@ describe("createMarket", () => {
     const body = {
       conditionId: "cond-123",
       marketsCreated: ["cond-123-Yes", "cond-123-No"],
+      outcomeDetails: [{ name: "Yes" }, { name: "No" }],
       thumbnailUrl: null,
       baseAsset: "sat",
-      divisibility: 10_000,
+      divisibility: 1_000,
     };
     mockFetchSuccess(body);
     const result = await createMarket("cond-123", createMarketParams);
     expect(result.conditionId).toBe("cond-123");
     expect(result.marketsCreated).toEqual(["cond-123-Yes", "cond-123-No"]);
+    expect(result.outcomeDetails).toEqual([{ name: "Yes" }, { name: "No" }]);
   });
 
   it("sends metadata as multipart form data", async () => {
@@ -217,7 +215,7 @@ describe("createMarket", () => {
       marketsCreated: [],
       thumbnailUrl: null,
       baseAsset: "sat",
-      divisibility: 10_000,
+      divisibility: 1_000,
     });
     await createMarket("cond-123", createMarketParams);
 
@@ -239,7 +237,7 @@ describe("createMarket", () => {
       marketsCreated: [],
       thumbnailUrl: null,
       baseAsset: "sat",
-      divisibility: 10_000,
+      divisibility: 1_000,
     });
     await createMarket("cond-123", createMarketParams);
 

@@ -37,7 +37,7 @@ test('recover-seed accepts only acknowledged owner-private seed-file input', asy
       '--mint',
       'https://mint.example',
       '--unit',
-      'sat',
+      'msat',
       '--acknowledge-seed-disclosure',
     ])
     assert.equal(result.code, 0)
@@ -61,7 +61,7 @@ test('recover-seed accepts only acknowledged owner-private seed-file input', asy
       '--mint',
       'https://mint.example',
       '--unit',
-      'sat',
+      'msat',
     ])
     assert.notEqual(noAcknowledgement.code, 0)
     assert.match(noAcknowledgement.stderr, /acknowledge-seed-disclosure/)
@@ -88,7 +88,7 @@ test('recover-seed accepts only acknowledged owner-private seed-file input', asy
       '--mint',
       'https://mint.example',
       '--unit',
-      'sat',
+      'msat',
       '--acknowledge-seed-disclosure',
       '--wallet-seed-hex',
       seed,
@@ -97,6 +97,44 @@ test('recover-seed accepts only acknowledged owner-private seed-file input', asy
     const argvOutput = `${argvSecret.stdout}\n${argvSecret.stderr}`
     assert.match(argvOutput, /unknown option/)
     assert.doesNotMatch(argvOutput, new RegExp(seed))
+  } finally {
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('recover-seed rejects the sat product unit', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'bitcaster-cli-recovery-sat-'))
+  try {
+    await writeFile(
+      join(home, 'config.json'),
+      `${JSON.stringify({
+        version: 2,
+        daemon: {
+          engineUrl: 'http://localhost:5000',
+          mintUrl: 'http://localhost:8085',
+          autoRetireResolvedConditionInventory: false,
+          assetMonitoringEnabled: false,
+        },
+        cli: { trustedEngineUrls: [] },
+      })}\n`,
+      { mode: 0o600 },
+    )
+    const result = await runCli(home, [
+      '--dry-run',
+      'wallet',
+      'recover-seed',
+      '--wallet-seed-hex-file',
+      join(home, 'missing-seed.hex'),
+      '--recovery-id',
+      'recovery-sat',
+      '--mint',
+      'https://mint.example',
+      '--unit',
+      'sat',
+      '--acknowledge-seed-disclosure',
+    ])
+    assert.notEqual(result.code, 0)
+    assert.match(`${result.stdout}\n${result.stderr}`, /unit must be msat/)
   } finally {
     await rm(home, { recursive: true, force: true })
   }
@@ -127,7 +165,7 @@ async function recoveryCli(home: string, seedPath: string, dryRun = true) {
     '--mint',
     'https://mint.example',
     '--unit',
-    'sat',
+    'msat',
     '--acknowledge-seed-disclosure',
   ])
 }

@@ -1,7 +1,9 @@
 import { useTranslation } from "react-i18next";
 import type { ActivityItem, ActivityType } from "@/types/portfolio";
-import { formatMarketSubunits, normalizeMarketBaseAsset } from "@bitcaster/client-sdk/marketUnits";
+import { normalizeMarketBaseAsset } from "@bitcaster/client-sdk/marketUnits";
+import { InlineAmount } from "@/components/shared/InlineAmount";
 import { ArrowDownLeft, ArrowUpRight, ShoppingCart, Tag, Trophy, Coins } from "lucide-react";
+import { assertNever } from "@/lib/enumDiscipline";
 
 const TYPE_META: Record<
   ActivityType,
@@ -65,6 +67,17 @@ export function ActivityFeed({ activity, onViewActivity }: ActivityFeedProps) {
       {activity.map((item) => {
         const config = TYPE_META[item.type];
         const Icon = config.icon;
+        const marketLabel = item.marketTitle ?? item.marketId;
+        const tradeToken = item.tradeDetails
+          ? t(tradeTokenLabelKey(item.tradeDetails.tokenSide), {
+              outcomeId: item.tradeDetails.outcomeId,
+            })
+          : null;
+        const tradeShares = item.tradeDetails
+          ? new Intl.NumberFormat(i18n.language, {
+              maximumFractionDigits: shareFractionDigits(item.tradeDetails.divisibility),
+            }).format(item.tradeDetails.faceAmountSubunits / item.tradeDetails.divisibility)
+          : null;
         const date = new Date(item.date).toLocaleDateString(i18n.language, {
           month: "short",
           day: "numeric",
@@ -90,9 +103,12 @@ export function ActivityFeed({ activity, onViewActivity }: ActivityFeedProps) {
               <p className="text-sm font-medium text-slate-900 dark:text-white">
                 {t(config.labelKey)}
               </p>
-              {item.marketTitle && (
+              {marketLabel && (
+                <p className="text-xs text-slate-500 dark:text-slate-400 truncate">{marketLabel}</p>
+              )}
+              {tradeToken && tradeShares && (
                 <p className="text-xs text-slate-500 dark:text-slate-400 truncate">
-                  {item.marketTitle}
+                  {tradeToken} · {t("activityTrade.shares", { amount: tradeShares })}
                 </p>
               )}
               {item.txId && (
@@ -113,13 +129,17 @@ export function ActivityFeed({ activity, onViewActivity }: ActivityFeedProps) {
             {/* Amount & Status */}
             <div className="text-right shrink-0">
               <div className="text-sm font-mono font-medium text-slate-900 dark:text-white">
-                {item.type === "deposit" ||
-                item.type === "payout_claimed" ||
-                item.type === "creator_fee_claimed"
-                  ? "+"
-                  : "-"}
-                {formatMarketSubunits(item.amountSats, normalizeMarketBaseAsset(item.baseAsset))}
+                {activityAmountPrefix(item.type)}
+                <InlineAmount
+                  amountSubunits={item.amountSubunits}
+                  baseAsset={normalizeMarketBaseAsset(item.baseAsset)}
+                />
               </div>
+              {item.tradeDetails && (
+                <p className="text-[10px] text-slate-400 dark:text-slate-500">
+                  {t("activityTrade.tradeValueBeforeFees")}
+                </p>
+              )}
               <div className="flex items-center justify-end gap-1 mt-0.5">
                 <span className="text-xs text-slate-400 dark:text-slate-500">{date}</span>
                 <span
@@ -134,4 +154,43 @@ export function ActivityFeed({ activity, onViewActivity }: ActivityFeedProps) {
       })}
     </div>
   );
+}
+
+function tradeTokenLabelKey(
+  tokenSide: NonNullable<ActivityItem["tradeDetails"]>["tokenSide"],
+): "activityTrade.outcomeToken" | "activityTrade.complementToken" {
+  switch (tokenSide) {
+    case "Outcome":
+      return "activityTrade.outcomeToken";
+    case "Complement":
+      return "activityTrade.complementToken";
+    default:
+      return assertNever(tokenSide);
+  }
+}
+
+function shareFractionDigits(divisibility: 1_000 | 1_000_000): number {
+  switch (divisibility) {
+    case 1_000:
+      return 3;
+    case 1_000_000:
+      return 6;
+    default:
+      return assertNever(divisibility);
+  }
+}
+
+function activityAmountPrefix(type: ActivityType): "+" | "-" {
+  switch (type) {
+    case "deposit":
+    case "Sell":
+    case "payout_claimed":
+    case "creator_fee_claimed":
+      return "+";
+    case "withdrawal":
+    case "Buy":
+      return "-";
+    default:
+      return assertNever(type);
+  }
 }

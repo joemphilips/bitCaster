@@ -31,8 +31,25 @@ export {
 }
 
 const DURABLE_SEED_DERIVED_OUTPUT_SCHEMA_VERSION = 1 as const
+const DURABLE_SEED_DERIVED_OUTPUT_RESERVATION_FAILURE_MESSAGE =
+  'durable seed-derived output reservation failed'
 
 export { DURABLE_SEED_DERIVED_OUTPUT_SCHEMA_VERSION }
+
+type DurableSeedDerivedOutputReservationFailureCategory =
+  | 'recovery_incomplete'
+  | 'stale_profile'
+  | 'unavailable'
+
+export class DurableSeedDerivedOutputReservationError extends Error {
+  readonly category: DurableSeedDerivedOutputReservationFailureCategory
+
+  constructor(category: DurableSeedDerivedOutputReservationFailureCategory) {
+    super(DURABLE_SEED_DERIVED_OUTPUT_RESERVATION_FAILURE_MESSAGE)
+    this.name = 'DurableSeedDerivedOutputReservationError'
+    this.category = category
+  }
+}
 
 export interface DurableSeedDerivedOutputKeyset {
   readonly id: string
@@ -94,8 +111,8 @@ export async function reserveAndConstructDurableSeedDerivedOutputs(
       validated.keyset.id,
       validated.amounts.length,
     )
-  } catch {
-    throw new Error('durable seed-derived output reservation failed')
+  } catch (error) {
+    throw new DurableSeedDerivedOutputReservationError(reservationFailureCategory(error))
   }
   if (!isExactReservation(reservation, validated.amounts.length)) {
     throw new Error('durable seed-derived output reservation is invalid')
@@ -283,6 +300,19 @@ function isExactReservation(
     isDurableSeedDerivedCounter(value.start) &&
     fitsDurableSeedDerivedCounterRange(value.start, expectedCount)
   )
+}
+
+function reservationFailureCategory(
+  error: unknown,
+): DurableSeedDerivedOutputReservationFailureCategory {
+  try {
+    if (!isNonArrayRecord(error)) return 'unavailable'
+    const code = Object.getOwnPropertyDescriptor(error, 'code')?.value
+    if (code === 'recovery_incomplete' || code === 'stale_profile') return code
+  } catch {
+    return 'unavailable'
+  }
+  return 'unavailable'
 }
 
 function createOutputs(input: ValidatedAllocationInput, counterStart: number): OutputData[] | null {

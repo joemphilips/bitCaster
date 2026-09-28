@@ -328,12 +328,11 @@ test('daemon range coordinator binds exactly across before/after-commit restart 
   }
 })
 
-test('daemon range coordinator atomically transfers its prepared source across restart', async () => {
+test('daemon range coordinator refuses target-only source authority without changing custody', async () => {
   const fixture = await createProfile()
   try {
     const operation = createRangeOperation()
     const binding = await createRangeBinding(walletScope(fixture.walletScopeId), operation)
-    const custodyOperationId = binding.record.operation.operationId
     const fence = await claimCustodyScopeLease(fixture.directory, {
       scopeId: fixture.walletScopeId,
       incarnationId: 'range-coordinator-source',
@@ -349,64 +348,13 @@ test('daemon range coordinator atomically transfers its prepared source across r
           binding,
           proofStateClient: unspentProofStateClient(),
           observedAtMs: 3,
-          injectFault: (phase) => {
-            if (phase === 'before-commit') throw new Error('injected source transfer rollback')
-          },
         }),
-      /injected source transfer rollback/,
+      /source custody identity is invalid/,
     )
     assert.equal(
       isDeepStrictEqual(await readDatabaseFingerprint(fixture.directory), beforeRollback),
       true,
-      'source rollback must preserve target inventory and custody byte-for-byte',
-    )
-
-    await assert.rejects(
-      () =>
-        coordinator.bindPreparedSource({
-          binding,
-          proofStateClient: unspentProofStateClient(),
-          observedAtMs: 4,
-          injectFault: (phase) => {
-            if (phase === 'after-commit') throw new Error('injected source acknowledgement loss')
-          },
-        }),
-      /injected source acknowledgement loss/,
-    )
-    const database = await openDaemonStateSqlite(fixture.directory)
-    try {
-      const reserved = database
-        .prepare(
-          `SELECT count(*) AS count FROM target_wallet_proofs
-           WHERE scope_id = ? AND reserved_by = ?`,
-        )
-        .get(fixture.walletScopeId, sourceReservationId(operation)) as { count: number }
-      assert.equal(reserved.count, 0)
-      assert.ok(
-        loadDaemonDurableCtfRangeAuthority(
-          new DurableCustodySqliteStore(database),
-          custodyOperationId,
-        ),
-      )
-    } finally {
-      database.close()
-    }
-
-    const restarted = new DaemonCtfRangeCoordinator(fixture.directory, fence)
-    const beforeReplay = await readDatabaseFingerprint(fixture.directory)
-    await restarted.bindPreparedSource({
-      binding,
-      proofStateClient: {
-        check: async () => {
-          throw new Error('NUT-07 must not run after durable source transfer')
-        },
-      },
-      observedAtMs: 5,
-    })
-    assert.equal(
-      isDeepStrictEqual(await readDatabaseFingerprint(fixture.directory), beforeReplay),
-      true,
-      'source transfer replay must be read-only',
+      'refusal must preserve target inventory and custody byte-for-byte',
     )
   } finally {
     await rm(fixture.directory, { recursive: true, force: true })

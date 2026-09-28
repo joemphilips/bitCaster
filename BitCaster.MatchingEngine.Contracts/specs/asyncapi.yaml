@@ -2,7 +2,7 @@ asyncapi: 3.0.0
 info:
   title: BitCaster SignalR Hubs
   description: SignalR hubs for real-time market and order updates.
-  version: 0.1.0
+  version: 0.2.0
   license:
     name: MIT
 
@@ -33,6 +33,15 @@ channels:
         $ref: '#/components/messages/LeaveMarketRequest'
     description: Client leaves a market group.
 
+  setPortfolioValuationSubscriptions:
+    address: SetPortfolioValuationSubscriptions
+    messages:
+      setPortfolioValuationSubscriptionsRequest:
+        $ref: '#/components/messages/SetPortfolioValuationSubscriptionsRequest'
+    description: >
+      Client replaces the connection's condition subscriptions for Portfolio
+      valuation updates. An empty array removes all such subscriptions.
+
   orderBookUpdated:
     address: OrderBookUpdated
     messages:
@@ -61,6 +70,26 @@ channels:
         $ref: '#/components/messages/MatchedMessage'
     description: Server pushes a public match delta to affected market groups.
 
+  confirmedTradeRecorded:
+    address: ConfirmedTradeRecorded
+    messages:
+      confirmedTradeRecordedMessage:
+        $ref: '#/components/messages/ConfirmedTradeRecordedMessage'
+    description: >
+      Server pushes a committed confirmed-trade price delta to the market
+      groups for the condition and to clients with a Portfolio valuation
+      subscription for that condition. The REST market catalogue remains
+      authoritative when a client reconnects or misses a live delta.
+
+  marketFundingUpdated:
+    address: MarketFundingUpdated
+    messages:
+      marketFundingUpdatedMessage:
+        $ref: '#/components/messages/MarketFundingUpdatedMessage'
+    description: >
+      Server pushes a committed cumulative funding total and its exact event
+      revision to every per-outcome market group for the condition.
+
   marketStatusChanged:
     address: MarketStatusChanged
     messages:
@@ -68,7 +97,8 @@ channels:
         $ref: '#/components/messages/MarketStatusChangedMessage'
     description: >
       Server pushes a lifecycle-change notification (e.g. open -> closed) to
-      every per-outcome market group of a condition.
+      every per-outcome market group of a condition and to clients with a
+      Portfolio valuation subscription for that condition.
 
   joinOrder:
     address: JoinOrder
@@ -118,6 +148,22 @@ operations:
     messages:
       - $ref: '#/channels/leaveMarket/messages/leaveMarketRequest'
 
+  setPortfolioValuationSubscriptions:
+    action: send
+    channel:
+      $ref: '#/channels/setPortfolioValuationSubscriptions'
+    summary: Replace Portfolio valuation subscriptions
+    description: >
+      Client supplies the exact desired set of condition IDs for this
+      connection. The array can contain at most 200 entries before duplicate
+      IDs are removed. Each ID uses the existing exact-case hexadecimal
+      condition ID form, from 1 to 128 characters. Invalid input is rejected
+      without changing the current set. An empty array unsubscribes from all
+      conditions. The subscription set is connection-local, so the client
+      must send it again after reconnecting.
+    messages:
+      - $ref: '#/channels/setPortfolioValuationSubscriptions/messages/setPortfolioValuationSubscriptionsRequest'
+
   orderBookUpdated:
     action: receive
     channel:
@@ -153,6 +199,33 @@ operations:
     messages:
       - $ref: '#/channels/matched/messages/matchedMessage'
 
+  confirmedTradeRecorded:
+    action: receive
+    channel:
+      $ref: '#/channels/confirmedTradeRecorded'
+    summary: Receive committed confirmed-trade price delta
+    description: >
+      Server pushes a confirmed trade only after its settlement is committed.
+      The message contains one bounded latest-trade value. Clients subscribed
+      to Portfolio valuation updates for the condition also receive it.
+      Clients must reload the REST market catalogue after reconnect or an
+      explicit refresh.
+    messages:
+      - $ref: '#/channels/confirmedTradeRecorded/messages/confirmedTradeRecordedMessage'
+
+  marketFundingUpdated:
+    action: receive
+    channel:
+      $ref: '#/channels/marketFundingUpdated'
+    summary: Receive a committed cumulative market-funding update
+    description: >
+      Server pushes the confirmed cumulative LMSR subsidy only after its
+      receipt is committed. A replay can repeat the same revision. A client
+      must not let an older REST catalogue observation reduce a newer total.
+      JoinMarket sends the current committed observation when funding exists.
+    messages:
+      - $ref: '#/channels/marketFundingUpdated/messages/marketFundingUpdatedMessage'
+
   marketStatusChanged:
     action: receive
     channel:
@@ -160,9 +233,10 @@ operations:
     summary: Receive market lifecycle change
     description: >
       Server pushes a MarketStatusChanged to clients in any of the
-      condition's per-outcome market groups when the market's lifecycle
-      state changes (e.g. when an oracle attestation or deadline closes it).
-      A client joined to any one outcome group of the condition receives it.
+      condition's per-outcome market groups when the market's lifecycle state
+      changes (e.g. when an oracle attestation or deadline closes it). A client
+      joined to any one outcome group or subscribed to Portfolio valuation
+      updates for the condition receives it.
     messages:
       - $ref: '#/channels/marketStatusChanged/messages/marketStatusChangedMessage'
 
@@ -217,6 +291,26 @@ components:
             description: >
               The primitive market ID in the format "{conditionId}-{outcomeName}".
 
+    SetPortfolioValuationSubscriptionsRequest:
+      payload:
+        type: object
+        additionalProperties: false
+        required:
+          - conditionIds
+        properties:
+          conditionIds:
+            type: array
+            maxItems: 200
+            items:
+              type: string
+              minLength: 1
+              maxLength: 128
+              pattern: '^[A-Fa-f0-9]+$'
+              description: >
+                Exact-case hexadecimal condition ID. The accepted length is 1
+                to 128 characters. Duplicate IDs are accepted and treated as
+                one.
+
     OrderBookUpdatedMessage:
       payload:
         $ref: '#/components/schemas/OrderBookSnapshot'
@@ -232,6 +326,23 @@ components:
     MatchedMessage:
       payload:
         $ref: '#/components/schemas/MatchedDelta'
+
+    ConfirmedTradeRecordedMessage:
+      payload:
+        type: object
+        additionalProperties: false
+        required:
+          - conditionId
+          - latestConfirmedTrade
+        properties:
+          conditionId:
+            type: string
+          latestConfirmedTrade:
+            $ref: '#/components/schemas/LatestConfirmedTrade'
+
+    MarketFundingUpdatedMessage:
+      payload:
+        $ref: '#/components/schemas/MarketFundingUpdated'
 
     MarketStatusChangedMessage:
       payload:
@@ -278,9 +389,10 @@ components:
       description: >
         Market price numerator `k`. Valid range is `1 <= k <= D - 1`, where
         `D` is the market's immutable `divisibility`. Immutable price
-        denominator D is per-market: categorical markets use D=10000 (0.01%
-        precision), while future numeric markets use D=1000000 (0.0001%
-        precision).
+        denominator D is per-market. Current yes/no and categorical markets
+        use D=1000 (0.1% precision). Numeric market creation and trading are
+        currently disabled; D=1000000 (0.0001% precision) is reserved for a
+        future numeric trade representation.
 
     OrderSide:
       type: string
@@ -452,7 +564,7 @@ components:
         divisibility:
           type: integer
           format: int32
-          enum: [10000, 1000000]
+          enum: [1000, 1000000]
           description: >
             Immutable price denominator `D`, server-determined.
         quotePaymentSubunits:
@@ -470,6 +582,40 @@ components:
         tokenSide:
           $ref: '#/components/schemas/TokenSide'
           description: Which token on the primitive outcome book was traded.
+
+    LatestConfirmedTrade:
+      type: object
+      additionalProperties: false
+      required:
+        - primitiveOutcomeId
+        - fillId
+        - executedAt
+        - eventOrder
+        - priceTick
+        - divisibility
+        - faceAmountSubunits
+      properties:
+        primitiveOutcomeId:
+          type: string
+        fillId:
+          type: string
+          format: uuid
+        executedAt:
+          type: string
+          format: date-time
+        eventOrder:
+          type: string
+        priceTick:
+          type: integer
+          minimum: 1
+        divisibility:
+          type: integer
+          format: int32
+          enum: [1000, 1000000]
+        faceAmountSubunits:
+          type: integer
+          format: int64
+          minimum: 1
 
     MarketStatusChanged:
       type: object
@@ -500,13 +646,36 @@ components:
             Winning outcome after an oracle attestation close. Null for
             deadline-only closes or non-resolving transitions.
 
+    MarketFundingUpdated:
+      type: object
+      additionalProperties: false
+      required:
+        - conditionId
+        - ammBotBudgetSubunits
+        - fundingRevision
+      properties:
+        conditionId:
+          type: string
+          description: The condition identifier whose funding was committed.
+        ammBotBudgetSubunits:
+          type: integer
+          format: int64
+          minimum: 1
+          description: >
+            Confirmed cumulative net external subsidy in product collateral
+            subunits. This value does not report active b or order-book depth.
+        fundingRevision:
+          type: string
+          minLength: 1
+          description: >
+            Exact durable event order that produced the cumulative total.
+
     OrderLifecycleStatus:
       type: string
       enum:
         - resting
         - matched
         - partially_filled
-        - awaiting_authorization
         - filled
         - cancelled
         - expired
@@ -524,6 +693,7 @@ components:
         - DefinitivelyRejected
         - Refundable
         - ExpiredBeforeSubmission
+        - RejectedBeforeSubmission
 
     SettlementGroupSummary:
       type: object
@@ -553,7 +723,10 @@ components:
             - 'null'
           format: date-time
           description: >
-            Null for Prepared and ExpiredBeforeSubmission. Non-null for every
+            Null for Prepared, RejectedBeforeSubmission, and ExpiredBeforeSubmission.
+            RejectedBeforeSubmission means this group stopped before committing
+            a mint request for a reason other than authorization expiry. It does
+            not confirm wallet recovery or authorize a refund. Non-null for every
             lifecycle path that reached SubmissionPending.
 
     OrderLifecycleChangedDelta:
@@ -589,7 +762,7 @@ components:
         divisibility:
           type: integer
           format: int32
-          enum: [10000, 1000000]
+          enum: [1000, 1000000]
         activeSettlementGroup:
           oneOf:
             - $ref: '#/components/schemas/SettlementGroupSummary'

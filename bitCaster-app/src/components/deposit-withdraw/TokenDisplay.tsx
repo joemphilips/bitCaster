@@ -10,6 +10,7 @@ interface TokenDisplayProps {
   proofCount: number;
   onClose?: () => void;
   onReclaim?: () => void;
+  onAcknowledgeHandoff?: () => void;
 }
 
 export function TokenDisplay({
@@ -18,6 +19,7 @@ export function TokenDisplay({
   proofCount,
   onClose,
   onReclaim,
+  onAcknowledgeHandoff,
 }: TokenDisplayProps) {
   const { t } = useTranslation();
   const [copied, setCopied] = useState(false);
@@ -87,7 +89,7 @@ export function TokenDisplay({
 
         {/* Amount */}
         <div className="mt-6 text-2xl font-bold text-white font-mono">
-          ₿{amountSats.toLocaleString()}
+          {amountSats.toLocaleString(undefined, { maximumFractionDigits: 3 })} sats
         </div>
 
         {/* Token text + copy */}
@@ -96,6 +98,7 @@ export function TokenDisplay({
             <span className="flex-1 text-xs text-slate-400 font-mono truncate">{token}</span>
             <button
               onClick={handleCopy}
+              aria-label={t("common.copy")}
               className="flex-shrink-0 p-2 rounded-lg text-slate-400 hover:text-white hover:bg-slate-700 transition-colors"
             >
               {copied ? <Check className="w-4 h-4 text-green-400" /> : <Copy className="w-4 h-4" />}
@@ -116,6 +119,15 @@ export function TokenDisplay({
             {t("deposit.reclaim")}
           </button>
         ) : null}
+        {onAcknowledgeHandoff && (
+          <button
+            type="button"
+            onClick={onAcknowledgeHandoff}
+            className="mt-5 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-500"
+          >
+            {t("deposit.acknowledgeTokenHandoff")}
+          </button>
+        )}
       </div>
     </div>
   );

@@ -367,6 +367,67 @@ test('engine result decoder binds persisted capability, authorization, and retry
   )
 })
 
+test('engine result decoder preserves result identity and metadata boundaries', () => {
+  const operation = createRangeOperation()
+  const requestDigest = 'ef'.repeat(32)
+  const validEnvelope = resultEnvelope(operation, requestDigest)
+  const valid = engineResult(operation.operationId, requestDigest, validEnvelope)
+  const authority = { operation, reference: valid.reference }
+  const cases = [
+    {
+      name: 'foreign envelope operation id',
+      response: engineResult(
+        operation.operationId,
+        requestDigest,
+        resultEnvelope(operation, requestDigest, 'foreign-envelope-operation'),
+      ),
+      expected: 'reject',
+    },
+    {
+      name: 'foreign top-level operation id',
+      response: { ...valid, operationId: 'foreign-top-level-operation' },
+      expected: 'reject',
+    },
+    {
+      name: 'foreign capability artifact id',
+      response: {
+        ...valid,
+        reference: {
+          ...valid.reference,
+          artifactId: '22222222-2222-4222-8222-222222222222',
+        },
+      },
+      expected: 'reject',
+    },
+    {
+      name: 'valid zero version',
+      response: { ...valid, version: 0 },
+      expected: 'accept',
+    },
+    {
+      name: 'length-valid non-date acknowledgement',
+      response: { ...valid, acknowledgedAt: 'xxxxxxxxxxxxxxxxxxxx' },
+      expected: 'reject',
+    },
+  ] as const
+
+  for (const scenario of cases) {
+    if (scenario.expected === 'accept') {
+      assert.equal(
+        decodeCtfRangeEngineResult(scenario.response, authority).version,
+        0,
+        scenario.name,
+      )
+    } else {
+      assert.throws(
+        () => decodeCtfRangeEngineResult(scenario.response, authority),
+        /CTF range engine result is invalid/,
+        scenario.name,
+      )
+    }
+  }
+})
+
 test('uncertain recovery queries the exact full manifest and delegates classification to the SDK', async () => {
   const operation = createRangeOperation()
   const binding = await createRangeBinding(operation)
@@ -903,6 +964,23 @@ function engineResult(
       frozenAt: '2026-07-30T00:00:00.000Z',
     },
   }
+}
+
+function resultEnvelope(
+  operation: DurableCtfRangeOperation,
+  requestDigest: string,
+  operationId = operation.operationId,
+): Uint8Array {
+  return new TextEncoder().encode(
+    JSON.stringify({
+      schemaVersion: 1,
+      operationId,
+      authorizationId: operation.authorizationId,
+      requestDigest,
+      selection: '01',
+      signatures: [],
+    }),
+  )
 }
 
 function createRangeOperation(): DurableCtfRangeOperation {

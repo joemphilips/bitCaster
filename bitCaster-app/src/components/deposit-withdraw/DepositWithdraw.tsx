@@ -7,12 +7,16 @@ import { PayLightning } from "./PayLightning";
 
 export function DepositWithdraw(props: DepositWithdrawProps) {
   const { currentView } = props;
+  const depositReminder = props.mode === "deposit" ? props.depositReminder : undefined;
+  const statusMessage = props.statusMessage;
 
   switch (currentView) {
     case "chooser":
       return (
         <MethodChooser
           mode={props.mode}
+          depositReminder={depositReminder}
+          statusMessage={statusMessage}
           onSelectMethod={props.onSelectMethod}
           onClose={props.onClose}
           onToggleFullscreen={props.onToggleFullscreen}
@@ -24,6 +28,8 @@ export function DepositWithdraw(props: DepositWithdrawProps) {
         <DepositEcash
           mints={props.mints}
           selectedMintId={props.selectedMintId}
+          depositReminder={depositReminder}
+          statusMessage={statusMessage}
           onMintChange={props.onMintChange}
           onPaste={props.onPaste}
           onScan={props.onScan}
@@ -38,14 +44,12 @@ export function DepositWithdraw(props: DepositWithdrawProps) {
         <DepositLightning
           mints={props.mints}
           selectedMintId={props.selectedMintId}
+          depositReminder={depositReminder}
+          statusMessage={statusMessage}
           amountSats={props.amountSats}
           amountLabel={props.amountLabel}
-          amountFiat={props.amountFiat}
-          fiatSymbol={props.fiatSymbol}
-          showFiatPrimary={props.showFiatPrimary}
           onMintChange={props.onMintChange}
           onNumpadPress={props.onNumpadPress}
-          onToggleCurrency={props.onToggleCurrency}
           onCreateInvoice={props.onCreateInvoice}
           onClose={props.onClose}
         />
@@ -56,13 +60,10 @@ export function DepositWithdraw(props: DepositWithdrawProps) {
         <SendEcash
           mints={props.mints}
           selectedMintId={props.selectedMintId}
+          statusMessage={statusMessage}
           amountSats={props.amountSats}
-          amountFiat={props.amountFiat}
-          fiatSymbol={props.fiatSymbol}
-          showFiatPrimary={props.showFiatPrimary}
           onMintChange={props.onMintChange}
           onNumpadPress={props.onNumpadPress}
-          onToggleCurrency={props.onToggleCurrency}
           onSendEcash={props.onSendEcash}
           onReclaimEcash={props.onReclaimEcash}
           hasPendingBearerReclaim={props.hasPendingBearerReclaim}
@@ -75,6 +76,7 @@ export function DepositWithdraw(props: DepositWithdrawProps) {
         <PayLightning
           mints={props.mints}
           selectedMintId={props.selectedMintId}
+          statusMessage={statusMessage}
           lightningInput={props.lightningInput}
           onMintChange={props.onMintChange}
           onLightningInputChange={props.onLightningInputChange}

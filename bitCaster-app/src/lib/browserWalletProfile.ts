@@ -31,6 +31,18 @@ export function activeBrowserWalletScopeId(): string | null {
   return activeScopeId;
 }
 
+/** Check a live wallet value against the module's currently active profile. */
+export function isActiveBrowserWalletId(walletId: string, mnemonic: string): boolean {
+  const currentWalletId = browserWalletIdFromMnemonic(mnemonic);
+  const currentScopeId =
+    currentWalletId === null
+      ? null
+      : deriveDurableCustodyScopeId({ scopeKind: "wallet", walletId: currentWalletId });
+  return (
+    currentWalletId === walletId && currentScopeId !== null && activeScopeId === currentScopeId
+  );
+}
+
 export function requireActiveBrowserWalletScopeId(): string {
   if (activeScopeId === null) throw new Error("The wallet profile is unavailable.");
   return activeScopeId;

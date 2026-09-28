@@ -7,6 +7,7 @@
  */
 import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToHex, concatBytes, utf8ToBytes } from '@noble/hashes/utils.js'
+import type { components } from './generated/api.js'
 
 export const ASSET_MONITORING_RESPONSE_BYTES_MAX = 2 * 1024 * 1024
 export const ASSET_MONITORING_ERROR_RESPONSE_BYTES_MAX = 64 * 1024
@@ -15,22 +16,23 @@ export const ASSET_MONITORING_HISTORY_POINTS_MAX = 300
 export const ASSET_MONITORING_RECOVERY_HINT_ITEMS_MAX = 16
 export const ASSET_MONITORING_RECOVERY_COUNTERS_MAX = 4096
 
-export type AssetMonitoringUnit = 'sat' | 'msat'
+export type AssetMonitoringCashuUnit = components['schemas']['CollateralUnit']
+export type AssetMonitoringDisplayBaseAsset = components['schemas']['BaseAsset']
 export type AssetMonitoringTimeframe = '1D' | '1W' | '1M' | 'ALL'
 export type AssetMonitoringValuationStatus = 'valued' | 'unvalued'
 
 export interface AssetMonitoringCollateralAssetReference {
   canonicalMintUrl: string
   kind: 'collateral'
-  cashuUnit: AssetMonitoringUnit
-  displayBaseAsset: AssetMonitoringUnit
+  cashuUnit: AssetMonitoringCashuUnit
+  displayBaseAsset: AssetMonitoringDisplayBaseAsset
 }
 
 export interface AssetMonitoringConditionalAssetReference {
   canonicalMintUrl: string
   kind: 'conditional'
-  cashuUnit: AssetMonitoringUnit
-  displayBaseAsset: AssetMonitoringUnit
+  cashuUnit: AssetMonitoringCashuUnit
+  displayBaseAsset: AssetMonitoringDisplayBaseAsset
   conditionId: string
   parentConditionId: string
   outcomeUniverseDigest: string
@@ -613,8 +615,8 @@ export function decodeAssetMonitoringAssetReference(value: unknown): AssetMonito
   if (record.kind === 'collateral') {
     const asset = exactRecord(record, ['canonicalMintUrl', 'kind', 'cashuUnit', 'displayBaseAsset'])
     requireCanonicalMintUrl(asset.canonicalMintUrl)
-    requireUnit(asset.cashuUnit)
-    requireUnit(asset.displayBaseAsset)
+    requireCashuUnit(asset.cashuUnit)
+    requireDisplayBaseAsset(asset.displayBaseAsset)
     return {
       canonicalMintUrl: asset.canonicalMintUrl,
       kind: 'collateral',
@@ -634,8 +636,8 @@ export function decodeAssetMonitoringAssetReference(value: unknown): AssetMonito
       'internalOutcomeSetId',
     ])
     requireCanonicalMintUrl(asset.canonicalMintUrl)
-    requireUnit(asset.cashuUnit)
-    requireUnit(asset.displayBaseAsset)
+    requireCashuUnit(asset.cashuUnit)
+    requireDisplayBaseAsset(asset.displayBaseAsset)
     requireConditionId(asset.conditionId, 'asset-monitoring condition id')
     requireConditionId(asset.parentConditionId, 'asset-monitoring parent condition id')
     requireDigest(asset.outcomeUniverseDigest, 'asset-monitoring outcome universe digest')
@@ -748,8 +750,6 @@ function compareAssets(
   return (
     leftKind - rightKind ||
     compareOrdinal(left.canonicalMintUrl, right.canonicalMintUrl) ||
-    compareUnit(left.cashuUnit, right.cashuUnit) ||
-    compareUnit(left.displayBaseAsset, right.displayBaseAsset) ||
     compareOrdinal(assetConditionId(left), assetConditionId(right)) ||
     compareOrdinal(assetParentConditionId(left), assetParentConditionId(right)) ||
     compareOrdinal(assetOutcomeUniverseDigest(left), assetOutcomeUniverseDigest(right)) ||
@@ -928,8 +928,12 @@ function requireCanonicalMintUrl(value: unknown): asserts value is string {
   }
 }
 
-function requireUnit(value: unknown): asserts value is AssetMonitoringUnit {
-  if (value !== 'sat' && value !== 'msat') throw new Error('asset-monitoring unit is invalid')
+function requireCashuUnit(value: unknown): asserts value is AssetMonitoringCashuUnit {
+  if (value !== 'msat') throw new Error('asset-monitoring cashu unit must be msat')
+}
+
+function requireDisplayBaseAsset(value: unknown): asserts value is AssetMonitoringDisplayBaseAsset {
+  if (value !== 'sat') throw new Error('asset-monitoring display base asset must be sat')
 }
 
 function requireTimeframe(value: unknown): asserts value is AssetMonitoringTimeframe {
@@ -1025,10 +1029,6 @@ function requireIsoTime(value: unknown, label: string): asserts value is string 
   ) {
     throw new Error(`${label} is invalid`)
   }
-}
-
-function compareUnit(left: AssetMonitoringUnit, right: AssetMonitoringUnit): number {
-  return (left === 'sat' ? 0 : 1) - (right === 'sat' ? 0 : 1)
 }
 
 function assetConditionId(asset: AssetMonitoringAssetReference): string {

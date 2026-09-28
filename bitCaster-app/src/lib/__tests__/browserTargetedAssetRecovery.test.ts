@@ -6,9 +6,11 @@ import {
   deriveDurableWalletProofSecret,
   deriveEncryptedWalletBackupV2AssetLocator,
   deriveRootCtfOutcomeCollectionId,
+  EncryptedWalletBackupV2HttpTransportError,
 } from "@bitcaster/client-sdk";
 import type { BitcasterDB } from "../../stores/proof-db";
 import { browserWalletScope } from "../browserCtfRangeOrderSource";
+import { BrowserEncryptedWalletBackupV2LocalCustodyError } from "../browserEncryptedWalletBackupV2Restore";
 import {
   browserTargetedAssetRecoveryFactVersion,
   recoverBrowserTargetedAsset,
@@ -25,6 +27,20 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("../browserEncryptedWalletBackupV2Restore", () => ({
+  BrowserEncryptedWalletBackupV2LocalCustodyError: class extends Error {
+    constructor(
+      readonly code:
+        | "removal"
+        | "missing-authority"
+        | "invalid-action"
+        | "partial"
+        | "stale-profile"
+        | "proof-read"
+        | "snapshot-read",
+    ) {
+      super(code);
+    }
+  },
   readBrowserEncryptedWalletBackupV2LocalAvailableAmount: mocks.localAmount,
   restoreAndAdmitBrowserEncryptedWalletBackupV2TargetedAsset: mocks.restoreBackup,
 }));
@@ -74,7 +90,20 @@ it("short-circuits exact local custody without backup or mint I/O", async () => 
   await expect(recoverBrowserTargetedAsset(input)).resolves.toEqual({ kind: "local" });
 
   expect(input.remote.readCurrentInventory).not.toHaveBeenCalled();
+  expect(input.loadWallet).not.toHaveBeenCalled();
   expect(input.wallet.restore).not.toHaveBeenCalled();
+});
+
+it("rejects a sat product asset before local custody I/O", async () => {
+  const input = await fixture();
+  (input as any).asset = { ...input.asset, unit: "sat" };
+
+  await expect(recoverBrowserTargetedAsset(input)).resolves.toEqual({
+    kind: "persistent-error",
+  });
+
+  expect(mocks.localAmount).not.toHaveBeenCalled();
+  expect(input.remote.readCurrentInventory).not.toHaveBeenCalled();
 });
 
 it.each([1n, 2n])(
@@ -93,6 +122,7 @@ it.each([1n, 2n])(
     });
 
     expect(mocks.restoreBackup).toHaveBeenCalledOnce();
+    expect(input.loadWallet).not.toHaveBeenCalled();
     expect(input.readExactMonitoringRecovery).not.toHaveBeenCalled();
     expect(input.wallet.restore).not.toHaveBeenCalled();
   },
@@ -120,6 +150,7 @@ it("uses a higher local amount and merges a sufficient backup with a lower local
     expect.objectContaining({ minimumAvailableAmount: 1n }),
   );
   expect(lowerLocal.wallet.restore).not.toHaveBeenCalled();
+  expect(lowerLocal.loadWallet).not.toHaveBeenCalled();
 });
 
 it("falls through a lower backup amount when no local copy exists", async () => {
@@ -132,6 +163,7 @@ it("falls through a lower backup amount when no local copy exists", async () => 
   await expect(recoverBrowserTargetedAsset(input)).resolves.toEqual({ kind: "unavailable" });
 
   expect(mocks.restoreBackup).not.toHaveBeenCalled();
+  expect(input.loadWallet).toHaveBeenCalledOnce();
   expect(input.wallet.restore).toHaveBeenCalledOnce();
 });
 
@@ -144,6 +176,87 @@ it("does not fall through after a backup service failure", async () => {
 
   expect(input.wallet.restore).not.toHaveBeenCalled();
   expect(warning).toHaveBeenCalledWith("targeted-recovery-stage=current-inventory");
+});
+
+it("reports local custody authority failure without exposing the failure", async () => {
+  const secret = "proof-secret-must-not-escape";
+  mocks.localAmount.mockRejectedValueOnce(new Error(secret));
+  const input = await fixture();
+  const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+  await expect(recoverBrowserTargetedAsset(input)).resolves.toEqual({
+    kind: "persistent-error",
+  });
+
+  expect(warning).toHaveBeenCalledWith("targeted-recovery-code=local-custody-authority");
+  expect(warning.mock.calls.flat()).not.toContain(secret);
+  expect(input.remote.readCurrentInventory).not.toHaveBeenCalled();
+});
+
+it.each([
+  ["removal", "local-custody-removal"],
+  ["missing-authority", "local-custody-missing-authority"],
+  ["invalid-action", "local-custody-invalid-action"],
+  ["partial", "local-custody-partial"],
+  ["stale-profile", "local-custody-stale-profile"],
+  ["proof-read", "local-custody-proof-read"],
+  ["snapshot-read", "local-custody-snapshot-read"],
+] as const)("reports the typed local custody %s guard", async (code, diagnostic) => {
+  mocks.localAmount.mockRejectedValueOnce(
+    new BrowserEncryptedWalletBackupV2LocalCustodyError(code, "secret-shaped local detail"),
+  );
+  const input = await fixture();
+  const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+  await expect(recoverBrowserTargetedAsset(input)).resolves.toEqual({
+    kind: "persistent-error",
+  });
+
+  expect(warning).toHaveBeenCalledWith(`targeted-recovery-code=${diagnostic}`);
+  expect(input.remote.readCurrentInventory).not.toHaveBeenCalled();
+});
+
+it.each([
+  ["transport-failure", "current-inventory-transport"],
+  ["invalid-response", "current-inventory-decode-or-digest"],
+] as const)("reports a bounded current-inventory %s diagnostic", async (errorCode, diagnostic) => {
+  mocks.localAmount.mockResolvedValueOnce(null);
+  const input = await fixture();
+  input.remote.readCurrentInventory.mockRejectedValueOnce(
+    new EncryptedWalletBackupV2HttpTransportError(errorCode),
+  );
+  const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+  await expect(recoverBrowserTargetedAsset(input)).resolves.toEqual({
+    kind: "persistent-error",
+  });
+
+  expect(warning).toHaveBeenCalledWith(`targeted-recovery-code=${diagnostic}`);
+  expect(warning.mock.calls.flat()).not.toContain(errorCode);
+});
+
+it("reports setup and lock failures at the targeted recovery entrypoint", async () => {
+  const stale = await fixture();
+  stale.isCurrentProfile = () => false;
+  const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+  await expect(recoverBrowserTargetedAsset(stale)).resolves.toEqual({
+    kind: "persistent-error",
+  });
+  expect(warning).toHaveBeenCalledWith("targeted-recovery-code=setup");
+
+  const locked = await fixture();
+  locked.lockManager = {
+    request: vi.fn(async () => {
+      throw new Error("lock secret");
+    }),
+  } as Pick<LockManager, "request">;
+
+  await expect(recoverBrowserTargetedAsset(locked)).resolves.toEqual({
+    kind: "persistent-error",
+  });
+  expect(warning).toHaveBeenCalledWith("targeted-recovery-code=lock");
+  expect(warning.mock.calls.flat()).not.toContain("lock secret");
 });
 
 it("reports fixed monitoring and mint stages without arbitrary error text", async () => {
@@ -237,7 +350,7 @@ it("rejects a foreign restored asset before admission", async () => {
   input.wallet.restore.mockResolvedValueOnce({ proofs: [exactProof()] });
   input.wallet.getKeyset.mockReturnValueOnce({
     id: KEYSET,
-    unit: "sat",
+    unit: "msat",
     verify: () => true,
     conditional: { conditionId: "11".repeat(32), outcomeCollectionId: "22".repeat(32) },
   });
@@ -273,11 +386,11 @@ it("keeps exact conditional metadata in canonical and legacy proof admission", a
   );
 });
 
-it("does not re-admit an exact proof that already exists in canonical custody", async () => {
+it("does not re-admit a persisted losing proof while importing a fresh sibling", async () => {
   mocks.localAmount.mockResolvedValueOnce(null).mockResolvedValueOnce(2n);
   const input = await fixture();
   input.monitoringFact.availableSubunits = 2;
-  const existing = exactProof(4);
+  const losing = exactProof(4);
   const fresh = exactProof(5);
   input.monitoringFact.recoveryHint = {
     keysetIds: [KEYSET],
@@ -292,16 +405,17 @@ it("does not re-admit an exact proof that already exists in canonical custody", 
         scopeId: input.scopeId,
         normalizedMint: input.asset.mintUrl,
         unit: input.asset.unit,
-        keysetId: existing.id,
-        secret: existing.secret,
+        keysetId: losing.id,
+        secret: losing.secret,
       }),
+      selectability: "verified-losing",
     },
   ]);
   input.wallet.restore
-    .mockResolvedValueOnce({ proofs: [existing] })
+    .mockResolvedValueOnce({ proofs: [losing] })
     .mockResolvedValueOnce({ proofs: [fresh] });
   input.wallet.groupProofsByState.mockResolvedValueOnce({
-    unspent: [existing, fresh],
+    unspent: [losing, fresh],
     pending: [],
     spent: [],
   });
@@ -311,6 +425,9 @@ it("does not re-admit an exact proof that already exists in canonical custody", 
   expect(mocks.admit).toHaveBeenCalledOnce();
   expect(mocks.admit).toHaveBeenCalledWith(
     expect.objectContaining({ proofs: [expect.objectContaining(fresh)] }),
+  );
+  expect(mocks.admit.mock.calls[0]?.[0].proofs).not.toEqual(
+    expect.arrayContaining([expect.objectContaining(losing)]),
   );
 });
 
@@ -444,7 +561,7 @@ async function fixture(
     groupProofsByState: vi.fn(),
     getKeyset: vi.fn(() => ({
       id: KEYSET,
-      unit: "sat",
+      unit: "msat",
       hasKeys: true,
       verify: () => true,
       conditional,
@@ -471,7 +588,7 @@ async function fixture(
   } as any;
   const asset = {
     mintUrl: "https://mint.example",
-    unit: "sat",
+    unit: "msat",
     assetIdentity: options.conditional
       ? `ctf:${CONDITION_ID}:${OUTCOME_COLLECTION_ID}`
       : "cashu:ordinary",
@@ -511,7 +628,7 @@ function monitoringFact(conditional = false) {
       ? {
           canonicalMintUrl: "https://mint.example",
           kind: "conditional" as const,
-          cashuUnit: "sat" as const,
+          cashuUnit: "msat" as const,
           displayBaseAsset: "sat" as const,
           conditionId: CONDITION_ID,
           parentConditionId: "00".repeat(32),
@@ -521,7 +638,7 @@ function monitoringFact(conditional = false) {
       : {
           canonicalMintUrl: "https://mint.example",
           kind: "collateral" as const,
-          cashuUnit: "sat" as const,
+          cashuUnit: "msat" as const,
           displayBaseAsset: "sat" as const,
         },
     availableSubunits: 1,

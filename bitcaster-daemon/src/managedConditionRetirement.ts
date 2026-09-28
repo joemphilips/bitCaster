@@ -22,7 +22,7 @@ import { deriveDurableCustodyOperationId } from '@bitcaster-market/client-sdk/du
 import type { ConditionAttestationResponse } from '@bitcaster-market/client-sdk/engineClient'
 import {
   amountToNumber,
-  computeInputFeeSatsForProofs,
+  computeInputFeeSubunitsForProofs,
 } from '@bitcaster-market/client-sdk/proofSelection'
 import type { CustodyScopeFence } from './profileFencing.ts'
 import type { DaemonProfile } from './profile.ts'
@@ -396,7 +396,7 @@ async function buildRetirementPreview(
       const count =
         remaining > RETIREMENT_PAGE_PROOF_MAX ? RETIREMENT_PAGE_PROOF_MAX - 1 : remaining
       const page = group.slice(offset, offset + count)
-      fee += computeInputFeeSatsForProofs(page, feePpk)
+      fee += computeInputFeeSubunitsForProofs(page, feePpk)
       offset += count
     }
   }

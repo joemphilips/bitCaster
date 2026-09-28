@@ -25,14 +25,17 @@ vi.mock("@/stores/activity-log", () => ({
   useActivityLogStore: (selector: (s: unknown) => unknown) => selector({ addActivity: vi.fn() }),
 }));
 
-vi.mock("@/stores/proof-db", () => ({
-  getConditionCtfProofs: vi.fn().mockResolvedValue([]),
-  getOutcomeProofs: vi.fn().mockResolvedValue([]),
-  removeProofs: vi.fn().mockResolvedValue(undefined),
-}));
+vi.mock("@/stores/proof-db", () => ({}));
 
-vi.mock("@/lib/cashu", () => ({
-  settleCtfPosition: vi.fn().mockResolvedValue([]),
+vi.mock("@/lib/browserPortfolioClaim", () => ({
+  claimPortfolioPosition: vi
+    .fn()
+    .mockResolvedValue({ kind: "completed", committedPayoutAmount: 0 }),
+}));
+vi.mock("@/lib/browserPortfolioRemove", () => ({
+  removePortfolioPosition: vi
+    .fn()
+    .mockResolvedValue({ kind: "completed", committedPayoutAmount: 0 }),
 }));
 
 vi.mock("@/stores/wallet", () => ({
@@ -55,7 +58,6 @@ vi.mock("../usePortfolioState", () => ({
     stats: {
       positionsValueSats: 0,
       totalValueSats: 0,
-      biggestWinSats: 0,
       predictionsCount: 0,
     },
     positions: [],

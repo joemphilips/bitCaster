@@ -147,7 +147,7 @@ export class DaemonCtfRangeCoordinator {
           return
         }
         if (commitPreparedSource) {
-          const source = commitDaemonCtfRangeSource(database, operation, input.observedAtMs)
+          commitDaemonCtfRangeSource(database, operation, input.observedAtMs, this.#fence)
           if (spentSourceProofs !== null) {
             spendResidualSourceProofs(
               store,
@@ -157,13 +157,6 @@ export class DaemonCtfRangeCoordinator {
               input.observedAtMs,
             )
           }
-          admitPreparedSourceProofs(
-            store,
-            input.binding.record,
-            operation,
-            source.authorization,
-            input.observedAtMs,
-          )
         }
         applyDurableCustodyTransaction(
           new DurableCustodyTransactionSqlite(database, this.#fence.scopeId, input.observedAtMs),
@@ -696,28 +689,6 @@ function admitSpendableSuccessors(
       nowMs,
     })
   }
-}
-
-function admitPreparedSourceProofs(
-  store: DurableCustodySqliteStore,
-  record: DurableCustodyRecord,
-  operation: DurableCtfRangeOperation,
-  proofs: readonly Proof[],
-  nowMs: number,
-): void {
-  if (
-    proofs.length !== record.operation.reservation.inputs.length ||
-    proofs.length !== operation.inputs.length
-  ) {
-    throw new Error('daemon CTF range source proof count is foreign')
-  }
-  proofs.forEach((proof, position) => {
-    const row = sourceProofRow(record, operation, proof, nowMs)
-    if (row.proofId !== record.operation.reservation.inputs[position]!.proofId) {
-      throw new Error('daemon CTF range source proof identity is foreign')
-    }
-    store.putProofCas(row, null)
-  })
 }
 
 function spendResidualSourceProofs(

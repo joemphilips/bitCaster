@@ -212,10 +212,11 @@ describe("SuccessView", () => {
     vi.useFakeTimers();
     const onClose = vi.fn();
 
-    render(<SuccessView amountSats={1000} onClose={onClose} />);
+    render(<SuccessView amountMsat={1000} baseAsset="sat" onClose={onClose} />);
 
     expect(screen.getByRole("progressbar", { name: "Auto-advance countdown" })).toBeInTheDocument();
     expect(screen.getByTestId("auto-advance-progress")).toHaveStyle({ width: "100%" });
+    expect(screen.getByText("1 sats")).toBeInTheDocument();
 
     act(() => {
       vi.advanceTimersByTime(1500);

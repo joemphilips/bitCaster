@@ -24,7 +24,7 @@ function market(id: string, state: Market["state"]): Market {
     creatorFeePercent: 0,
     baseMarket: "sats",
     baseAsset: "sat",
-    divisibility: 10_000,
+    divisibility: 1_000,
   };
 }
 

@@ -183,19 +183,19 @@ export class DurableOutgoingCashuSqliteStore {
   preflightParticipationScoreDelivery(input: {
     readonly scopeId: string
     readonly transferId: string
-    readonly amountSats: number
+    readonly amountMsat: number
     readonly purchasedTotal: number
     readonly accountSubject: string
     readonly mintUrl: string
     readonly nowMs: number
   }): {
     readonly transferId: string
-    readonly amountSats: number
+    readonly amountMsat: number
     readonly purchasedTotalEpoch: number
   } {
     assertPurchasedTotal(input.purchasedTotal)
     assertTransferId(input.transferId)
-    assertParticipationScoreAmount(input.amountSats)
+    assertParticipationScoreAmount(input.amountMsat)
     const pointer = this.#readParticipationScorePointer(input.scopeId)
     if (pointer !== null) {
       const current = this.get(input.scopeId, pointer.transferId)
@@ -212,35 +212,35 @@ export class DurableOutgoingCashuSqliteStore {
     const inserted = this.#database
       .prepare(
         `INSERT INTO daemon_participation_score_delivery_pointers (
-           scope_id, transfer_id, amount_sats, purchased_total_epoch, created_at_ms
+           scope_id, transfer_id, amount_msat, purchased_total_epoch, created_at_ms
          ) VALUES (?, ?, ?, ?, ?)`,
       )
-      .run(input.scopeId, input.transferId, input.amountSats, input.purchasedTotal, input.nowMs)
+      .run(input.scopeId, input.transferId, input.amountMsat, input.purchasedTotal, input.nowMs)
     if (inserted.changes !== 1) throw new Error('Participation Score delivery pointer CAS lost')
     return {
       transferId: input.transferId,
-      amountSats: input.amountSats,
+      amountMsat: input.amountMsat,
       purchasedTotalEpoch: input.purchasedTotal,
     }
   }
 
   #readParticipationScorePointer(scopeId: string): {
     readonly transferId: string
-    readonly amountSats: number
+    readonly amountMsat: number
     readonly purchasedTotalEpoch: number
   } | null {
     const row = this.#database
       .prepare(
-        `SELECT transfer_id AS transferId, amount_sats AS amountSats,
+        `SELECT transfer_id AS transferId, amount_msat AS amountMsat,
            purchased_total_epoch AS purchasedTotalEpoch
            FROM daemon_participation_score_delivery_pointers WHERE scope_id = ?`,
       )
       .get(scopeId) as
-      | { transferId: string; amountSats: number; purchasedTotalEpoch: number }
+      | { transferId: string; amountMsat: number; purchasedTotalEpoch: number }
       | undefined
     if (row === undefined) return null
     assertTransferId(row.transferId)
-    assertParticipationScoreAmount(row.amountSats)
+    assertParticipationScoreAmount(row.amountMsat)
     assertPurchasedTotal(row.purchasedTotalEpoch)
     return row
   }
@@ -249,7 +249,7 @@ export class DurableOutgoingCashuSqliteStore {
     scopeId: string,
     pointer: {
       readonly transferId: string
-      readonly amountSats: number
+      readonly amountMsat: number
       readonly purchasedTotalEpoch: number
     },
     current: {
@@ -269,16 +269,16 @@ export class DurableOutgoingCashuSqliteStore {
     scopeId: string,
     pointer: {
       readonly transferId: string
-      readonly amountSats: number
+      readonly amountMsat: number
       readonly purchasedTotalEpoch: number
     },
   ): void {
     const pointerDeleted = this.#database
       .prepare(
         `DELETE FROM daemon_participation_score_delivery_pointers
-         WHERE scope_id = ? AND transfer_id = ? AND amount_sats = ? AND purchased_total_epoch = ?`,
+         WHERE scope_id = ? AND transfer_id = ? AND amount_msat = ? AND purchased_total_epoch = ?`,
       )
-      .run(scopeId, pointer.transferId, pointer.amountSats, pointer.purchasedTotalEpoch)
+      .run(scopeId, pointer.transferId, pointer.amountMsat, pointer.purchasedTotalEpoch)
     if (pointerDeleted.changes !== 1)
       throw new Error('Participation Score delivery pointer CAS lost')
   }
@@ -306,7 +306,7 @@ export class DurableOutgoingCashuSqliteStore {
   #assertParticipationScorePointerTransfer(input: {
     readonly pointer: {
       readonly transferId: string
-      readonly amountSats: number
+      readonly amountMsat: number
       readonly purchasedTotalEpoch: number
     }
     readonly current: {
@@ -323,14 +323,14 @@ export class DurableOutgoingCashuSqliteStore {
       deliveryId: input.pointer.transferId,
       accountSubject: input.input.accountSubject,
       mintUrl: input.input.mintUrl,
-      requestedAmount: String(input.pointer.amountSats),
+      requestedAmount: String(input.pointer.amountMsat),
     })
     const transfer = input.current.transfer
     if (
       transfer.transferId !== input.pointer.transferId ||
       transfer.requestedAmount !== expected.requestedAmount ||
       transfer.mintUrl !== expected.mintUrl ||
-      transfer.unit !== 'sat' ||
+      transfer.unit !== 'msat' ||
       transfer.deliveryIntent.policy !== 'durable-recipient-ack' ||
       transfer.deliveryIntent.expectedSubject !== expected.accountSubject ||
       transfer.deliveryIntent.opaqueProductBinding !== expected.productBindingSha256
@@ -548,7 +548,7 @@ function assertPurchasedTotal(value: number): void {
 }
 
 function assertParticipationScoreAmount(value: number): void {
-  if (!Number.isSafeInteger(value) || value <= 0) {
+  if (!Number.isSafeInteger(value) || value <= 0 || value % 1_000 !== 0) {
     throw new Error('Participation Score delivery amount is invalid')
   }
 }

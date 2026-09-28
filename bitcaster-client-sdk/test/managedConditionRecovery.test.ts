@@ -58,6 +58,12 @@ for (const [kind, semanticKind, stage, path] of [
   ['capability-preparation', 'ctf-range-conditional-source', 'capability-preparation', '/v1/swap'],
   [
     'capability-preparation',
+    'ctf-range-conditional-source',
+    'capability-preparation',
+    '/v1/ctf/convert',
+  ],
+  [
+    'capability-preparation',
     'ctf-range-collateral-convert',
     'capability-preparation',
     '/v1/ctf/convert',

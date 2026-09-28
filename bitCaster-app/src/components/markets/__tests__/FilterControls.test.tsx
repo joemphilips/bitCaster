@@ -43,6 +43,39 @@ describe("FilterControls", () => {
     const onVolumeRangeChange = vi.fn();
     const onClosingDateChange = vi.fn();
     const onIncludeClosedChange = vi.fn();
+    const onClearAll = vi.fn();
+
+    render(
+      <FilterControls
+        isVisible={true}
+        selectedMarketTypes={["yesno"]}
+        volumeRange={{}}
+        includeClosed={true}
+        onMarketTypeChange={onMarketTypeChange}
+        onVolumeRangeChange={onVolumeRangeChange}
+        onClosingDateChange={onClosingDateChange}
+        onIncludeClosedChange={onIncludeClosedChange}
+        onClearAll={onClearAll}
+      />,
+    );
+
+    const clearAll = screen.getByText("Clear all");
+    expect(clearAll).toBeInTheDocument();
+
+    await user.click(clearAll);
+    expect(onMarketTypeChange).not.toHaveBeenCalled();
+    expect(onVolumeRangeChange).not.toHaveBeenCalled();
+    expect(onClosingDateChange).not.toHaveBeenCalled();
+    expect(onIncludeClosedChange).not.toHaveBeenCalled();
+    expect(onClearAll).toHaveBeenCalledOnce();
+  });
+
+  it("resets each filter when no clear-all owner is supplied", async () => {
+    const user = userEvent.setup();
+    const onMarketTypeChange = vi.fn();
+    const onVolumeRangeChange = vi.fn();
+    const onClosingDateChange = vi.fn();
+    const onIncludeClosedChange = vi.fn();
 
     render(
       <FilterControls
@@ -57,10 +90,7 @@ describe("FilterControls", () => {
       />,
     );
 
-    const clearAll = screen.getByText("Clear all");
-    expect(clearAll).toBeInTheDocument();
-
-    await user.click(clearAll);
+    await user.click(screen.getByTestId("market-filter-clear-all"));
     expect(onMarketTypeChange).toHaveBeenCalledWith([]);
     expect(onVolumeRangeChange).toHaveBeenCalledWith({});
     expect(onClosingDateChange).toHaveBeenCalledWith(undefined);

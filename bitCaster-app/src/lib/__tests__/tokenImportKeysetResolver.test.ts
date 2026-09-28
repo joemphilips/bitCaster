@@ -33,11 +33,11 @@ afterEach(() => {
 describe("resolveTokenImportKeysets", () => {
   it("returns requested inactive regular and conditional keysets without active-only filtering", async () => {
     const fetchMock = vi.fn(async (input: URL | RequestInfo, _init?: RequestInit) => {
-      const url = String(input);
-      return url.endsWith("/v1/conditional_keysets")
+      const url = new URL(String(input));
+      return url.pathname.endsWith("/v1/conditional_keysets")
         ? response([
-            { id: CONDITIONAL_ID, unit: "msat", active: false },
-            { id: "00aaaaaaaaaaaaaa", unit: "msat", active: true },
+            { id: CONDITIONAL_ID, unit: "msat", active: false, registered_at: 0 },
+            { id: "00aaaaaaaaaaaaaa", unit: "msat", active: true, registered_at: 1 },
           ])
         : response([
             { id: REGULAR_ID, unit: "sat", active: false },
@@ -55,7 +55,7 @@ describe("resolveTokenImportKeysets", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(fetchMock.mock.calls.map(([url]) => String(url))).toEqual([
       "https://mint.example/v1/keysets",
-      "https://mint.example/v1/conditional_keysets",
+      "https://mint.example/v1/conditional_keysets?limit=100",
     ]);
     expect(fetchMock.mock.calls.every(([, init]) => init?.redirect === "error")).toBe(true);
   });
@@ -66,7 +66,7 @@ describe("resolveTokenImportKeysets", () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async (input: URL | RequestInfo) =>
-        String(input).endsWith("/v1/conditional_keysets")
+        new URL(String(input)).pathname.endsWith("/v1/conditional_keysets")
           ? response([])
           : response([{ id: fullId, unit: "sat", active: true }]),
       ),
@@ -77,12 +77,45 @@ describe("resolveTokenImportKeysets", () => {
     expect(result.regularKeysets).toEqual([{ keysetId: fullId, unit: "sat", active: true }]);
   });
 
+  it("resolves a conditional keyset from the next inclusive registry page", async () => {
+    const prefix = "01d8a2e36a064e11";
+    const fullId = `${prefix}${"ab".repeat(25)}`;
+    const firstPage = Array.from({ length: 100 }, (_, index) => ({
+      id: `01${(index + 1).toString(16).padStart(64, "0")}`,
+      unit: "sat",
+      active: true,
+      registered_at: index,
+    }));
+    const conditionalUrls: URL[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: URL | RequestInfo) => {
+        const url = new URL(String(input));
+        if (url.pathname.endsWith("/keysets")) return response([]);
+        conditionalUrls.push(url);
+        if (url.searchParams.has("since")) {
+          return response([
+            firstPage.at(-1),
+            { id: fullId, unit: "sat", active: true, registered_at: 100 },
+          ]);
+        }
+        return response(firstPage);
+      }),
+    );
+
+    const result = await resolveTokenImportKeysets(request([prefix]));
+
+    expect(result.conditionalKeysets).toEqual([{ keysetId: fullId, unit: "sat", active: true }]);
+    expect(conditionalUrls.map((url) => url.searchParams.get("limit"))).toEqual(["100", "100"]);
+    expect(conditionalUrls.map((url) => url.searchParams.get("since"))).toEqual([null, "99"]);
+  });
+
   it("enforces the combined regular and conditional candidate bound", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async (input: URL | RequestInfo) =>
-        String(input).endsWith("/v1/conditional_keysets")
-          ? response([{ id: CONDITIONAL_ID, unit: "msat", active: true }])
+        new URL(String(input)).pathname.endsWith("/v1/conditional_keysets")
+          ? response([{ id: CONDITIONAL_ID, unit: "msat", active: true, registered_at: 0 }])
           : response([{ id: REGULAR_ID, unit: "sat", active: true }]),
       ),
     );

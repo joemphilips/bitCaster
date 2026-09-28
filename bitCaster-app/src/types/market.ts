@@ -21,19 +21,28 @@ export type Tag = MetaTag | CategoryTag;
 // Market Data Types
 // =============================================================================
 
+import type { components } from "@/generated/api";
+
+export type LatestConfirmedTrade = components["schemas"]["LatestConfirmedTrade"];
+
 export interface CurrentOdds {
-  yes: number;
-  no: number;
+  /** Price numerator. Null means no confirmed trade exists for this view. */
+  yes: number | null;
+  /** Price numerator. Null means no confirmed trade exists for this view. */
+  no: number | null;
 }
 
 export interface Outcome {
   id: string;
   label: string;
-  odds: number;
+  /** Price numerator. Null means no confirmed trade exists for this outcome. */
+  odds: number | null;
+  /** Persisted display accent for this categorical outcome, when available. */
+  color?: string;
 }
 
 // Base market properties shared by all market types
-export type ProductMarketDivisibility = 10_000 | 1_000_000;
+export type ProductMarketDivisibility = 1_000 | 1_000_000;
 
 interface BaseMarket {
   id: string;
@@ -46,14 +55,22 @@ interface BaseMarket {
   liquidity: number;
   liquiditySubunits: number;
   ammBotBudgetSubunits: number;
+  /** Revision paired with the confirmed funding total; absent only on local placeholders. */
+  fundingRevision?: string | null;
+  /** Exact primitive outcome IDs registered by the engine for live route subscriptions. */
+  registeredPrimitiveOutcomeIds?: string[];
   volumeLifetimeSubunits: number;
-  closingDate: string;
+  closingDate: string | null;
   createdDate: string;
   activeSince: string;
   baseAsset: "sat";
   divisibility: ProductMarketDivisibility;
   creatorFeePercent: number;
   baseMarket: string; // Default: "sats"
+  /** Exact bounded REST/live confirmed-trade records used for price authority. */
+  latestConfirmedTrades?: LatestConfirmedTrade[];
+  /** False means the source price authority was malformed and is unavailable. */
+  latestConfirmedTradesValid?: boolean;
   secondaryMarkets?: string[]; // IDs of markets using this as base
   /** Engine-reported winning outcome for closed/resolved markets. */
   finalOutcome?: string;

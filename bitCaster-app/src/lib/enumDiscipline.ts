@@ -1,7 +1,7 @@
 /**
  * Compile-time exhaustiveness guard for `switch` statements over discriminated
  * unions / generated enum types. The intent is documented in
- * `.claude/skills/bitcaster-coding-guideline/SKILL.md` (Rule 3): adding a new
+ * `.claude/rules/wire-values.md` (Rule 3): adding a new
  * variant to an OpenAPI-generated enum must produce a TypeScript compile
  * error at every consumer rather than silently picking up a runtime branch.
  *

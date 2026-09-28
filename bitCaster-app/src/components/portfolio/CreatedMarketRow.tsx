@@ -2,6 +2,7 @@ import { useState, type KeyboardEvent, type SyntheticEvent } from "react";
 import { useTranslation } from "react-i18next";
 import type { CreatedMarket, CreatedMarketStatus } from "@/types/portfolio";
 import { formatMarketSubunits, normalizeMarketBaseAsset } from "@bitcaster/client-sdk/marketUnits";
+import { InlineAmount } from "@/components/shared/InlineAmount";
 import { CheckCircle2, Eye } from "lucide-react";
 
 const STATUS_STYLES: Record<CreatedMarketStatus, string> = {
@@ -117,7 +118,7 @@ export function CreatedMarketRow({
         <div className="shrink-0 text-right">
           {market.creatorFeesEarned > 0 && (
             <div className="font-mono text-sm text-amber-600 dark:text-amber-400">
-              {formatMarketSubunits(market.creatorFeesEarned, baseAsset)}
+              <InlineAmount amountSubunits={market.creatorFeesEarned} baseAsset={baseAsset} />
             </div>
           )}
           {market.creatorFeePercent > 0 && (

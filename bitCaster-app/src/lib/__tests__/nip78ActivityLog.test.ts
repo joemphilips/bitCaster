@@ -14,8 +14,9 @@ const publishMock = vi.mocked(publishPrivateNip78);
 function item(overrides: Partial<ActivityItem> = {}): ActivityItem {
   return {
     id: "activity-1",
+    walletId: "a".repeat(64),
     type: "deposit",
-    amountSats: 1000,
+    amountSubunits: 1000,
     baseAsset: "sat",
     date: "2026-05-09T00:00:00.000Z",
     status: "completed",
@@ -50,6 +51,57 @@ describe("fetchNip78ActivityLog", () => {
     );
 
     await expect(fetchNip78ActivityLog("pub", "priv")).resolves.toEqual([item({ id: "valid" })]);
+  });
+
+  it("decodes legacy records without guessing their wallet", async () => {
+    fetchMock.mockResolvedValue(
+      JSON.stringify({
+        items: [
+          {
+            id: "legacy",
+            type: "deposit",
+            amountSats: 1_000,
+            baseAsset: "sat",
+            date: "2026-05-09T00:00:00.000Z",
+            status: "completed",
+            txId: null,
+            lightningInvoice: null,
+          },
+        ],
+      }),
+    );
+
+    await expect(fetchNip78ActivityLog("pub", "priv")).resolves.toEqual([
+      {
+        id: "legacy",
+        type: "deposit",
+        amountSubunits: 1_000,
+        baseAsset: "sat",
+        date: "2026-05-09T00:00:00.000Z",
+        status: "completed",
+        txId: null,
+        lightningInvoice: null,
+      },
+    ]);
+  });
+
+  it("preserves exact confirmed trade details in encrypted activity", async () => {
+    const trade = item({
+      id: `trade:${"a".repeat(64)}:22222222-2222-4222-8222-222222222222`,
+      type: "Sell",
+      amountSubunits: 1_237,
+      marketId: "condition-YES",
+      tradeDetails: {
+        fillId: "22222222-2222-4222-8222-222222222222",
+        outcomeId: "YES",
+        tokenSide: "Complement",
+        faceAmountSubunits: 2_500,
+        divisibility: 1_000,
+      },
+    });
+    fetchMock.mockResolvedValue(JSON.stringify({ items: [trade] }));
+
+    await expect(fetchNip78ActivityLog("pub", "priv")).resolves.toEqual([trade]);
   });
 
   it("returns null for missing or malformed content", async () => {

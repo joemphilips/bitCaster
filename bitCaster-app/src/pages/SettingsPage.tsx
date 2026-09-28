@@ -1,6 +1,8 @@
-import { useCallback, useEffect } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useSearchParams, useNavigate } from "react-router";
+import { useTranslation } from "react-i18next";
 import { Settings } from "@/components/settings/Settings";
+import { WalletSetupModal } from "@/components/shared/WalletSetupModal";
 import { useWalletStore, DEFAULT_MINT_URL } from "@/stores/wallet";
 import { useSettingsStore } from "@/stores/settings";
 import { useToastStore } from "@/stores/toast";
@@ -35,6 +37,7 @@ function isValidCategory(value: string | null): value is SettingsCategory {
 const APP_VERSION = "0.1.0";
 
 export function SettingsPage() {
+  const { t } = useTranslation();
   const walletStore = useWalletStore();
   const settingsStore = useSettingsStore();
   const navigate = useNavigate();
@@ -43,6 +46,9 @@ export function SettingsPage() {
   // on every unrelated settings-store update.
   const openCategory = useSettingsStore((s) => s.openCategory);
   const [searchParams] = useSearchParams();
+  const [isReplacementOpen, setIsReplacementOpen] = useState(false);
+  const [isReplacingWallet, setIsReplacingWallet] = useState(false);
+  const [walletReplacementError, setWalletReplacementError] = useState<string | null>(null);
 
   // Allow other parts of the app (e.g. the market creation wizard) to
   // deep-link to a specific category via /settings?category=nostr. Use
@@ -109,9 +115,9 @@ export function SettingsPage() {
       signerMode: settingsStore.nostrSignerMode,
       signerSource: settingsStore.signerSource,
       signerBackupState: settingsStore.signerBackupState,
-      canRevealGeneratedNsec:
-        settingsStore.signerSource === "implicit-generated" &&
+      canRevealLocalNsec:
         settingsStore.nostrSignerMode === "nsec" &&
+        settingsStore.signerSource === "implicit-generated" &&
         !!settingsStore.nsecSecret,
       profile: settingsStore.nostrProfile,
       profileFetchStatus: settingsStore.nostrProfileFetchStatus,
@@ -144,6 +150,31 @@ export function SettingsPage() {
   const handleRemoveMint = useCallback((url: string) => {
     userRemoveMint(url);
   }, []);
+
+  const handleOpenWalletReplacement = useCallback(() => {
+    setWalletReplacementError(null);
+    setIsReplacementOpen(true);
+  }, []);
+
+  const handleWalletReplacement = useCallback(
+    async (words: string[]) => {
+      setIsReplacingWallet(true);
+      setWalletReplacementError(null);
+      try {
+        const result = await useWalletStore.getState().recoverFromMnemonic(words);
+        if (result.valid) {
+          setIsReplacementOpen(false);
+        } else {
+          setWalletReplacementError(result.error ?? t("wallet.replaceBlockedSafetyChecks"));
+        }
+      } catch {
+        setWalletReplacementError(t("wallet.replaceBlockedSafetyChecks"));
+      } finally {
+        setIsReplacingWallet(false);
+      }
+    },
+    [t],
+  );
 
   const handleThemeChange = useCallback(
     (theme: ThemeOption) => {
@@ -208,28 +239,45 @@ export function SettingsPage() {
   );
 
   return (
-    <Settings
-      activeCategory={settingsStore.activeCategory}
-      settings={settingsState}
-      seedPhrase={walletStore.mnemonic}
-      walletBackupState={walletStore.walletBackupState}
-      generatedNsecSecret={
-        settingsStore.signerSource === "implicit-generated" ? settingsStore.nsecSecret : null
-      }
-      onCategoryToggle={settingsStore.setActiveCategory}
-      onThemeChange={handleThemeChange}
-      onLikedMarketCloseNotificationsChange={handleLikedMarketCloseNotificationsChange}
-      onAddMint={handleAddMint}
-      onRemoveMint={handleRemoveMint}
-      onMintClick={handleMintClick}
-      onSignerModeChange={handleSignerModeChange}
-      onNsecSubmit={handleNsecSubmit}
-      onConfirmWalletBackup={walletStore.markWalletBackupConfirmed}
-      onConfirmSignerBackup={() => settingsStore.setSignerBackupState("confirmed")}
-      onDisconnectNostr={handleDisconnectNostr}
-      onRetryNostrProfile={refreshNostrProfile}
-      onAddRelay={userAddRelay}
-      onRemoveRelay={userRemoveRelay}
-    />
+    <>
+      <Settings
+        activeCategory={settingsStore.activeCategory}
+        settings={settingsState}
+        seedPhrase={walletStore.mnemonic}
+        walletBackupState={walletStore.walletBackupState}
+        localNsecSecret={
+          settingsStore.nostrSignerMode === "nsec" &&
+          settingsStore.signerSource === "implicit-generated"
+            ? settingsStore.nsecSecret
+            : null
+        }
+        onCategoryToggle={settingsStore.setActiveCategory}
+        onThemeChange={handleThemeChange}
+        onLikedMarketCloseNotificationsChange={handleLikedMarketCloseNotificationsChange}
+        onAddMint={handleAddMint}
+        onRemoveMint={handleRemoveMint}
+        onMintClick={handleMintClick}
+        onSignerModeChange={handleSignerModeChange}
+        onNsecSubmit={handleNsecSubmit}
+        onViewSeedPhrase={walletStore.acknowledgeWalletSeedReminder}
+        onReplaceWallet={handleOpenWalletReplacement}
+        onConfirmWalletBackup={walletStore.markWalletBackupConfirmed}
+        onConfirmSignerBackup={() => settingsStore.setSignerBackupState("confirmed")}
+        onDisconnectNostr={handleDisconnectNostr}
+        onRetryNostrProfile={refreshNostrProfile}
+        onAddRelay={userAddRelay}
+        onRemoveRelay={userRemoveRelay}
+      />
+      {isReplacementOpen && (
+        <WalletSetupModal
+          mode="replace"
+          isCreating={isReplacingWallet}
+          error={walletReplacementError}
+          onClose={() => setIsReplacementOpen(false)}
+          onCreateNew={() => undefined}
+          onImportSeed={handleWalletReplacement}
+        />
+      )}
+    </>
   );
 }

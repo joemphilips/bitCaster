@@ -47,7 +47,7 @@ function isStoredCreatorMarket(value: unknown): value is StoredCreatorMarket {
     (m.thumbnailUrl === null || typeof m.thumbnailUrl === "string") &&
     typeof m.createdAt === "string" &&
     m.baseAsset === "sat" &&
-    (m.divisibility === 10_000 || m.divisibility === 1_000_000) &&
+    (m.divisibility === 1_000 || m.divisibility === 1_000_000) &&
     typeof m.creatorFeePercent === "number" &&
     (m.oracle === undefined || isStoredCreatorOracle(m.oracle))
   );

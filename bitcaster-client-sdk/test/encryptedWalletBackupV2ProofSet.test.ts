@@ -5,13 +5,29 @@ import { test } from 'node:test'
 import {
   createEncryptedWalletBackupV2AssetIdentity,
   decryptEncryptedWalletBackupV2ProofSetBundle,
+  discoverEncryptedWalletBackupV2ProofSetBundle,
   encryptedWalletBackupV2LocalAssetKey,
+  authorizeEncryptedWalletBackupV2RemoteTerminalSealReuse,
+  issueEncryptedWalletBackupV2TerminalSeal,
   prepareEncryptedWalletBackupV2ProofSetBundle,
+  requireEncryptedWalletBackupV2DecryptedProofSet,
+  requireEncryptedWalletBackupV2DecryptedProofSetSource,
+  requireEncryptedWalletBackupV2RemoteTerminalSealReuseAuthority,
   requireEncryptedWalletBackupV2VerifiedProofSet,
   verifyEncryptedWalletBackupV2RestoredProofSet,
   type EncryptedWalletBackupV2RestoreVerificationPort,
   type EncryptedWalletBackupV2ProofSetProof,
 } from '../src/encryptedWalletBackupV2ProofSet.ts'
+import {
+  createDurableCustodyArtifactReference,
+  createDurableProofOperationFacts,
+  deriveDurableCustodyScopeId,
+  deriveDurableCustodyWalletId,
+  prepareDurableCustodyExactArtifact,
+  type DurableCustodyRecord,
+} from '../src/durableCustody.ts'
+import { createDurableCustodyProofOperation } from '../src/durableCustodyProofOperationRecord.ts'
+import { serializeDurableCustodyProofInput } from '../src/durableCustodyProofOperation.ts'
 import {
   prepareEncryptedWalletBackupV2TransportBundle,
   type EncryptedWalletBackupV2BundleRuntime,
@@ -22,6 +38,11 @@ import { serializeDurableCustodyProofArtifact } from '../src/durableCustodyProof
 import { encodeDurableWalletProofDerivationLocatorCbor } from '../src/durableWalletProofDerivationLocator.ts'
 import { deriveDurableWalletProofSecret } from '../src/durableWalletProofDerivationLocator.ts'
 import { createEncryptedWalletBackupV2KeyHandle } from '../src/encryptedWalletBackupV2Keys.ts'
+import {
+  createEncryptedWalletBackupV2CurrentHead,
+  enumerateEncryptedWalletBackupV2DescriptorPages,
+} from '../src/encryptedWalletBackupV2Head.ts'
+import type { EncryptedWalletBackupV2RemotePort } from '../src/encryptedWalletBackupV2HttpAdapter.ts'
 
 const SEED = Uint8Array.from({ length: 64 }, (_value, index) => index)
 const KEYSET = deriveKeysetId(
@@ -128,8 +149,177 @@ test('v2 proof set restores one asset proof material', async () => {
   assert.equal(restored.proofs.length, 2)
   assert.equal(restored.proofs[1]!.asset.kind, 'ordinary')
   assert.equal(restored.counterHighWaterMarks[0]!.nextCounter, 2)
-  restored.proofs[0]!.proof.secret = '00'.repeat(32)
-  assert.notEqual(restored.proofs[0]!.proof.secret, proof(0, { kind: 'ordinary' }).proof.secret)
+  assert.equal(Object.isFrozen(restored.proofs[0]!.proof), true)
+  assert.throws(() => {
+    restored.proofs[0]!.proof.secret = '00'.repeat(32)
+  }, TypeError)
+  assert.equal(restored.proofs[0]!.proof.secret, proof(0, { kind: 'ordinary' }).proof.secret)
+})
+
+test('v2 proof-set discovery derives ordinary and CTF identities from authenticated payloads', async () => {
+  for (const entry of [proof(0, { kind: 'ordinary' }), proof(0, ctfAsset(), true)]) {
+    const keyHandle = await handle()
+    const prepared = await prepareEncryptedWalletBackupV2ProofSetBundle({
+      keyHandle,
+      seed: SEED,
+      asset: proofSetAsset(entry),
+      proofs: [entry],
+      custodyRevision: 1n,
+      counterHighWaterMarks: [counter(1)],
+      runtime: webcrypto,
+    })
+
+    const discovered = await discover(keyHandle, prepared)
+    assert.deepEqual(discovered.asset, proofSetAsset(entry))
+    assert.equal(
+      requireEncryptedWalletBackupV2DecryptedProofSet(discovered.unverified).proofs.length,
+      1,
+    )
+    assert.equal(
+      requireEncryptedWalletBackupV2DecryptedProofSetSource(discovered.unverified).bundleId,
+      prepared.descriptor.bundleId,
+    )
+    assert.throws(() => requireEncryptedWalletBackupV2VerifiedProofSet(discovered.unverified))
+  }
+})
+
+test('v2 proof-set discovery rejects mixed mint, unit, or asset identities', async () => {
+  const keyHandle = await handle()
+  const first = proof(0, { kind: 'ordinary' })
+  const ordinary = proofSetAsset(first)
+  const cases = [
+    {
+      second: { ...proof(1, { kind: 'ordinary' }), mintUrl: 'https://other-mint.example' },
+      counters: [counter(1), { ...counter(2), mintUrl: 'https://other-mint.example' }],
+    },
+    {
+      second: { ...proof(1, { kind: 'ordinary' }), unit: 'msat' as const },
+      counters: [counter(1), { ...counter(2), unit: 'msat' as const }],
+    },
+    {
+      second: proof(1, ctfAsset(), true),
+      counters: [counter(2)],
+    },
+  ]
+
+  for (const { second, counters } of cases) {
+    const prepared = await prepareEncryptedWalletBackupV2TransportBundle({
+      keyHandle,
+      asset: ordinary,
+      declaredAmount: 2n,
+      custodyRevision: 1n,
+      canonicalPayload: proofSetPayload([first, second], counters),
+      runtime: webcrypto,
+    })
+    await assert.rejects(() => discover(keyHandle, prepared), /proof set asset is foreign/)
+  }
+})
+
+test('v2 proof-set discovery rejects locator, descriptor, ciphertext, amount, and revision mismatches', async () => {
+  const keyHandle = await handle()
+  const entry = proof(0, { kind: 'ordinary' })
+  const ordinary = proofSetAsset(entry)
+  const payload = proofSetPayload([entry], [counter(1)])
+  const wrongLocator = await prepareEncryptedWalletBackupV2TransportBundle({
+    keyHandle,
+    asset: { ...ordinary, assetIdentity: `ctf:${'11'.repeat(32)}:${'22'.repeat(32)}` },
+    declaredAmount: 1n,
+    custodyRevision: 1n,
+    canonicalPayload: payload,
+    runtime: webcrypto,
+  })
+  await assert.rejects(() => discover(keyHandle, wrongLocator), /proof set asset is foreign/)
+
+  const prepared = await prepareEncryptedWalletBackupV2TransportBundle({
+    keyHandle,
+    asset: ordinary,
+    declaredAmount: 1n,
+    custodyRevision: 1n,
+    canonicalPayload: payload,
+    runtime: webcrypto,
+  })
+  const changedCommitment = `${prepared.descriptor.payloadCommitment[0] === '0' ? '1' : '0'}${prepared.descriptor.payloadCommitment.slice(1)}`
+  await assert.rejects(
+    () =>
+      discover(keyHandle, {
+        ...prepared,
+        descriptor: { ...prepared.descriptor, payloadCommitment: changedCommitment },
+      }),
+    /corrupt encrypted wallet backup v2 bundle/,
+  )
+
+  const changedBody = new Uint8Array(prepared.objects[0]!.body)
+  changedBody[0] = changedBody[0]! ^ 1
+  await assert.rejects(
+    () =>
+      discover(keyHandle, {
+        ...prepared,
+        objects: [{ ...prepared.objects[0]!, body: changedBody }],
+      }),
+    /corrupt encrypted wallet backup v2 bundle/,
+  )
+
+  const wrongAmount = await prepareEncryptedWalletBackupV2TransportBundle({
+    keyHandle,
+    asset: ordinary,
+    declaredAmount: 2n,
+    custodyRevision: 1n,
+    canonicalPayload: payload,
+    runtime: webcrypto,
+  })
+  await assert.rejects(() => discover(keyHandle, wrongAmount), /declared amount is invalid/)
+  await assert.rejects(() => discover(keyHandle, prepared, 2n), /custody metadata is foreign/)
+})
+
+test('v2 proof-set discovery preserves authenticated terminal seal provenance', async () => {
+  const entry = proof(0, ctfAsset(), true)
+  const committed = committedTerminalStore(entry, 'redeem:discovery-sealed-losing')
+  const terminalSeal = await issueEncryptedWalletBackupV2TerminalSeal({
+    seed: SEED,
+    proof: entry,
+    operationId: committed.operationId,
+    store: committed.store,
+  })
+  const keyHandle = await handle()
+  const prepared = await prepareEncryptedWalletBackupV2ProofSetBundle({
+    keyHandle,
+    seed: SEED,
+    asset: proofSetAsset(entry),
+    proofs: [{ ...entry, terminalSeal }],
+    custodyRevision: 1n,
+    counterHighWaterMarks: [counter(1)],
+    runtime: webcrypto,
+  })
+  const discovered = await discover(keyHandle, prepared)
+  const unavailable: EncryptedWalletBackupV2RestoreVerificationPort = {
+    resolveKeyset: async () => {
+      throw new Error('mint unavailable')
+    },
+    verifyProofs: () => {
+      throw new Error('mint unavailable')
+    },
+    checkProofStates: async () => {
+      throw new Error('mint unavailable')
+    },
+  }
+
+  const verified = await verifyEncryptedWalletBackupV2RestoredProofSet({
+    seed: SEED,
+    expectedAsset: discovered.asset,
+    unverified: discovered.unverified,
+    port: unavailable,
+  })
+  assert.equal(verified.proofs[0]!.selectionAuthority, 'terminal-sealed-non-selectable')
+  await assert.rejects(
+    () =>
+      verifyEncryptedWalletBackupV2RestoredProofSet({
+        seed: SEED,
+        expectedAsset: discovered.asset,
+        unverified: { ...discovered.unverified },
+        port: unavailable,
+      }),
+    /authenticated decrypted material/,
+  )
 })
 
 test('v2 proof set derives the declared amount from every retained proof', async () => {
@@ -349,6 +539,16 @@ test('v2 proof set rejects wrong seed, duplicate proofs, and low counters before
     () => prepare({ keyHandle, seed: SEED, proofs: [entry], counters: [counter(1), counter(1)] }),
     /duplicated/,
   )
+  await assert.rejects(
+    () =>
+      prepare({
+        keyHandle,
+        seed: SEED,
+        proofs: [{ ...entry, proofId: '00'.repeat(32) } as EncryptedWalletBackupV2ProofSetProof],
+        counters: [],
+      }),
+    /proof id is invalid/,
+  )
 })
 
 test('v2 restored proof verifier accepts ordinary and CTF proof sets', async () => {
@@ -441,6 +641,440 @@ test('v2 restored proof verifier requires an exact all-unspent NUT-07 result', a
   }
 })
 
+test('v2 sealed losing CTF restores complete and non-selectable without mint access', async () => {
+  const entry = proof(0, ctfAsset(), true)
+  const committed = committedTerminalStore(entry, 'redeem:sealed-losing')
+  const seal = await issueEncryptedWalletBackupV2TerminalSeal({
+    seed: SEED,
+    proof: entry,
+    operationId: committed.operationId,
+    store: committed.store,
+  })
+  assert.equal(seal.code, 13015)
+  assert.equal(seal.operationIdDigest.length, 64)
+  assert.equal(seal.requestDigest.length, 64)
+  assert.equal(seal.proofCommitment.length, 64)
+  const input = await restored([{ ...entry, terminalSeal: seal }])
+  const unavailable: EncryptedWalletBackupV2RestoreVerificationPort = {
+    resolveKeyset: async () => {
+      throw new Error('mint unavailable')
+    },
+    verifyProofs: () => {
+      throw new Error('mint unavailable')
+    },
+    checkProofStates: async () => {
+      throw new Error('mint unavailable')
+    },
+  }
+  const verified = await verifyEncryptedWalletBackupV2RestoredProofSet({
+    ...input,
+    port: unavailable,
+  })
+  assert.equal(verified.proofs[0]!.selectionAuthority, 'terminal-sealed-non-selectable')
+  assert.equal(verified.proofs[0]!.proof.secret, entry.proof.secret)
+  assert.equal(verified.proofs[0]!.terminalSeal?.requestDigest, seal.requestDigest)
+  assert.throws(() => {
+    ;(input.unverified.proofs[0]!.terminalSeal as { classifiedAtMs: number }).classifiedAtMs = 1
+  }, TypeError)
+  await assert.doesNotReject(() =>
+    verifyEncryptedWalletBackupV2RestoredProofSet({ ...input, port: unavailable }),
+  )
+  await assert.rejects(
+    () =>
+      verifyEncryptedWalletBackupV2RestoredProofSet({
+        ...input,
+        unverified: { ...input.unverified },
+        port: unavailable,
+      }),
+    /authenticated decrypted material/,
+  )
+})
+
+test('v2 remote terminal seal reuse ignores a spent sibling in the current bundle', async () => {
+  const keyHandle = await handle()
+  const losing = proof(0, ctfAsset(), true)
+  const losingSibling = proof(1, ctfAsset(), true)
+  const spentSibling = proof(2, ctfAsset(), true)
+  const unspentSibling = proof(3, ctfAsset(), true)
+  const committed = committedTerminalStore(losing, 'redeem:remote-reuse')
+  const committedSibling = committedTerminalStore(losingSibling, 'redeem:remote-reuse-2')
+  const seal = await issueEncryptedWalletBackupV2TerminalSeal({
+    seed: SEED,
+    proof: losing,
+    operationId: committed.operationId,
+    store: committed.store,
+  })
+  const siblingSeal = await issueEncryptedWalletBackupV2TerminalSeal({
+    seed: SEED,
+    proof: losingSibling,
+    operationId: committedSibling.operationId,
+    store: committedSibling.store,
+  })
+  const asset = proofSetAsset(losing)
+  const prepared = await prepareEncryptedWalletBackupV2ProofSetBundle({
+    keyHandle,
+    seed: SEED,
+    asset,
+    proofs: [
+      { ...losing, terminalSeal: seal },
+      { ...losingSibling, terminalSeal: siblingSeal },
+      spentSibling,
+      unspentSibling,
+    ],
+    custodyRevision: 1n,
+    counterHighWaterMarks: [counter(4)],
+    runtime: webcrypto,
+  })
+  const result = await authorizeEncryptedWalletBackupV2RemoteTerminalSealReuse({
+    keyHandle,
+    seed: SEED,
+    expectedAsset: asset,
+    custodyRevision: 1n,
+    expectedEnrollmentEpoch: 1,
+    remote: remotePort(keyHandle, prepared),
+    remoteRequest: requestContext(),
+    runtime: webcrypto,
+  })
+  const reuses = result.authorities
+  assert.equal(result.currentHeadEvidence.bundles[0]!.bundleId, prepared.descriptor.bundleId)
+  assert.equal(reuses.length, 2)
+  for (const reuse of reuses)
+    assert.equal(requireEncryptedWalletBackupV2RemoteTerminalSealReuseAuthority(reuse), reuse)
+  const restoredBundle = result.decrypted
+  const restoredLosers = restoredBundle.proofs.filter((entry) => entry.terminalSeal !== undefined)
+  assert.equal(restoredLosers.length, 2)
+  const retainedLosing = restoredLosers[1]!
+  const retainedAuthority = reuses.find((authority) => authority.proofId === retainedLosing.proofId)
+  assert.notEqual(retainedAuthority, undefined)
+  const successor = await prepareEncryptedWalletBackupV2ProofSetBundle({
+    keyHandle,
+    seed: SEED,
+    asset,
+    proofs: [retainedLosing, restoredBundle.proofs[3]!],
+    custodyRevision: 2n,
+    counterHighWaterMarks: [counter(4)],
+    runtime: webcrypto,
+    remoteTerminalSealReuses: [retainedAuthority!],
+    remoteTerminalSealReuseHeadEvidence: result.currentHeadEvidence,
+  })
+  assert.equal(successor.descriptor.custodyRevision, 2n)
+})
+
+test('v2 remote terminal seal reuse reconstructs after restart and fresh refetch', async () => {
+  const originalKeyHandle = await handle()
+  const losing = proof(0, ctfAsset(), true)
+  const committed = committedTerminalStore(losing, 'redeem:remote-restart')
+  const seal = await issueEncryptedWalletBackupV2TerminalSeal({
+    seed: SEED,
+    proof: losing,
+    operationId: committed.operationId,
+    store: committed.store,
+  })
+  const asset = proofSetAsset(losing)
+  const prepared = await prepareEncryptedWalletBackupV2ProofSetBundle({
+    keyHandle: originalKeyHandle,
+    seed: SEED,
+    asset,
+    proofs: [{ ...losing, terminalSeal: seal }],
+    custodyRevision: 4n,
+    counterHighWaterMarks: [counter(1)],
+    runtime: webcrypto,
+  })
+  const restartedKeyHandle = await handle()
+  const result = await authorizeEncryptedWalletBackupV2RemoteTerminalSealReuse({
+    keyHandle: restartedKeyHandle,
+    seed: SEED,
+    expectedAsset: asset,
+    custodyRevision: 4n,
+    expectedEnrollmentEpoch: 1,
+    remote: remotePort(restartedKeyHandle, prepared),
+    remoteRequest: requestContext(),
+    runtime: webcrypto,
+  })
+  const reuse = result.authorities[0]!
+  const restored = result.decrypted
+  await assert.doesNotReject(() =>
+    prepareEncryptedWalletBackupV2ProofSetBundle({
+      keyHandle: restartedKeyHandle,
+      seed: SEED,
+      asset,
+      proofs: [restored.proofs[0]!],
+      custodyRevision: 5n,
+      counterHighWaterMarks: [counter(1)],
+      runtime: webcrypto,
+      remoteTerminalSealReuses: [reuse],
+      remoteTerminalSealReuseHeadEvidence: result.currentHeadEvidence,
+    }),
+  )
+})
+
+test('v2 remote terminal seal reuse refuses newer remote material without the old seal', async () => {
+  const keyHandle = await handle()
+  const losing = proof(0, ctfAsset(), true)
+  const committed = committedTerminalStore(losing, 'redeem:remote-newer')
+  const seal = await issueEncryptedWalletBackupV2TerminalSeal({
+    seed: SEED,
+    proof: losing,
+    operationId: committed.operationId,
+    store: committed.store,
+  })
+  const asset = proofSetAsset(losing)
+  const old = await prepareEncryptedWalletBackupV2ProofSetBundle({
+    keyHandle,
+    seed: SEED,
+    asset,
+    proofs: [{ ...losing, terminalSeal: seal }],
+    custodyRevision: 7n,
+    counterHighWaterMarks: [counter(1)],
+    runtime: webcrypto,
+  })
+  const newer = await prepareEncryptedWalletBackupV2ProofSetBundle({
+    keyHandle,
+    seed: SEED,
+    asset,
+    proofs: [losing],
+    custodyRevision: 8n,
+    counterHighWaterMarks: [counter(1)],
+    runtime: webcrypto,
+  })
+  await assert.rejects(
+    () =>
+      authorizeEncryptedWalletBackupV2RemoteTerminalSealReuse({
+        keyHandle,
+        seed: SEED,
+        expectedAsset: asset,
+        custodyRevision: 8n,
+        expectedEnrollmentEpoch: 1,
+        remote: remotePort(keyHandle, newer),
+        remoteRequest: requestContext(),
+        runtime: webcrypto,
+      }),
+    /terminal seal is missing/,
+  )
+  assert.equal(old.descriptor.custodyRevision, 7n)
+})
+
+test('v2 remote terminal seal reuse rejects wrong remote scope and copied authority', async () => {
+  const keyHandle = await handle()
+  const losing = proof(0, ctfAsset(), true)
+  const committed = committedTerminalStore(losing, 'redeem:remote-scope')
+  const seal = await issueEncryptedWalletBackupV2TerminalSeal({
+    seed: SEED,
+    proof: losing,
+    operationId: committed.operationId,
+    store: committed.store,
+  })
+  const asset = proofSetAsset(losing)
+  const prepared = await prepareEncryptedWalletBackupV2ProofSetBundle({
+    keyHandle,
+    seed: SEED,
+    asset,
+    proofs: [{ ...losing, terminalSeal: seal }],
+    custodyRevision: 7n,
+    counterHighWaterMarks: [counter(1)],
+    runtime: webcrypto,
+  })
+  await assert.rejects(
+    () =>
+      authorizeEncryptedWalletBackupV2RemoteTerminalSealReuse({
+        keyHandle,
+        seed: SEED,
+        expectedAsset: { ...asset, assetIdentity: 'cashu:ordinary' },
+        custodyRevision: 7n,
+        expectedEnrollmentEpoch: 1,
+        remote: remotePort(keyHandle, prepared),
+        remoteRequest: requestContext(),
+        runtime: webcrypto,
+      }),
+    /not current/,
+  )
+  await assert.rejects(
+    () =>
+      authorizeEncryptedWalletBackupV2RemoteTerminalSealReuse({
+        keyHandle,
+        seed: SEED,
+        expectedAsset: asset,
+        custodyRevision: 8n,
+        expectedEnrollmentEpoch: 1,
+        remote: remotePort(keyHandle, prepared),
+        remoteRequest: requestContext(),
+        runtime: webcrypto,
+      }),
+    /binding is invalid/,
+  )
+  const validRemote = remotePort(keyHandle, prepared)
+  await assert.rejects(
+    () =>
+      authorizeEncryptedWalletBackupV2RemoteTerminalSealReuse({
+        keyHandle,
+        seed: SEED,
+        expectedAsset: asset,
+        custodyRevision: 7n,
+        expectedEnrollmentEpoch: 1,
+        remote: {
+          ...validRemote,
+          readDescriptorPage: async (request) => {
+            const page = await validRemote.readDescriptorPage(request)
+            return { ...page, head: { ...page.head, activeSetDigest: '00'.repeat(32) } }
+          },
+        },
+        remoteRequest: requestContext(),
+        runtime: webcrypto,
+      }),
+    /head authority/,
+  )
+  await assert.rejects(
+    () =>
+      authorizeEncryptedWalletBackupV2RemoteTerminalSealReuse({
+        keyHandle,
+        seed: SEED,
+        expectedAsset: asset,
+        custodyRevision: 7n,
+        expectedEnrollmentEpoch: 2,
+        remote: remotePort(keyHandle, prepared, false),
+        remoteRequest: requestContext(),
+        runtime: webcrypto,
+      }),
+    /head scope/,
+  )
+  const result = await authorizeEncryptedWalletBackupV2RemoteTerminalSealReuse({
+    keyHandle,
+    seed: SEED,
+    expectedAsset: asset,
+    custodyRevision: 7n,
+    expectedEnrollmentEpoch: 1,
+    remote: remotePort(keyHandle, prepared),
+    remoteRequest: requestContext(),
+    runtime: webcrypto,
+  })
+  const copied = { ...result.authorities[0]! }
+  await assert.rejects(
+    () =>
+      prepareEncryptedWalletBackupV2ProofSetBundle({
+        keyHandle,
+        seed: SEED,
+        asset,
+        proofs: [{ ...losing, terminalSeal: seal }],
+        custodyRevision: 8n,
+        counterHighWaterMarks: [counter(1)],
+        runtime: webcrypto,
+        remoteTerminalSealReuses: result.authorities,
+      }),
+    /head evidence is required/,
+  )
+  await assert.rejects(
+    () =>
+      prepareEncryptedWalletBackupV2ProofSetBundle({
+        keyHandle,
+        seed: SEED,
+        asset,
+        proofs: [{ ...losing, terminalSeal: seal }],
+        custodyRevision: 8n,
+        counterHighWaterMarks: [counter(1)],
+        runtime: webcrypto,
+        remoteTerminalSealReuses: [copied],
+        remoteTerminalSealReuseHeadEvidence: result.currentHeadEvidence,
+      }),
+    /authority is invalid/,
+  )
+})
+
+test('v2 terminal seal rejects forged, missing, and foreign authority', async () => {
+  const entry = proof(0, ctfAsset(), true)
+  const committed = committedTerminalStore(entry, 'redeem:terminal-guards')
+  const seal = await issueEncryptedWalletBackupV2TerminalSeal({
+    seed: SEED,
+    proof: entry,
+    operationId: committed.operationId,
+    store: committed.store,
+  })
+  const keyHandle = await handle()
+  for (const terminalSeal of [
+    { ...seal },
+    { ...seal, code: 13016 as 13015 },
+    { ...seal, requestDigest: '00'.repeat(32) },
+  ]) {
+    await assert.rejects(
+      () => prepareWithRuntime(keyHandle, [{ ...entry, terminalSeal }], [counter(1)], webcrypto),
+      /terminal seal/,
+    )
+  }
+  await assert.rejects(
+    () =>
+      prepareWithRuntime(
+        keyHandle,
+        [{ ...proof(1, ctfAsset(), true), terminalSeal: seal }],
+        [counter(2)],
+        webcrypto,
+      ),
+    /terminal seal proof binding/,
+  )
+  await assert.rejects(
+    () =>
+      issueEncryptedWalletBackupV2TerminalSeal({
+        seed: SEED,
+        proof: proof(1, ctfAsset(), true),
+        operationId: committed.operationId,
+        store: committed.store,
+      }),
+    /terminal seal operation is foreign/,
+  )
+  const active = await restored([entry])
+  await assert.rejects(
+    () =>
+      verifyEncryptedWalletBackupV2RestoredProofSet({
+        ...active,
+        port: {
+          ...active.port,
+          resolveKeyset: async () => {
+            throw new Error('mint unavailable')
+          },
+        },
+      }),
+    /mint unavailable/,
+  )
+})
+
+test('v2 proof-set rejects the old V1 payload instead of silently falling back', async () => {
+  const entry = proof(0, { kind: 'ordinary' })
+  const keyHandle = await handle()
+  const prepared = await prepareEncryptedWalletBackupV2TransportBundle({
+    keyHandle,
+    asset: proofSetAsset(entry),
+    declaredAmount: 1n,
+    custodyRevision: 1n,
+    canonicalPayload: proofSetPayload([entry], [counter(1)], 1),
+    runtime: webcrypto,
+  })
+  await assert.rejects(() => restore(keyHandle, prepared), /proof set CBOR is invalid/)
+})
+
+test('v2 proof-set rejects an unknown terminal seal version in authenticated ciphertext', async () => {
+  const entry = proof(0, ctfAsset(), true)
+  const seal = {
+    schemaVersion: 2 as 1,
+    kind: 'ctf-verified-losing' as const,
+    operationIdDigest: '11'.repeat(32),
+    requestDigest: '22'.repeat(32),
+    code: 13015 as const,
+    classifiedAtMs: 1_700_000_000_000,
+    proofCommitment: '33'.repeat(32),
+  }
+  const keyHandle = await handle()
+  const prepared = await prepareEncryptedWalletBackupV2TransportBundle({
+    keyHandle,
+    asset: proofSetAsset(entry),
+    declaredAmount: 1n,
+    custodyRevision: 1n,
+    canonicalPayload: proofSetPayload([{ ...entry, terminalSeal: seal }], [counter(1)]),
+    runtime: webcrypto,
+  })
+  await assert.rejects(
+    () => restore(keyHandle, prepared, proofSetAsset(entry)),
+    /terminal seal is invalid/,
+  )
+})
+
 async function restored(proofs: readonly EncryptedWalletBackupV2ProofSetProof[]) {
   const keyHandle = await handle()
   const asset = proofSetAsset(proofs[0]!)
@@ -465,6 +1099,105 @@ async function restored(proofs: readonly EncryptedWalletBackupV2ProofSetProof[])
       ...prepared,
     }),
     port: verificationPort(),
+  }
+}
+
+function committedTerminalStore(entry: EncryptedWalletBackupV2ProofSetProof, operationId: string) {
+  const scopeInput = { scopeKind: 'wallet' as const, walletId: deriveDurableCustodyWalletId(SEED) }
+  const scope = { ...scopeInput, scopeId: deriveDurableCustodyScopeId(scopeInput) }
+  const operation = {
+    operationId,
+    kind: 'ctf-redeem' as const,
+    mintUrl: MINT,
+    inputs: [serializeDurableCustodyProofInput(entry.proof)],
+    outputs: {},
+    metadata: { unit: 'sat' },
+  }
+  const requestBody = prepareDurableCustodyExactArtifact(operation)
+  const output = prepareDurableCustodyExactArtifact(operation.outputs)
+  const privateMaterial = prepareDurableCustodyExactArtifact(operation)
+  const facts = createDurableProofOperationFacts({
+    unit: 'sat',
+    binding: { kind: 'wallet', activityId: operationId, stage: 'ctf-redeem' },
+    horizon: { notBeforeMs: null, notAfterMs: null, safetyMarginMs: 0 },
+    hasOutputs: false,
+    inputKeysetRequirement: 'required',
+    keysets: [
+      {
+        keysetId: KEYSET,
+        unit: 'sat',
+        curve: 'secp256k1',
+        publicKeys: { '1': '02194603ffa36356f4a56b7df9371fc3192472351453ec7398b8da8117e7c3e104' },
+        keysetExpiryMs: null,
+        requireDleq: true,
+        usedByInputs: true,
+        usedByOutputs: false,
+      },
+    ],
+  })
+  const initial = createDurableCustodyProofOperation({
+    scope,
+    operation,
+    facts,
+    inventoryAccountId: null,
+    exactBoundary: {
+      method: 'POST',
+      path: '/v1/redeem_outcome',
+      idempotencyKey: operationId,
+      requestBody,
+      output,
+      privateMaterial,
+    },
+  })
+  const authority = {
+    schemaVersion: 1,
+    kind: 'authenticated-terminal-mint-rejection',
+    operationId: initial.operation.operationId,
+    semanticKind: 'ctf-redeem',
+    normalizedMint: MINT,
+    requestFingerprint: initial.operation.exactRequest.requestFingerprint,
+    code: 13015,
+    transportProvenance: 'authenticated-mint-transport',
+    transportOperationId: operationId,
+    rejectionBody: { code: 13015 },
+    predecessorDisposition: 'retain',
+    selectedSuccessorProofIds: [],
+  }
+  const exactRejection = prepareDurableCustodyExactArtifact(authority)
+  const record: DurableCustodyRecord = {
+    ...initial,
+    operation: {
+      ...initial.operation,
+      state: 'aborted',
+      terminalMintRejection: {
+        kind: 'authenticated-terminal-mint-rejection',
+        code: 13015,
+        rejectionHandle: `mint-terminal-rejection:${exactRejection.fingerprint}`,
+        rejectionFingerprint: exactRejection.fingerprint,
+        exactRejection: createDurableCustodyArtifactReference(
+          `artifact:${operationId}:terminal-mint-rejection`,
+          exactRejection,
+        ),
+        predecessorDisposition: 'retain',
+        selectedSuccessorProofIds: [],
+      },
+    },
+  }
+  return {
+    operationId: initial.operation.operationId,
+    store: {
+      async withCommittedTerminalRejection<T>(
+        requestedId: string,
+        read: (value: {
+          record: DurableCustodyRecord
+          exactRejection: typeof exactRejection
+          classifiedAtMs: number
+        }) => T,
+      ): Promise<T> {
+        assert.equal(requestedId, initial.operation.operationId)
+        return read({ record, exactRejection, classifiedAtMs: 1_700_000_000_000 })
+      },
+    },
   }
 }
 
@@ -537,6 +1270,71 @@ function restore(
   })
 }
 
+function discover(
+  keyHandle: Awaited<ReturnType<typeof handle>>,
+  prepared: EncryptedWalletBackupV2PreparedTransportBundle,
+  custodyRevision = prepared.descriptor.custodyRevision,
+) {
+  return discoverEncryptedWalletBackupV2ProofSetBundle({
+    keyHandle,
+    seed: SEED,
+    custodyRevision,
+    runtime: webcrypto,
+    ...prepared,
+  })
+}
+
+function requestContext() {
+  return {
+    origin: 'https://backup.example',
+    issuedAtUnixSeconds: 100,
+    expiresAtUnixSeconds: 130,
+    signal: new AbortController().signal,
+    runtime: webcrypto,
+  }
+}
+
+function remotePort(
+  keyHandle: Awaited<ReturnType<typeof handle>>,
+  prepared: EncryptedWalletBackupV2PreparedTransportBundle,
+  assertRequestEpoch = true,
+): Pick<EncryptedWalletBackupV2RemotePort, 'readDescriptorPage' | 'readObject'> {
+  const head = createEncryptedWalletBackupV2CurrentHead({
+    realm: prepared.descriptor.realm,
+    walletId: prepared.descriptor.walletId,
+    enrollmentEpoch: 1,
+    headVersion: 7,
+    bundles: [prepared.descriptor],
+  })
+  const pages = enumerateEncryptedWalletBackupV2DescriptorPages({
+    head,
+    bundles: [prepared.descriptor],
+  })
+  const base = `https://backup.example/v1/encrypted-wallet-backup/realms/${keyHandle.realm}/wallets/${keyHandle.walletId}`
+  return {
+    readDescriptorPage: async ({ requestProof, afterBundleId }) => {
+      assert.equal(requestProof.method, 'GET')
+      if (assertRequestEpoch) assert.equal(requestProof.enrollmentEpoch, 1)
+      assert.equal(
+        requestProof.url,
+        `${base}/head${afterBundleId === null ? '' : `/after/${afterBundleId}`}`,
+      )
+      const page = pages.find((candidate) => candidate.afterBundleId === afterBundleId)
+      if (page === undefined) throw new Error('descriptor page not found')
+      return page
+    },
+    readObject: async ({ requestProof, objectId, expectedDescriptor }) => {
+      assert.equal(requestProof.method, 'GET')
+      if (assertRequestEpoch) assert.equal(requestProof.enrollmentEpoch, 1)
+      assert.equal(requestProof.url, `${base}/objects/${objectId}`)
+      assert.equal(expectedDescriptor.bundleId, prepared.descriptor.bundleId)
+      const object = prepared.objects.find((candidate) => candidate.objectId === objectId)
+      if (object === undefined) throw new Error('object not found')
+      return object
+    },
+  }
+}
+
 function proofSetAsset(value: EncryptedWalletBackupV2ProofSetProof) {
   return {
     mintUrl: value.mintUrl,
@@ -584,9 +1382,10 @@ function counter(nextCounter: number) {
 function proofSetPayload(
   proofs: readonly EncryptedWalletBackupV2ProofSetProof[],
   counters: readonly { mintUrl: string; unit: 'sat'; keysetId: string; nextCounter: number }[],
+  version = 2,
 ): Uint8Array {
   return encodeCanonicalBackupCbor([
-    1,
+    version,
     'encrypted-wallet-backup-v2-proof-set',
     proofs.map((entry) => [
       entry.mintUrl,
@@ -603,6 +1402,21 @@ function proofSetPayload(
           ],
       serializeDurableCustodyProofArtifact(entry.proof),
       encodeDurableWalletProofDerivationLocatorCbor(entry.locator),
+      ...(version === 1
+        ? []
+        : [
+            entry.terminalSeal === undefined
+              ? null
+              : [
+                  entry.terminalSeal.schemaVersion,
+                  entry.terminalSeal.kind,
+                  entry.terminalSeal.operationIdDigest,
+                  entry.terminalSeal.requestDigest,
+                  entry.terminalSeal.code,
+                  entry.terminalSeal.classifiedAtMs,
+                  entry.terminalSeal.proofCommitment,
+                ],
+          ]),
     ]),
     counters.map((entry) => [entry.mintUrl, entry.unit, entry.keysetId, entry.nextCounter]),
   ])

@@ -111,6 +111,19 @@ export interface SelectTokenImportKeysetCandidatesInput {
   conditionalResponse: unknown
 }
 
+export interface TokenImportConditionalKeysetPageQuery {
+  readonly limit: 100
+  readonly since?: number
+}
+
+export interface SelectPagedTokenImportKeysetCandidatesInput {
+  request: TokenImportKeysetRequest
+  regularResponse: Promise<unknown>
+  fetchConditionalPage: (query: TokenImportConditionalKeysetPageQuery) => Promise<unknown>
+}
+
+const TOKEN_IMPORT_CONDITIONAL_KEYSET_PAGE_SIZE = 100
+
 export function assertTokenImportResolverRequestLive(
   request: TokenImportKeysetRequest,
   nowMs = Date.now(),
@@ -149,6 +162,102 @@ export function selectTokenImportKeysetCandidates(
     freshness: 'fresh',
     regularKeysets,
     conditionalKeysets,
+  }
+}
+
+/**
+ * Resolves candidates from the inclusive, timestamp-paged CTF keyset registry.
+ * The transport callback remains responsible for bounded HTTP and destination
+ * policy. This helper retains only matching candidate metadata across pages.
+ */
+export async function selectPagedTokenImportKeysetCandidates(
+  input: SelectPagedTokenImportKeysetCandidatesInput,
+): Promise<TokenImportKeysetLookup> {
+  assertTokenImportResolverRequestLive(input.request)
+  if (!Number.isSafeInteger(input.request.maxCandidates) || input.request.maxCandidates <= 0) {
+    throw new Error('Mint keyset lookup candidate bound is invalid')
+  }
+
+  const firstPagePromise = input.fetchConditionalPage({
+    limit: TOKEN_IMPORT_CONDITIONAL_KEYSET_PAGE_SIZE,
+  })
+  const [regularResponse, firstPage] = await Promise.all([
+    Promise.resolve(input.regularResponse),
+    firstPagePromise,
+  ])
+  assertTokenImportResolverRequestLive(input.request)
+
+  const regularKeysets = selectCandidatesFromWireResponse(regularResponse, input.request, 'regular')
+  if (regularKeysets.length > input.request.maxCandidates) {
+    fail('resolver_response_too_large', 'Mint keyset lookup exceeded the candidate bound')
+  }
+
+  const conditionalById = new Map<string, TokenImportKeysetMetadata>()
+  const registeredAtById = new Map<string, number>()
+  let since: number | undefined
+  let page: unknown = firstPage
+
+  while (true) {
+    assertTokenImportResolverRequestLive(input.request)
+    const parsedPage = parseConditionalKeysetPage(page, since)
+    const pageCandidates = selectCandidatesFromWireResponse(page, input.request, 'conditional')
+
+    for (const candidate of pageCandidates) {
+      if (parsedPage.conflictingRegisteredAtIds.has(candidate.keysetId)) {
+        fail(
+          'spoofed_keyset_metadata',
+          'Mint returned conflicting metadata for a conditional keyset',
+        )
+      }
+      const registeredAt = parsedPage.registeredAtById.get(candidate.keysetId)
+      if (registeredAt === undefined) {
+        fail('keyset_resolution_indeterminate', 'Mint conditional keyset page is incomplete')
+      }
+
+      const existing = conditionalById.get(candidate.keysetId)
+      if (existing !== undefined) {
+        if (
+          !sameTokenImportKeysetMetadata(existing, candidate) ||
+          registeredAtById.get(candidate.keysetId) !== registeredAt
+        ) {
+          fail(
+            'spoofed_keyset_metadata',
+            'Mint returned conflicting metadata for a conditional keyset',
+          )
+        }
+        continue
+      }
+
+      conditionalById.set(candidate.keysetId, candidate)
+      registeredAtById.set(candidate.keysetId, registeredAt)
+      if (regularKeysets.length + conditionalById.size > input.request.maxCandidates) {
+        fail('resolver_response_too_large', 'Mint keyset lookup exceeded the candidate bound')
+      }
+    }
+
+    if (parsedPage.keysets.length < TOKEN_IMPORT_CONDITIONAL_KEYSET_PAGE_SIZE) {
+      break
+    }
+
+    const lastRegisteredAt = parsedPage.lastRegisteredAt
+    if (lastRegisteredAt === undefined || (since !== undefined && lastRegisteredAt <= since)) {
+      fail('keyset_resolution_indeterminate', 'Mint conditional keyset pagination did not advance')
+    }
+    since = lastRegisteredAt
+    assertTokenImportResolverRequestLive(input.request)
+    page = await input.fetchConditionalPage({
+      limit: TOKEN_IMPORT_CONDITIONAL_KEYSET_PAGE_SIZE,
+      since,
+    })
+    assertTokenImportResolverRequestLive(input.request)
+  }
+
+  assertTokenImportResolverRequestLive(input.request)
+  return {
+    canonicalMintUrl: input.request.canonicalMintUrl,
+    freshness: 'fresh',
+    regularKeysets,
+    conditionalKeysets: [...conditionalById.values()],
   }
 }
 
@@ -269,6 +378,76 @@ function selectCandidatesFromWireResponse(
       }
       return metadata
     })
+}
+
+interface ParsedConditionalKeysetPage {
+  readonly keysets: readonly unknown[]
+  readonly registeredAtById: ReadonlyMap<string, number>
+  readonly conflictingRegisteredAtIds: ReadonlySet<string>
+  readonly lastRegisteredAt?: number
+}
+
+function parseConditionalKeysetPage(
+  value: unknown,
+  since: number | undefined,
+): ParsedConditionalKeysetPage {
+  if (!isRecord(value) || !Array.isArray(value.keysets)) {
+    fail('keyset_resolution_indeterminate', 'Mint returned an invalid conditional keyset page')
+  }
+  if (value.keysets.length > TOKEN_IMPORT_CONDITIONAL_KEYSET_PAGE_SIZE) {
+    fail('keyset_resolution_indeterminate', 'Mint exceeded the conditional keyset page size')
+  }
+
+  let lastRegisteredAt: number | undefined
+  const registeredAtById = new Map<string, number>()
+  const conflictingRegisteredAtIds = new Set<string>()
+  for (const candidate of value.keysets) {
+    if (!isRecord(candidate) || typeof candidate.id !== 'string') {
+      fail('keyset_resolution_indeterminate', 'Mint returned an invalid conditional keyset page')
+    }
+    const registeredAt = candidate.registered_at
+    if (
+      typeof registeredAt !== 'number' ||
+      !Number.isSafeInteger(registeredAt) ||
+      registeredAt < 0 ||
+      (since !== undefined && registeredAt < since) ||
+      (lastRegisteredAt !== undefined && registeredAt < lastRegisteredAt)
+    ) {
+      fail('keyset_resolution_indeterminate', 'Mint conditional keyset timestamps are invalid')
+    }
+    lastRegisteredAt = registeredAt
+
+    if (registeredAtById.has(candidate.id)) {
+      if (registeredAtById.get(candidate.id) !== registeredAt) {
+        conflictingRegisteredAtIds.add(candidate.id)
+      }
+    } else {
+      registeredAtById.set(candidate.id, registeredAt)
+    }
+  }
+
+  return {
+    keysets: value.keysets,
+    registeredAtById,
+    conflictingRegisteredAtIds,
+    lastRegisteredAt,
+  }
+}
+
+function sameTokenImportKeysetMetadata(
+  left: TokenImportKeysetMetadata,
+  right: TokenImportKeysetMetadata,
+): boolean {
+  return (
+    left.keysetId === right.keysetId &&
+    Object.is(left.unit, right.unit) &&
+    Object.is(left.active, right.active) &&
+    Object.is(left.conditionId, right.conditionId) &&
+    Object.is(left.outcomeCollection, right.outcomeCollection) &&
+    Object.is(left.outcomeCollectionId, right.outcomeCollectionId) &&
+    Object.is(left.inputFeePpk, right.inputFeePpk) &&
+    Object.is(left.finalExpiry, right.finalExpiry)
+  )
 }
 
 /**
@@ -427,9 +606,9 @@ export async function validateTokenImport(
 }
 
 /**
- * Admits ordinary sat, conditional CTF msat, or regular collateral msat for a
- * general product wallet without making the caller decode first. The decoded
- * unit selects the bounded policy; resolved keyset source selects one closed
+ * Admits conditional CTF msat or regular collateral msat for a general
+ * product wallet without making the caller decode first. The decoded unit
+ * selects the bounded policy; resolved keyset source selects one closed
  * context. Mixed regular/conditional msat imports fail closed.
  */
 export async function validateProductWalletTokenImport(
@@ -565,12 +744,15 @@ function productWalletPolicy(decoded: Token | readonly Token[]): ImportContextPo
       fail('invalid_token', `decoded token ${tokenIndex} has an invalid shape`)
     }
     const tokenUnit = requireSupportedUnit(token.unit, `token ${tokenIndex}`)
+    if (tokenUnit === 'sat') {
+      fail('unsupported_unit', 'product-wallet token imports require msat')
+    }
     if (unit !== undefined && tokenUnit !== unit) {
       fail('unit_mismatch', 'decoded token set contains mixed units')
     }
     unit = tokenUnit
   }
-  return unit === 'sat' ? { unit, source: 'regular' } : { unit: 'msat', source: 'either' }
+  return { unit: 'msat', source: 'either' }
 }
 
 function deriveProductWalletContext(

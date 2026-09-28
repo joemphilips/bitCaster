@@ -4,3 +4,4 @@ export { MainNav } from "./MainNav";
 export { UserMenu } from "./UserMenu";
 export { NotificationBell } from "./NotificationBell";
 export { DurableWalletErrors } from "./DurableWalletErrors";
+export { EncryptedWalletBackupRecoveryStatus } from "./EncryptedWalletBackupRecoveryStatus";

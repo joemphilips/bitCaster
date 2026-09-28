@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import {
-  computeInputFeeSatsForProofs,
+  computeInputFeeSubunitsForProofs,
   computeInputFeeSubunitsFromPpk,
   sumProofs,
   takeProofsForLock,
@@ -19,11 +19,11 @@ test('sumProofs rejects an unsafe amount sum', () => {
   )
 })
 
-test('computeInputFeeSatsForProofs rejects an unsafe fee sum', () => {
+test('computeInputFeeSubunitsForProofs rejects an unsafe fee sum', () => {
   const proof = (secret: string) => ({ amount: 1, id: 'keyset', secret, C: secret })
   assert.throws(
     () =>
-      computeInputFeeSatsForProofs([proof('a'), proof('b')], {
+      computeInputFeeSubunitsForProofs([proof('a'), proof('b')], {
         keyset: Number.MAX_SAFE_INTEGER,
       }),
     /safe integer range/i,

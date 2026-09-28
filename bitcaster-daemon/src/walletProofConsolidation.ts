@@ -13,7 +13,6 @@ import {
 } from '@bitcaster-market/client-sdk/boundedProofConsolidation'
 import {
   completeExactProofConsolidationOperation,
-  classifyExactProofConsolidationReplayFailure,
   prepareExactProofConsolidationOperation,
   validateExactProofConsolidationOperation,
   validateExactProofConsolidationProofs,
@@ -43,7 +42,6 @@ import {
   readAvailableWalletProofPage,
   getProofOperation,
   readProofOperationsByPurposePage,
-  releasePreparedProofReservationFenced,
   type AvailableWalletProofGroup,
   type FencedStateMutation,
   type ProofOperationRecord,
@@ -509,13 +507,10 @@ async function recoverOperation(
   }
   if (entry.state !== 'prepared') throw new Error('proof consolidation operation has failed')
   const outcome = await recoverPreparedProofs(entry, validated, asset, input)
-  if (outcome.kind === 'released') return
   await completeAndFinalize(entry.operationId, reservationId, outcome.proofs, asset, input.mutation)
 }
 
-type PreparedProofRecovery =
-  | { readonly kind: 'proofs'; readonly proofs: readonly Proof[] }
-  | { readonly kind: 'released' }
+type PreparedProofRecovery = { readonly proofs: readonly Proof[] }
 
 type RecoveryWallet = ExactProofConsolidationWallet & {
   checkProofsStates(proofs: Array<Pick<Proof, 'id' | 'secret'>>): Promise<ProofState[]>
@@ -585,7 +580,6 @@ async function replayExactPreparedConsolidation(
 ): Promise<PreparedProofRecovery> {
   try {
     return {
-      kind: 'proofs',
       proofs: await completeExactProofConsolidationOperation(validated, wallet, {
         purpose: WALLET_PROOF_CONSOLIDATION_PURPOSE,
       }),
@@ -593,21 +587,6 @@ async function replayExactPreparedConsolidation(
   } catch (error) {
     if (!(error instanceof MintOperationError)) throw error
     const postRejectionStates = await checkExactInputStates(wallet, entry)
-    const disposition = classifyExactProofConsolidationReplayFailure({
-      definiteMintRejection: true,
-      inputStates: postRejectionStates.map(({ state }) => state),
-    })
-    if (disposition === 'release-exact-unspent-inputs') {
-      await releasePreparedProofReservationFenced(
-        {
-          operationId: entry.operationId,
-          reservationId: metadataText(entry, 'reservationId'),
-          reason: definiteMintRejectionReason(error),
-        },
-        input.mutation(),
-      )
-      return { kind: 'released' }
-    }
     const postRejectionDecision = classifyCtfRangeSourceRecovery({
       journalKind: 'consolidation',
       journalState: 'prepared',
@@ -648,16 +627,10 @@ async function restorePersistedConsolidation(
     ? await input.dependencies.restoreOutputGroups(entry.mintUrl, entry.outputs)
     : await restoreOutputGroups(entry.mintUrl, entry.outputs)
   return {
-    kind: 'proofs',
     proofs: validateExactProofConsolidationProofs(validated, restored.consolidated, {
       purpose: WALLET_PROOF_CONSOLIDATION_PURPOSE,
     }),
   }
-}
-
-function definiteMintRejectionReason(error: MintOperationError): string {
-  const code = Number.isSafeInteger(error.code) ? String(error.code) : 'unknown'
-  return `wallet-proof-consolidation-mint-rejected-${code}`
 }
 
 async function completeAndFinalize(

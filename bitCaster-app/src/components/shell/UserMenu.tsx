@@ -11,7 +11,7 @@ import {
   Languages,
   Check,
 } from "lucide-react";
-import { formatMarketSubunits } from "@bitcaster/client-sdk/marketUnits";
+import { InlineAmount } from "@/components/shared/InlineAmount";
 import { useTranslation } from "react-i18next";
 import { LANGUAGES } from "@/i18n";
 
@@ -46,7 +46,7 @@ export function UserMenu({ user, onLogout, onNavigate, onCreateClick }: UserMenu
         <div className="text-left">
           <div className="text-sm font-medium text-slate-900 dark:text-slate-100">{user.name}</div>
           <div className="text-xs text-amber-400 font-mono">
-            {formatMarketSubunits(user.balance ?? 0, "sat")}
+            <InlineAmount amountSubunits={user.balance ?? 0} baseAsset="sat" />
           </div>
         </div>
 

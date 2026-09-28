@@ -31,26 +31,21 @@ import {
   type IngressReceiveCashuTokenResult,
 } from "@/lib/walletOps";
 import { useToastStore } from "@/stores/toast";
+import { getCanonicalSelectableProofs, isCtfProof } from "@/stores/proof-db";
 import {
-  getUnitProofs,
-  getProofs,
-  addProofs,
-  removeProofs,
-  isCtfProof,
-  type StoredProof,
-} from "@/stores/proof-db";
+  browserWalletIdFromMnemonic,
+  browserWalletScopeIdFromMnemonic,
+  isActiveBrowserWalletId,
+} from "@/lib/browserWalletProfile";
 import { usePaymentRequestInbox } from "@/stores/paymentRequestInbox";
 import { safeHostname } from "@/lib/url";
 import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
 import {
   cashuAmountToMarketSubunits,
-  collateralScaleForUnit,
   defaultCollateralUnit,
-  parseCashuProofUnit,
-  type CashuProofUnit,
+  parseSatsToMsat,
   type MarketBaseAsset,
 } from "@bitcaster/client-sdk/marketUnits";
-import { formatBtc } from "@/lib/format";
 
 export type ExtendedView =
   | DepositWithdrawView
@@ -63,15 +58,6 @@ export type ExtendedView =
 
 export type InvoiceStatus = "pending" | "paid" | "expired" | "error";
 
-function depositInputAmountToActivitySubunits(amount: number, baseAsset: MarketBaseAsset): number {
-  const unit = defaultCollateralUnit(baseAsset);
-  const amountSubunits = amount * collateralScaleForUnit(unit);
-  if (!Number.isSafeInteger(amountSubunits)) {
-    throw new Error(`Amount exceeds safe integer range for ${unit}: ${amount}`);
-  }
-  return amountSubunits;
-}
-
 export interface DepositWithdrawState {
   mode: DepositWithdrawMode;
   currentView: ExtendedView;
@@ -79,9 +65,6 @@ export interface DepositWithdrawState {
   selectedMintId: string;
   amountSats: number;
   amountLabel: string;
-  amountFiat: string;
-  fiatSymbol: string;
-  showFiatPrimary: boolean;
   lightningInput: string;
   isLoading: boolean;
   error: string | null;
@@ -101,21 +84,22 @@ export interface DepositWithdrawState {
   paymentRequestStatus: "waiting" | "received";
 
   // Success state
-  successAmount: number;
+  /** Successful product amount in native msat subunits. */
+  successAmountMsat: number;
   /** Product base asset of the displayed success amount. */
-  successUnit: MarketBaseAsset;
+  successBaseAsset: MarketBaseAsset;
 
   // Handlers
   onSelectMethod: (method: MethodType) => void;
   onNumpadPress: (key: string) => void;
   onMintChange: (mintId: string) => void;
-  onToggleCurrency: () => void;
   onCreateInvoice: () => void;
   /** Discard the active mint quote and immediately request a fresh one for the
    *  same amount/mint/unit (one-click re-quote after expiry / failure). */
   onRegenerateInvoice: () => void;
   onSendEcash: () => void;
   onReclaimEcash: () => void;
+  onAcknowledgeEcashHandoff: () => void;
   onPaste: () => void;
   onScan: () => void;
   onRequest: () => void;
@@ -125,6 +109,14 @@ export interface DepositWithdrawState {
   onConfirmMelt: () => void;
   onBack: () => void;
   onClose: () => void;
+}
+
+function activeWalletId(): string | null {
+  return browserWalletIdFromMnemonic(useWalletStore.getState().mnemonic);
+}
+
+function isWalletScopeActive(walletId: string): boolean {
+  return isActiveBrowserWalletId(walletId, useWalletStore.getState().mnemonic);
 }
 
 /**
@@ -153,12 +145,15 @@ export function useDepositWithdrawState(
   const mintUrls = storeMints.map((m) => m.url);
   const balancesByMint = useLiveQuery(
     async () => {
-      const proofs = await getProofs();
+      const scopeId = browserWalletScopeIdFromMnemonic(walletMnemonic);
+      if (scopeId === null) return {};
+      const proofs = await getCanonicalSelectableProofs(scopeId);
+      if (proofs === null) throw new Error("Canonical wallet custody is unavailable");
       const map: Record<string, number> = {};
       for (const p of proofs.filter((proof) => !isCtfProof(proof))) {
-        const unit = requireCashuProofUnit(p.unit);
+        if (p.unit !== "msat") continue;
         map[p.mintUrl] =
-          (map[p.mintUrl] ?? 0) + cashuAmountToMarketSubunits(amountToNumber(p.amount), unit);
+          (map[p.mintUrl] ?? 0) + cashuAmountToMarketSubunits(amountToNumber(p.amount), "msat");
       }
       return map;
     },
@@ -177,7 +172,6 @@ export function useDepositWithdrawState(
   const [currentView, setCurrentView] = useState<ExtendedView>("chooser");
   const [selectedMintId, setSelectedMintId] = useState(activeMintUrl);
   const [amountString, setAmountString] = useState("");
-  const [showFiatPrimary, setShowFiatPrimary] = useState(false);
   const [lightningInput, setLightningInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -200,8 +194,8 @@ export function useDepositWithdrawState(
   );
 
   // Success state
-  const [successAmount, setSuccessAmount] = useState(0);
-  const [successUnit, setSuccessUnit] = useState<MarketBaseAsset>("sat");
+  const [successAmountMsat, setSuccessAmountMsat] = useState(0);
+  const [successBaseAsset, setSuccessBaseAsset] = useState<MarketBaseAsset>("sat");
 
   // Track which view opened the scanner so we can process results correctly
   const scanReturnViewRef = useRef<ExtendedView>("deposit-ecash");
@@ -256,20 +250,23 @@ export function useDepositWithdrawState(
 
   // React to the global inbox flipping our pending request to "received".
   useEffect(() => {
-    if (!pendingRequestId || !inboxEntry) return;
+    if (
+      !pendingRequestId ||
+      !inboxEntry ||
+      inboxEntry.walletScopeId !==
+        browserWalletScopeIdFromMnemonic(useWalletStore.getState().mnemonic)
+    )
+      return;
     setPaymentRequestStatus("received");
-    setSuccessAmount(inboxEntry.amountSubunits);
-    setSuccessUnit(inboxEntry.baseAsset);
-    const handle = setTimeout(() => {
-      usePaymentRequestInbox.getState().clear(pendingRequestId);
-      setPendingRequestId(null);
-      onDismiss();
-    }, 2000);
-    return () => clearTimeout(handle);
-  }, [pendingRequestId, inboxEntry, onDismiss]);
+    setSuccessAmountMsat(inboxEntry.amountSubunits);
+    setSuccessBaseAsset(inboxEntry.baseAsset);
+    setCurrentView("success");
+    usePaymentRequestInbox.getState().clear(pendingRequestId);
+    setPendingRequestId(null);
+  }, [pendingRequestId, inboxEntry]);
 
-  const amountSats = parseInt(amountString || "0", 10);
-  const amountLabel = formatBtc(amountSats);
+  const amountSats = parseDisplayAmountSats(amountString);
+  const amountLabel = `${amountSats.toLocaleString(undefined, { maximumFractionDigits: 3 })} sats`;
 
   const onSelectMethod = useCallback(
     (method: MethodType) => {
@@ -280,10 +277,13 @@ export function useDepositWithdrawState(
         if (method === "ecash") {
           const presentationGeneration = ++bearerPresentationGenerationRef.current;
           const requestedMintId = selectedMintId;
+          const walletId = activeWalletId();
+          if (walletId === null || !isWalletScopeActive(walletId)) return;
           void resumeBrowserBearerWithdrawal(selectedMintId)
             .then(async (transfer) => {
               if (
                 presentationGeneration !== bearerPresentationGenerationRef.current ||
+                !isWalletScopeActive(walletId) ||
                 transfer?.mintUrl !== requestedMintId
               ) {
                 return;
@@ -301,7 +301,12 @@ export function useDepositWithdrawState(
                 return;
               }
               const classified = await classifyBrowserBearerWithdrawal({ transfer });
-              if (presentationGeneration !== bearerPresentationGenerationRef.current) return;
+              if (
+                presentationGeneration !== bearerPresentationGenerationRef.current ||
+                !isWalletScopeActive(walletId)
+              ) {
+                return;
+              }
               setBearerWithdrawal(classified);
               switch (classified.deliveryState) {
                 case "delivery-pending":
@@ -316,7 +321,7 @@ export function useDepositWithdrawState(
                     return;
                   }
                   setEcashToken(token.encodedToken);
-                  setAmountString(classified.requestedAmount);
+                  setAmountString(String(Number(classified.requestedAmount) / 1_000));
                   setCurrentView("token-display");
                   return;
                 case "bearer-partial":
@@ -328,7 +333,10 @@ export function useDepositWithdrawState(
               }
             })
             .catch((reason: Error) => {
-              if (presentationGeneration === bearerPresentationGenerationRef.current) {
+              if (
+                presentationGeneration === bearerPresentationGenerationRef.current &&
+                isWalletScopeActive(walletId)
+              ) {
                 setError(reason.message);
               }
             });
@@ -343,6 +351,16 @@ export function useDepositWithdrawState(
       if (key === "backspace") {
         return prev.length <= 1 ? "" : prev.slice(0, -1);
       }
+
+      if (key === ".") {
+        if (prev === "") return "0.";
+        return prev.includes(".") ? prev : `${prev}.`;
+      }
+
+      if (!/^\d$/.test(key)) return prev;
+      const decimalIndex = prev.indexOf(".");
+      if (decimalIndex >= 0 && prev.length - decimalIndex - 1 >= 3) return prev;
+
       // Prevent leading zeros
       if (prev === "" && key === "0") return "";
       return prev + key;
@@ -355,10 +373,6 @@ export function useDepositWithdrawState(
     setSelectedMintId(mintId);
   }, []);
 
-  const onToggleCurrency = useCallback(() => {
-    setShowFiatPrimary((prev) => !prev);
-  }, []);
-
   const stopActiveMintQuote = useCallback(async () => {
     mintQuotePresentationGenerationRef.current += 1;
     unsubRef.current?.();
@@ -369,18 +383,24 @@ export function useDepositWithdrawState(
   }, []);
 
   const handlePaidInvoice = useCallback(
-    (quote: DurableBolt11MintQuote, requested: number, baseAsset: MarketBaseAsset) => {
-      setInvoiceStatus("paid");
-      const requestedSubunits = depositInputAmountToActivitySubunits(requested, baseAsset);
+    (
+      quote: DurableBolt11MintQuote,
+      requestedMsat: number,
+      baseAsset: MarketBaseAsset,
+      walletId: string,
+    ) => {
       useActivityLogStore.getState().addActivity({
+        walletId,
         type: "deposit",
         baseAsset,
-        amountSats: requestedSubunits,
+        amountSubunits: requestedMsat,
         status: "completed",
         lightningInvoice: quote.invoiceRequest,
       });
-      setSuccessAmount(requestedSubunits);
-      setSuccessUnit(baseAsset);
+      if (!isWalletScopeActive(walletId)) return;
+      setInvoiceStatus("paid");
+      setSuccessAmountMsat(requestedMsat);
+      setSuccessBaseAsset(baseAsset);
       setCurrentView("success");
     },
     [],
@@ -390,20 +410,23 @@ export function useDepositWithdrawState(
     (
       r: { status: string; error?: Error },
       quote: DurableBolt11MintQuote,
-      requested: number,
+      requestedMsat: number,
       baseAsset: MarketBaseAsset,
+      walletId: string,
     ) => {
       if (mintQuoteRef.current?.quoteRecordId !== quote.quoteRecordId) return;
       switch (r.status) {
         case "PAID":
-          handlePaidInvoice(quote, requested, baseAsset);
+          handlePaidInvoice(quote, requestedMsat, baseAsset, walletId);
           return;
         case "EXPIRED":
+          if (!isWalletScopeActive(walletId)) return;
           setInvoiceStatus("expired");
           setError("The Lightning invoice expired before payment arrived.");
           void stopActiveMintQuote();
           return;
         case "ERROR":
+          if (!isWalletScopeActive(walletId)) return;
           setInvoiceStatus("error");
           setError(r.error?.message ?? "Mint quote recovery failed.");
           return;
@@ -421,13 +444,25 @@ export function useDepositWithdrawState(
     setIsLoading(true);
     setError(null);
     setInvoiceStatus("pending");
-    const requested = amountSats;
+    const initialWalletId = activeWalletId();
+    let operationWalletId = initialWalletId;
     const mintUrl = selectedMintId;
     const baseAsset = "sat" as const;
-    const quoteAmount = depositInputAmountToActivitySubunits(requested, baseAsset);
     const presentationGeneration = mintQuotePresentationGenerationRef.current;
     try {
+      const quoteAmount = parseSatsToMsat(amountString);
       await useWalletStore.getState().ensureImplicitWallet();
+      const walletId = activeWalletId();
+      if (walletId === null) throw new Error("The active wallet is unavailable.");
+      operationWalletId = walletId;
+      if (initialWalletId !== null && !isWalletScopeActive(initialWalletId)) {
+        inflightRef.current = false;
+        return;
+      }
+      if (!isWalletScopeActive(walletId)) {
+        inflightRef.current = false;
+        return;
+      }
       if (
         mintQuoteDisposedRef.current ||
         presentationGeneration !== mintQuotePresentationGenerationRef.current
@@ -439,6 +474,11 @@ export function useDepositWithdrawState(
         mintUrl,
         unit: defaultCollateralUnit(baseAsset),
       });
+      if (!isWalletScopeActive(walletId)) {
+        await hideBrowserDurableBolt11MintQuote(created.quote.quoteRecordId);
+        inflightRef.current = false;
+        return;
+      }
       if (
         mintQuoteDisposedRef.current ||
         presentationGeneration !== mintQuotePresentationGenerationRef.current
@@ -452,10 +492,12 @@ export function useDepositWithdrawState(
       setCurrentView("invoice-display");
       const unsub = await subscribeActiveBrowserDurableBolt11MintQuote({
         quote: created.quote,
-        onResult: (result) => handleInvoiceWaitResult(result, created.quote, requested, baseAsset),
+        onResult: (result) =>
+          handleInvoiceWaitResult(result, created.quote, quoteAmount, baseAsset, walletId),
         options: {
           onTransientError: (error) => {
             if (
+              isWalletScopeActive(walletId) &&
               !mintQuoteDisposedRef.current &&
               mintQuoteRef.current?.quoteRecordId === created.quote.quoteRecordId
             ) {
@@ -465,16 +507,21 @@ export function useDepositWithdrawState(
         },
       });
       if (
+        !isWalletScopeActive(walletId) ||
         mintQuoteDisposedRef.current ||
         presentationGeneration !== mintQuotePresentationGenerationRef.current
       ) {
         unsub();
         await hideBrowserDurableBolt11MintQuote(created.quote.quoteRecordId);
+        inflightRef.current = false;
         return;
       }
       unsubRef.current = unsub;
     } catch (e) {
       if (
+        (operationWalletId === null
+          ? activeWalletId() === null
+          : isWalletScopeActive(operationWalletId)) &&
         !mintQuoteDisposedRef.current &&
         presentationGeneration === mintQuotePresentationGenerationRef.current
       ) {
@@ -490,7 +537,7 @@ export function useDepositWithdrawState(
         setIsLoading(false);
       }
     }
-  }, [amountSats, selectedMintId, handleInvoiceWaitResult]);
+  }, [amountSats, amountString, selectedMintId, handleInvoiceWaitResult]);
 
   const onRegenerateInvoice = useCallback(() => {
     void stopActiveMintQuote().finally(() => {
@@ -504,71 +551,106 @@ export function useDepositWithdrawState(
   }, [onCreateInvoice, stopActiveMintQuote]);
 
   const onPaste = useCallback(async () => {
+    const walletId = activeWalletId();
     setError(null);
     try {
       const text = await navigator.clipboard.readText();
       if (!text) return;
+      if (walletId !== null && !isWalletScopeActive(walletId)) return;
 
       // Detect if it's an ecash token or a lightning invoice
       if (currentView === "deposit-ecash") {
+        if (walletId === null) throw new Error("The active wallet is unavailable.");
         setIsLoading(true);
         const received = await ingressReceiveCashuToken(text, "paste");
-        toastNewMintIfAdded(received);
         const receivedBaseAsset = received.baseAsset;
         useActivityLogStore.getState().addActivity({
+          walletId,
           type: "deposit",
           baseAsset: receivedBaseAsset,
-          amountSats: received.amountSubunits,
+          amountSubunits: received.amountSubunits,
           status: "completed",
         });
+        if (!isWalletScopeActive(walletId)) return;
+        toastNewMintIfAdded(received);
         setIsLoading(false);
-        setSuccessAmount(received.amountSubunits);
-        setSuccessUnit(receivedBaseAsset);
+        setSuccessAmountMsat(received.amountSubunits);
+        setSuccessBaseAsset(receivedBaseAsset);
         setCurrentView("success");
       } else if (currentView === "pay-lightning") {
         setLightningInput(text);
         // Auto-create melt quote if it looks like a bolt11 invoice
         if (text.toLowerCase().startsWith("lnbc") || text.toLowerCase().startsWith("lntb")) {
+          if (walletId === null) throw new Error("The active wallet is unavailable.");
           setIsLoading(true);
           const quote = await createMeltQuote(text, selectedMintId);
+          if (!isWalletScopeActive(walletId)) return;
           setMeltQuote(quote);
           setCurrentView("melt-confirm");
           setIsLoading(false);
         }
       }
     } catch (e) {
-      setError((e as Error).message);
+      if (walletId === null || isWalletScopeActive(walletId)) setError((e as Error).message);
+      setIsLoading(false);
+    } finally {
       setIsLoading(false);
     }
   }, [currentView, selectedMintId]);
 
   const onSendEcash = useCallback(async () => {
     if (amountSats <= 0) return;
+    const walletId = activeWalletId();
+    if (walletId === null || !isWalletScopeActive(walletId)) {
+      setError("The active wallet is unavailable.");
+      return;
+    }
     setIsLoading(true);
     setError(null);
     try {
       const transfer = await executeBrowserBearerWithdrawal({
-        amount: amountSats,
+        amountMsat: parseSatsToMsat(amountString),
         mintUrl: selectedMintId,
       });
       if (transfer.token === null) throw new Error("Withdrawal token was not durably admitted");
+      if (!isWalletScopeActive(walletId)) return;
       setBearerWithdrawal(transfer);
       setEcashToken(transfer.token.encodedToken);
       setCurrentView("token-display");
     } catch (e) {
-      setError((e as Error).message);
+      if (isWalletScopeActive(walletId)) setError((e as Error).message);
     } finally {
       setIsLoading(false);
     }
-  }, [amountSats, selectedMintId]);
+  }, [amountSats, amountString, selectedMintId]);
+
+  const onAcknowledgeEcashHandoff = useCallback(() => {
+    if (bearerWithdrawal?.token == null || currentView !== "token-display") return;
+    if (
+      bearerWithdrawal.walletScopeId !==
+      browserWalletScopeIdFromMnemonic(useWalletStore.getState().mnemonic)
+    )
+      return;
+    setSuccessAmountMsat(
+      cashuAmountToMarketSubunits(
+        amountToNumber(bearerWithdrawal.requestedAmount),
+        bearerWithdrawal.unit,
+      ),
+    );
+    setSuccessBaseAsset("sat");
+    setCurrentView("success");
+  }, [bearerWithdrawal, currentView]);
 
   const onReclaimEcash = useCallback(async () => {
     if (bearerWithdrawal === null) return;
+    const walletId = activeWalletId();
+    if (walletId === null || !isWalletScopeActive(walletId)) return;
     setEcashToken(null);
     setCurrentView("send-ecash");
     setIsLoading(true);
     try {
       const classified = await reclaimBrowserBearerWithdrawal({ transfer: bearerWithdrawal });
+      if (!isWalletScopeActive(walletId)) return;
       setBearerWithdrawal(classified);
       switch (classified.deliveryState) {
         case "bearer-spent":
@@ -601,9 +683,11 @@ export function useDepositWithdrawState(
           setError(t("deposit.reclaimUnavailable"));
       }
     } catch (reason) {
+      if (!isWalletScopeActive(walletId)) return;
       const persisted = await resumeBrowserBearerWithdrawal(bearerWithdrawal.mintUrl).catch(
         () => null,
       );
+      if (!isWalletScopeActive(walletId)) return;
       if (persisted?.transferId === bearerWithdrawal.transferId) {
         setBearerWithdrawal(persisted);
         if (persisted.deliveryState !== "delivery-pending") setEcashToken(null);
@@ -616,18 +700,25 @@ export function useDepositWithdrawState(
 
   const onLightningInputChange = useCallback(
     async (value: string) => {
+      const walletId = activeWalletId();
+      if (walletId !== null && !isWalletScopeActive(walletId)) return;
       setLightningInput(value);
       // Auto-create melt quote when a bolt11 invoice is detected
       const trimmed = value.trim().toLowerCase();
       if (trimmed.startsWith("lnbc") || trimmed.startsWith("lntb")) {
+        if (walletId === null) {
+          setError("The active wallet is unavailable.");
+          return;
+        }
         setIsLoading(true);
         setError(null);
         try {
           const quote = await createMeltQuote(value.trim(), selectedMintId);
+          if (!isWalletScopeActive(walletId)) return;
           setMeltQuote(quote);
           setCurrentView("melt-confirm");
         } catch (e) {
-          setError((e as Error).message);
+          if (isWalletScopeActive(walletId)) setError((e as Error).message);
         } finally {
           setIsLoading(false);
         }
@@ -638,41 +729,33 @@ export function useDepositWithdrawState(
 
   const onConfirmMelt = useCallback(async () => {
     if (!meltQuote) return;
+    const walletId = activeWalletId();
+    if (walletId === null || !isWalletScopeActive(walletId)) return;
     setMeltIsPaying(true);
     setError(null);
     try {
-      const proofs = await getUnitProofs(selectedMintId, { unit: "sat" });
-      const { paid, change } = await meltProofs(meltQuote, proofs, selectedMintId);
+      const { paid } = await meltProofs(meltQuote, selectedMintId);
 
       if (!paid) {
-        setError("Payment failed");
+        if (isWalletScopeActive(walletId)) setError("Payment failed");
         return;
       }
 
-      // Remove spent proofs, add change
-      await removeProofs(proofs.map((p) => p.secret));
-      if (change.length > 0) {
-        const changeStored: StoredProof[] = change.map((p) => ({
-          ...p,
-          mintUrl: selectedMintId,
-          baseAsset: "sat",
-          unit: "sat",
-        }));
-        await addProofs(changeStored);
-      }
-
+      const amountMsat = amountToNumber(meltQuote.amount);
       useActivityLogStore.getState().addActivity({
+        walletId,
         type: "withdrawal",
         baseAsset: "sat",
-        amountSats: amountToNumber(meltQuote.amount),
+        amountSubunits: amountMsat,
         status: "completed",
         lightningInvoice: lightningInput,
       });
-      setSuccessAmount(amountToNumber(meltQuote.amount));
-      setSuccessUnit("sat");
+      if (!isWalletScopeActive(walletId)) return;
+      setSuccessAmountMsat(amountMsat);
+      setSuccessBaseAsset("sat");
       setCurrentView("success");
     } catch (e) {
-      setError((e as Error).message);
+      if (isWalletScopeActive(walletId)) setError((e as Error).message);
     } finally {
       setMeltIsPaying(false);
     }
@@ -690,23 +773,32 @@ export function useDepositWithdrawState(
 
       // Detect cashu token
       if (trimmed.toLowerCase().startsWith("cashu")) {
+        const walletId = activeWalletId();
+        if (walletId === null || !isWalletScopeActive(walletId)) {
+          setError("The active wallet is unavailable.");
+          return;
+        }
         setIsLoading(true);
         try {
           const received = await ingressReceiveCashuToken(trimmed, "scan");
-          toastNewMintIfAdded(received);
           const receivedBaseAsset = received.baseAsset;
           useActivityLogStore.getState().addActivity({
+            walletId,
             type: "deposit",
             baseAsset: receivedBaseAsset,
-            amountSats: received.amountSubunits,
+            amountSubunits: received.amountSubunits,
             status: "completed",
           });
-          setSuccessAmount(received.amountSubunits);
-          setSuccessUnit(receivedBaseAsset);
+          if (!isWalletScopeActive(walletId)) return;
+          toastNewMintIfAdded(received);
+          setSuccessAmountMsat(received.amountSubunits);
+          setSuccessBaseAsset(receivedBaseAsset);
           setCurrentView("success");
         } catch (e) {
-          setError((e as Error).message);
-          setCurrentView(scanReturnViewRef.current);
+          if (isWalletScopeActive(walletId)) {
+            setError((e as Error).message);
+            setCurrentView(scanReturnViewRef.current);
+          }
         } finally {
           setIsLoading(false);
         }
@@ -715,15 +807,23 @@ export function useDepositWithdrawState(
 
       // Detect bolt11 invoice
       if (trimmed.toLowerCase().startsWith("lnbc") || trimmed.toLowerCase().startsWith("lntb")) {
+        const walletId = activeWalletId();
+        if (walletId === null || !isWalletScopeActive(walletId)) {
+          setError("The active wallet is unavailable.");
+          return;
+        }
         setIsLoading(true);
         try {
           const quote = await createMeltQuote(trimmed, selectedMintId);
+          if (!isWalletScopeActive(walletId)) return;
           setMeltQuote(quote);
           setLightningInput(trimmed);
           setCurrentView("melt-confirm");
         } catch (e) {
-          setError((e as Error).message);
-          setCurrentView(scanReturnViewRef.current);
+          if (isWalletScopeActive(walletId)) {
+            setError((e as Error).message);
+            setCurrentView(scanReturnViewRef.current);
+          }
         } finally {
           setIsLoading(false);
         }
@@ -787,9 +887,6 @@ export function useDepositWithdrawState(
     selectedMintId,
     amountSats,
     amountLabel,
-    amountFiat: "$0.00", // Fiat conversion not yet implemented
-    fiatSymbol: "$",
-    showFiatPrimary,
     lightningInput,
     isLoading,
     error,
@@ -802,16 +899,16 @@ export function useDepositWithdrawState(
     meltIsPaying,
     paymentRequestEncoded,
     paymentRequestStatus,
-    successAmount,
-    successUnit,
+    successAmountMsat,
+    successBaseAsset,
     onSelectMethod,
     onNumpadPress,
     onMintChange,
-    onToggleCurrency,
     onCreateInvoice,
     onRegenerateInvoice,
     onSendEcash,
     onReclaimEcash,
+    onAcknowledgeEcashHandoff,
     onPaste,
     onScan,
     onRequest,
@@ -824,8 +921,13 @@ export function useDepositWithdrawState(
   };
 }
 
-function requireCashuProofUnit(value: string | null | undefined): CashuProofUnit {
-  const unit = parseCashuProofUnit(value);
-  if (!unit) throw new Error(`Unsupported Cashu proof unit '${value ?? ""}'`);
-  return unit;
+function parseDisplayAmountSats(value: string): number {
+  if (value === "") return 0;
+  try {
+    return parseSatsToMsat(value) / 1_000;
+  } catch {
+    // Keep action buttons disabled while the user has entered an incomplete
+    // decimal such as "1.". The shared parser remains authoritative at send.
+    return 0;
+  }
 }

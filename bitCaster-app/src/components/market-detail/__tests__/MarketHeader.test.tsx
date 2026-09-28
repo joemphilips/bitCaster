@@ -1,4 +1,4 @@
-import { act, render, screen } from "@testing-library/react";
+import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -35,7 +35,7 @@ function makeMarket(overrides: Partial<YesNoMarketDetail> = {}): YesNoMarketDeta
     activeSince: "2026-01-01T00:00:00Z",
     baseUnit: "sats",
     baseAsset: "sat",
-    divisibility: 10_000,
+    divisibility: 1_000,
     mint: {
       collateral: "sat",
       keysetCount: 2,
@@ -63,6 +63,20 @@ function makeMarket(overrides: Partial<YesNoMarketDetail> = {}): YesNoMarketDeta
 }
 
 describe("MarketHeader", () => {
+  it.each([
+    ["Volume", "Total traded volume so far"],
+    ["Total funding", "Total funds contributed to this market's bot"],
+  ])("explains %s across its icon and amount", async (label, description) => {
+    const user = userEvent.setup();
+    renderHeader(makeMarket());
+    const control = screen.getByRole("button", { name: new RegExp(label) });
+    await user.hover(control.querySelector("svg")!);
+    expect(screen.getByRole("tooltip")).toHaveTextContent(description);
+    await user.hover(within(control).getByRole("group"));
+    expect(control).toHaveAccessibleDescription(description);
+    expect(control.querySelector("[title]")).toBeNull();
+  });
+
   let originalClipboard: NavigatorMutable["clipboard"];
 
   beforeEach(() => {
@@ -140,6 +154,27 @@ describe("MarketHeader", () => {
 
     expect(screen.getByText("Final Outcome")).toBeInTheDocument();
     expect(screen.getByText("Yes")).toBeInTheDocument();
+    expect(screen.getByText(/Resolved on/)).toBeInTheDocument();
+    expect(await screen.findByText(shortCreatorNpub)).toBeInTheDocument();
+  });
+
+  it("keeps the resolved lifecycle label without inventing a missing resolution date", async () => {
+    const market = makeMarket({
+      state: "closed",
+      resolution: {
+        ...makeMarket().resolution,
+        status: "resolved",
+        resolutionDate: null,
+      },
+    });
+    renderHeader(market);
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(screen.getAllByText("Resolved")).toHaveLength(2);
+    expect(screen.queryByText(/Resolved on/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/January 1, 1970/)).not.toBeInTheDocument();
     expect(await screen.findByText(shortCreatorNpub)).toBeInTheDocument();
   });
 

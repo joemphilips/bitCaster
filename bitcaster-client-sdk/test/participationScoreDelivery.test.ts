@@ -11,14 +11,15 @@ const input = {
   deliveryId: '123e4567-e89b-42d3-a456-426614174000',
   accountSubject: 'a'.repeat(64),
   mintUrl: 'https://mint.example',
-  requestedAmount: '21',
+  requestedAmount: '21000',
 }
 
 test('builds one canonical Participation Score durable-recipient binding', () => {
   const metadata = createParticipationScoreDeliveryMetadata(input)
   assert.equal(metadata.destinationId, input.deliveryId)
   assert.equal(metadata.purpose, 'participation-score')
-  assert.equal(metadata.unit, 'sat')
+  assert.equal(metadata.unit, 'msat')
+  assert.equal(metadata.requestedAmount, '21000')
   assert.equal(metadata.creditPolicy, 'exact-amount')
   assert.equal(metadata.productBindingSha256, deriveParticipationScoreProductBinding())
   assert.equal(metadata.productBindingSha256.length, 64)
@@ -45,12 +46,12 @@ test('uses the fixed domain-separated binding for every Score payment', () => {
       ...input,
       deliveryId: crypto.randomUUID(),
       accountSubject: 'b'.repeat(64),
-      requestedAmount: '22',
+      requestedAmount: '22000',
     }).productBindingSha256,
   )
 })
 
-test('requires canonical identifiers, exact positive sats, and a canonical token', () => {
+test('requires canonical identifiers, whole-Score msat amounts, and a canonical token', () => {
   assert.throws(
     () => createParticipationScoreDeliveryMetadata({ ...input, requestedAmount: '0' }),
     /requested amount/,
@@ -72,4 +73,13 @@ test('requires canonical identifiers, exact positive sats, and a canonical token
     () => createParticipationScoreDeliverySubmission({ metadata, token: 'cashuAwrong' }),
     /token/,
   )
+})
+
+test('rejects fractional Score and unsafe monetary inputs', () => {
+  for (const requestedAmount of ['1', '999', '1001', '-1000', '9007199254741000']) {
+    assert.throws(
+      () => createParticipationScoreDeliveryMetadata({ ...input, requestedAmount }),
+      /requested amount/,
+    )
+  }
 })

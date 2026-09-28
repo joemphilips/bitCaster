@@ -1,3 +1,5 @@
+import type { components } from "@/generated/api";
+
 // =============================================================================
 // Wallet & Currency Types
 // =============================================================================
@@ -43,9 +45,10 @@ export interface PortfolioStats {
   totalValueSats: number;
   positionsValueKnown?: boolean;
   totalValueKnown?: boolean;
+  positionsValueLoading?: boolean;
+  totalValueLoading?: boolean;
   positionsValueByUnit?: Array<{ unit: "sat"; amount: number }>;
   totalValueByUnit?: Array<{ unit: "sat"; amount: number }>;
-  biggestWinSats: number;
   predictionsCount: number;
 }
 
@@ -60,6 +63,7 @@ export interface PortfolioMonitoringState {
   assetPageError: "unavailable" | null;
   hasMoreAssets: boolean;
   loadingMoreAssets: boolean;
+  liveUpdateCoverageLimited: boolean;
 }
 
 // =============================================================================
@@ -77,30 +81,31 @@ export interface Position {
   side: PositionSide;
   outcomeId?: string;
   outcomeLabel?: string;
+  /** Persisted accent for one primitive categorical outcome. */
+  outcomeColor?: string;
   canClaimPayout?: boolean;
+  claimRecoveryPending?: boolean;
+  removalPending?: boolean;
   canDiscard?: boolean;
   /** False for server monitoring rows. Local proofs authorize all wallet actions. */
   canSell?: boolean;
   /** Complete canonical monitor identity when local custody can prove it. */
   monitoringAssetIdentity?: string;
   baseAsset: "sat";
-  divisibility: import("./market").ProductMarketDivisibility;
+  /** Registered market denominator, when the catalogue or monitor supplied it. */
+  divisibility?: import("./market").ProductMarketDivisibility;
   /** Exact share count when the client knows the market divisibility. */
   shares?: number;
-  avgBuyPrice: number;
-  currentPrice: number;
   currentValueSats: number;
   /** False when the display-only monitor cannot value this asset. */
   valueKnown?: boolean;
-  profitLossSats: number;
-  profitLossPercent: number;
   status: PositionStatus;
   /**
    * Single source-of-truth winner flag for a closed position (P22 Link F),
    * derived once in usePortfolioState via deriveWinner. A position is a winner
    * iff it holds >= 1 proof on a winning keyset (the attested outcome is a
    * member of the keyset's collection). The "Won" badge, Claim button,
-   * value/P&L, and the destructive "Remove" guard all read this same field so
+   * and the destructive "Remove" guard all read this same field so
    * they can never disagree. Always false while active.
    */
   isWinner: boolean;
@@ -113,8 +118,8 @@ export interface Position {
    * Closed but NOT YET ATTESTED (no final outcome — closed by deadline, or
    * before the oracle attests). Win/loss is UNDECIDED (P22 Link F): the row
    * shows an "awaiting resolution" indicator and offers NEITHER Claim NOR
-   * Remove, so not-yet-decided proofs can never be destroyed. Its value is the
-   * full held amount, not zero. Always false while active.
+   * Remove, so not-yet-decided proofs can never be destroyed. Its value remains
+   * unvalued until authoritative attestation. Always false while active.
    */
   isPending: boolean;
   /**
@@ -154,10 +159,20 @@ export type ActivityType =
   | "creator_fee_claimed";
 export type ActivityStatus = "pending" | "completed" | "Failed";
 
+export interface TradeActivityDetails {
+  fillId: string;
+  outcomeId: string;
+  tokenSide: components["schemas"]["TokenSide"];
+  faceAmountSubunits: number;
+  divisibility: import("./market").ProductMarketDivisibility;
+}
+
 export interface ActivityItem {
   id: string;
+  /** Missing only on legacy history whose wallet cannot be inferred. */
+  walletId?: string;
   type: ActivityType;
-  amountSats: number;
+  amountSubunits: number;
   baseAsset: "sat";
   date: string;
   status: ActivityStatus;
@@ -167,6 +182,8 @@ export interface ActivityItem {
   marketId?: string;
   marketTitle?: string;
   positionId?: string;
+  /** Exact confirmed fill values. Old manually added Buy/Sell rows may omit them. */
+  tradeDetails?: TradeActivityDetails;
 }
 
 // =============================================================================
@@ -222,7 +239,7 @@ export interface PortfolioProps {
   /** User profile information */
   profile: UserProfile;
 
-  /** P/L chart data for each time range */
+  /** Estimated portfolio-value history for each time range */
   plChartData: PLChartData;
 
   /** Portfolio statistics */
@@ -281,9 +298,6 @@ export interface PortfolioProps {
 
   /** Called when user removes a losing closed CTF position from local wallet state */
   onDiscardLostPosition?: (positionId: string) => void;
-
-  /** Called when user clicks to view a fund */
-  onViewFund?: (fundId: string) => void;
 
   /** Called when user opens Settings */
   onOpenSettings?: () => void;

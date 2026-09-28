@@ -17,7 +17,7 @@ import type { components } from "@/generated/api";
  * (the P7 §`/markets/{id}` regression). The fix is structural: read engine
  * state directly, exhaustive-switch over the generated union, fail loudly on
  * any unexpected value via `assertNever`. See
- * `.claude/skills/bitcaster-coding-guideline/SKILL.md` for the full rule.
+ * `.claude/rules/wire-values.md` (Rule 3) for the full rule.
  */
 export type MarketState = components["schemas"]["MarketCatalogueEntry"]["state"];
 

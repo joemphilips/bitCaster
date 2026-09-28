@@ -29,6 +29,7 @@ import {
   decodePersistedCtfRangeOrderPreparationBytes,
   encodePersistedCtfRangeOrderPreparation,
   planPersistedCtfRangeOrderAuthorization,
+  settlementCapabilityV1WorkFacts,
   validateAndProjectCtfRangeSettlementCapabilityResponse,
   type CtfRangeOrderRequest,
 } from '../src/ctfRangeOrderProtocol.ts'
@@ -42,6 +43,7 @@ import {
   deriveSettlementCapabilityArtifactDigest,
 } from '../src/settlementCapabilityArtifact.ts'
 import {
+  ctfRangeSourceMode,
   ctfRangeSourceKeepDerivationLocators,
   prepareCtfRangeSourceOperation,
   validateCtfRangeSourceCompletionOperation,
@@ -49,8 +51,12 @@ import {
 import { deserializeDurableCustodyOutput } from '../src/durableCustodyProofOperation.ts'
 import { planCtfRangeCapabilitySource } from '../src/ctfRangeCapabilitySourcePlan.ts'
 import {
+  completeCtfRangeMixedSourceOperation,
+  ctfRangeMixedSourceChangeDerivationLocators,
   completeCtfRangeCollateralSourceOperation,
   prepareCtfRangeCollateralSourceOperation,
+  prepareCtfRangeMixedSourceOperation,
+  validateCtfRangeMixedSourceOperation,
   validateCtfRangeCollateralSourceOperation,
 } from '../src/ctfRangeCollateralSourceOperation.ts'
 
@@ -131,7 +137,7 @@ test('prepares exact PAY_TO_UNLOCK material and completes one durable buy author
     assert.equal(condition.coordinatorPublicKey, COORDINATOR_PUBLIC_KEY)
     assert.deepEqual(condition.mode, {
       kind: 'pool',
-      policy: { rateN: 10_000n, rateD: 3n, minReceive: 10_000n, maxDebit: 3n },
+      policy: { rateN: 1_000n, rateD: 3n, minReceive: 1_000n, maxDebit: 3n },
     })
   }
 
@@ -355,45 +361,30 @@ test('derives the exact authorization plan from persisted Buy and Sell preparati
   }
 })
 
-test('GTD preparation preserves the original order expiry and rejects an expired horizon', () => {
-  const expiresAt = '1970-01-01T00:05:00.000Z'
-  const persisted = buildPersistedCtfRangeOrderPreparation({
-    request: {
-      ...rangeOrderRequest(),
-      timeInForce: 'GTD',
-      expiresAt,
-    },
-    coordinatorPublicKey: COORDINATOR_PUBLIC_KEY,
-    mintFacts: reviewedMintFacts(),
-    market: {
-      outcomes: [
-        { id: 'yes-id', label: 'YES' },
-        { id: 'no-id', label: 'NO' },
-      ],
-    },
-    nowUnixSeconds: 20,
-    randomId: sequentialId('range-operation-gtd', 'authorization-gtd'),
-  })
-
-  assert.equal(persisted.request.expiresAt, expiresAt)
-  assert.equal(persisted.expiry, 300)
-  assert.throws(
-    () =>
-      buildPersistedCtfRangeOrderPreparation({
-        request: persisted.request,
-        coordinatorPublicKey: COORDINATOR_PUBLIC_KEY,
-        mintFacts: reviewedMintFacts(),
-        market: {
-          outcomes: [
-            { id: 'yes-id', label: 'YES' },
-            { id: 'no-id', label: 'NO' },
-          ],
-        },
-        nowUnixSeconds: 300,
-        randomId: sequentialId('range-operation-expired', 'authorization-expired'),
-      }),
-    /GTD order expiry horizon is exhausted/,
-  )
+test('public capability preparation rejects non-FOK orders', () => {
+  for (const timeInForce of ['FAK', 'GTC', 'GTD'] as const) {
+    assert.throws(
+      () =>
+        buildPersistedCtfRangeOrderPreparation({
+          request: {
+            ...rangeOrderRequest(),
+            timeInForce,
+            expiresAt: timeInForce === 'GTD' ? '2030-01-01T00:05:00.000Z' : null,
+          } as unknown as CtfRangeOrderRequest,
+          coordinatorPublicKey: COORDINATOR_PUBLIC_KEY,
+          mintFacts: reviewedMintFacts(),
+          market: {
+            outcomes: [
+              { id: 'yes-id', label: 'YES' },
+              { id: 'no-id', label: 'NO' },
+            ],
+          },
+          nowUnixSeconds: 20,
+          randomId: sequentialId(`range-operation-${timeInForce}`, `authorization-${timeInForce}`),
+        }),
+      /time in force/,
+    )
+  }
 })
 
 test('builds one capability request and validates its exact engine projection', () => {
@@ -413,9 +404,10 @@ test('builds one capability request and validates its exact engine projection', 
   const request = preparation.request
   const operation = completedOperation(preparation)
   const capabilityRequest = createCtfRangeSettlementCapabilityRequest(preparation, operation)
-  const artifactDigest = deriveSettlementCapabilityArtifactDigest(
-    createPoolSettlementCapabilityArtifact(operation),
-  )
+  assert.equal(capabilityRequest.orderIntent.timeInForce, 'FOK')
+  const artifact = createPoolSettlementCapabilityArtifact(operation)
+  const artifactDigest = deriveSettlementCapabilityArtifactDigest(artifact)
+  const workFacts = settlementCapabilityV1WorkFacts(operation)
   const capability = {
     reference: {
       artifactId: '11111111-1111-4111-8111-111111111111',
@@ -433,29 +425,15 @@ test('builds one capability request and validates its exact engine projection', 
   }
 
   assert.equal(capabilityRequest.stageIdempotencyKey, operation.authorizationId)
-  assert.equal(capabilityRequest.continuation, null)
-  const continuation = {
-    predecessorOrderId: '11111111-1111-4111-8111-111111111111',
-    settlementGroupId: '22222222-2222-4222-8222-222222222222',
-    settlementGroupRevision: 3,
-    continuationRevision: 4,
-  }
-  assert.deepEqual(
-    createCtfRangeSettlementCapabilityRequest(preparation, operation, continuation).continuation,
-    continuation,
-  )
-  assert.throws(
-    () =>
-      createCtfRangeSettlementCapabilityRequest(preparation, operation, {
-        ...continuation,
-        continuationRevision: 0,
-      }),
-    /continuation revision is invalid/,
-  )
   assert.equal(
     Buffer.from(capabilityRequest.artifact, 'base64').toString('base64'),
     capabilityRequest.artifact,
   )
+  assert.deepEqual(workFacts, {
+    inputCount: artifact.inputs.length,
+    manifestCount: artifact.manifest.entries.length,
+    artifactByteCount: Buffer.from(capabilityRequest.artifact, 'base64').byteLength,
+  })
   assert.deepEqual(
     validateAndProjectCtfRangeSettlementCapabilityResponse({
       capability,
@@ -754,9 +732,9 @@ test('prepares one exact collateral conversion with locked offer and ordinary co
     COMPLEMENT_COLLECTION,
     OUTCOME_COLLECTION,
   ])
-  assert.equal(completed.authorization.reduce(sumProofAmount, 0), 10_000)
-  assert.equal(completed.complement.reduce(sumProofAmount, 0), 10_000)
-  assert.equal(completed.collateralChange.reduce(sumProofAmount, 0), 9_999)
+  assert.equal(completed.authorization.reduce(sumProofAmount, 0), 1_000)
+  assert.equal(completed.complement.reduce(sumProofAmount, 0), 1_000)
+  assert.equal(completed.collateralChange.reduce(sumProofAmount, 0), 18_999)
   assert.throws(
     () =>
       validateCtfRangeCollateralSourceOperation(
@@ -768,6 +746,255 @@ test('prepares one exact collateral conversion with locked offer and ordinary co
       ),
     /value authority|preparation is foreign|plan is invalid/,
   )
+})
+
+test('persists and replays one exact mixed held-share conversion with separate change groups', async () => {
+  const preparation = persistedPreparation('range-operation-mixed-source', 'Sell')
+  const seed = new Uint8Array(64).fill(7)
+  const authorization = prepareCtfRangeOrderAuthorization({
+    seed,
+    ...withoutPersistedRequest(preparation),
+  }).authorizationOutputs
+  const offered: Proof = {
+    id: preparation.offerKeyset.id,
+    amount: 1_024,
+    secret: 'held-share-input',
+    C: MINT_PUBLIC_KEY,
+  }
+  const collateral: Proof = {
+    id: preparation.receiveKeyset.id,
+    amount: 16,
+    secret: 'regular-fee-input',
+    C: MINT_PUBLIC_KEY,
+  }
+  const plan = planCtfRangeCapabilitySource({
+    side: 'Sell',
+    authorizationAmounts: authorization.map(({ blindedMessage }) =>
+      blindedMessage.amount.toString(),
+    ),
+    offeredKeyset: preparation.offerKeyset,
+    collateralKeyset: preparation.receiveKeyset,
+    complementKeyset: preparation.complementKeyset,
+    offeredCandidates: [offered],
+    collateralCandidates: [collateral],
+    maxInputs: preparation.maxInputs,
+    maxOutputs: 256,
+  })
+  assert.equal(plan.kind, 'mixed-source-ctf-convert')
+  if (plan.kind !== 'mixed-source-ctf-convert') throw new Error('expected mixed source plan')
+
+  const reservations: Array<{ keysetId: string; count: number }> = []
+  const operation = await prepareCtfRangeMixedSourceOperation({
+    preparation,
+    seed,
+    counterSource: counterSource(11, reservations),
+    plan,
+  })
+  assert.ok(operation)
+  assert.equal(operation.kind, 'ctf-range-conditional-source')
+  assert.equal(ctfRangeSourceMode(operation), 'mixed-source-ctf-convert')
+  assert.equal(operation.metadata?.endpoint, 'POST /v1/ctf/convert')
+  assert.deepEqual(Object.keys(operation.outputs).sort(), [
+    'authorization',
+    'collateral-change',
+    'offered-change',
+  ])
+  assert.equal(operation.inputs.length, 2)
+  assert.equal(operation.inputs[0]?.id, preparation.offerKeyset.id)
+  assert.equal(operation.inputs[1]?.id, preparation.receiveKeyset.id)
+  assert.equal(operation.metadata?.fees, 1)
+  assert.equal(
+    operation.outputs.authorization!.reduce(
+      (sum, output) => sum + Number(output.blindedMessage.amount),
+      0,
+    ),
+    1_000,
+  )
+  assert.equal(
+    operation.outputs['offered-change']!.reduce(
+      (sum, output) => sum + Number(output.blindedMessage.amount),
+      0,
+    ),
+    24,
+  )
+  assert.equal(
+    operation.outputs['collateral-change']!.reduce(
+      (sum, output) => sum + Number(output.blindedMessage.amount),
+      0,
+    ),
+    15,
+  )
+  assert.deepEqual(
+    reservations.map(({ keysetId }) => keysetId),
+    [preparation.offerKeyset.id, preparation.receiveKeyset.id],
+  )
+  assert.equal(
+    (operation.metadata?.offeredPlan as { keysetId: string }).keysetId,
+    preparation.offerKeyset.id,
+  )
+  assert.equal(
+    (operation.metadata?.collateralPlan as { keysetId: string }).keysetId,
+    preparation.receiveKeyset.id,
+  )
+  assert.deepEqual(validateCtfRangeMixedSourceOperation(operation, preparation), operation)
+
+  const requests: CtfConvertRequest[] = []
+  const transport = {
+    postConvert: async (value: CtfConvertRequest) => {
+      requests.push(value)
+      return {
+        signatures: Object.fromEntries(
+          Object.entries(value.outputs).map(([collection, messages]) => [
+            collection,
+            messages.map(signBlindedMessage),
+          ]),
+        ),
+      }
+    },
+  }
+  const completionInput = {
+    operation,
+    preparation,
+    seed,
+    transport,
+  }
+  const completed = await completeCtfRangeMixedSourceOperation(completionInput)
+  const replayed = await completeCtfRangeMixedSourceOperation(completionInput)
+  assert.equal(requests.length, 2)
+  assert.equal(
+    JSON.stringify(requests[0], (_key, value) =>
+      typeof value === 'bigint' ? value.toString() : value,
+    ),
+    JSON.stringify(requests[1], (_key, value) =>
+      typeof value === 'bigint' ? value.toString() : value,
+    ),
+  )
+  assert.deepEqual(Object.keys(requests[0]!.inputs).sort(), ['*', OUTCOME_COLLECTION])
+  assert.deepEqual(Object.keys(requests[0]!.outputs).sort(), ['*', OUTCOME_COLLECTION])
+  assert.equal(completed.authorization.reduce(sumProofAmount, 0), 1_000)
+  assert.equal(completed.offeredChange.reduce(sumProofAmount, 0), 24)
+  assert.equal(completed.collateralChange.reduce(sumProofAmount, 0), 15)
+  for (const [first, second] of [
+    [completed.authorization, replayed.authorization],
+    [completed.offeredChange, replayed.offeredChange],
+    [completed.collateralChange, replayed.collateralChange],
+  ] as const) {
+    assert.deepEqual(
+      first.map(({ id, amount, secret, C }) => [id, Number(amount), secret, C]),
+      second.map(({ id, amount, secret, C }) => [id, Number(amount), secret, C]),
+    )
+  }
+
+  await assert.rejects(
+    completeCtfRangeMixedSourceOperation({
+      ...completionInput,
+      transport: {
+        postConvert: async (request) => {
+          const signatures = Object.fromEntries(
+            Object.entries(request.outputs).map(([collection, messages]) => [
+              collection,
+              messages.map(signBlindedMessage),
+            ]),
+          )
+          const offeredSignatures = signatures[OUTCOME_COLLECTION]!
+          return {
+            signatures: {
+              ...signatures,
+              [OUTCOME_COLLECTION]: [
+                { ...offeredSignatures[0]!, id: 'foreign-keyset' },
+                ...offeredSignatures.slice(1),
+              ],
+            },
+          }
+        },
+      },
+    }),
+    /foreign collateral range authorization signature/,
+  )
+
+  const locators = ctfRangeMixedSourceChangeDerivationLocators(operation, preparation, {
+    offeredChange: completed.offeredChange,
+    collateralChange: completed.collateralChange,
+  })
+  assert.ok(locators.offeredChange.every(({ keysetId }) => keysetId === preparation.offerKeyset.id))
+  assert.ok(
+    locators.collateralChange.every(({ keysetId }) => keysetId === preparation.receiveKeyset.id),
+  )
+  assert.equal(locators.offeredChange.length, completed.offeredChange.length)
+  assert.equal(locators.collateralChange.length, completed.collateralChange.length)
+})
+
+test('rejects malformed mixed-source operation authority before conversion', async () => {
+  const preparation = persistedPreparation('range-operation-mixed-source-invalid', 'Sell')
+  const seed = new Uint8Array(64).fill(7)
+  const authorization = prepareCtfRangeOrderAuthorization({
+    seed,
+    ...withoutPersistedRequest(preparation),
+  }).authorizationOutputs
+  const plan = planCtfRangeCapabilitySource({
+    side: 'Sell',
+    authorizationAmounts: authorization.map(({ blindedMessage }) =>
+      blindedMessage.amount.toString(),
+    ),
+    offeredKeyset: preparation.offerKeyset,
+    collateralKeyset: preparation.receiveKeyset,
+    complementKeyset: preparation.complementKeyset,
+    offeredCandidates: [
+      {
+        id: preparation.offerKeyset.id,
+        amount: 1_024,
+        secret: 'held-share-invalid-case',
+        C: MINT_PUBLIC_KEY,
+      },
+    ],
+    collateralCandidates: [
+      {
+        id: preparation.receiveKeyset.id,
+        amount: 16,
+        secret: 'regular-fee-invalid-case',
+        C: MINT_PUBLIC_KEY,
+      },
+    ],
+    maxInputs: preparation.maxInputs,
+    maxOutputs: 256,
+  })
+  if (plan.kind !== 'mixed-source-ctf-convert') throw new Error('expected mixed source plan')
+  const preflightReservations: Array<{ keysetId: string; count: number }> = []
+  await assert.rejects(
+    prepareCtfRangeMixedSourceOperation({
+      preparation,
+      seed,
+      counterSource: counterSource(0, preflightReservations),
+      plan: { ...plan, inputFee: plan.inputFee + 1 },
+    }),
+    /fee or output plan authority/,
+  )
+  assert.deepEqual(preflightReservations, [])
+  const operation = await prepareCtfRangeMixedSourceOperation({
+    preparation,
+    seed,
+    counterSource: counterSource(),
+    plan,
+  })
+  assert.ok(operation)
+  const invalidOperations: unknown[] = [
+    { ...operation, metadata: { ...operation.metadata, endpoint: 'POST /v1/swap' } },
+    { ...operation, metadata: { ...operation.metadata, conditionId: 'cd'.repeat(32) } },
+    {
+      ...operation,
+      inputs: [
+        operation.inputs[0]!,
+        { ...operation.inputs[1]!, secret: operation.inputs[0]!.secret },
+      ],
+    },
+    { ...operation, metadata: { ...operation.metadata, fees: 0 } },
+  ]
+  for (const invalid of invalidOperations) {
+    assert.throws(
+      () => validateCtfRangeMixedSourceOperation(invalid, preparation),
+      /invalid|authority|foreign|duplicated|exact output plan/i,
+    )
+  }
 })
 
 test('rejects wallet substitution of exact range authorization outputs', async () => {
@@ -830,9 +1057,9 @@ function preparationInput() {
     coordinatorPublicKey: COORDINATOR_PUBLIC_KEY,
     side: 'Buy' as const,
     priceNumerator: 2,
-    amountSubunits: 10_000,
-    minimumFillAmountSubunits: 10_000,
-    divisibility: 10_000,
+    amountSubunits: 1_000,
+    minimumFillAmountSubunits: 1_000,
+    divisibility: 1_000,
     offerKeyset: regularKeyset(),
     receiveKeyset: outcomeKeyset(),
     expiryObservation: expiryObservation(),
@@ -927,12 +1154,12 @@ function rangeOrderRequest(): CtfRangeOrderRequest {
     tokenSide: 'Outcome',
     side: 'Buy',
     price: 2,
-    amountSubunits: 10_000,
-    minimumFillAmountSubunits: 10_000,
+    amountSubunits: 1_000,
+    minimumFillAmountSubunits: 1_000,
     baseAsset: 'sat',
     collateralUnit: 'msat',
-    divisibility: 10_000,
-    timeInForce: 'GTC',
+    divisibility: 1_000,
+    timeInForce: 'FOK',
     expiresAt: null,
     mintUrl: MINT_URL,
   }
@@ -997,7 +1224,11 @@ function sequentialId(...ids: string[]): () => string {
   return () => ids[index++] ?? 'unexpected-id'
 }
 
-function persistedPreparation(operationId: string, side: 'Buy' | 'Sell' = 'Buy') {
+function persistedPreparation(
+  operationId: string,
+  side: 'Buy' | 'Sell' = 'Buy',
+  authorizationLifetimeSeconds?: number,
+) {
   return buildPersistedCtfRangeOrderPreparation({
     request: { ...rangeOrderRequest(), side },
     coordinatorPublicKey: COORDINATOR_PUBLIC_KEY,
@@ -1010,8 +1241,31 @@ function persistedPreparation(operationId: string, side: 'Buy' | 'Sell' = 'Buy')
     },
     nowUnixSeconds: 20,
     randomId: sequentialId(operationId, `${operationId}:authorization`),
+    authorizationLifetimeSeconds,
   })
 }
+
+test('authorization lifetime cap only shortens the mint-derived expiry', () => {
+  const baseline = persistedPreparation('lifetime-cap')
+  assert.equal(baseline.expiry, 700)
+  assert.equal(persistedPreparation('lifetime-cap', 'Buy', 60).expiry, 80)
+  assert.equal(persistedPreparation('lifetime-cap', 'Buy', 680).expiry, 700)
+  assert.ok(
+    Buffer.from(
+      encodePersistedCtfRangeOrderPreparation(persistedPreparation('lifetime-cap', 'Buy', 1_000)),
+    ).equals(Buffer.from(encodePersistedCtfRangeOrderPreparation(baseline))),
+    'a larger lifetime cap changed the default preparation bytes',
+  )
+})
+
+test('authorization lifetime cap rejects invalid values and addition overflow', () => {
+  for (const lifetime of [0, -1, 0.5, NaN, Infinity, Number.MAX_SAFE_INTEGER]) {
+    assert.throws(
+      () => persistedPreparation('invalid-lifetime', 'Buy', lifetime),
+      /authorization lifetime/,
+    )
+  }
+})
 
 function withoutPersistedRequest(preparation: ReturnType<typeof persistedPreparation>) {
   const { version: _, request: _request, complementKeyset: _complement, ...input } = preparation
@@ -1026,8 +1280,6 @@ function preparationRecord(
     scopeId: `custody:wallet:${'11'.repeat(32)}`,
     rangeOperationId: persisted.operationId,
     sourceOperationId: persisted.sourceOperationId,
-    sourceKind: persisted.sourceKind,
-    predecessorRangeOperationId: persisted.predecessorRangeOperationId,
     authorizationId: persisted.authorizationId,
     clientOrderId: persisted.request.clientOrderId,
     orderRouteId: persisted.request.marketId,
@@ -1039,8 +1291,6 @@ function preparationRecord(
     priceSubunits: persisted.priceNumerator,
     amountSubunits: persisted.amountSubunits,
     minimumFillAmountSubunits: persisted.request.minimumFillAmountSubunits,
-    continueAfterPartialFill: false,
-    continuation: null,
     divisibility: persisted.divisibility,
     authorizationExpiresAtUnixSeconds: persisted.expiry,
     preparationBytes,

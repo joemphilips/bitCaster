@@ -1,6 +1,7 @@
 services:
   mintd:
     build: ./cdk
+    command: ["cdk-mintd", "--config", "/etc/cdk-mintd/bitcaster.toml"]
     ports:
       - "8085:8085"
     environment:

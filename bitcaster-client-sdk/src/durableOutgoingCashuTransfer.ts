@@ -32,7 +32,7 @@ import {
   type DurableWalletProofDerivationLocator,
 } from './durableWalletProofDerivationLocator.ts'
 
-export const DURABLE_OUTGOING_CASHU_TRANSFER_SCHEMA_VERSION = 1 as const
+export const DURABLE_OUTGOING_CASHU_TRANSFER_SCHEMA_VERSION = 2 as const
 export const DURABLE_OUTGOING_CASHU_RECOVERY_PAGE_LIMIT_MAX = 128
 export const DURABLE_OUTGOING_CASHU_TOKEN_PROOF_LIMIT_MAX = 512
 export const DURABLE_OUTGOING_CASHU_CUSTODY_REVISION_LIMIT_MAX =
@@ -72,6 +72,10 @@ export type DurableOutgoingCashuDeliveryState =
   | 'bearer-partial'
   | 'reclaim-prepared'
   | 'reclaimed'
+
+export interface DurableOutgoingCashuRecipientSequence {
+  readonly predecessorTransferId: string | null
+}
 
 export interface DurableOutgoingCashuTokenAuthority {
   readonly encodedToken: string
@@ -130,12 +134,13 @@ export interface DurableOutgoingCashuReclaimExecutionInput {
 
 /** A local-only record. `encodedToken` is bearer authority and must never leave its durable store. */
 export interface DurableOutgoingCashuTransfer {
-  readonly schemaVersion: 1
+  readonly schemaVersion: 2
   readonly transferId: string
   readonly walletScopeId: string
   readonly mintUrl: string
   readonly unit: string
   readonly requestedAmount: string
+  readonly recipientSequence: DurableOutgoingCashuRecipientSequence | null
   readonly walletSendOperation: DurableWalletSendOperation
   readonly walletSendOperationAuthority: DurableWalletOperationAuthority
   /** One exact locator per seed-derived keep output. Null means not seed-derived. */
@@ -184,6 +189,7 @@ export interface DurableOutgoingCashuPreMintAdapter {
     readonly mintUrl: string
     readonly unit: string
     readonly requestedAmount: string
+    readonly recipientSequence: DurableOutgoingCashuRecipientSequence | null
     readonly deliveryIntent: DurableOutgoingCashuDeliveryIntent
     readonly maximumEncodedTokenBytes: number
     readonly maximumTokenProofs: number
@@ -215,6 +221,7 @@ export interface DurableOutgoingCashuCoordinatorInput {
     readonly mintUrl: string
     readonly unit: string
     readonly requestedAmount: string
+    readonly recipientSequence?: DurableOutgoingCashuRecipientSequence | null
     readonly deliveryIntent: DurableOutgoingCashuDeliveryIntent
   }
   readonly wallet: DurableWalletSendExecutionInput['wallet']
@@ -296,6 +303,7 @@ export function createDurableOutgoingCashuTransfer(input: {
   readonly requestedAmount: string
   readonly walletSendOperation: DurableWalletSendOperation
   readonly keepProofDerivationLocators?: readonly (DurableWalletProofDerivationLocator | null)[]
+  readonly recipientSequence?: DurableOutgoingCashuRecipientSequence | null
   readonly deliveryIntent: DurableOutgoingCashuDeliveryIntent
   readonly dueAtMs?: number
 }): DurableOutgoingCashuTransfer {
@@ -305,6 +313,11 @@ export function createDurableOutgoingCashuTransfer(input: {
     throw new Error('durable outgoing Cashu transfer requested amount conflicts with send plan')
   }
   const intent = decodeDeliveryIntent(input.deliveryIntent)
+  const recipientSequence = normalizeRecipientSequence(
+    input.recipientSequence,
+    input.transferId,
+    intent,
+  )
   return decodeDurableOutgoingCashuTransfer({
     schemaVersion: DURABLE_OUTGOING_CASHU_TRANSFER_SCHEMA_VERSION,
     transferId: input.transferId,
@@ -312,6 +325,7 @@ export function createDurableOutgoingCashuTransfer(input: {
     mintUrl: operation.mintUrl,
     unit: operation.unit,
     requestedAmount: input.requestedAmount,
+    recipientSequence,
     walletSendOperation: operation,
     walletSendOperationAuthority: deriveDurableWalletOperationAuthority(operation),
     keepProofDerivationLocators: decodeKeepProofDerivationLocators(
@@ -339,20 +353,21 @@ export async function runDurableOutgoingCashuTransfer(
   if (mode === 'recover' && input.walletOperationStore === undefined) {
     throw new Error('durable outgoing Cashu recovery requires the persisted wallet operation store')
   }
+  const request = normalizeOutgoingCoordinatorTransfer(input.transfer)
   const prepared = decodeDurableOutgoingCashuTransfer(
     mode === 'execute'
       ? await input.preMint.prepare({
-          ...input.transfer,
-          maximumEncodedTokenBytes: input.transfer.deliveryIntent.tokenBytesLimit,
-          maximumTokenProofs: input.transfer.deliveryIntent.tokenProofLimit,
+          ...request,
+          maximumEncodedTokenBytes: request.deliveryIntent.tokenBytesLimit,
+          maximumTokenProofs: request.deliveryIntent.tokenProofLimit,
         })
-      : await requirePreMintRecovery(input.preMint, input.transfer),
+      : await requirePreMintRecovery(input.preMint, request),
   )
   if (mode === 'recover' && prepared.deliveryState === 'delivery-pending') {
-    assertTransferMatchesRequest(prepared, input.transfer)
+    assertTransferMatchesRequest(prepared, request)
     return prepared
   }
-  assertPreparedTransferMatchesRequest(prepared, input.transfer)
+  assertPreparedTransferMatchesRequest(prepared, request)
   if (
     prepared.walletSendOperation.preview.sendOutputs.length >
     prepared.deliveryIntent.tokenProofLimit
@@ -474,6 +489,7 @@ function assertPreparedTransferMatchesRequest(
     transfer.mintUrl !== request.mintUrl ||
     transfer.unit !== request.unit ||
     transfer.requestedAmount !== request.requestedAmount ||
+    !sameRecipientSequence(transfer.recipientSequence, request.recipientSequence) ||
     deriveDurableCustodyArtifactFingerprint(transfer.deliveryIntent) !==
       deriveDurableCustodyArtifactFingerprint(request.deliveryIntent) ||
     transfer.deliveryState !== 'prepared' ||
@@ -486,7 +502,9 @@ function assertPreparedTransferMatchesRequest(
 
 function assertTransferMatchesRequest(
   transfer: DurableOutgoingCashuTransfer,
-  request: DurableOutgoingCashuCoordinatorInput['transfer'],
+  request: DurableOutgoingCashuCoordinatorInput['transfer'] & {
+    readonly recipientSequence: DurableOutgoingCashuRecipientSequence | null
+  },
 ): void {
   if (
     transfer.transferId !== request.transferId ||
@@ -494,10 +512,28 @@ function assertTransferMatchesRequest(
     transfer.mintUrl !== request.mintUrl ||
     transfer.unit !== request.unit ||
     transfer.requestedAmount !== request.requestedAmount ||
+    !sameRecipientSequence(transfer.recipientSequence, request.recipientSequence) ||
     deriveDurableCustodyArtifactFingerprint(transfer.deliveryIntent) !==
       deriveDurableCustodyArtifactFingerprint(request.deliveryIntent)
   ) {
     throw new Error('durable outgoing Cashu pre-mint authority conflicts')
+  }
+}
+
+function normalizeOutgoingCoordinatorTransfer(
+  input: DurableOutgoingCashuCoordinatorInput['transfer'],
+): DurableOutgoingCashuCoordinatorInput['transfer'] & {
+  readonly recipientSequence: DurableOutgoingCashuRecipientSequence | null
+} {
+  const deliveryIntent = decodeDeliveryIntent(input.deliveryIntent)
+  return {
+    ...input,
+    deliveryIntent,
+    recipientSequence: normalizeRecipientSequence(
+      input.recipientSequence,
+      input.transferId,
+      deliveryIntent,
+    ),
   }
 }
 
@@ -510,6 +546,7 @@ export function decodeDurableOutgoingCashuTransfer(value: unknown): DurableOutgo
     'mintUrl',
     'unit',
     'requestedAmount',
+    'recipientSequence',
     'walletSendOperation',
     'walletSendOperationAuthority',
     'keepProofDerivationLocators',
@@ -546,9 +583,17 @@ export function decodeDurableOutgoingCashuTransfer(value: unknown): DurableOutgo
     operation,
   )
   const deliveryIntent = decodeDeliveryIntent(value.deliveryIntent)
+  const recipientSequence = decodeRecipientSequence(
+    value.recipientSequence,
+    value.transferId,
+    deliveryIntent,
+  )
   const token = decodeToken(value.token, {
+    transferId: value.transferId,
+    walletScopeId: value.walletScopeId,
     mintUrl,
     unit: value.unit,
+    recipientSequence,
     deliveryIntent,
     walletSendOperation: operation,
   })
@@ -576,6 +621,7 @@ export function decodeDurableOutgoingCashuTransfer(value: unknown): DurableOutgo
     mintUrl,
     unit: value.unit,
     requestedAmount: value.requestedAmount,
+    recipientSequence,
     walletSendOperation: operation,
     walletSendOperationAuthority: authority,
     keepProofDerivationLocators,
@@ -1194,7 +1240,13 @@ function decodeToken(
   value: unknown,
   transfer: Pick<
     DurableOutgoingCashuTransfer,
-    'mintUrl' | 'unit' | 'deliveryIntent' | 'walletSendOperation'
+    | 'transferId'
+    | 'walletScopeId'
+    | 'mintUrl'
+    | 'unit'
+    | 'recipientSequence'
+    | 'deliveryIntent'
+    | 'walletSendOperation'
   >,
 ): DurableOutgoingCashuTokenAuthority | null {
   const intent = transfer.deliveryIntent
@@ -1233,9 +1285,10 @@ function decodeToken(
       {
         ...transfer,
         schemaVersion: DURABLE_OUTGOING_CASHU_TRANSFER_SCHEMA_VERSION,
-        transferId: 'decode-only',
-        walletScopeId: 'decode-only',
+        transferId: transfer.transferId,
+        walletScopeId: transfer.walletScopeId,
         requestedAmount: sumSendAmount(transfer.walletSendOperation),
+        recipientSequence: transfer.recipientSequence,
         walletSendOperationAuthority: deriveDurableWalletOperationAuthority(
           transfer.walletSendOperation,
         ),
@@ -1421,6 +1474,39 @@ function decodeDeliveryIntent(value: unknown): DurableOutgoingCashuDeliveryInten
     'token proof',
   )
   return structuredClone(value) as DurableOutgoingCashuDeliveryIntent
+}
+
+function normalizeRecipientSequence(
+  value: unknown,
+  transferId: string,
+  intent: DurableOutgoingCashuDeliveryIntent,
+): DurableOutgoingCashuRecipientSequence | null {
+  return value === undefined ? null : decodeRecipientSequence(value, transferId, intent)
+}
+
+function decodeRecipientSequence(
+  value: unknown,
+  transferId: string,
+  intent: DurableOutgoingCashuDeliveryIntent,
+): DurableOutgoingCashuRecipientSequence | null {
+  if (value === null) return null
+  if (intent.policy !== 'durable-recipient-ack') {
+    throw new Error('durable outgoing Cashu recipient sequence policy is invalid')
+  }
+  if (!isRecord(value)) {
+    throw new Error('durable outgoing Cashu recipient sequence is invalid')
+  }
+  exactKeys(value, ['predecessorTransferId'])
+  const predecessorTransferId = value.predecessorTransferId
+  if (predecessorTransferId === null) return { predecessorTransferId: null }
+  requireText(predecessorTransferId, 'predecessor transfer id')
+  if (predecessorTransferId.trim().length === 0) {
+    throw new Error('durable outgoing Cashu predecessor transfer id is invalid')
+  }
+  if (predecessorTransferId === transferId) {
+    throw new Error('durable outgoing Cashu recipient sequence predecessor is self')
+  }
+  return { predecessorTransferId }
 }
 
 function decodeRecipientReceipt(
@@ -1693,6 +1779,14 @@ function sameAuthority(
     left.requestFingerprint === right.requestFingerprint &&
     left.outputPlanFingerprint === right.outputPlanFingerprint
   )
+}
+
+function sameRecipientSequence(
+  left: DurableOutgoingCashuRecipientSequence | null,
+  right: DurableOutgoingCashuRecipientSequence | null | undefined,
+): boolean {
+  if (left === null || right == null) return left === null && right == null
+  return left.predecessorTransferId === right.predecessorTransferId
 }
 
 function requireCanonicalMint(value: unknown): string {

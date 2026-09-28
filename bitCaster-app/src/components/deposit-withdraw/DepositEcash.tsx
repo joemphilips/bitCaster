@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { ChevronLeft, Maximize2, Clipboard, ScanLine, FileText } from "lucide-react";
 import { MintSelector } from "./MintSelector";
 import type { MintInfo } from "@/types/deposit-withdraw";
@@ -5,6 +6,8 @@ import type { MintInfo } from "@/types/deposit-withdraw";
 interface DepositEcashProps {
   mints?: MintInfo[];
   selectedMintId?: string;
+  depositReminder?: ReactNode;
+  statusMessage?: ReactNode;
   onMintChange?: (mintId: string) => void;
   onPaste?: () => void;
   onScan?: () => void;
@@ -16,6 +19,8 @@ interface DepositEcashProps {
 export function DepositEcash({
   mints,
   selectedMintId,
+  depositReminder,
+  statusMessage,
   onMintChange,
   onPaste,
   onScan,
@@ -29,7 +34,7 @@ export function DepositEcash({
       <div className="absolute inset-0 bg-black/60" />
 
       {/* Sheet */}
-      <div className="relative w-full md:max-w-md bg-slate-800 rounded-t-2xl md:rounded-2xl overflow-hidden">
+      <div className="relative max-h-[calc(100vh-2rem)] w-full overflow-y-auto rounded-t-2xl bg-slate-800 md:max-w-md md:rounded-2xl">
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-4">
           <button
@@ -46,6 +51,13 @@ export function DepositEcash({
             <Maximize2 className="w-5 h-5" />
           </button>
         </div>
+
+        {(statusMessage || depositReminder) && (
+          <div className="space-y-3 px-5 pb-3">
+            {statusMessage}
+            {depositReminder}
+          </div>
+        )}
 
         {/* Mint Selector — for choosing which mint to use for payment requests */}
         {mints && mints.length > 0 && selectedMintId && (

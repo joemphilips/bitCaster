@@ -55,6 +55,7 @@ const MINT_URL = 'https://mint.example'
 const PRIVATE_KEY = Uint8Array.from([...new Uint8Array(31), 7])
 const KEYS = { '1': bytesToHex(secp256k1.getPublicKey(PRIVATE_KEY, true)) }
 const KEYSET_ID = deriveKeysetId(KEYS)
+const MSAT_KEYSET_ID = deriveKeysetId(KEYS, { unit: 'msat', versionByte: 1 })
 const BLS_PRIVATE_KEY = Uint8Array.from([...new Uint8Array(31), 2])
 const BLS_KEYS = {
   '1': bytesToHex(bls12_381.G2.Point.BASE.multiply(2n).toBytes(true)),
@@ -68,6 +69,8 @@ const scopeInput = {
   unit: 'sat' as const,
 }
 const SCOPE = { ...scopeInput, scopeId: deriveDurableCustodyScopeId(scopeInput) }
+const MELT_SCOPE_INPUT = { ...scopeInput, unit: 'msat' as const }
+const MELT_SCOPE = { ...MELT_SCOPE_INPUT, scopeId: deriveDurableCustodyScopeId(MELT_SCOPE_INPUT) }
 const OWNER: DurableCustodyOwnerAuthorization = {
   incarnationId: 'wallet-service-1',
   fencingEpoch: 1,
@@ -388,6 +391,63 @@ test('accepts and verifies an exact wallet receive operation', () => {
   assert.equal(result.proofs.length, 1)
 })
 
+test('accepts wallet-melt change as an ordered prefix and rejects foreign or excess change', () => {
+  const prepared = preparedMelt('melt:prefix', 2)
+  const first = proofForMeltChange('melt:prefix', 0)
+  const result = prepareDurableCustodyVerifiedMintResult({
+    record: prepared.record,
+    exactAuthority: prepared.exactAuthority,
+    result: { change: [first] },
+  })
+
+  assert.equal(prepared.authority.operation.kind, 'wallet-melt')
+  assert.equal(prepared.facts.binding.stage, 'send')
+  assert.equal(prepared.record.operation.proofStorage.lineage.successorAdmissionMode, 'subset')
+  assert.equal(result.proofs.length, 1)
+  assert.deepEqual(result.selectedSuccessorProofIds, [result.proofs[0]!.material.proofId])
+
+  assert.throws(
+    () =>
+      prepareDurableCustodyVerifiedMintResult({
+        record: prepared.record,
+        exactAuthority: prepared.exactAuthority,
+        result: {
+          change: [
+            first,
+            proofForMeltChange('melt:prefix', 1),
+            proofForMeltChange('melt:prefix', 2),
+          ],
+        },
+      }),
+    /custody mint proof count is invalid|exceeds its planned prefix/,
+  )
+  const foreign = proofForOutput(
+    OutputData.createSingleData(1, KEYSET_ID, 'foreign-melt-change', 19n),
+  )
+  assert.throws(
+    () =>
+      prepareDurableCustodyVerifiedMintResult({
+        record: prepared.record,
+        exactAuthority: prepared.exactAuthority,
+        result: { change: [foreign] },
+      }),
+    /wallet proof result does not match a planned output/,
+  )
+})
+
+test('accepts a wallet-melt with no planned or returned change', () => {
+  const prepared = preparedMelt('melt:no-change', 0)
+  const result = prepareDurableCustodyVerifiedMintResult({
+    record: prepared.record,
+    exactAuthority: prepared.exactAuthority,
+    result: { change: [] },
+  })
+
+  assert.equal(prepared.facts.verification.hasOutputs, false)
+  assert.deepEqual(result.proofs, [])
+  assert.deepEqual(result.selectedSuccessorProofIds, [])
+})
+
 test('rejects a full-length V3 output before durable custody result admission', () => {
   const prepared = preparedSend('send:bls', {
     id: BLS_KEYSET_ID,
@@ -456,6 +516,66 @@ function preparedSend(
     },
   })
   return { ...authority, artifacts, record, operation, output }
+}
+
+function preparedMelt(operationId: string, outputCount: number) {
+  const input = OutputData.createSingleData(1, MSAT_KEYSET_ID, `melt-input:${operationId}`, 7n)
+  const outputs = Array.from({ length: outputCount }, (_, index) =>
+    OutputData.createSingleData(
+      0,
+      MSAT_KEYSET_ID,
+      `melt-output:${operationId}:${index}`,
+      11n + BigInt(index),
+    ),
+  )
+  const operation = {
+    operationId,
+    kind: 'wallet-melt' as const,
+    mintUrl: MINT_URL,
+    inputs: [proofForOutput(input, MSAT_KEYSET_ID)],
+    outputs: { change: outputs.map(serializeDurableCustodyOutput) },
+    metadata: addDurableWalletProofTransitionMetadata(
+      { unit: 'msat' },
+      createDurableWalletProofTransition({
+        inputSource: 'wallet',
+        plannedOutputLabels: ['change'],
+        resultGroups: { change: { kind: 'wallet', asset: 'regular', reservedBy: null } },
+        resultCardinality: { change: 'prefix' },
+      }),
+    ),
+  }
+  const authority = prepareDurableCustodyMintOperationAuthority({
+    operation,
+    keysets: [
+      {
+        canonicalMintUrl: MINT_URL,
+        id: MSAT_KEYSET_ID,
+        unit: 'msat',
+        keys: KEYS,
+        inputFeePpk: 0,
+        finalExpiry: null,
+        identity: { kind: 'regular' },
+      },
+    ],
+  })
+  const artifacts = {
+    requestBody: authority.exactRequest,
+    output: authority.exactOutput,
+    privateMaterial: authority.exactAuthority,
+  }
+  const record = createDurableCustodyProofOperation({
+    scope: MELT_SCOPE,
+    operation,
+    facts: authority.facts,
+    inventoryAccountId: MELT_SCOPE.inventoryAccountId,
+    exactBoundary: {
+      method: 'POST',
+      path: '/v1/melt/bolt11',
+      idempotencyKey: operationId,
+      ...artifacts,
+    },
+  })
+  return { ...authority, artifacts, record, operation, outputs }
 }
 
 function preparedCtfRedeem(operationId: string) {
@@ -554,7 +674,7 @@ function proofForBlsOutput(output: OutputData): Proof {
   )
 }
 
-function proofForOutput(output: OutputData): Proof {
+function proofForOutput(output: OutputData, keysetId = KEYSET_ID): Proof {
   const signature = createBlindSignature(
     pointFromHex(output.blindedMessage.B_),
     PRIVATE_KEY,
@@ -563,12 +683,24 @@ function proofForOutput(output: OutputData): Proof {
   const dleq = createDLEQProof(pointFromHex(output.blindedMessage.B_), PRIVATE_KEY)
   return output.toProof(
     {
-      id: KEYSET_ID,
+      id: keysetId,
       amount: output.blindedMessage.amount,
       C_: signature.C_.toHex(true),
       dleq: { e: bytesToHex(dleq.e), s: bytesToHex(dleq.s) },
     },
-    { id: KEYSET_ID, keys: KEYS },
+    { id: keysetId, keys: KEYS },
+  )
+}
+
+function proofForMeltChange(operationId: string, index: number): Proof {
+  return proofForOutput(
+    OutputData.createSingleData(
+      1,
+      MSAT_KEYSET_ID,
+      `melt-output:${operationId}:${index}`,
+      11n + BigInt(index),
+    ),
+    MSAT_KEYSET_ID,
   )
 }
 

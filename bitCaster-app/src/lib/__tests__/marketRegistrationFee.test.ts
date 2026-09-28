@@ -1,4 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import i18n from "@/i18n";
 import { Amount, OutputData } from "@cashu/cashu-ts";
 
 const mocks = vi.hoisted(() => ({
@@ -62,7 +63,7 @@ const { registerConditionWithFee, registrationFeeForPolicy } =
 const request = {
   tags: [["title", "Registration fee"]],
   announcementHex: "announcement",
-  collateral: "sat",
+  collateral: "msat",
 };
 const V2_KEYSET_ID = `01${"1".repeat(64)}`;
 const WALLET_SEED = new Uint8Array(64).fill(1);
@@ -75,7 +76,7 @@ function registrationProof(secret = "registration-input-proof") {
     C: `02${"2".repeat(64)}`,
     mintUrl: "https://mint.example.test",
     baseAsset: "sat" as const,
-    unit: "sat" as const,
+    unit: "msat" as const,
   };
 }
 
@@ -100,11 +101,12 @@ function registrationWallet(keysetId = V2_KEYSET_ID) {
 
 function transfer(overrides: Record<string, unknown> = {}) {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
+    recipientSequence: null,
     transferId: "ctf-condition-registration:test",
     walletScopeId: "scope-1",
     mintUrl: "https://mint.example.test",
-    unit: "sat",
+    unit: "msat",
     requestedAmount: "3",
     deliveryIntent: {
       policy: "bearer-spend-classification",
@@ -154,6 +156,33 @@ describe("registerConditionWithFee", () => {
     });
   });
 
+  afterEach(async () => {
+    await i18n.changeLanguage("en");
+  });
+
+  it.each([
+    [
+      "en",
+      "The mint's market creation fee is invalid. Supported fees range from 0.001 sats to 1,000 sats.",
+    ],
+    [
+      "ja",
+      "ミントのマーケット作成手数料が無効です。対応する手数料の範囲は 0.001 sats から 1,000 sats です。",
+    ],
+  ])("reports invalid fee bounds in sats before payment (%s)", async (language, expected) => {
+    await i18n.changeLanguage(language);
+    await expect(
+      registerConditionWithFee({
+        mintUrl: "https://mint.example.test",
+        requiredFeeSubunits: 1_000_001,
+        request,
+      }),
+    ).rejects.toThrow(expected);
+    expect(mocks.getWalletForUnit).not.toHaveBeenCalled();
+    expect(mocks.executeOutgoing).not.toHaveBeenCalled();
+    expect(mocks.registerCondition).not.toHaveBeenCalled();
+  });
+
   it("charges one-vs-rest registration fees for every generated collection", () => {
     expect(
       registrationFeeForPolicy(
@@ -183,7 +212,7 @@ describe("registerConditionWithFee", () => {
       reuseTransferId: true,
       transfer: {
         mintUrl: "https://mint.example.test",
-        unit: "sat",
+        unit: "msat",
         requestedAmount: "3",
         deliveryIntent: {
           policy: "bearer-spend-classification",
@@ -247,7 +276,7 @@ describe("registerConditionWithFee", () => {
     expect(mocks.getBoundedCanonicalRegularProofs).toHaveBeenCalledWith(
       "https://mint.example.test",
       {
-        unit: "sat",
+        unit: "msat",
         scopeId: "scope-1",
       },
     );
@@ -279,7 +308,7 @@ describe("registerConditionWithFee", () => {
 
     mocks.recoverFundedAsset.mockResolvedValueOnce({ kind: "unavailable" });
     await expect(outgoing.preflightFundedAsset()).rejects.toThrow(
-      "Not enough regular sat proofs are available for the 3 sat condition registration fee.",
+      "Not enough regular msat proofs are available for the 3 msat condition registration fee.",
     );
 
     mocks.wallet = registrationWallet("00legacy");
@@ -304,7 +333,7 @@ describe("registerConditionWithFee", () => {
     const outgoing = mocks.executeOutgoing.mock.calls[0]![0];
     const restore = {
       mintUrl: "https://mint.example.test",
-      unit: "sat",
+      unit: "msat",
       outputs: {
         keep: [{ blindedMessage: { amount: "1", id: "keep", B_: "keep-B" } }],
         send: [{ blindedMessage: { amount: "3", id: "send", B_: "send-B" } }],
@@ -317,7 +346,7 @@ describe("registerConditionWithFee", () => {
     });
     expect(mocks.restoreExactMintOutputs).toHaveBeenCalledWith(expect.anything(), {
       mintUrl: "https://mint.example.test",
-      unit: "sat",
+      unit: "msat",
       outputs: [restore.outputs.keep[0], restore.outputs.send[0]],
     });
 

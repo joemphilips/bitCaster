@@ -26,6 +26,27 @@ const conditionId = "a".repeat(64);
 const walletId = "b".repeat(64);
 
 describe("asset monitoring snapshot", () => {
+  it("refuses the complete snapshot when one proof uses sat", () => {
+    expect(
+      buildAssetMonitoringHoldings({
+        proofs: [proof(), proof({ secret: "unsupported", unit: "sat" })],
+        catalogue: [],
+      }),
+    ).toBeNull();
+  });
+
+  it("refuses the complete snapshot when an evicted asset uses sat", () => {
+    expect(
+      buildAssetMonitoringHoldings({
+        proofs: [proof()],
+        catalogue: [],
+        evictedAssets: [
+          { kind: "ordinary", mintUrl: "https://mint.example", unit: "sat", declaredAmount: 1 },
+        ],
+      }),
+    ).toBeNull();
+  });
+
   it("reports only a valid bound NUT-13 recovery counter", () => {
     const stored = proof({ id: keysetId(), secret: "recoverable", C: "03" });
     const custody = custodyProof(stored);
@@ -368,6 +389,50 @@ describe("asset monitoring snapshot", () => {
     ).resolves.toEqual([{ conditionId, outcomes: ["NO", "YES"] }]);
     expect(fetchImpl).toHaveBeenCalledOnce();
     expect(String(fetchImpl.mock.calls[0]?.[0])).toContain("page_size=1");
+  });
+
+  it.each([
+    [
+      ["YES", "NO"],
+      ["NO", "YES"],
+    ],
+    [
+      ["Zulu", "alpha", "Beta"],
+      ["Beta", "Zulu", "alpha"],
+    ],
+  ])(
+    "canonicalizes copied public display-order outcomes for monitoring (%j)",
+    async (displayOutcomes, expectedOutcomes) => {
+      const fetchImpl = vi
+        .fn()
+        .mockResolvedValue(
+          new Response(JSON.stringify({ markets: [{ conditionId, outcomes: displayOutcomes }] })),
+        );
+
+      await expect(
+        fetchAssetMonitoringCatalogue([conditionId], {
+          engineBaseUrl: "https://engine.example",
+          fetchImpl,
+        }),
+      ).resolves.toEqual([{ conditionId, outcomes: expectedOutcomes }]);
+    },
+  );
+
+  it("rejects duplicate public catalogue outcome labels", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValue(
+        new Response(
+          JSON.stringify({ markets: [{ conditionId, outcomes: ["YES", "NO", "YES"] }] }),
+        ),
+      );
+
+    await expect(
+      fetchAssetMonitoringCatalogue([conditionId], {
+        engineBaseUrl: "https://engine.example",
+        fetchImpl,
+      }),
+    ).rejects.toThrow();
   });
 
   it("splits more than 50 selected conditions into bounded catalogue requests", async () => {

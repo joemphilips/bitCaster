@@ -72,7 +72,7 @@ export interface NostrSettings {
   signerMode: NostrSignerMode;
   signerSource: NostrSignerSource;
   signerBackupState: SecretBackupState;
-  canRevealGeneratedNsec: boolean;
+  canRevealLocalNsec: boolean;
   profile: NostrProfile | null;
   profileFetchStatus: NostrProfileFetchStatus;
   relays: RelayConfig[];
@@ -103,7 +103,7 @@ export interface SettingsProps {
   seedPhrase?: string;
 
   walletBackupState?: SecretBackupState;
-  generatedNsecSecret?: string | null;
+  localNsecSecret?: string | null;
 
   /** Called when user toggles a category group */
   onCategoryToggle?: (category: SettingsCategory) => void;
@@ -122,6 +122,7 @@ export interface SettingsProps {
   onAddMint?: (url: string) => Promise<void>;
   onRemoveMint?: (url: string) => void;
   onViewSeedPhrase?: () => void;
+  onReplaceWallet?: () => void;
   onMintClick?: (url: string) => void;
 
   // Nostr callbacks

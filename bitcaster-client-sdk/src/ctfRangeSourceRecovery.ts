@@ -15,7 +15,6 @@ export type CtfRangeSourceRecoveryDecision =
   | { readonly kind: 'reuse-completed' }
   | { readonly kind: 'replay-exact-persisted-operation' }
   | { readonly kind: 'restore-exact-persisted-outputs' }
-  | { readonly kind: 'release-exact-unspent-inputs' }
   | {
       readonly kind: 'remain-pending'
       readonly reason: CtfRangeSourceRecoveryPendingReason
@@ -44,8 +43,8 @@ export function classifyCtfRangeSourceRecovery(
 ): CtfRangeSourceRecoveryDecision {
   const journalKind = requireJournalKind(input.journalKind)
   const journalState = requireJournalState(input.journalState)
-  const now = requireTimestamp(input.now, 'recovery observation time')
-  const expiry = requireExpiry(journalKind, input.authorizationExpiry)
+  requireTimestamp(input.now, 'recovery observation time')
+  requireExpiry(journalKind, input.authorizationExpiry)
   requireObservationBound(input.inputStates)
 
   switch (journalState) {
@@ -60,17 +59,12 @@ export function classifyCtfRangeSourceRecovery(
       }
     case 'prepared': {
       requireAbsentFailureReason(input.failureReason)
-      return classifyPrepared(journalKind, input.inputStates, now, expiry)
+      return classifyPrepared(input.inputStates)
     }
   }
 }
 
-function classifyPrepared(
-  journalKind: CtfRangeSourceJournalKind,
-  values: readonly unknown[],
-  now: number,
-  expiry: number | null,
-): CtfRangeSourceRecoveryDecision {
+function classifyPrepared(values: readonly unknown[]): CtfRangeSourceRecoveryDecision {
   if (values.length < 1) {
     throw new Error('CTF range source recovery input count is invalid')
   }
@@ -82,9 +76,6 @@ function classifyPrepared(
     return { kind: 'restore-exact-persisted-outputs' }
   }
   if (states.every((state) => state === 'UNSPENT')) {
-    if (journalKind === 'authorization-source' && expiry !== null && now >= expiry) {
-      return { kind: 'release-exact-unspent-inputs' }
-    }
     return { kind: 'replay-exact-persisted-operation' }
   }
   if (states.some((state) => state === 'PENDING')) {
@@ -134,16 +125,16 @@ function requireObservationBound(values: readonly unknown[]): void {
 function requireExpiry(
   journalKind: CtfRangeSourceJournalKind,
   value: number | null | undefined,
-): number | null {
+): void {
   if (journalKind === 'consolidation') {
     if (value !== undefined && value !== null) {
       throw new Error('CTF range consolidation must not carry authorization expiry')
     }
-    return null
+    return
   }
-  return value === undefined || value === null
-    ? null
-    : requireTimestamp(value, 'authorization expiry')
+  if (value !== undefined && value !== null) {
+    requireTimestamp(value, 'authorization expiry')
+  }
 }
 
 function requireTimestamp(value: number, label: string): number {

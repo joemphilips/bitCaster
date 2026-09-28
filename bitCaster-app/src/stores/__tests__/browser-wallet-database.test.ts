@@ -3,7 +3,12 @@ import "fake-indexeddb/auto";
 import Dexie from "dexie";
 import { afterEach, describe, expect, it } from "vitest";
 import { deriveDurableCustodyScopeId } from "@bitcaster/client-sdk/durableCustody";
+import {
+  createEncryptedWalletBackupV2AssetIdentity,
+  encryptedWalletBackupV2LocalAssetKey,
+} from "@bitcaster/client-sdk/encryptedWalletBackupV2ProofSet";
 import { browserWalletDatabaseName } from "@/lib/browserWalletProfile";
+import { createBrowserCompletedProofRemovalMarkerRow } from "../browser-proof-backup-authority";
 import { activateBrowserWalletDatabase, BitcasterDB, db } from "../proof-db";
 
 const scopes = ["11".repeat(32), "22".repeat(32)].map((walletId) =>
@@ -37,6 +42,7 @@ const currentTableNames = [
   "mintQuotes",
   "outgoingCashuTransferAdmissions",
   "outgoingCashuTransfers",
+  "marketFundingHeads",
   "participationScoreDeliveryPointers",
   "targetedAssetRecoveryAttempts",
 ].sort();
@@ -51,10 +57,15 @@ describe("browser wallet databases", () => {
     activateBrowserWalletDatabase(scopes[1]!);
     await db.open();
 
-    expect(db.verno).toBe(16);
+    expect(db.verno).toBe(19);
     expect(db.tables.map(({ name }) => name).sort()).toEqual(currentTableNames);
     expect(db.custodyProofs.schema.primKey.keyPath).toEqual(["scopeId", "proofId"]);
     expect(db.custodyProofs.schema.idxByName["[scopeId+selectability+proofId]"]).toBeDefined();
+    expect(
+      db.custodyProofs.schema.idxByName[
+        "[scopeId+normalizedMint+unit+conditionId+selectability+proofId]"
+      ],
+    ).toBeDefined();
     expect(
       db.custodyProofs.schema.idxByName[
         "[scopeId+normalizedMint+unit+assetKind+selectability+curve+amount+proofId]"
@@ -132,6 +143,66 @@ describe("browser wallet databases", () => {
         "[scopeId+paymentMethod+recoveryState+lastRecoveryAttemptAtMs+quoteRecordId]"
       ],
     ).toBeDefined();
+    expect(db.marketFundingHeads.schema.primKey.keyPath).toEqual(["scopeId", "recipientBinding"]);
+    expect(
+      db.outgoingCashuTransfers.schema.idxByName["[scopeId+recipientBinding+predecessorKey]"],
+    ).toBeDefined();
+  });
+
+  it("round-trips completed-removal markers without live authority indexes", async () => {
+    const scopeId = scopes[1]!;
+    activateBrowserWalletDatabase(scopeId);
+    await db.open();
+    const walletId = "22".repeat(32);
+    const asset = createEncryptedWalletBackupV2AssetIdentity({
+      mintUrl: "https://mint.example",
+      unit: "msat",
+      asset: {
+        kind: "ctf",
+        conditionId: "aa".repeat(32),
+        outcomeLabel: "YES",
+        outcomeCollectionId: "bb".repeat(32),
+        registeredAt: 1,
+        finalExpiry: 2,
+      },
+    });
+    const marker = createBrowserCompletedProofRemovalMarkerRow({
+      scopeId,
+      proofId: "44".repeat(32),
+      proofFingerprint: "55".repeat(32),
+      proofRevision: 0,
+      proofCommitment: "66".repeat(32),
+      localAssetKey: encryptedWalletBackupV2LocalAssetKey(asset),
+      removalIntentId: "database-marker-test",
+      proofSetCommitment: "77".repeat(32),
+      completionCustodyRevision: "3",
+      realm: "development",
+      walletId,
+      enrollmentEpoch: 1,
+      acknowledgedHeadVersion: 0,
+      acknowledgedActiveSetDigest: "88".repeat(32),
+      acknowledgementKind: "current-head",
+      receiptDigest: null,
+      acknowledgedAtMs: 2,
+      completedAtMs: 3,
+    });
+    await db.custodyProofBackupAuthorities.put(marker);
+
+    await expect(db.custodyProofBackupAuthorities.get([scopeId, marker.proofId])).resolves.toEqual(
+      marker,
+    );
+    await expect(
+      db.custodyProofBackupAuthorities
+        .where("[scopeId+proofState+proofId]")
+        .equals([scopeId, "selectable", marker.proofId])
+        .count(),
+    ).resolves.toBe(0);
+    await expect(
+      db.custodyProofBackupAuthorities
+        .where("[scopeId+admissionOperationId]")
+        .equals([scopeId, "admission-marker-test"])
+        .count(),
+    ).resolves.toBe(0);
   });
 
   it("keeps the version-8 reset for undeployed version-7 wallet data", async () => {

@@ -1,12 +1,15 @@
-import { useEffect, useState, useCallback, useMemo } from "react";
-import { useNavigate, useSearchParams } from "react-router";
+import { useEffect, useState, useCallback, useMemo, useRef } from "react";
+import { useLocation, useNavigate, useSearchParams } from "react-router";
+import { useTranslation } from "react-i18next";
 import { MarketDiscovery } from "@/components/markets";
 import { getMarkets, filterMarkets } from "@/lib/markets";
 import { DEFAULT_MARKET_SORT, type MarketSort } from "@/hooks/useMarketSort";
 import type { Market, MarketType, VolumeRange, FilterState, CategoryTag } from "@/types/market";
 
 export function MarketsPage() {
+  const { t } = useTranslation();
   const navigate = useNavigate();
+  const location = useLocation();
   const [searchParams] = useSearchParams();
   const searchQuery = searchParams.get("search")?.trim() ?? "";
   const [markets, setMarkets] = useState<Market[]>([]);
@@ -30,11 +33,14 @@ export function MarketsPage() {
   // Sort dimension is hoisted into the engine query (`?sort=`); the page now
   // owns only the active selection, not the client-side ordering.
   const [sort, setSort] = useState<MarketSort>(DEFAULT_MARKET_SORT);
+  const requestGeneration = useRef(0);
 
   const loadMarkets = useCallback(() => {
+    const generation = ++requestGeneration.current;
     setLoading(true);
     setError(null);
     setNextCursor(null);
+    setLoadingMore(false);
     const tags = selectedTags.length > 0 ? selectedTags : undefined;
     getMarkets({
       sort,
@@ -43,14 +49,17 @@ export function MarketsPage() {
       state: filter.includeClosed ? "All" : "Open",
     })
       .then((result) => {
+        if (generation !== requestGeneration.current) return;
         setMarkets(result.markets);
         setNextCursor(result.nextCursor);
         setLastSuccessfulRefreshAt(result.lastSuccessfulRefreshAt ?? null);
       })
       .catch(() => {
-        setError("Failed to load markets. Please check that the matching engine is running.");
+        if (generation !== requestGeneration.current) return;
+        setError("market.catalogueLoadFailed");
       })
       .finally(() => {
+        if (generation !== requestGeneration.current) return;
         setLoading(false);
       });
   }, [sort, selectedTags, searchQuery, filter.includeClosed]);
@@ -66,12 +75,15 @@ export function MarketsPage() {
         counts.set(tagId, (counts.get(tagId) ?? 0) + 1);
       }
     }
+    for (const id of selectedTags) {
+      if (!counts.has(id)) counts.set(id, 0);
+    }
     return Array.from(counts.entries()).map(([id, count]) => ({
       id,
       label: id,
       marketCount: count,
     }));
-  }, [markets]);
+  }, [markets, selectedTags]);
 
   // Market-type / volume / closing-date filters stay client-side. Search and
   // tag selection are pushed up to the API call, so we strip them from the
@@ -90,6 +102,28 @@ export function MarketsPage() {
   const handleClearTags = useCallback(() => {
     setSelectedTags([]);
   }, []);
+
+  const handleClearAll = useCallback(() => {
+    setSelectedTags([]);
+    setFilter((prev) => ({
+      ...prev,
+      searchQuery: "",
+      selectedTags: [],
+      marketTypes: [],
+      volumeRange: {},
+      closingInDays: undefined,
+      includeClosed: false,
+    }));
+    const nextSearchParams = new URLSearchParams(searchParams);
+    nextSearchParams.delete("search");
+    navigate(
+      {
+        pathname: location.pathname,
+        search: nextSearchParams.toString() ? `?${nextSearchParams.toString()}` : "",
+      },
+      { replace: true },
+    );
+  }, [location.pathname, navigate, searchParams]);
 
   const handleMarketTypeChange = useCallback((types: MarketType[]) => {
     setFilter((prev) => ({ ...prev, marketTypes: types }));
@@ -116,6 +150,7 @@ export function MarketsPage() {
 
   const handleLoadMore = useCallback(() => {
     if (!nextCursor || loadingMore) return;
+    const generation = requestGeneration.current;
     setLoadingMore(true);
     const tags = selectedTags.length > 0 ? selectedTags : undefined;
     getMarkets({
@@ -126,14 +161,17 @@ export function MarketsPage() {
       cursor: nextCursor,
     })
       .then((result) => {
+        if (generation !== requestGeneration.current) return;
         setMarkets((prev) => [...prev, ...result.markets]);
         setNextCursor(result.nextCursor);
       })
       .catch(() => {
+        if (generation !== requestGeneration.current) return;
         // Pagination failure is non-fatal — leave the existing list in place
         // and surface nothing rather than blow up the page.
       })
       .finally(() => {
+        if (generation !== requestGeneration.current) return;
         setLoadingMore(false);
       });
   }, [nextCursor, loadingMore, sort, selectedTags, searchQuery, filter.includeClosed]);
@@ -148,55 +186,26 @@ export function MarketsPage() {
   const catalogueHasRefreshed =
     lastSuccessfulRefreshAt !== null && !lastSuccessfulRefreshAt.startsWith("0001-01-01T00:00:00");
 
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center min-h-[50vh]">
-        <div className="text-slate-400 animate-pulse">Loading markets...</div>
-      </div>
-    );
-  }
+  const hasActiveFilters =
+    searchQuery.length > 0 ||
+    selectedTags.length > 0 ||
+    filter.marketTypes.length > 0 ||
+    filter.volumeRange.min !== undefined ||
+    filter.volumeRange.max !== undefined ||
+    filter.closingInDays !== undefined ||
+    filter.includeClosed === true;
 
-  if (error) {
-    return (
-      <div className="flex flex-col items-center justify-center min-h-[50vh] gap-4">
-        <div className="text-red-400">{error}</div>
-        <button
-          onClick={loadMarkets}
-          className="px-4 py-2 bg-[#f7931a] text-black rounded-lg hover:bg-[#e8850f] transition-colors"
-        >
-          Retry
-        </button>
-      </div>
-    );
-  }
-
-  if (markets.length === 0 && !catalogueHasRefreshed) {
-    return (
-      <div className="flex items-center justify-center min-h-[50vh]">
-        <div className="text-slate-400 animate-pulse">Catalogue refreshing...</div>
-      </div>
-    );
-  }
-
-  if (markets.length === 0) {
-    return (
-      <div className="flex flex-col items-center justify-center min-h-[50vh] gap-4 px-4 text-center">
-        <div className="text-6xl" aria-hidden="true">
-          📈
-        </div>
-        <div className="space-y-2">
-          <h2 className="text-2xl font-bold text-slate-900 dark:text-slate-100">No markets yet</h2>
-          <p className="text-slate-500 dark:text-slate-400">Create one to get started.</p>
-        </div>
-        <button
-          onClick={() => navigate("/creator")}
-          className="px-4 py-2 bg-[#f7931a] text-black rounded-lg hover:bg-[#e8850f] transition-colors"
-        >
-          Create Market
-        </button>
-      </div>
-    );
-  }
+  const discoveryStatus = loading
+    ? "loading"
+    : error
+      ? "error"
+      : markets.length === 0 && !catalogueHasRefreshed
+        ? "refreshing"
+        : markets.length === 0 && hasActiveFilters
+          ? "no-match"
+          : markets.length === 0
+            ? "empty"
+            : "ready";
 
   return (
     <MarketDiscovery
@@ -208,6 +217,7 @@ export function MarketsPage() {
       onSortChange={setSort}
       onTagSelect={handleTagSelect}
       onClearTags={handleClearTags}
+      onClearAll={handleClearAll}
       onMarketTypeChange={handleMarketTypeChange}
       onVolumeRangeChange={handleVolumeRangeChange}
       onClosingDateChange={handleClosingDateChange}
@@ -216,6 +226,40 @@ export function MarketsPage() {
       hasMore={nextCursor !== null}
       onLoadMore={handleLoadMore}
       onViewSecondaryMarket={handleViewSecondaryMarket}
+      status={discoveryStatus}
+      statusMessage={
+        discoveryStatus === "loading"
+          ? t("market.loadingMarkets")
+          : discoveryStatus === "refreshing"
+            ? t("market.catalogueRefreshing")
+            : discoveryStatus === "error"
+              ? t(error ?? "market.catalogueLoadFailedFallback")
+              : discoveryStatus === "no-match"
+                ? t("market.noMarketsMatchFilters")
+                : discoveryStatus === "empty"
+                  ? t("market.noMarketsYet")
+                  : undefined
+      }
+      statusAction={
+        discoveryStatus === "error" ? (
+          <button
+            onClick={loadMarkets}
+            className="px-4 py-2 bg-[#f7931a] text-black rounded-lg hover:bg-[#e8850f] transition-colors"
+          >
+            {t("common.retry")}
+          </button>
+        ) : discoveryStatus === "empty" ? (
+          <>
+            <p className="text-slate-500 dark:text-slate-400">{t("market.createMarketHint")}</p>
+            <button
+              onClick={() => navigate("/creator")}
+              className="px-4 py-2 bg-[#f7931a] text-black rounded-lg hover:bg-[#e8850f] transition-colors"
+            >
+              {t("market.createMarket")}
+            </button>
+          </>
+        ) : undefined
+      }
     />
   );
 }

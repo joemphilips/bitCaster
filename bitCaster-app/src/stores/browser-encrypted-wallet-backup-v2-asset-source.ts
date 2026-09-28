@@ -1,6 +1,7 @@
 import {
   createEncryptedWalletBackupV2AssetIdentity,
   deserializeDurableCustodyProofArtifact,
+  issueEncryptedWalletBackupV2TerminalSeal,
   prepareEncryptedWalletBackupV2ProofSetBundle,
   verifyDurableWalletConditionalKeyset,
   type EncryptedWalletBackupV2AssetIdentity,
@@ -10,16 +11,21 @@ import {
   type EncryptedWalletBackupV2ProofSetAsset,
   type EncryptedWalletBackupV2ProofSetProof,
   type EncryptedWalletBackupV2BundleRuntime,
+  type EncryptedWalletBackupV2CommittedTerminalSealStore,
+  type EncryptedWalletBackupV2RemoteTerminalSealReuseResult,
 } from "@bitcaster/client-sdk";
+import { deriveDurableCustodyProofId } from "@bitcaster/client-sdk/durableCustody";
 import { decodeDurableWalletProofDerivationLocator } from "@bitcaster/client-sdk/durableWalletProofDerivationLocator";
 import {
   requireBrowserProofBackupAuthorityForProof,
   requireBrowserProofBackupAuthorityRow,
+  type BrowserProofBackupTerminalAuthority,
 } from "./browser-proof-backup-authority";
 import {
   createEncryptedWalletBackupV2DesiredAssetRow,
   decodeEncryptedWalletBackupV2DesiredAssetRow,
   type EncryptedWalletBackupV2DesiredAssetRow,
+  type EncryptedWalletBackupV2TerminalCtfContext,
 } from "./browser-encrypted-wallet-backup-v2-desired-asset";
 import {
   decodeBrowserCustodyConditionalKeysetRow,
@@ -31,7 +37,39 @@ export interface BrowserEncryptedWalletBackupV2AssetSnapshot {
   readonly desired: EncryptedWalletBackupV2DesiredAssetRow;
   readonly asset: ReturnType<typeof createEncryptedWalletBackupV2AssetIdentity>;
   readonly proofs: readonly EncryptedWalletBackupV2ProofSetProof[];
+  /** Losing bodies are retained, but cannot enter a bundle until sealed. */
+  readonly losingProofs: readonly BrowserEncryptedWalletBackupV2LosingProof[];
   readonly counterHighWaterMarks: readonly EncryptedWalletBackupV2CounterHighWaterMark[];
+}
+
+export interface BrowserEncryptedWalletBackupV2LosingProof {
+  readonly proofId: string;
+  readonly proof: EncryptedWalletBackupV2ProofSetProof;
+  readonly origin: BrowserProofBackupTerminalAuthority;
+}
+
+/** One local custody read with separate backup coverage and available amount facts. */
+export interface BrowserEncryptedWalletBackupV2LocalAssetRead {
+  readonly desired: EncryptedWalletBackupV2DesiredAssetRow | null;
+  readonly activeProofs: readonly ReturnType<typeof decodeBrowserCustodyProofRow>[];
+  readonly backupEligibleProofCount: number;
+  readonly snapshot: BrowserEncryptedWalletBackupV2AssetSnapshot | null;
+}
+
+export type BrowserEncryptedWalletBackupV2LocalAssetReadFailure =
+  | "invalid-action"
+  | "missing-authority"
+  | "proof-read"
+  | "snapshot-read";
+
+export class BrowserEncryptedWalletBackupV2LocalAssetReadError extends Error {
+  constructor(
+    readonly code: BrowserEncryptedWalletBackupV2LocalAssetReadFailure,
+    message: string,
+  ) {
+    super(message);
+    this.name = "BrowserEncryptedWalletBackupV2LocalAssetReadError";
+  }
 }
 
 interface BrowserEncryptedWalletBackupV2AssetSourceInput {
@@ -47,26 +85,121 @@ export async function readBrowserEncryptedWalletBackupV2AssetSnapshot(
   return materializeAssetSnapshot(await readRawAssetSnapshot(input));
 }
 
-/** Reads exact selectable and locked rows for one V2 asset without broad mint scanning. */
+/**
+ * Reads one bounded local asset state. Locator-bearing proofs define backup
+ * coverage. Locked operation proofs without locators remain local-only.
+ */
+export async function readBrowserEncryptedWalletBackupV2LocalAssetRead(input: {
+  readonly database: BitcasterDB;
+  readonly scopeId: string;
+  readonly asset: EncryptedWalletBackupV2AssetIdentity;
+}): Promise<BrowserEncryptedWalletBackupV2LocalAssetRead> {
+  const expected = createEncryptedWalletBackupV2DesiredAssetRow({
+    scopeId: input.scopeId,
+    asset: input.asset,
+    custodyRevision: 0n,
+    activeProofCount: 0,
+  });
+  let raw: Awaited<ReturnType<typeof readRawAssetSnapshot>>;
+  try {
+    raw = await readRawAssetSnapshot({
+      database: input.database,
+      scopeId: input.scopeId,
+      localAssetKey: expected.localAssetKey,
+      expectedAsset: input.asset,
+      localRead: true,
+    });
+  } catch (error) {
+    if (error instanceof BrowserEncryptedWalletBackupV2LocalAssetReadError) throw error;
+    throw localReadError("proof-read", "browser V2 local custody proof read failed");
+  }
+  const desired = raw.rawDesired === undefined ? null : raw.desired;
+  const backupEligibleProofCount = raw.proofRows.length;
+  let snapshot: BrowserEncryptedWalletBackupV2AssetSnapshot | null = null;
+  if (
+    desired !== null &&
+    desired.desiredAction === "replace" &&
+    raw.activeProofRows.length > 0 &&
+    backupEligibleProofCount === desired.activeProofCount
+  ) {
+    try {
+      snapshot = materializeAssetSnapshot(raw);
+    } catch {
+      throw localReadError("snapshot-read", "browser V2 local custody snapshot read failed");
+    }
+  }
+  return Object.freeze({
+    desired,
+    activeProofs: Object.freeze([...raw.activeProofRows]),
+    backupEligibleProofCount,
+    snapshot,
+  });
+}
+
+/** Reads exact active rows for one V2 asset without broad mint scanning. */
 export async function readBrowserEncryptedWalletBackupV2ExactLocalProofRows(input: {
   readonly database: BitcasterDB;
   readonly scopeId: string;
   readonly asset: EncryptedWalletBackupV2AssetIdentity;
+  /** SDK-verified CTF tuple for an initial keyset-free admission route. */
+  readonly ctfRoute?: Extract<EncryptedWalletBackupV2ProofSetAsset, { readonly kind: "ctf" }>;
 }): Promise<readonly ReturnType<typeof decodeBrowserCustodyProofRow>[]> {
+  if (
+    input.ctfRoute !== undefined &&
+    (!input.asset.assetIdentity.startsWith("ctf:") ||
+      createEncryptedWalletBackupV2AssetIdentity({
+        mintUrl: input.asset.mintUrl,
+        unit: input.asset.unit,
+        asset: input.ctfRoute,
+      }).assetIdentity !== input.asset.assetIdentity)
+  )
+    throw new Error("browser V2 exact local proof CTF route is foreign");
   const desired = createEncryptedWalletBackupV2DesiredAssetRow({
     scopeId: input.scopeId,
     asset: input.asset,
     custodyRevision: 0n,
     activeProofCount: 0,
   });
-  const context = desired.assetIdentity.startsWith("ctf:")
-    ? await ctfContext(input.database, desired, true)
+  const raw = await input.database.encryptedWalletBackupV2DesiredAssets.get([
+    input.scopeId,
+    desired.localAssetKey,
+  ]);
+  const persisted = raw === undefined ? null : decodeEncryptedWalletBackupV2DesiredAssetRow(raw);
+  if (
+    persisted !== null &&
+    (persisted.scopeId !== input.scopeId ||
+      persisted.localAssetKey !== desired.localAssetKey ||
+      persisted.mintUrl !== desired.mintUrl ||
+      persisted.unit !== desired.unit ||
+      persisted.assetIdentity !== desired.assetIdentity)
+  )
+    throw new Error("browser V2 exact local proof asset is foreign");
+  let route = desired.assetIdentity.startsWith("ctf:")
+    ? await ctfContext(input.database, persisted ?? desired, true)
     : null;
-  if (desired.assetIdentity.startsWith("ctf:") && context === null) return [];
-  return activeRows(input.database, desired, context?.first ?? null);
+  if (route === null && input.ctfRoute !== undefined) {
+    route = {
+      first: null,
+      keysets: Object.freeze([]),
+      terminalCtfContext: input.ctfRoute,
+    };
+  }
+  if (desired.assetIdentity.startsWith("ctf:") && route === null)
+    throw new Error("browser V2 exact local proof CTF context is missing");
+  return activeRows(
+    input.database,
+    persisted ?? desired,
+    route?.first ?? route?.terminalCtfContext ?? null,
+    true,
+  );
 }
 
-async function readRawAssetSnapshot(input: BrowserEncryptedWalletBackupV2AssetSourceInput) {
+async function readRawAssetSnapshot(
+  input: BrowserEncryptedWalletBackupV2AssetSourceInput & {
+    readonly expectedAsset?: EncryptedWalletBackupV2AssetIdentity;
+    readonly localRead?: boolean;
+  },
+) {
   return input.database.transaction(
     "r",
     [
@@ -82,25 +215,88 @@ async function readRawAssetSnapshot(input: BrowserEncryptedWalletBackupV2AssetSo
         input.scopeId,
         input.localAssetKey,
       ]);
-      if (rawDesired === undefined) throw new Error("browser V2 desired asset is absent");
-      const desired = decodeEncryptedWalletBackupV2DesiredAssetRow(rawDesired);
-      if (desired.scopeId !== input.scopeId || desired.localAssetKey !== input.localAssetKey)
-        throw new Error("browser V2 desired asset is foreign");
+      if (rawDesired === undefined && input.expectedAsset === undefined) {
+        throw new Error("browser V2 desired asset is absent");
+      }
+      const expectedAsset = input.expectedAsset;
+      let desired: EncryptedWalletBackupV2DesiredAssetRow;
+      if (rawDesired === undefined) {
+        if (expectedAsset === undefined) throw new Error("browser V2 desired asset is absent");
+        desired = createEncryptedWalletBackupV2DesiredAssetRow({
+          scopeId: input.scopeId,
+          asset: expectedAsset,
+          custodyRevision: 0n,
+          activeProofCount: 0,
+        });
+      } else {
+        try {
+          desired = decodeEncryptedWalletBackupV2DesiredAssetRow(rawDesired);
+        } catch (error) {
+          if (!input.localRead) throw error;
+          throw localReadError("invalid-action", "browser V2 local custody asset is invalid");
+        }
+      }
+      if (desired.scopeId !== input.scopeId || desired.localAssetKey !== input.localAssetKey) {
+        if (!input.localRead) throw new Error("browser V2 desired asset is foreign");
+        throw localReadError("invalid-action", "browser V2 local custody asset is invalid");
+      }
       const context = desired.assetIdentity.startsWith("ctf:")
-        ? await ctfContext(input.database, desired)
+        ? await ctfContext(input.database, desired, rawDesired === undefined)
         : null;
-      const activeProofRows = await activeRows(input.database, desired, context?.first ?? null);
+      if (desired.assetIdentity.startsWith("ctf:") && context === null) {
+        return {
+          rawDesired,
+          desired,
+          activeProofRows: [],
+          proofRows: [],
+          authorities: [],
+          context: null,
+          keysetIds: [],
+          associations: [],
+          cursors: [],
+        };
+      }
+      const activeProofRows = await activeRows(
+        input.database,
+        desired,
+        context?.first ?? context?.terminalCtfContext ?? null,
+      );
       const rawAuthorities = await input.database.custodyProofBackupAuthorities.bulkGet(
         activeProofRows.map((row) => [row.scopeId, row.proofId]),
       );
-      const eligibleProofs = activeProofRows.flatMap((proof, index) => {
+      const activeProofs = activeProofRows.map((proof, index) => {
         const rawAuthority = rawAuthorities[index];
         if (rawAuthority === undefined)
-          throw new Error("browser V2 proof backup authority is missing");
-        const authority = requireBrowserProofBackupAuthorityRow(rawAuthority);
-        if (authority.derivationLocator === null) return [];
-        return [{ proof, authority: requireBrowserProofBackupAuthorityForProof(authority, proof) }];
+          throw localReadRefusal(
+            input,
+            "missing-authority",
+            "browser V2 proof backup authority is missing",
+          );
+        let authority: ReturnType<typeof requireBrowserProofBackupAuthorityForProof>;
+        try {
+          authority = requireBrowserProofBackupAuthorityForProof(rawAuthority, proof);
+        } catch (error) {
+          if (!input.localRead) throw error;
+          throw localReadError(
+            "snapshot-read",
+            "browser V2 local custody proof authority is invalid",
+          );
+        }
+        if (
+          authority.derivationLocator === null &&
+          (proof.selectability !== "locked" || proof.reservationOperationId === null)
+        ) {
+          throw localReadRefusal(
+            input,
+            "snapshot-read",
+            "browser V2 local custody proof is not retained",
+          );
+        }
+        return { proof, authority };
       });
+      const eligibleProofs = activeProofs.filter(
+        ({ authority }) => authority.derivationLocator !== null,
+      );
       const proofRows = eligibleProofs.map(({ proof }) => proof);
       const authorities = eligibleProofs.map(({ authority }) => authority);
       const keysetIds = [...new Set(proofRows.map(({ keysetId }) => keysetId))];
@@ -111,9 +307,34 @@ async function readRawAssetSnapshot(input: BrowserEncryptedWalletBackupV2AssetSo
       const cursors = await input.database.walletCounterCursors.bulkGet(
         keysetIds.map((keysetId) => [input.scopeId, keysetId]),
       );
-      return { rawDesired, proofRows, authorities, context, keysetIds, associations, cursors };
+      return {
+        rawDesired,
+        desired,
+        activeProofRows,
+        proofRows,
+        authorities,
+        context,
+        keysetIds,
+        associations,
+        cursors,
+      };
     },
   );
+}
+
+function localReadRefusal(
+  input: { readonly localRead?: boolean },
+  code: Exclude<BrowserEncryptedWalletBackupV2LocalAssetReadFailure, "proof-read">,
+  message: string,
+): Error {
+  return input.localRead ? localReadError(code, message) : new Error(message);
+}
+
+function localReadError(
+  code: BrowserEncryptedWalletBackupV2LocalAssetReadFailure,
+  message: string,
+): BrowserEncryptedWalletBackupV2LocalAssetReadError {
+  return new BrowserEncryptedWalletBackupV2LocalAssetReadError(code, message);
 }
 
 function materializeAssetSnapshot(
@@ -125,16 +346,44 @@ function materializeAssetSnapshot(
   const keysets = new Map(
     (raw.context?.keysets ?? []).map((keyset) => [keyset.keysetId, keyset] as const),
   );
-  const asset = assetIdentity(desired, raw.proofRows, keysets);
+  const asset = assetIdentity(
+    desired,
+    raw.proofRows,
+    keysets,
+    raw.context?.terminalCtfContext ?? null,
+  );
   const proofs = raw.proofRows.map((row, index) =>
     proofSnapshot(row, raw.authorities[index], desired, asset.proofSetAsset, keysets),
   );
+  const losingProofs = raw.proofRows.flatMap((row, index) => {
+    if (row.selectability !== "verified-losing") return [];
+    const authority = raw.authorities[index];
+    if (authority === undefined || authority.terminalAuthority === null) {
+      throw new Error("browser V2 losing proof origin is invalid");
+    }
+    return [
+      Object.freeze({
+        proofId: row.proofId,
+        proof: proofs[index]!,
+        origin: Object.freeze({ ...authority.terminalAuthority }),
+      }),
+    ];
+  });
   return Object.freeze({
     desired,
     asset: asset.identity,
     proofs: Object.freeze(proofs),
+    losingProofs: Object.freeze(losingProofs),
     counterHighWaterMarks: Object.freeze(
-      counterMarks(desired, proofs, raw.keysetIds, raw.associations, raw.cursors),
+      counterMarks(
+        desired,
+        proofs,
+        raw.proofRows,
+        raw.keysetIds,
+        raw.associations,
+        raw.cursors,
+        (raw.context?.keysets.length ?? 0) === 0,
+      ),
     ),
   });
 }
@@ -145,25 +394,109 @@ export async function prepareBrowserEncryptedWalletBackupV2AssetBundle(input: {
   readonly seed: Uint8Array;
   readonly runtime: EncryptedWalletBackupV2BundleRuntime;
   readonly bundleIdExists?: (bundleId: string) => boolean | Promise<boolean>;
+  readonly terminalSealStore?: EncryptedWalletBackupV2CommittedTerminalSealStore;
+  readonly remoteTerminalSealReuse?: EncryptedWalletBackupV2RemoteTerminalSealReuseResult;
 }): Promise<EncryptedWalletBackupV2PreparedTransportBundle> {
   if (input.snapshot.desired.desiredAction !== "replace")
     throw new Error("browser V2 removal has no proof bundle");
+  const proofs = await issueLocalTerminalSeals(input);
+  const remoteAuthorities = input.remoteTerminalSealReuse?.authorities.filter((authority) =>
+    input.snapshot.losingProofs.some(
+      (losing) => losing.origin.kind === "remote-seal" && losing.proofId === authority.proofId,
+    ),
+  );
+  const counterHighWaterMarks = mergeCounterHighWaterMarks(
+    input.snapshot.counterHighWaterMarks,
+    input.remoteTerminalSealReuse?.decrypted.counterHighWaterMarks ?? [],
+  );
   return prepareEncryptedWalletBackupV2ProofSetBundle({
     keyHandle: input.keyHandle,
     seed: input.seed,
     asset: input.snapshot.asset,
-    proofs: input.snapshot.proofs,
+    proofs,
     custodyRevision: BigInt(input.snapshot.desired.custodyRevision),
-    counterHighWaterMarks: input.snapshot.counterHighWaterMarks,
+    counterHighWaterMarks,
     runtime: input.runtime,
     bundleIdExists: input.bundleIdExists,
+    remoteTerminalSealReuses: remoteAuthorities,
+    remoteTerminalSealReuseHeadEvidence: input.remoteTerminalSealReuse?.currentHeadEvidence,
   });
+}
+
+async function issueLocalTerminalSeals(input: {
+  readonly snapshot: BrowserEncryptedWalletBackupV2AssetSnapshot;
+  readonly seed: Uint8Array;
+  readonly terminalSealStore?: EncryptedWalletBackupV2CommittedTerminalSealStore;
+  readonly remoteTerminalSealReuse?: EncryptedWalletBackupV2RemoteTerminalSealReuseResult;
+}): Promise<readonly EncryptedWalletBackupV2ProofSetProof[]> {
+  const losingByProof = new Map(
+    input.snapshot.losingProofs.map((losing) => [losing.proof, losing] as const),
+  );
+  if (losingByProof.size !== input.snapshot.losingProofs.length)
+    throw new Error("browser V2 losing proof binding is duplicated");
+  if (
+    input.snapshot.losingProofs.some(
+      ({ proof, proofId }) =>
+        !input.snapshot.proofs.some((candidate) => candidate === proof) ||
+        deriveDurableCustodyProofId({
+          scopeId: input.snapshot.desired.scopeId,
+          normalizedMint: proof.mintUrl,
+          unit: proof.unit,
+          keysetId: proof.proof.id,
+          secret: proof.proof.secret,
+        }) !== proofId,
+    )
+  )
+    throw new Error("browser V2 losing proof binding is invalid");
+  if (input.snapshot.proofs.some(({ terminalSeal }) => terminalSeal !== undefined))
+    throw new Error("browser V2 terminal seal must be issued from local custody");
+  const remoteReuse = input.remoteTerminalSealReuse;
+  const remoteByProofId = new Map(
+    remoteReuse?.decrypted.proofs
+      .filter(({ terminalSeal }) => terminalSeal !== undefined)
+      .map((proof) => [proof.proofId, proof] as const) ?? [],
+  );
+  return Promise.all(
+    input.snapshot.proofs.map(async (proof) => {
+      const losing = losingByProof.get(proof);
+      if (losing === undefined) return proof;
+      if (losing.origin.kind === "remote-seal") {
+        if (remoteReuse === undefined)
+          throw new Error("browser V2 remote terminal seal requires remote reuse authority");
+        const restored = remoteByProofId.get(
+          deriveDurableCustodyProofId({
+            scopeId: input.snapshot.desired.scopeId,
+            normalizedMint: proof.mintUrl,
+            unit: proof.unit,
+            keysetId: proof.proof.id,
+            secret: proof.proof.secret,
+          }),
+        );
+        if (restored?.terminalSeal === undefined)
+          throw new Error("browser V2 remote terminal seal is missing");
+        return Object.freeze({ ...proof, terminalSeal: restored.terminalSeal });
+      }
+      if (input.terminalSealStore === undefined)
+        throw new Error("browser V2 losing proof requires a terminal seal store");
+      const terminalSeal = await issueEncryptedWalletBackupV2TerminalSeal({
+        seed: input.seed,
+        proof,
+        operationId: losing.origin.operationId,
+        store: input.terminalSealStore,
+      });
+      return Object.freeze({ ...proof, terminalSeal });
+    }),
+  );
 }
 
 async function activeRows(
   database: BitcasterDB,
   desired: EncryptedWalletBackupV2DesiredAssetRow,
-  ctf: ReturnType<typeof decodeBrowserCustodyConditionalKeysetRow> | null,
+  ctf:
+    | ReturnType<typeof decodeBrowserCustodyConditionalKeysetRow>
+    | EncryptedWalletBackupV2TerminalCtfContext
+    | null,
+  includePendingRemoval = false,
 ) {
   const selector =
     ctf === null
@@ -172,8 +505,16 @@ async function activeRows(
   const values =
     ctf === null
       ? [desired.scopeId, desired.mintUrl, desired.unit, "regular"]
-      : [desired.scopeId, desired.mintUrl, desired.unit, ctf.conditionId, ctf.outcomeCollection];
-  const states = ["selectable", "locked"] as const;
+      : [
+          desired.scopeId,
+          desired.mintUrl,
+          desired.unit,
+          ctf.conditionId,
+          "outcomeCollection" in ctf ? ctf.outcomeCollection : ctf.outcomeLabel,
+        ];
+  const states = includePendingRemoval
+    ? (["selectable", "locked", "verified-losing", "pending-removal"] as const)
+    : (["selectable", "locked", "verified-losing"] as const);
   const groups = await Promise.all(
     states.map((state) =>
       database.custodyProofs
@@ -205,19 +546,39 @@ async function ctfContext(
   if (keysets.length > 16)
     throw new Error("browser V2 conditional keyset context exceeds the limit");
   const first = keysets[0];
-  if (first === undefined && allowAbsent) return null;
-  if (
-    first === undefined ||
-    keysets.some((row) => row.outcomeCollection !== first.outcomeCollection)
-  )
+  if (first === undefined && allowAbsent && desired.terminalCtfContext === null) return null;
+  if (first === undefined) {
+    if (desired.terminalCtfContext === null)
+      throw new Error("browser V2 conditional keyset context is invalid");
+    return {
+      first: null,
+      keysets: Object.freeze([]),
+      terminalCtfContext: desired.terminalCtfContext,
+    };
+  }
+  if (keysets.some((row) => row.outcomeCollection !== first.outcomeCollection))
     throw new Error("browser V2 conditional keyset context is invalid");
-  return { first, keysets: Object.freeze(keysets) };
+  if (
+    desired.terminalCtfContext !== null &&
+    (desired.terminalCtfContext.conditionId !== first.conditionId ||
+      desired.terminalCtfContext.outcomeLabel !== first.outcomeCollection ||
+      desired.terminalCtfContext.outcomeCollectionId !== first.outcomeCollectionId ||
+      desired.terminalCtfContext.registeredAt !== first.registeredAtUnixSeconds ||
+      desired.terminalCtfContext.finalExpiry !== first.finalExpiryUnixSeconds)
+  )
+    throw new Error("browser V2 conditional keyset context conflicts");
+  return {
+    first,
+    keysets: Object.freeze(keysets),
+    terminalCtfContext: desired.terminalCtfContext,
+  };
 }
 
 function assetIdentity(
   desired: EncryptedWalletBackupV2DesiredAssetRow,
   rows: readonly ReturnType<typeof decodeBrowserCustodyProofRow>[],
   keysets: ReadonlyMap<string, ReturnType<typeof decodeBrowserCustodyConditionalKeysetRow>>,
+  terminalCtfContext: EncryptedWalletBackupV2TerminalCtfContext | null,
 ) {
   if (!desired.assetIdentity.startsWith("ctf:")) {
     const proofSetAsset = { kind: "ordinary" } as const;
@@ -231,19 +592,21 @@ function assetIdentity(
     };
   }
   const first = rows[0];
-  if (first === undefined || first.assetKind !== "conditional")
-    throw new Error("browser V2 conditional asset is empty");
-  const keyset = keysets.get(first.keysetId);
-  if (keyset === undefined) throw new Error("browser V2 conditional keyset is missing");
-  keysets.forEach((value) => verifyCtfKeyset(value));
-  const asset: EncryptedWalletBackupV2ProofSetAsset = {
-    kind: "ctf",
-    conditionId: keyset.conditionId,
-    outcomeCollectionId: keyset.outcomeCollectionId,
-    outcomeLabel: keyset.outcomeCollection,
-    registeredAt: keyset.registeredAtUnixSeconds,
-    finalExpiry: keyset.finalExpiryUnixSeconds,
-  };
+  const keyset = first === undefined ? undefined : keysets.get(first.keysetId);
+  if (keyset === undefined && terminalCtfContext === null)
+    throw new Error("browser V2 conditional keyset is missing");
+  if (keyset !== undefined) keysets.forEach((value) => verifyCtfKeyset(value));
+  const asset: EncryptedWalletBackupV2ProofSetAsset =
+    keyset === undefined
+      ? { kind: "ctf", ...terminalCtfContext! }
+      : {
+          kind: "ctf",
+          conditionId: keyset.conditionId,
+          outcomeCollectionId: keyset.outcomeCollectionId,
+          outcomeLabel: keyset.outcomeCollection,
+          registeredAt: keyset.registeredAtUnixSeconds,
+          finalExpiry: keyset.finalExpiryUnixSeconds,
+        };
   if (`ctf:${asset.conditionId}:${asset.outcomeCollectionId}` !== desired.assetIdentity)
     throw new Error("browser V2 conditional asset is foreign");
   return {
@@ -279,7 +642,17 @@ function proofSnapshot(
     authority.derivationLocator === null
   )
     throw new Error("browser V2 proof backup authority is foreign");
-  if (asset.kind === "ctf") requireCtfKeyset(row, asset, keysets);
+  if (asset.kind === "ctf") {
+    const keyset = keysets.get(row.keysetId);
+    if (keyset === undefined) {
+      if (
+        row.selectability !== "verified-losing" ||
+        row.conditionId !== asset.conditionId ||
+        row.outcomeCollection !== asset.outcomeLabel
+      )
+        throw new Error("browser V2 conditional keyset is missing");
+    } else requireCtfKeyset(row, asset, keysets);
+  }
   return Object.freeze({
     mintUrl: row.normalizedMint,
     unit: row.unit,
@@ -341,9 +714,11 @@ function verifyCtfKeyset(
 function counterMarks(
   desired: EncryptedWalletBackupV2DesiredAssetRow,
   proofs: readonly EncryptedWalletBackupV2ProofSetProof[],
+  rows: readonly ReturnType<typeof decodeBrowserCustodyProofRow>[],
   keysetIds: readonly string[],
   associations: readonly (import("./proof-db").BrowserWalletCounterAssociationRow | undefined)[],
   cursors: readonly (import("./proof-db").BrowserWalletCounterCursorRow | undefined)[],
+  allowKeysetFreeSealed: boolean,
 ) {
   const highestNut13Counter = new Map<string, number>();
   for (const proof of proofs) {
@@ -353,9 +728,16 @@ function counterMarks(
       Math.max(highestNut13Counter.get(proof.proof.id) ?? -1, proof.locator.counter),
     );
   }
-  return keysetIds.map((keysetId, index) => {
+  const sealedOnly =
+    rows.length > 0 && rows.every(({ selectability }) => selectability === "verified-losing");
+  const allowMissingPair = allowKeysetFreeSealed && sealedOnly;
+  return keysetIds.flatMap((keysetId, index) => {
     const association = associations[index];
     const cursor = cursors[index];
+    // Range locators do not allocate NUT-13 counters. Do not invent a cursor
+    // for them, but retain existing cursor authority for future NUT-13 use.
+    if (!highestNut13Counter.has(keysetId) && association === undefined && cursor === undefined)
+      return [];
     if (
       association === undefined ||
       cursor === undefined ||
@@ -364,21 +746,39 @@ function counterMarks(
       association.unit !== desired.unit ||
       association.keysetId !== keysetId ||
       cursor.scopeId !== desired.scopeId ||
-      cursor.keysetId !== keysetId ||
-      association.recoveryComplete !== true ||
-      cursor.next < 0 ||
-      cursor.next > 2_147_483_648
-    )
+      cursor.keysetId !== keysetId
+    ) {
+      if (allowMissingPair) return [];
+      throw new Error("browser V2 counter authority is missing");
+    }
+    if (association.recoveryComplete !== true || cursor.next < 0 || cursor.next > 2_147_483_648)
       throw new Error("browser V2 counter authority is missing");
     if ((highestNut13Counter.get(keysetId) ?? -1) >= cursor.next)
       throw new Error("browser V2 NUT-13 locator is ahead of its cursor");
-    return Object.freeze({
-      mintUrl: desired.mintUrl,
-      unit: backupUnit(desired.unit),
-      keysetId,
-      nextCounter: cursor.next,
-    });
+    return [
+      Object.freeze({
+        mintUrl: desired.mintUrl,
+        unit: backupUnit(desired.unit),
+        keysetId,
+        nextCounter: cursor.next,
+      }),
+    ];
   });
+}
+
+function mergeCounterHighWaterMarks(
+  local: readonly EncryptedWalletBackupV2CounterHighWaterMark[],
+  remote: readonly EncryptedWalletBackupV2CounterHighWaterMark[],
+): readonly EncryptedWalletBackupV2CounterHighWaterMark[] {
+  const marks = new Map<string, EncryptedWalletBackupV2CounterHighWaterMark>();
+  for (const mark of [...local, ...remote]) {
+    const identity = JSON.stringify([mark.mintUrl, mark.unit, mark.keysetId]);
+    const current = marks.get(identity);
+    if (current === undefined || mark.nextCounter > current.nextCounter) {
+      marks.set(identity, mark);
+    }
+  }
+  return [...marks.values()];
 }
 
 function backupUnit(value: string): "sat" | "msat" {
