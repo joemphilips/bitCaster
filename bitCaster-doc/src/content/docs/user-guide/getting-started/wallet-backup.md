@@ -97,6 +97,14 @@ the service accepts a wallet update. An updating or unavailable value does
 not mean that funds are lost. Positions without a known price remain visible.
 Use the wallet's payment or trade flow to check which funds it can spend.
 
+During portfolio updates or an unfinished claim, the app can keep the last
+successful value estimate on screen. It marks that estimate as out of date.
+The estimate is not an amount available to spend. The app keeps it only in
+memory. Reloading the page, changing the wallet, or changing the signed-in
+account clears it. An unavailable initial value does not become a saved
+estimate. Claim progress comes from the wallet's current operation, not from
+the saved estimate.
+
 ## Web app restore order
 
 When the web app needs proofs for one asset, it uses this order:
@@ -156,6 +164,20 @@ be identified or deleted in this release. It continues to use part of the
 storage allowance. Keep every phrase for a wallet you may want to reopen.
 
 ## Use the same wallet in another browser
+
+The app shows **Preparing wallet backup** while it checks your backup.
+The deposit and top-up screens show this message where you enter an amount.
+Wait for the check to finish before you create an invoice or add ecash.
+You do not need to keep clicking the action button.
+If another tab uses the wallet, close that tab when you no longer need it.
+
+If backup stops, select **Retry wallet backup** in the same screen.
+Retry keeps your amount, local funds, and unfinished work.
+It does not create or submit an invoice.
+After backup is ready, select the action button to continue.
+If the message asks you to sign in, sign in or reload the page if you are already signed in.
+This check does not require sign-in when backup is disabled or the wallet has no backup enrollment.
+Retry does not guarantee that backup or recovery can finish.
 
 A fresh browser restores and checks the wallet's current encrypted backup
 before it enables wallet actions or uploads new backup data. You can read the

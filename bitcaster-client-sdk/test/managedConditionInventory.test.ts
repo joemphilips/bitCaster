@@ -14,6 +14,8 @@ import {
   prepareDlcConditionResolutionEvidence,
   startManagedConditionInventoryRetirement,
   verifyDlcConditionResolution,
+  verifyDlcOracleResolution,
+  type DlcOracleResolutionAuthority,
   type DlcConditionResolutionEvidence,
   type ManagedConditionInventoryBinding,
   type ManagedConditionInventoryQuiescence,
@@ -83,6 +85,54 @@ test('SDK verifies and binds exact DLC resolution evidence', () => {
   const persisted = persistVerifiedConditionResolution(verified)
   assert.equal(Object.getOwnPropertySymbols(persisted).length, 0)
   assert.equal(persisted.evidenceFingerprint, verified.evidenceFingerprint)
+})
+
+test('oracle verification needs no custody scope and returns no spending authority', () => {
+  const evidence = resolutionEvidence()
+  const { outcomes, threshold, oracles } = registeredAuthority(evidence)
+  const authority = { outcomes, threshold, oracles }
+
+  assert.equal(verifyDlcOracleResolution(authority, evidence), undefined)
+  assert.equal(verifyDlcOracleResolution(authority, evidence), undefined)
+})
+
+test('oracle-only verification rejects foreign outcomes, keys, nonces, and invalid signatures', () => {
+  const evidence = resolutionEvidence()
+  const { outcomes, threshold, oracles } = registeredAuthority(evidence)
+  const authority = { outcomes, threshold, oracles }
+  const cases: readonly [DlcOracleResolutionAuthority, DlcConditionResolutionEvidence, RegExp][] = [
+    [{ ...authority, outcomes: ['YES'] }, evidence, /outcome list is invalid/],
+    [{ ...authority, outcomes: ['Alpha', 'Beta'] }, evidence, /outcome is foreign/],
+    [authority, { ...evidence, resolvedOutcome: 'NO' }, /signature is invalid/],
+    [
+      { ...authority, oracles: [{ ...oracles[0]!, noncePoint: '11'.repeat(32) }] },
+      evidence,
+      /signature is invalid/,
+    ],
+    [
+      authority,
+      {
+        ...evidence,
+        attestations: [
+          {
+            oraclePublicKey: SECOND_ORACLE_PUBLIC_KEY,
+            signature: signOutcome('YES', SECOND_PRIVATE_KEY),
+          },
+        ],
+      },
+      /oracle is foreign/,
+    ],
+    [
+      authority,
+      { ...evidence, attestations: [{ ...evidence.attestations[0]!, signature: '00'.repeat(64) }] },
+      /signature is invalid/,
+    ],
+    [{ ...authority, threshold: 2 }, evidence, /threshold is invalid/],
+  ]
+
+  for (const [registered, input, expected] of cases) {
+    assert.throws(() => verifyDlcOracleResolution(registered, input), expected)
+  }
 })
 
 test('SDK canonicalizes the mint oracle witness before verification and persistence', () => {
@@ -167,6 +217,7 @@ test('DLC resolution uses the independently restored oracle threshold', () => {
     () => verifyDlcConditionResolution(binding, registered, evidence),
     /threshold is not met/,
   )
+  assert.throws(() => verifyDlcOracleResolution(registered, evidence), /threshold is not met/)
   assert.doesNotThrow(() =>
     verifyDlcConditionResolution(binding, registered, {
       ...evidence,
@@ -221,6 +272,8 @@ test('SDK accepts the CDK and engine DLC attestation parity fixture', () => {
     ],
   })
   const verified = verifyDlcConditionResolution(binding, registered, evidence)
+
+  assert.equal(verifyDlcOracleResolution(registered, evidence), undefined)
 
   assert.equal(verified.conditionId, conditionId)
   assert.equal(verified.resolvedOutcome, 'Yes')

@@ -366,6 +366,11 @@ test('daemon range coordinator stages and applies the exact result across crash 
   try {
     const operation = createRangeOperation()
     const binding = await createRangeBinding(walletScope(fixture.walletScopeId), operation)
+    const pendingOperation = createRangeOperation('pending')
+    const pendingBinding = await createRangeBinding(
+      walletScope(fixture.walletScopeId),
+      pendingOperation,
+    )
     const custodyOperationId = binding.record.operation.operationId
     const fence = await claimCustodyScopeLease(fixture.directory, {
       scopeId: fixture.walletScopeId,
@@ -373,9 +378,15 @@ test('daemon range coordinator stages and applies the exact result across crash 
       observedAtMs: 2,
     })
     await seedInputProofs(fixture.directory, fence, operation, binding)
+    await seedInputProofs(fixture.directory, fence, pendingOperation, pendingBinding)
     const coordinator = new DaemonCtfRangeCoordinator(fixture.directory, fence)
     await coordinator.bind({
       binding,
+      proofStateClient: unspentProofStateClient(),
+      observedAtMs: 3,
+    })
+    await coordinator.bind({
+      binding: pendingBinding,
       proofStateClient: unspentProofStateClient(),
       observedAtMs: 3,
     })
@@ -386,7 +397,6 @@ test('daemon range coordinator stages and applies the exact result across crash 
       selection,
       signatures: signaturesFor(operation, selection),
     })
-    const recovery = recoveryFor(operation, selection)
     const resolveKeyset = rangeKeysetResolver(operation)
     const beforeStageRollback = await readRangeLifecycleSnapshot(
       fixture.directory,
@@ -500,6 +510,11 @@ test('daemon range coordinator stages and applies the exact result across crash 
       fixture.walletScopeId,
       custodyOperationId,
     )
+    assert.equal(
+      beforeApplyRollback.activeWork.length,
+      1,
+      'staged range must retain its recovery index',
+    )
 
     await assert.rejects(
       () =>
@@ -513,15 +528,18 @@ test('daemon range coordinator stages and applies the exact result across crash 
         }),
       /injected apply rollback/,
     )
+    const afterApplyRollback = await readRangeLifecycleSnapshot(
+      fixture.directory,
+      fixture.walletScopeId,
+      custodyOperationId,
+    )
     assert.equal(
-      isDeepStrictEqual(
-        await readRangeLifecycleSnapshot(
-          fixture.directory,
-          fixture.walletScopeId,
-          custodyOperationId,
-        ),
-        beforeApplyRollback,
-      ),
+      afterApplyRollback.activeWork.length,
+      1,
+      'apply rollback must restore the recovery index',
+    )
+    assert.equal(
+      isDeepStrictEqual(afterApplyRollback, beforeApplyRollback),
       true,
       'apply rollback must preserve the exact bounded lifecycle snapshot',
     )
@@ -552,6 +570,51 @@ test('daemon range coordinator stages and applies the exact result across crash 
     )
     const appliedDatabase = await openDaemonStateSqlite(fixture.directory)
     try {
+      const activeWorkCount = appliedDatabase
+        .prepare(
+          `SELECT count(*) AS count FROM custody_active_work
+           WHERE scope_id = ? AND operation_id = ?`,
+        )
+        .get(fixture.walletScopeId, custodyOperationId) as { count: number }
+      const lineageActiveWork = appliedDatabase
+        .prepare(
+          `SELECT EXISTS (
+             SELECT 1 FROM custody_proof_lineage AS lineage
+             JOIN custody_active_work AS work
+               ON work.scope_id = lineage.scope_id AND work.operation_id = lineage.operation_id
+             WHERE lineage.scope_id = ? AND lineage.operation_id = ?
+               AND lineage.lineage_kind = 'successor'
+           ) AS blocked`,
+        )
+        .get(fixture.walletScopeId, custodyOperationId) as { blocked: number }
+      assert.equal(activeWorkCount.count, 0, 'applied range must release its active recovery index')
+      assert.equal(lineageActiveWork.blocked, 0, 'applied successor lineage must not block Remove')
+      const pendingWork = appliedDatabase
+        .prepare(
+          `SELECT count(*) AS count FROM custody_active_work
+           WHERE scope_id = ? AND operation_id = ?`,
+        )
+        .get(fixture.walletScopeId, pendingBinding.record.operation.operationId) as {
+        count: number
+      }
+      assert.equal(pendingWork.count, 1, 'exact apply must preserve independent active work')
+      const pendingDependency = appliedDatabase
+        .prepare(
+          `SELECT EXISTS (
+             SELECT 1 FROM custody_operation_inputs AS input
+             JOIN custody_active_work AS work
+               ON work.scope_id = input.scope_id AND work.operation_id = input.operation_id
+             WHERE input.scope_id = ? AND input.operation_id = ?
+           ) AS blocked`,
+        )
+        .get(fixture.walletScopeId, pendingBinding.record.operation.operationId) as {
+        blocked: number
+      }
+      assert.equal(
+        pendingDependency.blocked,
+        1,
+        'genuine active inputs must retain the Remove dependency',
+      )
       for (const { proofId } of binding.record.operation.reservation.inputs) {
         const predecessor = new DurableCustodySqliteStore(appliedDatabase).getProof(
           fixture.walletScopeId,
@@ -976,9 +1039,9 @@ function walletScope(scopeId: string): DurableCustodyScope {
   }
 }
 
-function createRangeOperation(): DurableCtfRangeOperation {
+function createRangeOperation(suffix = '1'): DurableCtfRangeOperation {
   const seed = new Uint8Array(64).fill(7)
-  const operationId = 'daemon-range-operation-1'
+  const operationId = `daemon-range-operation-${suffix}`
   const manifest = createCtfRangeManifest({
     seed,
     operationId,
@@ -1003,8 +1066,8 @@ function createRangeOperation(): DurableCtfRangeOperation {
   }).map(signOutput)
   return createDurableCtfRangeOperation({
     operationId,
-    sourceOperationId: 'daemon-range-prepare-1',
-    authorizationId: 'daemon-range-authorization-1',
+    sourceOperationId: `daemon-range-prepare-${suffix}`,
+    authorizationId: `daemon-range-authorization-${suffix}`,
     mintUrl: 'https://mint.example',
     unit: 'msat',
     conditionId: CONDITION_ID,
@@ -1477,6 +1540,13 @@ async function readRangeLifecycleSnapshot(directory: string, scopeId: string, op
          ORDER BY input_position`,
       )
       .all(scopeId, operationId)
+    const activeWork = database
+      .prepare(
+        `SELECT next_attempt_at_ms AS nextAttemptAtMs, estimated_bytes AS estimatedBytes
+         FROM custody_active_work
+         WHERE scope_id = ? AND operation_id = ?`,
+      )
+      .all(scopeId, operationId)
     return {
       operation,
       artifacts,
@@ -1488,6 +1558,7 @@ async function readRangeLifecycleSnapshot(directory: string, scopeId: string, op
       successorAdmissions,
       admittedProofs,
       reservations,
+      activeWork,
     }
   } finally {
     database.close()

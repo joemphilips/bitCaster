@@ -1,6 +1,6 @@
 ---
-title: "Ecash"
-description: "What Cashu ecash is and how bitCaster uses sat-denominated conditional tokens."
+title: 'Ecash'
+description: 'What Cashu ecash is and how bitCaster uses sat-denominated conditional tokens.'
 sidebar:
   order: 0
 ---
@@ -51,6 +51,58 @@ share it only with the intended recipient.
 Adding funds to your wallet is not the same as funding a market's bot.
 [Bot funding](/user-guide/core-concepts/funding-bot-liquidity/) is a separate,
 non-refundable subsidy. It does not add to your spendable wallet balance.
+
+## Receive a Cashu payment request in the CLI
+
+Start the configured daemon, then create a request:
+
+```bash
+bitcaster-cli wallet request create
+```
+
+Share the returned `encoded` value with the sender.
+The request has no fixed amount. It accepts msat tokens from the configured mint.
+The receive address belongs to the wallet seed, not the Nostr login key.
+The CLI receives these requests; it does not pay a scanned request.
+
+Use the returned `requestId` to check progress:
+
+```bash
+bitcaster-cli wallet request status <request-id>
+bitcaster-cli wallet request watch <request-id>
+```
+
+`awaiting` means that no receipt is saved.
+`pending` means that receipt processing is incomplete.
+Only `credited` confirms that the wallet applied the receipt.
+The result's `amountMsat` field uses msat, not sats.
+A saved receipt or a delivered Nostr message alone is not a completed payment.
+
+Press Ctrl+C to stop watching. This does not cancel the saved request or the
+daemon's receiver. Keep the daemon running to receive payments.
+A restart resumes saved requests after wallet recovery permits new operations.
+
+To list saved requests or retry an incomplete receipt, use:
+
+```bash
+bitcaster-cli wallet request list --page-size 32
+bitcaster-cli wallet request list --cursor <nextCursor> --page-size 32
+bitcaster-cli wallet request recover <request-id>
+```
+
+Pass `nextCursor` unchanged. Stop when it is `null`.
+`recover` reuses the saved receipt and wallet recovery records.
+It does not create another request or guarantee that the mint is available.
+Keep the native wallet profile while an operation is pending.
+
+## Mint fees
+
+The mint charges an input fee when it consumes proofs. The fee depends on
+the number of proofs and the rate attached to each proof's keyset. Ordinary
+ecash and conditional tokens can both have input fees. Existing proofs keep
+their original rate when the mint changes the rate for new keysets.
+Check the wallet's estimate before you confirm. Separate preparation steps
+can each incur a fee, even if a later order does not complete.
 
 ## Trust model
 

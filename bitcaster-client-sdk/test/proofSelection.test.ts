@@ -9,7 +9,21 @@ import {
 } from '../src/proofSelection.ts'
 
 test('computeInputFeeSubunitsFromPpk returns NUT-02 proof-count fee in keyset subunits', () => {
-  assert.equal(computeInputFeeSubunitsFromPpk(10 * 1), 1)
+  for (const [totalPpk, expectedSubunits] of [
+    [0, 0],
+    [10, 1],
+    [1_000, 1],
+    [2_000, 2],
+    [2_001, 3],
+  ] as const) {
+    assert.equal(computeInputFeeSubunitsFromPpk(totalPpk), expectedSubunits)
+  }
+})
+
+test('computeInputFeeSubunitsForProofs retains current and historical keyset fees', () => {
+  const proof = (id: string, secret: string) => ({ amount: 8, id, secret, C: secret })
+  const inputs = [proof('current', 'a'), proof('current', 'b'), proof('historical', 'c')]
+  assert.equal(computeInputFeeSubunitsForProofs(inputs, { current: 1_000, historical: 1 }), 3)
 })
 
 test('sumProofs rejects an unsafe amount sum', () => {

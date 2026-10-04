@@ -18,6 +18,8 @@ public interface IMarketHubClient
 
     Task ConfirmedTradeRecorded(ConfirmedTradeRecordedMessage message);
 
+    Task MarketCommentsChanged(MarketCommentsChangedMessage message);
+
     Task MarketFundingUpdated(MarketFundingUpdatedMessage message);
 
     /// <summary>
@@ -58,6 +60,14 @@ public sealed record MatchedDelta(
 public sealed record ConfirmedTradeRecordedMessage(
     string ConditionId,
     LatestConfirmedTrade LatestConfirmedTrade);
+
+/// <summary>
+/// A committed comment invalidates the condition's comment snapshot.
+/// EventOrder is an opaque source position. It does not prove snapshot readiness.
+/// </summary>
+public sealed record MarketCommentsChangedMessage(
+    string ConditionId,
+    string EventOrder);
 
 /// <summary>
 /// One committed cumulative market-funding observation. The revision is the

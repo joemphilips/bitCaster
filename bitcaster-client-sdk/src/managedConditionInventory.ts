@@ -51,6 +51,11 @@ export interface PersistedRegisteredDlcConditionAuthority extends ManagedConditi
   }[]
 }
 
+export type DlcOracleResolutionAuthority = Pick<
+  PersistedRegisteredDlcConditionAuthority,
+  'outcomes' | 'threshold' | 'oracles'
+>
+
 export interface PersistedVerifiedConditionResolution extends ManagedConditionInventoryBinding {
   readonly schemaVersion: 1
   readonly source: 'dlc-oracle-attestation'
@@ -146,10 +151,7 @@ export function verifyDlcConditionResolution(
   assertSameBinding(binding, authority)
   const exact = prepareResolutionEvidence(input)
   const evidence = decodeDlcEvidence(exact.artifact)
-  if (!authority.outcomes.includes(evidence.resolvedOutcome)) {
-    throw new Error('resolved outcome is foreign')
-  }
-  verifyAttestationThreshold(authority, evidence)
+  verifyOracleResolution(authority, evidence)
   return brandResolution({
     schemaVersion: 1,
     ...binding,
@@ -161,6 +163,15 @@ export function verifyDlcConditionResolution(
     authorityId: fingerprintAuthority(authority),
     evidenceFingerprint: exact.fingerprint,
   })
+}
+
+export function verifyDlcOracleResolution(
+  registered: DlcOracleResolutionAuthority,
+  input: DlcConditionResolutionEvidence,
+): void {
+  const authority = decodeOracleResolutionAuthority(registered)
+  const exact = prepareResolutionEvidence(input)
+  verifyOracleResolution(authority, decodeDlcEvidence(exact.artifact))
 }
 
 /** Decode and canonicalize the mint's enum-outcome oracle witness. */
@@ -457,18 +468,22 @@ function decodeRegisteredConditionAuthority(
   if (!record(value)) throw new Error('registered condition authority is invalid')
   exactKeys(value, REGISTERED_CONDITION_KEYS, 'registered condition authority')
   const binding = decodeManagedConditionInventoryBinding(value)
-  const outcomes = uniqueTexts(value.outcomes, 'condition outcome', OUTCOME_COUNT_MAX)
-  const oracles = decodeRegisteredOracles(value.oracles)
-  const threshold = positiveCount(value.threshold, 'oracle threshold')
-  if (threshold > oracles.length) throw new Error('oracle threshold is invalid')
   return {
     schemaVersion: schema(value.schemaVersion),
     ...binding,
     eventId: canonicalText(value.eventId, 'oracle event id'),
-    outcomes,
-    threshold,
-    oracles,
+    ...decodeOracleResolutionAuthority(value),
   }
+}
+
+function decodeOracleResolutionAuthority(value: unknown): DlcOracleResolutionAuthority {
+  if (!record(value)) throw new Error('registered oracle authority is invalid')
+  const outcomes = uniqueTexts(value.outcomes, 'condition outcome', OUTCOME_COUNT_MAX)
+  if (outcomes.length < 2) throw new Error('condition outcome list is invalid')
+  const oracles = decodeRegisteredOracles(value.oracles)
+  const threshold = positiveCount(value.threshold, 'oracle threshold')
+  if (threshold > oracles.length) throw new Error('oracle threshold is invalid')
+  return { outcomes, threshold, oracles }
 }
 
 function decodeRegisteredOracles(
@@ -506,10 +521,13 @@ function decodeAttestations(value: unknown): DlcConditionResolutionEvidence['att
   return result
 }
 
-function verifyAttestationThreshold(
-  registered: PersistedRegisteredDlcConditionAuthority,
+function verifyOracleResolution(
+  registered: DlcOracleResolutionAuthority,
   evidence: DlcConditionResolutionEvidence,
 ): void {
+  if (!registered.outcomes.includes(evidence.resolvedOutcome)) {
+    throw new Error('resolved outcome is foreign')
+  }
   const oracles = new Map(registered.oracles.map((oracle) => [oracle.oraclePublicKey, oracle]))
   const message = taggedHash('DLC/oracle/attestation/v0', utf8ToBytes(evidence.resolvedOutcome))
   let valid = 0

@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useMemo, useRef } from "react";
+import { useState, useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from "react";
 import { useLiveQuery } from "dexie-react-hooks";
 import {
   db,
@@ -46,6 +46,7 @@ import type {
   PortfolioMonitoringState,
 } from "@/types/portfolio";
 import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
+import { deriveDurableCustodyScopeId } from "@bitcaster/client-sdk/durableCustody";
 import { deriveWinner } from "@/lib/positionWinner";
 import type {
   AssetMonitoringAssetReference,
@@ -62,10 +63,12 @@ import {
   type PortfolioInvalidation,
 } from "@/lib/portfolioInvalidation";
 import { observePortfolioValuations } from "@/lib/marketHub";
+import { getNostrSignerRevision, subscribeToNostrSignerRevision } from "@/lib/nostr";
 
 const automaticPortfolioRefreshDelayMs = 10_000;
 const maximumBuildingPortfolioExtraReads = 3;
 type PortfolioPositionSnapshot = {
+  scopeId: string;
   positions: Position[];
   marketCatalogue: Map<string, MarketCatalogueEntry>;
 };
@@ -167,7 +170,8 @@ function outcomeDisplayColor(
     !market.outcomes.includes(outcomeCollection)
   )
     return undefined;
-  return market.outcomeDetails?.find((detail) => detail.name === outcomeCollection)?.color;
+  const color = market.outcomeDetails?.find((detail) => detail.name === outcomeCollection)?.color;
+  return typeof color === "string" ? color : undefined;
 }
 
 export function enrichPositionWithCatalogue(
@@ -435,7 +439,7 @@ export function mapMonitoringPortfolio(response: AssetMonitoringPortfolioRespons
   chart: PLChartDataPoint[];
   monitoring: Omit<
     PortfolioMonitoringState,
-    "error" | "assetPageError" | "hasMoreAssets" | "loadingMoreAssets"
+    "error" | "assetPageError" | "hasMoreAssets" | "loadingMoreAssets" | "retainingDisplay"
   >;
 } {
   const positions = response.assets.assets
@@ -528,6 +532,16 @@ export function usePortfolioState(): PortfolioState & {
     value: AssetMonitoringPortfolioResponse;
   } | null>(null);
   const [monitoringError, setMonitoringError] = useState<"unavailable" | null>(null);
+  // One bounded first-page response, for display only. Never retain local actions or proofs.
+  const [lastCompleteDisplay, setLastCompleteDisplay] = useState<{
+    scopeKey: string;
+    value: AssetMonitoringPortfolioResponse;
+  } | null>(null);
+  const signerRevision = useSyncExternalStore(
+    subscribeToNostrSignerRevision,
+    getNostrSignerRevision,
+    getNostrSignerRevision,
+  );
   const [loadingMonitoringKey, setLoadingMonitoringKey] = useState<string | null>(null);
   const [monitoringAssets, setMonitoringAssets] = useState<{
     key: string;
@@ -585,13 +599,27 @@ export function usePortfolioState(): PortfolioState & {
   const storeMints = useWalletStore((s) => s.mints);
   const walletMnemonic = useWalletStore((s) => s.mnemonic);
   const walletId = useMemo(() => browserWalletIdFromMnemonic(walletMnemonic), [walletMnemonic]);
+  const walletScopeId = useMemo(
+    () =>
+      walletId === null ? null : deriveDurableCustodyScopeId({ scopeKind: "wallet", walletId }),
+    [walletId],
+  );
+  const displayScopeKey =
+    walletState === "ready" && walletId !== null
+      ? `${walletId}:${signerRevision}:${nostrProfile?.pubkey ?? ""}`
+      : null;
   const activity = useMemo(
     () => activityItems.filter((item) => walletId !== null && item.walletId === walletId),
     [activityItems, walletId],
   );
-  const monitoringKey =
-    walletState === "ready" && walletId !== null ? `${walletId}:${selectedTimeRange}` : null;
+  const monitoringKey = displayScopeKey !== null ? `${displayScopeKey}:${selectedTimeRange}` : null;
   const monitoringReady = monitoringResponse?.key === monitoringKey;
+  useEffect(() => {
+    setLastCompleteDisplay(null);
+    setMonitoringError(null);
+    setMonitoringUnavailable(false);
+    setLoadingMoreAssets(false);
+  }, [displayScopeKey]);
   const clearAutomaticRefreshTimer = useCallback(() => {
     if (automaticRefreshTimer.current !== null) {
       clearTimeout(automaticRefreshTimer.current);
@@ -735,6 +763,8 @@ export function usePortfolioState(): PortfolioState & {
       .then((value) => {
         if (
           activeMonitoringKey.current !== monitoringKey ||
+          getNostrSignerRevision() !== signerRevision ||
+          activeBrowserWalletScopeId() !== walletScopeId ||
           activeMonitoringRequest.current !== requestId ||
           activePortfolioRead.current !== read ||
           controller.signal.aborted
@@ -747,6 +777,19 @@ export function usePortfolioState(): PortfolioState & {
           return;
         }
         setMonitoringResponse({ key: monitoringKey, value });
+        if (
+          displayScopeKey !== null &&
+          !value.summary.building &&
+          !value.assets.building &&
+          !value.history.building &&
+          !value.summary.incomplete &&
+          !value.assets.incomplete &&
+          !value.history.incomplete &&
+          value.summary.estimatedTotalValueMsat !== null &&
+          value.summary.unvaluedAssetCount === 0
+        ) {
+          setLastCompleteDisplay({ scopeKey: displayScopeKey, value });
+        }
         setMonitoringAssets({
           key: monitoringKey,
           generation: requestId,
@@ -775,6 +818,8 @@ export function usePortfolioState(): PortfolioState & {
       .catch(() => {
         if (
           activeMonitoringKey.current !== monitoringKey ||
+          getNostrSignerRevision() !== signerRevision ||
+          activeBrowserWalletScopeId() !== walletScopeId ||
           activeMonitoringRequest.current !== requestId ||
           activePortfolioRead.current !== read ||
           controller.signal.aborted
@@ -815,6 +860,9 @@ export function usePortfolioState(): PortfolioState & {
     scheduleAutomaticPortfolioRefresh,
     selectedTimeRange,
     walletId,
+    displayScopeKey,
+    signerRevision,
+    walletScopeId,
   ]);
 
   const firstPageConditionIds = useMemo(() => {
@@ -898,6 +946,8 @@ export function usePortfolioState(): PortfolioState & {
       .then((page) => {
         if (
           activeMonitoringKey.current !== key ||
+          getNostrSignerRevision() !== signerRevision ||
+          activeBrowserWalletScopeId() !== walletScopeId ||
           activeMonitoringRequest.current !== generation ||
           activeAssetPageRequest.current !== requestId
         )
@@ -918,6 +968,8 @@ export function usePortfolioState(): PortfolioState & {
       .catch(() => {
         if (
           activeMonitoringKey.current !== key ||
+          getNostrSignerRevision() !== signerRevision ||
+          activeBrowserWalletScopeId() !== walletScopeId ||
           activeMonitoringRequest.current !== generation ||
           activeAssetPageRequest.current !== requestId
         )
@@ -927,6 +979,8 @@ export function usePortfolioState(): PortfolioState & {
       .finally(() => {
         if (
           activeMonitoringKey.current !== key ||
+          getNostrSignerRevision() !== signerRevision ||
+          activeBrowserWalletScopeId() !== walletScopeId ||
           activeMonitoringRequest.current !== generation ||
           activeAssetPageRequest.current !== requestId
         )
@@ -934,7 +988,7 @@ export function usePortfolioState(): PortfolioState & {
         assetPageInFlight.current = false;
         setLoadingMoreAssets(false);
       });
-  }, [loadingMoreAssets, visibleAssets, walletId]);
+  }, [loadingMoreAssets, visibleAssets, walletId, signerRevision, walletScopeId]);
 
   const positionsFromDb = useLiveQuery(
     async () => {
@@ -1063,24 +1117,28 @@ export function usePortfolioState(): PortfolioState & {
         };
         return enrichPositionWithCatalogue(position, market);
       });
-      return { positions, marketCatalogue: catalogue };
+      return { scopeId, positions, marketCatalogue: catalogue };
     },
     [monitoringReady, monitoringUnavailable, visibleMonitoringConditionIdsKey, walletMnemonic],
     undefined as PortfolioPositionSnapshot | undefined,
   );
-  const positions: Position[] = positionsFromDb?.positions ?? [];
-  const localPositionsUnavailable = positionsFromDb === undefined;
+  const currentLocalPositions =
+    positionsFromDb?.scopeId === walletScopeId ? positionsFromDb : undefined;
+  const positions: Position[] = currentLocalPositions?.positions ?? [];
+  const localPositionsUnavailable = currentLocalPositions === undefined;
   const fundsFromDb = useLiveQuery(
     async () => {
       const scopeId = browserWalletScopeIdFromMnemonic(walletMnemonic);
       if (scopeId === null || activeBrowserWalletScopeId() !== scopeId) return undefined;
-      return readCanonicalLocalFunds(scopeId, storeMints);
+      const funds = await readCanonicalLocalFunds(scopeId, storeMints);
+      return activeBrowserWalletScopeId() === scopeId ? { scopeId, funds } : undefined;
     },
     [storeMints, walletMnemonic],
-    undefined as (Fund & { mintName: string })[] | null | undefined,
+    undefined as { scopeId: string; funds: (Fund & { mintName: string })[] | null } | undefined,
   );
-  const localFunds: Fund[] = fundsFromDb ?? [];
-  const localFundsUnavailable = fundsFromDb == null;
+  const currentLocalFunds = fundsFromDb?.scopeId === walletScopeId ? fundsFromDb.funds : undefined;
+  const localFunds: Fund[] = currentLocalFunds ?? [];
+  const localFundsUnavailable = currentLocalFunds == null;
   const localStats = useMemo(() => computeStats(positions, localFunds), [positions, localFunds]);
   const visibleMonitoring =
     monitoringResponse?.key === monitoringKey && visibleAssets
@@ -1093,9 +1151,23 @@ export function usePortfolioState(): PortfolioState & {
           },
         })
       : null;
-  const funds = visibleMonitoring?.funds ?? localFunds;
-  const currentStats = visibleMonitoring?.stats
-    ? visibleMonitoring.stats
+  const cachedDisplay =
+    lastCompleteDisplay?.scopeKey === displayScopeKey ? lastCompleteDisplay : null;
+  const claimInProgress = positions.some((position) => position.claimRecoveryPending);
+  const valuesLoading = monitoringKey !== null && loadingMonitoringKey === monitoringKey;
+  const retainingDisplay =
+    cachedDisplay !== null &&
+    (valuesLoading ||
+      monitoringUnavailable ||
+      visibleMonitoring === null ||
+      visibleMonitoring.monitoring.building ||
+      claimInProgress);
+  const displayMonitoring = retainingDisplay
+    ? mapMonitoringPortfolio(cachedDisplay.value)
+    : visibleMonitoring;
+  const funds = displayMonitoring?.funds ?? localFunds;
+  const currentStats = displayMonitoring?.stats
+    ? displayMonitoring.stats
     : localFundsUnavailable || localPositionsUnavailable
       ? {
           ...localStats,
@@ -1104,29 +1176,42 @@ export function usePortfolioState(): PortfolioState & {
           positionsValueKnown: !localPositionsUnavailable && localStats.positionsValueKnown,
         }
       : localStats;
-  const valuesLoading = monitoringKey !== null && loadingMonitoringKey === monitoringKey;
   const stats = {
     ...currentStats,
-    totalValueLoading: valuesLoading,
-    positionsValueLoading: valuesLoading,
+    totalValueLoading: valuesLoading || claimInProgress,
+    positionsValueLoading: valuesLoading || claimInProgress,
   };
-  const visiblePositions = visibleMonitoring
+  const visiblePositions = displayMonitoring
     ? mergeMonitoringPositions(
-        visibleMonitoring.positions.map((position) =>
+        displayMonitoring.positions.map((position) =>
           enrichPositionWithCatalogue(
             position,
-            (positionsFromDb?.marketCatalogue ?? EMPTY_MARKET_CATALOGUE).get(position.marketId),
+            (currentLocalPositions?.marketCatalogue ?? EMPTY_MARKET_CATALOGUE).get(
+              position.marketId,
+            ),
           ),
         ),
         positions,
       )
     : positions;
   const plChartData = useMemo(() => {
-    if (!visibleMonitoring || stats.totalValueKnown === false) return EMPTY_PL_CHART_DATA;
-    return { ...EMPTY_PL_CHART_DATA, [selectedTimeRange]: visibleMonitoring.chart };
-  }, [selectedTimeRange, stats.totalValueKnown, visibleMonitoring]);
+    if (
+      !displayMonitoring ||
+      stats.totalValueKnown === false ||
+      (retainingDisplay && cachedDisplay?.value.history.timeframe !== selectedTimeRange)
+    )
+      return EMPTY_PL_CHART_DATA;
+    return { ...EMPTY_PL_CHART_DATA, [selectedTimeRange]: displayMonitoring.chart };
+  }, [
+    selectedTimeRange,
+    stats.totalValueKnown,
+    displayMonitoring,
+    retainingDisplay,
+    cachedDisplay,
+  ]);
   const monitoring: PortfolioMonitoringState = {
-    stale: visibleMonitoring?.monitoring.stale ?? false,
+    stale: retainingDisplay || (visibleMonitoring?.monitoring.stale ?? false),
+    retainingDisplay,
     incomplete: visibleMonitoring?.monitoring.incomplete ?? false,
     building: visibleMonitoring?.monitoring.building ?? false,
     unvaluedAssetCount: visibleMonitoring?.monitoring.unvaluedAssetCount ?? 0,

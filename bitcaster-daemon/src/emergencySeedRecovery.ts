@@ -340,6 +340,11 @@ async function selectRecoveryKeysets(
   ])
   const regular = decodeRegularKeysets(regularRaw, input.unit)
   const conditional = decodeConditionalKeysets(conditionalRaw, input.unit)
+  await store.assertRecoveryKeysetMintBindings({
+    walletScopeId: fence.scopeId,
+    mintUrl: input.mintUrl,
+    keysetIds: [...regular, ...conditional].map(({ id }) => id),
+  })
   assertListedRecoveryAuthority(highWaters, roster.keysetIds, regular, conditional)
   const rosterKeysetIds = new Set(roster.keysetIds)
   const eligibleConditional = conditional.filter(

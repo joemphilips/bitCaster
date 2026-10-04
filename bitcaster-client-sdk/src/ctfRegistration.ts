@@ -1,5 +1,73 @@
+import type { Proof, SerializedBlindedMessage, SerializedBlindedSignature } from '@cashu/cashu-ts'
 import { complementOutcomeSetId, parseOutcomeSetId } from './outcomeSets.ts'
 import { amountToNumber } from './proofSelection.ts'
+
+export const MAX_CONDITION_REGISTRATION_FEE_SUBUNITS = 1_000_000
+
+export interface CtfConditionRegistrationRequest {
+  tags: string[][]
+  announcementHex: string
+  collateral?: string
+  outcomeCollections?: readonly string[]
+  fee?: readonly Proof[]
+  outputs?: readonly SerializedBlindedMessage[]
+}
+
+export interface CtfConditionRegistrationResponse {
+  condition_id: string
+  keysets: Record<string, string>
+  change?: SerializedBlindedSignature[]
+}
+
+export class MintError extends Error {
+  readonly code: number
+  readonly detail: string
+
+  constructor(code: number, detail: string) {
+    super(`[Mint] ${detail}`)
+    this.name = 'MintError'
+    this.code = code
+    this.detail = detail
+  }
+}
+
+export async function registerCtfCondition(
+  params: CtfConditionRegistrationRequest,
+  options: { endpoint: string; fetch?: typeof globalThis.fetch },
+): Promise<CtfConditionRegistrationResponse> {
+  const response = await (options.fetch ?? globalThis.fetch)(options.endpoint, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      tags: params.tags,
+      announcements: [params.announcementHex],
+      ...(params.collateral ? { collateral: params.collateral } : {}),
+      ...(params.outcomeCollections ? { outcome_collections: params.outcomeCollections } : {}),
+      ...(params.fee ? { fee: params.fee.map(toWireAmountBearing) } : {}),
+      ...(params.outputs ? { outputs: params.outputs.map(toWireAmountBearing) } : {}),
+    }),
+  })
+  if (!response.ok) throw await parseConditionRegistrationError(response)
+  return response.json()
+}
+
+async function parseConditionRegistrationError(response: Response): Promise<MintError> {
+  let code = 0
+  let detail = `Failed to register condition: ${response.status}`
+  try {
+    const text = await response.text()
+    try {
+      const body = JSON.parse(text)
+      code = typeof body.code === 'number' ? body.code : 0
+      detail = body.detail ?? body.message ?? text
+    } catch {
+      detail = text
+    }
+  } catch {
+    // A failed body read does not prove that the mint refused registration.
+  }
+  return new MintError(code, detail)
+}
 
 export type CtfDefaultKeysetCreation = 'none' | 'one-vs-rest' | 'all'
 

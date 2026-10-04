@@ -1,6 +1,6 @@
 ---
-title: "Atomic Settlement"
-description: "What happens after you submit a trade, and how to handle a delay."
+title: 'Atomic Settlement'
+description: 'What happens after you submit a trade, and how to handle a delay.'
 sidebar:
   order: 2
 ---
@@ -14,9 +14,11 @@ complete only one side of that exchange. This is what **atomic settlement** mean
 
 ## Before you confirm
 
-Review the quantity, price protection, and fees. Price protection limits the
-prices at which your order can trade. It does not remove wallet preparation or
-refund fees. Preparation can cost a fee even if no trade completes.
+Review the quantity, quoted trade value, and separate fees.
+The engine refuses a trade that costs more, or pays less, than the trade value
+you accepted. It also checks the accepted worst execution price.
+These limits do not remove wallet preparation or refund fees.
+Preparation can cost a fee even if no trade completes.
 
 To sell all your shares, keep some ordinary sats available for preparation
 fees. The wallet can pay those fees with sats instead of reducing the shares
@@ -24,7 +26,8 @@ you sell. The sale proceeds cannot pay this fee because preparation comes first.
 
 Both the web app and CLI use fill-or-kill (FOK) orders in this release. When the
 engine accepts the order, the available matching orders must cover its full
-quantity within its price protection. Otherwise, it cancels the whole order.
+quantity within the accepted trade-value and price limits. Otherwise, it cancels
+the whole order.
 It does not fill only part of your request or leave the rest waiting for a buyer
 or seller. A matching decision still needs settlement confirmation.
 

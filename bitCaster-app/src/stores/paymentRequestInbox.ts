@@ -2,11 +2,10 @@ import { create } from "zustand";
 import type { MarketBaseAsset } from "@bitcaster/client-sdk/marketUnits";
 
 /**
- * A received payment keyed by the originating PaymentRequest id.
- * Populated by the continuous NIP-17 listener; consumed by the
- * "Receive via request" view so the "Waiting…" → "Received" transition
- * survives reloads, navigation, and payments that arrive before the
- * view is mounted.
+ * The tab keeps received payments by PaymentRequest id in memory.
+ * The continuous NIP-17 listener updates this store.
+ * The Receive view can show payments that arrive before it mounts.
+ * Navigation keeps this state. A reload clears it.
  */
 export interface InboxEntry {
   id: string;

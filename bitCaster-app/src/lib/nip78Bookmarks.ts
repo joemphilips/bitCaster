@@ -9,39 +9,34 @@
  */
 
 import { NDKEvent, NDKPrivateKeySigner } from "@nostr-dev-kit/ndk";
-import { createExplicitRelayNdk, DEFAULT_RELAYS } from "./nostr";
+import {
+  BOOKMARK_KIND,
+  BOOKMARK_D_TAG,
+  bookmarkEventTemplate,
+  parseBookmarkPayload,
+} from "@bitcaster/client-sdk/bookmarks";
+import { withTemporaryRelayNdk, type RelayOperationOptions } from "./nostr";
 
-export const BOOKMARK_KIND = 30078 as const;
-export const BOOKMARK_D_TAG = "bitcaster:bookmarks" as const;
-
-interface BookmarkPayload {
-  markets: string[];
-}
+export { BOOKMARK_KIND, BOOKMARK_D_TAG } from "@bitcaster/client-sdk/bookmarks";
 
 /**
  * Publish the user's current bookmark set as a NIP-78 replaceable event.
  * Uses a short-lived NDK instance so we don't keep extra relay connections
  * open on the shared singleton.
  */
-export async function publishBookmarks(privateKeyHex: string, marketIds: string[]): Promise<void> {
-  const ndk = createExplicitRelayNdk({
-    explicitRelayUrls: DEFAULT_RELAYS,
-    signer: new NDKPrivateKeySigner(privateKeyHex),
-  });
-  await ndk.connect();
+export async function publishBookmarks(
+  privateKeyHex: string,
+  marketIds: string[],
+  options: RelayOperationOptions = {},
+): Promise<void> {
+  await withTemporaryRelayNdk(options, new NDKPrivateKeySigner(privateKeyHex), async (ndk) => {
+    const event = new NDKEvent(
+      ndk,
+      bookmarkEventTemplate(marketIds, Math.floor(Date.now() / 1000)),
+    );
 
-  const event = new NDKEvent(ndk);
-  event.kind = BOOKMARK_KIND;
-  event.tags = [["d", BOOKMARK_D_TAG]];
-  event.content = JSON.stringify({ markets: marketIds } satisfies BookmarkPayload);
-
-  try {
     await event.publishReplaceable();
-  } finally {
-    for (const relay of ndk.pool.relays.values()) {
-      relay.disconnect();
-    }
-  }
+  });
 }
 
 /**
@@ -49,29 +44,19 @@ export async function publishBookmarks(privateKeyHex: string, marketIds: string[
  *
  * Returns `null` if no event exists or the content cannot be parsed.
  */
-export async function fetchBookmarks(pubkey: string): Promise<string[] | null> {
-  const ndk = createExplicitRelayNdk({ explicitRelayUrls: DEFAULT_RELAYS });
-  await ndk.connect();
-
-  try {
-    const event = await ndk.fetchEvent({
-      kinds: [BOOKMARK_KIND as number],
-      authors: [pubkey],
-      "#d": [BOOKMARK_D_TAG],
-    });
-    if (!event) return null;
-    try {
-      const parsed = JSON.parse(event.content) as Partial<BookmarkPayload>;
-      if (Array.isArray(parsed.markets) && parsed.markets.every((m) => typeof m === "string")) {
-        return parsed.markets;
-      }
-      return null;
-    } catch {
-      return null;
-    }
-  } finally {
-    for (const relay of ndk.pool.relays.values()) {
-      relay.disconnect();
-    }
-  }
+export async function fetchBookmarks(
+  pubkey: string,
+  options: RelayOperationOptions = {},
+): Promise<string[] | null> {
+  return (
+    (await withTemporaryRelayNdk(options, undefined, async (ndk) => {
+      const event = await ndk.fetchEvent({
+        kinds: [BOOKMARK_KIND as number],
+        authors: [pubkey],
+        "#d": [BOOKMARK_D_TAG],
+      });
+      if (!event) return null;
+      return parseBookmarkPayload(event.content);
+    })) ?? null
+  );
 }

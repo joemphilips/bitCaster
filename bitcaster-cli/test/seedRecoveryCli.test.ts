@@ -16,8 +16,10 @@ test('recover-seed accepts only acknowledged owner-private seed-file input', asy
         daemon: {
           engineUrl: 'http://localhost:5000',
           mintUrl: 'http://localhost:8085',
+          mintUrls: ['http://localhost:8085'],
           autoRetireResolvedConditionInventory: false,
           assetMonitoringEnabled: false,
+          nostrRelays: [],
         },
         cli: { trustedEngineUrls: [] },
       })}\n`,
@@ -112,8 +114,10 @@ test('recover-seed rejects the sat product unit', async () => {
         daemon: {
           engineUrl: 'http://localhost:5000',
           mintUrl: 'http://localhost:8085',
+          mintUrls: ['http://localhost:8085'],
           autoRetireResolvedConditionInventory: false,
           assetMonitoringEnabled: false,
+          nostrRelays: [],
         },
         cli: { trustedEngineUrls: [] },
       })}\n`,

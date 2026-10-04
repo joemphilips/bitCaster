@@ -1,12 +1,17 @@
 import { useEffect, useRef, useState } from "react";
-import { fetchNip78CreatorMarkets, publishNip78CreatorMarkets } from "@/lib/nip78CreatorMarkets";
+import {
+  fetchNip78CreatorMarkets,
+  publishNip78CreatorMarkets,
+  publicCreatorMarketsEqual,
+} from "@/lib/nip78CreatorMarkets";
 import { resolveNsecIdentity } from "@/lib/identityOps";
 import {
-  creatorMarketsEqual,
+  mergeCreatorMarket,
   useCreatorMarketsStore,
   type StoredCreatorMarket,
 } from "./creatorMarkets";
 import { useSettingsStore } from "./settings";
+import { effectiveRelayUrls } from "@/lib/relayDefaults";
 
 const PUBLISH_DEBOUNCE_MS = 800;
 
@@ -22,9 +27,7 @@ function mergeCreatorMarkets(
   const byId = new Map<string, StoredCreatorMarket>();
   for (const m of [...a, ...b]) {
     const existing = byId.get(m.conditionId);
-    if (!existing || existing.createdAt < m.createdAt) {
-      byId.set(m.conditionId, m);
-    }
+    byId.set(m.conditionId, existing ? mergeCreatorMarket(existing, m) : m);
   }
   return Array.from(byId.values()).sort((x, y) =>
     x.createdAt < y.createdAt ? 1 : x.createdAt > y.createdAt ? -1 : 0,
@@ -47,6 +50,8 @@ function mergeCreatorMarkets(
 export function useCreatorSync(): void {
   const nostrSignerMode = useSettingsStore((s) => s.nostrSignerMode);
   const nsecSecret = useSettingsStore((s) => s.nsecSecret);
+  const relaySelectionKey = useSettingsStore((s) => JSON.stringify(s.relays.map(({ url }) => url)));
+  const relays = effectiveRelayUrls(useSettingsStore.getState().relays);
   const markets = useCreatorMarketsStore((s) => s.markets);
   const replace = useCreatorMarketsStore((s) => s.replace);
   const [initialSyncDone, setInitialSyncDone] = useState(false);
@@ -58,15 +63,17 @@ export function useCreatorSync(): void {
     setInitialSyncDone(false);
     lastPublished.current = null;
     keysRef.current = null;
-    if (nostrSignerMode !== "nsec") return;
+    if (nostrSignerMode !== "nsec" || relays.length === 0) return;
 
     const keys = resolveNsecIdentity(nsecSecret);
     if (!keys) return;
     keysRef.current = keys;
 
     let cancelled = false;
+    const controller = new AbortController();
+    const options = { relays, signal: controller.signal };
     void (async () => {
-      const remote = await fetchNip78CreatorMarkets(keys.publicKey).catch(() => null);
+      const remote = await fetchNip78CreatorMarkets(keys.publicKey, options).catch(() => null);
       if (cancelled) return;
 
       const local = useCreatorMarketsStore.getState().markets;
@@ -75,7 +82,7 @@ export function useCreatorSync(): void {
         lastPublished.current = [...local];
         setInitialSyncDone(true);
         if (local.length > 0) {
-          await publishNip78CreatorMarkets(keys.privateKeyHex, local).catch(() => {});
+          await publishNip78CreatorMarkets(keys.privateKeyHex, local, options).catch(() => {});
         }
         return;
       }
@@ -87,28 +94,36 @@ export function useCreatorSync(): void {
 
       const remoteIds = new Set(remote.map((m) => m.conditionId));
       const remoteHasAll = local.every((m) => remoteIds.has(m.conditionId));
-      if (!remoteHasAll || !creatorMarketsEqual(remote, merged)) {
-        await publishNip78CreatorMarkets(keys.privateKeyHex, merged).catch(() => {});
+      if (!remoteHasAll || !publicCreatorMarketsEqual(remote, merged)) {
+        await publishNip78CreatorMarkets(keys.privateKeyHex, merged, options).catch(() => {});
       }
     })();
 
     return () => {
       cancelled = true;
+      controller.abort();
     };
-  }, [nostrSignerMode, nsecSecret, replace]);
+  }, [nostrSignerMode, nsecSecret, replace, relaySelectionKey]);
 
   // Publish to relays whenever the local set changes after the initial sync.
   useEffect(() => {
-    if (nostrSignerMode !== "nsec" || !initialSyncDone) return;
+    if (nostrSignerMode !== "nsec" || !initialSyncDone || relays.length === 0) return;
     const keys = keysRef.current;
     if (!keys) return;
-    if (lastPublished.current && creatorMarketsEqual(lastPublished.current, markets)) return;
+    if (lastPublished.current && publicCreatorMarketsEqual(lastPublished.current, markets)) return;
 
     const snapshot = [...markets];
+    const controller = new AbortController();
     const handle = setTimeout(() => {
       lastPublished.current = snapshot;
-      publishNip78CreatorMarkets(keys.privateKeyHex, snapshot).catch(() => {});
+      publishNip78CreatorMarkets(keys.privateKeyHex, snapshot, {
+        relays,
+        signal: controller.signal,
+      }).catch(() => {});
     }, PUBLISH_DEBOUNCE_MS);
-    return () => clearTimeout(handle);
-  }, [nostrSignerMode, markets, initialSyncDone]);
+    return () => {
+      clearTimeout(handle);
+      controller.abort();
+    };
+  }, [nostrSignerMode, markets, initialSyncDone, relaySelectionKey]);
 }

@@ -73,10 +73,19 @@ test('order lifecycle connection rejoins tracked orders after reconnect', async 
 
   let reconnects = 0
   const errors: string[] = []
+  const receipts: import('../src/orderTimeline.ts').OrderTimelineObservation[] = []
+  const callbackOrders: string[] = []
   try {
     const connection = new SignalROrderLifecycleConnection({
       engineBaseUrl: 'https://engine.example',
       nostrSecretKeyHex: '1'.repeat(64),
+      observeOrderTimeline: (observation) => {
+        receipts.push(observation)
+        throw new Error('observer unavailable')
+      },
+      onSettlementGroupStateChanged: (delta) => {
+        callbackOrders.push(delta.orderId)
+      },
       onReconnected: () => {
         reconnects += 1
       },
@@ -94,6 +103,37 @@ test('order lifecycle connection rejoins tracked orders after reconnect', async 
       ['JoinOrder', 'condition-YES', 'order-1'],
       ['JoinOrder', 'condition-NO', 'order-2'],
     ])
+    const notify = fake.handlers.get('SettlementGroupStateChanged')!
+    for (const orderId of [
+      '11111111-1111-4111-8111-111111111111',
+      '22222222-2222-4222-8222-222222222222',
+    ]) {
+      notify({
+        orderId,
+        marketId: 'condition-YES',
+        settlementGroup: {
+          groupId: '33333333-3333-4333-8333-333333333333',
+          status: 'Confirmed',
+          revision: 2,
+          coalescingDeadline: '2026-08-01T00:00:00.000Z',
+          frozenAt: '2026-08-01T00:00:01.000Z',
+        },
+      })
+    }
+    await waitFor(() => callbackOrders.length === 2)
+    assert.deepEqual(
+      receipts.map(({ orderId }) => orderId),
+      callbackOrders,
+    )
+    assert.equal(
+      receipts.every(
+        ({ groupId, groupRevision, operationId }) =>
+          groupId === '33333333-3333-4333-8333-333333333333' &&
+          groupRevision === 2 &&
+          operationId === null,
+      ),
+      true,
+    )
 
     fake.failingOrderId = 'order-1'
     await fake.reconnected?.()
@@ -109,6 +149,10 @@ test('order lifecycle connection rejoins tracked orders after reconnect', async 
       'automatic reconnect exhausted',
       'join failed for order-1',
     ])
+    notify({ orderId: 'malformed' })
+    await waitFor(() => errors.length === 4)
+    assert.equal(receipts.length, 2)
+    assert.equal(callbackOrders.length, 2)
 
     await connection.stop()
     await fake.closed?.()
@@ -120,6 +164,7 @@ test('order lifecycle connection rejoins tracked orders after reconnect', async 
 })
 
 class FakeHubConnection {
+  readonly handlers = new Map<string, (value: unknown) => void>()
   readonly invocations: unknown[][] = []
   startCalls = 0
   failingOrderId: string | null = null
@@ -132,7 +177,9 @@ class FakeHubConnection {
 
   async stop(): Promise<void> {}
 
-  on(): void {}
+  on(name: string, callback: (value: unknown) => void): void {
+    this.handlers.set(name, callback)
+  }
 
   onreconnected(callback: () => void): void {
     this.reconnected = callback

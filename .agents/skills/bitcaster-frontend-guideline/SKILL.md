@@ -45,3 +45,14 @@ description: Apply bitCaster GUI behavior rules. Use this skill when you change 
 - Test reload reconstruction for durable failures.
 - Test the difference between order failure and funds recovery.
 - Add a parent E2E scenario for a user-visible real-stack failure when the change affects the complete flow.
+
+### Keep Mocked And E2E Tests Aligned
+
+- When frontend behavior or a mocked test expectation changes, inspect the corresponding frontend E2E scenario and its helpers.
+- Update affected E2E actions, selectors, and expected results in the same change.
+- Preserve the user-visible result. Do not weaken an assertion to hide a failure.
+- If no E2E change is needed, name the inspected scenario and give a short reason in the implementation handoff.
+- If no counterpart exists, state whether a real-stack scenario is needed. Do not add E2E coverage only for styling or copy.
+- Run focused frontend E2E cases when interaction, request mapping, signing, persistence, or subscriptions change.
+- Use component tests for presentation-only changes. Reserve the complete E2E suite for the workflow's final gate.
+- Report which tests ran. Do not claim that an unrun E2E case passed.

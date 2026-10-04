@@ -598,7 +598,7 @@ async function verifyBrowserEncryptedWalletBackupV2RestoredProofSet(
       seed: input.seed,
       expectedAsset: asset,
       unverified: restored.unverified,
-      port: restoreVerificationPort(input, loadWallet),
+      port: restoreVerificationPort(input, asset, loadWallet),
     });
     requireCurrent(input);
     return verified;
@@ -645,6 +645,7 @@ function classifyFailure(error: unknown): BrowserEncryptedWalletBackupV2FailureC
 
 function restoreVerificationPort(
   input: BrowserEncryptedWalletBackupV2RemoteInput,
+  asset: EncryptedWalletBackupV2AssetIdentity,
   loadWallet: () => Promise<CashuWallet>,
 ): EncryptedWalletBackupV2RestoreVerificationPort {
   return {
@@ -652,6 +653,10 @@ function restoreVerificationPort(
       requireCurrent(input);
       if (isBlsKeyset(keysetId)) throw new Error("browser V2 restore BLS keyset is unsupported");
       const wallet = await loadWallet();
+      if (asset.assetIdentity.startsWith("ctf:")) {
+        await wallet.keyChain.loadConditionalKeyset(keysetId);
+        requireCurrent(input);
+      }
       const keyset = wallet.getKeyset(keysetId);
       return {
         mintUrl,

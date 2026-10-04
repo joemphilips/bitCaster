@@ -89,215 +89,268 @@ afterEach(async () => {
 });
 
 describe("browser CTF explicit removal coordinator", () => {
-  it.each([1, 2])("starts and finalizes a %s-proof removal atomically", async (count) => {
-    const fixture = await createFixture(count);
-    const targets = [fixture.target(fixture.proofs[0]!.proofId)];
-    const targetIds = targets.map(({ proofId }) => proofId);
-    const input = fixture.input(targets);
+  it.each([
+    { count: 1, localClassification: false, staleExclusion: false },
+    { count: 2, localClassification: false, staleExclusion: false },
+    { count: 1, localClassification: true, staleExclusion: false },
+    { count: 2, localClassification: true, staleExclusion: false },
+    { count: 1, localClassification: true, staleExclusion: true },
+    { count: 2, localClassification: true, staleExclusion: true },
+  ])(
+    "requires exact acknowledgement for a $count-proof removal (local classification: $localClassification, stale exclusion: $staleExclusion)",
+    async ({ count, localClassification, staleExclusion }) => {
+      const fixture = await createFixture(count, localClassification);
+      const targets = [fixture.target(fixture.proofs[0]!.proofId)];
+      const targetIds = targets.map(({ proofId }) => proofId);
+      const input = fixture.input(targets);
 
-    await expect(startBrowserCtfRemove(input)).resolves.toMatchObject({ kind: "started" });
-    const started = await fixture.database.encryptedWalletBackupV2DesiredAssets.get([
-      fixture.scopeId,
-      fixture.desired.localAssetKey,
-    ]);
-    expect(started).toMatchObject({
-      custodyRevision: "2",
-      activeProofCount: count - 1,
-      desiredAction: count === 1 ? "remove" : "replace",
-      syncState: "pending",
-      removalIntent: { state: "pending", proofs: [{ proofId: targetIds[0] }] },
-    });
-    const target = fixture.proofs.find(({ proofId }) => proofId === targetIds[0]);
-    if (target === undefined) throw new Error("test target is missing");
-    const startedDecoded = decodeEncryptedWalletBackupV2DesiredAssetRow(started!);
-    const targetAuthorityRaw = await fixture.database.custodyProofBackupAuthorities.get([
-      fixture.scopeId,
-      target.proofId,
-    ]);
-    const targetAuthority =
-      targetAuthorityRaw === undefined
-        ? undefined
-        : requireBrowserLiveProofBackupAuthorityTableRow(targetAuthorityRaw, [
+      await expect(startBrowserCtfRemove(input)).resolves.toMatchObject({ kind: "started" });
+      const started = await fixture.database.encryptedWalletBackupV2DesiredAssets.get([
+        fixture.scopeId,
+        fixture.desired.localAssetKey,
+      ]);
+      expect(started).toMatchObject({
+        custodyRevision: "2",
+        activeProofCount: count - 1,
+        desiredAction: count === 1 ? "remove" : "replace",
+        syncState: "pending",
+        removalIntent: { state: "pending", proofs: [{ proofId: targetIds[0] }] },
+      });
+      const target = fixture.proofs.find(({ proofId }) => proofId === targetIds[0]);
+      if (target === undefined) throw new Error("test target is missing");
+      const startedDecoded = decodeEncryptedWalletBackupV2DesiredAssetRow(started!);
+      const targetAuthorityRaw = await fixture.database.custodyProofBackupAuthorities.get([
+        fixture.scopeId,
+        target.proofId,
+      ]);
+      const targetAuthority =
+        targetAuthorityRaw === undefined
+          ? undefined
+          : requireBrowserLiveProofBackupAuthorityTableRow(targetAuthorityRaw, [
+              fixture.scopeId,
+              target.proofId,
+            ]);
+      expect(startedDecoded.removalIntent?.proofs[0]?.proofCommitment).toBe(
+        targetAuthority?.backupRecordCommitment,
+      );
+      expect(startedDecoded.removalIntent?.proofs[0]?.proofCommitment).not.toBe(
+        target.proofFingerprint,
+      );
+      expect(
+        await fixture.database.custodyProofs.get([fixture.scopeId, target.proofId]),
+      ).toMatchObject({
+        revision: target.revision + 1,
+        selectability: "pending-removal",
+        reservationOperationId: null,
+      });
+      expect(
+        await fixture.database.proofs.get(storedProofFromCustodyRow(target).secret),
+      ).toBeUndefined();
+      expect(await fixture.database.custodyProofs.count()).toBe(count);
+
+      mocks.requireNewWritePermission.mockReset();
+      mocks.requireNewWritePermission.mockRejectedValue(new Error("new writes are refused"));
+      await expect(startBrowserCtfRemove(input)).resolves.toMatchObject({ kind: "resumed" });
+      expect(mocks.requireNewWritePermission).not.toHaveBeenCalled();
+      const originalTarget = targets[0]!;
+      await expect(
+        startBrowserCtfRemove({
+          ...input,
+          targets: [{ ...originalTarget, proofFingerprint: "ff".repeat(32) }],
+        }),
+      ).rejects.toThrow(/conflicts with pending intent/);
+      await expect(
+        startBrowserCtfRemove({
+          ...input,
+          targets: [{ ...originalTarget, proofRevision: originalTarget.proofRevision + 1 }],
+        }),
+      ).rejects.toThrow(/conflicts with pending intent/);
+      const conflict = fixture.proofs[count - 1]!.proofId;
+      if (count > 1) {
+        await expect(
+          startBrowserCtfRemove(fixture.input([fixture.target(conflict)])),
+        ).rejects.toThrow(/conflicts/);
+      }
+
+      const successor = await prepareEncryptedWalletBackupV2TransportBundle({
+        keyHandle: fixture.keyHandle,
+        asset: fixture.asset,
+        declaredAmount: BigInt(count - 1),
+        custodyRevision: 2n,
+        canonicalPayload: encodeCanonicalBackupCbor(["successor"]),
+        runtime: {
+          subtle: crypto.subtle,
+          getRandomValues: (target) => crypto.getRandomValues(target),
+        },
+      });
+      const successorHead = createEncryptedWalletBackupV2CurrentHead({
+        realm: REALM,
+        walletId: fixture.keyHandle.walletId,
+        enrollmentEpoch: 1,
+        headVersion: 2,
+        bundles: count === 1 ? [] : [successor.descriptor],
+      });
+      const successorEvidence = evidence(successorHead, count === 1 ? [] : [successor.descriptor]);
+      const desired = (await fixture.database.encryptedWalletBackupV2DesiredAssets.get([
+        fixture.scopeId,
+        fixture.desired.localAssetKey,
+      ]))!;
+      const decoded = JSON.parse(JSON.stringify(desired)) as typeof desired;
+      const intent = decoded.removalIntent!;
+      await fixture.store.acceptCompetingHead({
+        collectedHeadEvidence: successorEvidence,
+        stalePreparedMutation: { mutationId: "00".repeat(16), requestDigest: "00".repeat(32) },
+      });
+      await fixture.database.encryptedWalletBackupV2DesiredAssets.put({
+        ...decoded,
+        syncState: "acknowledged",
+        removalIntent: {
+          ...intent,
+          state: "exclusion-acknowledged",
+          acknowledgedExclusionEvidence:
+            count === 1
+              ? {
+                  kind: "current-head",
+                  headVersion: successorHead.headVersion,
+                  activeSetDigest: successorHead.activeSetDigest,
+                  bundleId: null,
+                  bundleDescriptorDigest: null,
+                  acknowledgedAtMs: 3_000,
+                }
+              : {
+                  kind: "receipt",
+                  headVersion: successorHead.headVersion,
+                  activeSetDigest: successorHead.activeSetDigest,
+                  receiptDigest: "cc".repeat(32),
+                  bundleId: successor.descriptor.bundleId,
+                  bundleDescriptorDigest: digestEncryptedWalletBackupV2BundleDescriptor(
+                    successor.descriptor,
+                  ),
+                  supersededBundleIds: [],
+                  acknowledgedAtMs: 3_000,
+                },
+        },
+      });
+
+      if (staleExclusion) {
+        const newerHead = createEncryptedWalletBackupV2CurrentHead({
+          realm: REALM,
+          walletId: fixture.keyHandle.walletId,
+          enrollmentEpoch: 1,
+          headVersion: successorHead.headVersion + 1,
+          bundles: count === 1 ? [] : [successor.descriptor],
+        });
+        await fixture.store.acceptCompetingHead({
+          collectedHeadEvidence: evidence(newerHead, count === 1 ? [] : [successor.descriptor]),
+          stalePreparedMutation: { mutationId: "00".repeat(16), requestDigest: "00".repeat(32) },
+        });
+        await expect(
+          finalizeBrowserCtfRemove({
+            ...input,
+            localAssetKey: fixture.desired.localAssetKey,
+            proofIds: targetIds,
+            observedAtMs: 3_001,
+          }),
+        ).rejects.toThrow(/accepted head evidence is stale/);
+        expect(
+          await fixture.database.custodyProofs.get([fixture.scopeId, target.proofId]),
+        ).toMatchObject({
+          proofBody: target.proofBody,
+          selectability: "pending-removal",
+        });
+        expect(
+          await fixture.database.custodyProofBackupAuthorities.get([
             fixture.scopeId,
             target.proofId,
-          ]);
-    expect(startedDecoded.removalIntent?.proofs[0]?.proofCommitment).toBe(
-      targetAuthority?.backupRecordCommitment,
-    );
-    expect(startedDecoded.removalIntent?.proofs[0]?.proofCommitment).not.toBe(
-      target.proofFingerprint,
-    );
-    expect(
-      await fixture.database.custodyProofs.get([fixture.scopeId, target.proofId]),
-    ).toMatchObject({
-      revision: 1,
-      selectability: "pending-removal",
-      reservationOperationId: null,
-    });
-    expect(
-      await fixture.database.proofs.get(storedProofFromCustodyRow(target).secret),
-    ).toBeUndefined();
-    expect(await fixture.database.custodyProofs.count()).toBe(count);
-
-    mocks.requireNewWritePermission.mockReset();
-    mocks.requireNewWritePermission.mockRejectedValue(new Error("new writes are refused"));
-    await expect(startBrowserCtfRemove(input)).resolves.toMatchObject({ kind: "resumed" });
-    expect(mocks.requireNewWritePermission).not.toHaveBeenCalled();
-    const originalTarget = targets[0]!;
-    await expect(
-      startBrowserCtfRemove({
-        ...input,
-        targets: [{ ...originalTarget, proofFingerprint: "ff".repeat(32) }],
-      }),
-    ).rejects.toThrow(/conflicts with pending intent/);
-    await expect(
-      startBrowserCtfRemove({
-        ...input,
-        targets: [{ ...originalTarget, proofRevision: originalTarget.proofRevision + 1 }],
-      }),
-    ).rejects.toThrow(/conflicts with pending intent/);
-    const conflict = fixture.proofs[count - 1]!.proofId;
-    if (count > 1) {
+          ]),
+        ).toMatchObject({
+          backupState: "remote-backed",
+          admissionOperationId: null,
+          backupRecordCommitment: targetAuthority!.backupRecordCommitment,
+          terminalAuthority: { kind: "local-operation" },
+        });
+        expect(await fixture.database.custodyProofs.count()).toBe(count);
+        return;
+      }
+      if (count === 1) {
+        await expect(
+          discoverBrowserCtfRemovals({
+            database: fixture.database,
+            scopeId: fixture.scopeId,
+            keyHandle: fixture.keyHandle,
+            enrollmentEpoch: 1,
+            lockManager: immediateLockManager,
+            isCurrentProfile: () => true,
+            observedAtMs: 3_001,
+          }),
+        ).resolves.toBe(1);
+      } else {
+        await expect(
+          finalizeBrowserCtfRemove({
+            ...input,
+            localAssetKey: fixture.desired.localAssetKey,
+            proofIds: targetIds,
+            observedAtMs: 3_001,
+          }),
+        ).resolves.toEqual({ kind: "completed" });
+      }
+      expect(
+        await fixture.database.custodyProofs.get([fixture.scopeId, target.proofId]),
+      ).toBeUndefined();
+      const completedAuthority = await fixture.database.custodyProofBackupAuthorities.get([
+        fixture.scopeId,
+        target.proofId,
+      ]);
+      expect(completedAuthority).toMatchObject({
+        recordKind: "completed-removal",
+        proofRevision: target.revision + 1,
+      });
+      expect(completedAuthority).toMatchObject({
+        proofCommitment: startedDecoded.removalIntent?.proofs[0]?.proofCommitment,
+      });
+      if (count === 1) {
+        expect(
+          await fixture.database.encryptedWalletBackupV2DesiredAssets.get([
+            fixture.scopeId,
+            fixture.desired.localAssetKey,
+          ]),
+        ).toBeUndefined();
+        await expect(startBrowserCtfRemove(input)).resolves.toMatchObject({ kind: "completed" });
+      } else {
+        expect(
+          await fixture.database.encryptedWalletBackupV2DesiredAssets.get([
+            fixture.scopeId,
+            fixture.desired.localAssetKey,
+          ]),
+        ).toMatchObject({ custodyRevision: "2", activeProofCount: 1, removalIntent: null });
+        const survivor = fixture.proofs.find(({ proofId }) => proofId !== targetIds[0]);
+        if (survivor === undefined) throw new Error("test survivor is missing");
+        expect(
+          await fixture.database.proofs.get(storedProofFromCustodyRow(survivor).secret),
+        ).toEqual(expect.any(Object));
+      }
+      await expect(startBrowserCtfRemove(input)).resolves.toMatchObject({ kind: "completed" });
       await expect(
-        startBrowserCtfRemove(fixture.input([fixture.target(conflict)])),
-      ).rejects.toThrow(/conflicts/);
-    }
-
-    const successor = await prepareEncryptedWalletBackupV2TransportBundle({
-      keyHandle: fixture.keyHandle,
-      asset: fixture.asset,
-      declaredAmount: BigInt(count - 1),
-      custodyRevision: 2n,
-      canonicalPayload: encodeCanonicalBackupCbor(["successor"]),
-      runtime: {
-        subtle: crypto.subtle,
-        getRandomValues: (target) => crypto.getRandomValues(target),
-      },
-    });
-    const successorHead = createEncryptedWalletBackupV2CurrentHead({
-      realm: REALM,
-      walletId: fixture.keyHandle.walletId,
-      enrollmentEpoch: 1,
-      headVersion: 2,
-      bundles: count === 1 ? [] : [successor.descriptor],
-    });
-    const successorEvidence = evidence(successorHead, count === 1 ? [] : [successor.descriptor]);
-    const desired = (await fixture.database.encryptedWalletBackupV2DesiredAssets.get([
-      fixture.scopeId,
-      fixture.desired.localAssetKey,
-    ]))!;
-    const decoded = JSON.parse(JSON.stringify(desired)) as typeof desired;
-    const intent = decoded.removalIntent!;
-    await fixture.store.acceptCompetingHead({
-      collectedHeadEvidence: successorEvidence,
-      stalePreparedMutation: { mutationId: "00".repeat(16), requestDigest: "00".repeat(32) },
-    });
-    await fixture.database.encryptedWalletBackupV2DesiredAssets.put({
-      ...decoded,
-      syncState: "acknowledged",
-      removalIntent: {
-        ...intent,
-        state: "exclusion-acknowledged",
-        acknowledgedExclusionEvidence:
-          count === 1
-            ? {
-                kind: "current-head",
-                headVersion: successorHead.headVersion,
-                activeSetDigest: successorHead.activeSetDigest,
-                bundleId: null,
-                bundleDescriptorDigest: null,
-                acknowledgedAtMs: 3_000,
-              }
-            : {
-                kind: "receipt",
-                headVersion: successorHead.headVersion,
-                activeSetDigest: successorHead.activeSetDigest,
-                receiptDigest: "cc".repeat(32),
-                bundleId: successor.descriptor.bundleId,
-                bundleDescriptorDigest: digestEncryptedWalletBackupV2BundleDescriptor(
-                  successor.descriptor,
-                ),
-                supersededBundleIds: [],
-                acknowledgedAtMs: 3_000,
-              },
-      },
-    });
-
-    if (count === 1) {
-      await expect(
-        discoverBrowserCtfRemovals({
-          database: fixture.database,
-          scopeId: fixture.scopeId,
-          keyHandle: fixture.keyHandle,
-          enrollmentEpoch: 1,
-          lockManager: immediateLockManager,
-          isCurrentProfile: () => true,
-          observedAtMs: 3_001,
+        startBrowserCtfRemove({
+          ...input,
+          targets: [{ ...originalTarget, proofFingerprint: "ff".repeat(32) }],
         }),
-      ).resolves.toBe(1);
-    } else {
+      ).rejects.toThrow();
+      await expect(
+        startBrowserCtfRemove({
+          ...input,
+          targets: [{ ...originalTarget, proofRevision: originalTarget.proofRevision + 1 }],
+        }),
+      ).rejects.toThrow();
       await expect(
         finalizeBrowserCtfRemove({
           ...input,
           localAssetKey: fixture.desired.localAssetKey,
           proofIds: targetIds,
-          observedAtMs: 3_001,
         }),
       ).resolves.toEqual({ kind: "completed" });
-    }
-    expect(
-      await fixture.database.custodyProofs.get([fixture.scopeId, target.proofId]),
-    ).toBeUndefined();
-    const completedAuthority = await fixture.database.custodyProofBackupAuthorities.get([
-      fixture.scopeId,
-      target.proofId,
-    ]);
-    expect(completedAuthority).toMatchObject({ recordKind: "completed-removal", proofRevision: 1 });
-    expect(completedAuthority).toMatchObject({
-      proofCommitment: startedDecoded.removalIntent?.proofs[0]?.proofCommitment,
-    });
-    if (count === 1) {
-      expect(
-        await fixture.database.encryptedWalletBackupV2DesiredAssets.get([
-          fixture.scopeId,
-          fixture.desired.localAssetKey,
-        ]),
-      ).toBeUndefined();
-      await expect(startBrowserCtfRemove(input)).resolves.toMatchObject({ kind: "completed" });
-    } else {
-      expect(
-        await fixture.database.encryptedWalletBackupV2DesiredAssets.get([
-          fixture.scopeId,
-          fixture.desired.localAssetKey,
-        ]),
-      ).toMatchObject({ custodyRevision: "2", activeProofCount: 1, removalIntent: null });
-      const survivor = fixture.proofs.find(({ proofId }) => proofId !== targetIds[0]);
-      if (survivor === undefined) throw new Error("test survivor is missing");
-      expect(await fixture.database.proofs.get(storedProofFromCustodyRow(survivor).secret)).toEqual(
-        expect.any(Object),
-      );
-    }
-    await expect(startBrowserCtfRemove(input)).resolves.toMatchObject({ kind: "completed" });
-    await expect(
-      startBrowserCtfRemove({
-        ...input,
-        targets: [{ ...originalTarget, proofFingerprint: "ff".repeat(32) }],
-      }),
-    ).rejects.toThrow();
-    await expect(
-      startBrowserCtfRemove({
-        ...input,
-        targets: [{ ...originalTarget, proofRevision: originalTarget.proofRevision + 1 }],
-      }),
-    ).rejects.toThrow();
-    await expect(
-      finalizeBrowserCtfRemove({
-        ...input,
-        localAssetKey: fixture.desired.localAssetKey,
-        proofIds: targetIds,
-      }),
-    ).resolves.toEqual({ kind: "completed" });
-  });
+    },
+  );
 
   it("removes siblings from one terminal operation in separate confirmed actions", async () => {
     const fixture = await createLocalFixture(2, true);
@@ -736,42 +789,49 @@ describe("browser CTF explicit removal coordinator", () => {
     ).toMatchObject({ custodyRevision: "1", removalIntent: null });
   });
 
-  it("fails closed when a local terminal operation is missing", async () => {
-    const fixture = await createFixture(1);
-    const proof = fixture.proofs[0]!;
-    const rawAuthority = await fixture.database.custodyProofBackupAuthorities.get([
-      fixture.scopeId,
-      proof.proofId,
-    ]);
-    if (rawAuthority === undefined) throw new Error("test authority is missing");
-    const authority = requireBrowserLiveProofBackupAuthorityTableRow(rawAuthority, [
-      fixture.scopeId,
-      proof.proofId,
-    ]);
-    if (authority === undefined || authority.backupState !== "remote-backed") {
-      throw new Error("test authority is not remote-backed");
-    }
-    await fixture.database.custodyProofBackupAuthorities.put({
-      ...authority,
-      admissionOperationId: "admission-local",
-      backupState: "local-only",
-      backupRecordId: null,
-      backupRecordCommitment: null,
-      derivationLocator: null,
-      terminalOperationId: "missing-terminal-operation",
-      terminalAuthority: { kind: "local-operation", operationId: "missing-terminal-operation" },
-    });
-
-    await expect(
-      startBrowserCtfRemove(fixture.input([fixture.target(proof.proofId)])),
-    ).rejects.toThrow(/terminal seal operation is missing/);
-    expect(
-      await fixture.database.encryptedWalletBackupV2DesiredAssets.get([
+  it.each(["local-only", "remote-backed"] as const)(
+    "fails closed when a %s proof's local terminal operation is missing",
+    async (backupState) => {
+      const fixture = await createFixture(1);
+      const proof = fixture.proofs[0]!;
+      const rawAuthority = await fixture.database.custodyProofBackupAuthorities.get([
         fixture.scopeId,
-        fixture.desired.localAssetKey,
-      ]),
-    ).toMatchObject({ custodyRevision: "1", removalIntent: null });
-  });
+        proof.proofId,
+      ]);
+      if (rawAuthority === undefined) throw new Error("test authority is missing");
+      const authority = requireBrowserLiveProofBackupAuthorityTableRow(rawAuthority, [
+        fixture.scopeId,
+        proof.proofId,
+      ]);
+      if (authority === undefined || authority.backupState !== "remote-backed") {
+        throw new Error("test authority is not remote-backed");
+      }
+      await fixture.database.custodyProofBackupAuthorities.put({
+        ...(backupState === "remote-backed"
+          ? authority
+          : {
+              ...authority,
+              admissionOperationId: "admission-local",
+              backupState: "local-only",
+              backupRecordId: null,
+              backupRecordCommitment: null,
+              derivationLocator: null,
+            }),
+        terminalOperationId: "missing-terminal-operation",
+        terminalAuthority: { kind: "local-operation", operationId: "missing-terminal-operation" },
+      });
+
+      await expect(
+        startBrowserCtfRemove(fixture.input([fixture.target(proof.proofId)])),
+      ).rejects.toThrow(/terminal seal operation is missing/);
+      expect(
+        await fixture.database.encryptedWalletBackupV2DesiredAssets.get([
+          fixture.scopeId,
+          fixture.desired.localAssetKey,
+        ]),
+      ).toMatchObject({ custodyRevision: "1", removalIntent: null });
+    },
+  );
 
   it("routes a local-only authority with a derivation locator through managed checks", async () => {
     const fixture = await createFixture(1);
@@ -889,29 +949,86 @@ describe("browser CTF explicit removal coordinator", () => {
     ).toMatchObject({ custodyRevision: "1", removalIntent: null });
   });
 
-  it("refuses an exact proof reservation without changing canonical custody", async () => {
-    const fixture = await createFixture(1);
-    const proof = fixture.proofs[0]!;
-    await fixture.database.custodyReservations.put({
-      scopeId: fixture.scopeId,
-      proofId: proof.proofId,
-      operationId: "01".repeat(32),
-      reservationId: "02".repeat(32),
-      inputPosition: 0,
-    });
-    await expect(
-      startBrowserCtfRemove(fixture.input([fixture.target(proof.proofId)])),
-    ).rejects.toThrow(/reservation/);
-    expect(
-      await fixture.database.custodyProofs.get([fixture.scopeId, proof.proofId]),
-    ).toMatchObject({ selectability: "verified-losing", revision: 0 });
-    expect(
-      await fixture.database.encryptedWalletBackupV2DesiredAssets.get([
-        fixture.scopeId,
-        fixture.desired.localAssetKey,
-      ]),
-    ).toMatchObject({ custodyRevision: "1", removalIntent: null });
-  });
+  it.each([false, true])(
+    "refuses an exact proof reservation without changing canonical custody (local classification: %s)",
+    async (localClassification) => {
+      const fixture = await createFixture(1, localClassification);
+      const proof = fixture.proofs[0]!;
+      await fixture.database.custodyReservations.put({
+        scopeId: fixture.scopeId,
+        proofId: proof.proofId,
+        operationId: "01".repeat(32),
+        reservationId: "02".repeat(32),
+        inputPosition: 0,
+      });
+      await expect(
+        startBrowserCtfRemove(fixture.input([fixture.target(proof.proofId)])),
+      ).rejects.toThrow(/reservation/);
+      expect(
+        await fixture.database.custodyProofs.get([fixture.scopeId, proof.proofId]),
+      ).toMatchObject({ selectability: "verified-losing", revision: proof.revision });
+      expect(
+        await fixture.database.encryptedWalletBackupV2DesiredAssets.get([
+          fixture.scopeId,
+          fixture.desired.localAssetKey,
+        ]),
+      ).toMatchObject({ custodyRevision: "1", removalIntent: null });
+    },
+  );
+
+  it.each(["foreign-operation", "missing-rejection"] as const)(
+    "retains restored custody with %s local terminal evidence",
+    async (defect) => {
+      const fixture = await createFixture(2, true);
+      const proof = fixture.proofs[0]!;
+      const key = [fixture.scopeId, proof.proofId] as [string, string];
+      const authority = requireBrowserLiveProofBackupAuthorityTableRow(
+        await fixture.database.custodyProofBackupAuthorities.get(key),
+        key,
+      );
+      if (authority === undefined) throw new Error("test restored authority is missing");
+      if (defect === "foreign-operation") {
+        const sibling = fixture.proofs[1]!;
+        const siblingKey = [fixture.scopeId, sibling.proofId] as [string, string];
+        const foreign = requireBrowserLiveProofBackupAuthorityTableRow(
+          await fixture.database.custodyProofBackupAuthorities.get(siblingKey),
+          siblingKey,
+        );
+        if (foreign === undefined) throw new Error("test sibling authority is missing");
+        await fixture.database.custodyProofBackupAuthorities.put({
+          ...authority,
+          terminalOperationId: foreign.terminalOperationId,
+          terminalAuthority: foreign.terminalAuthority,
+        });
+      } else {
+        const operationId = authority.terminalOperationId!;
+        const operation = await fixture.database.custodyOperations.get([
+          fixture.scopeId,
+          operationId,
+        ]);
+        const reference = operation?.record.operation.terminalMintRejection?.exactRejection;
+        if (reference === undefined) throw new Error("test committed rejection is missing");
+        await fixture.database.custodyArtifacts.delete([
+          fixture.scopeId,
+          operationId,
+          reference.artifactId,
+        ]);
+      }
+      await expect(
+        startBrowserCtfRemove(fixture.input([fixture.target(proof.proofId)])),
+      ).rejects.toThrow(
+        defect === "foreign-operation" ? /local terminal operation is foreign/ : /artifact/,
+      );
+      expect(await fixture.database.custodyProofs.get(key)).toEqual(proof);
+      expect(
+        await fixture.database.encryptedWalletBackupV2DesiredAssets.get([
+          fixture.scopeId,
+          fixture.desired.localAssetKey,
+        ]),
+      ).toMatchObject({ custodyRevision: "1", removalIntent: null });
+      expect(await fixture.database.encryptedWalletBackupV2PreparedMutations.count()).toBe(0);
+    },
+  );
 
   it.each([1, 2])(
     "cancels an exact rejected %s-proof removal without deleting custody or queuing backup",
@@ -1186,7 +1303,8 @@ function proofFromLocalRow(row: ReturnType<typeof createBrowserCustodyProofRow>)
   } as never;
 }
 
-async function createFixture(count: number) {
+async function createFixture(count: number, localClassification = false) {
+  const classified = localClassification ? await createLocalFixture(count) : null;
   const keyHandle = await createEncryptedWalletBackupV2KeyHandle({
     seed: SEED,
     realm: REALM,
@@ -1196,8 +1314,8 @@ async function createFixture(count: number) {
     scopeKind: "wallet",
     walletId: keyHandle.walletId,
   });
-  const database = new BitcasterDB(browserWalletDatabaseName(scopeId));
-  databases.push(database);
+  const database = classified?.database ?? new BitcasterDB(browserWalletDatabaseName(scopeId));
+  if (classified === null) databases.push(database);
   const asset = createEncryptedWalletBackupV2AssetIdentity({
     mintUrl: MINT,
     unit: "msat",
@@ -1210,33 +1328,49 @@ async function createFixture(count: number) {
       finalExpiry: 2,
     },
   });
-  const proofs = Array.from({ length: count }, (_, index) => {
-    const row = createBrowserCustodyProofRow({
-      scopeId,
-      normalizedMint: MINT,
-      unit: "msat",
-      proof: {
-        id: `01${(index + 1).toString(16).padStart(2, "0")}${"11".repeat(31)}`,
-        amount: 1 as never,
-        secret: `remove-secret-${index}`,
-        C: `02${"22".repeat(32)}`,
-      },
-      asset: { kind: "conditional", conditionId: CONDITION_ID, outcomeCollection: OUTCOME },
-      receivedAtMs: 1_000,
+  const proofs =
+    classified?.proofs ??
+    Array.from({ length: count }, (_, index) => {
+      const row = createBrowserCustodyProofRow({
+        scopeId,
+        normalizedMint: MINT,
+        unit: "msat",
+        proof: {
+          id: `01${(index + 1).toString(16).padStart(2, "0")}${"11".repeat(31)}`,
+          amount: 1 as never,
+          secret: `remove-secret-${index}`,
+          C: `02${"22".repeat(32)}`,
+        },
+        asset: { kind: "conditional", conditionId: CONDITION_ID, outcomeCollection: OUTCOME },
+        receivedAtMs: 1_000,
+      });
+      return decodeBrowserCustodyProofRow({ ...row, selectability: "verified-losing" });
     });
-    return decodeBrowserCustodyProofRow({ ...row, selectability: "verified-losing" });
-  });
+  const localAuthorities = await database.custodyProofBackupAuthorities.bulkGet(
+    proofs.map(({ proofId }) => [scopeId, proofId]),
+  );
   await database.custodyProofs.bulkPut(proofs);
   await database.custodyProofBackupAuthorities.bulkPut(
-    proofs.map((proof, index) =>
-      createBrowserRemoteProofBackupAuthorityRow({
+    proofs.map((proof, index) => {
+      const restored = createBrowserRemoteProofBackupAuthorityRow({
         proof,
         observedAtMs: 2_000,
         derivationLocator: terminalLocator(proof, index),
         restoreProofId: proof.proofId,
         restoreProofCommitment: terminalProofCommitment(proof, index),
-      }),
-    ),
+      });
+      if (classified === null) return restored;
+      const previous = requireBrowserLiveProofBackupAuthorityTableRow(localAuthorities[index], [
+        scopeId,
+        proof.proofId,
+      ]);
+      if (previous === undefined) throw new Error("test classified authority is missing");
+      return {
+        ...restored,
+        terminalOperationId: previous.terminalOperationId,
+        terminalAuthority: previous.terminalAuthority,
+      };
+    }),
   );
   await database.proofs.bulkPut(
     proofs.map((proof) => storedProofRow(storedProofFromCustodyRow(proof))),

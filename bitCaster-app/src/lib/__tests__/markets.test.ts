@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   fetchMarketDetail,
+  fetchMarketPriceHistory,
+  fetchMarketComments,
   filterMarkets,
   getMarkets,
   getTagValue,
@@ -12,17 +14,97 @@ import {
   submitOrder,
   windowPriceHistory,
   applyMarketPriceHistory,
+  applyMarketComments,
   priceNumeratorToPercent,
   createAuthenticatedBrowserEngineClient,
   getDurableCashuDeliveryStatus,
   generateNip98Header,
+  signTradeComment,
   validateLatestConfirmedTrades,
+  registerCondition,
+  fetchMarketRegistrationForRecovery,
+  MintError,
 } from "../markets";
+import { EngineClientError } from "@bitcaster/client-sdk";
 import { applyConfirmedTradeDelta } from "@/lib/marketHub";
 import { outcomeSetIdsForMarketBooks, resolveOutcomeSets } from "@/lib/outcomeSets";
-import type { MarketCatalogueEntry } from "../markets";
+import type { MarketCatalogueEntry, MarketCommentsResponse } from "../markets";
 import type { FilterState, Market } from "@/types/market";
 import type { MarketDetail } from "@/types/market-detail";
+
+describe("condition registration adapter", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("uses the local mint proxy and shared wire mapping", async () => {
+    const response = { condition_id: "condition-1", keysets: { YES: "keyset-1" } };
+    const fetchMock = vi.fn().mockResolvedValue(Response.json(response));
+    vi.stubGlobal("fetch", fetchMock);
+    expect(
+      await registerCondition({ tags: [], announcementHex: "abcd", collateral: "msat" }),
+    ).toEqual(response);
+    expect(fetchMock).toHaveBeenCalledWith("/v1/conditions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ tags: [], announcements: ["abcd"], collateral: "msat" }),
+    });
+  });
+
+  it("keeps the shared MintError identity used by fee recovery", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValue(
+          Response.json({ code: 13048, detail: "Unsupported collateral" }, { status: 400 }),
+        ),
+    );
+    await expect(registerCondition({ tags: [], announcementHex: "abcd" })).rejects.toBeInstanceOf(
+      MintError,
+    );
+  });
+});
+
+describe("market registration recovery adapter", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("reads exact registration metadata through the shared anonymous client", async () => {
+    const registration = {
+      conditionId: "condition/one",
+      creatorPubkey: null,
+      outcomes: ["Yes", "No"],
+      baseAsset: "sat",
+      divisibility: 1_000,
+      thumbnailUrl: null,
+      outcomeDetails: [{ name: "Yes", color: null }, { name: "No" }],
+    };
+    const fetchMock = vi.fn().mockResolvedValue(Response.json(registration));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(fetchMarketRegistrationForRecovery("condition/one")).resolves.toEqual(
+      registration,
+    );
+    expect(fetchMock).toHaveBeenCalledOnce();
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe(`${window.location.origin}/api/v1/markets/condition%2Fone/registration`);
+    expect(init.method).toBeUndefined();
+    expect(new Headers(init.headers).get("authorization")).toBeNull();
+  });
+
+  it("propagates an unavailable exact registration read", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation(async () => new Response("unavailable", { status: 503 })),
+    );
+    let caught: unknown;
+    try {
+      await fetchMarketRegistrationForRecovery("condition-1");
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(EngineClientError);
+    expect((caught as EngineClientError).status).toBe(503);
+  });
+});
 
 const mocks = vi.hoisted(() => ({
   eventSign: vi.fn(),
@@ -245,6 +327,22 @@ describe("mapCatalogueEntryToMarket", () => {
           Charlie: "#AABBCC",
         },
       );
+    }
+  });
+
+  it("treats nullable legacy outcome colors as unavailable display accents", () => {
+    const market = mapCatalogueEntryToMarket({
+      ...categoricalEntry,
+      outcomeDetails: [{ name: "Alice", color: null }, { name: "Bob" }],
+    });
+
+    expect(market.type).toBe("categorical");
+    if (market.type === "categorical") {
+      expect(market.outcomes.map(({ label, color }) => [label, color])).toEqual([
+        ["Alice", undefined],
+        ["Bob", undefined],
+        ["Charlie", undefined],
+      ]);
     }
   });
 
@@ -1231,7 +1329,7 @@ describe("windowPriceHistory (P22 Link D timeframe windowing)", () => {
     price,
   });
 
-  it('caps the "all" timeframe to the newest retained points', () => {
+  it("retains all server samples without a browser cap", () => {
     const history = {
       timeframe: "all" as const,
       data: Array.from({ length: 1002 }, (_, index) =>
@@ -1239,14 +1337,15 @@ describe("windowPriceHistory (P22 Link D timeframe windowing)", () => {
       ),
     };
     const result = windowPriceHistory(history);
-    expect(result.data).toHaveLength(1000);
-    expect(result.data[0].price).toBe(2);
+    expect(result.data).toHaveLength(1002);
+    expect(result.data[0].price).toBe(0);
     expect(result.data.at(-1)?.price).toBe(1001);
   });
 
-  it("trims points older than the window, anchored on the newest sample", () => {
+  it("uses server evaluation time without pre-window carry-in", () => {
     const history = {
       timeframe: "24h" as const,
+      asOf: "2026-05-25T12:00:00Z",
       data: [
         makePoint("2026-05-10T10:00:00Z", 5),
         makePoint("2026-05-20T10:00:00Z", 10),
@@ -1256,12 +1355,101 @@ describe("windowPriceHistory (P22 Link D timeframe windowing)", () => {
       ],
     };
     const result = windowPriceHistory(history);
-    expect(result.data.map((p) => p.price)).toEqual([10, 15, 18, 20]);
+    expect(result.data.map((p) => p.price)).toEqual([15, 18, 20]);
   });
 
   it("returns the series untouched when an empty timeframe is given", () => {
     const history = { timeframe: "7d" as const, data: [] };
     expect(windowPriceHistory(history).data).toHaveLength(0);
+  });
+});
+
+describe("market comment mapping", () => {
+  const createdAt = "2026-05-25T11:00:00Z";
+  const executedAt = "2026-05-25T10:00:00Z";
+
+  function marketForComments(): MarketDetail {
+    const market = mapCatalogueEntryToMarket(yesNoEntry);
+    if (market.type !== "yesno") throw new Error("Expected a binary market fixture");
+    return {
+      ...market,
+      baseUnit: "sats",
+      categoryTags: market.categoryTags.map((id) => ({
+        id,
+        label: id,
+        description: "",
+        marketCount: 0,
+      })),
+      creator: { id: "creator", name: "Creator", totalMarketsCreated: 0, feePercent: 0 },
+      resolution: {
+        criteria: "criteria",
+        source: "oracle",
+        resolutionDate: null,
+        status: "open",
+      },
+      priceHistory: { timeframe: "7d", data: [] },
+      orderBook: { bids: [], asks: [], spread: 0 },
+      recentTrades: [],
+      comments: [],
+      relatedMarkets: [],
+    };
+  }
+
+  it.each(["NO", "Alice"])(
+    "retains the confirmed %s trade coordinate without replacing comment time",
+    (outcomeId) => {
+      const trade = {
+        fillId: "56ab09f2-4ce0-4f37-80ad-8d5846476042",
+        outcomeId,
+        executedAt,
+        price: 420,
+        priceDenominator: 1_000,
+      };
+      const response: MarketCommentsResponse = {
+        snapshotEventOrder: "opaque-cut",
+        conditionId: "condition-1",
+        comments: [
+          {
+            commentId: "8f7a9a9e-8f8f-43d7-9d25-7d79c09bd6a2",
+            authorPubkey: "a".repeat(64),
+            content: "A confirmed comment",
+            createdAt,
+            trade,
+          },
+        ],
+      };
+      const market = marketForComments();
+
+      const mapped = applyMarketComments(market, response).comments[0];
+
+      expect(mapped.timestamp).toBe(createdAt);
+      expect(mapped.userId).toBe("a".repeat(64));
+      expect(mapped.userDisplayName).toBe("aaaaaaaa…aaaaaaaa");
+      expect(mapped.trade).toEqual(trade);
+      expect(mapped.trade?.outcomeId).toBe(outcomeId);
+    },
+  );
+
+  it("retains an explicit null trade coordinate", () => {
+    const response: MarketCommentsResponse = {
+      snapshotEventOrder: "opaque-cut",
+      conditionId: "condition-1",
+      comments: [
+        {
+          commentId: "8f7a9a9e-8f8f-43d7-9d25-7d79c09bd6a2",
+          authorPubkey: "a".repeat(64),
+          content: "A comment without an exact fill",
+          createdAt,
+          trade: null,
+        },
+      ],
+    };
+    const market = marketForComments();
+
+    const mapped = applyMarketComments(market, response).comments[0];
+
+    expect(mapped.timestamp).toBe(createdAt);
+    expect(mapped.trade).toBeNull();
   });
 });
 
@@ -1296,6 +1484,8 @@ describe("price history normalization", () => {
     };
 
     const updated = applyMarketPriceHistory(market as unknown as MarketDetail, {
+      snapshotEventOrder: "opaque-cut",
+      asOf: "2026-05-25T10:00:00Z",
       conditionId: "abc123",
       timeframe: "7d",
       outcomes: [
@@ -1345,6 +1535,8 @@ describe("price history normalization", () => {
     } as unknown as MarketDetail;
 
     const updated = applyMarketPriceHistory(market, {
+      snapshotEventOrder: "opaque-cut",
+      asOf: "2026-05-25T10:00:00Z",
       conditionId: "abc123",
       timeframe: "7d",
       outcomes: [
@@ -1403,6 +1595,8 @@ describe("price history normalization", () => {
     } as unknown as MarketDetail;
 
     const updated = applyMarketPriceHistory(market, {
+      snapshotEventOrder: "opaque-cut",
+      asOf: "2026-05-25T10:00:00Z",
       conditionId: "abc123",
       timeframe: "7d",
       outcomes: [
@@ -1432,6 +1626,27 @@ describe("price history normalization", () => {
         source: "fill",
       },
     ]);
+  });
+});
+
+describe("trade comment signing", () => {
+  it("signs the current frontend market URL and maps the signed timestamp", async () => {
+    const now = vi.spyOn(Date, "now").mockReturnValue(1_790_000_000_000);
+    try {
+      const comment = await signTradeComment("condition A", "My trade reason");
+      expect(comment).toEqual({
+        id: "mock",
+        pubkey: "mock",
+        sig: "mock",
+        kind: 1,
+        createdAt: 1_790_000_000,
+        tags: [["r", `${window.location.origin}/markets/condition%20A`]],
+        content: "My trade reason",
+      });
+      expect(mocks.eventSign).toHaveBeenCalled();
+    } finally {
+      now.mockRestore();
+    }
   });
 });
 
@@ -1519,5 +1734,98 @@ describe("durable Cashu delivery transport", () => {
       vi.useRealTimers();
       globalThis.fetch = originalFetch;
     }
+  });
+});
+
+describe("SDK snapshot output to browser mapping", () => {
+  afterEach(() => vi.unstubAllGlobals());
+  it.each(["1h", "24h", "7d", "30d", "all"] as const)(
+    "%s live refresh and reload keep identical server samples at the same cut",
+    async (timeframe) => {
+      const timestamp = "2026-05-25T10:00:00Z";
+      const response = {
+        conditionId: "condition/one",
+        timeframe,
+        snapshotEventOrder: "opaque z/a",
+        asOf: timestamp,
+        outcomes: [
+          {
+            outcomeId: "Yes",
+            data: [
+              { timestamp, eventOrder: "opaque-z", price: 500, volumeSubunits: 20, source: "fill" },
+              {
+                timestamp: "2026-05-25T10:00:00.100Z",
+                eventOrder: "opaque-a",
+                price: 510,
+                volumeSubunits: 30,
+                source: "fill",
+              },
+            ],
+          },
+        ],
+      };
+      const fetchMock = vi.fn().mockImplementation(async () => Response.json(response));
+      vi.stubGlobal("fetch", fetchMock);
+      const signal = new AbortController().signal;
+      const options = { minimumEventOrder: "opaque z/a", refresh: true, signal };
+      const live = await fetchMarketPriceHistory("condition/one", timeframe, options);
+      const reload = await fetchMarketPriceHistory("condition/one", timeframe, options);
+      const market = mapCatalogueEntryToMarket(yesNoEntry) as unknown as MarketDetail;
+      const mapped = applyMarketPriceHistory(market, live).priceHistory;
+      expect(mapped.data).toEqual(applyMarketPriceHistory(market, reload).priceHistory.data);
+      expect(mapped.data.map((point) => point.price)).toEqual([50, 51]);
+      expect(mapped.asOf).toBe(timestamp);
+      expect(mapped.snapshotEventOrder).toBe("opaque z/a");
+      const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+      expect(url).toBe(
+        `${window.location.origin}/api/v1/markets/condition%2Fone/price-history?timeframe=${timeframe}&minimumEventOrder=opaque+z%2Fa&refresh=true`,
+      );
+      expect(init.signal).toBe(signal);
+    },
+  );
+  it("forwards late comment read options, fill size, and unavailable errors through the SDK", async () => {
+    const trade = {
+      fillId: "fill",
+      outcomeId: "Yes",
+      executedAt: "2026-05-25T10:00:00Z",
+      price: 500,
+      priceDenominator: 1000,
+      faceAmountSubunits: 3000,
+    };
+    const response = {
+      conditionId: "condition/one",
+      snapshotEventOrder: "opaque",
+      comments: [
+        {
+          commentId: "comment",
+          authorPubkey: "a".repeat(64),
+          createdAt: trade.executedAt,
+          content: "late comment",
+          trade,
+        },
+      ],
+    };
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(Response.json(response))
+      .mockResolvedValueOnce(Response.json({}, { status: 503 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const signal = new AbortController().signal;
+    const comments = await fetchMarketComments("condition/one", {
+      minimumEventOrder: "opaque",
+      refresh: true,
+      signal,
+    });
+    expect(comments.snapshotEventOrder).toBe("opaque");
+    expect(
+      applyMarketComments(
+        mapCatalogueEntryToMarket(yesNoEntry) as unknown as MarketDetail,
+        comments,
+      ).comments[0].trade,
+    ).toEqual(trade);
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      `${window.location.origin}/api/v1/markets/condition%2Fone/comments?minimumEventOrder=opaque&refresh=true`,
+    );
+    await expect(fetchMarketComments("condition/one")).rejects.toBeInstanceOf(EngineClientError);
   });
 });

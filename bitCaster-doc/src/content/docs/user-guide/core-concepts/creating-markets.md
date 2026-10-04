@@ -23,14 +23,51 @@ If a payment needs a wallet, choose Create wallet or Restore wallet.
 Setup and cancellation preserve your draft. Setup does not submit the market
 or pay its fee. Continue only after you review the next action.
 
-For each categorical outcome, choose a color or leave **Automatic** selected.
-With Automatic, the server assigns the color when it creates the market.
+Categorical outcomes start with visible colors: green, red, orange, then other
+distinct colors. Select **Automatic** to choose a different unused color.
+You can also select a color manually. The draft and Review keep your selection.
+Creation stores the selected color.
 The market views and Portfolio use the same outcome colors.
 Colors do not change outcome identity or settlement.
 
 API clients can set the optional `color` field to a six-digit hexadecimal
 value with a leading `#`. Omit it for automatic assignment. See the
 [Market Catalogue API](/technical/protocol/market-catalogue/) for the wire fields.
+
+## Resume an incomplete creation
+
+Mint registration can succeed before the engine accepts the market.
+If the engine request fails, resume the saved creation instead of starting
+another one. Use the original wallet, oracle key, mint, and engine.
+Keep the local browser data or daemon profile until creation finishes.
+
+The client retains the original announcement, market details, thumbnail,
+and registration payment reference. Reloading does not require you to select
+the thumbnail again. After mint registration is confirmed, resuming does not
+charge another registration fee. If a response is lost, the client checks
+the existing registration before it sends another request.
+A paid mint registration alone does not mean that the market is ready.
+
+CLI users can check and resume the same creation in the original daemon profile:
+
+```bash
+bitcaster-cli market creation-status create-001
+bitcaster-cli market creation-resume create-001
+```
+
+Replace `create-001` with your creation identifier.
+The status result includes `mintRegistered` and `engineRegistered`.
+If registration is not paid yet, resuming can still require your fee approval.
+The saved thumbnail is reused when you omit `--thumbnail`.
+If you supply that option, the file must match the original thumbnail.
+
+## Creator dashboard
+
+The creator dashboard shows engine lifecycle state and confirmed trade volume.
+When engine data is absent, it shows an unknown state and an unavailable amount.
+After a failed refresh, it labels retained state and volume as last known.
+A failed refresh does not make a known closed market active.
+Restored local records and oracle records do not confirm engine lifecycle state.
 
 ## Your role as oracle
 
@@ -63,6 +100,11 @@ mint has registered the event.
 ## Fund your market
 
 After market creation succeeds, bitCaster shows an optional **Fund the market maker** step. This is a separate post-creation flow. Funding gives the market's automated market maker capacity to post bids and asks on the order book. You can submit more than one accepted funding payment after creation.
+
+When a payment made in this creation step is credited, a success screen shows
+a five-second countdown. The app then opens the market. A pending payment or
+a restored old credit does not start this countdown. Funding from the market
+detail page does not navigate away.
 
 This payment is a non-refundable subsidy for this market's bot. It does not
 fund your trading wallet. It gives you no market shares, fee income, or right

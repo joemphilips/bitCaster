@@ -329,6 +329,15 @@ export class DaemonCtfRangeCoordinator {
             }),
         )
         admitSpendableSuccessors(database, successors, input.observedAtMs)
+        transaction.rebuildActiveWorkIndex({
+          scopeId: current.scope.scopeId,
+          operationRows: [
+            {
+              operationId: input.custodyOperationId,
+              expectedRevision: current.revision + 1,
+            },
+          ],
+        })
       },
       faultOptions(input.injectFault),
     )

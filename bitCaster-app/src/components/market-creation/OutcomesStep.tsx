@@ -3,6 +3,7 @@ import { useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import type { WizardOutcome, OutcomeType } from "@/types/market-creation";
 import { MAX_MARKET_OUTCOMES } from "@/hooks/useMarketCreationState";
+import { categoricalOutcomeColors } from "@/components/shared/OutcomeLabel";
 
 interface OutcomesStepProps {
   outcomeType: OutcomeType;
@@ -199,6 +200,7 @@ export function OutcomesStep({
     outcomes.length <= MAX_MARKET_OUTCOMES &&
     outcomes.every((o) => o.label.trim().length > 0) &&
     labelsAvoidOutcomeSetSeparator;
+  const colors = categoricalOutcomeColors(outcomes ?? []);
 
   return (
     <div className="w-full max-w-xl">
@@ -208,11 +210,8 @@ export function OutcomesStep({
       <p className="text-sm text-slate-400 mb-8">{t("marketCreation.defineOutcomesDesc")}</p>
 
       <div className="space-y-3 mb-4">
-        {outcomes?.map((outcome) => {
-          const color =
-            typeof outcome.color === "string" && /^#[0-9A-Fa-f]{6}$/.test(outcome.color)
-              ? outcome.color
-              : null;
+        {outcomes?.map((outcome, index) => {
+          const color = colors[index];
           return (
             <div key={outcome.id} className="p-4 rounded-lg bg-slate-900 border border-slate-700">
               <div className="flex items-start gap-3">
@@ -235,7 +234,7 @@ export function OutcomesStep({
                         outcome: outcome.label || t("common.unnamed"),
                       })}
                       type="color"
-                      value={color ?? "#808080"}
+                      value={color}
                       onChange={(event) => onOutcomeColorChange?.(outcome.id, event.target.value)}
                       className="h-8 w-10 cursor-pointer rounded border border-slate-600 bg-transparent p-0.5"
                     />
@@ -245,13 +244,8 @@ export function OutcomesStep({
                     aria-label={t("marketCreation.useAutomaticOutcomeColorFor", {
                       outcome: outcome.label || t("common.unnamed"),
                     })}
-                    aria-pressed={!color}
                     onClick={() => onOutcomeColorChange?.(outcome.id, null)}
-                    className={`rounded px-2 py-1 text-xs transition-colors ${
-                      color
-                        ? "text-slate-400 hover:bg-slate-800 hover:text-white"
-                        : "bg-slate-800 text-white ring-1 ring-blue-500/60"
-                    }`}
+                    className="rounded px-2 py-1 text-xs text-slate-400 transition-colors hover:bg-slate-800 hover:text-white"
                   >
                     {t("marketCreation.outcomeColorAutomatic")}
                   </button>

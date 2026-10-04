@@ -49,6 +49,7 @@ import {
   disconnect,
   joinMarket,
   onConfirmedTradeRecorded,
+  onMarketCommentsChanged,
   onMarketFundingUpdated,
   onMarketRejoined,
   observePortfolioValuations,
@@ -453,6 +454,41 @@ describe("Portfolio valuation subscriptions", () => {
       "SetPortfolioValuationSubscriptions",
       ["a"],
     );
+  });
+});
+
+describe("MarketCommentsChanged invalidation", () => {
+  it("routes opaque committed positions and removes each subscription", async () => {
+    await joinMarket("cond-YES");
+    const handler = vi.fn();
+    const second = vi.fn();
+    const other = vi.fn();
+    const removeFirst = onMarketCommentsChanged("cond", handler);
+    const removeSecond = onMarketCommentsChanged("cond", second);
+    const removeOther = onMarketCommentsChanged("other", other);
+    const notify = signalrMock.registeredHandlers.get("MarketCommentsChanged")!;
+    for (const payload of [
+      null,
+      {},
+      { conditionId: "cond" },
+      { conditionId: "cond", eventOrder: "" },
+    ])
+      notify(payload);
+    expect(handler).not.toHaveBeenCalled();
+    const message = { conditionId: "cond", eventOrder: "opaque z/a" };
+    notify(message);
+    expect(handler).toHaveBeenCalledWith(message);
+    expect(second).toHaveBeenCalledWith(message);
+    expect(other).not.toHaveBeenCalled();
+    removeFirst();
+    notify(message);
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(second).toHaveBeenCalledTimes(2);
+    removeSecond();
+    removeOther();
+    notify(message);
+    expect(second).toHaveBeenCalledTimes(2);
+    await disconnect();
   });
 });
 

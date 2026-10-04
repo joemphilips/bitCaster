@@ -38,6 +38,7 @@ import type {
 import {
   createEncryptedWalletBackupV2AssetIdentity,
   digestEncryptedWalletBackupV2BundleDescriptor,
+  digestEncryptedWalletBackupV2TerminalProofCommitment,
   decodeEncryptedWalletBackupV2AssetIdentity,
   requireEncryptedWalletBackupV2CollectedHeadEvidence,
   requireEncryptedWalletBackupV2VerifiedProofSetSource,
@@ -163,6 +164,10 @@ export async function admitBrowserEncryptedWalletBackupV2AcceptedRemoteAsset(
               if (transactional === null) {
                 throw new Error("browser V2 accepted-remote transaction preflight is missing");
               }
+              await bindNewlyRestoredLiveOrigins(
+                input,
+                transactional.missingSelectable.map(({ entry }) => entry),
+              );
               await finishAcceptedRemoteAdmission(input, prepared, transactional);
             },
           },
@@ -1732,7 +1737,10 @@ async function commitMixedAuthority(
           await requireIncomingLiveAuthorities(input.database, input.scopeId, verified);
           await recheckClassification();
         },
-        afterPersist: hadExistingLocal ? reconcile : persistFreshMixed,
+        afterPersist: async () => {
+          await bindNewlyRestoredLiveOrigins(input, liveEntries);
+          await (hadExistingLocal ? reconcile() : persistFreshMixed());
+        },
         legacyProofCache: {
           spentSecrets: [],
           freshProofs: liveToAdmit.map(({ stored }) => stored),
@@ -1859,6 +1867,10 @@ async function commitAuthority(
     }
   };
   const afterPersist = async () => {
+    await bindNewlyRestoredLiveOrigins(
+      input,
+      selected.map(({ verified: entry }) => entry),
+    );
     input.setTargetedRecoveryAdmissionStage?.("backup-admit-counter");
     await restoreCountersInOwnedTransaction(input, verified);
     input.setTargetedRecoveryAdmissionStage?.("backup-admit-desired");
@@ -1915,6 +1927,53 @@ async function commitAuthority(
         throw new Error("browser V2 restore injected commit fault");
     },
   );
+}
+
+async function bindNewlyRestoredLiveOrigins(
+  input: Pick<BrowserEncryptedWalletBackupV2AdmissionInput, "database" | "scopeId">,
+  entries: readonly EncryptedWalletBackupV2VerifiedProofSet["proofs"][number][],
+): Promise<void> {
+  const observedAtMs = Date.now();
+  for (const entry of entries) {
+    const key = [input.scopeId, entry.proofId] as [string, string];
+    const proof = decodeBrowserCustodyProofRow(await input.database.custodyProofs.get(key));
+    const expected = createBrowserCustodyProofRow({
+      scopeId: input.scopeId,
+      normalizedMint: entry.mintUrl,
+      unit: entry.unit,
+      proof: entry.proof,
+      asset: proofAssetForAcceptedRemoteEntry(entry),
+      receivedAtMs: proof.receivedAtMs,
+    });
+    const authority = requireBrowserProofBackupAuthorityForProof(
+      requireBrowserLiveProofBackupAuthorityTableRow(
+        await input.database.custodyProofBackupAuthorities.get(key),
+        key,
+      ),
+      proof,
+    );
+    if (
+      entry.selectionAuthority !== "live-verified" ||
+      expected.proofId !== entry.proofId ||
+      !sameProofMaterial(proof, expected) ||
+      proof.selectability !== "selectable" ||
+      proof.reservationOperationId !== null ||
+      authority.backupState !== "local-only" ||
+      authority.terminalAuthority !== null ||
+      !sameBrowserProofDerivationLocator(authority.derivationLocator, entry.locator)
+    ) {
+      throw new Error("browser V2 newly restored live origin conflicts");
+    }
+    await input.database.custodyProofBackupAuthorities.put(
+      createBrowserRemoteProofBackupAuthorityRow({
+        proof,
+        observedAtMs: Math.max(observedAtMs, proof.receivedAtMs, authority.updatedAtMs),
+        derivationLocator: entry.locator,
+        restoreProofId: entry.proofId,
+        restoreProofCommitment: digestEncryptedWalletBackupV2TerminalProofCommitment(entry),
+      }),
+    );
+  }
 }
 
 function localReimportId(input: BrowserEncryptedWalletBackupV2AdmissionInput): string {

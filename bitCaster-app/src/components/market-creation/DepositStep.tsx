@@ -77,6 +77,7 @@ export function DepositStep({
     null,
   );
   const [showCreditedNotice, setShowCreditedNotice] = useState(false);
+  const [successRemainingMs, setSuccessRemainingMs] = useState(5_000);
   const [fundingBusy, setFundingBusy] = useState(false);
   const [headTransferId, setHeadTransferId] = useState<string | null>(null);
   const [headReady, setHeadReady] = useState(false);
@@ -190,12 +191,33 @@ export function DepositStep({
     if (presentation === "detail") return;
     navigate(`/markets/${conditionId}`);
   }, [conditionId, navigate, presentation]);
+  const continueToMarketRef = useRef(continueToMarket);
+  continueToMarketRef.current = continueToMarket;
 
   useEffect(() => {
     if (presentation === "detail" || !showCreditedNotice || fundingBusy) return undefined;
-    const timer = window.setTimeout(continueToMarket, 5_000);
-    return () => window.clearTimeout(timer);
-  }, [continueToMarket, showCreditedNotice, presentation, fundingBusy]);
+    const current = generation.current;
+    const startedAt = Date.now();
+    const updateRemaining = () =>
+      setSuccessRemainingMs(Math.max(0, 5_000 - (Date.now() - startedAt)));
+    updateRemaining();
+    const interval = window.setInterval(updateRemaining, 50);
+    const timer = window.setTimeout(() => {
+      if (current === generation.current) continueToMarketRef.current();
+    }, 5_000);
+    return () => {
+      window.clearInterval(interval);
+      window.clearTimeout(timer);
+    };
+  }, [
+    showCreditedNotice,
+    presentation,
+    fundingBusy,
+    conditionId,
+    accountSubject,
+    activeMintUrl,
+    walletMnemonic,
+  ]);
 
   const submitMarketFunding = useCallback(async () => {
     if (fundingBusy || inFlight.current) return;
@@ -305,6 +327,39 @@ export function DepositStep({
         >
           {t("marketCreation.attractTraders")}
         </button>
+      </div>
+    );
+  }
+
+  if (presentation === "creation" && showCreditedNotice && !fundingBusy) {
+    const progressPercent = Math.max(0, Math.min(100, (successRemainingMs / 5_000) * 100));
+    return (
+      <div className="w-full max-w-xl text-center" data-testid="amm-funding-success">
+        <div className="mx-auto mb-6 flex h-20 w-20 items-center justify-center rounded-full bg-emerald-500/20">
+          <Check className="h-10 w-10 text-emerald-400" />
+        </div>
+        <h2 className="mb-2 text-xl font-bold text-white sm:text-2xl" aria-live="polite">
+          {t("marketCreation.statusPaymentCredited")}
+        </h2>
+        <p className="mt-4 text-sm text-slate-400">
+          {t("marketCreation.fundingAutoAdvance", {
+            seconds: Math.ceil(successRemainingMs / 1_000),
+          })}
+        </p>
+        <div
+          role="progressbar"
+          aria-label={t("marketCreation.fundingAutoAdvanceProgress")}
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={Math.round(progressPercent)}
+          className="mx-auto mt-4 h-1.5 w-48 overflow-hidden rounded-full bg-slate-800"
+        >
+          <div
+            data-testid="amm-funding-success-progress"
+            className="h-full rounded-full bg-emerald-400 transition-[width] duration-75 ease-linear"
+            style={{ width: `${progressPercent}%` }}
+          />
+        </div>
       </div>
     );
   }

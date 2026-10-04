@@ -58,6 +58,10 @@ export function MarketCreationWizard(props: MarketCreationWizardProps) {
     createdMarketBaseAsset,
     createdMarketDivisibility,
     onRequireWallet,
+    retainedCreation,
+    isLoadingCreation,
+    onResumeCreation,
+    onDismissCreationError,
   } = props;
 
   const { currentStep } = draft;
@@ -65,7 +69,7 @@ export function MarketCreationWizard(props: MarketCreationWizardProps) {
   const isReviewStep = outcomeType === "yesno" ? currentStep >= 3 : currentStep === 4;
 
   const [bannerDismissed, setBannerDismissed] = useState(false);
-  const showResumeBanner = hasSavedDraft && !bannerDismissed;
+  const showResumeBanner = hasSavedDraft && !bannerDismissed && !retainedCreation;
 
   const handleStartOver = () => {
     clearDraft();
@@ -161,6 +165,58 @@ export function MarketCreationWizard(props: MarketCreationWizardProps) {
             onRequireWallet={onRequireWallet}
           />
         </div>
+        {feeOverlays}
+      </div>
+    );
+  }
+
+  if (retainedCreation) {
+    return (
+      <div className="min-h-screen bg-slate-50 dark:bg-slate-950 flex flex-col">
+        {header}
+        <section
+          data-testid="market-creation-resume"
+          aria-labelledby="creation-resume-title"
+          className="mx-auto my-12 w-full max-w-xl rounded-xl border border-amber-500/40 bg-slate-900 p-6"
+        >
+          <h1 id="creation-resume-title" className="text-xl font-semibold text-white">
+            {t("marketCreation.creationRetainedTitle")}
+          </h1>
+          <p className="mt-3 text-slate-200">{retainedCreation.title}</p>
+          <p role="status" className="mt-3 text-sm text-amber-200">
+            {t(
+              retainedCreation.mintConfirmed
+                ? "marketCreation.creationMintConfirmed"
+                : "marketCreation.creationRetainedDescription",
+            )}
+          </p>
+          <p className="mt-3 text-sm text-slate-300">
+            {t("marketCreation.creationResumeDescription")}
+          </p>
+          <button
+            data-testid="resume-market-creation"
+            onClick={onResumeCreation}
+            disabled={isSubmitting || isLoadingCreation}
+            className="mt-6 w-full rounded-full bg-green-600 px-4 py-3 font-semibold text-white disabled:opacity-50"
+          >
+            {t(isSubmitting ? "marketCreation.creatingMarket" : "marketCreation.resumeCreation")}
+          </button>
+          {submitError && (
+            <div
+              role="alert"
+              className="mt-4 rounded-xl border border-red-500/30 bg-red-500/10 p-4"
+            >
+              <p className="select-text text-sm text-red-300">{submitError}</p>
+              <button
+                onClick={onDismissCreationError}
+                aria-label={t("marketCreation.dismissCreationError")}
+                className="mt-3 text-sm text-red-200 underline"
+              >
+                {t("marketCreation.dismissCreationError")}
+              </button>
+            </div>
+          )}
+        </section>
         {feeOverlays}
       </div>
     );

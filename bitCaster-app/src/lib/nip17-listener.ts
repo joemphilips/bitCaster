@@ -1,9 +1,8 @@
-import type { PaymentRequestPayload } from "@cashu/cashu-ts";
+import { readPendingCashuPaymentRequestMessage } from "@bitcaster/client-sdk/paymentRequest";
+import { normalizeNostrRelayUrls } from "@bitcaster/client-sdk/nostrRelays";
 import { deriveNostrKeyPair, subscribeNip17DMs } from "./nip17";
 import { encodeToken } from "./cashu";
 import { ingressReceiveCashuToken } from "./walletOps";
-import { normalizeUrl } from "./url";
-import { parseCashuProofUnit } from "@bitcaster/client-sdk/marketUnits";
 import { useActivityLogStore } from "@/stores/activity-log";
 import { usePaymentRequestInbox } from "@/stores/paymentRequestInbox";
 import { useWalletStore } from "@/stores/wallet";
@@ -43,6 +42,7 @@ interface ListenerStart {
   mnemonic: string;
   relayKey: string;
   promise: Promise<void>;
+  controller: AbortController;
 }
 
 let _current: ListenerHandle | null = null;
@@ -72,29 +72,19 @@ async function handleIncomingDM(
 ): Promise<void> {
   if (!isCurrentListenerContext(generation, scopeId)) return;
 
-  let payload: PaymentRequestPayload;
-  try {
-    payload = JSON.parse(content) as PaymentRequestPayload;
-  } catch {
-    // Not a JSON payload — ignore silently (other NIP-17 traffic).
-    return;
-  }
-  if (!payload?.proofs || !payload.mint) return;
-  if (typeof payload.id !== "string" || payload.id.length === 0) return;
-
-  const normalizedMint = normalizeUrl(payload.mint);
-  const pending = usePaymentRequestInbox.getState().pending[payload.id];
-  if (!pending || pending.walletScopeId !== scopeId || pending.mintUrl !== normalizedMint) return;
+  const message = readPendingCashuPaymentRequestMessage({
+    content,
+    walletScopeId: scopeId,
+    readPending: (id) => usePaymentRequestInbox.getState().pending[id],
+  });
+  if (message === null) return;
+  const { payload, normalizedMint, unit } = message;
 
   const dedupKey = `${scopeId}|${payload.id}|${payload.proofs[0]?.secret ?? ""}`;
   if (_processedEvents.has(dedupKey) || _processingEvents.has(dedupKey)) return;
   _processingEvents.add(dedupKey);
 
   try {
-    const unit = parseCashuProofUnit(payload.unit);
-    if (!unit) {
-      throw new Error(`Unsupported Cashu proof unit '${payload.unit ?? ""}'`);
-    }
     const token = encodeToken(payload.proofs, normalizedMint, unit);
     if (
       !isCurrentListenerContext(generation, scopeId) ||
@@ -150,11 +140,16 @@ async function handleIncomingDM(
  * the previous subscription before starting a new one.
  */
 export async function startNip17Listener(mnemonic: string, relays: string[]): Promise<void> {
+  if (relays.length === 0) {
+    stopNip17Listener();
+    return;
+  }
+  const selectedRelays = normalizeNostrRelayUrls(relays);
   if (!mnemonic) return;
   const scopeId = browserWalletScopeIdFromMnemonic(mnemonic);
   const walletId = browserWalletIdFromMnemonic(mnemonic);
   if (scopeId === null || walletId === null || !isCurrentWalletScope(scopeId)) return;
-  const relayKey = [...relays].sort().join("|");
+  const relayKey = JSON.stringify([...selectedRelays].sort());
   if (
     _current &&
     _current.mnemonic === mnemonic &&
@@ -169,6 +164,7 @@ export async function startNip17Listener(mnemonic: string, relays: string[]): Pr
   }
 
   const generation = ++_generation;
+  _starting?.controller.abort();
   _current?.unsub();
   _current = null;
   _starting = null;
@@ -178,7 +174,9 @@ export async function startNip17Listener(mnemonic: string, relays: string[]): Pr
     mnemonic,
     relayKey,
     promise: Promise.resolve(),
+    controller: new AbortController(),
   };
+  _starting = pendingStart;
   pendingStart.promise = (async () => {
     const kp = deriveNostrKeyPair(mnemonic);
     const unsub = await subscribeNip17DMs(
@@ -187,7 +185,8 @@ export async function startNip17Listener(mnemonic: string, relays: string[]): Pr
       (content) => {
         void handleIncomingDM(content, generation, scopeId, walletId);
       },
-      relays.length > 0 ? relays : undefined,
+      selectedRelays,
+      pendingStart.controller.signal,
     );
     if (!isCurrentListenerContext(generation, scopeId)) {
       unsub();
@@ -197,12 +196,12 @@ export async function startNip17Listener(mnemonic: string, relays: string[]): Pr
   })().finally(() => {
     if (_starting?.generation === generation) _starting = null;
   });
-  _starting = pendingStart;
   return pendingStart.promise;
 }
 
 export function stopNip17Listener(): void {
   _generation += 1;
+  _starting?.controller.abort();
   _current?.unsub();
   _current = null;
   _starting = null;

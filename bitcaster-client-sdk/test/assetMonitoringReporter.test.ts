@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { EngineClientError } from '../src/engineClient.ts'
+import { BitcasterEngineClient, EngineClientError } from '../src/engineClient.ts'
 import {
   AssetMonitoringReporter,
   fetchAssetMonitoringCatalogue,
@@ -21,7 +21,7 @@ const holdings = [
   },
 ]
 
-test('asset-monitoring reporter coalesces changes and retries only a safe 409 interval', async (t) => {
+test('asset-monitoring reporter coalesces changes and retries a baseline-required interval', async (t) => {
   const requests: Array<{ startsNewInterval: boolean }> = []
   let calls = 0
   const reporter = new AssetMonitoringReporter({
@@ -30,7 +30,9 @@ test('asset-monitoring reporter coalesces changes and retries only a safe 409 in
     remote: {
       submitAssetMonitoringReport: async (request) => {
         requests.push(request)
-        if (calls++ === 0) throw new EngineClientError(409, 'interval')
+        if (calls++ === 0) {
+          throw new EngineClientError(409, 'interval', 'asset-monitoring-baseline-required')
+        }
       },
     },
     hasPendingSubmittedOrder: async () => false,
@@ -48,6 +50,104 @@ test('asset-monitoring reporter coalesces changes and retries only a safe 409 in
     requests.map((request) => request.startsNewInterval),
     [false, true],
   )
+})
+
+test('asset-monitoring reporter restarts only for the baseline-required ProblemDetails code', async (t) => {
+  const scenarios = [
+    {
+      name: 'baseline required without a pending order',
+      code: 'asset-monitoring-baseline-required',
+      pendingOrder: false,
+      expectedStartsNewInterval: [false, true],
+      expectedPendingChecks: 1,
+      expectedAccepted: 1,
+    },
+    {
+      name: 'baseline required with a pending order',
+      code: 'asset-monitoring-baseline-required',
+      pendingOrder: true,
+      expectedStartsNewInterval: [false],
+      expectedPendingChecks: 1,
+      expectedAccepted: 0,
+    },
+    {
+      name: 'changed-content conflict',
+      code: 'asset-monitoring-report-conflict',
+      pendingOrder: false,
+      expectedStartsNewInterval: [false],
+      expectedPendingChecks: 0,
+      expectedAccepted: 0,
+    },
+    {
+      name: 'unknown conflict code',
+      code: 'other-conflict',
+      pendingOrder: false,
+      expectedStartsNewInterval: [false],
+      expectedPendingChecks: 0,
+      expectedAccepted: 0,
+    },
+    {
+      name: 'uncoded conflict',
+      code: undefined,
+      pendingOrder: false,
+      expectedStartsNewInterval: [false],
+      expectedPendingChecks: 0,
+      expectedAccepted: 0,
+    },
+  ] as const
+
+  for (const scenario of scenarios) {
+    await t.test(scenario.name, async (subtest) => {
+      const requests: Array<{ startsNewInterval: boolean }> = []
+      let pendingChecks = 0
+      let accepted = 0
+      const client = new BitcasterEngineClient({
+        baseUrl: 'https://engine.example',
+        fetchImpl: async (_input, init) => {
+          assert.equal(typeof init?.body, 'string')
+          requests.push(JSON.parse(init!.body as string) as { startsNewInterval: boolean })
+          if (requests.length === 1) {
+            return new Response(
+              JSON.stringify({ status: 409, code: scenario.code, detail: 'report refused' }),
+              { status: 409, headers: { 'content-type': 'application/problem+json' } },
+            )
+          }
+          return new Response(null, { status: 204 })
+        },
+      })
+      const reporter = new AssetMonitoringReporter({
+        walletId,
+        buildHoldings: async () => holdings,
+        remote: {
+          submitAssetMonitoringReport: (request) => client.submitAssetMonitoringReport(request),
+        },
+        hasPendingSubmittedOrder: async () => {
+          pendingChecks += 1
+          return scenario.pendingOrder
+        },
+        isCurrent: () => true,
+        onAccepted: () => {
+          accepted += 1
+        },
+      })
+      subtest.after(() => reporter.stop())
+
+      reporter.request()
+      if (scenario.expectedAccepted > 0) {
+        await waitFor(() => accepted === scenario.expectedAccepted)
+      } else {
+        await waitFor(() => requests.length === 1)
+        await new Promise((resolve) => setTimeout(resolve, 0))
+      }
+
+      assert.deepEqual(
+        requests.map((request) => request.startsNewInterval),
+        scenario.expectedStartsNewInterval,
+      )
+      assert.equal(pendingChecks, scenario.expectedPendingChecks)
+      assert.equal(accepted, scenario.expectedAccepted)
+    })
+  }
 })
 
 test('asset-monitoring reporter retries a transient failure without another wallet change', async (t) => {
@@ -72,9 +172,27 @@ test('asset-monitoring reporter retries a transient failure without another wall
 
 test('asset-monitoring reporter calls onAccepted only for accepted reports', async (t) => {
   const scenarios = [
-    { name: 'normal success', firstError: undefined, expectedCalls: 1, expectedAccepted: 1 },
-    { name: 'safe 409 conflict', firstError: 409, expectedCalls: 2, expectedAccepted: 1 },
-    { name: 'permanent failure', firstError: 403, expectedCalls: 1, expectedAccepted: 0 },
+    {
+      name: 'normal success',
+      firstErrorStatus: undefined,
+      firstErrorCode: undefined,
+      expectedCalls: 1,
+      expectedAccepted: 1,
+    },
+    {
+      name: 'baseline-required conflict',
+      firstErrorStatus: 409,
+      firstErrorCode: 'asset-monitoring-baseline-required',
+      expectedCalls: 2,
+      expectedAccepted: 1,
+    },
+    {
+      name: 'permanent failure',
+      firstErrorStatus: 403,
+      firstErrorCode: undefined,
+      expectedCalls: 1,
+      expectedAccepted: 0,
+    },
   ] as const
 
   for (const scenario of scenarios) {
@@ -91,8 +209,12 @@ test('asset-monitoring reporter calls onAccepted only for accepted reports', asy
         remote: {
           submitAssetMonitoringReport: async () => {
             calls += 1
-            if (calls === 1 && scenario.firstError !== undefined) {
-              throw new EngineClientError(scenario.firstError, 'test response')
+            if (calls === 1 && scenario.firstErrorStatus !== undefined) {
+              throw new EngineClientError(
+                scenario.firstErrorStatus,
+                'test response',
+                scenario.firstErrorCode,
+              )
             }
           },
         },

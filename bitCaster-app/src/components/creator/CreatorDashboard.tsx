@@ -4,9 +4,9 @@ import { useTranslation } from "react-i18next";
 import { Plus, TrendingUp, CheckCircle2, BarChart3, Coins, AlertCircle } from "lucide-react";
 import { formatBtc } from "@/lib/format";
 import { formatMarketSubunits } from "@bitcaster/client-sdk/marketUnits";
-import { buildOracleAttestationEvent } from "@/lib/oracleAttestation";
-import { getOracleAnnouncementEventId, signEnumAttestation } from "@/lib/kormir";
-import { submitOracleAttestation } from "@/lib/markets";
+import { publishBrowserOracleOutcome } from "@/lib/oracleAttestation";
+import { ORACLE_EXPLANATION_UTF8_BYTES_MAX } from "@bitcaster/client-sdk/oracleResolutionExplanation";
+import { NativeDialog } from "@/components/shared/NativeDialog";
 import { useCreatorDashboardState } from "@/hooks/useCreatorDashboardState";
 import { effectiveRelayUrls } from "@/lib/relayDefaults";
 import { MyMarkets } from "@/components/portfolio/MyMarkets";
@@ -14,6 +14,13 @@ import { PrimaryGradientButton } from "@/components/shared/PrimaryGradientButton
 import { useCreatorMarketsStore } from "@/stores/creatorMarkets";
 import { useSettingsStore } from "@/stores/settings";
 import { AnalyticsComingSoon } from "./AnalyticsComingSoon";
+import type { CreatorEngineDataStatus } from "@/types/portfolio";
+
+const ENGINE_VOLUME_SUBLABELS: Record<CreatorEngineDataStatus, string> = {
+  current: "creator.statTotalVolumeSub",
+  stale: "creator.engineDataStale",
+  unavailable: "creator.engineDataUnavailable",
+};
 
 type ActiveTab = "overview" | "analytics";
 
@@ -56,84 +63,55 @@ export function CreatorDashboard() {
   const [resolvingMarketId, setResolvingMarketId] = useState<string | null>(null);
   const [resolutionError, setResolutionError] = useState<string | null>(null);
   const [resolutionSuccess, setResolutionSuccess] = useState<string | null>(null);
-  const { stats, markets, isLoading, error, pubkey, refresh } = useCreatorDashboardState();
-  const signerMode = useSettingsStore((s) => s.nostrSignerMode);
-  const nsecSecret = useSettingsStore((s) => s.nsecSecret);
+  const { stats, markets, isLoading, error, pubkey, refresh, engineDataStatus } =
+    useCreatorDashboardState();
   const relays = useSettingsStore((s) => s.relays);
-  const markOracleAttested = useCreatorMarketsStore((s) => s.markOracleAttested);
-
+  const [resolutionDialog, setResolutionDialog] = useState<{
+    marketId: string;
+    outcome: string;
+  } | null>(null);
+  const [explanation, setExplanation] = useState("");
   const handleCreateMarket = () => navigate("/creator/new");
   const handleViewMarket = (marketId: string) => navigate(`/markets/${marketId}`);
-  const handlePublishOracleAttestation = async (marketId: string, outcome: string) => {
+  const handlePublishOracleAttestation = (marketId: string, outcome: string) => {
     const market = markets.find((m) => m.id === marketId);
-    if (!market?.oracle) return;
+    if (!market?.oracle || !market.oracle.outcomes.includes(outcome)) return;
     setResolutionError(null);
     setResolutionSuccess(null);
-    if (!market.oracle.outcomes.includes(outcome)) {
-      setResolutionError(t("creator.invalidAttestationOutcome"));
-      return;
-    }
-    if (signerMode !== "nsec") {
-      setResolutionError(t("creator.nsecRequiredToResolve"));
-      return;
-    }
-    if (!nsecSecret) {
-      setResolutionError(t("creator.nsecRequiredToResolve"));
-      return;
-    }
-    const relayUrls = effectiveRelayUrls(relays);
-    if (relayUrls.length === 0) {
-      setResolutionError(t("creator.relayRequiredToResolve"));
-      return;
-    }
-    const confirmed = window.confirm(
-      t("creator.closeMarketConfirm", { title: market.title, outcome }),
-    );
-    if (!confirmed) return;
+    setExplanation(market.oracle.explanationDraft ?? "");
+    setResolutionDialog({
+      marketId,
+      outcome: market.oracle.chosenOutcome ?? market.oracle.attestedOutcome ?? outcome,
+    });
+  };
+  const confirmResolution = async () => {
+    if (!resolutionDialog) return;
+    const { marketId, outcome } = resolutionDialog;
     setResolvingMarketId(marketId);
     try {
-      // Sign against the announcement's COMMITTED nonce via kormir. The mint
-      // enforces the DLC committed-nonce scheme at redeem; a fresh-nonce
-      // signature would close the market but leave it unclaimable.
-      //
-      // Pass the mirrored announcement hex so a fresh browser profile (which
-      // restored only the oracle nsec and lost kormir's nonce-index store) can
-      // re-import the committed-nonce material before signing (P22 B1b). The
-      // import is idempotent and non-destructive when the event already exists.
-      const attestationHex = await signEnumAttestation(
-        relayUrls,
-        market.oracle.eventId,
+      await useCreatorMarketsStore.getState().saveOracleExplanationDraft(marketId, explanation);
+      const result = await publishBrowserOracleOutcome(
+        marketId,
         outcome,
-        market.oracle.announcementHex,
+        explanation,
+        effectiveRelayUrls(relays),
       );
-      const announcementEventId =
-        market.oracle.announcementEventId ??
-        (await getOracleAnnouncementEventId(relayUrls, market.oracle.eventId));
-      if (!announcementEventId) {
-        throw new Error(t("creator.missingAnnouncementEventId"));
-      }
-      const attestation = buildOracleAttestationEvent(
-        nsecSecret,
-        attestationHex,
-        announcementEventId,
+      setResolutionSuccess(
+        t(
+          result.failures.length
+            ? "creator.oracleDeliveryIncomplete"
+            : "creator.oracleDeliveryComplete",
+          { outcome },
+        ),
       );
-      await submitOracleAttestation(marketId, attestation);
-      markOracleAttested(marketId, {
-        outcome,
-        attestationHex,
-        attestedAt: new Date().toISOString(),
-      });
-      setResolutionSuccess(t("creator.attestationPublished", { outcome }));
+      setResolutionDialog(null);
       refresh();
-    } catch (err) {
-      setResolutionError(
-        err instanceof Error ? err.message : t("creator.attestationPublishFailed"),
-      );
+    } catch {
+      setResolutionError(t("creator.oracleRecoveryRequired"));
     } finally {
       setResolvingMarketId(null);
     }
   };
-
   return (
     <div className="min-h-screen bg-slate-50 dark:bg-slate-950">
       <div className="mx-auto max-w-6xl px-4 py-6 sm:px-6 lg:px-8">
@@ -194,8 +172,12 @@ export function CreatorDashboard() {
               />
               <StatCard
                 label={t("creator.statTotalVolume")}
-                value={formatMarketSubunits(stats.totalVolumeSubunits, "sat")}
-                subValue={t("creator.statTotalVolumeSub")}
+                value={
+                  engineDataStatus === "unavailable"
+                    ? "—"
+                    : formatMarketSubunits(stats.totalVolumeSubunits, "sat")
+                }
+                subValue={t(ENGINE_VOLUME_SUBLABELS[engineDataStatus])}
                 icon={<BarChart3 className="h-5 w-5" />}
               />
               <StatCard
@@ -212,7 +194,7 @@ export function CreatorDashboard() {
               <div className="flex items-start gap-3 rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800 dark:border-rose-800 dark:bg-rose-950/40 dark:text-rose-300">
                 <AlertCircle className="mt-0.5 h-5 w-5 flex-shrink-0" />
                 <div>
-                  <p className="font-semibold">{t("creator.volumeErrorTitle")}</p>
+                  <p className="font-semibold">{t("creator.engineDataUnavailable")}</p>
                   <p className="mt-0.5 text-xs opacity-80">{error}</p>
                 </div>
               </div>
@@ -251,6 +233,67 @@ export function CreatorDashboard() {
         )}
 
         {activeTab === "analytics" && <AnalyticsComingSoon />}
+        {resolutionDialog && (
+          <NativeDialog
+            ariaLabel={t("creator.resolveDialogTitle")}
+            canDismiss={resolvingMarketId === null}
+            onDismiss={() => setResolutionDialog(null)}
+          >
+            {(dismiss) => (
+              <div className="mx-auto mt-16 w-[calc(100%-2rem)] max-w-lg rounded-2xl bg-white p-6 text-slate-900 shadow-xl dark:bg-slate-900 dark:text-slate-100">
+                <h2 className="text-xl font-semibold">{t("creator.resolveDialogTitle")}</h2>
+                <p className="mt-3">
+                  {t("creator.resolveImmutableChoice", {
+                    outcome: resolutionDialog.outcome,
+                  })}
+                </p>
+                {resolutionError && (
+                  <p role="alert" className="mt-3 text-sm text-rose-600">
+                    {resolutionError}
+                  </p>
+                )}
+                <label className="mt-4 block" htmlFor="oracle-explanation">
+                  {t("creator.explanationOptional")}
+                </label>
+                <textarea
+                  id="oracle-explanation"
+                  value={explanation}
+                  disabled={
+                    !!markets.find((m) => m.id === resolutionDialog.marketId)?.oracle
+                      ?.chosenOutcome ||
+                    !!markets.find((m) => m.id === resolutionDialog.marketId)?.oracle
+                      ?.attestedOutcome ||
+                    resolvingMarketId !== null
+                  }
+                  onChange={(event) => setExplanation(event.target.value)}
+                  className="mt-2 min-h-28 w-full rounded-lg border border-slate-300 p-3 dark:border-slate-700 dark:bg-slate-800"
+                />
+                <p className="mt-2 text-sm text-slate-500">
+                  {t("creator.explanationLimit", {
+                    limit: ORACLE_EXPLANATION_UTF8_BYTES_MAX,
+                  })}
+                </p>
+                <div className="mt-6 flex justify-end gap-3">
+                  <button type="button" disabled={resolvingMarketId !== null} onClick={dismiss}>
+                    {t("common.cancel")}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void confirmResolution()}
+                    disabled={
+                      resolvingMarketId !== null ||
+                      new TextEncoder().encode(explanation).length >
+                        ORACLE_EXPLANATION_UTF8_BYTES_MAX
+                    }
+                    className="rounded-lg bg-emerald-600 px-4 py-2 font-semibold text-white disabled:opacity-50"
+                  >
+                    {t(resolvingMarketId ? "creator.closingMarket" : "creator.confirmResolution")}
+                  </button>
+                </div>
+              </div>
+            )}
+          </NativeDialog>
+        )}
       </div>
     </div>
   );

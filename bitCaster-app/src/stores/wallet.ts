@@ -33,6 +33,7 @@ import {
 import { createActiveBrowserWalletCounterSource } from "./browser-wallet-counter-db";
 import type { MintConnectionTestStatus } from "@/types/wallet";
 import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
+import { readPublicMintMetadata } from "@bitcaster/client-sdk";
 import {
   cashuAmountToMarketSubunits,
   defaultCollateralUnit,
@@ -180,17 +181,12 @@ async function addOrUpdateMint(
   activate: boolean,
 ): Promise<void> {
   const normalized = normalizeUrl(url);
-  const mint = new CashuMint(normalized);
-  const [info, { keysets }, keys] = await Promise.all([
-    mint.getInfo(),
-    mint.getKeySets(),
-    mint.getKeys(),
-  ]);
+  const { info, keysets, keys } = await readPublicMintMetadata(normalized);
   const storedMint: StoredMint = {
     url: normalized,
     info: info as unknown as Record<string, unknown>,
     keysets,
-    keys: keys.keysets[0],
+    keys: keys[0],
   };
   set((s) => {
     const exists = s.mints.some((m) => m.url === normalized);

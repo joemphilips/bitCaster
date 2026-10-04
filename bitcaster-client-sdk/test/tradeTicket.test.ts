@@ -256,6 +256,57 @@ function fillablePreview(overrides: Record<string, unknown> = {}) {
   }
 }
 
+test('protected tickets retain the accepted aggregate independently of worst price', () => {
+  for (const side of ['Buy', 'Sell'] as const) {
+    for (const tokenSide of ['Outcome', 'Complement'] as const) {
+      const ticket = buildTradeTicket({
+        market: yesNoMarket,
+        selection: { side: tokenSide === 'Outcome' ? 'yes' : 'no' },
+        amountSubunits: 10_000,
+        side,
+        orderType: 'market',
+        limitPrice: 500,
+      })
+      const worstPrice = side === 'Buy' ? 500 : 300
+      const protect = (quotePaymentSubunits: number) =>
+        buildProtectedTradeTicket({
+          ticket,
+          previewRequest: previewRequest(ticket),
+          previewResponse: fillablePreview({
+            quotePaymentSubunits,
+            averagePrice: quotePaymentSubunits / 10,
+            worstPrice,
+            projectedFinalPrice: tokenSide === 'Outcome' ? 400 : 600,
+          }),
+        })
+      const accepted = protect(4_000)
+      const changed = protect(side === 'Buy' ? 5_000 : 3_000)
+      assert.equal(accepted.request.price, worstPrice)
+      assert.equal(changed.request.price, worstPrice)
+      assert.equal(accepted.request.maxQuotePaymentSubunits, side === 'Buy' ? 4_000 : null)
+      assert.equal(accepted.request.minQuotePaymentSubunits, side === 'Sell' ? 4_000 : null)
+      assert.equal(changed.request.maxQuotePaymentSubunits, side === 'Buy' ? 5_000 : null)
+      assert.equal(changed.request.minQuotePaymentSubunits, side === 'Sell' ? 3_000 : null)
+      assert.equal(ticket.request.maxQuotePaymentSubunits, undefined)
+      assert.equal(ticket.request.minQuotePaymentSubunits, undefined)
+      assert.throws(
+        () =>
+          buildProtectedTradeTicket({
+            ticket: accepted,
+            previewRequest: previewRequest(accepted),
+            previewResponse: fillablePreview({
+              quotePaymentSubunits: 5_000,
+              averagePrice: 500,
+              worstPrice,
+              projectedFinalPrice: 500,
+            }),
+          }),
+        /accepted quote payment cannot change/,
+      )
+    }
+  }
+})
+
 test('buildProtectedTradeTicket uses the selected-token worst price for Buy and Sell', () => {
   const buy = buildTradeTicket({
     market: yesNoMarket,

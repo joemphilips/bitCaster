@@ -4,6 +4,7 @@ import {
   decodeSettlementGroupStateChangedDelta,
 } from '@bitcaster-market/client-sdk/engineClient'
 import { signNip98 } from './nostrAuth.ts'
+import { startOrderPhase } from './orderTimeline.ts'
 
 const require = createRequire(import.meta.url)
 
@@ -32,6 +33,7 @@ export interface OrderLifecycleDelta {
 }
 
 export interface SignalROrderLifecycleConnectionOptions {
+  observeOrderTimeline?: import('./orderTimeline.ts').OrderTimelineObserver
   engineBaseUrl: string
   nostrSecretKeyHex: string
   onOrderLifecycleChanged?: (delta: OrderLifecycleDelta) => void | Promise<void>
@@ -121,15 +123,41 @@ export class SignalROrderLifecycleConnection {
 
   private registerHandlers(connection: HubConnectionLike): void {
     connection.on('OrderLifecycleChanged', (value: unknown) => {
+      const finish = startOrderPhase(
+        this.callbacks.observeOrderTimeline,
+        'notification-receipt',
+        {},
+      )
       void this.invokeCallback(async () => {
-        await this.callbacks.onOrderLifecycleChanged?.(parseOrderLifecycleChanged(value))
+        const delta = decodeOrderLifecycleChangedDelta(value)
+        finish('success', {
+          orderId: delta.orderId,
+          groupId: delta.activeSettlementGroup?.groupId,
+          groupRevision: delta.activeSettlementGroup?.revision,
+        })
+        await this.callbacks.onOrderLifecycleChanged?.({
+          orderId: delta.orderId,
+          marketId: delta.marketId,
+        })
       })
     })
     connection.on('SettlementGroupStateChanged', (value: unknown) => {
+      const finish = startOrderPhase(
+        this.callbacks.observeOrderTimeline,
+        'notification-receipt',
+        {},
+      )
       void this.invokeCallback(async () => {
-        await this.callbacks.onSettlementGroupStateChanged?.(
-          parseSettlementGroupStateChanged(value),
-        )
+        const delta = decodeSettlementGroupStateChangedDelta(value)
+        finish('success', {
+          orderId: delta.orderId,
+          groupId: delta.settlementGroup.groupId,
+          groupRevision: delta.settlementGroup.revision,
+        })
+        await this.callbacks.onSettlementGroupStateChanged?.({
+          orderId: delta.orderId,
+          marketId: delta.marketId,
+        })
       })
     })
   }

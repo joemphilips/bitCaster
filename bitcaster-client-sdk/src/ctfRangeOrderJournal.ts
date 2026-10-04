@@ -5,9 +5,14 @@ import {
 } from './durableCustody.ts'
 import { assertOrderRouteBelongsToCondition } from './orderRoute.ts'
 import { parseMarketDivisibility, type MarketDivisibility } from './marketUnits.ts'
+import {
+  decodeCtfRangeOrderFeeFacts,
+  type CtfRangeOrderFeeFacts,
+} from './ctfRangeOrderFeeComposition.ts'
 
 export const CTF_RANGE_ORDER_PREPARATION_BYTES_MAX = 256 * 1_024
 export const CTF_RANGE_ORDER_PREPARATION_PAGE_LIMIT_MAX = 256
+export const CTF_RANGE_ORDER_FEE_CONSENT_BYTES_MAX = 4 * 1024
 
 const ID_LENGTH_MAX = 16_384
 const SHORT_ID_LENGTH_MAX = 1_024
@@ -31,6 +36,7 @@ const IDENTITY_FIELDS = [
   'divisibility',
   'authorizationExpiresAtUnixSeconds',
   'preparationBytes',
+  'feeConsentBytes',
   'createdAtMs',
 ] as const
 const RECORD_FIELDS = [
@@ -75,6 +81,7 @@ export interface CtfRangeOrderPreparationIdentity {
   readonly divisibility: MarketDivisibility
   readonly authorizationExpiresAtUnixSeconds: number
   readonly preparationBytes: Uint8Array
+  readonly feeConsentBytes: Uint8Array | null
   readonly createdAtMs: number
 }
 
@@ -114,16 +121,50 @@ export function decodeCtfRangeOrderPreparationArtifact(bytes: Uint8Array): unkno
   return parsed
 }
 
+export function encodeCtfRangeOrderFeeConsentArtifact(value: unknown): Uint8Array {
+  return encodeBoundedDurableArtifact(
+    decodeCtfRangeOrderFeeFacts(value),
+    CTF_RANGE_ORDER_FEE_CONSENT_BYTES_MAX,
+  )
+}
+
+export function decodeCtfRangeOrderFeeConsentArtifact(bytes: Uint8Array): CtfRangeOrderFeeFacts {
+  if (
+    !(bytes instanceof Uint8Array) ||
+    bytes.byteLength < 1 ||
+    bytes.byteLength > CTF_RANGE_ORDER_FEE_CONSENT_BYTES_MAX
+  ) {
+    throw new Error('CTF range fee consent bytes exceed their byte limit')
+  }
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes))
+  } catch {
+    throw new Error('CTF range fee consent bytes are not canonical JSON')
+  }
+  const facts = decodeCtfRangeOrderFeeFacts(parsed)
+  if (!sameBytes(bytes, encodeCtfRangeOrderFeeConsentArtifact(facts))) {
+    throw new Error('CTF range fee consent bytes are not canonical')
+  }
+  return facts
+}
+
 export function decodeCtfRangeOrderPreparationIdentity(
   value: unknown,
 ): CtfRangeOrderPreparationIdentity {
-  return decodeIdentityFields(exactRecord(value, IDENTITY_FIELDS, 'preparation identity'))
+  return decodeIdentityFields(
+    exactRecord(withAbsentFeeConsentAsNull(value), IDENTITY_FIELDS, 'preparation identity'),
+  )
 }
 
 export function decodeCtfRangeOrderPreparationRecord(
   value: unknown,
 ): CtfRangeOrderPreparationRecord {
-  const candidate = exactRecord(value, RECORD_FIELDS, 'preparation record')
+  const candidate = exactRecord(
+    withAbsentFeeConsentAsNull(value),
+    RECORD_FIELDS,
+    'preparation record',
+  )
   const identity = decodeIdentityFields(candidate)
   const lifecycleState = decodeCtfRangeOrderPreparationLifecycle(candidate.lifecycleState)
   const capability =
@@ -142,6 +183,12 @@ export function decodeCtfRangeOrderPreparationRecord(
     capability,
     updatedAtMs,
   }
+}
+
+function withAbsentFeeConsentAsNull(value: unknown): unknown {
+  return isRecord(value) && !Object.prototype.hasOwnProperty.call(value, 'feeConsentBytes')
+    ? { ...value, feeConsentBytes: null }
+    : value
 }
 
 export function decodeCtfRangeOrderPreparationCapability(
@@ -267,7 +314,10 @@ export function sameCtfRangeOrderPreparationIdentity(
     left.divisibility === right.divisibility &&
     left.authorizationExpiresAtUnixSeconds === right.authorizationExpiresAtUnixSeconds &&
     left.createdAtMs === right.createdAtMs &&
-    sameBytes(left.preparationBytes, right.preparationBytes)
+    sameBytes(left.preparationBytes, right.preparationBytes) &&
+    (left.feeConsentBytes === null
+      ? right.feeConsentBytes === null
+      : right.feeConsentBytes !== null && sameBytes(left.feeConsentBytes, right.feeConsentBytes))
   )
 }
 
@@ -375,6 +425,12 @@ function decodeIdentityFields(
       'authorization expiry',
     ),
     preparationBytes: requireCanonicalBytes(candidate.preparationBytes),
+    feeConsentBytes:
+      candidate.feeConsentBytes === null
+        ? null
+        : encodeCtfRangeOrderFeeConsentArtifact(
+            decodeCtfRangeOrderFeeConsentArtifact(candidate.feeConsentBytes as Uint8Array),
+          ),
     createdAtMs: requireNonnegativeSafeInteger(candidate.createdAtMs, 'created time'),
   }
 }

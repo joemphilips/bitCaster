@@ -180,9 +180,6 @@ describe("MarketDetail", () => {
         tradeAmount={0}
         tradePreview={null}
         tradeSide="Buy"
-        orderType="market"
-        limitOrderPreview={null}
-        limitPrice={50}
       />,
     );
 
@@ -199,9 +196,6 @@ describe("MarketDetail", () => {
         tradeAmount={0}
         tradePreview={null}
         tradeSide="Buy"
-        orderType="market"
-        limitOrderPreview={null}
-        limitPrice={50}
       />,
     );
 
@@ -229,9 +223,6 @@ describe("MarketDetail", () => {
         tradeAmount={1}
         tradePreview={null}
         tradeSide="Buy"
-        orderType="market"
-        limitOrderPreview={null}
-        limitPrice={50}
       />,
     );
 
@@ -245,9 +236,6 @@ describe("MarketDetail", () => {
         tradePreview={null}
         tradeSide="Buy"
         tradeTab="Liquidity"
-        orderType="market"
-        limitOrderPreview={null}
-        limitPrice={50}
       />,
     );
     expect(screen.queryByText("market.confirm")).not.toBeInTheDocument();
@@ -262,9 +250,6 @@ describe("MarketDetail", () => {
         tradeAmount={0}
         tradePreview={null}
         tradeSide="Buy"
-        orderType="market"
-        limitOrderPreview={null}
-        limitPrice={50}
       />,
     );
     act(() => {
@@ -281,9 +266,6 @@ describe("MarketDetail", () => {
           tradeAmount={0}
           tradePreview={null}
           tradeSide="Buy"
-          orderType="market"
-          limitOrderPreview={null}
-          limitPrice={50}
         />,
       );
     });
@@ -299,9 +281,6 @@ describe("MarketDetail", () => {
         tradeAmount={0}
         tradePreview={null}
         tradeSide="Buy"
-        orderType="market"
-        limitOrderPreview={null}
-        limitPrice={500}
       />,
     );
 
@@ -346,9 +325,6 @@ describe("MarketDetail", () => {
         tradeAmount={0}
         tradePreview={null}
         tradeSide="Buy"
-        orderType="market"
-        limitOrderPreview={null}
-        limitPrice={500}
       />,
     );
 
@@ -419,9 +395,6 @@ describe("MarketDetail", () => {
         tradeAmount={0}
         tradePreview={null}
         tradeSide="Buy"
-        orderType="market"
-        limitOrderPreview={null}
-        limitPrice={500}
       />,
     );
 
@@ -462,9 +435,6 @@ describe("MarketDetail", () => {
         tradeAmount={0}
         tradePreview={null}
         tradeSide="Buy"
-        orderType="market"
-        limitOrderPreview={null}
-        limitPrice={500_000}
       />,
     );
 
@@ -482,9 +452,6 @@ describe("MarketDetail", () => {
         tradeAmount={0}
         tradePreview={null}
         tradeSide="Buy"
-        orderType="market"
-        limitOrderPreview={null}
-        limitPrice={50}
       />,
     );
 
@@ -525,9 +492,6 @@ describe("MarketDetail", () => {
         tradeAmount={0}
         tradePreview={null}
         tradeSide="Buy"
-        orderType="market"
-        limitOrderPreview={null}
-        limitPrice={500}
       />,
     );
 
@@ -576,9 +540,6 @@ describe("MarketDetail", () => {
         tradeAmount={0}
         tradePreview={null}
         tradeSide="Buy"
-        orderType="market"
-        limitOrderPreview={null}
-        limitPrice={50}
       />,
     );
 
@@ -629,9 +590,6 @@ describe("MarketDetail", () => {
         tradeAmount={0}
         tradePreview={null}
         tradeSide="Buy"
-        orderType="market"
-        limitOrderPreview={null}
-        limitPrice={50}
       />,
     );
 
@@ -711,9 +669,6 @@ describe("MarketDetail", () => {
         tradeAmount={0}
         tradePreview={null}
         tradeSide="Buy"
-        orderType="market"
-        limitOrderPreview={null}
-        limitPrice={50}
       />,
     );
 
@@ -741,7 +696,7 @@ describe("MarketDetail", () => {
     );
   });
 
-  it("disables the mobile sticky confirm for market orders without executable liquidity", () => {
+  it("disables the mobile sticky confirm without executable FOK liquidity", () => {
     render(
       <MarketDetail
         market={makeMarket()}
@@ -752,9 +707,6 @@ describe("MarketDetail", () => {
         tradeFeeFacts={feeFacts()}
         feeConsentCurrent
         tradeSide="Buy"
-        orderType="market"
-        limitOrderPreview={null}
-        limitPrice={50}
       />,
     );
 
@@ -780,9 +732,6 @@ describe("MarketDetail", () => {
           tradeFeeFacts={feeFacts()}
           feeConsentCurrent
           tradeSide="Buy"
-          orderType="market"
-          limitOrderPreview={null}
-          limitPrice={50}
         />,
       );
 
@@ -819,9 +768,6 @@ describe("MarketDetail", () => {
         tradeFeeFacts={feeFacts()}
         feeConsentCurrent
         tradeSide="Buy"
-        orderType="market"
-        limitOrderPreview={null}
-        limitPrice={50}
       />,
     );
 

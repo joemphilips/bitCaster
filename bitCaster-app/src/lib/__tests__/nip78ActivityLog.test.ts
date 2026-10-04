@@ -2,6 +2,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ActivityItem } from "@/types/portfolio";
 import { fetchNip78ActivityLog, publishNip78ActivityLog } from "../nip78ActivityLog";
 import { fetchPrivateNip78Content, publishPrivateNip78 } from "../nip78Private";
+import {
+  decodeActivityLogPayload,
+  encodeActivityLogPayload,
+} from "@bitcaster/client-sdk/activityLog";
 
 vi.mock("../nip78Private", () => ({
   fetchPrivateNip78Content: vi.fn(),
@@ -31,6 +35,34 @@ beforeEach(() => {
 });
 
 describe("publishNip78ActivityLog", () => {
+  it("uses the shared codec for browser publish and native payload restore", async () => {
+    const rows = [item({ amountSubunits: 1_237 })];
+    await publishNip78ActivityLog("priv", rows);
+    expect(decodeActivityLogPayload(publishMock.mock.calls[0][2])).toEqual(rows);
+    fetchMock.mockResolvedValue(encodeActivityLogPayload(rows));
+    await expect(fetchNip78ActivityLog("pub", "priv")).resolves.toEqual(rows);
+  });
+  it("round-trips separate fills with exact submitted-order metadata through the private transport", async () => {
+    const fills = ["first", "second"].map((fillId) =>
+      item({
+        id: `trade:${"a".repeat(64)}:${fillId}`,
+        type: "Buy",
+        marketId: "condition-YES",
+        tradeDetails: {
+          orderId: "one",
+          fillId,
+          outcomeId: "YES",
+          tokenSide: "Outcome",
+          faceAmountSubunits: 1000,
+          divisibility: 1000,
+        },
+      }),
+    );
+    await publishNip78ActivityLog("priv", fills);
+    const payload = publishMock.mock.calls[0][2];
+    fetchMock.mockResolvedValue(payload);
+    await expect(fetchNip78ActivityLog("pub", "priv")).resolves.toEqual(fills);
+  });
   it("publishes portfolio activity through encrypted private NIP-78 helper", async () => {
     await publishNip78ActivityLog("priv", [item()]);
 
@@ -38,6 +70,7 @@ describe("publishNip78ActivityLog", () => {
       "priv",
       "bitcaster:activity-log",
       JSON.stringify({ items: [item()] }),
+      undefined,
     );
   });
 });

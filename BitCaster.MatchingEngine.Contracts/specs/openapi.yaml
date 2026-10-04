@@ -22,6 +22,8 @@ paths:
         and optionally stores a thumbnail.
         The authenticated pubkey from the NIP-98 header is recorded as the
         market creator — no creator field in the request body is needed.
+        The complete multipart request must not exceed 6 MiB, including
+        metadata, the thumbnail, and multipart boundaries.
       parameters:
         - $ref: '#/components/parameters/ConditionId'
       requestBody:
@@ -38,10 +40,11 @@ paths:
                   description: >
                     JSON-encoded CreateMarketRequest object containing market
                     title, description, outcomes, and category tags.
+                    Maximum length is 65,536 UTF-16 code units.
                 thumbnail:
                   type: string
                   format: binary
-                  description: Optional thumbnail image (JPEG, PNG, or WebP, max 5 MB).
+                  description: Optional thumbnail image (JPEG, PNG, or WebP, max 5 MiB).
       responses:
         '200':
           description: Market created
@@ -63,6 +66,35 @@ paths:
             application/json:
               schema:
                 type: string
+        '413':
+          description: The complete request body exceeds the 6 MiB limit.
+
+  /api/v1/markets/{conditionId}/registration:
+    get:
+      operationId: getMarketRegistration
+      summary: Fetch public registration facts for a market
+      description: >
+        Returns the stored registration identity and unit facts without reading
+        market prices, the catalogue, or mint data. This response does not
+        claim that trades or prices are available. A missing registration
+        returns 404; a failed registration read remains an error.
+      parameters:
+        - $ref: '#/components/parameters/ConditionId'
+      responses:
+        '200':
+          description: Stored public market registration facts
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MarketRegistrationResponse'
+        '400':
+          description: Invalid condition ID
+        '404':
+          description: No market registration exists for this condition ID
+        '429':
+          description: Anonymous or authenticated market-query rate limit exceeded
+        '500':
+          description: The registration authority could not be read
 
   /api/v1/markets/{conditionId}/oracle-attestation:
     post:
@@ -121,6 +153,20 @@ paths:
         the response never uses compound outcome ids.
       parameters:
         - $ref: '#/components/parameters/ConditionId'
+        - name: minimumEventOrder
+          in: query
+          required: false
+          description: Opaque source position from a server response. Do not compare positions on the client.
+          schema:
+            type: string
+            maxLength: 30
+        - name: refresh
+          in: query
+          required: false
+          description: Capture the current source position once. Wait for that position before returning the snapshot.
+          schema:
+            type: boolean
+            default: false
         - name: timeframe
           in: query
           required: false
@@ -141,7 +187,9 @@ paths:
               schema:
                 $ref: '#/components/schemas/MarketPriceHistoryResponse'
         '400':
-          description: Invalid condition id or timeframe
+          description: Invalid condition id, timeframe, or event order
+        '503':
+          description: The snapshot could not prove the requested position within the read deadline.
 
   /api/v1/markets/{conditionId}/comments:
     get:
@@ -151,10 +199,25 @@ paths:
         Returns engine-indexed comments attached to orders in this condition
         after those orders have produced at least one settled fill. The
         response is condition-keyed and returns the public kind-1 author
-        pubkey while intentionally omitting order ids, fill ids, ephemeral
-        pubkeys, and counterparty ids.
+        pubkey. It includes the associated confirmed fill id only inside
+        trade when its exact price coordinate is available. It omits order
+        ids, ephemeral pubkeys, and counterparty ids.
       parameters:
         - $ref: '#/components/parameters/ConditionId'
+        - name: minimumEventOrder
+          in: query
+          required: false
+          description: Opaque source position from a server response. Do not compare positions on the client.
+          schema:
+            type: string
+            maxLength: 30
+        - name: refresh
+          in: query
+          required: false
+          description: Capture the current source position once. Wait for that position before returning the snapshot.
+          schema:
+            type: boolean
+            default: false
       responses:
         '200':
           description: Verified market comments
@@ -163,7 +226,9 @@ paths:
               schema:
                 $ref: '#/components/schemas/MarketCommentsResponse'
         '400':
-          description: Invalid condition id
+          description: Invalid condition id or event order
+        '503':
+          description: The snapshot could not prove the requested position within the read deadline.
 
   /api/v1/conditions/{conditionId}/attestation:
     get:
@@ -1129,16 +1194,17 @@ paths:
   /api/v1/asset-monitoring/reports:
     post:
       operationId: submitAssetMonitoringReport
-      summary: Submit one complete display-only asset holdings report
+      summary: Submit one complete display-only asset holdings report for an account-wallet pair
       security:
         - nip98: []
       description: >
         Accepts one complete best-effort holdings snapshot for the authenticated
-        account and canonical wallet id. The engine does not verify proof
+        account and canonical wallet id. Each account-wallet pair has an
+        independent monitoring interval. The engine does not verify proof
         ownership and does not accept a seed signature or backup state. An
         exact retry of the latest report returns no content. Reusing the latest
-        report id with different content, or using an invalid interval or wallet
-        lifecycle, returns a conflict.
+        report id with different content, or using an invalid interval, returns
+        a report conflict.
       requestBody:
         required: true
         content:
@@ -1153,7 +1219,18 @@ paths:
         '401':
           description: Missing or invalid authentication.
         '409':
-          description: Latest-report idempotency or wallet interval lifecycle conflict.
+          description: >
+            ProblemDetails.code is `asset-monitoring-baseline-required` when
+            this account-wallet pair has no accepted baseline. It is
+            `asset-monitoring-report-conflict` for changed latest-report
+            content or another report conflict. A client may retry only the
+            baseline-required response with `startsNewInterval: true`, and
+            only when it has no pending submitted order. Other or unknown
+            conflict codes do not permit an automatic interval restart.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
         '413':
           description: Request exceeds the 1 MiB report limit.
         '429':
@@ -1162,14 +1239,18 @@ paths:
   /api/v1/asset-monitoring/summary:
     get:
       operationId: getAssetMonitoringSummary
-      summary: Read the active wallet asset-monitoring summary
+      summary: Read the selected account-wallet asset-monitoring summary
       security:
         - nip98: []
+      description: >
+        Reads only the wallet id selected by the authenticated account. Each
+        account-wallet pair has an independent monitoring interval. A pair
+        without a report returns an empty stale summary with no `asOf` value.
       parameters:
         - $ref: '#/components/parameters/AssetMonitoringWalletId'
       responses:
         '200':
-          description: Bounded active-wallet monitoring summary.
+          description: Bounded summary for the selected account-wallet pair.
           headers:
             Cache-Control:
               $ref: '#/components/headers/AssetMonitoringNoStore'
@@ -1185,9 +1266,6 @@ paths:
               schema: { $ref: '#/components/schemas/ProblemDetails' }
         '401':
           description: Missing or invalid authentication.
-        '409':
-          description: Wallet is not active for the authenticated account.
-          headers: { Cache-Control: { $ref: '#/components/headers/AssetMonitoringNoStore' } }
         '503':
           description: The active event-store provider has no bounded monitoring reader.
           headers: { Cache-Control: { $ref: '#/components/headers/AssetMonitoringNoStore' } }
@@ -1198,9 +1276,13 @@ paths:
   /api/v1/asset-monitoring/assets:
     get:
       operationId: getAssetMonitoringAssets
-      summary: Read one page of active wallet monitored assets
+      summary: Read one page of monitored assets for the selected account-wallet pair
       security:
         - nip98: []
+      description: >
+        Reads one page for the wallet id selected by the authenticated account.
+        Its interval and cursors are independent of other wallet ids used by
+        that account.
       parameters:
         - $ref: '#/components/parameters/AssetMonitoringWalletId'
         - name: pageSize
@@ -1211,7 +1293,7 @@ paths:
           schema: { type: string, minLength: 1, maxLength: 4096 }
       responses:
         '200':
-          description: Canonically ordered bounded active-wallet asset page.
+          description: Canonically ordered bounded asset page for the selected account-wallet pair.
           headers:
             Cache-Control:
               $ref: '#/components/headers/AssetMonitoringNoStore'
@@ -1220,16 +1302,13 @@ paths:
               schema:
                 $ref: '#/components/schemas/AssetMonitoringAssetsResponse'
         '400':
-          description: Malformed wallet id, page size, or cursor.
+          description: Malformed wallet id, page size, or invalid or stale cursor.
           headers: { Cache-Control: { $ref: '#/components/headers/AssetMonitoringNoStore' } }
           content:
             application/problem+json:
               schema: { $ref: '#/components/schemas/ProblemDetails' }
         '401':
           description: Missing or invalid authentication.
-        '409':
-          description: Wallet is not active for the authenticated account.
-          headers: { Cache-Control: { $ref: '#/components/headers/AssetMonitoringNoStore' } }
         '503':
           description: The active event-store provider has no bounded monitoring reader.
           headers: { Cache-Control: { $ref: '#/components/headers/AssetMonitoringNoStore' } }
@@ -1240,9 +1319,12 @@ paths:
   /api/v1/asset-monitoring/history:
     get:
       operationId: getAssetMonitoringHistory
-      summary: Read bounded estimated active wallet value history
+      summary: Read bounded estimated value history for the selected account-wallet pair
       security:
         - nip98: []
+      description: >
+        Reads history for the wallet id selected by the authenticated account.
+        Each account-wallet pair has an independent monitoring interval.
       parameters:
         - $ref: '#/components/parameters/AssetMonitoringWalletId'
         - name: timeframe
@@ -1253,7 +1335,7 @@ paths:
             default: 1D
       responses:
         '200':
-          description: At most 300 deterministic value points from compact active-interval facts.
+          description: At most 300 deterministic value points from compact facts in the selected account-wallet interval.
           headers:
             Cache-Control:
               $ref: '#/components/headers/AssetMonitoringNoStore'
@@ -1269,9 +1351,6 @@ paths:
               schema: { $ref: '#/components/schemas/ProblemDetails' }
         '401':
           description: Missing or invalid authentication.
-        '409':
-          description: Wallet is not active for the authenticated account.
-          headers: { Cache-Control: { $ref: '#/components/headers/AssetMonitoringNoStore' } }
         '503':
           description: The active event-store provider has no bounded monitoring reader.
           headers: { Cache-Control: { $ref: '#/components/headers/AssetMonitoringNoStore' } }
@@ -1282,9 +1361,12 @@ paths:
   /api/v1/portfolio:
     get:
       operationId: getPortfolio
-      summary: Read the bounded active wallet portfolio first-paint data
+      summary: Read bounded first-paint portfolio data for the selected account-wallet pair
       security:
         - nip98: []
+      description: >
+        Returns portfolio data for the wallet id selected by the authenticated
+        account. Each account-wallet pair has an independent monitoring interval.
       parameters:
         - $ref: '#/components/parameters/AssetMonitoringWalletId'
         - name: timeframe
@@ -1298,7 +1380,7 @@ paths:
           schema: { type: integer, format: int32, minimum: 1, maximum: 200, default: 50 }
       responses:
         '200':
-          description: Bounded active-wallet monitoring summary, asset page, and value history.
+          description: Bounded summary, asset page, and value history for the selected account-wallet pair.
           headers:
             Cache-Control:
               $ref: '#/components/headers/AssetMonitoringNoStore'
@@ -1314,9 +1396,6 @@ paths:
               schema: { $ref: '#/components/schemas/ProblemDetails' }
         '401':
           description: Missing or invalid authentication.
-        '409':
-          description: Wallet is not active for the authenticated account.
-          headers: { Cache-Control: { $ref: '#/components/headers/AssetMonitoringNoStore' } }
         '429':
           description: Authenticated history-read rate limit exceeded.
         '503':
@@ -1951,7 +2030,7 @@ components:
           description: Client-generated report identifier for exact retry handling.
         startsNewInterval:
           type: boolean
-          description: True for the first report and for a wallet switch.
+          description: True for the first report for this account-wallet pair or to start a new interval for this pair.
         holdings:
           type: array
           maxItems: 200
@@ -2136,6 +2215,26 @@ components:
           $ref: '#/components/schemas/OrderSide'
         price:
           $ref: '#/components/schemas/Probability'
+        maxQuotePaymentSubunits:
+          type:
+            - integer
+            - 'null'
+          format: int64
+          minimum: 0
+          description: >
+            Required nonnegative aggregate quote-payment maximum in msat for
+            Buy FOK. Use the accepted preview payment. Absent or null for Sell.
+            This bound does not include mint fees or replace the per-fill price.
+        minQuotePaymentSubunits:
+          type:
+            - integer
+            - 'null'
+          format: int64
+          minimum: 0
+          description: >
+            Required nonnegative aggregate quote-payment minimum in msat for
+            Sell FOK. Use the accepted preview payment. Absent or null for Buy.
+            This bound does not include mint fees or replace the per-fill price.
         amountSubunits:
           allOf:
             - $ref: '#/components/schemas/CollateralSubunits'
@@ -2912,6 +3011,7 @@ components:
         - attestedOutcome
         - oracleWitness
         - registeredAuthority
+        - attestationEvent
       properties:
         conditionId:
           type: string
@@ -2923,6 +3023,11 @@ components:
           $ref: '#/components/schemas/OracleWitness'
         registeredAuthority:
           $ref: '#/components/schemas/RegisteredConditionAuthority'
+        attestationEvent:
+          $ref: '#/components/schemas/OracleNostrEvent'
+          description: >
+            Exact signed kind-89 event retained with the verified resolution.
+            Its createdAt field carries the original NIP-01 created_at value.
 
     RegisteredConditionAuthority:
       type: object
@@ -3225,6 +3330,18 @@ components:
           type: string
           format: date-time
           nullable: true
+        maxQuotePaymentSubunits:
+          type: integer
+          format: int64
+          minimum: 0
+          nullable: true
+          description: The immutable accepted Buy FOK aggregate quote-payment maximum in msat. Null when not applicable.
+        minQuotePaymentSubunits:
+          type: integer
+          format: int64
+          minimum: 0
+          nullable: true
+          description: The immutable accepted Sell FOK aggregate quote-payment minimum in msat. Null when not applicable.
         activeSettlementGroup:
           oneOf:
             - $ref: '#/components/schemas/SettlementGroupSummary'
@@ -3719,10 +3836,11 @@ components:
           description: Exact outcome identity name from the corresponding outcomes list.
         color:
           type: string
+          nullable: true
           pattern: '^#[0-9A-F]{6}$'
           description: >
             Optional server-resolved display color. Present colors use
-            uppercase #RRGGBB. Older records can omit color.
+            uppercase #RRGGBB. Older records can omit color or return null.
 
     CreateMarketRequest:
       type: object
@@ -3820,6 +3938,48 @@ components:
             yes/no and categorical markets use `1000`; `1000000` is reserved
             for a future numeric trade representation.
 
+    MarketRegistrationResponse:
+      type: object
+      required:
+        - conditionId
+        - creatorPubkey
+        - outcomes
+        - baseAsset
+        - divisibility
+        - thumbnailUrl
+        - outcomeDetails
+      properties:
+        conditionId:
+          type: string
+          description: Registered condition ID.
+        creatorPubkey:
+          type: string
+          nullable: true
+          pattern: '^[0-9a-f]{64}$'
+          description: Creator Nostr pubkey recorded at registration, or null for legacy markets.
+        outcomes:
+          type: array
+          items:
+            type: string
+          description: Registered outcome identity names, in registration order.
+        baseAsset:
+          $ref: '#/components/schemas/BaseAsset'
+        divisibility:
+          type: integer
+          format: int32
+          description: >
+            Immutable registered market price denominator. Current markets use
+            1000; 1000000 is reserved for a future numeric trade representation.
+        thumbnailUrl:
+          type: string
+          nullable: true
+          description: Public thumbnail URL, or null when no thumbnail was registered.
+        outcomeDetails:
+          type: array
+          items:
+            $ref: '#/components/schemas/MarketOutcomeDetails'
+          description: Registered display details aligned with the outcome identity list.
+
     MarketPriceHistoryPoint:
       type: object
       required:
@@ -3833,10 +3993,10 @@ components:
           type: string
           minLength: 1
           description: >
-            Opaque canonical ordering identity for this confirmed trade.
-            Compare values with ordinal string ordering. The greater value
-            identifies the newer event, including when timestamps are equal.
-            Use this value when merging history with confirmed live trades.
+            Opaque source position for this confirmed trade.
+            Pass the value unchanged to minimumEventOrder when requesting a snapshot.
+            Do not compare positions on the client.
+            Do not merge live trade points into retained history snapshots.
         timestamp:
           type: string
           format: date-time
@@ -3881,7 +4041,17 @@ components:
         - conditionId
         - timeframe
         - outcomes
+        - snapshotEventOrder
+        - asOf
       properties:
+        snapshotEventOrder:
+          type: string
+          nullable: true
+          description: Applied source position proven for this snapshot. Treat this value as opaque.
+        asOf:
+          type: string
+          format: date-time
+          description: Server evaluation time for the selected history window.
         conditionId:
           type: string
         timeframe:
@@ -3904,6 +4074,7 @@ components:
         - content
         - createdAt
         - authorPubkey
+        - trade
       properties:
         commentId:
           type: string
@@ -3920,13 +4091,60 @@ components:
           type: string
           pattern: '^[0-9a-f]{64}$'
           description: Nostr pubkey that signed the comment.
+        trade:
+          description: Confirmed fill coordinate for this comment. Null when the exact coordinate is unavailable.
+          oneOf:
+            - $ref: '#/components/schemas/MarketCommentTrade'
+            - type: 'null'
+
+    MarketCommentTrade:
+      type: object
+      required:
+        - fillId
+        - outcomeId
+        - executedAt
+        - price
+        - priceDenominator
+      properties:
+        faceAmountSubunits:
+          type: integer
+          format: int64
+          nullable: true
+          minimum: 1
+          description: Linked confirmed fill size in market face-amount subunits. Null means unknown size.
+        fillId:
+          type: string
+          format: uuid
+          description: Confirmed fill associated with the comment.
+        outcomeId:
+          type: string
+          description: Primitive outcome route used by public trade history.
+        executedAt:
+          type: string
+          format: date-time
+          description: Confirmed fill time used by public trade history.
+        price:
+          type: integer
+          format: int32
+          minimum: 1
+          description: Primitive outcome price numerator used by public trade history.
+        priceDenominator:
+          type: integer
+          format: int32
+          minimum: 2
+          description: Market divisibility used as the price denominator.
 
     MarketCommentsResponse:
       type: object
       required:
         - conditionId
         - comments
+        - snapshotEventOrder
       properties:
+        snapshotEventOrder:
+          type: string
+          nullable: true
+          description: Applied source position proven for this snapshot. Treat this value as opaque.
         conditionId:
           type: string
         comments:

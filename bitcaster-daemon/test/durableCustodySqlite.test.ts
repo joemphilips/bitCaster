@@ -141,6 +141,70 @@ test('fenced custody unit of work rolls proof and counter writes back atomically
   }
 })
 
+test('putCounterCas refuses another mint binding before insert or update', async () => {
+  const fixture = await profile()
+  try {
+    const fence = await claimCustodyScopeLease(fixture.directory, {
+      scopeId: fixture.walletScopeId,
+      incarnationId: 'incarnation-counter-alias',
+      observedAtMs: 2,
+    })
+    const database = await openDaemonStateSqlite(fixture.directory)
+    try {
+      database
+        .prepare(
+          `INSERT INTO target_keyset_counters (
+             scope_id, normalized_mint, unit, keyset_id, next_counter, updated_at_ms
+           ) VALUES (?, 'https://mint-one.example', 'sat', ?, 4, 2)`,
+        )
+        .run(fixture.walletScopeId, KEYSET_ID)
+      const newMintCounter: CustodyCounterSqliteRow = {
+        scopeId: fixture.walletScopeId,
+        normalizedMint: 'https://mint-two.example',
+        unit: 'msat',
+        keysetId: KEYSET_ID,
+        nextCounter: 1,
+        revision: 0,
+        updatedAtMs: 3,
+      }
+      const beforeInsert = readCounterRows(database, fixture.walletScopeId)
+      await assert.rejects(
+        () =>
+          withDurableCustodyUnitOfWork(fixture.directory, fence, 3, (transaction) => {
+            new DurableCustodySqliteStore(transaction).putCounterCas(newMintCounter, null)
+          }),
+        /another mint URL/,
+      )
+      assert.deepEqual(readCounterRows(database, fixture.walletScopeId), beforeInsert)
+
+      database
+        .prepare(
+          `INSERT INTO custody_keyset_counters (
+             scope_id, normalized_mint, unit, keyset_id,
+             next_counter, revision, updated_at_ms
+           ) VALUES (?, 'https://mint-two.example', 'msat', ?, 1, 0, 3)`,
+        )
+        .run(fixture.walletScopeId, KEYSET_ID)
+      const beforeUpdate = readCounterRows(database, fixture.walletScopeId)
+      await assert.rejects(
+        () =>
+          withDurableCustodyUnitOfWork(fixture.directory, fence, 4, (transaction) => {
+            new DurableCustodySqliteStore(transaction).putCounterCas(
+              { ...newMintCounter, nextCounter: 2, revision: 1, updatedAtMs: 4 },
+              0,
+            )
+          }),
+        /another mint URL/,
+      )
+      assert.deepEqual(readCounterRows(database, fixture.walletScopeId), beforeUpdate)
+    } finally {
+      database.close()
+    }
+  } finally {
+    await rm(fixture.directory, { recursive: true, force: true })
+  }
+})
+
 test('artifact adapter validates full immutable reference and operation revision', async () => {
   const fixture = await profile()
   try {
@@ -1737,6 +1801,28 @@ function proofRow(
     revision: 0,
     createdAtMs: 3,
     updatedAtMs: 3,
+  }
+}
+
+function readCounterRows(
+  database: Awaited<ReturnType<typeof openDaemonStateSqlite>>,
+  scopeId: string,
+) {
+  return {
+    target: database
+      .prepare(
+        `SELECT scope_id, normalized_mint, unit, keyset_id, next_counter, updated_at_ms
+         FROM target_keyset_counters WHERE scope_id = ?
+         ORDER BY normalized_mint, unit, keyset_id`,
+      )
+      .all(scopeId),
+    custody: database
+      .prepare(
+        `SELECT scope_id, normalized_mint, unit, keyset_id, next_counter, revision, updated_at_ms
+         FROM custody_keyset_counters WHERE scope_id = ?
+         ORDER BY normalized_mint, unit, keyset_id`,
+      )
+      .all(scopeId),
   }
 }
 

@@ -26,6 +26,37 @@ beforeEach(() => {
 });
 
 describe("useActivityLogStore", () => {
+  it("retains two exact order-linked fill records across local reload and compares order identity", async () => {
+    const fills = ["first", "second"].map((fillId) =>
+      item({
+        id: `trade:${WALLET_A}:${fillId}`,
+        type: "Buy",
+        marketId: "condition-YES",
+        tradeDetails: {
+          orderId: "one",
+          fillId,
+          outcomeId: "YES",
+          tokenSide: "Outcome",
+          faceAmountSubunits: 1000,
+          divisibility: 1000,
+        },
+      }),
+    );
+    fills.forEach((fill) => useActivityLogStore.getState().upsertConfirmedTrade(fill));
+    const saved = localStorage.getItem("bitcaster-activity-log")!;
+    useActivityLogStore.setState({ items: [] });
+    localStorage.setItem("bitcaster-activity-log", saved);
+    await useActivityLogStore.persist.rehydrate();
+    expect(activityLogsEqual(useActivityLogStore.getState().items, fills)).toBe(true);
+    expect(useActivityLogStore.getState().items).toHaveLength(2);
+    const changed = { ...fills[0], tradeDetails: { ...fills[0].tradeDetails!, orderId: "two" } };
+    expect(activityLogsEqual([fills[0]], [changed])).toBe(false);
+    for (const orderId of ["", " one", null, 1]) {
+      expect(
+        decodeActivityItem({ ...fills[0], tradeDetails: { ...fills[0].tradeDetails, orderId } }),
+      ).toBeNull();
+    }
+  });
   it("replace sorts newest first and caps the persisted activity feed", () => {
     const older = item({ id: "older", date: "2026-05-08T00:00:00.000Z" });
     const newer = item({ id: "newer", date: "2026-05-09T00:00:00.000Z" });
@@ -33,6 +64,21 @@ describe("useActivityLogStore", () => {
     useActivityLogStore.getState().replace([older, newer]);
 
     expect(useActivityLogStore.getState().items.map((i) => i.id)).toEqual(["newer", "older"]);
+  });
+
+  it("keeps the browser display cache at 500 rows after shared extraction", async () => {
+    const rows = Array.from({ length: 501 }, (_, index) =>
+      item({ id: String(index), date: new Date(index * 1_000).toISOString() }),
+    );
+    useActivityLogStore.getState().replace(rows);
+    expect(useActivityLogStore.getState().items).toHaveLength(500);
+    expect(useActivityLogStore.getState().items[0].id).toBe("500");
+    expect(useActivityLogStore.getState().items.at(-1)!.id).toBe("1");
+    const saved = localStorage.getItem("bitcaster-activity-log")!;
+    useActivityLogStore.setState({ items: [] });
+    localStorage.setItem("bitcaster-activity-log", saved);
+    await useActivityLogStore.persist.rehydrate();
+    expect(useActivityLogStore.getState().items).toHaveLength(500);
   });
 
   it("replace reorders an equal item set when dates require it", () => {

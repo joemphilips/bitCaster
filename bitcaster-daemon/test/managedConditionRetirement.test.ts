@@ -6,6 +6,7 @@ import { after, test } from 'node:test'
 import { schnorr, secp256k1 } from '@noble/curves/secp256k1.js'
 import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToHex, concatBytes, utf8ToBytes } from '@noble/hashes/utils.js'
+import { finalizeEvent } from 'nostr-tools/pure'
 import {
   CheckStateEnum,
   MintOperationError,
@@ -73,6 +74,10 @@ test('daemon previews then atomically retires one verified condition inventory',
     oraclePublicKeys: [oraclePublicKey],
   })
   const signature = signOutcome('YES', oraclePrivateKey)
+  const { created_at, ...signedEvent } = finalizeEvent(
+    { kind: 89, created_at: 1_900_000_000, tags: [['e', '44'.repeat(32)]], content: 'AQ==' },
+    oraclePrivateKey,
+  )
   const inputs = Array.from({ length: 65 }, (_, index) =>
     proof(CTF_KEYSET_ID, `conditional-input-${index.toString().padStart(3, '0')}`, 1),
   )
@@ -96,6 +101,15 @@ test('daemon previews then atomically retires one verified condition inventory',
       getConditionAttestation: async () => ({
         conditionId,
         attestedOutcome: 'YES',
+        attestationEvent: {
+          id: signedEvent.id,
+          pubkey: signedEvent.pubkey,
+          createdAt: created_at,
+          kind: 89 as const,
+          tags: signedEvent.tags,
+          content: signedEvent.content,
+          sig: signedEvent.sig,
+        },
         oracleWitness: {
           oracle_sigs: [
             {

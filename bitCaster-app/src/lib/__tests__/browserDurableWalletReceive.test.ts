@@ -169,6 +169,7 @@ describe("browser durable ordinary receive", () => {
     expect(operations).toHaveLength(1);
     const receiveOperation = operations[0]!;
     expect(receiveOperation.record.operation.semanticKind).toBe("generic-receive");
+    expect(receiveOperation.record.operation.proofStorage.pinReasons).toEqual([]);
     expect(receiveOperation.operationId).toBe(receiveOperation.record.operation.operationId);
 
     const desiredRows = await database.encryptedWalletBackupV2DesiredAssets.toArray();
@@ -660,6 +661,9 @@ describe("browser durable ordinary receive", () => {
     expect((await database.custodyOperations.toArray())[0]?.record.operation.result.state).toBe(
       "verified-staged",
     );
+    expect(
+      (await database.custodyOperations.toArray())[0]?.record.operation.proofStorage.pinReasons,
+    ).toEqual(["active-reservation"]);
     expect(await database.custodyProofs.count()).toBe(0);
     expect(await database.encryptedWalletBackupV2DesiredAssets.count()).toBe(0);
 
@@ -679,6 +683,9 @@ describe("browser durable ordinary receive", () => {
     expect((await database.custodyOperations.toArray())[0]?.record.operation.result.state).toBe(
       "applied",
     );
+    expect(
+      (await database.custodyOperations.toArray())[0]?.record.operation.proofStorage.pinReasons,
+    ).toEqual([]);
     expect(await database.custodyProofs.count()).toBe(1);
     expect(await database.encryptedWalletBackupV2DesiredAssets.count()).toBe(1);
   });
@@ -699,6 +706,9 @@ describe("browser durable ordinary receive", () => {
     expect((await database.custodyOperations.toArray())[0]?.record.operation.result.state).toBe(
       "applied",
     );
+    expect(
+      (await database.custodyOperations.toArray())[0]?.record.operation.proofStorage.pinReasons,
+    ).toEqual([]);
     expect(await database.custodyProofs.count()).toBe(1);
     expect(await database.encryptedWalletBackupV2DesiredAssets.count()).toBe(1);
 

@@ -8,8 +8,11 @@ import {
   deriveKeysetId,
   hashToCurve,
   Keyset,
+  Mint,
   OutputData,
   pointFromHex,
+  Wallet,
+  type RequestFn,
   type Wallet as CashuWallet,
 } from "@cashu/cashu-ts";
 import { bytesToHex } from "@noble/curves/utils.js";
@@ -1179,6 +1182,129 @@ it("admits mixed CTF siblings through the live mint gate and keeps losing proof 
   );
 });
 
+it("admits exact CTF siblings from a cold real wallet whose ordinary lists omit CTF", async () => {
+  const fixture = await sealedBackupFixture(true);
+  const cold = await coldRestoreWallet(fixture.input.asset.mintUrl);
+  expect(() => cold.wallet.getKeyset(CTF_KEYSET)).toThrow(/not found/);
+
+  await restoreAndAdmitBrowserEncryptedWalletBackupV2TargetedAsset({
+    ...fixture.input,
+    loadWallet: async () => cold.wallet,
+    lockManager: immediateLockManager(),
+  });
+
+  const expectedLive = createBrowserCustodyProofRow({
+    scopeId: fixture.input.scopeId,
+    normalizedMint: fixture.input.asset.mintUrl,
+    unit: "msat",
+    proof: fixture.liveProof,
+    asset: { kind: "conditional", conditionId: CTF_CONDITION_ID, outcomeCollection: CTF_OUTCOME },
+    receivedAtMs: 1,
+  });
+  const rows = await fixture.input.database.custodyProofs.toArray();
+  expect(rows.map(({ proofId }) => proofId).sort()).toEqual(
+    [fixture.proofId, expectedLive.proofId].sort(),
+  );
+  expect(rows.map(({ selectability }) => selectability).sort()).toEqual([
+    "selectable",
+    "verified-losing",
+  ]);
+  expect(await fixture.input.database.custodyConditionalKeysets.toArray()).toMatchObject([
+    {
+      keysetId: CTF_KEYSET,
+      conditionId: CTF_CONDITION_ID,
+      outcomeCollection: CTF_OUTCOME,
+      outcomeCollectionId: CTF_OUTCOME_COLLECTION_ID,
+      inputFeePpk: 100,
+      registeredAtUnixSeconds: 0,
+      finalExpiryUnixSeconds: 100,
+    },
+  ]);
+  expect(
+    cold.requests.filter(({ pathname }) => pathname === "/v1/conditional_keysets"),
+  ).toHaveLength(1);
+  expect(
+    cold.requests.filter(({ pathname }) => pathname === `/v1/keys/${CTF_KEYSET}`),
+  ).toHaveLength(1);
+  expect(
+    cold.requests.every(
+      ({ method, pathname }) => method === "GET" || pathname === "/v1/checkstate",
+    ),
+  ).toBe(true);
+});
+
+it("restores an ordinary asset from a cold real wallet without conditional discovery", async () => {
+  const fixture = await backupFixture(true);
+  const { scopeId } = browserWalletScope(SEED);
+  const database = new BitcasterDB(browserWalletDatabaseName(scopeId));
+  openDatabases.push(database);
+  const cold = await coldRestoreWallet(fixture.input.asset.mintUrl);
+  await restoreAndAdmitBrowserEncryptedWalletBackupV2TargetedAsset({
+    ...fixture.input,
+    scopeId,
+    database,
+    loadWallet: async () => cold.wallet,
+    lockManager: immediateLockManager(),
+  });
+  expect(await database.custodyProofs.count()).toBe(1);
+  expect(cold.requests.some(({ pathname }) => pathname === "/v1/conditional_keysets")).toBe(false);
+});
+
+it.each([
+  ["absent conditional ID", { conditionalPresent: false }],
+  ["foreign conditional ID", { conditionalOverrides: { id: ORDINARY_RESTORE_KEYSET } }],
+  ["invalid conditional keys", { conditionalPublicKey: "02" + "ff".repeat(32) }],
+  ["wrong conditional unit", { conditionalOverrides: { unit: "sat" } }],
+  ["wrong conditional asset", { conditionalOverrides: { condition_id: "bb".repeat(32) } }],
+  ["changed registration metadata", { conditionalOverrides: { registered_at: 1 } }],
+  ["changed outcome label", { conditionalOverrides: { outcome_collection: "NO" } }],
+] as const)("refuses cold restore with %s before custody admission", async (_label, options) => {
+  const fixture = await sealedBackupFixture(true);
+  const cold = await coldRestoreWallet(fixture.input.asset.mintUrl, options);
+  await expect(
+    restoreAndAdmitBrowserEncryptedWalletBackupV2TargetedAsset({
+      ...fixture.input,
+      loadWallet: async () => cold.wallet,
+      lockManager: immediateLockManager(),
+    }),
+  ).rejects.toThrow();
+  expect(await fixture.input.database.custodyProofs.count()).toBe(0);
+  expect(await fixture.input.database.custodyProofBackupAuthorities.count()).toBe(0);
+  expect(await fixture.input.database.encryptedWalletBackupV2DesiredAssets.count()).toBe(0);
+});
+
+it.each(["abort", "profile-change"] as const)(
+  "refuses cold restore after %s during conditional discovery",
+  async (mode) => {
+    const fixture = await sealedBackupFixture(true);
+    const controller = new AbortController();
+    let current = true;
+    const cold = await coldRestoreWallet(fixture.input.asset.mintUrl, {
+      onConditionalRead: () => {
+        switch (mode) {
+          case "abort":
+            controller.abort();
+            break;
+          case "profile-change":
+            current = false;
+            break;
+        }
+      },
+    });
+    await expect(
+      restoreAndAdmitBrowserEncryptedWalletBackupV2TargetedAsset({
+        ...fixture.input,
+        signal: controller.signal,
+        isCurrentProfile: () => current,
+        loadWallet: async () => cold.wallet,
+        lockManager: immediateLockManager(),
+      }),
+    ).rejects.toThrow(/profile is stale/);
+    expect(await fixture.input.database.custodyProofs.count()).toBe(0);
+    expect(await fixture.input.database.custodyProofBackupAuthorities.count()).toBe(0);
+  },
+);
+
 it("reconciles an existing active sibling through the production mixed restore path", async () => {
   const fixture = await sealedBackupFixture(true);
   const active = createBrowserCustodyProofRow({
@@ -1478,6 +1604,7 @@ function ctfRestoreWallet(mintUrl: string): CashuWallet {
   keyset.keys = { 1: CTF_PUBLIC_KEY };
   return {
     mint: { mintUrl },
+    keyChain: { loadConditionalKeyset: async () => keyset },
     getKeyset: () => keyset,
     checkProofsStates: async (proofs: readonly { readonly secret: string }[]) =>
       proofs.map(({ secret }) => ({
@@ -1486,6 +1613,85 @@ function ctfRestoreWallet(mintUrl: string): CashuWallet {
         witness: null,
       })),
   } as unknown as CashuWallet;
+}
+
+async function coldRestoreWallet(
+  mintUrl: string,
+  options?: {
+    readonly conditionalPresent?: boolean;
+    readonly conditionalOverrides?: Readonly<Record<string, unknown>>;
+    readonly conditionalPublicKey?: string;
+    readonly onConditionalRead?: () => void;
+  },
+) {
+  const requests: { method: string; pathname: string }[] = [];
+  const request: RequestFn = async <T>(input: Parameters<RequestFn>[0]): Promise<T> => {
+    const pathname = new URL(input.endpoint).pathname;
+    requests.push({ method: input.method ?? "GET", pathname });
+    let response: unknown;
+    switch (pathname) {
+      case "/v1/info":
+        response = { name: "cold restore fixture", nuts: {} };
+        break;
+      case "/v1/keysets":
+        response = {
+          keysets: [{ id: ORDINARY_RESTORE_KEYSET, unit: "msat", active: true, input_fee_ppk: 0 }],
+        };
+        break;
+      case "/v1/keys":
+        response = {
+          keysets: [{ id: ORDINARY_RESTORE_KEYSET, unit: "msat", keys: { "1": CTF_PUBLIC_KEY } }],
+        };
+        break;
+      case "/v1/conditional_keysets":
+        options?.onConditionalRead?.();
+        response = {
+          keysets:
+            options?.conditionalPresent === false
+              ? []
+              : [
+                  {
+                    id: CTF_KEYSET,
+                    unit: "msat",
+                    active: true,
+                    input_fee_ppk: 100,
+                    final_expiry: 100,
+                    condition_id: CTF_CONDITION_ID,
+                    outcome_collection: CTF_OUTCOME,
+                    outcome_collection_id: CTF_OUTCOME_COLLECTION_ID,
+                    registered_at: 0,
+                    ...options?.conditionalOverrides,
+                  },
+                ],
+        };
+        break;
+      case `/v1/keys/${CTF_KEYSET}`:
+        response = {
+          keysets: [
+            {
+              id: CTF_KEYSET,
+              unit: "msat",
+              keys: { "1": options?.conditionalPublicKey ?? CTF_PUBLIC_KEY },
+            },
+          ],
+        };
+        break;
+      case "/v1/checkstate": {
+        const { Ys } = input.requestBody as { Ys: string[] };
+        response = { states: Ys.map((Y) => ({ Y, state: "UNSPENT", witness: null })) };
+        break;
+      }
+      default:
+        throw new Error("Unexpected cold restore mint request");
+    }
+    return response as T;
+  };
+  const wallet = new Wallet(new Mint(mintUrl, { customRequest: request }), {
+    unit: "msat",
+    bip39seed: SEED,
+  });
+  await wallet.loadMint();
+  return { wallet, requests };
 }
 
 async function sealedBackupFixture(includeSelectableSibling = false) {
@@ -1708,6 +1914,7 @@ async function sealedBackupFixture(includeSelectableSibling = false) {
     headEvidence,
     bundleId: bundle.descriptor.bundleId,
     proof,
+    liveProof,
     proofId: predecessor.proofId,
     locator,
     input: {

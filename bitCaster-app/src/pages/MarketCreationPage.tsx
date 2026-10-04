@@ -69,6 +69,10 @@ export function MarketCreationPage() {
         categoryTags={state.categoryTags}
         isSubmitting={state.isSubmitting}
         submitError={state.submitError}
+        retainedCreation={state.retainedCreation}
+        isLoadingCreation={state.isLoadingCreation}
+        onResumeCreation={state.onResumeCreation}
+        onDismissCreationError={state.onDismissCreationError}
         registrationFeePrompt={state.registrationFeePrompt}
         registrationFeeTopUp={state.registrationFeeTopUp}
         registrationFeeTopUpStage={state.registrationFeeTopUpStage}

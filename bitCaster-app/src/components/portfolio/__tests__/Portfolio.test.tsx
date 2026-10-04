@@ -367,6 +367,36 @@ describe("Portfolio", () => {
   });
 
   describe("Monitoring status", () => {
+    it.each([null, "unavailable"] as const)(
+      "labels retained estimates and progress without claiming current local balances: %s",
+      (error) => {
+        renderPortfolio({
+          stats: { ...mockStats, totalValueLoading: true },
+          monitoring: {
+            retainingDisplay: true,
+            stale: true,
+            incomplete: false,
+            building: true,
+            unvaluedAssetCount: 0,
+            hasPendingOutgoing: false,
+            pendingOutgoingValueMsat: null,
+            error,
+            assetPageError: null,
+            hasMoreAssets: false,
+            loadingMoreAssets: false,
+            liveUpdateCoverageLimited: false,
+          },
+        });
+        const notice = screen
+          .getAllByRole("status")
+          .find((element) => element.textContent?.includes("last successful"));
+        expect(notice).toHaveTextContent("Showing the last successful portfolio estimate.");
+        expect(notice).toHaveTextContent("It is not a spendable balance.");
+        expect(notice).toHaveTextContent("Loading...");
+        expect(notice).not.toHaveTextContent("Local wallet data is shown.");
+        if (error) expect(notice).toHaveTextContent("Portfolio monitoring is unavailable.");
+      },
+    );
     it.each([true, false])("shows value-level loading only during a request: %s", (loading) => {
       renderPortfolio({
         stats: {

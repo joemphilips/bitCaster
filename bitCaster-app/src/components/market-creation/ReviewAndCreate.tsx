@@ -2,7 +2,7 @@ import { FileText, Tag, Calendar, BarChart3, Loader2 } from "lucide-react";
 import { Link } from "react-router";
 import { useTranslation } from "react-i18next";
 import type { WizardStepBasicInfo, WizardStepOutcomes } from "@/types/market-creation";
-import { normalizeOutcomeColor } from "@/components/shared/OutcomeLabel";
+import { categoricalOutcomeColors, normalizeOutcomeColor } from "@/components/shared/OutcomeLabel";
 
 interface ReviewAndCreateProps {
   description: string;
@@ -25,6 +25,10 @@ export function ReviewAndCreate({
 }: ReviewAndCreateProps) {
   const { t } = useTranslation();
   const canCreate = description.trim().length > 0 && !isSubmitting;
+  const colors =
+    outcomes?.outcomeType === "categorical"
+      ? categoricalOutcomeColors(outcomes.outcomes ?? [])
+      : null;
 
   return (
     <div className="w-full max-w-xl">
@@ -129,8 +133,12 @@ export function ReviewAndCreate({
                     </p>
                     {outcomes.outcomes && (
                       <div className="flex flex-wrap gap-1 mt-1">
-                        {outcomes.outcomes.map((o) => {
-                          const color = o.color ? normalizeOutcomeColor(o.color) : null;
+                        {outcomes.outcomes.map((o, index) => {
+                          const color = colors
+                            ? normalizeOutcomeColor(colors[index])
+                            : o.color
+                              ? normalizeOutcomeColor(o.color)
+                              : null;
                           return (
                             <span
                               key={o.id}

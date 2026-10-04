@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { deriveDurableCustodyArtifactFingerprint } from '../src/durableCustody.ts'
 import test from 'node:test'
 import { secp256k1 } from '@noble/curves/secp256k1.js'
 import { bytesToHex } from '@noble/curves/utils.js'
@@ -26,6 +27,7 @@ import {
   createCtfRangeSettlementCapabilityRequest,
   ctfRangeOrderPreparationKeysetLookup,
   decodeCtfRangeOrderPreparationFromRecord,
+  decodePersistedCtfRangeOrderPreparation,
   decodePersistedCtfRangeOrderPreparationBytes,
   encodePersistedCtfRangeOrderPreparation,
   planPersistedCtfRangeOrderAuthorization,
@@ -346,6 +348,68 @@ test('builds, canonically persists, and verifies one exact range preparation rec
         randomId: sequentialId('ambiguous-operation', 'ambiguous-authorization'),
       }),
     /exact engine order route/,
+  )
+})
+
+test('aggregate consent survives exact preparation restore and detects changed identity', () => {
+  for (const side of ['Buy', 'Sell'] as const) {
+    const original = persistedPreparation(`consent-${side}`, side)
+    const bytes = encodePersistedCtfRangeOrderPreparation(original)
+    const record = preparationRecord(original, bytes)
+    const restored = decodeCtfRangeOrderPreparationFromRecord(record, original.request)
+    assert.equal(restored.request.maxQuotePaymentSubunits, side === 'Buy' ? 2 : null)
+    assert.equal(restored.request.minQuotePaymentSubunits, side === 'Sell' ? 2 : null)
+    const changedRequest = {
+      ...original.request,
+      maxQuotePaymentSubunits: side === 'Buy' ? 3 : null,
+      minQuotePaymentSubunits: side === 'Sell' ? 3 : null,
+    }
+    assert.throws(() => decodeCtfRangeOrderPreparationFromRecord(record, changedRequest), /foreign/)
+    const operation = completedOperation(restored)
+    const capability = createCtfRangeSettlementCapabilityRequest(restored, operation)
+    const changed = createCtfRangeSettlementCapabilityRequest(
+      { ...original, request: changedRequest },
+      operation,
+    )
+    assert.notEqual(
+      deriveDurableCustodyArtifactFingerprint(capability),
+      deriveDurableCustodyArtifactFingerprint(changed),
+    )
+    assert.equal(capability.artifact, changed.artifact)
+    assert.equal(capability.orderIntent.maxQuotePaymentSubunits, side === 'Buy' ? 2 : null)
+    assert.equal(capability.orderIntent.minQuotePaymentSubunits, side === 'Sell' ? 2 : null)
+  }
+})
+
+test('preparation codec refuses missing malformed wrong-side and unknown consent fields', () => {
+  const original = persistedPreparation('invalid-consent')
+  const cases = [
+    { maxQuotePaymentSubunits: null },
+    { maxQuotePaymentSubunits: -1 },
+    { maxQuotePaymentSubunits: 1.5 },
+    { maxQuotePaymentSubunits: Number.MAX_SAFE_INTEGER + 1 },
+    { maxQuotePaymentSubunits: '2' },
+    { maxQuotePaymentSubunits: null, minQuotePaymentSubunits: 2 },
+    { minQuotePaymentSubunits: 2 },
+    { quotePaymentSubunits: 2 },
+  ]
+  for (const malformed of cases) {
+    assert.throws(
+      () =>
+        decodePersistedCtfRangeOrderPreparation({
+          ...original,
+          request: { ...original.request, ...malformed },
+        }),
+      /bound is invalid|fields are invalid/,
+    )
+  }
+  const { maxQuotePaymentSubunits: _, ...missing } = original.request
+  assert.throws(
+    () =>
+      decodePersistedCtfRangeOrderPreparationBytes(
+        encodeCtfRangeOrderPreparationArtifact({ ...original, request: missing }),
+      ),
+    /fields are invalid/,
   )
 })
 
@@ -1154,6 +1218,8 @@ function rangeOrderRequest(): CtfRangeOrderRequest {
     tokenSide: 'Outcome',
     side: 'Buy',
     price: 2,
+    maxQuotePaymentSubunits: 2,
+    minQuotePaymentSubunits: null,
     amountSubunits: 1_000,
     minimumFillAmountSubunits: 1_000,
     baseAsset: 'sat',
@@ -1230,7 +1296,12 @@ function persistedPreparation(
   authorizationLifetimeSeconds?: number,
 ) {
   return buildPersistedCtfRangeOrderPreparation({
-    request: { ...rangeOrderRequest(), side },
+    request: {
+      ...rangeOrderRequest(),
+      side,
+      maxQuotePaymentSubunits: side === 'Buy' ? 2 : null,
+      minQuotePaymentSubunits: side === 'Sell' ? 2 : null,
+    },
     coordinatorPublicKey: COORDINATOR_PUBLIC_KEY,
     mintFacts: reviewedMintFacts(),
     market: {
@@ -1294,6 +1365,7 @@ function preparationRecord(
     divisibility: persisted.divisibility,
     authorizationExpiresAtUnixSeconds: persisted.expiry,
     preparationBytes,
+    feeConsentBytes: null,
     createdAtMs: 1,
     lifecycleState: 'prepared',
     revision: 0,

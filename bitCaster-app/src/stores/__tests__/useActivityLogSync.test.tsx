@@ -82,7 +82,11 @@ describe("useActivityLogSync", () => {
     });
     await waitFor(
       () => {
-        expect(mockPublishActivityLog).toHaveBeenCalledWith("private-key", [local, remote]);
+        expect(mockPublishActivityLog).toHaveBeenCalledWith(
+          "private-key",
+          [local, remote],
+          expect.objectContaining({ signal: expect.any(AbortSignal) }),
+        );
       },
       { timeout: 1500 },
     );
@@ -95,7 +99,11 @@ describe("useActivityLogSync", () => {
     renderHook(() => useActivityLogSync());
 
     await waitFor(() => {
-      expect(mockFetchActivityLog).toHaveBeenCalledWith("public-key", "private-key");
+      expect(mockFetchActivityLog).toHaveBeenCalledWith(
+        "public-key",
+        "private-key",
+        expect.objectContaining({ signal: expect.any(AbortSignal) }),
+      );
     });
 
     act(() => {

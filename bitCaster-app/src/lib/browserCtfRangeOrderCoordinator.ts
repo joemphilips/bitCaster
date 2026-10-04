@@ -108,6 +108,7 @@ import {
   type CtfRangeReviewedMintFacts,
   type PersistedCtfRangeOrderPreparation,
 } from "@bitcaster/client-sdk/ctfRangeOrderProtocol";
+import { encodeCtfRangeOrderFeeConsentArtifact } from "@bitcaster/client-sdk/ctfRangeOrderJournal";
 import { calculateSettlementCapabilityV1Tariff } from "@bitcaster/client-sdk/participationScore";
 import {
   EngineClientError,
@@ -529,6 +530,7 @@ export class BrowserCtfRangeOrderCoordinator {
     readonly round: number;
     readonly inputs: readonly Proof[];
     readonly plannedRound: ProofConsolidationRound;
+    readonly consentedFeeFacts: CtfRangeOrderFeeFacts;
   }): Promise<void> {
     const scope = browserWalletScope(input.seed);
     await withWalletProfileLock(
@@ -935,6 +937,7 @@ export class BrowserCtfRangeOrderCoordinator {
       readonly round: number;
       readonly inputs: readonly Proof[];
       readonly plannedRound: ProofConsolidationRound;
+      readonly consentedFeeFacts: CtfRangeOrderFeeFacts;
     },
     scope: DurableCustodyScope,
     owner: DurableCustodyOwnerAuthorization,
@@ -964,7 +967,14 @@ export class BrowserCtfRangeOrderCoordinator {
       throw rangeError("source-preparation-failed", error);
     }
     const binding = createBrowserRangeConsolidationBinding(scope, input.preparation, operation);
-    await this.#persistPreparedConsolidation(scope, owner, input.preparation, input.round, binding);
+    await this.#persistPreparedConsolidation(
+      scope,
+      owner,
+      input.preparation,
+      input.round,
+      binding,
+      input.consentedFeeFacts,
+    );
     return binding;
   }
 
@@ -974,6 +984,7 @@ export class BrowserCtfRangeOrderCoordinator {
     preparation: PersistedCtfRangeOrderPreparation,
     round: number,
     binding: ReturnType<typeof createBrowserRangeConsolidationBinding>,
+    consentedFeeFacts: CtfRangeOrderFeeFacts,
   ): Promise<void> {
     const operation = binding.authority.authority.operation;
     validateCtfRangeConsolidationOperation(operation);
@@ -992,7 +1003,7 @@ export class BrowserCtfRangeOrderCoordinator {
       await this.#database.transaction("rw", this.#transactionTables(true), async (tx) => {
         await insertCtfRangePreparationInTransaction(
           tx,
-          await this.#journalIdentity(scope, preparation),
+          await this.#journalIdentity(scope, preparation, consentedFeeFacts),
           this.#database,
         );
         await appendCtfRangePreparationConsolidationInTransaction(
@@ -1216,13 +1227,17 @@ export class BrowserCtfRangeOrderCoordinator {
   async #journalIdentity(
     scope: DurableCustodyScope,
     preparation: PersistedCtfRangeOrderPreparation,
+    consentedFeeFacts: CtfRangeOrderFeeFacts,
   ) {
     const existing = await readCtfRangePreparation(
       scope.scopeId,
       preparation.operationId,
       this.#database,
     );
-    return browserRangeJournalIdentity(scope, preparation, existing?.createdAtMs ?? this.#now());
+    return {
+      ...browserRangeJournalIdentity(scope, preparation, existing?.createdAtMs ?? this.#now()),
+      feeConsentBytes: encodeCtfRangeOrderFeeConsentArtifact(consentedFeeFacts),
+    };
   }
 
   async #prepareAndPersistSource(
@@ -1345,6 +1360,7 @@ export class BrowserCtfRangeOrderCoordinator {
       predecessors,
       stagedPredecessors,
       operation.inputs,
+      input.consentedFeeFacts,
     );
     return { operation, custodyOperationId };
   }
@@ -1358,12 +1374,13 @@ export class BrowserCtfRangeOrderCoordinator {
     predecessors: ReturnType<typeof browserSourceProofRows>[number]["proof"][],
     stagedPredecessors: readonly ReturnType<typeof browserSourceProofRows>[number][],
     sourceProofs: DurableCustodyProofOperationInput["inputs"],
+    consentedFeeFacts: CtfRangeOrderFeeFacts,
   ): Promise<void> {
     try {
       await this.#database.transaction("rw", this.#transactionTables(true), async (tx) => {
         await insertCtfRangePreparationInTransaction(
           tx,
-          await this.#journalIdentity(scope, preparation),
+          await this.#journalIdentity(scope, preparation, consentedFeeFacts),
           this.#database,
         );
         await this.#custody.transactInCurrentTransaction(
@@ -2344,6 +2361,8 @@ export class BrowserCtfRangeOrderCoordinator {
       status.amountSubunits !== request.amountSubunits ||
       status.side !== request.side ||
       status.price !== request.price ||
+      status.maxQuotePaymentSubunits !== request.maxQuotePaymentSubunits ||
+      status.minQuotePaymentSubunits !== request.minQuotePaymentSubunits ||
       status.tokenSide !== request.tokenSide ||
       status.baseAsset !== request.baseAsset ||
       status.divisibility !== request.divisibility

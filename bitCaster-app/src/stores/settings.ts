@@ -12,7 +12,7 @@ import type {
   NostrProfileFetchStatus,
   RelayConfig,
 } from "@/types/settings";
-import { defaultRelayConfigs, removeRetiredPublicDefaultRelays } from "@/lib/relayDefaults";
+import { defaultRelayConfigs, normalizeRelayConfigs } from "@/lib/relayDefaults";
 
 const DEFAULT_RELAYS: RelayConfig[] = defaultRelayConfigs();
 
@@ -145,7 +145,7 @@ export const useSettingsStore = create<SettingsStoreState>()(
         set((s) => {
           if (s.relays.some((r) => r.url === url)) return s;
           return {
-            relays: removeRetiredPublicDefaultRelays([
+            relays: normalizeRelayConfigs([
               ...s.relays,
               { url, connectionStatus: "disconnected" as const },
             ]),
@@ -173,7 +173,7 @@ export const useSettingsStore = create<SettingsStoreState>()(
       onRehydrateStorage: () => {
         return (state: SettingsStoreState | undefined) => {
           if (state) {
-            state.relays = removeRetiredPublicDefaultRelays(state.relays);
+            state.relays = normalizeRelayConfigs(state.relays);
             applyTheme(state.theme);
           }
         };

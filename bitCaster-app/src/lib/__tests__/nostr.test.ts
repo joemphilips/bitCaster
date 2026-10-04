@@ -1,4 +1,6 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { nip19 } from "nostr-tools";
+import { encrypt } from "nostr-tools/nip49";
 
 // Hoisted state lets `vi.mock` factories close over live references.
 const mocks = vi.hoisted(() => {
@@ -26,31 +28,66 @@ const mocks = vi.hoisted(() => {
     }),
     setSignerMode: vi.fn(),
   };
+  const relaySettingSubscribers: Array<
+    (state: typeof settingsState, previous: typeof settingsState) => void
+  > = [];
   return {
     settingsState,
     ndkCtor: vi.fn(),
     privateKeySignerCtor: vi.fn(),
     nip07SignerCtor: vi.fn(),
     setPendingKormirNsecSpy: vi.fn(),
+    getUser: vi.fn(),
+    relayConnections: [] as string[],
+    relaySettingSubscribers,
+    setRelays: (relays: { url: string }[]) => {
+      const previous = { ...settingsState };
+      settingsState.relays = relays;
+      for (const listener of relaySettingSubscribers) listener(settingsState, previous);
+    },
   };
 });
 
 vi.mock("@/stores/settings", () => ({
   useSettingsStore: {
     getState: () => mocks.settingsState,
+    subscribe: vi.fn((listener) => {
+      mocks.relaySettingSubscribers.push(listener);
+      return () => {};
+    }),
   },
 }));
 
 vi.mock("@nostr-dev-kit/ndk", () => {
-  // Minimal NDK stub — the rehydrate path touches `signer`, `pool`, and
-  // `addExplicitRelay` (via getNdk). Keep it tiny.
+  // Model the public setter boundary. Installed-dependency tests check disposal.
   class FakeNDK {
     signer: unknown = null;
-    pool = { relays: new Map<string, unknown>() };
-    addExplicitRelay = vi.fn((_url: string) => ({}));
-    connect = vi.fn(() => Promise.resolve());
-    constructor(opts: unknown) {
+    pool = { relays: new Map<string, { dispose: () => void }>() };
+    subManager = { subscriptions: new Map() };
+    private selected: string[] = [];
+    get explicitRelayUrls() {
+      return this.selected;
+    }
+    set explicitRelayUrls(urls: string[]) {
+      this.selected = [...urls];
+      for (const [url, relay] of this.pool.relays) {
+        if (!urls.includes(url)) {
+          relay.dispose();
+          this.pool.relays.delete(url);
+        }
+      }
+      for (const url of urls) {
+        if (!this.pool.relays.has(url)) this.pool.relays.set(url, { dispose: vi.fn() });
+      }
+    }
+    connect = vi.fn(() => {
+      mocks.relayConnections.push(...this.pool.relays.keys());
+      return Promise.resolve();
+    });
+    getUser = mocks.getUser;
+    constructor(opts: { explicitRelayUrls?: string[] }) {
       mocks.ndkCtor(opts);
+      this.explicitRelayUrls = opts.explicitRelayUrls ?? [];
     }
   }
   class FakeNDKPrivateKeySigner {
@@ -81,6 +118,73 @@ vi.mock("@nostr-dev-kit/ndk-wallet", () => ({
 vi.mock("../kormir", () => ({
   setPendingKormirNsec: mocks.setPendingKormirNsecSpy,
 }));
+
+describe("loginWithNsecOrNcryptsec shared private-key adapter", () => {
+  const secret = new Uint8Array(32).fill(0x11);
+  const nsec = nip19.nsecEncode(secret);
+  const passphrase = "fixture-private-key-passphrase";
+  const encrypted = encrypt(secret, passphrase, 4);
+  let nostrModule: typeof import("../nostr");
+
+  beforeEach(async () => {
+    vi.resetModules();
+    mocks.settingsState.relays = [];
+    mocks.privateKeySignerCtor.mockClear();
+    mocks.ndkCtor.mockClear();
+    mocks.setPendingKormirNsecSpy.mockClear();
+    mocks.relayConnections.length = 0;
+    nostrModule = await import("../nostr");
+  });
+
+  it.each([
+    ["hex", `  ${"11".repeat(32)}  `, undefined],
+    ["nsec", `  ${nsec}  `, undefined],
+    ["ncryptsec", encrypted, passphrase],
+  ])("installs the shared canonical nsec from real %s input", async (_kind, input, password) => {
+    const revision = vi.fn();
+    const unsubscribe = nostrModule.subscribeToNostrSignerRevision(revision);
+    const result = await nostrModule.loginWithNsecOrNcryptsec(input!, password);
+    expect(result.nsec).toBe(nsec);
+    expect(result.signer).toBe(nostrModule.getNdk().signer);
+    expect(mocks.privateKeySignerCtor).toHaveBeenCalledExactlyOnceWith(nsec);
+    expect(mocks.setPendingKormirNsecSpy).toHaveBeenCalledExactlyOnceWith(nsec);
+    expect(nostrModule.getNostrSignerRevision()).toBe(1);
+    expect(revision).toHaveBeenCalledOnce();
+    expect(mocks.relayConnections).toEqual([]);
+    unsubscribe();
+  });
+
+  it.each([
+    ["public key", nip19.npubEncode("22".repeat(32)), undefined],
+    ["invalid scalar", "00".repeat(32), undefined],
+    ["malformed input", "nsec1private-fixture-invalid", undefined],
+    ["missing password", encrypted, undefined],
+    ["wrong password", encrypted, "fixture-wrong-password"],
+  ])("refuses %s before signer installation with a safe error", async (_kind, input, password) => {
+    await expect(nostrModule.loginWithNsecOrNcryptsec(input!, password)).rejects.toThrow(
+      "Private Nostr key is invalid or could not be decrypted.",
+    );
+    expect(mocks.privateKeySignerCtor).not.toHaveBeenCalled();
+    expect(mocks.ndkCtor).not.toHaveBeenCalled();
+    expect(mocks.setPendingKormirNsecSpy).not.toHaveBeenCalled();
+    expect(nostrModule.getNostrSignerRevision()).toBe(0);
+  });
+
+  it("keeps the installed signer and Kormir binding after a refused replacement", async () => {
+    const first = await nostrModule.loginWithNsecOrNcryptsec(nsec);
+    const revision = vi.fn();
+    const unsubscribe = nostrModule.subscribeToNostrSignerRevision(revision);
+    await expect(nostrModule.loginWithNsecOrNcryptsec(encrypted, "wrong")).rejects.toThrow(
+      "Private Nostr key is invalid or could not be decrypted.",
+    );
+    expect(nostrModule.getNdk().signer).toBe(first.signer);
+    expect(nostrModule.getNostrSignerRevision()).toBe(1);
+    expect(revision).not.toHaveBeenCalled();
+    expect(mocks.privateKeySignerCtor).toHaveBeenCalledExactlyOnceWith(nsec);
+    expect(mocks.setPendingKormirNsecSpy).toHaveBeenCalledExactlyOnceWith(nsec);
+    unsubscribe();
+  });
+});
 
 describe("rehydrateNostrSigner", () => {
   let nostrModule: typeof import("../nostr");
@@ -208,6 +312,70 @@ describe("fetchAndStoreNostrProfile", () => {
   });
 });
 
+describe("fetchPublicNostrProfile", () => {
+  let nostrModule: typeof import("../nostr");
+  const pubkey = "0123456789abcdef".repeat(4);
+
+  beforeEach(async () => {
+    vi.useFakeTimers();
+    vi.resetModules();
+    mocks.getUser.mockReset();
+    nostrModule = await import("../nostr");
+  });
+
+  afterEach(() => {
+    vi.clearAllTimers();
+    vi.useRealTimers();
+  });
+
+  it.each([123, {}, [], null, undefined, true, "", "  "])(
+    "uses a valid name and empty avatar for malformed public fields %j",
+    async (malformed) => {
+      mocks.getUser.mockReturnValue({
+        fetchProfile: vi.fn().mockResolvedValue(undefined),
+        profile: { displayName: malformed, name: "  Public author  ", image: malformed },
+      });
+      expect(await nostrModule.fetchPublicNostrProfile(pubkey)).toEqual({
+        pubkey,
+        displayName: "Public author",
+        avatar: "",
+      });
+      expect(mocks.getUser).toHaveBeenCalledExactlyOnceWith({ pubkey });
+    },
+  );
+
+  it.each([123, {}, [], null, undefined, true, "  "])(
+    "uses the public-key fallback when both public names are malformed or empty %j",
+    async (malformed) => {
+      mocks.getUser.mockReturnValue({
+        fetchProfile: vi.fn().mockResolvedValue(undefined),
+        profile: { displayName: malformed, name: malformed },
+      });
+      expect(await nostrModule.fetchPublicNostrProfile(pubkey)).toEqual({
+        pubkey,
+        displayName: pubkey.slice(0, 8),
+        avatar: "",
+      });
+    },
+  );
+
+  it("preserves the valid preferred name and string avatar", async () => {
+    mocks.getUser.mockReturnValue({
+      fetchProfile: vi.fn().mockResolvedValue(undefined),
+      profile: {
+        displayName: "  <Public author>  ",
+        name: "Secondary name",
+        image: "  https://example.com/avatar.png  ",
+      },
+    });
+    expect(await nostrModule.fetchPublicNostrProfile(pubkey)).toEqual({
+      pubkey,
+      displayName: "<Public author>",
+      avatar: "https://example.com/avatar.png",
+    });
+  });
+});
+
 describe("getNdk relay reconciliation", () => {
   let nostrModule: typeof import("../nostr");
 
@@ -215,26 +383,25 @@ describe("getNdk relay reconciliation", () => {
     vi.resetModules();
     mocks.settingsState.relays = [{ url: "wss://relay.damus.io" }];
     mocks.ndkCtor.mockClear();
+    mocks.relayConnections.length = 0;
+    mocks.relaySettingSubscribers.length = 0;
     nostrModule = await import("../nostr");
   });
 
-  it("ignores arbitrary user relays and constructs from allowed defaults", () => {
+  it("connects only the custom selection without restoring defaults", async () => {
     mocks.settingsState.relays = [{ url: "wss://relay.user.example" }];
-    nostrModule.getNdk() as unknown as {
-      addExplicitRelay: (url: string) => unknown;
-      pool: { relays: Map<string, unknown> };
-    };
+    await nostrModule.loginWithExtension();
     expect(mocks.ndkCtor).toHaveBeenCalledWith(
       expect.objectContaining({
-        explicitRelayUrls: ["ws://localhost:7777"],
+        explicitRelayUrls: ["wss://relay.user.example"],
       }),
     );
+    expect(mocks.relayConnections).toEqual(["wss://relay.user.example"]);
   });
 
-  it("keeps public relays out of default construction", () => {
-    expect(nostrModule.DEFAULT_RELAYS).not.toContain("wss://relay.nostr.band");
-    expect(nostrModule.DEFAULT_RELAYS).not.toContain("wss://relay.damus.io");
-    expect(nostrModule.DEFAULT_RELAYS).not.toContain("wss://nos.lol");
+  it("connects a public relay when explicitly selected", async () => {
+    await nostrModule.loginWithExtension();
+    expect(mocks.relayConnections).toEqual(["wss://relay.damus.io"]);
   });
 
   it("defaults non-production builds to the local relay", () => {
@@ -254,20 +421,43 @@ describe("getNdk relay reconciliation", () => {
   });
 
   it("reconciles new user relays added between calls without duplicating", () => {
-    const ndk = nostrModule.getNdk() as unknown as {
-      addExplicitRelay: ReturnType<typeof vi.fn>;
-      pool: { relays: Map<string, unknown> };
-    };
-    // Simulate the FakeNDK pool being seeded on construction.
-    for (const url of nostrModule.DEFAULT_RELAYS) ndk.pool.relays.set(url, {});
+    const ndk = nostrModule.getNdk();
     // User adds a new relay after first getNdk().
     mocks.settingsState.relays = [{ url: "ws://localhost:7777" }, { url: "ws://localhost:7778" }];
     nostrModule.getNdk();
-    expect(ndk.addExplicitRelay).toHaveBeenCalledWith("ws://localhost:7778", undefined, true);
-    // Calling again with no further changes must NOT walk the pool again.
-    ndk.pool.relays.set("ws://localhost:7778", {});
-    ndk.addExplicitRelay.mockClear();
+    expect(ndk.explicitRelayUrls).toEqual(["ws://localhost:7777", "ws://localhost:7778"]);
+    const unchanged = ndk.pool.relays.get("ws://localhost:7778");
     nostrModule.getNdk();
-    expect(ndk.addExplicitRelay).not.toHaveBeenCalled();
+    expect(ndk.pool.relays.get("ws://localhost:7778")).toBe(unchanged);
+  });
+
+  it("disconnects removed relays, makes zero connections on empty, and permits public re-add", async () => {
+    const ndk = nostrModule.getNdk();
+    const previous = ndk.pool.relays.get("wss://relay.damus.io")!;
+    mocks.setRelays([]);
+    expect(previous.dispose).toHaveBeenCalledOnce();
+    expect(ndk.pool.relays.size).toBe(0);
+    await nostrModule.loginWithExtension();
+    expect(previous.dispose).toHaveBeenCalledOnce();
+    expect(ndk.pool.relays.size).toBe(0);
+    expect(mocks.relayConnections).toEqual([]);
+    mocks.setRelays([{ url: "wss://nos.lol" }]);
+    await nostrModule.loginWithExtension();
+    expect([...ndk.pool.relays.keys()]).toEqual(["wss://nos.lol"]);
+    expect(mocks.relayConnections).toEqual(["wss://nos.lol"]);
+  });
+
+  it("keeps a saved explicit oracle destination independent of empty current settings", () => {
+    mocks.settingsState.relays = [];
+    nostrModule.createExplicitRelayNdk({
+      explicitRelayUrls: ["wss://saved.oracle.example/Archive?Key=A"],
+    });
+    expect(mocks.ndkCtor).toHaveBeenCalledWith(
+      expect.objectContaining({
+        explicitRelayUrls: ["wss://saved.oracle.example/Archive?Key=A"],
+        autoConnectUserRelays: false,
+        outboxRelayUrls: [],
+      }),
+    );
   });
 });

@@ -4,9 +4,29 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { DatabaseSync } from 'node:sqlite'
 import test from 'node:test'
+import {
+  Amount,
+  CheckStateEnum,
+  createBlindSignature,
+  createDLEQProof,
+  deriveKeysetId,
+  hashToCurve,
+  pointFromHex,
+  type MintKeys,
+  type Proof,
+  type ProofState,
+  type SerializedBlindedMessage,
+} from '@cashu/cashu-ts'
+import { secp256k1 } from '@noble/curves/secp256k1.js'
+import { planExactSeedRecoveryBatch } from '@bitcaster-market/client-sdk/conditionalKeysetSeedRecovery'
 import { bootstrapFreshDaemonProfile } from '../src/profileBootstrap.ts'
+import { claimCustodyScopeLease, releaseCustodyScopeLease } from '../src/profileFencing.ts'
 import { acquireDaemonRunLock } from '../src/runLock.ts'
-import { runOfflineDaemonSeedRecovery } from '../src/emergencySeedRecovery.ts'
+import {
+  runOfflineDaemonSeedRecovery,
+  type AllKeysetSeedRecoveryTransport,
+} from '../src/emergencySeedRecovery.ts'
+import { advanceDaemonKeysetCounter, reserveDaemonKeysetCounter } from '../src/state.ts'
 import { openDaemonStateSqlite } from '../src/stateSqlite.ts'
 import { canonicalTestKeysetId } from './support/canonicalKeysetId.ts'
 
@@ -164,6 +184,184 @@ test('offline seed recovery scans and commits a clean profile', async () => {
   }
 })
 
+test('offline recovery imports only unspent change after operation and proof payload loss', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'bitcaster-offline-recovery-high-water-'))
+  try {
+    const walletSeedHex = '07'.repeat(64)
+    const profile = await bootstrap(directory, walletSeedHex)
+    const seedPath = await writeSeedFile(directory, walletSeedHex)
+    const mintPrivateKey = Uint8Array.from([...new Uint8Array(31), 2])
+    const mintPublicKey = Buffer.from(secp256k1.getPublicKey(mintPrivateKey, true)).toString('hex')
+    const keyset = regularKeyset({ '1': mintPublicKey })
+    const expectedCandidates = planExactSeedRecoveryBatch({
+      seed: Uint8Array.from(Buffer.from(walletSeedHex, 'hex')),
+      keysetId: keyset.id,
+      startCounter: 0,
+      count: 4,
+    })
+    let expectedProofs: Proof[] = []
+    let restoreCalls = 0
+    let stateCalls = 0
+    const expectedCandidateBlindedOutputs = new Set(
+      expectedCandidates.map(({ blindedOutput }) => blindedOutput.B_),
+    )
+    const transport = offlineRecoveryTransport({
+      keyset,
+      onProofs(proofs) {
+        stateCalls += 1
+        assert.equal(proofs.length, 4)
+        const expectedCounterBySecret = new Map(
+          expectedProofs.map((proof, counter) => [proof.secret, counter]),
+        )
+        return [...proofs].reverse().map((proof) => {
+          const counter = expectedCounterBySecret.get(proof.secret)
+          assert.notEqual(counter, undefined, 'NUT-07 proof secret must bind to a candidate Y')
+          return {
+            Y: hashToCurve(new TextEncoder().encode(proof.secret)).toHex(true),
+            state: counter! < 2 ? CheckStateEnum.SPENT : CheckStateEnum.UNSPENT,
+            witness: null,
+          }
+        })
+      },
+      async onRestore(outputs) {
+        restoreCalls += 1
+        assert.equal(outputs.length, 300)
+        const candidates = outputs as readonly SerializedBlindedMessage[]
+        assert.equal(candidates[0]?.id, keyset.id)
+        if (restoreCalls === 1) {
+          assert.deepEqual(
+            candidates.slice(0, 4).map(({ B_ }) => B_),
+            expectedCandidates.map(({ blindedOutput }) => blindedOutput.B_),
+          )
+        }
+        const recoveredOutputs = candidates.filter(({ B_ }) =>
+          expectedCandidateBlindedOutputs.has(B_),
+        )
+        if (restoreCalls > 1) assert.equal(recoveredOutputs.length, 0)
+        if (recoveredOutputs.length === 0) return { outputs: [], signatures: [] }
+        const signatures = recoveredOutputs.map((output) => {
+          const blindedPoint = pointFromHex(output.B_)
+          const signature = createBlindSignature(blindedPoint, mintPrivateKey, output.id)
+          const dleq = createDLEQProof(blindedPoint, mintPrivateKey)
+          return {
+            id: output.id,
+            amount: Amount.from(1),
+            C_: signature.C_.toHex(true),
+            dleq: {
+              e: Buffer.from(dleq.e).toString('hex'),
+              s: Buffer.from(dleq.s).toString('hex'),
+            },
+          }
+        })
+        expectedProofs = expectedCandidates.map((candidate, index) =>
+          candidate.outputData.toProof(signatures[index]!, keyset),
+        )
+        return {
+          outputs: recoveredOutputs.map((output) => ({ ...output, amount: Amount.from(0) })),
+          signatures,
+        }
+      },
+    })
+
+    await withDaemonHome(directory, async () => {
+      const fence = await claimCustodyScopeLease(directory, {
+        scopeId: profile.walletScopeId,
+        incarnationId: 'offline-recovery-high-water-setup',
+        observedAtMs: 2,
+      })
+      try {
+        await advanceDaemonKeysetCounter(
+          keyset.id,
+          4,
+          { fence, observedAtMs: 3 },
+          { normalizedMint: 'https://mint.example', unit: 'msat' },
+        )
+      } finally {
+        await releaseCustodyScopeLease(directory, fence, 4)
+      }
+
+      await withDatabase(directory, (database) => {
+        assert.deepEqual(readRecoveryPayloadCounts(database), {
+          targetProofOperations: 0,
+          custodyOperations: 0,
+          custodyArtifacts: 0,
+          targetProofs: 0,
+          custodyProofs: 0,
+        })
+      })
+
+      const result = await runOfflineDaemonSeedRecovery({
+        recoveryId: 'high-water-recovery',
+        mintUrl: 'https://mint.example',
+        unit: 'msat',
+        walletSeedHexFile: seedPath,
+        disclosureAcknowledged: true,
+        transport,
+      })
+      assert.equal(result.state, 'completed')
+      assert.equal(result.selectedKeysetCount, 1)
+      assert.equal(restoreCalls, 2)
+      assert.equal(stateCalls, 1)
+
+      await withDatabase(directory, (database) => {
+        const rows = readCustodyProofs(database, profile.walletScopeId)
+        const expectedRecoveredProofs = expectedProofs
+          .slice(2)
+          .map((proof) => ({
+            proof: {
+              id: proof.id,
+              amount: String(proof.amount),
+              secret: proof.secret,
+              C: proof.C,
+            },
+            nut07State: 'UNSPENT',
+            selectability: 'selectable',
+          }))
+          .sort((left, right) => left.proof.secret.localeCompare(right.proof.secret))
+        assert.deepEqual(
+          rows.map(({ proof, nut07State, selectability }) => ({
+            proof: {
+              id: proof.id,
+              amount: proof.amount,
+              secret: proof.secret,
+              C: proof.C,
+            },
+            nut07State,
+            selectability,
+          })),
+          expectedRecoveredProofs,
+        )
+        assert.deepEqual(readCounterRows(database, profile.walletScopeId), {
+          target: [{ keysetId: keyset.id, nextCounter: 4 }],
+          custody: [{ keysetId: keyset.id, nextCounter: 4 }],
+        })
+      })
+
+      const reserveAtMs = Date.now()
+      const reservationFence = await claimCustodyScopeLease(directory, {
+        scopeId: profile.walletScopeId,
+        incarnationId: 'offline-recovery-next-reservation',
+        observedAtMs: reserveAtMs,
+      })
+      try {
+        assert.deepEqual(
+          await reserveDaemonKeysetCounter(
+            keyset.id,
+            1,
+            { fence: reservationFence, observedAtMs: reserveAtMs },
+            { normalizedMint: 'https://mint.example', unit: 'msat' },
+          ),
+          { start: 4, count: 1 },
+        )
+      } finally {
+        await releaseCustodyScopeLease(directory, reservationFence, reserveAtMs + 1)
+      }
+    })
+  } finally {
+    await removeRecoveryTemp(directory)
+  }
+})
+
 async function bootstrap(directory: string, walletSeedHex: string) {
   return bootstrapFreshDaemonProfile({
     directory,
@@ -252,10 +450,100 @@ function readCount(
     | 'custody_proofs'
     | 'target_keyset_counters'
     | 'seed_recovery_jobs'
-    | 'seed_recovery_keysets',
+    | 'seed_recovery_keysets'
+    | 'target_proof_operations'
+    | 'custody_operations'
+    | 'custody_artifacts'
+    | 'target_wallet_proofs',
 ): number {
   return (database.prepare(`SELECT count(*) AS count FROM ${table}`).get() as { count: number })
     .count
+}
+
+function readRecoveryPayloadCounts(database: DatabaseSync) {
+  return {
+    targetProofOperations: readCount(database, 'target_proof_operations'),
+    custodyOperations: readCount(database, 'custody_operations'),
+    custodyArtifacts: readCount(database, 'custody_artifacts'),
+    targetProofs: readCount(database, 'target_wallet_proofs'),
+    custodyProofs: readCount(database, 'custody_proofs'),
+  }
+}
+
+function readCustodyProofs(database: DatabaseSync, scopeId: string) {
+  const rows = database
+    .prepare(
+      `SELECT proof_body AS proofBody, nut07_state AS nut07State,
+              selectability
+       FROM custody_proofs WHERE scope_id = ? ORDER BY proof_id`,
+    )
+    .all(scopeId) as Array<{
+    proofBody: Uint8Array
+    nut07State: 'UNSPENT' | 'SPENT' | 'PENDING'
+    selectability: 'selectable' | 'locked' | 'spent' | 'retained'
+  }>
+  return rows
+    .map(({ proofBody, ...state }) => ({
+      ...state,
+      proof: JSON.parse(new TextDecoder().decode(proofBody)) as {
+        id: string
+        amount: string
+        secret: string
+        C: string
+      },
+    }))
+    .sort((left, right) => left.proof.secret.localeCompare(right.proof.secret))
+}
+
+function readCounterRows(database: DatabaseSync, scopeId: string) {
+  const read = (table: 'target_keyset_counters' | 'custody_keyset_counters') =>
+    (
+      database
+        .prepare(
+          `SELECT keyset_id AS keysetId, next_counter AS nextCounter
+           FROM ${table} WHERE scope_id = ? ORDER BY keyset_id`,
+        )
+        .all(scopeId) as Array<{ keysetId: string; nextCounter: number }>
+    ).map(({ keysetId, nextCounter }) => ({ keysetId, nextCounter }))
+  return { target: read('target_keyset_counters'), custody: read('custody_keyset_counters') }
+}
+
+function regularKeyset(keys: Record<string, string>): MintKeys {
+  const unit = 'msat'
+  return { id: deriveKeysetId(keys, { unit, versionByte: 1 }), unit, keys }
+}
+
+function offlineRecoveryTransport(input: {
+  readonly keyset: MintKeys
+  readonly onProofs: (proofs: readonly Proof[]) => ProofState[]
+  readonly onRestore: (outputs: readonly unknown[]) => unknown
+}): AllKeysetSeedRecoveryTransport {
+  return {
+    wallet: {
+      async loadMint() {},
+      keyChain: {
+        getKeyset: () => input.keyset,
+        async ensureKeysetKeys() {
+          return input.keyset
+        },
+      },
+      async checkProofsStates(proofs) {
+        return input.onProofs(proofs)
+      },
+    },
+    async listRegularKeysets() {
+      return { keysets: [{ id: input.keyset.id, unit: input.keyset.unit }] }
+    },
+    async listConditionalKeysets() {
+      return { keysets: [] }
+    },
+    async getConditionalKeyset() {
+      throw new Error('regular recovery must not fetch conditional keys')
+    },
+    async restoreCandidates(outputs) {
+      return input.onRestore(outputs)
+    },
+  }
 }
 
 function emptyTransport(keysetId: string) {

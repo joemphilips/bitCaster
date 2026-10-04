@@ -1,5 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router";
 import userEvent from "@testing-library/user-event";
 import i18n from "@/i18n";
@@ -74,6 +74,11 @@ async function enterFundingAmount(user: ReturnType<typeof userEvent.setup>, amou
 }
 
 describe("DepositStep", () => {
+  afterEach(() => {
+    cleanup();
+    vi.useRealTimers();
+  });
+
   beforeEach(async () => {
     await i18n.changeLanguage("en");
     mockWalletState.mnemonic = "test mnemonic";
@@ -365,6 +370,62 @@ describe("DepositStep", () => {
     expect(timeoutSpy.mock.calls.some(([, delay]) => delay === 5_000)).toBe(false);
     expect(screen.queryByTestId("market-detail-page")).not.toBeInTheDocument();
     timeoutSpy.mockRestore();
+  });
+
+  it("shows the five-second success countdown without restarting it on callback changes", async () => {
+    executeBrowserMarketFundingDelivery.mockResolvedValueOnce({
+      progress: "credited",
+      transfer: { transferId: "payment-1", requestedAmount: "100000" },
+    });
+    const onCredited = vi.fn();
+    vi.useFakeTimers();
+    const view = renderStep({ onCredited });
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Attract Traders" })));
+    fireEvent.change(screen.getByTestId("amm-funding-custom-budget"), { target: { value: "100" } });
+    const submit = screen.getByTestId("confirm-amm-funding");
+    await act(async () => {
+      fireEvent.click(submit);
+      fireEvent.click(submit);
+    });
+    expect(executeBrowserMarketFundingDelivery).toHaveBeenCalledTimes(1);
+    expect(onCredited).toHaveBeenCalledOnce();
+    expect(screen.getByTestId("amm-funding-success")).toBeInTheDocument();
+    expect(screen.queryByTestId("amm-funding-custom-budget")).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("progressbar", { name: "Market navigation countdown" }),
+    ).toHaveAttribute("aria-valuenow", "100");
+    act(() => vi.advanceTimersByTime(2_500));
+    expect(screen.getByTestId("amm-funding-success-progress")).toHaveStyle({ width: "50%" });
+    view.rerender(stepTree({ onCredited: vi.fn() }));
+    act(() => vi.advanceTimersByTime(2_499));
+    expect(screen.queryByTestId("market-detail-page")).not.toBeInTheDocument();
+    act(() => vi.advanceTimersByTime(1));
+    expect(screen.getByTestId("market-detail-page")).toBeInTheDocument();
+    act(() => vi.advanceTimersByTime(5_000));
+    expect(onCredited).toHaveBeenCalledOnce();
+  });
+
+  it.each(["unmount", "wallet change"])("cleans up the success countdown on %s", async (change) => {
+    executeBrowserMarketFundingDelivery.mockResolvedValueOnce({
+      progress: "credited",
+      transfer: { transferId: "payment-1", requestedAmount: "100000" },
+    });
+    vi.useFakeTimers();
+    const view = renderStep();
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Attract Traders" })));
+    fireEvent.change(screen.getByTestId("amm-funding-custom-budget"), { target: { value: "100" } });
+    await act(async () => fireEvent.click(screen.getByTestId("confirm-amm-funding")));
+    expect(screen.getByTestId("amm-funding-success")).toBeInTheDocument();
+    act(() => vi.advanceTimersByTime(2_000));
+    if (change === "unmount") view.unmount();
+    else {
+      mockWalletState.mnemonic = "replacement test mnemonic";
+      await act(async () => view.rerender(stepTree()));
+      expect(screen.queryByTestId("amm-funding-success")).not.toBeInTheDocument();
+    }
+    act(() => vi.advanceTimersByTime(5_000));
+    expect(screen.queryByTestId("market-detail-page")).not.toBeInTheDocument();
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it("forwards the supplied market divisibility to the funding adapter", async () => {

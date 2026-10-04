@@ -15,6 +15,7 @@ export interface InitialProfileSecrets {
   readonly walletSeedHex: string
   readonly nostrSecretKeyHex: string
   readonly nostrPublicKeyHex: string
+  readonly nativeOracleNonceSeedHex: string
 }
 
 export class ProfileSecretProtectionError extends Error {
@@ -41,14 +42,16 @@ export function normalizeInitialProfileSecrets(input: {
   readonly walletSeedHex: string
   readonly nostrSecretKeyHex: string
   readonly nostrPublicKeyHex?: string
+  readonly nativeOracleNonceSeedHex: string
 }): InitialProfileSecrets {
   const walletSeedHex = exactWalletSeedHex(input.walletSeedHex)
   const nostrSecretKeyHex = exactPrivateHex(input.nostrSecretKeyHex)
   const nostrPublicKeyHex = deriveNostrPublicKey(nostrSecretKeyHex)
+  const nativeOracleNonceSeedHex = exactNativeOracleNonceSeedHex(input.nativeOracleNonceSeedHex)
   if (input.nostrPublicKeyHex !== undefined && input.nostrPublicKeyHex !== nostrPublicKeyHex) {
     throw new ProfileSecretProtectionError('secret-binding-mismatch')
   }
-  return { walletSeedHex, nostrSecretKeyHex, nostrPublicKeyHex }
+  return { walletSeedHex, nostrSecretKeyHex, nostrPublicKeyHex, nativeOracleNonceSeedHex }
 }
 
 export function protectInitialProfileSecrets(
@@ -58,9 +61,10 @@ export function protectInitialProfileSecrets(
 ): ProtectedSecretBody {
   const plaintext = Buffer.from(
     JSON.stringify({
-      version: 1,
+      version: 2,
       walletSeedHex: secrets.walletSeedHex,
       nostrSecretKeyHex: secrets.nostrSecretKeyHex,
+      nativeOracleNonceSeedHex: secrets.nativeOracleNonceSeedHex,
     }),
     'utf8',
   )
@@ -89,10 +93,16 @@ export function unlockInitialProfileSecrets(
     throw new ProfileSecretProtectionError('secret-body-invalid')
   }
   if (
-    !isExactRecord(parsed, ['version', 'walletSeedHex', 'nostrSecretKeyHex']) ||
-    parsed.version !== 1 ||
+    !isExactRecord(parsed, [
+      'version',
+      'walletSeedHex',
+      'nostrSecretKeyHex',
+      'nativeOracleNonceSeedHex',
+    ]) ||
+    parsed.version !== 2 ||
     typeof parsed.walletSeedHex !== 'string' ||
-    typeof parsed.nostrSecretKeyHex !== 'string'
+    typeof parsed.nostrSecretKeyHex !== 'string' ||
+    typeof parsed.nativeOracleNonceSeedHex !== 'string'
   ) {
     throw new ProfileSecretProtectionError('secret-body-invalid')
   }
@@ -100,6 +110,7 @@ export function unlockInitialProfileSecrets(
     walletSeedHex: parsed.walletSeedHex,
     nostrSecretKeyHex: parsed.nostrSecretKeyHex,
     nostrPublicKeyHex,
+    nativeOracleNonceSeedHex: parsed.nativeOracleNonceSeedHex,
   })
   return secrets
 }
@@ -197,7 +208,14 @@ function exactWalletSeedHex(value: string): string {
   return value
 }
 
-function deriveNostrPublicKey(privateKeyHex: string): string {
+function exactNativeOracleNonceSeedHex(value: string): string {
+  if (!/^[0-9a-f]{64}$/.test(value)) {
+    throw new ProfileSecretProtectionError('secret-body-invalid')
+  }
+  return value
+}
+
+export function deriveNostrPublicKey(privateKeyHex: string): string {
   const ecdh = createECDH('secp256k1')
   try {
     ecdh.setPrivateKey(Buffer.from(privateKeyHex, 'hex'))
@@ -205,6 +223,51 @@ function deriveNostrPublicKey(privateKeyHex: string): string {
     throw new ProfileSecretProtectionError('secret-body-invalid')
   }
   return ecdh.getPublicKey(undefined, 'compressed').subarray(1).toString('hex')
+}
+
+export interface NativeOracleSignerBinding {
+  readonly walletScopeId: string
+  readonly creationId: string
+  readonly eventId: string
+  readonly nonceIndex: number
+  readonly creatorPublicKeyHex: string
+}
+
+export function protectNativeOracleSigner(
+  secretKeyHex: string,
+  binding: NativeOracleSignerBinding,
+  passphrase?: string,
+): ProtectedSecretBody {
+  const key = exactPrivateHex(secretKeyHex)
+  if (deriveNostrPublicKey(key) !== binding.creatorPublicKeyHex)
+    throw new ProfileSecretProtectionError('secret-binding-mismatch')
+  return protectBody(Buffer.from(key, 'hex'), oracleSignerBinding(binding), passphrase)
+}
+
+export function unlockNativeOracleSigner(
+  body: ProtectedSecretBody,
+  binding: NativeOracleSignerBinding,
+  passphrase?: string,
+): string {
+  const key = Buffer.from(unlockBody(body, oracleSignerBinding(binding), passphrase)).toString(
+    'hex',
+  )
+  if (key.length !== 64 || deriveNostrPublicKey(key) !== binding.creatorPublicKeyHex)
+    throw new ProfileSecretProtectionError('secret-binding-mismatch')
+  return key
+}
+
+function oracleSignerBinding(binding: NativeOracleSignerBinding): Uint8Array {
+  return Buffer.from(
+    JSON.stringify([
+      'bitcaster-daemon/oracle-signer/v1',
+      binding.walletScopeId,
+      binding.creationId,
+      binding.eventId,
+      binding.nonceIndex,
+      binding.creatorPublicKeyHex,
+    ]),
+  )
 }
 
 function isExactRecord(value: unknown, keys: readonly string[]): value is Record<string, unknown> {

@@ -39,6 +39,8 @@ export interface SdkSubmitOrderRequest {
   tokenSide: 'Outcome' | 'Complement'
   side: 'Buy' | 'Sell'
   price: number
+  maxQuotePaymentSubunits?: number | null
+  minQuotePaymentSubunits?: number | null
   amountSubunits: number
   timeInForce: 'FOK'
 }

@@ -8,6 +8,8 @@ import {
   type OutputData,
   type MintPreview,
   type MintQuoteBolt11Response,
+  type MeltPreview,
+  type MeltQuoteBaseResponse,
   type Proof,
   type ProofState,
   type SwapPreview,
@@ -521,6 +523,43 @@ export function serializeDurableWalletSendOperation(input: {
     preview: serializeSendPreview(input.preview),
   })
   if (operation.kind !== 'wallet-send') throw new Error('durable wallet operation is not a send')
+  return operation
+}
+
+/** Persist one exact msat BOLT11 wallet-melt plan before the mint request starts. */
+export function serializeDurableWalletMeltOperation(input: {
+  readonly operationId: string
+  readonly mintUrl: string
+  readonly unit: string
+  readonly preview: MeltPreview<Pick<MeltQuoteBaseResponse, 'quote' | 'amount'>>
+}): DurableWalletMeltOperation {
+  if (input.unit !== 'msat') {
+    throw new Error('durable wallet melt requires msat')
+  }
+  if (input.preview.method !== 'bolt11') {
+    throw new Error('durable wallet melt requires bolt11')
+  }
+  const operation = decodeDurableWalletOperation({
+    schemaVersion: DURABLE_WALLET_OPERATION_SCHEMA_VERSION,
+    operationId: input.operationId,
+    kind: 'wallet-melt',
+    mintUrl: input.mintUrl,
+    unit: input.unit,
+    preview: {
+      method: input.preview.method,
+      inputs: input.preview.inputs.map(serializeDurableWalletProof),
+      outputData: input.preview.outputData.map(serializeMeltOutput),
+      keysetId: input.preview.keysetId,
+      quote: {
+        quote: input.preview.quote.quote,
+        amount: Amount.from(input.preview.quote.amount).toString(),
+      },
+      requestOptions: { preferAsync: false, extraPayload: {} },
+    },
+  })
+  if (operation.kind !== 'wallet-melt') {
+    throw new Error('durable wallet operation is not a melt')
+  }
   return operation
 }
 
@@ -1557,6 +1596,17 @@ export function hydrateDurableWalletProof(proof: DurableWalletProof): Proof {
 }
 
 function serializeOutput(output: OutputDataLike): DurableWalletOutputData {
+  return serializeOutputWithZeroPolicy(output, false)
+}
+
+function serializeMeltOutput(output: OutputDataLike): DurableWalletOutputData {
+  return serializeOutputWithZeroPolicy(output, true)
+}
+
+function serializeOutputWithZeroPolicy(
+  output: OutputDataLike,
+  allowZeroAmount: boolean,
+): DurableWalletOutputData {
   const serialized = serializeDurableCustodyOutput(output)
   const durable: DurableWalletOutputData = {
     blindedMessage: {
@@ -1568,7 +1618,7 @@ function serializeOutput(output: OutputDataLike): DurableWalletOutputData {
     secret: serialized.secret,
     ephemeralE: serialized.ephemeralE ?? null,
   }
-  decodeOutput(durable)
+  decodeOutput(durable, allowZeroAmount)
   return durable
 }
 

@@ -1,6 +1,6 @@
 ---
-title: "Trading Model"
-description: "How CLOB orders, authorization, settlement groups, and admission protection work."
+title: 'Trading Model'
+description: 'How CLOB orders, authorization, settlement groups, and admission protection work.'
 sidebar:
   order: 2
 ---
@@ -56,17 +56,22 @@ not a confirmed trade. Execution estimates are `null` when the full amount
 cannot fill. The current price is `null` when no confirmed trade exists.
 Funding does not create a market-price point.
 
-The GUI uses one Buy/Sell form. Auto price protection sets a maximum buy
-price or a minimum sell price for the selected token. It uses the best
-eligible execution price before the requested trade. It adds 20 percentage
-points for Buy and subtracts 20 percentage points for Sell. For example,
-a best Buy price of 10% gives a 30% limit, not 12%. The limit stays within
-valid market prices. This rule does not prohibit all extreme prices.
-Choose Custom to set a different absolute limit. The last trade, midpoint,
-and quoted average price do not determine the Auto limit.
+The GUI uses one Buy/Sell form. It previews the requested quantity over the
+full valid price range: `D - 1` for Buy and 1 for Sell.
+The user confirms the quoted trade value and reviews fees separately.
+The order keeps that accepted total and the preview's worst execution price.
+The engine checks the complete current FOK plan before accepting fills.
+Equal or better execution can proceed. Worse execution refuses the whole order.
+
+Buy uses `maxQuotePaymentSubunits` as the maximum trade payment.
+Sell uses `minQuotePaymentSubunits` as the minimum gross trade proceeds.
+The applicable bound must be a non-negative integer in msat.
+The opposite bound is `null`. These bounds exclude fees.
+They are engine admission constraints, not independent mint-enforced constraints.
+CLI clients can also select a narrower per-fill price limit.
 
 `POST /api/v1/orders/capacity-preview` estimates the maximum quantity at
-that limit. Send `marketId`, `side`, and `tokenSide`. Omit `price` for Auto.
+a selected price limit. Send `marketId`, `side`, and `tokenSide`. Omit `price` for Auto.
 Send an integer `price` for Custom. Explicit `null` is invalid.
 Auto uses `floor(D * 20 / 100)` ticks and clamps the limit to `1..D-1`.
 The result includes all eligible makers, not only the bot.
@@ -90,9 +95,10 @@ Capacity is limited to one public FOK order. Maker minimums can leave gaps:
 not every smaller quantity must fill. Continue to use `/orders/preview`
 for the entered quantity and calculate its fees separately.
 
-The order keeps this bound through balance checks, top-up, preparation, and
-submission. It fills the complete quantity within the bound or fills none.
-The bound does not reserve liquidity or guarantee execution. If the order no
+The order keeps the accepted trade total and per-fill price limit through
+balance checks, top-up, preparation, submission, and recovery.
+It fills the complete quantity within both limits or fills none.
+These limits do not reserve liquidity or guarantee execution. If the order no
 longer fits, review a fresh preview and confirm a new attempt. The GUI does
 not retry the order automatically. Wallet or Nostr setup, or a change of
 trading identity, also requires a fresh preview and confirmation.

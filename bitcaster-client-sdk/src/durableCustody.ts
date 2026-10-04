@@ -1487,6 +1487,8 @@ export function reduceDurableCustodyState(
       operation.operation.proofStorage.lineage.successorAdmission = structuredClone(
         transition.successorAdmission,
       )
+      operation.operation.proofStorage.pinReasons =
+        operation.operation.proofStorage.pinReasons.filter((pin) => pin !== 'active-reservation')
       break
     case 'reconcile-authenticated-terminal-mint-rejection':
       if (

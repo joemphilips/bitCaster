@@ -1,4 +1,17 @@
-import { renderHook, act, waitFor } from "@testing-library/react";
+import "fake-indexeddb/auto";
+import { renderHook, act, waitFor, cleanup } from "@testing-library/react";
+import Dexie from "dexie";
+import { Blob as NativeBlob, File as NativeFile } from "node:buffer";
+import { webcrypto } from "node:crypto";
+import { FormData as NativeFormData } from "undici";
+import { finalizeEvent, getPublicKey } from "nostr-tools/pure";
+import {
+  deriveDlcConditionId,
+  deriveDurableCustodyScopeId,
+  deriveDurableCustodyWalletId,
+} from "@bitcaster/client-sdk";
+import { BitcasterDB } from "@/stores/proof-db";
+import { browserWalletDatabaseName } from "@/lib/browserWalletProfile";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import i18n from "@/i18n";
 import type { ReactNode } from "react";
@@ -11,22 +24,34 @@ const {
   mockRegisterConditionWithFee,
   mockGetAvailableRegularBalanceSubunits,
   mockCreateMarket,
-  mockFetchEngineCatalogueEntry,
+  mockFetchMarketRegistrationForRecovery,
   mockCreateEnumAnnouncement,
   mockEnsureKormirNsec,
   mockGetOracleAnnouncementEventId,
   mockRefreshMintInfoWithoutActivating,
   mockWalletState,
+  runtime,
 } = vi.hoisted(() => ({
   mockNavigate: vi.fn(),
   mockRegisterConditionWithFee: vi.fn(),
   mockGetAvailableRegularBalanceSubunits: vi.fn(),
   mockCreateMarket: vi.fn(),
-  mockFetchEngineCatalogueEntry: vi.fn(),
+  mockFetchMarketRegistrationForRecovery: vi.fn(),
   mockCreateEnumAnnouncement: vi.fn(),
   mockEnsureKormirNsec: vi.fn(),
   mockGetOracleAnnouncementEventId: vi.fn(),
   mockRefreshMintInfoWithoutActivating: vi.fn(),
+  runtime: {
+    database: null as any,
+    conditionId: "",
+    lookupMint: vi.fn(),
+    published: [] as string[],
+    seed: new Uint8Array(64).fill(0x11),
+    scopeId: "",
+    feeOperations: [] as string[],
+    engineThumbnails: [] as Array<{ name: string; bytes: Uint8Array }>,
+    draftStore: null as typeof useMarketDraftStore | null,
+  },
   mockWalletState: {
     activeMintUrl: "https://mint.example.test",
     mints: [
@@ -37,7 +62,11 @@ const {
             CTF: {
               default_keyset_creation: "one-vs-rest",
               registration_fees: [
-                { unit: "msat", registration_fee_base: 0, registration_fee_per_keyset: 0 },
+                {
+                  unit: "msat",
+                  registration_fee_base: 0,
+                  registration_fee_per_keyset: 0,
+                },
               ],
             },
           },
@@ -47,6 +76,23 @@ const {
   },
 }));
 
+// Keep the production store and installed persist middleware. Switch only the
+// module reference when a fixture needs a store initialized without storage.
+vi.mock("@/stores/marketDraft", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/stores/marketDraft")>();
+  return {
+    ...actual,
+    useMarketDraftStore: new Proxy(actual.useMarketDraftStore, {
+      apply(target, thisArg, args) {
+        return Reflect.apply(runtime.draftStore ?? target, thisArg, args);
+      },
+      get(target, property) {
+        return Reflect.get(runtime.draftStore ?? target, property);
+      },
+    }),
+  };
+});
+
 vi.mock("react-router", async () => {
   const actual = await vi.importActual("react-router");
   return { ...actual, useNavigate: () => mockNavigate };
@@ -54,8 +100,26 @@ vi.mock("react-router", async () => {
 
 vi.mock("@/lib/markets", async () => ({
   createMarket: (...args: unknown[]) => mockCreateMarket(...args),
-  fetchEngineCatalogueEntry: (...args: unknown[]) => mockFetchEngineCatalogueEntry(...args),
+  fetchMarketRegistrationForRecovery: (...args: unknown[]) =>
+    mockFetchMarketRegistrationForRecovery(...args),
   CreateMarketError: (await import("@bitcaster/client-sdk")).CreateMarketError,
+  createPreparedMarket: async (
+    conditionId: string,
+    prepared: { bodyBytes: ArrayBuffer; contentType: string },
+  ) => {
+    const form = await new Request("https://engine.example", {
+      method: "POST",
+      headers: { "Content-Type": prepared.contentType },
+      body: prepared.bodyBytes,
+    }).formData();
+    const thumbnail = form.get("thumbnail");
+    if (thumbnail instanceof Blob)
+      runtime.engineThumbnails.push({
+        name: (thumbnail as File).name,
+        bytes: new Uint8Array(await thumbnail.arrayBuffer()),
+      });
+    return mockCreateMarket(conditionId, JSON.parse(String(form.get("metadata"))));
+  },
   requiredMarketCreationOutcomeCollections: (outcomes: readonly string[]) => outcomes,
   MintError: class MintError extends Error {
     constructor(
@@ -68,11 +132,25 @@ vi.mock("@/lib/markets", async () => ({
   },
 }));
 
-vi.mock("@/lib/marketRegistrationFee", () => ({
+vi.mock("@/lib/marketRegistrationFee", async () => ({
+  ...(await vi.importActual<typeof import("@/lib/marketRegistrationFee")>(
+    "@/lib/marketRegistrationFee",
+  )),
   MAX_CONDITION_REGISTRATION_FEE_SUBUNITS: 1000000,
   getAvailableRegularBalanceSubunits: (...args: unknown[]) =>
     mockGetAvailableRegularBalanceSubunits(...args),
   registerConditionWithFee: (...args: unknown[]) => mockRegisterConditionWithFee(...args),
+  prepareConditionRegistrationFee: async (input: { operationRef: string | null }) => {
+    if (input.operationRef !== null) runtime.feeOperations.push(input.operationRef);
+    return { kind: "fee-free" };
+  },
+  deliverPreparedConditionRegistrationFee: async (_prepared: unknown, input: any) =>
+    mockRegisterConditionWithFee({
+      mintUrl: input.mintUrl,
+      requiredFeeSubunits: input.requiredFeeSubunits,
+      request: input.request,
+    }),
+  confirmConditionRegistrationFee: async () => {},
   registrationFeeForPolicy: (
     outcomes: readonly string[],
     settings: {
@@ -96,14 +174,69 @@ vi.mock("@/lib/marketRegistrationFee", () => ({
   },
 }));
 
-vi.mock("@/lib/kormir", () => ({
+vi.mock("@/lib/kormir", async () => ({
   createEnumAnnouncement: (...args: unknown[]) => mockCreateEnumAnnouncement(...args),
   ensureKormirNsec: (...args: unknown[]) => mockEnsureKormirNsec(...args),
   getOracleAnnouncementEventId: (...args: unknown[]) => mockGetOracleAnnouncementEventId(...args),
+  prepareEnumAnnouncement: async (...args: any[]) => {
+    const sdk = await import("@bitcaster/client-sdk");
+    const { finalizeEvent, getPublicKey } = await import("nostr-tools/pure");
+    const key = new Uint8Array(32).fill(0x11);
+    const artifactHex = await mockCreateEnumAnnouncement(...args);
+    runtime.conditionId = sdk.deriveDlcConditionId({
+      eventId: args[1],
+      outcomeCount: args[2].length,
+      oraclePublicKeys: [getPublicKey(key)],
+    });
+    return {
+      artifactHex,
+      eventJson: JSON.stringify(
+        finalizeEvent({ kind: 88, created_at: 1_700_000_000, tags: [], content: "qrs=" }, key),
+      ),
+    };
+  },
 }));
 
-vi.mock("@/lib/identityOps", () => ({
-  resolveNsecIdentity: () => ({ publicKey: "a".repeat(64) }),
+vi.mock("@/lib/identityOps", async () => ({
+  resolveNsecIdentity: (secret: string | null) =>
+    secret === null
+      ? null
+      : {
+          publicKey: getPublicKey(new Uint8Array(Buffer.from(secret, "hex"))),
+        },
+}));
+
+vi.mock("@/lib/cashu", () => ({
+  captureBrowserMintPersistenceContext: () => ({
+    database: runtime.database,
+    seed: runtime.seed,
+    scopeId: runtime.scopeId,
+    activeMintUrl: mockWalletState.activeMintUrl,
+    requireCapturedProfile: () => {},
+  }),
+  getWalletForUnit: vi.fn(),
+}));
+
+vi.mock("@/lib/slug", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/slug")>("@/lib/slug");
+  return {
+    ...actual,
+    buildEventId: (title: string) => `${actual.slugifyEventTitle(title) || "market"}_abcdefabcdef`,
+  };
+});
+vi.mock("@/lib/nostr", () => ({
+  withTemporaryRelayNdk: async (_options: unknown, _signer: unknown, callback: any) => callback({}),
+}));
+vi.mock("@nostr-dev-kit/ndk", async () => ({
+  ...(await vi.importActual("@nostr-dev-kit/ndk")),
+  NDKEvent: class {
+    constructor(_ndk: unknown, event: unknown) {
+      runtime.published.push(JSON.stringify(event));
+    }
+    async publish() {
+      return new Set(["relay"]);
+    }
+  },
 }));
 
 vi.mock("@/lib/walletOps", () => ({
@@ -124,7 +257,7 @@ vi.mock("@/stores/wallet", () => ({
 // "0% fee" assertion can read the persisted entry. Mocked separately from
 // the store under test so the assertion sees real reads/writes.
 import { useCreatorMarketsStore } from "@/stores/creatorMarkets";
-import type { MarketCatalogueEntry } from "@/lib/markets";
+import type { MarketRegistrationResponse } from "@/lib/markets";
 import type { WizardOutcome } from "@/types/market-creation";
 
 // Stub nip17 so the test does not pull in nostr-tools at module load time.
@@ -144,22 +277,64 @@ function wrapper({ children }: { children: ReactNode }) {
   return <MemoryRouter>{children}</MemoryRouter>;
 }
 
-beforeEach(() => {
-  vi.clearAllMocks();
-  mockRegisterConditionWithFee.mockResolvedValue({
-    condition_id: "test-cond-id",
+const walletId = deriveDurableCustodyWalletId(runtime.seed);
+const walletScopeId = deriveDurableCustodyScopeId({
+  scopeKind: "wallet",
+  walletId,
+});
+const databaseName = browserWalletDatabaseName(walletScopeId);
+const conditionId = deriveDlcConditionId({
+  eventId: "test_market_abcdefabcdef",
+  outcomeCount: 2,
+  oraclePublicKeys: [getPublicKey(new Uint8Array(32).fill(0x11))],
+});
+const announcementEvent = finalizeEvent(
+  { kind: 88, created_at: 1_700_000_000, tags: [], content: "qrs=" },
+  new Uint8Array(32).fill(0x11),
+);
+
+beforeEach(async () => {
+  vi.resetAllMocks();
+  // Each independent creation fixture owns a fresh public creator record.
+  useCreatorMarketsStore.setState({ markets: [] });
+  runtime.draftStore = null;
+  vi.stubGlobal("Blob", NativeBlob);
+  vi.stubGlobal("File", NativeFile);
+  vi.stubGlobal("FormData", NativeFormData);
+  vi.stubGlobal("crypto", webcrypto);
+  URL.createObjectURL = vi.fn(() => "blob:retained-thumbnail");
+  URL.revokeObjectURL = vi.fn();
+  runtime.database = new BitcasterDB(databaseName);
+  runtime.scopeId = walletScopeId;
+  runtime.seed = new Uint8Array(64).fill(0x11);
+  runtime.engineThumbnails = [];
+  runtime.published = [];
+  runtime.feeOperations = [];
+  runtime.conditionId = conditionId;
+  runtime.lookupMint.mockImplementation(async () =>
+    Response.json({ code: 13021 }, { status: 400 }),
+  );
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => runtime.lookupMint()),
+  );
+  mockRegisterConditionWithFee.mockImplementation(async () => ({
+    condition_id: runtime.conditionId,
     keysets: { Yes: "ks1", No: "ks2" },
-  });
+  }));
   mockGetAvailableRegularBalanceSubunits.mockResolvedValue(1000);
-  mockCreateMarket.mockResolvedValue({
-    conditionId: "test-cond-id",
-    marketsCreated: ["test-cond-id-Yes", "test-cond-id-No"],
-    outcomeDetails: [{ name: "Yes" }, { name: "No" }],
+  mockCreateMarket.mockImplementation(async (_id, metadata) => ({
+    conditionId: runtime.conditionId,
+    baseAsset: "sat",
+    marketsCreated: metadata.outcomes.map(
+      (outcome: { name: string }) => `${runtime.conditionId}-${outcome.name}`,
+    ),
+    outcomeDetails: metadata.outcomes,
     thumbnailUrl: null,
     divisibility: 1_000,
-  });
-  mockFetchEngineCatalogueEntry.mockResolvedValue(null);
-  mockCreateEnumAnnouncement.mockResolvedValue("announcement-hex");
+  }));
+  mockFetchMarketRegistrationForRecovery.mockResolvedValue(null);
+  mockCreateEnumAnnouncement.mockResolvedValue("aabb");
   mockEnsureKormirNsec.mockResolvedValue(undefined);
   mockGetOracleAnnouncementEventId.mockResolvedValue("c".repeat(64));
   mockRefreshMintInfoWithoutActivating.mockResolvedValue(undefined);
@@ -172,7 +347,11 @@ beforeEach(() => {
           CTF: {
             default_keyset_creation: "one-vs-rest",
             registration_fees: [
-              { unit: "msat", registration_fee_base: 0, registration_fee_per_keyset: 0 },
+              {
+                unit: "msat",
+                registration_fee_base: 0,
+                registration_fee_per_keyset: 0,
+              },
             ],
           },
         },
@@ -188,6 +367,13 @@ beforeEach(() => {
   // Reset the persisted wizard draft so each test starts from a clean
   // "no work in progress" state.
   useMarketDraftStore.setState({ draft: defaultDraft(), hasSavedDraft: false });
+});
+
+afterEach(async () => {
+  cleanup();
+  runtime.database?.close();
+  await Dexie.delete(databaseName);
+  vi.unstubAllGlobals();
 });
 
 async function setupDraftForSubmission() {
@@ -259,10 +445,12 @@ function setCategoricalSubmissionDraft(outcomes: WizardOutcome[]) {
   });
 }
 
-function catalogueMarket(overrides: Partial<MarketCatalogueEntry> = {}): MarketCatalogueEntry {
+function registrationMarket(
+  overrides: Partial<MarketRegistrationResponse> = {},
+): MarketRegistrationResponse {
   return {
-    conditionId: "test-cond-id",
-    creatorPubkey: "a".repeat(64),
+    conditionId: conditionId,
+    creatorPubkey: getPublicKey(new Uint8Array(32).fill(0x11)),
     outcomes: ["Yes", "No"],
     outcomeDetails: [
       { name: "Yes", color: "#112233" },
@@ -272,8 +460,394 @@ function catalogueMarket(overrides: Partial<MarketCatalogueEntry> = {}): MarketC
     divisibility: 1_000,
     thumbnailUrl: "/api/v1/test-cond-id/thumbnail",
     ...overrides,
-  } as unknown as MarketCatalogueEntry;
+  };
 }
+
+async function coldReloadCreation() {
+  cleanup();
+  runtime.database.close();
+  runtime.database = new BitcasterDB(databaseName);
+  await useMarketDraftStore.persist.rehydrate();
+  const { result } = renderHook(() => useMarketCreationState(), { wrapper });
+  await waitFor(() => expect(result.current.isLoadingCreation).toBe(false));
+  await waitFor(() => expect(result.current.retainedCreation).not.toBeNull());
+  return result;
+}
+
+async function beginPaidCreation() {
+  mockWalletState.mints[0].info.nuts.CTF.registration_fees[0].registration_fee_base = 7;
+  const result = await setupDraftForSubmission();
+  await act(async () => {
+    await result.current.onCreateMarket();
+  });
+  expect(result.current.registrationFeePrompt?.feeSubunits).toBe(7);
+  return result;
+}
+
+describe("durable browser market creation", () => {
+  it("resumes a paid engine 401 after a cold read with the original thumbnail and one announcement", async () => {
+    const result = await beginPaidCreation();
+    const bytes = new Uint8Array(2 * 1024 * 1024).fill(0x7a);
+    await act(async () =>
+      result.current.onThumbnailUpload(new File([bytes], "original.png", { type: "image/png" })),
+    );
+    mockCreateMarket.mockRejectedValueOnce(new CreateMarketError("unauthorized", 401, false));
+    await act(async () => {
+      await result.current.onConfirmRegistrationFee();
+    });
+    expect(result.current.retainedCreation?.mintConfirmed).toBe(true);
+    expect(result.current.submitError).toBe(i18n.t("marketCreation.creationIncompleteError"));
+    const id = useMarketDraftStore.getState().draft.creation!.creationId;
+    const retained = await runtime.database.marketCreations.get([walletScopeId, id]);
+    expect(retained.thumbnail.data.byteLength).toBe(bytes.byteLength);
+    expect(new Uint8Array(retained.thumbnail.data).every((byte) => byte === 0x7a)).toBe(true);
+    const reloaded = await coldReloadCreation();
+    expect(reloaded.current.thumbnailFile).toBeNull();
+    expect(reloaded.current.retainedCreation?.mintConfirmed).toBe(true);
+    await act(async () => {
+      await reloaded.current.onResumeCreation();
+    });
+    expect(reloaded.current.createdMarketConditionId).toBe(conditionId);
+    expect(mockRegisterConditionWithFee).toHaveBeenCalledTimes(1);
+    expect(runtime.feeOperations).toHaveLength(1);
+    expect(runtime.feeOperations[0]).toBe(retained.registration.feeOperationRef);
+    expect(mockCreateEnumAnnouncement).toHaveBeenCalledTimes(1);
+    expect(runtime.published).toEqual([retained.announcement.announcementNostrEventJson]);
+    expect(runtime.engineThumbnails).toHaveLength(2);
+    expect(
+      runtime.engineThumbnails.every(
+        (file) =>
+          file.name === "original.png" &&
+          file.bytes.every((byte) => byte === 0x7a) &&
+          file.bytes.length === bytes.length,
+      ),
+    ).toBe(true);
+    expect(useMarketDraftStore.getState().draft.creation).toBeUndefined();
+  });
+
+  it("does not treat unavailable mint reconciliation as absence after a lost paid response", async () => {
+    const result = await beginPaidCreation();
+    mockRegisterConditionWithFee.mockRejectedValueOnce(new Error("lost mint response"));
+    runtime.lookupMint
+      .mockImplementationOnce(async () => Response.json({ code: 13021 }, { status: 400 }))
+      .mockImplementationOnce(async () => new Response("unavailable", { status: 503 }));
+    await act(async () => {
+      await result.current.onConfirmRegistrationFee();
+    });
+    expect(mockCreateMarket).not.toHaveBeenCalled();
+    const retained = await runtime.database.marketCreations.toArray();
+    expect(retained[0].mintConfirmed).toBe(false);
+    runtime.lookupMint.mockImplementation(async () =>
+      Response.json({
+        condition_id: conditionId,
+        collateral: "msat",
+        announcements: ["aabb"],
+        tags: [
+          ["title", "Test Market"],
+          ["description", "Test description"],
+        ],
+      }),
+    );
+    const reloaded = await coldReloadCreation();
+    await act(async () => {
+      await reloaded.current.onResumeCreation();
+    });
+    expect(reloaded.current.createdMarketConditionId).toBe(conditionId);
+    expect(mockRegisterConditionWithFee).toHaveBeenCalledTimes(1);
+    expect(runtime.feeOperations).toHaveLength(1);
+    expect(mockCreateEnumAnnouncement).toHaveBeenCalledTimes(1);
+    expect(runtime.published).toHaveLength(1);
+  });
+
+  it("reconciles the original engine registration on reload after response and lookup loss", async () => {
+    const result = await beginPaidCreation();
+    mockCreateMarket.mockRejectedValueOnce(new CreateMarketError("lost response", null, true));
+    mockFetchMarketRegistrationForRecovery
+      .mockResolvedValueOnce(null)
+      .mockRejectedValueOnce(new Error("lookup unavailable"));
+    await act(async () => {
+      await result.current.onConfirmRegistrationFee();
+    });
+    const reloaded = await coldReloadCreation();
+    mockFetchMarketRegistrationForRecovery.mockResolvedValue(registrationMarket());
+    await act(async () => {
+      await reloaded.current.onResumeCreation();
+    });
+    expect(reloaded.current.createdMarketConditionId).toBe(conditionId);
+    expect(mockCreateMarket).toHaveBeenCalledTimes(1);
+    expect(mockRegisterConditionWithFee).toHaveBeenCalledTimes(1);
+    expect(runtime.feeOperations).toHaveLength(1);
+    expect(runtime.published).toHaveLength(1);
+  });
+
+  it.each(["wallet", "scope", "mint", "creator", "engine"] as const)(
+    "refuses a changed %s binding before another effect",
+    async (changed) => {
+      const result = await beginPaidCreation();
+      mockCreateMarket.mockRejectedValueOnce(new CreateMarketError("unauthorized", 401, false));
+      await act(async () => {
+        await result.current.onConfirmRegistrationFee();
+      });
+      switch (changed) {
+        case "wallet":
+          runtime.seed = new Uint8Array(64).fill(0x22);
+          break;
+        case "scope":
+          runtime.scopeId = "other-wallet-scope";
+          break;
+        case "mint":
+          mockWalletState.activeMintUrl = "https://other-mint.example";
+          break;
+        case "creator":
+          useSettingsStore.setState({ nsecSecret: "22".repeat(32) });
+          break;
+        case "engine":
+          useMarketDraftStore.getState().setDraft((draft) => ({
+            ...draft,
+            creation: {
+              ...draft.creation!,
+              binding: {
+                ...draft.creation!.binding,
+                engineBaseUrl: "https://other-engine.example",
+              },
+            },
+          }));
+          break;
+      }
+      const counts = [
+        runtime.lookupMint.mock.calls.length,
+        mockFetchMarketRegistrationForRecovery.mock.calls.length,
+      ];
+      await act(async () => {
+        await result.current.onResumeCreation();
+      });
+      expect(result.current.createdMarketConditionId).toBeNull();
+      expect(runtime.feeOperations).toHaveLength(1);
+      expect(runtime.published).toHaveLength(1);
+      expect(mockCreateMarket).toHaveBeenCalledTimes(1);
+      expect([
+        runtime.lookupMint.mock.calls.length,
+        mockFetchMarketRegistrationForRecovery.mock.calls.length,
+      ]).toEqual(counts);
+    },
+  );
+
+  it("refuses changed paid draft creation and resumes only immutable saved metadata", async () => {
+    const result = await beginPaidCreation();
+    mockCreateMarket.mockRejectedValueOnce(new CreateMarketError("unauthorized", 401, false));
+    await act(async () => {
+      await result.current.onConfirmRegistrationFee();
+    });
+    await act(async () => {
+      result.current.onTitleChange("Different paid market");
+      result.current.onDescriptionChange("Changed");
+    });
+    await act(async () => {
+      await result.current.onCreateMarket();
+    });
+    expect(mockCreateMarket).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      await result.current.onResumeCreation();
+    });
+    expect(mockCreateMarket.mock.calls[1][1]).toMatchObject({
+      title: "Test Market",
+      description: "Test description",
+    });
+    expect(runtime.feeOperations).toHaveLength(1);
+    expect(mockCreateEnumAnnouncement).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the completed pointer when the creator row fails, then cold-resumes only its save", async () => {
+    useCreatorMarketsStore.setState({ markets: [] });
+    const result = await beginPaidCreation();
+    const original = Storage.prototype.setItem;
+    const failure = vi.spyOn(Storage.prototype, "setItem").mockImplementation(function (
+      this: Storage,
+      key,
+      value,
+    ) {
+      if (key === "bitcaster-creator-markets") throw new Error("creator storage unavailable");
+      return original.call(this, key, value);
+    });
+    await act(async () => {
+      await result.current.onConfirmRegistrationFee();
+    });
+    expect(result.current.createdMarketConditionId).toBeNull();
+    expect(useMarketDraftStore.getState().draft.creation).toBeDefined();
+    const rows = await runtime.database.marketCreations.toArray();
+    expect(rows[0].engineResult).not.toBeNull();
+    failure.mockRestore();
+    await useCreatorMarketsStore.persist.rehydrate();
+    expect(useCreatorMarketsStore.getState().markets).toEqual([]);
+    const counts = [
+      runtime.lookupMint.mock.calls.length,
+      mockFetchMarketRegistrationForRecovery.mock.calls.length,
+    ];
+    const reloaded = await coldReloadCreation();
+    await act(async () => {
+      await reloaded.current.onResumeCreation();
+    });
+    expect(reloaded.current.createdMarketConditionId).toBe(conditionId);
+    expect(useMarketDraftStore.getState().draft.creation).toBeUndefined();
+    expect(useCreatorMarketsStore.getState().markets[0].oracle?.announcementEventJson).toBe(
+      rows[0].announcement.announcementNostrEventJson,
+    );
+    expect(runtime.feeOperations).toHaveLength(1);
+    expect(runtime.published).toHaveLength(1);
+    expect(mockCreateEnumAnnouncement).toHaveBeenCalledTimes(1);
+    expect(mockRegisterConditionWithFee).toHaveBeenCalledTimes(1);
+    expect(mockCreateMarket).toHaveBeenCalledTimes(1);
+    expect([
+      runtime.lookupMint.mock.calls.length,
+      mockFetchMarketRegistrationForRecovery.mock.calls.length,
+    ]).toEqual(counts);
+  });
+
+  it("fails a real creation-store writer before fee or publication", async () => {
+    const result = await beginPaidCreation();
+    vi.spyOn(runtime.database.marketCreations, "add").mockRejectedValueOnce(
+      new Error("storage unavailable"),
+    );
+    await act(async () => {
+      await result.current.onConfirmRegistrationFee();
+    });
+    expect(await runtime.database.marketCreations.count()).toBe(0);
+    expect(useMarketDraftStore.getState().draft.creation).toBeDefined();
+    expect(runtime.feeOperations).toHaveLength(0);
+    expect(runtime.published).toHaveLength(0);
+    expect(mockRegisterConditionWithFee).not.toHaveBeenCalled();
+    expect(mockCreateMarket).not.toHaveBeenCalled();
+  });
+
+  it("fails draft pointer persistence before fee or publication on every retry", async () => {
+    const result = await beginPaidCreation();
+    const original = Storage.prototype.setItem;
+    const failure = vi.spyOn(Storage.prototype, "setItem").mockImplementation(function (
+      this: Storage,
+      key,
+      value,
+    ) {
+      if (
+        key === "bitcaster-market-draft" &&
+        JSON.parse(String(value)).state.draft.creation !== undefined
+      )
+        throw new Error("draft storage unavailable");
+      original.call(this, key, value);
+    });
+    try {
+      await act(async () => {
+        await result.current.onConfirmRegistrationFee();
+      });
+      await act(async () => {
+        await result.current.onCreateMarket();
+      });
+      expect(await runtime.database.marketCreations.count()).toBe(0);
+      expect(mockCreateEnumAnnouncement).not.toHaveBeenCalled();
+      expect(runtime.feeOperations).toHaveLength(0);
+      expect(runtime.published).toHaveLength(0);
+    } finally {
+      failure.mockRestore();
+    }
+  });
+
+  it("fails before preparation when the actual draft store initialized without localStorage", async () => {
+    const storage = Object.getOwnPropertyDescriptor(window, "localStorage")!;
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      Object.defineProperty(window, "localStorage", {
+        configurable: true,
+        get() {
+          throw new DOMException("fixture storage denied", "SecurityError");
+        },
+      });
+      vi.resetModules();
+      const cold =
+        await vi.importActual<typeof import("@/stores/marketDraft")>("@/stores/marketDraft");
+      runtime.draftStore = cold.useMarketDraftStore;
+      Object.defineProperty(window, "localStorage", storage);
+      // Zustand's swallowed getter failure is permanent for this instance,
+      // even when the browser getter becomes available before submission.
+      expect(cold.useMarketDraftStore.persist).toBeUndefined();
+      expect(cold.useMarketDraftStore.getState().hasCreationPersistence()).toBe(false);
+      mockWalletState.mints[0].info.nuts.CTF.registration_fees[0].registration_fee_base = 7;
+      const result = await setupDraftForSubmission();
+      await act(async () => {
+        await result.current.onCreateMarket();
+      });
+      expect(result.current.registrationFeePrompt).toBeNull();
+      await act(async () => {
+        await result.current.onConfirmRegistrationFee();
+      });
+      expect(runtime.feeOperations).toHaveLength(0);
+      expect(mockCreateEnumAnnouncement).not.toHaveBeenCalled();
+      expect(runtime.published).toHaveLength(0);
+      expect(mockRegisterConditionWithFee).not.toHaveBeenCalled();
+      expect(mockCreateMarket).not.toHaveBeenCalled();
+      expect(await runtime.database.marketCreations.count()).toBe(0);
+      expect(result.current.submitError).toBe(i18n.t("marketCreation.creationStorageUnavailable"));
+      expect(
+        JSON.parse(localStorage.getItem("bitcaster-market-draft")!).state.draft.creation,
+      ).toBeUndefined();
+    } finally {
+      Object.defineProperty(window, "localStorage", storage);
+      warning.mockRestore();
+    }
+  });
+
+  it("retains a dismissed failure identity across cold reload and draft reset", async () => {
+    const result = await beginPaidCreation();
+    mockCreateMarket.mockRejectedValueOnce(new CreateMarketError("unauthorized", 401, false));
+    await act(async () => {
+      await result.current.onConfirmRegistrationFee();
+    });
+    const pointer = useMarketDraftStore.getState().draft.creation!;
+    await act(async () => {
+      result.current.onDismissCreationError();
+      result.current.clearDraft();
+    });
+    expect(useMarketDraftStore.getState().draft.creation?.creationId).toBe(pointer.creationId);
+    const reloaded = await coldReloadCreation();
+    expect(reloaded.current.submitError).toBeNull();
+    expect(reloaded.current.retainedCreation?.mintConfirmed).toBe(true);
+    expect(() => useMarketDraftStore.getState().completeCreation("wrong-id")).toThrow();
+  });
+
+  it.each(["thumbnail", "metadata", "multipart"] as const)(
+    "rejects the %s limit before fee and signing",
+    async (limit) => {
+      const result = await setupDraftForSubmission();
+      switch (limit) {
+        case "thumbnail":
+          await act(async () =>
+            result.current.onThumbnailUpload(
+              new File([new Uint8Array(5 * 1024 * 1024 + 1)], "large.png"),
+            ),
+          );
+          break;
+        case "metadata":
+          await act(async () => result.current.onDescriptionChange("x".repeat(65537)));
+          break;
+        case "multipart":
+          await act(async () =>
+            result.current.onThumbnailUpload(
+              new File([new Uint8Array(5 * 1024 * 1024)], "x".repeat(1024 * 1024), {
+                type: "image/png",
+              }),
+            ),
+          );
+          break;
+      }
+      await act(async () => {
+        await result.current.onCreateMarket();
+      });
+      expect(result.current.submitError).toMatch(/Market (thumbnail|metadata|creation)/);
+      expect(mockCreateEnumAnnouncement).not.toHaveBeenCalled();
+      expect(runtime.feeOperations).toHaveLength(0);
+      expect(runtime.published).toHaveLength(0);
+      expect(mockRegisterConditionWithFee).not.toHaveBeenCalled();
+    },
+  );
+});
 
 describe("useMarketCreationState – wizard navigation", () => {
   it("skips binary outcomes, initializes Yes/No, and returns to basic info", async () => {
@@ -299,7 +873,9 @@ describe("useMarketCreationState – wizard navigation", () => {
       ],
       baseAsset: "sat",
     });
-    expect(result.current.draft.stepReviewAndCreate).toEqual({ description: "" });
+    expect(result.current.draft.stepReviewAndCreate).toEqual({
+      description: "",
+    });
 
     await act(async () => {
       result.current.onBack();
@@ -378,8 +954,13 @@ describe("useMarketCreationState – categorical outcomes", () => {
     });
 
     expect(useMarketDraftStore.getState().draft.stepOutcomes?.outcomes).toEqual([
-      { id: "b", label: "B", description: "" },
-      { id: expect.any(String), label: "", description: "" },
+      { id: "b", label: "B", description: "", color: "#E15759" },
+      {
+        id: expect.any(String),
+        label: "",
+        description: "",
+        color: "#F28E2B",
+      },
     ]);
   });
 
@@ -409,12 +990,38 @@ describe("useMarketCreationState – categorical outcomes", () => {
     await act(async () => {
       resumed.result.current.onOutcomeColorChange("a", null);
     });
-    expect(
-      Object.hasOwn(
-        useMarketDraftStore.getState().draft.stepOutcomes?.outcomes?.[0] ?? {},
-        "color",
-      ),
-    ).toBe(false);
+    expect(resumed.result.current.draft.stepOutcomes?.outcomes?.[0].color).toBe("#59A14F");
+    expect(resumed.result.current.draft.stepOutcomes?.outcomes?.[1].color).toBe("#E15759");
+  });
+
+  it("restores visible defaults once and preserves Automatic across draft reload at maximum outcomes", async () => {
+    setCategoricalOutcomes(Array.from({ length: 8 }, (_, index) => makeOutcome(String(index))));
+    const first = renderHook(() => useMarketCreationState(), { wrapper });
+    const original = first.result.current.draft.stepOutcomes!.outcomes!;
+    expect(original.map((outcome) => outcome.color)).toEqual([
+      "#59A14F",
+      "#E15759",
+      "#F28E2B",
+      "#4E79A7",
+      "#76B7B2",
+      "#EDC948",
+      "#B07AA1",
+      "#FF9DA7",
+    ]);
+    const draftBeforeRerender = useMarketDraftStore.getState().draft;
+    first.rerender();
+    expect(useMarketDraftStore.getState().draft).toBe(draftBeforeRerender);
+    await act(async () => first.result.current.onOutcomeColorChange("0", null));
+    const selected = first.result.current.draft.stepOutcomes!.outcomes!;
+    expect(selected[0].color).toBe("#2563EB");
+    expect(selected.slice(1)).toEqual(original.slice(1));
+    expect(new Set(selected.map((outcome) => outcome.color)).size).toBe(8);
+    first.unmount();
+    await act(async () => useMarketDraftStore.persist.rehydrate());
+    const resumed = renderHook(() => useMarketCreationState(), { wrapper });
+    expect(resumed.result.current.draft.stepOutcomes!.outcomes![0].color).toBe("#2563EB");
+    await act(async () => resumed.result.current.onOutcomeColorChange("0", null));
+    expect(resumed.result.current.draft.stepOutcomes!.outcomes![0].color).toBe("#59A14F");
   });
 });
 
@@ -424,13 +1031,14 @@ describe("useMarketCreationState – onCreateMarket", () => {
     const callOrder: string[] = [];
     mockRegisterConditionWithFee.mockImplementation(async () => {
       callOrder.push("condition");
-      return { condition_id: "test-cond-id", keysets: { Yes: "ks1", No: "ks2" } };
+      return { condition_id: conditionId, keysets: { Yes: "ks1", No: "ks2" } };
     });
     mockCreateMarket.mockImplementation(async () => {
       callOrder.push("createMarket");
       return {
-        conditionId: "test-cond-id",
-        marketsCreated: [],
+        conditionId,
+        baseAsset: "sat",
+        marketsCreated: [`${conditionId}-Yes`, `${conditionId}-No`],
         thumbnailUrl: null,
         divisibility: 1_000,
       };
@@ -450,14 +1058,14 @@ describe("useMarketCreationState – onCreateMarket", () => {
           ["title", "Test Market"],
           ["description", "Test description"],
         ],
-        announcementHex: "announcement-hex",
+        announcementHex: "aabb",
         collateral: "msat",
         outcomeCollections: undefined,
       },
     });
     expect(mockCreateMarket).toHaveBeenCalledOnce();
     expect(mockCreateMarket.mock.calls[0][1]).toMatchObject({
-      oracleAnnouncementHex: "announcement-hex",
+      oracleAnnouncementHex: "aabb",
     });
   });
 
@@ -491,7 +1099,11 @@ describe("useMarketCreationState – onCreateMarket", () => {
               CTF: {
                 default_keyset_creation: "one-vs-rest",
                 registration_fees: [
-                  { unit: "msat", registration_fee_base: 1, registration_fee_per_keyset: 1 },
+                  {
+                    unit: "msat",
+                    registration_fee_base: 1,
+                    registration_fee_per_keyset: 1,
+                  },
                 ],
               },
             },
@@ -535,7 +1147,11 @@ describe("useMarketCreationState – onCreateMarket", () => {
 
   it("prompts before paying a non-zero registration fee", async () => {
     mockWalletState.mints[0].info.nuts.CTF.registration_fees = [
-      { unit: "msat", registration_fee_base: 10, registration_fee_per_keyset: 2 },
+      {
+        unit: "msat",
+        registration_fee_base: 10,
+        registration_fee_per_keyset: 2,
+      },
       { unit: "usd", registration_fee_base: 0, registration_fee_per_keyset: 0 },
     ];
     const result = await setupDraftForSubmission();
@@ -564,7 +1180,11 @@ describe("useMarketCreationState – onCreateMarket", () => {
 
   it("shows the top-up gate when the registration fee exceeds available regular balance", async () => {
     mockWalletState.mints[0].info.nuts.CTF.registration_fees = [
-      { unit: "msat", registration_fee_base: 10, registration_fee_per_keyset: 2 },
+      {
+        unit: "msat",
+        registration_fee_base: 10,
+        registration_fee_per_keyset: 2,
+      },
       { unit: "usd", registration_fee_base: 0, registration_fee_per_keyset: 0 },
     ];
     mockGetAvailableRegularBalanceSubunits.mockResolvedValueOnce(3);
@@ -585,7 +1205,11 @@ describe("useMarketCreationState – onCreateMarket", () => {
 
   it("rechecks the registration fee after top-up success", async () => {
     mockWalletState.mints[0].info.nuts.CTF.registration_fees = [
-      { unit: "msat", registration_fee_base: 10, registration_fee_per_keyset: 2 },
+      {
+        unit: "msat",
+        registration_fee_base: 10,
+        registration_fee_per_keyset: 2,
+      },
       { unit: "usd", registration_fee_base: 0, registration_fee_per_keyset: 0 },
     ];
     mockGetAvailableRegularBalanceSubunits.mockResolvedValueOnce(3).mockResolvedValueOnce(1000);
@@ -623,7 +1247,11 @@ describe("useMarketCreationState – onCreateMarket", () => {
   ])("shows the registration fee cap in sats (%s)", async (language, expected) => {
     await i18n.changeLanguage(language);
     mockWalletState.mints[0].info.nuts.CTF.registration_fees = [
-      { unit: "msat", registration_fee_base: 1000001, registration_fee_per_keyset: 0 },
+      {
+        unit: "msat",
+        registration_fee_base: 1000001,
+        registration_fee_per_keyset: 0,
+      },
     ];
     const result = await setupDraftForSubmission();
 
@@ -655,6 +1283,41 @@ describe("useMarketCreationState – onCreateMarket", () => {
     expect(mockCreateMarket).not.toHaveBeenCalled();
   });
 
+  it("rejects engine-invalid outcome labels before oracle publication or mint registration", async () => {
+    setCategoricalSubmissionDraft([
+      { id: "new-york", label: "New York", description: "" },
+      { id: "tokyo", label: "Tokyo", description: "" },
+    ]);
+    const { result } = renderHook(() => useMarketCreationState(), { wrapper });
+
+    await act(async () => {
+      await result.current.onCreateMarket();
+    });
+
+    expect(result.current.submitError).toBe(
+      "Outcome labels must be 1 to 191 ASCII letters or digits.",
+    );
+    expect(mockEnsureKormirNsec).not.toHaveBeenCalled();
+    expect(mockCreateEnumAnnouncement).not.toHaveBeenCalled();
+    expect(mockRegisterConditionWithFee).not.toHaveBeenCalled();
+    expect(mockCreateMarket).not.toHaveBeenCalled();
+  });
+
+  it("checks the final serialized metadata limit before paying the mint registration fee", async () => {
+    const result = await setupDraftForSubmission();
+    mockCreateEnumAnnouncement.mockResolvedValueOnce("a".repeat(65_537));
+
+    await act(async () => {
+      await result.current.onCreateMarket();
+    });
+
+    expect(result.current.submitError).toBe("Market metadata exceeds the 64 KB engine limit.");
+    expect(mockCreateEnumAnnouncement).toHaveBeenCalledOnce();
+    expect(mockGetOracleAnnouncementEventId).not.toHaveBeenCalled();
+    expect(mockRegisterConditionWithFee).not.toHaveBeenCalled();
+    expect(mockCreateMarket).not.toHaveBeenCalled();
+  });
+
   it("blocks market creation when CTF settings are missing or invalid", async () => {
     (mockWalletState.mints[0].info.nuts as any).CTF = { supported: true };
     const result = await setupDraftForSubmission();
@@ -678,7 +1341,7 @@ describe("useMarketCreationState – onCreateMarket", () => {
       await result.current.onCreateMarket();
     });
 
-    expect(result.current.submitError).toBe("Mint rejected");
+    expect(result.current.submitError).toBe(i18n.t("marketCreation.creationIncompleteError"));
     expect(mockCreateMarket).not.toHaveBeenCalled();
     expect(mockNavigate).not.toHaveBeenCalled();
   });
@@ -691,7 +1354,7 @@ describe("useMarketCreationState – onCreateMarket", () => {
       await result.current.onCreateMarket();
     });
 
-    expect(result.current.submitError).toBe("Market creation failed");
+    expect(result.current.submitError).toBe(i18n.t("marketCreation.creationIncompleteError"));
     expect(mockNavigate).not.toHaveBeenCalled();
   });
 
@@ -700,8 +1363,11 @@ describe("useMarketCreationState – onCreateMarket", () => {
     const result = await setupDraftForSubmission();
     const originalError = new CreateMarketError("connection was lost", null, true);
     mockCreateMarket.mockRejectedValueOnce(originalError);
-    mockFetchEngineCatalogueEntry.mockResolvedValueOnce(
-      catalogueMarket({ thumbnailUrl: "/persisted-thumbnail", outcomeDetails: undefined }),
+    mockFetchMarketRegistrationForRecovery.mockResolvedValueOnce(null).mockResolvedValueOnce(
+      registrationMarket({
+        thumbnailUrl: "/persisted-thumbnail",
+        outcomeDetails: [{ name: "Yes", color: null }, { name: "No" }],
+      }),
     );
 
     await act(async () => {
@@ -709,14 +1375,13 @@ describe("useMarketCreationState – onCreateMarket", () => {
     });
 
     expect(mockCreateMarket).toHaveBeenCalledOnce();
-    expect(mockFetchEngineCatalogueEntry).toHaveBeenCalledOnce();
-    expect(mockFetchEngineCatalogueEntry).toHaveBeenCalledWith("test-cond-id");
-    expect(result.current.createdMarketConditionId).toBe("test-cond-id");
+    expect(mockFetchMarketRegistrationForRecovery).toHaveBeenCalledTimes(2);
+    expect(mockFetchMarketRegistrationForRecovery).toHaveBeenCalledWith(conditionId);
+    expect(result.current.createdMarketConditionId).toBe(conditionId);
     expect(result.current.submitError).toBeNull();
     expect(
-      useCreatorMarketsStore
-        .getState()
-        .markets.find((market) => market.conditionId === "test-cond-id")?.thumbnailUrl,
+      useCreatorMarketsStore.getState().markets.find((market) => market.conditionId === conditionId)
+        ?.thumbnailUrl,
     ).toBe("/persisted-thumbnail");
   });
 
@@ -728,8 +1393,8 @@ describe("useMarketCreationState – onCreateMarket", () => {
     ]);
     const { result } = renderHook(() => useMarketCreationState(), { wrapper });
     mockCreateMarket.mockRejectedValueOnce(new CreateMarketError("already exists", 409, true));
-    mockFetchEngineCatalogueEntry.mockResolvedValueOnce(
-      catalogueMarket({
+    mockFetchMarketRegistrationForRecovery.mockResolvedValueOnce(null).mockResolvedValueOnce(
+      registrationMarket({
         outcomes: ["Alpha", "Beta"],
         outcomeDetails: [
           { name: "Beta", color: "#ABCDEF" },
@@ -747,17 +1412,23 @@ describe("useMarketCreationState – onCreateMarket", () => {
       { name: "Alpha", color: "#111111" },
       { name: "Beta", color: "#222222" },
     ]);
-    expect(mockFetchEngineCatalogueEntry).toHaveBeenCalledOnce();
-    expect(result.current.createdMarketConditionId).toBe("test-cond-id");
+    expect(mockFetchMarketRegistrationForRecovery).toHaveBeenCalledTimes(2);
+    expect(result.current.createdMarketConditionId).toBe(conditionId);
     expect(result.current.submitError).toBeNull();
   });
 
   it.each([
-    { label: "unknown condition", overrides: { conditionId: "other-condition" } },
+    {
+      label: "unknown condition",
+      overrides: { conditionId: "other-condition" },
+    },
     { label: "wrong owner", overrides: { creatorPubkey: "b".repeat(64) } },
     { label: "wrong outcomes", overrides: { outcomes: ["Yes", "Gamma"] } },
     { label: "duplicate outcomes", overrides: { outcomes: ["Yes", "Yes"] } },
-    { label: "wrong product units", overrides: { divisibility: 1_000_000 as const } },
+    {
+      label: "wrong product units",
+      overrides: { divisibility: 1_000_000 as const },
+    },
     {
       label: "invalid persisted colors",
       overrides: {
@@ -767,20 +1438,22 @@ describe("useMarketCreationState – onCreateMarket", () => {
         ],
       },
     },
-  ])("keeps the original error for a catalogue row with $label", async ({ overrides }) => {
+  ])("retains incomplete creation when reconciliation has $label", async ({ overrides }) => {
     const result = await setupDraftForSubmission();
     const originalError = new CreateMarketError("create result is uncertain", 503, true);
     mockCreateMarket.mockRejectedValueOnce(originalError);
-    mockFetchEngineCatalogueEntry.mockResolvedValueOnce(catalogueMarket(overrides));
+    mockFetchMarketRegistrationForRecovery
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(registrationMarket(overrides as Partial<MarketRegistrationResponse>));
 
     await act(async () => {
       await result.current.onCreateMarket();
     });
 
     expect(mockCreateMarket).toHaveBeenCalledOnce();
-    expect(mockFetchEngineCatalogueEntry).toHaveBeenCalledOnce();
+    expect(mockFetchMarketRegistrationForRecovery).toHaveBeenCalledTimes(2);
     expect(result.current.createdMarketConditionId).toBeNull();
-    expect(result.current.submitError).toBe(originalError.message);
+    expect(result.current.submitError).toBe(i18n.t("marketCreation.creationIncompleteError"));
     expect(useMarketDraftStore.getState().hasSavedDraft).toBe(true);
   });
 
@@ -794,24 +1467,26 @@ describe("useMarketCreationState – onCreateMarket", () => {
       await result.current.onCreateMarket();
     });
 
-    expect(mockFetchEngineCatalogueEntry).not.toHaveBeenCalled();
-    expect(result.current.submitError).toBe("request rejected");
+    expect(mockFetchMarketRegistrationForRecovery).toHaveBeenCalledOnce();
+    expect(result.current.submitError).toBe(i18n.t("marketCreation.creationIncompleteError"));
     expect(useMarketDraftStore.getState().hasSavedDraft).toBe(true);
   });
 
-  it("keeps the original create error when catalogue reconciliation is unavailable", async () => {
+  it("keeps the original create error when registration recovery is unavailable", async () => {
     const result = await setupDraftForSubmission();
     const originalError = new CreateMarketError("engine response was lost", null, true);
     mockCreateMarket.mockRejectedValueOnce(originalError);
-    mockFetchEngineCatalogueEntry.mockRejectedValueOnce(new Error("catalogue unavailable"));
+    mockFetchMarketRegistrationForRecovery
+      .mockResolvedValueOnce(null)
+      .mockRejectedValueOnce(new Error("registration unavailable"));
 
     await act(async () => {
       await result.current.onCreateMarket();
     });
 
-    expect(mockFetchEngineCatalogueEntry).toHaveBeenCalledOnce();
+    expect(mockFetchMarketRegistrationForRecovery).toHaveBeenCalledTimes(2);
     expect(mockCreateMarket).toHaveBeenCalledOnce();
-    expect(result.current.submitError).toBe(originalError.message);
+    expect(result.current.submitError).toBe(i18n.t("marketCreation.creationIncompleteError"));
     expect(useMarketDraftStore.getState().hasSavedDraft).toBe(true);
   });
 
@@ -823,13 +1498,13 @@ describe("useMarketCreationState – onCreateMarket", () => {
     });
 
     expect(mockCreateMarket).toHaveBeenCalledOnce();
-    expect(mockFetchEngineCatalogueEntry).not.toHaveBeenCalled();
+    expect(mockFetchMarketRegistrationForRecovery).toHaveBeenCalledOnce();
     // createMarket success transitions the wizard to the
     // deposit step rather than navigating to the market detail page. The
     // user funds the bot first; navigation happens from DepositStep once
     // the Lightning payment reaches Paid. The hook signals this via
     // `createdMarketConditionId`.
-    expect(result.current.createdMarketConditionId).toBe("test-cond-id");
+    expect(result.current.createdMarketConditionId).toBe(conditionId);
     expect(result.current.createdMarketDivisibility).toBe(1_000);
     expect(mockNavigate).not.toHaveBeenCalled();
   });
@@ -856,7 +1531,7 @@ describe("useMarketCreationState – onCreateMarket", () => {
     expect(useMarketDraftStore.getState().hasSavedDraft).toBe(true);
   });
 
-  it("submits chosen categorical colors by exact outcome name and omits automatic colors", async () => {
+  it("submits manual and visible Automatic colors by exact outcome name", async () => {
     const future = new Date(Date.now() + 86400000).toISOString().slice(0, 16);
     useMarketDraftStore.setState({
       draft: {
@@ -883,13 +1558,15 @@ describe("useMarketCreationState – onCreateMarket", () => {
     });
     const { result } = renderHook(() => useMarketCreationState(), { wrapper });
 
+    await act(async () => result.current.onOutcomeColorChange("beta", null));
+    expect(result.current.draft.stepOutcomes!.outcomes![1].color).toBe("#E15759");
     await act(async () => {
       await result.current.onCreateMarket();
     });
 
     expect(mockCreateMarket.mock.calls[0][1].outcomes).toEqual([
       { name: "Alpha", color: "#123456" },
-      { name: "Beta" },
+      { name: "Beta", color: "#E15759" },
     ]);
   });
 
@@ -905,7 +1582,7 @@ describe("useMarketCreationState – onCreateMarket", () => {
 
     const entry = useCreatorMarketsStore
       .getState()
-      .markets.find((m) => m.conditionId === "test-cond-id");
+      .markets.find((m) => m.conditionId === conditionId);
     expect(entry).toBeDefined();
     expect(entry!.creatorFeePercent).toBe(0);
   });
@@ -955,7 +1632,7 @@ describe("useMarketCreationState – onCreateMarket", () => {
     const entry = useCreatorMarketsStore.getState().markets[0];
     expect(entry.oracle?.type).toBe("self");
     expect(entry.oracle?.eventId).toMatch(/^will_btc_hit_150k_[0-9a-f]{12}$/);
-    expect(entry.oracle?.announcementEventId).toBe("c".repeat(64));
+    expect(entry.oracle?.announcementEventId).toBe(announcementEvent.id);
     expect(entry.oracle?.outcomes).toEqual(["Yes", "No"]);
   });
 });

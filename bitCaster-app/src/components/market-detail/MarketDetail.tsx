@@ -78,11 +78,8 @@ export function MarketDetail({
   tradeFeeFacts,
   feeConsentCurrent,
   tradeSide,
-  orderType,
-  limitOrderPreview,
-  limitPrice,
   tradeCapacityPreview,
-  automaticLimitPrice,
+  isFullyEmptyBook,
   onTimeframeChange,
   onTradeSelect,
   onTradeClear,
@@ -95,14 +92,11 @@ export function MarketDetail({
   isTradeSubmitting,
   onShare,
   onCommentPost,
-  onCommentLike,
   onLoadMoreComments,
   onRelatedMarketClick,
   onTradeSideChange,
   tradeTab: controlledTradeTab,
   onTradeTabChange,
-  onOrderTypeChange,
-  onLimitPriceChange,
   sellHoldings,
   walletReady = true,
   onWalletRequired,
@@ -158,13 +152,12 @@ export function MarketDetail({
   const marketState = useMarketState(market.state);
   const isEffectivelyClosed = marketState === "Closed";
   const isTradingDisabled = isEffectivelyClosed;
-  const activePreview = orderType === "limit" ? limitOrderPreview : tradePreview;
   const previewNeedsAttention =
     !!tradeSelection &&
     tradeAmount > 0 &&
     !(
-      activePreview?.status === "ready" &&
-      activePreview.response?.fullFillAvailable === true &&
+      tradePreview?.status === "ready" &&
+      tradePreview.response?.fullFillAvailable === true &&
       feeConsentCurrent
     );
   const handleTradeTabChange = (tab: TradeTab) => {
@@ -181,11 +174,8 @@ export function MarketDetail({
       tradeFeeFacts={tradeFeeFacts}
       feeConsentCurrent={feeConsentCurrent}
       tradeSide={tradeSide}
-      orderType={orderType}
-      limitOrderPreview={limitOrderPreview}
-      limitPrice={limitPrice}
       tradeCapacityPreview={tradeCapacityPreview}
-      automaticLimitPrice={automaticLimitPrice}
+      isFullyEmptyBook={isFullyEmptyBook}
       onTradeSelect={onTradeSelect}
       onTradeClear={onTradeClear}
       onAmountChange={onAmountChange}
@@ -199,8 +189,6 @@ export function MarketDetail({
       onTradeSideChange={onTradeSideChange}
       tradeTab={activeTradeTab}
       onTradeTabChange={handleTradeTabChange}
-      onOrderTypeChange={onOrderTypeChange}
-      onLimitPriceChange={onLimitPriceChange}
       sellHoldings={sellHoldings}
       walletReady={walletReady}
       onWalletRequired={onWalletRequired}
@@ -339,18 +327,17 @@ export function MarketDetail({
               />
             )}
             <RelatedMarkets markets={market.relatedMarkets} onMarketClick={onRelatedMarketClick} />
-            <CommentSection
-              comments={market.comments}
-              onCommentLike={onCommentLike}
-              onLoadMoreComments={onLoadMoreComments}
-            />
+            <CommentSection comments={market.comments} onLoadMoreComments={onLoadMoreComments} />
           </div>
         </div>
       </div>
 
       {/* Mobile: Sticky Bottom Trade Bar (only for open markets) */}
-      {!isTradingDisabled && activeTradeTab !== "Liquidity" && (
-        <div className="fixed left-0 right-0 bottom-[calc(4rem+env(safe-area-inset-bottom))] z-40 border-t border-slate-200 bg-white p-4 dark:border-slate-700 dark:bg-slate-800 lg:hidden">
+      {!isTradingDisabled && !isFullyEmptyBook && activeTradeTab !== "Liquidity" && (
+        <div
+          data-testid="mobile-trade-bar"
+          className="fixed left-0 right-0 bottom-[calc(4rem+env(safe-area-inset-bottom))] z-40 border-t border-slate-200 bg-white p-4 dark:border-slate-700 dark:bg-slate-800 lg:hidden"
+        >
           {tradeSelection ? (
             <div className="flex items-center gap-3">
               <div className="flex-1">
@@ -359,7 +346,10 @@ export function MarketDetail({
                   {tradeSelection.outcomeId && ` - ${tradeSelection.outcomeId}`}
                 </p>
                 <p className="text-sm font-medium text-slate-900 dark:text-white">
-                  {activePreview?.response?.fullFillAvailable === false
+                  {tradePreview?.response?.fullFillAvailable === false ||
+                  (tradeCapacityPreview?.status === "ready" &&
+                    tradeCapacityPreview.response?.status === "ready" &&
+                    tradeCapacityPreview.response.maxFaceAmountSubunits === 0)
                     ? t("trade.previewNotFillable")
                     : previewNeedsAttention
                       ? t("trade.previewLoading")

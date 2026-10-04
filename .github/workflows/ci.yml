@@ -24,6 +24,7 @@ jobs:
         with:
           node-version: 22
       - run: npm ci --ignore-scripts
+      - run: npm run patch:dependencies
       - run: npm run format:check
 
   dotnet-build:
@@ -53,6 +54,8 @@ jobs:
         with:
           node-version: 22
       - run: npm ci --ignore-scripts
+        working-directory: .
+      - run: npm run patch:dependencies
         working-directory: .
       - name: Check kormir-wasm provenance
         working-directory: .

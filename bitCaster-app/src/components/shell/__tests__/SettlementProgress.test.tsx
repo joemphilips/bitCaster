@@ -283,6 +283,7 @@ function fixture(): CtfRangeOrderPreparationRecord {
     divisibility: 1_000,
     authorizationExpiresAtUnixSeconds: 1_000,
     preparationBytes: encodeCtfRangeOrderPreparationArtifact({ version: 1 }),
+    feeConsentBytes: null,
     createdAtMs: 1,
     updatedAtMs: 2,
     lifecycleState: "order-submitted",

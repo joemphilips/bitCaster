@@ -1,9 +1,10 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useNavigate } from "react-router";
 import { useTranslation } from "react-i18next";
 import { Portfolio } from "@/components/portfolio";
 import { DepositWithdrawOverlay } from "@/components/deposit-withdraw/DepositWithdrawOverlay";
 import { WalletSetupModal } from "@/components/shared/WalletSetupModal";
+import { NativeDialog } from "@/components/shared/NativeDialog";
 import { usePortfolioState } from "./usePortfolioState";
 import { useSettingsStore } from "@/stores/settings";
 import { useActivityLogStore } from "@/stores/activity-log";
@@ -13,7 +14,11 @@ import {
   removePortfolioPosition,
   type BrowserPortfolioRemoveFailure,
 } from "@/lib/browserPortfolioRemove";
-import { browserWalletIdFromMnemonic, isActiveBrowserWalletId } from "@/lib/browserWalletProfile";
+import {
+  activeBrowserWalletScopeId,
+  browserWalletIdFromMnemonic,
+  isActiveBrowserWalletId,
+} from "@/lib/browserWalletProfile";
 import type { BrowserCtfClaimFailureCategory } from "@/lib/browserCtfRedeemCoordinator";
 import type { PLTimeSelector } from "@/types/portfolio";
 import type { DepositWithdrawMode } from "@/types/deposit-withdraw";
@@ -42,6 +47,18 @@ function isCurrentWallet(walletId: string): boolean {
   return isActiveBrowserWalletId(walletId, mnemonic);
 }
 
+type PositionActionDialog = { scopeId: string | null } & (
+  | { kind: "message"; message: string }
+  | {
+      kind: "confirm-remove";
+      positionId: string;
+      walletId: string;
+      mintUrl: string;
+      conditionId: string;
+      outcomeCollection: string;
+    }
+);
+
 export function PortfolioPage() {
   const navigate = useNavigate();
   const { t } = useTranslation();
@@ -49,10 +66,22 @@ export function PortfolioPage() {
   const [overlayMode, setOverlayMode] = useState<DepositWithdrawMode | null>(null);
   const [claimingPositionId, setClaimingPositionId] = useState<string | null>(null);
   const [removingPositionId, setRemovingPositionId] = useState<string | null>(null);
+  const [operationScopeId, setOperationScopeId] = useState<string | null>(null);
   const [showWalletSetup, setShowWalletSetup] = useState(false);
   const [walletSetupCreating, setWalletSetupCreating] = useState(false);
   const [walletSetupError, setWalletSetupError] = useState<string | null>(null);
+  const [actionDialog, setActionDialog] = useState<PositionActionDialog | null>(null);
+  const activeScopeId = activeBrowserWalletScopeId();
+  const visibleDialog = actionDialog?.scopeId === activeScopeId ? actionDialog : null;
   const addActivity = useActivityLogStore((s) => s.addActivity);
+
+  useEffect(() => {
+    setActionDialog((dialog) => (dialog?.scopeId === activeScopeId ? dialog : null));
+  }, [activeScopeId]);
+
+  const showActionMessage = useCallback((message: string) => {
+    setActionDialog({ kind: "message", message, scopeId: activeBrowserWalletScopeId() });
+  }, []);
 
   const removeFailureMessage = useCallback(
     (failure: BrowserPortfolioRemoveFailure) =>
@@ -182,6 +211,7 @@ export function PortfolioPage() {
       const walletId = browserWalletIdFromMnemonic(useWalletStore.getState().mnemonic);
       if (walletId === null || !isCurrentWallet(walletId)) return;
 
+      setOperationScopeId(activeBrowserWalletScopeId());
       setClaimingPositionId(positionId);
       try {
         const conditionId = toPortfolioMarketDetailId(position.marketId, position.outcomeId);
@@ -204,9 +234,9 @@ export function PortfolioPage() {
           },
         });
         if (!isCurrentWallet(walletId)) return;
-        if (result.kind === "pending") window.alert(t("portfolio.claimPending"));
+        if (result.kind === "pending") showActionMessage(t("portfolio.claimPending"));
         if (result.kind === "error") {
-          window.alert(
+          showActionMessage(
             [
               t("portfolio.claimFailed"),
               t(CLAIM_FAILURE_TRANSLATION_KEYS[result.error.category]),
@@ -218,27 +248,54 @@ export function PortfolioPage() {
           );
         }
       } catch {
-        if (isCurrentWallet(walletId)) window.alert(t("portfolio.claimFailed"));
+        if (isCurrentWallet(walletId)) showActionMessage(t("portfolio.claimFailed"));
       } finally {
         setClaimingPositionId(null);
       }
     },
-    [addActivity, claimingPositionId, removingPositionId, state.positions, t],
+    [addActivity, claimingPositionId, removingPositionId, state.positions, t, showActionMessage],
   );
 
   const handleDiscardLostPosition = useCallback(
-    async (positionId: string) => {
+    async (
+      positionId: string,
+      confirmation?: Extract<PositionActionDialog, { kind: "confirm-remove" }>,
+    ) => {
       if (removingPositionId || claimingPositionId) return;
       const position = state.positions.find((p) => p.id === positionId);
       if (!position || !position.isLoser || position.isWinner || position.isPending) return;
-      if (!window.confirm(t("portfolio.discardLostPositionConfirm"))) return;
       const walletId = browserWalletIdFromMnemonic(useWalletStore.getState().mnemonic);
       if (walletId === null || !isCurrentWallet(walletId)) return;
+      const conditionId = toPortfolioMarketDetailId(position.marketId, position.outcomeId);
+      const outcomeCollection = position.outcomeLabel ?? position.outcomeId;
+      if (!outcomeCollection) return;
+      if (confirmation === undefined) {
+        setActionDialog({
+          kind: "confirm-remove",
+          scopeId: activeBrowserWalletScopeId(),
+          positionId,
+          walletId,
+          mintUrl: position.mintUrl,
+          conditionId,
+          outcomeCollection,
+        });
+        return;
+      }
+      if (
+        confirmation.walletId !== walletId ||
+        confirmation.scopeId !== activeBrowserWalletScopeId() ||
+        confirmation.positionId !== position.id ||
+        confirmation.mintUrl !== position.mintUrl ||
+        confirmation.conditionId !== conditionId ||
+        confirmation.outcomeCollection !== outcomeCollection
+      ) {
+        setActionDialog(null);
+        return;
+      }
+      setActionDialog(null);
+      setOperationScopeId(activeBrowserWalletScopeId());
       setRemovingPositionId(positionId);
       try {
-        const conditionId = toPortfolioMarketDetailId(position.marketId, position.outcomeId);
-        const outcomeCollection = position.outcomeLabel ?? position.outcomeId;
-        if (!outcomeCollection) throw new Error("Position outcome is unavailable");
         // The catalogue label cannot authorize deletion. The coordinator verifies mint evidence.
         const result = await removePortfolioPosition({
           mintUrl: position.mintUrl,
@@ -261,27 +318,35 @@ export function PortfolioPage() {
           case "completed":
             break;
           case "pending":
-            window.alert(t("portfolio.removePending"));
+            showActionMessage(t("portfolio.removePending"));
             break;
           case "stopped":
-            window.alert(t("portfolio.removePayout"));
+            showActionMessage(t("portfolio.removePayout"));
             break;
           case "partial":
-            window.alert(
+            showActionMessage(
               result.error ? removeFailureMessage(result.error) : t("portfolio.removePending"),
             );
             break;
           case "error":
-            window.alert(removeFailureMessage(result.error));
+            showActionMessage(removeFailureMessage(result.error));
             break;
         }
       } catch {
-        if (isCurrentWallet(walletId)) window.alert(t("portfolio.removeFailed"));
+        if (isCurrentWallet(walletId)) showActionMessage(t("portfolio.removeFailed"));
       } finally {
         setRemovingPositionId(null);
       }
     },
-    [addActivity, claimingPositionId, removingPositionId, state.positions, t, removeFailureMessage],
+    [
+      addActivity,
+      claimingPositionId,
+      removingPositionId,
+      state.positions,
+      t,
+      removeFailureMessage,
+      showActionMessage,
+    ],
   );
 
   const handlePositionsTabChange = useCallback(
@@ -339,6 +404,48 @@ export function PortfolioPage() {
         showConnectNostrCta={showConnectNostrCta}
         onConnectNostr={handleConnectNostr}
       />
+      {operationScopeId === activeScopeId && (claimingPositionId || removingPositionId) && (
+        <p role="status" className="mx-auto max-w-6xl px-4 py-2 text-sm text-neutral-400">
+          {t(claimingPositionId ? "portfolio.claimInProgress" : "portfolio.removalInProgress")}
+        </p>
+      )}
+      {visibleDialog && (
+        <NativeDialog
+          ariaLabel={t("portfolio.positionActionTitle")}
+          onDismiss={() => setActionDialog(null)}
+        >
+          {(dismiss) => (
+            <section className="mx-auto mt-24 max-w-lg rounded-xl border border-neutral-700 bg-neutral-900 p-6 text-neutral-100 shadow-xl">
+              <h2 className="mb-4 text-lg font-semibold">{t("portfolio.positionActionTitle")}</h2>
+              <p className="select-text whitespace-pre-wrap break-words text-sm">
+                {visibleDialog.kind === "message"
+                  ? visibleDialog.message
+                  : t("portfolio.discardLostPositionConfirm")}
+              </p>
+              <div className="mt-6 flex justify-end gap-3">
+                <button
+                  type="button"
+                  className="rounded-lg border border-neutral-600 px-4 py-2 text-sm"
+                  onClick={dismiss}
+                >
+                  {t(visibleDialog.kind === "message" ? "common.close" : "common.cancel")}
+                </button>
+                {visibleDialog.kind === "confirm-remove" && (
+                  <button
+                    type="button"
+                    className="rounded-lg bg-red-700 px-4 py-2 text-sm"
+                    onClick={() =>
+                      void handleDiscardLostPosition(visibleDialog.positionId, visibleDialog)
+                    }
+                  >
+                    {t("common.remove")}
+                  </button>
+                )}
+              </div>
+            </section>
+          )}
+        </NativeDialog>
+      )}
       {overlayMode && (
         <DepositWithdrawOverlay mode={overlayMode} onClose={() => setOverlayMode(null)} />
       )}

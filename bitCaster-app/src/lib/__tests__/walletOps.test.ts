@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { Amount, getEncodedToken, type Token } from "@cashu/cashu-ts";
+import { Amount, PaymentRequest, getEncodedToken, type Token } from "@cashu/cashu-ts";
 import { useSettingsStore } from "@/stores/settings";
 import { useWalletStore } from "@/stores/wallet";
 import { usePaymentRequestInbox } from "@/stores/paymentRequestInbox";
@@ -425,17 +425,18 @@ describe("walletOps facade", () => {
     expect(getRelayUrlValidationError("https://relay.example")).toBe(
       "Relay URL must start with wss:// or local ws://",
     );
-    expect(getRelayUrlValidationError("wss://relay.example")).toBe(
-      "Relay URL must be the configured bitCaster relay or a local relay.",
-    );
-    expect(getRelayUrlValidationError("wss://relay.damus.io")).toBe(
-      "Public Nostr relays are not supported. Use a bitCaster-owned relay.",
-    );
+    expect(getRelayUrlValidationError("wss://relay.example")).toBeNull();
+    expect(getRelayUrlValidationError("wss://relay.damus.io")).toBeNull();
     expect(() => userAddRelay("https://relay.example")).toThrow(
       "Relay URL must start with wss:// or local ws://",
     );
-    expect(() => userAddRelay("wss://nos.lol")).toThrow(
-      "Public Nostr relays are not supported. Use a bitCaster-owned relay.",
+    userAddRelay("wss://nos.lol");
+    expect(useSettingsStore.getState().addRelay).toHaveBeenCalledWith("wss://nos.lol");
+    expect(() => userAddRelay("ws://remote.example")).toThrow("exact loopback");
+    expect(() => userAddRelay("wss://user:password@relay.example")).toThrow("credentials");
+    expect(() => userAddRelay("wss://relay.example#fragment")).toThrow("fragment");
+    expect(normalizeRelayUrl("wss://CUSTOM.example/Path?Key=A")).toBe(
+      "wss://custom.example/Path?Key=A",
     );
   });
 
@@ -448,6 +449,13 @@ describe("walletOps facade", () => {
     expect(result.id).toBe("abcdef12");
     expect(result.request.unit).toBe("msat");
     expect(result.encoded).toMatch(/^creq/);
+    const decoded = PaymentRequest.fromEncodedRequest(result.encoded);
+    expect(decoded.id).toBe(result.id);
+    expect(decoded.amount).toBeUndefined();
+    expect(decoded.mints).toEqual(["https://active.mint"]);
+    expect(decoded.transport).toEqual([
+      { type: "nostr", target: "nprofile1test", tags: [["n", "17"]] },
+    ]);
     expect(nip17.getNostrNprofile).toHaveBeenCalledWith("1".repeat(64), ["ws://localhost:7777"]);
     expect(usePaymentRequestInbox.getState().pending[result.id]).toMatchObject({
       id: result.id,
@@ -460,5 +468,22 @@ describe("walletOps facade", () => {
     useWalletStore.setState({ mnemonic: "" });
 
     expect(() => userCreatePaymentRequest("https://active.mint")).toThrow("Wallet not set up");
+  });
+
+  it.each([
+    { relays: [] },
+    {
+      relays: [
+        { url: "wss://custom.example/Path?Key=A", connectionStatus: "disconnected" as const },
+      ],
+    },
+  ])("uses the exact relay selection in payment request hints: %j", async ({ relays }) => {
+    useSettingsStore.setState({ relays });
+    const nip17 = await import("@/lib/nip17");
+    userCreatePaymentRequest("https://active.mint");
+    expect(nip17.getNostrNprofile).toHaveBeenLastCalledWith(
+      "1".repeat(64),
+      relays.map(({ url }) => url),
+    );
   });
 });

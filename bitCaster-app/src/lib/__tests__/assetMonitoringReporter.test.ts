@@ -570,15 +570,17 @@ describe("asset monitoring reporter", () => {
     reporter.request();
     await vi.waitFor(() => expect(remote.submitAssetMonitoringReport).toHaveBeenCalledOnce());
     reporter.request();
-    first.reject(new EngineClientError(409, "conflict"));
+    first.reject(new EngineClientError(409, "conflict", "asset-monitoring-baseline-required"));
 
     await vi.waitFor(() => expect(remote.submitAssetMonitoringReport).toHaveBeenCalledTimes(2));
     expect(requestAt(remote, 1).startsNewInterval).toBe(false);
   });
 
-  it("defers a 409 when a submitted order remains nonterminal", async () => {
+  it("defers a baseline-required 409 when a submitted order remains nonterminal", async () => {
     const remote = reporterRemote();
-    remote.submitAssetMonitoringReport.mockRejectedValue(new EngineClientError(409, "conflict"));
+    remote.submitAssetMonitoringReport.mockRejectedValue(
+      new EngineClientError(409, "conflict", "asset-monitoring-baseline-required"),
+    );
     const hasPendingSubmittedOrder = vi.fn().mockResolvedValue(true);
     const reporter = new AssetMonitoringReporter({
       walletId,
@@ -595,10 +597,12 @@ describe("asset monitoring reporter", () => {
     expect(remote.submitAssetMonitoringReport).toHaveBeenCalledOnce();
   });
 
-  it("retries only a 409 without a pending order using the same holdings and a new ID", async () => {
+  it("retries only a baseline-required 409 without a pending order using the same holdings and a new ID", async () => {
     const remote = reporterRemote();
     remote.submitAssetMonitoringReport
-      .mockRejectedValueOnce(new EngineClientError(409, "conflict"))
+      .mockRejectedValueOnce(
+        new EngineClientError(409, "conflict", "asset-monitoring-baseline-required"),
+      )
       .mockResolvedValueOnce(undefined);
     const reporter = new AssetMonitoringReporter({
       walletId,

@@ -128,6 +128,8 @@ export function buildTradeTicket(params: {
  * `priceOverride` uses the fillable preview's selected-token worst price. An
  * explicit override must equal the preview request price and is copied
  * without slippage or widening.
+ * Copy the accepted quote payment into the applicable aggregate bound.
+ * Keep that bound separate from the per-fill price and fee consent.
  */
 export function buildProtectedTradeTicket(params: {
   ticket: TradeTicket
@@ -183,13 +185,70 @@ export function buildProtectedTradeTicket(params: {
   if (!validatePriceNumerator(protectedPrice, response.priceDenominator)) {
     throw new TradeTicketError('invalid-preview', 'The protected price is invalid.')
   }
+  const bounds = acceptedQuotePaymentBounds(ticket.request.side, response.quotePaymentSubunits)
+  if (
+    ticket.request.maxQuotePaymentSubunits !== undefined ||
+    ticket.request.minQuotePaymentSubunits !== undefined
+  ) {
+    const original = decodeOrderQuotePaymentBounds(ticket.request.side, ticket.request)
+    if (
+      original.maxQuotePaymentSubunits !== bounds.maxQuotePaymentSubunits ||
+      original.minQuotePaymentSubunits !== bounds.minQuotePaymentSubunits
+    ) {
+      throw new TradeTicketError('invalid-preview', 'The accepted quote payment cannot change.')
+    }
+  }
 
   return {
     marketId: ticket.marketId,
     request: {
       ...ticket.request,
       price: protectedPrice,
+      ...bounds,
     },
+  }
+}
+
+function acceptedQuotePaymentBounds(side: SdkTradeSide, quotePaymentSubunits: unknown) {
+  switch (side) {
+    case 'Buy':
+      return decodeOrderQuotePaymentBounds(side, { maxQuotePaymentSubunits: quotePaymentSubunits })
+    case 'Sell':
+      return decodeOrderQuotePaymentBounds(side, { minQuotePaymentSubunits: quotePaymentSubunits })
+  }
+}
+
+export function decodeOrderQuotePaymentBounds(
+  side: SdkTradeSide,
+  value: { maxQuotePaymentSubunits?: unknown; minQuotePaymentSubunits?: unknown },
+): { maxQuotePaymentSubunits: number | null; minQuotePaymentSubunits: number | null } {
+  let applicable: unknown
+  let inapplicable: unknown
+  switch (side) {
+    case 'Buy':
+      applicable = value.maxQuotePaymentSubunits
+      inapplicable = value.minQuotePaymentSubunits
+      break
+    case 'Sell':
+      applicable = value.minQuotePaymentSubunits
+      inapplicable = value.maxQuotePaymentSubunits
+      break
+    default:
+      throw new Error('order quote payment side is invalid')
+  }
+  if (
+    typeof applicable !== 'number' ||
+    !Number.isSafeInteger(applicable) ||
+    applicable < 0 ||
+    (inapplicable !== undefined && inapplicable !== null)
+  ) {
+    throw new Error('order quote payment bound is invalid')
+  }
+  switch (side) {
+    case 'Buy':
+      return { maxQuotePaymentSubunits: applicable, minQuotePaymentSubunits: null }
+    case 'Sell':
+      return { maxQuotePaymentSubunits: null, minQuotePaymentSubunits: applicable }
   }
 }
 

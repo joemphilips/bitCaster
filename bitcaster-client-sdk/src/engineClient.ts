@@ -1,4 +1,4 @@
-import type { components } from './generated/api.ts'
+import type { components, operations } from './generated/api.ts'
 import {
   parseMarketDivisibility,
   type CtfCollateralUnit,
@@ -32,6 +32,7 @@ import {
   type AssetMonitoringSummaryResponse,
 } from './assetMonitoring.ts'
 import type { WalletId } from './durableCustody.ts'
+import { readSignedOracleEvent } from './oracleResolutionExplanation.ts'
 import {
   decodeDurableRecipientDeliveryStatus,
   decodeDurableRecipientDeliverySubmission,
@@ -105,7 +106,10 @@ export type OrderLifecycleStatus =
 export type OrderTimeInForce = 'GTC' | 'FOK' | 'FAK' | 'GTD'
 export type SettlementCapabilityTimeInForce = 'FOK'
 
-export interface SettlementOrderIntent {
+export interface SettlementOrderIntent extends Pick<
+  components['schemas']['SettlementOrderIntent'],
+  'maxQuotePaymentSubunits' | 'minQuotePaymentSubunits'
+> {
   outcomeId: string
   tokenSide: 'Outcome' | 'Complement'
   side: 'Buy' | 'Sell'
@@ -148,6 +152,7 @@ export interface ConditionAttestationResponse {
   readonly attestedOutcome: string
   readonly oracleWitness: unknown
   readonly registeredAuthority: unknown
+  readonly attestationEvent: components['schemas']['OracleNostrEvent']
 }
 
 export interface SettlementCapabilityResultResponse {
@@ -319,7 +324,10 @@ export interface EngineProblem {
   detail?: string
 }
 
-export interface OrderStatusResponse {
+export interface OrderStatusResponse extends Pick<
+  components['schemas']['OrderStatusResponse'],
+  'maxQuotePaymentSubunits' | 'minQuotePaymentSubunits'
+> {
   orderId: string
   marketId: string
   status: OrderLifecycleStatus
@@ -376,9 +384,9 @@ export interface OrderBookSnapshot {
 }
 
 export interface QueryMarketsParams {
-  state?: 'Open' | 'Closed' | 'Resolved' | 'All'
+  state?: NonNullable<NonNullable<operations['queryMarkets']['parameters']['query']>['state']>
   sort?: 'Trending' | 'Popular' | 'New'
-  tag?: string
+  tag?: NonNullable<NonNullable<operations['queryMarkets']['parameters']['query']>['tag']>
   /** @deprecated Use creatorPubkey; OpenAPI wire name is creator_pubkey. */
   creator?: string
   creatorPubkey?: string
@@ -395,32 +403,20 @@ export interface QueryMarketsResponse {
   nextCursor?: string | null
 }
 
-export type PriceHistoryTimeframe = '1h' | '24h' | '7d' | '30d' | 'all'
+export type PriceHistoryTimeframe = components['schemas']['MarketPriceHistoryResponse']['timeframe']
 
 export type MarketPriceHistoryPoint = components['schemas']['MarketPriceHistoryPoint']
 
-export interface MarketOutcomePriceHistory {
-  outcomeId: string
-  data: MarketPriceHistoryPoint[]
-}
+export type MarketOutcomePriceHistory = components['schemas']['MarketOutcomePriceHistory']
 
-export interface MarketPriceHistoryResponse {
-  conditionId: string
-  timeframe: PriceHistoryTimeframe
-  outcomes: MarketOutcomePriceHistory[]
-}
+export type MarketPriceHistoryResponse = components['schemas']['MarketPriceHistoryResponse']
 
-export interface MarketComment {
-  commentId: string
-  content: string
-  createdAt: string
-  authorPubkey: string
-}
+export type MarketSnapshotReadOptions = NonNullable<
+  operations['getMarketComments']['parameters']['query']
+> & { signal?: AbortSignal }
 
-export interface MarketCommentsResponse {
-  conditionId: string
-  comments: MarketComment[]
-}
+export type MarketComment = components['schemas']['MarketComment']
+export type MarketCommentsResponse = components['schemas']['MarketCommentsResponse']
 
 export interface ParticipationScoreResponse {
   pubkey: string
@@ -755,30 +751,58 @@ export class BitcasterEngineClient {
     return response.status !== 404
   }
 
-  async getOrderBook(marketId: string): Promise<OrderBookSnapshot> {
-    const response = await this.request(`/api/v1/${encodePathSegment(marketId)}/orderbook`)
+  async getOrderBook(marketId: string, signal?: AbortSignal): Promise<OrderBookSnapshot> {
+    const response = await this.request(`/api/v1/${encodePathSegment(marketId)}/orderbook`, {
+      signal,
+    })
     return (await response.json()) as OrderBookSnapshot
   }
 
-  async queryMarkets(params: QueryMarketsParams = {}): Promise<QueryMarketsResponse> {
-    const response = await this.request(`/api/v1/markets/query${buildMarketsQueryString(params)}`)
+  async queryMarkets(
+    params: QueryMarketsParams = {},
+    signal?: AbortSignal,
+  ): Promise<QueryMarketsResponse> {
+    const response = await this.request(`/api/v1/markets/query${buildMarketsQueryString(params)}`, {
+      signal,
+    })
     return (await response.json()) as QueryMarketsResponse
+  }
+
+  async getCreatorMarkets(
+    pubkey: string,
+  ): Promise<components['schemas']['CreatorMarketsResponse']> {
+    const response = await this.request(`/api/v1/creators/${encodePathSegment(pubkey)}/markets`)
+    return (await response.json()) as components['schemas']['CreatorMarketsResponse']
   }
 
   async getMarketPriceHistory(
     conditionId: string,
     timeframe: PriceHistoryTimeframe = '7d',
+    options: MarketSnapshotReadOptions = {},
   ): Promise<MarketPriceHistoryResponse> {
     const query = new URLSearchParams({ timeframe })
+    if (options.minimumEventOrder !== undefined)
+      query.set('minimumEventOrder', options.minimumEventOrder)
+    if (options.refresh === true) query.set('refresh', 'true')
     const response = await this.request(
       `/api/v1/markets/${encodePathSegment(conditionId)}/price-history?${query}`,
+      { signal: options.signal },
     )
     return (await response.json()) as MarketPriceHistoryResponse
   }
 
-  async getMarketComments(conditionId: string): Promise<MarketCommentsResponse> {
+  async getMarketComments(
+    conditionId: string,
+    options: MarketSnapshotReadOptions = {},
+  ): Promise<MarketCommentsResponse> {
+    const query = new URLSearchParams()
+    if (options.minimumEventOrder !== undefined)
+      query.set('minimumEventOrder', options.minimumEventOrder)
+    if (options.refresh === true) query.set('refresh', 'true')
+    const suffix = query.size === 0 ? '' : `?${query}`
     const response = await this.request(
-      `/api/v1/markets/${encodePathSegment(conditionId)}/comments`,
+      `/api/v1/markets/${encodePathSegment(conditionId)}/comments${suffix}`,
+      { signal: options.signal },
     )
     return (await response.json()) as MarketCommentsResponse
   }
@@ -835,13 +859,26 @@ export class BitcasterEngineClient {
     )
   }
 
-  async getMarket(conditionId: string): Promise<unknown | null> {
-    const response = await this.queryMarkets({
-      ids: [conditionId],
-      state: 'All',
-      pageSize: 1,
-    })
+  async getMarket(conditionId: string, signal?: AbortSignal): Promise<unknown | null> {
+    const response = await this.queryMarkets(
+      {
+        ids: [conditionId],
+        state: 'All',
+        pageSize: 1,
+      },
+      signal,
+    )
     return response.markets[0] ?? null
+  }
+
+  async getMarketRegistration(
+    conditionId: string,
+    signal?: AbortSignal,
+  ): Promise<components['schemas']['MarketRegistrationResponse'] | null> {
+    return this.getOptional(
+      `/api/v1/markets/${encodePathSegment(conditionId)}/registration`,
+      signal,
+    )
   }
 
   async getConditionAttestation(conditionId: string): Promise<ConditionAttestationResponse | null> {
@@ -854,9 +891,15 @@ export class BitcasterEngineClient {
     if (response.status === 404) return null
     const value = exactEngineRecord(
       await readAllocationBoundedJsonResponse(response, CONDITION_ATTESTATION_RESPONSE_BYTES_MAX),
-      ['conditionId', 'attestedOutcome', 'oracleWitness', 'registeredAuthority'],
+      [
+        'conditionId',
+        'attestedOutcome',
+        'oracleWitness',
+        'registeredAuthority',
+        'attestationEvent',
+      ],
     )
-    if (typeof value.conditionId !== 'string' || typeof value.attestedOutcome !== 'string') {
+    if (value.conditionId !== conditionId || typeof value.attestedOutcome !== 'string') {
       throw new Error('condition attestation response is invalid')
     }
     return {
@@ -864,11 +907,12 @@ export class BitcasterEngineClient {
       attestedOutcome: value.attestedOutcome,
       oracleWitness: value.oracleWitness,
       registeredAuthority: value.registeredAuthority,
+      attestationEvent: decodeConditionAttestationEvent(value.attestationEvent),
     }
   }
 
-  private async getOptional<T>(path: string): Promise<T | null> {
-    const response = await this.request(path, {}, undefined, true)
+  private async getOptional<T>(path: string, signal?: AbortSignal): Promise<T | null> {
+    const response = await this.request(path, { signal }, undefined, true)
     if (response.status === 404) return null
     return (await response.json()) as T
   }
@@ -1037,8 +1081,12 @@ export class BitcasterEngineClient {
   }
 }
 
-async function awaitAbortable<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
-  if (signal.aborted) throw new Error('request aborted')
+export async function awaitAbortable<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) {
+    // The caller can already have started this operation before cancellation.
+    void operation.catch(() => undefined)
+    throw new Error('request aborted')
+  }
   return new Promise<T>((resolve, reject) => {
     const onAbort = () => {
       cleanup()
@@ -1141,7 +1189,7 @@ export function decodeOrderStatusResponse(value: unknown): OrderStatusResponse {
       'divisibility',
       'activeSettlementGroup',
     ],
-    ['expiresAt'],
+    ['expiresAt', 'maxQuotePaymentSubunits', 'minQuotePaymentSubunits'],
   )
   requireUuid(response.orderId, 'order id')
   if (typeof response.marketId !== 'string' || response.marketId.length < 1) {
@@ -1170,11 +1218,26 @@ export function decodeOrderStatusResponse(value: unknown): OrderStatusResponse {
     filledAmountSubunits: response.filledAmountSubunits as number,
     fills,
     ...orderFields,
+    ...decodeOrderStatusQuoteBounds(response),
     tokenSide: response.tokenSide,
     baseAsset: 'sat',
     divisibility,
     activeSettlementGroup,
   }
+}
+
+function decodeOrderStatusQuoteBounds(
+  response: Record<string, unknown>,
+): Pick<OrderStatusResponse, 'maxQuotePaymentSubunits' | 'minQuotePaymentSubunits'> {
+  const bounds: Pick<OrderStatusResponse, 'maxQuotePaymentSubunits' | 'minQuotePaymentSubunits'> =
+    {}
+  for (const field of ['maxQuotePaymentSubunits', 'minQuotePaymentSubunits'] as const) {
+    if (!Object.hasOwn(response, field)) continue
+    const value = response[field]
+    if (value !== null) requireNonnegativeSafeInteger(value, 'order quote-payment bound')
+    bounds[field] = value
+  }
+  return bounds
 }
 
 function decodeOrderStatusFields(
@@ -1434,6 +1497,31 @@ function requireOrderStatus(value: unknown): asserts value is OrderLifecycleStat
   }
 }
 
+function decodeConditionAttestationEvent(
+  value: unknown,
+): components['schemas']['OracleNostrEvent'] {
+  const wire = exactEngineRecord(value, [
+    'id',
+    'pubkey',
+    'createdAt',
+    'kind',
+    'tags',
+    'content',
+    'sig',
+  ])
+  const { createdAt, ...signed } = wire
+  const event = readSignedOracleEvent(JSON.stringify({ ...signed, created_at: createdAt }), 89)
+  return {
+    id: event.id,
+    pubkey: event.pubkey,
+    createdAt: event.created_at,
+    kind: 89,
+    tags: event.tags,
+    content: event.content,
+    sig: event.sig,
+  }
+}
+
 function exactEngineRecord(
   value: unknown,
   required: readonly string[],
@@ -1576,7 +1664,7 @@ function buildMarketsQueryString(params: QueryMarketsParams): string {
   const query = new URLSearchParams()
   if (params.state) query.set('state', params.state)
   if (params.sort) query.set('sort', params.sort)
-  if (params.tag) query.set('tag', params.tag)
+  for (const tag of params.tag ?? []) query.append('tag', tag)
   const creatorPubkey = params.creatorPubkey ?? params.creator
   if (creatorPubkey) query.set('creator_pubkey', creatorPubkey)
   if (params.ids?.length) query.set('ids', params.ids.join(','))

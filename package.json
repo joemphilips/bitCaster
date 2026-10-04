@@ -14,7 +14,8 @@
     "test:mutation:cli": "stryker run stryker.cli.config.mjs",
     "vectors:nut-ctf-range:generate": "node scripts/generate-nut-ctf-range-v1.mjs --write",
     "vectors:nut-ctf-range:check": "node scripts/generate-nut-ctf-range-v1.mjs --check",
-    "postinstall": "node scripts/postinstall-build-cli.mjs"
+    "patch:dependencies": "patch-package --error-on-fail",
+    "postinstall": "npm run patch:dependencies && node scripts/postinstall-build-cli.mjs"
   },
   "workspaces": [
     "bitCaster-app",
@@ -27,6 +28,7 @@
     "@stryker-mutator/core": "10.0.0",
     "@stryker-mutator/vitest-runner": "10.0.0",
     "jsdom": "^29.1.1",
-    "prettier": "^3.8.3"
+    "prettier": "^3.8.3",
+    "patch-package": "8.0.1"
   }
 }

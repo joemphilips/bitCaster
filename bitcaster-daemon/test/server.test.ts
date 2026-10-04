@@ -12,7 +12,7 @@ import { bootstrapFreshDaemonProfile } from '../src/profileBootstrap.ts'
 import { claimCustodyScopeLease } from '../src/profileFencing.ts'
 import { completedProofAuthorityDigest } from '@bitcaster-market/client-sdk/ctfSplit'
 import { emptyDaemonState, readDaemonKeysetCounters, writeState } from '../src/state.ts'
-import { dispatch, orderBackingError, startDaemonServer } from '../src/server.ts'
+import { dispatch, startDaemonServer } from '../src/server.ts'
 import {
   createDaemonCompleteSetOutputMode,
   recoverCompleteSetSplits,
@@ -581,37 +581,3 @@ function postSocketJson(socketPath: string, body: unknown): Promise<unknown> {
     req.end(text)
   })
 }
-
-test('buy order backing uses quote payment, not face amount', () => {
-  assert.equal(
-    orderBackingError({
-      side: 'Buy',
-      price: 400,
-      amountSubunits: 3_000,
-      divisibility: 1_000,
-      holdings: {
-        baseUnitProofs: 12_000,
-        primitiveProofsByAtom: {},
-        complementProofsByAtom: {},
-      },
-    }),
-    null,
-  )
-})
-
-test('sell order backing still uses VCS face amount', () => {
-  assert.match(
-    orderBackingError({
-      side: 'Sell',
-      price: 400,
-      amountSubunits: 3_000,
-      divisibility: 1_000,
-      holdings: {
-        baseUnitProofs: 50_000,
-        primitiveProofsByAtom: { Alpha: 2_000 },
-        complementProofsByAtom: {},
-      },
-    }) ?? '',
-    /need 3 shares/,
-  )
-})

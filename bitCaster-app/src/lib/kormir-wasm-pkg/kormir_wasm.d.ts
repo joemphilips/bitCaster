@@ -67,8 +67,9 @@ export class Kormir {
      * (a public protocol artifact, mirrored client-side) carries the committed
      * nonce point(s); because nonce keys are derived deterministically from the
      * signing key, the original index is recovered by a bounded scan and the
-     * announcement is re-saved. After this call `sign_enum_event(event_id, …)`
-     * succeeds and produces the same committed-nonce signature the mint expects.
+     * announcement is re-saved. Use `prepare_enum_attestation` with the retained
+     * signed kind-88 JSON to restore its exact Nostr ID before signing.
+     * This produces the same committed-nonce signature the mint expects.
      *
      * `announcement_tlv_hex` is the TLV-enveloped hex returned by
      * `create_enum_event` (and stored by the client). Returns the event_id.
@@ -76,8 +77,18 @@ export class Kormir {
     import_enum_event(announcement_tlv_hex: string): Promise<string>;
     list_events(): Promise<any>;
     static new(relays: string[]): Promise<Kormir>;
+    prepare_enum_attestation(event_id: string, outcome: string, announcement_event_json: string): Promise<PreparedOracleEvent>;
+    prepare_enum_event(event_id: string, outcomes: string[], event_maturity_epoch: number, title: string, description: string): Promise<PreparedOracleEvent>;
     static restore(str: string): Promise<void>;
     sign_enum_event(event_id: string, outcome: string): Promise<string>;
+}
+
+export class PreparedOracleEvent {
+    private constructor();
+    free(): void;
+    [Symbol.dispose](): void;
+    readonly artifact_hex: string;
+    readonly nostr_event_json: string;
 }
 
 export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembly.Module;
@@ -94,6 +105,8 @@ export interface InitOutput {
     readonly kormir_import_enum_event: (a: number, b: number, c: number) => any;
     readonly kormir_list_events: (a: number) => any;
     readonly kormir_new: (a: number, b: number) => any;
+    readonly kormir_prepare_enum_attestation: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => any;
+    readonly kormir_prepare_enum_event: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => any;
     readonly kormir_restore: (a: number, b: number) => any;
     readonly kormir_sign_enum_event: (a: number, b: number, c: number, d: number, e: number) => any;
     readonly __wbg_announcement_free: (a: number, b: number) => void;
@@ -101,6 +114,7 @@ export interface InitOutput {
     readonly __wbg_eventdata_free: (a: number, b: number) => void;
     readonly __wbg_get_announcement_event_maturity_epoch: (a: number) => number;
     readonly __wbg_get_eventdata_event_maturity_epoch: (a: number) => number;
+    readonly __wbg_preparedoracleevent_free: (a: number, b: number) => void;
     readonly __wbg_set_announcement_event_maturity_epoch: (a: number, b: number) => void;
     readonly __wbg_set_eventdata_event_maturity_epoch: (a: number, b: number) => void;
     readonly announcement_announcement_signature: (a: number) => [number, number];
@@ -122,6 +136,8 @@ export interface InitOutput {
     readonly eventdata_observed_outcome: (a: number) => [number, number];
     readonly eventdata_outcomes: (a: number) => [number, number];
     readonly eventdata_value: (a: number) => any;
+    readonly preparedoracleevent_artifact_hex: (a: number) => [number, number];
+    readonly preparedoracleevent_nostr_event_json: (a: number) => [number, number];
     readonly rustsecp256k1zkp_v0_10_0_default_error_callback_fn: (a: number, b: number) => void;
     readonly rustsecp256k1zkp_v0_10_0_default_illegal_callback_fn: (a: number, b: number) => void;
     readonly rustsecp256k1_v0_10_0_context_create: (a: number) => number;

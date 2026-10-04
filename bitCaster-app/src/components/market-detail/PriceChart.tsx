@@ -1,9 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { X } from "lucide-react";
 import uPlot from "uplot";
 import "uplot/dist/uPlot.min.css";
 import { canonicalizeOutcomeSet } from "@/lib/outcomeSets";
-import { latestPricePointsPerSecond } from "@/lib/priceHistory";
+import {
+  confirmedPriceAtOrBefore,
+  TIMEFRAME_WINDOW_MS,
+  windowPriceHistory,
+} from "@/lib/priceHistory";
+import { fetchPublicNostrProfile, type PublicNostrProfile } from "@/lib/nostr";
 import type { Outcome } from "@/types/market";
 import { normalizeOutcomeColor, OutcomeLabel } from "@/components/shared/OutcomeLabel";
 import type { PriceHistory, ChartTimeframe, Comment, PricePoint } from "@/types/market-detail";
@@ -40,69 +46,163 @@ const TIMEFRAME_LABELS: Record<ChartTimeframe, string> = {
 
 const PRIMARY_SERIES_COLOR = "rgb(59, 130, 246)";
 const CHART_HEIGHT = 224;
-const MAX_PRICE_HISTORY_POINTS_PER_OUTCOME = 1000;
 const MAX_COMMENT_MARKERS = 40;
-const COMMENT_MARKER_LANES = 4;
-const COMMENT_MARKER_SPACING = 24;
+const MAX_AUTHOR_PROFILE_LOOKUPS = 40;
 const EMPTY_COMMENTS: Comment[] = [];
 
 type Series = { id: string; label: string; color: string; data: PricePoint[] };
-type CommentGroup = { timestamp: number; comments: Comment[] };
-type PositionedCommentGroup = CommentGroup & { left: number; top: number; plotLeft: number };
-type PositionedCommentCluster = {
-  id: number;
-  groups: PositionedCommentGroup[];
+type CommentGroup = {
+  id: string;
+  timestamp: number;
+  price: number;
+  seriesId: string;
+  seriesLabel: string;
+  linkedFillSize: number | null;
+  comments: Comment[];
+};
+type PositionedCommentGroup = CommentGroup & {
+  plotLeft: number;
+  plotTop: number;
+  anchorLeft: number;
+  anchorTop: number;
   left: number;
   top: number;
 };
-type CursorSample = { label: string; color: string; value: number };
+type CommentGroupResult = { groups: CommentGroup[]; hiddenCount: number };
 type CursorReadout = {
   time: number;
-  price: number;
-  sampleTime: number;
-  samples: CursorSample[];
-  tooltipLeft: number;
-  tooltipTop: number;
+  price: number | null;
   xLabelLeft: number;
   xLabelTop: number;
   yLabelLeft: number;
   yLabelTop: number;
 };
 
+const COMMENT_MARKER_WIDTH = 24;
+const COMMENT_MARKER_HEIGHT = 18;
+const COMMENT_MARKER_OFFSETS: Array<[number, number]> = [
+  [0, -28],
+  [0, 28],
+  [-32, -24],
+  [32, -24],
+  [-32, 24],
+  [32, 24],
+  [-48, 0],
+  [48, 0],
+  [0, -52],
+  [0, 52],
+  [-56, -28],
+  [56, -28],
+  [-56, 28],
+  [56, 28],
+  [-80, 0],
+  [80, 0],
+];
+
 function groupComments(
   comments: readonly Comment[],
   xScale: { min: number; max: number } | null,
-): { groups: CommentGroup[]; hiddenCount: number } {
+  series: readonly Series[],
+  isCategorical: boolean,
+): CommentGroupResult {
   if (!xScale) return { groups: [], hiddenCount: 0 };
-  const groupsBySecond = new Map<number, Comment[]>();
+  const groupsByCoordinate = new Map<string, Omit<CommentGroup, "id">>();
   for (const comment of comments) {
-    const timestampMs = Date.parse(comment.timestamp);
+    const trade = comment.trade;
+    if (
+      !trade ||
+      !Number.isSafeInteger(trade.price) ||
+      !Number.isSafeInteger(trade.priceDenominator) ||
+      trade.priceDenominator <= 0 ||
+      trade.price < 0 ||
+      trade.price > trade.priceDenominator
+    ) {
+      continue;
+    }
+
+    const timestampMs = Date.parse(trade.executedAt);
     if (!Number.isFinite(timestampMs)) continue;
-    const timestamp = Math.floor(timestampMs / 1000);
+    const timestamp = timestampMs / 1000;
     if (timestamp < xScale.min || timestamp > xScale.max) continue;
-    const group = groupsBySecond.get(timestamp) ?? [];
-    group.push(comment);
-    groupsBySecond.set(timestamp, group);
+
+    let price = (trade.price / trade.priceDenominator) * 100;
+    let seriesId = "primary";
+    let seriesLabel = "";
+    if (isCategorical) {
+      const matchedSeries = series.find((item) => item.id === trade.outcomeId);
+      if (!matchedSeries) continue;
+      seriesId = matchedSeries.id;
+      seriesLabel = matchedSeries.label;
+    } else {
+      const primitiveOutcomeId = trade.outcomeId.toLowerCase();
+      if (primitiveOutcomeId === "no") {
+        price = 100 - price;
+      } else if (primitiveOutcomeId !== "yes") {
+        continue;
+      }
+    }
+
+    if (!Number.isFinite(price) || price < 0 || price > 100) continue;
+    const coordinateKey = JSON.stringify([seriesId, timestampMs, price]);
+    const group = groupsByCoordinate.get(coordinateKey) ?? {
+      timestamp,
+      price,
+      seriesId,
+      seriesLabel,
+      linkedFillSize: null,
+      comments: [],
+    };
+    const fillSize = trade.faceAmountSubunits;
+    if (typeof fillSize === "number" && Number.isFinite(fillSize) && fillSize > 0) {
+      group.linkedFillSize = Math.max(group.linkedFillSize ?? 0, fillSize);
+    }
+    group.comments.push(comment);
+    groupsByCoordinate.set(coordinateKey, group);
   }
-  const groups = [...groupsBySecond]
-    .map(([timestamp, groupedComments]) => ({ timestamp, comments: groupedComments }))
-    .sort((left, right) => left.timestamp - right.timestamp);
+  const groups = [...groupsByCoordinate.entries()].map(([key, group]) => ({
+    ...group,
+    id: encodeURIComponent(key),
+  }));
+  const selected = groups
+    .sort(
+      (left, right) =>
+        (right.linkedFillSize ?? 0) - (left.linkedFillSize ?? 0) ||
+        right.timestamp - left.timestamp ||
+        (left.id < right.id ? -1 : left.id > right.id ? 1 : 0),
+    )
+    .slice(0, MAX_COMMENT_MARKERS)
+    .sort(
+      (left, right) =>
+        left.timestamp - right.timestamp ||
+        left.seriesId.localeCompare(right.seriesId) ||
+        left.price - right.price,
+    );
   return {
-    groups: groups.slice(-MAX_COMMENT_MARKERS),
+    groups: selected,
     hiddenCount: Math.max(0, groups.length - MAX_COMMENT_MARKERS),
   };
 }
 
-function formatChartTime(timestampSeconds: number, locale: string): string {
-  return new Intl.DateTimeFormat(locale, { dateStyle: "short", timeStyle: "short" }).format(
-    new Date(timestampSeconds * 1000),
-  );
+function formatChartTime(
+  timestampSeconds: number,
+  locale: string,
+  timeframe: ChartTimeframe,
+): string {
+  return new Intl.DateTimeFormat(locale, {
+    dateStyle: "short",
+    ...(timeframe === "30d" || timeframe === "all" ? {} : { timeStyle: "short" as const }),
+  }).format(new Date(timestampSeconds * 1000));
 }
 
-function formatCommentTime(timestampSeconds: number, locale: string): string {
-  return new Intl.DateTimeFormat(locale, { dateStyle: "short", timeStyle: "medium" }).format(
-    new Date(timestampSeconds * 1000),
-  );
+function formatCommentTime(
+  timestampSeconds: number,
+  locale: string,
+  timeframe: ChartTimeframe,
+): string {
+  return new Intl.DateTimeFormat(locale, {
+    dateStyle: "short",
+    ...(timeframe === "30d" || timeframe === "all" ? {} : { timeStyle: "medium" as const }),
+  }).format(new Date(timestampSeconds * 1000));
 }
 
 function clampPosition(value: number, elementSize: number, availableSize: number): number {
@@ -111,6 +211,70 @@ function clampPosition(value: number, elementSize: number, availableSize: number
     padding,
     Math.min(value, Math.max(padding, availableSize - elementSize - padding)),
   );
+}
+
+function markerBodiesOverlap(left: number, top: number, right: number, bottom: number): boolean {
+  const separation = 4;
+  return (
+    left < right + COMMENT_MARKER_WIDTH + separation &&
+    left + COMMENT_MARKER_WIDTH + separation > right &&
+    top < bottom + COMMENT_MARKER_HEIGHT + separation &&
+    top + COMMENT_MARKER_HEIGHT + separation > bottom
+  );
+}
+
+function chooseMarkerBodyPosition(
+  anchorLeft: number,
+  anchorTop: number,
+  chartWidth: number,
+  chartHeight: number,
+  positioned: readonly PositionedCommentGroup[],
+): { left: number; top: number } {
+  let bestPosition: { left: number; top: number } | null = null;
+  let fewestOverlaps = Number.POSITIVE_INFINITY;
+  for (const [offsetLeft, offsetTop] of COMMENT_MARKER_OFFSETS) {
+    const candidate = {
+      left: clampPosition(
+        anchorLeft + offsetLeft - COMMENT_MARKER_WIDTH / 2,
+        COMMENT_MARKER_WIDTH,
+        chartWidth,
+      ),
+      top: clampPosition(
+        anchorTop + offsetTop - COMMENT_MARKER_HEIGHT / 2,
+        COMMENT_MARKER_HEIGHT,
+        chartHeight,
+      ),
+    };
+    const overlaps = positioned.filter((item) =>
+      markerBodiesOverlap(candidate.left, candidate.top, item.left, item.top),
+    ).length;
+    if (overlaps < fewestOverlaps) {
+      bestPosition = candidate;
+      fewestOverlaps = overlaps;
+      if (overlaps === 0) return candidate;
+    }
+  }
+  return bestPosition ?? { left: anchorLeft, top: anchorTop };
+}
+
+function commentTailPath(
+  group: Pick<PositionedCommentGroup, "left" | "top" | "anchorLeft" | "anchorTop">,
+  width = COMMENT_MARKER_WIDTH,
+  height = COMMENT_MARKER_HEIGHT,
+): string {
+  const centerLeft = group.left + width / 2;
+  const centerTop = group.top + height / 2;
+  const horizontalDistance = group.anchorLeft - centerLeft;
+  const verticalDistance = group.anchorTop - centerTop;
+  if (Math.abs(horizontalDistance) / width > Math.abs(verticalDistance) / height) {
+    const edgeLeft = horizontalDistance < 0 ? group.left : group.left + width;
+    const edgeTop = Math.max(group.top + 4, Math.min(group.anchorTop, group.top + height - 4));
+    return `M ${group.anchorLeft} ${group.anchorTop} L ${edgeLeft} ${edgeTop - 4} L ${edgeLeft} ${edgeTop + 4} Z`;
+  }
+
+  const edgeTop = verticalDistance < 0 ? group.top : group.top + height;
+  const edgeLeft = Math.max(group.left + 4, Math.min(group.anchorLeft, group.left + width - 4));
+  return `M ${group.anchorLeft} ${group.anchorTop} L ${edgeLeft - 4} ${edgeTop} L ${edgeLeft + 4} ${edgeTop} Z`;
 }
 
 function measuredRegionSize(
@@ -130,28 +294,14 @@ function timeOf(point: PricePoint): number {
   return new Date(point.timestamp).getTime();
 }
 
-function normalizeSeriesData(data: PricePoint[], timeframe: ChartTimeframe): PricePoint[] {
-  const sorted = latestPricePointsPerSecond(data);
-  if (sorted.length === 0) return sorted;
-
-  if (timeframe === "all") {
-    return sorted.slice(-MAX_PRICE_HISTORY_POINTS_PER_OUTCOME);
-  }
-
-  const newest = timeOf(sorted[sorted.length - 1]);
-  const cutoff = newest - TIMEFRAME_SECONDS[timeframe] * 1000;
-  const firstInWindow = sorted.findIndex((point) => timeOf(point) >= cutoff);
-  const windowed = firstInWindow <= 0 ? sorted : sorted.slice(firstInWindow - 1);
-  return windowed.slice(-MAX_PRICE_HISTORY_POINTS_PER_OUTCOME);
-}
-
 function toUnixSeconds(point: PricePoint): number {
-  return Math.floor(timeOf(point) / 1000);
+  return timeOf(point) / 1000;
 }
 
 function buildSeries(input: {
   priceHistory: PriceHistory;
   timeframe: ChartTimeframe;
+  evaluationMs: number | null;
   outcomePriceHistories?: Record<string, PriceHistory>;
   outcomes?: Outcome[];
 }): Series[] {
@@ -168,10 +318,15 @@ function buildSeries(input: {
         id: outcome.id,
         label: outcome.label,
         color: normalizeOutcomeColor(outcome.color),
-        data: normalizeSeriesData(
-          input.outcomePriceHistories?.[canonicalizeOutcomeSet([outcome.label])]?.data ?? [],
-          input.timeframe,
-        ),
+        data: windowPriceHistory(
+          {
+            ...(input.outcomePriceHistories?.[canonicalizeOutcomeSet([outcome.label])] ?? {
+              data: [],
+            }),
+            timeframe: input.timeframe,
+          },
+          input.evaluationMs,
+        ).data,
       }))
       .filter((series) => series.data.length > 0);
   }
@@ -181,7 +336,10 @@ function buildSeries(input: {
       id: "primary",
       label: "",
       color: PRIMARY_SERIES_COLOR,
-      data: normalizeSeriesData(input.priceHistory.data, input.timeframe),
+      data: windowPriceHistory(
+        { ...input.priceHistory, timeframe: input.timeframe },
+        input.evaluationMs,
+      ).data,
     },
   ].filter((series) => series.data.length > 0);
 }
@@ -202,12 +360,14 @@ function alignSeries(series: Series[]): uPlot.AlignedData {
 function xScaleFor(
   data: uPlot.AlignedData,
   timeframe: ChartTimeframe,
+  evaluationMs: number | null,
 ): { min: number; max: number } | null {
   const times = data[0] as number[];
   if (times.length === 0) return null;
   if (timeframe !== "all") {
+    if (evaluationMs === null) return null;
     const windowSeconds = TIMEFRAME_SECONDS[timeframe];
-    const max = times[times.length - 1];
+    const max = evaluationMs / 1000;
     return { min: max - windowSeconds, max };
   }
   const max = times[times.length - 1];
@@ -244,75 +404,180 @@ export function PriceChart({
   const activeMarkerRef = useRef<HTMLButtonElement | null>(null);
   const ignoreNextMarkerFocusRef = useRef(false);
   const dismissTimerRef = useRef<number | null>(null);
+  const pinnedCommentGroupIdRef = useRef<string | null>(null);
   const plotRef = useRef<uPlot | null>(null);
   const resizeObserverRef = useRef<ResizeObserver | null>(null);
   const markerRefreshRef = useRef<((plot: uPlot) => void) | null>(null);
+  const cursorRefreshRef = useRef<((plot: uPlot) => void) | null>(null);
   const [cursorReadout, setCursorReadout] = useState<CursorReadout | null>(null);
-  const [positionedCommentClusters, setPositionedCommentClusters] = useState<
-    PositionedCommentCluster[]
-  >([]);
-  const [activeCommentTimestamp, setActiveCommentTimestamp] = useState<number | null>(null);
-  const [activeCommentClusterId, setActiveCommentClusterId] = useState<number | null>(null);
-  const [pinnedCommentClusterId, setPinnedCommentClusterId] = useState<number | null>(null);
+  const [positionedCommentGroups, setPositionedCommentGroups] = useState<PositionedCommentGroup[]>(
+    [],
+  );
+  const [activeCommentGroupId, setActiveCommentGroupId] = useState<string | null>(null);
+  const authorProfileRequests = useRef(new Map<string, Promise<PublicNostrProfile | null>>());
+  const [authorProfiles, setAuthorProfiles] = useState(
+    new Map<string, PublicNostrProfile | null>(),
+  );
+
+  const clock = useMemo(
+    () => ({
+      asOfMs: priceHistory.asOf ? Date.parse(priceHistory.asOf) : null,
+      receivedAt: priceHistory.receivedAt ?? performance.now(),
+    }),
+    [priceHistory],
+  );
+  const [expiryTick, setExpiryTick] = useState(0);
+  const evaluationMs = useMemo(
+    () =>
+      clock.asOfMs === null
+        ? null
+        : clock.asOfMs + Math.floor(Math.max(0, performance.now() - clock.receivedAt)),
+    [clock, expiryTick],
+  );
+  useEffect(() => {
+    const windowMs = TIMEFRAME_WINDOW_MS[chartTimeframe];
+    if (clock.asOfMs === null || windowMs === null) return;
+    const points = outcomePriceHistories
+      ? Object.values(outcomePriceHistories).flatMap((history) => history.data)
+      : priceHistory.data;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const schedule = () => {
+      const now = clock.asOfMs! + Math.floor(Math.max(0, performance.now() - clock.receivedAt));
+      const nextExpiry = points.reduce((next, point) => {
+        const expiry = Date.parse(point.timestamp) + windowMs + 1;
+        return expiry > now ? Math.min(next, expiry) : next;
+      }, Infinity);
+      if (!Number.isFinite(nextExpiry)) return;
+      timer = setTimeout(
+        () => {
+          setExpiryTick((tick) => tick + 1);
+          schedule();
+        },
+        Math.min(2_147_483_647, Math.max(1, nextExpiry - now)),
+      );
+    };
+    schedule();
+    return () => {
+      if (timer !== undefined) clearTimeout(timer);
+    };
+  }, [chartTimeframe, clock, priceHistory, outcomePriceHistories]);
 
   const series = useMemo(
     () =>
       disabledNumeric
         ? []
-        : buildSeries({ priceHistory, timeframe: chartTimeframe, outcomePriceHistories, outcomes }),
-    [priceHistory, chartTimeframe, outcomePriceHistories, outcomes, disabledNumeric],
+        : buildSeries({
+            priceHistory,
+            timeframe: chartTimeframe,
+            evaluationMs,
+            outcomePriceHistories,
+            outcomes,
+          }),
+    [
+      priceHistory,
+      chartTimeframe,
+      outcomePriceHistories,
+      outcomes,
+      disabledNumeric,
+      evaluationMs,
+      expiryTick,
+    ],
   );
   const chartData = useMemo(() => alignSeries(series), [series]);
-  const xScale = useMemo(() => xScaleFor(chartData, chartTimeframe), [chartData, chartTimeframe]);
-  const commentGroupResult = useMemo(() => groupComments(comments, xScale), [comments, xScale]);
+  const xScale = useMemo(
+    () => xScaleFor(chartData, chartTimeframe, evaluationMs),
+    [chartData, chartTimeframe, evaluationMs],
+  );
+  const isCategorical = Boolean(
+    outcomePriceHistories && outcomes && outcomes.length > 0 && !disabledNumeric,
+  );
+  const historyRef = useRef(series);
+  historyRef.current = series;
+  const commentGroupResult = useMemo(
+    () => groupComments(comments, xScale, series, isCategorical),
+    [comments, xScale, series, isCategorical],
+  );
   const hasChartData = series.length > 0 && chartData[0].length > 0;
   const locale = i18n.resolvedLanguage ?? i18n.language ?? "en";
-  const activeCommentCluster = positionedCommentClusters.find(
-    (cluster) => cluster.id === activeCommentClusterId,
+  const activeCommentGroup = positionedCommentGroups.find(
+    (group) => group.id === activeCommentGroupId,
   );
-  const activeCommentGroup = activeCommentCluster?.groups.find(
-    (group) => group.timestamp === activeCommentTimestamp,
-  );
-  const activePositionedCommentGroup = activeCommentGroup;
+  useEffect(() => {
+    if (!activeCommentGroup) return undefined;
+    let cancelled = false;
+    const authors = [
+      ...new Set(activeCommentGroup.comments.map((comment) => comment.userId)),
+    ].filter((author) => /^[0-9a-f]{64}$/.test(author));
+    const requests = authorProfileRequests.current;
+    for (const author of authors) {
+      if (requests.has(author)) continue;
+      // Best-effort display enrichment must remain bounded even across repeated group changes.
+      if (requests.size >= MAX_AUTHOR_PROFILE_LOOKUPS) break;
+      requests.set(
+        author,
+        fetchPublicNostrProfile(author).catch(() => null),
+      );
+    }
+    if (!authors.some((author) => requests.has(author))) return undefined;
+    void Promise.all(
+      authors
+        .filter((author) => requests.has(author))
+        .map(async (author) => [author, (await requests.get(author)) ?? null] as const),
+    ).then((profiles) => {
+      if (!cancelled) setAuthorProfiles(new Map(profiles));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeCommentGroup]);
   const chartRegionWidth = measuredRegionSize(chartRegionRef.current, "width", 320);
   const chartRegionHeight = measuredRegionSize(chartRegionRef.current, "height", CHART_HEIGHT);
   const commentPopoverWidth = Math.max(1, Math.min(288, chartRegionWidth - 8));
-  const commentPopoverHeight = Math.max(1, Math.min(176, chartRegionHeight - 8));
-  const commentPopoverLeft = activePositionedCommentGroup
-    ? clampPosition(
-        activePositionedCommentGroup.left + COMMENT_MARKER_SPACING / 2,
-        commentPopoverWidth,
-        chartRegionWidth,
-      )
+  const commentPopoverBelow = activeCommentGroup
+    ? chartRegionHeight - activeCommentGroup.anchorTop >= activeCommentGroup.anchorTop
+    : true;
+  const commentPopoverSpace = activeCommentGroup
+    ? (commentPopoverBelow
+        ? chartRegionHeight - activeCommentGroup.anchorTop
+        : activeCommentGroup.anchorTop) - 12
+    : chartRegionHeight - 8;
+  const commentPopoverHeight = Math.max(1, Math.min(176, commentPopoverSpace));
+  const commentPopoverLeft = activeCommentGroup
+    ? clampPosition(activeCommentGroup.anchorLeft + 8, commentPopoverWidth, chartRegionWidth)
     : 4;
-  const commentPopoverTop = activePositionedCommentGroup
+  const commentPopoverTop = activeCommentGroup
     ? clampPosition(
-        activePositionedCommentGroup.top + COMMENT_MARKER_SPACING + 4 + commentPopoverHeight <=
-          chartRegionHeight - 4
-          ? activePositionedCommentGroup.top + COMMENT_MARKER_SPACING + 4
-          : activePositionedCommentGroup.top - commentPopoverHeight - 4,
+        commentPopoverBelow
+          ? activeCommentGroup.anchorTop + 8
+          : activeCommentGroup.anchorTop - commentPopoverHeight - 8,
         commentPopoverHeight,
         chartRegionHeight,
       )
     : 4;
-  const latestValues = series
-    .map((s) => {
-      const latest = s.data[s.data.length - 1];
-      return latest ? { id: s.id, label: s.label, value: latest.price, color: s.color } : null;
-    })
-    .filter(
-      (value): value is { id: string; label: string; value: number; color: string } =>
-        value !== null,
-    );
+  const displayedSeries = isCategorical
+    ? (outcomes ?? []).slice(0, 8).map((outcome) => ({
+        id: outcome.id,
+        label: outcome.label,
+        color: normalizeOutcomeColor(outcome.color),
+        data: series.find((item) => item.id === outcome.id)?.data ?? [],
+      }))
+    : series;
+  const latestValues = displayedSeries.map((item) => ({
+    id: item.id,
+    label: item.label,
+    color: item.color,
+    value: cursorReadout
+      ? confirmedPriceAtOrBefore(item.data, cursorReadout.time)
+      : (item.data[item.data.length - 1]?.price ?? null),
+  }));
 
   const seriesSignature = series.map((s) => `${s.id}:${s.label}:${s.color}`).join("|");
 
   const closeCommentPopover = (restoreFocus: boolean) => {
     if (dismissTimerRef.current !== null) window.clearTimeout(dismissTimerRef.current);
     dismissTimerRef.current = null;
-    setPinnedCommentClusterId(null);
-    setActiveCommentClusterId(null);
-    setActiveCommentTimestamp(null);
+    pinnedCommentGroupIdRef.current = null;
+    setActiveCommentGroupId(null);
     if (
       restoreFocus &&
       activeMarkerRef.current &&
@@ -328,33 +593,23 @@ export function PriceChart({
     if (!plot) return;
     plot.setCursor({
       left: group.plotLeft,
-      top: Math.max(plot.over.clientHeight, 1) / 2,
+      top: group.plotTop,
     });
   };
 
-  const activateCommentMarker = (cluster: PositionedCommentCluster, marker: HTMLButtonElement) => {
+  const activateCommentMarker = (group: PositionedCommentGroup, marker: HTMLButtonElement) => {
     if (dismissTimerRef.current !== null) window.clearTimeout(dismissTimerRef.current);
     dismissTimerRef.current = null;
     activeMarkerRef.current = marker;
-    setActiveCommentClusterId(cluster.id);
-    const selectedGroup = cluster.groups.find(
-      (group) => group.timestamp === activeCommentTimestamp,
-    );
-    const group = selectedGroup ?? cluster.groups[0];
-    setActiveCommentTimestamp(group.timestamp);
-    setCommentCursor(group);
-  };
-
-  const selectCommentTimestamp = (group: PositionedCommentGroup) => {
-    setActiveCommentTimestamp(group.timestamp);
+    setActiveCommentGroupId(group.id);
     setCommentCursor(group);
   };
 
   const scheduleCommentPopoverDismiss = () => {
-    if (pinnedCommentClusterId !== null || dismissTimerRef.current !== null) return;
+    if (pinnedCommentGroupIdRef.current !== null || dismissTimerRef.current !== null) return;
     dismissTimerRef.current = window.setTimeout(() => {
       dismissTimerRef.current = null;
-      setActiveCommentTimestamp(null);
+      setActiveCommentGroupId(null);
     }, 120);
   };
 
@@ -365,7 +620,7 @@ export function PriceChart({
     plotRef.current?.destroy();
     resizeObserverRef.current?.disconnect();
     setCursorReadout(null);
-    setPositionedCommentClusters([]);
+    setPositionedCommentGroups([]);
 
     const width = Math.max(
       Math.floor(container.clientWidth || container.getBoundingClientRect().width),
@@ -373,23 +628,14 @@ export function PriceChart({
     );
     const steppedPaths = uPlot.paths.stepped?.({ align: 1 });
     const updateCursorReadout = (plot: uPlot) => {
-      const { left, top, idx } = plot.cursor;
-      if (left == null || top == null || left < 0 || idx == null) {
+      const { left } = plot.cursor;
+      if (left == null || left < 0) {
         setCursorReadout(null);
         return;
       }
 
       const axisTime = plot.posToVal(left, "x");
-      const axisPrice = plot.posToVal(top, "y");
-      const sampledTime = plot.data[0]?.[idx];
-      if (typeof sampledTime !== "number") {
-        setCursorReadout(null);
-        return;
-      }
-      const samples = series.flatMap((item, index) => {
-        const value = plot.data[index + 1]?.[idx];
-        return typeof value === "number" ? [{ label: item.label, color: item.color, value }] : [];
-      });
+      const axisPrice = confirmedPriceAtOrBefore(historyRef.current[0]?.data ?? [], axisTime);
       const region = chartRegionRef.current;
       const regionRect = region?.getBoundingClientRect();
       const overRect = plot.over.getBoundingClientRect();
@@ -398,19 +644,13 @@ export function PriceChart({
       const plotLeft = overRect.left - (regionRect?.left ?? 0);
       const plotTop = overRect.top - (regionRect?.top ?? 0);
       const xPosition = plotLeft + plot.valToPos(axisTime, "x");
-      const yPosition = plotTop + plot.valToPos(axisPrice, "y");
-      const tooltipWidth = Math.max(1, Math.min(240, width - 8));
-      const tooltipHeight = Math.max(1, Math.min(112, height - 8));
+      const yPosition = plotTop + (axisPrice === null ? 0 : plot.valToPos(axisPrice, "y"));
       const xLabelWidth = Math.max(1, Math.min(96, width - 8));
       const yLabelWidth = Math.max(1, Math.min(72, width - 8));
 
       setCursorReadout({
         time: axisTime,
         price: axisPrice,
-        sampleTime: sampledTime,
-        samples,
-        tooltipLeft: clampPosition(xPosition + 12, tooltipWidth, width),
-        tooltipTop: clampPosition(yPosition - tooltipHeight - 10, tooltipHeight, height),
         xLabelLeft: clampPosition(xPosition - xLabelWidth / 2, xLabelWidth, width),
         xLabelTop: clampPosition(plotTop + plot.over.clientHeight - 24, 20, height),
         yLabelLeft: clampPosition(
@@ -456,6 +696,7 @@ export function PriceChart({
             stroke: s.color,
             width: 2,
             points: { show: true },
+            spanGaps: true,
             paths: steppedPaths,
             value: (_u: uPlot, value: number | null) => (value == null ? "" : formatPercent(value)),
           })),
@@ -475,6 +716,7 @@ export function PriceChart({
     );
 
     plotRef.current = plot;
+    cursorRefreshRef.current = updateCursorReadout;
     const resizeObserver = new ResizeObserver(([entry]) => {
       const nextWidth = Math.max(Math.floor(entry.contentRect.width), 1);
       plot.setSize({ width: nextWidth, height: CHART_HEIGHT });
@@ -486,6 +728,7 @@ export function PriceChart({
       resizeObserver.disconnect();
       plot.destroy();
       if (plotRef.current === plot) plotRef.current = null;
+      if (cursorRefreshRef.current === updateCursorReadout) cursorRefreshRef.current = null;
       if (resizeObserverRef.current === resizeObserver) resizeObserverRef.current = null;
       if (markerRefreshRef.current) markerRefreshRef.current = null;
     };
@@ -497,13 +740,14 @@ export function PriceChart({
     if (xScale) {
       plotRef.current.setScale("x", xScale);
     }
+    cursorRefreshRef.current?.(plotRef.current);
   }, [chartData, hasChartData, xScale]);
 
   useEffect(() => {
     const plot = plotRef.current;
     const region = chartRegionRef.current;
     if (!plot || !region || !hasChartData) {
-      setPositionedCommentClusters([]);
+      setPositionedCommentGroups([]);
       return;
     }
 
@@ -512,51 +756,32 @@ export function PriceChart({
       const overRect = currentPlot.over.getBoundingClientRect();
       const offsetLeft = overRect.left - regionRect.left;
       const offsetTop = overRect.top - regionRect.top;
-      const laneRightEdges = Array<number>(COMMENT_MARKER_LANES).fill(Number.NEGATIVE_INFINITY);
-      const positioned: Array<PositionedCommentCluster & { lane: number }> = [];
+      const positioned: PositionedCommentGroup[] = [];
+      const regionWidth = measuredRegionSize(region, "width", 320);
+      const regionHeight = measuredRegionSize(region, "height", CHART_HEIGHT);
       for (const group of commentGroupResult.groups) {
         const plotLeft = currentPlot.valToPos(group.timestamp, "x");
+        const plotTop = currentPlot.valToPos(group.price, "y");
+        const anchorLeft = offsetLeft + plotLeft;
+        const anchorTop = offsetTop + plotTop;
+        const bodyPosition = chooseMarkerBodyPosition(
+          anchorLeft,
+          anchorTop,
+          regionWidth,
+          regionHeight,
+          positioned,
+        );
         const positionedGroup: PositionedCommentGroup = {
           ...group,
           plotLeft,
-          left: clampPosition(
-            offsetLeft + plotLeft - 12,
-            24,
-            measuredRegionSize(region, "width", 320),
-          ),
-          top: 0,
+          plotTop,
+          anchorLeft,
+          anchorTop,
+          ...bodyPosition,
         };
-        const lane = laneRightEdges.findIndex(
-          (rightEdge) => plotLeft - rightEdge >= COMMENT_MARKER_SPACING,
-        );
-        if (lane < 0) {
-          const nearestCluster = positioned.reduce((nearest, cluster) => {
-            const clusterX = cluster.groups[0].plotLeft;
-            return Math.abs(plotLeft - clusterX) < Math.abs(plotLeft - nearest.groups[0].plotLeft)
-              ? cluster
-              : nearest;
-          });
-          nearestCluster.groups.push(positionedGroup);
-          positionedGroup.top = nearestCluster.top;
-          laneRightEdges[nearestCluster.lane] = plotLeft + COMMENT_MARKER_SPACING;
-          continue;
-        }
-        laneRightEdges[lane] = plotLeft + COMMENT_MARKER_SPACING;
-        const markerWidth = 24;
-        positionedGroup.top = offsetTop + 4 + lane * COMMENT_MARKER_SPACING;
-        positioned.push({
-          id: group.timestamp,
-          groups: [positionedGroup],
-          left: clampPosition(
-            offsetLeft + plotLeft - markerWidth / 2,
-            markerWidth,
-            measuredRegionSize(region, "width", 320),
-          ),
-          top: positionedGroup.top,
-          lane,
-        });
+        positioned.push(positionedGroup);
       }
-      setPositionedCommentClusters(positioned);
+      setPositionedCommentGroups(positioned);
     };
 
     markerRefreshRef.current = refreshPositions;
@@ -567,7 +792,18 @@ export function PriceChart({
   }, [commentGroupResult, hasChartData, seriesSignature, xScale]);
 
   useEffect(() => {
-    if (activeCommentClusterId === null) return;
+    if (
+      activeCommentGroupId === null ||
+      positionedCommentGroups.some((group) => group.id === activeCommentGroupId)
+    ) {
+      return;
+    }
+    pinnedCommentGroupIdRef.current = null;
+    setActiveCommentGroupId(null);
+  }, [activeCommentGroupId, positionedCommentGroups]);
+
+  useEffect(() => {
+    if (activeCommentGroupId === null) return;
     const handleOutsidePointer = (event: PointerEvent) => {
       const target = event.target;
       if (!(target instanceof Node)) return;
@@ -590,7 +826,7 @@ export function PriceChart({
       document.removeEventListener("pointerdown", handleOutsidePointer, true);
       document.removeEventListener("keydown", handleEscape, true);
     };
-  }, [activeCommentClusterId]);
+  }, [activeCommentGroupId]);
 
   useEffect(
     () => () => {
@@ -637,60 +873,14 @@ export function PriceChart({
             {cursorReadout && (
               <>
                 <div
-                  data-testid="price-chart-cursor-tooltip"
-                  role="tooltip"
-                  aria-hidden={activeCommentGroup !== undefined}
-                  className={`absolute z-10 max-h-28 overflow-y-auto rounded-md border border-slate-200 bg-white/95 p-2 text-xs text-slate-700 shadow-md dark:border-slate-600 dark:bg-slate-800/95 dark:text-slate-100 ${activeCommentGroup ? "hidden" : ""}`}
-                  style={{
-                    left: cursorReadout.tooltipLeft,
-                    top: cursorReadout.tooltipTop,
-                    width: Math.max(1, Math.min(240, chartRegionWidth - 8)),
-                    pointerEvents: "none",
-                  }}
-                >
-                  <div>
-                    <span className="font-semibold">{t("market.chartCursorTime")}:</span>{" "}
-                    {formatChartTime(cursorReadout.time, locale)}
-                  </div>
-                  <div>
-                    <span className="font-semibold">{t("market.chartCursorPrice")}:</span>{" "}
-                    {formatPercent(cursorReadout.price)}
-                  </div>
-                  {cursorReadout.samples.length === 0 ? (
-                    <p className="mt-1 text-slate-500 dark:text-slate-400">
-                      {t("market.chartNoSampleAtCursor")}
-                    </p>
-                  ) : (
-                    <div className="mt-1 border-t border-slate-200 pt-1 dark:border-slate-600">
-                      <div className="text-slate-500 dark:text-slate-400">
-                        {t("market.chartSampledTime")}:{" "}
-                        {formatChartTime(cursorReadout.sampleTime, locale)}
-                      </div>
-                      {cursorReadout.samples.map((sample, index) => (
-                        <div
-                          key={`${sample.label}:${index}`}
-                          className="flex items-center justify-between gap-2"
-                        >
-                          <span className="truncate">
-                            {sample.label || t("market.chartSampledPrice")}:{" "}
-                          </span>
-                          <span className="shrink-0 font-semibold" style={{ color: sample.color }}>
-                            {formatPercent(sample.value)}
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-                <div
                   data-testid="price-chart-x-axis-cursor-label"
                   aria-hidden="true"
                   className="pointer-events-none absolute z-10 rounded bg-slate-700 px-1.5 py-0.5 text-[10px] text-white shadow"
                   style={{ left: cursorReadout.xLabelLeft, top: cursorReadout.xLabelTop }}
                 >
-                  {formatChartTime(cursorReadout.time, locale)}
+                  {formatChartTime(cursorReadout.time, locale, chartTimeframe)}
                 </div>
-                {!activeCommentGroup && (
+                {!isCategorical && cursorReadout.price !== null && (
                   <div
                     data-testid="price-chart-y-axis-cursor-label"
                     aria-hidden="true"
@@ -708,60 +898,71 @@ export function PriceChart({
               aria-label={t("market.chartComments")}
               className="pointer-events-none absolute inset-0 z-20"
             >
-              {positionedCommentClusters.map((cluster) => {
-                const firstGroup = cluster.groups[0];
-                const label =
-                  cluster.groups.length === 1
-                    ? t("market.chartCommentMarker", {
-                        time: formatCommentTime(firstGroup.timestamp, locale),
-                        count: firstGroup.comments.length,
-                      })
-                    : t("market.chartCommentClusterMarker", {
-                        count: cluster.groups.length,
-                        start: formatCommentTime(firstGroup.timestamp, locale),
-                        end: formatCommentTime(
-                          cluster.groups[cluster.groups.length - 1].timestamp,
-                          locale,
-                        ),
-                      });
-                const expanded = activeCommentClusterId === cluster.id;
+              <svg
+                data-testid="price-chart-comment-tails"
+                aria-hidden="true"
+                className="pointer-events-none absolute inset-0 h-full w-full overflow-visible"
+                viewBox={`0 0 ${chartRegionWidth} ${chartRegionHeight}`}
+                preserveAspectRatio="none"
+              >
+                {positionedCommentGroups.map((group) => (
+                  <path
+                    key={group.id}
+                    data-testid="price-chart-comment-tail"
+                    data-anchor-x={group.anchorLeft}
+                    data-anchor-y={group.anchorTop}
+                    data-series-id={group.seriesId}
+                    d={commentTailPath(group)}
+                    className="fill-slate-400/60 stroke-slate-600 dark:fill-slate-500/60 dark:stroke-slate-300"
+                    strokeWidth="1"
+                  />
+                ))}
+              </svg>
+              {positionedCommentGroups.map((group) => {
+                const markerText = t("market.chartCommentMarker", {
+                  time: formatCommentTime(group.timestamp, locale, chartTimeframe),
+                  count: group.comments.length,
+                });
+                const label = group.seriesLabel
+                  ? `${group.seriesLabel}: ${markerText}`
+                  : markerText;
+                const expanded = activeCommentGroupId === group.id;
                 return (
                   <button
-                    key={cluster.id}
+                    key={group.id}
                     type="button"
                     data-testid="price-chart-comment-marker"
                     data-chart-comment-marker="true"
+                    data-series-id={group.seriesId}
+                    data-anchor-x={group.anchorLeft}
+                    data-anchor-y={group.anchorTop}
                     aria-label={label}
                     aria-haspopup="dialog"
                     aria-expanded={expanded}
-                    aria-controls={`price-chart-comments-${cluster.id}`}
+                    aria-controls={`price-chart-comments-${group.id}`}
                     title={label}
-                    className="pointer-events-auto absolute flex h-5 min-w-5 items-center justify-center rounded-full border border-amber-700 bg-amber-100 px-1 text-[10px] font-bold leading-none text-amber-900 shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 dark:border-amber-300 dark:bg-amber-300 dark:text-slate-900"
-                    style={{ left: cluster.left, top: cluster.top }}
-                    onPointerEnter={(event) => activateCommentMarker(cluster, event.currentTarget)}
+                    className="pointer-events-auto absolute flex h-[18px] w-6 items-center justify-center rounded-full border border-slate-600 bg-slate-400/60 px-1 text-[10px] font-bold leading-none text-slate-950 shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 dark:border-slate-300 dark:bg-slate-500/60 dark:text-white"
+                    style={{ left: group.left, top: group.top }}
+                    onPointerEnter={(event) => activateCommentMarker(group, event.currentTarget)}
                     onPointerLeave={scheduleCommentPopoverDismiss}
                     onFocus={(event) => {
                       if (ignoreNextMarkerFocusRef.current) {
                         ignoreNextMarkerFocusRef.current = false;
                         return;
                       }
-                      activateCommentMarker(cluster, event.currentTarget);
+                      activateCommentMarker(group, event.currentTarget);
                     }}
                     onBlur={scheduleCommentPopoverDismiss}
                     onClick={(event) => {
-                      if (pinnedCommentClusterId === cluster.id) {
+                      if (pinnedCommentGroupIdRef.current === group.id) {
                         closeCommentPopover(false);
                       } else {
-                        setPinnedCommentClusterId(cluster.id);
-                        activateCommentMarker(cluster, event.currentTarget);
+                        pinnedCommentGroupIdRef.current = group.id;
+                        activateCommentMarker(group, event.currentTarget);
                       }
                     }}
                   >
-                    {cluster.groups.length > 1
-                      ? cluster.groups.length
-                      : firstGroup.comments.length > 1
-                        ? firstGroup.comments.length
-                        : "•"}
+                    {group.comments.length > 1 ? group.comments.length : "•"}
                   </button>
                 );
               })}
@@ -776,98 +977,115 @@ export function PriceChart({
                 </div>
               )}
             </div>
-            {activeCommentCluster && activeCommentGroup && activePositionedCommentGroup && (
-              <div
-                ref={commentPopoverRef}
-                id={`price-chart-comments-${activeCommentCluster.id}`}
-                data-testid="price-chart-comment-popover"
-                role="dialog"
-                aria-label={t("market.chartCommentsAt", {
-                  time: formatCommentTime(activeCommentGroup.timestamp, locale),
-                })}
-                className="absolute z-30 flex flex-col overflow-hidden rounded-lg border border-slate-200 bg-white text-slate-800 shadow-xl dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100"
-                style={{
-                  left: commentPopoverLeft,
-                  top: commentPopoverTop,
-                  width: commentPopoverWidth,
-                  maxHeight: commentPopoverHeight,
-                }}
-                onPointerEnter={() => {
-                  if (dismissTimerRef.current !== null)
-                    window.clearTimeout(dismissTimerRef.current);
-                  dismissTimerRef.current = null;
-                }}
-                onPointerLeave={scheduleCommentPopoverDismiss}
-                onFocusCapture={() => {
-                  if (dismissTimerRef.current !== null)
-                    window.clearTimeout(dismissTimerRef.current);
-                  dismissTimerRef.current = null;
-                }}
-                onBlurCapture={scheduleCommentPopoverDismiss}
-              >
-                <div className="flex items-start justify-between gap-2 border-b border-slate-200 px-3 py-2 dark:border-slate-600">
-                  <h4 className="text-xs font-semibold">
-                    {t("market.chartCommentsAt", {
-                      time: formatCommentTime(activeCommentGroup.timestamp, locale),
-                    })}
-                  </h4>
-                  <button
-                    type="button"
-                    className="shrink-0 rounded px-1 text-xs text-slate-500 hover:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:text-slate-300 dark:hover:bg-slate-700"
-                    onClick={() => closeCommentPopover(true)}
-                  >
-                    {t("common.close")}
-                  </button>
-                </div>
-                <div
-                  role="region"
-                  aria-label={t("market.chartCommentsAt", {
-                    time: formatCommentTime(activeCommentGroup.timestamp, locale),
-                  })}
-                  tabIndex={0}
-                  className="min-h-0 overflow-y-auto p-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-500 dark:focus-visible:ring-blue-300"
+            {activeCommentGroup && (
+              <>
+                <svg
+                  aria-hidden="true"
+                  className="pointer-events-none absolute inset-0 z-30 h-full w-full"
+                  viewBox={`0 0 ${chartRegionWidth} ${chartRegionHeight}`}
+                  preserveAspectRatio="none"
                 >
-                  {activeCommentCluster.groups.length > 1 && (
-                    <div
-                      role="group"
-                      aria-label={t("market.chartCommentTimes")}
-                      className="mb-3 flex flex-wrap gap-1 border-b border-slate-200 pb-2 dark:border-slate-600"
+                  <path
+                    data-testid="price-chart-comment-panel-tail"
+                    data-anchor-x={activeCommentGroup.anchorLeft}
+                    data-anchor-y={activeCommentGroup.anchorTop}
+                    d={commentTailPath(
+                      {
+                        ...activeCommentGroup,
+                        left: commentPopoverLeft,
+                        top: commentPopoverTop,
+                      },
+                      commentPopoverWidth,
+                      commentPopoverHeight,
+                    )}
+                    className="fill-white stroke-slate-200 dark:fill-slate-800 dark:stroke-slate-600"
+                  />
+                </svg>
+                <div
+                  ref={commentPopoverRef}
+                  id={`price-chart-comments-${activeCommentGroup.id}`}
+                  data-testid="price-chart-comment-popover"
+                  role="dialog"
+                  aria-label={t("market.chartCommentsAt", {
+                    time: formatCommentTime(activeCommentGroup.timestamp, locale, chartTimeframe),
+                  })}
+                  className="absolute z-30 flex flex-col overflow-hidden rounded-lg border border-slate-200 bg-white text-slate-800 shadow-xl dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100"
+                  style={{
+                    left: commentPopoverLeft,
+                    top: commentPopoverTop,
+                    width: commentPopoverWidth,
+                    height: commentPopoverHeight,
+                    maxHeight: commentPopoverHeight,
+                  }}
+                  onPointerEnter={() => {
+                    if (dismissTimerRef.current !== null)
+                      window.clearTimeout(dismissTimerRef.current);
+                    dismissTimerRef.current = null;
+                  }}
+                  onPointerLeave={scheduleCommentPopoverDismiss}
+                  onFocusCapture={() => {
+                    if (dismissTimerRef.current !== null)
+                      window.clearTimeout(dismissTimerRef.current);
+                    dismissTimerRef.current = null;
+                  }}
+                  onBlurCapture={scheduleCommentPopoverDismiss}
+                >
+                  <div className="flex items-center justify-between gap-2 px-3 pt-2">
+                    <time
+                      className="text-[11px] text-slate-500 dark:text-slate-400"
+                      dateTime={new Date(activeCommentGroup.timestamp * 1000).toISOString()}
                     >
-                      {activeCommentCluster.groups.map((group) => (
-                        <button
-                          key={group.timestamp}
-                          type="button"
-                          data-testid="price-chart-comment-time-choice"
-                          aria-pressed={group.timestamp === activeCommentGroup.timestamp}
-                          className="rounded bg-slate-100 px-1.5 py-1 text-[10px] text-slate-700 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:bg-slate-700 dark:text-slate-100"
-                          onClick={() => selectCommentTimestamp(group)}
+                      {formatCommentTime(activeCommentGroup.timestamp, locale, chartTimeframe)}
+                    </time>
+                    <button
+                      type="button"
+                      aria-label={t("common.close")}
+                      className="flex h-8 w-8 shrink-0 items-center justify-center rounded text-slate-500 hover:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:text-slate-300 dark:hover:bg-slate-700"
+                      onClick={() => closeCommentPopover(true)}
+                    >
+                      <X aria-hidden="true" className="h-4 w-4" />
+                    </button>
+                  </div>
+                  <div
+                    role="region"
+                    aria-label={t("market.chartCommentsAt", {
+                      time: formatCommentTime(activeCommentGroup.timestamp, locale, chartTimeframe),
+                    })}
+                    tabIndex={0}
+                    className="min-h-0 overflow-y-auto p-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-500 dark:focus-visible:ring-blue-300"
+                  >
+                    <ul className="space-y-3">
+                      {activeCommentGroup.comments.map((comment) => (
+                        <li
+                          key={comment.id}
+                          className="border-b border-slate-100 pb-2 last:border-0 last:pb-0 dark:border-slate-700"
                         >
-                          {formatCommentTime(group.timestamp, locale)}
-                        </button>
+                          <div className="mb-1 flex items-center justify-between gap-2 text-[11px] text-slate-500 dark:text-slate-400">
+                            <span
+                              className="truncate font-medium"
+                              data-testid="price-chart-comment-author"
+                              title={comment.userId}
+                            >
+                              {authorProfiles.get(comment.userId)?.displayName.trim() ||
+                                comment.userDisplayName}
+                            </span>
+                            <time className="shrink-0" dateTime={comment.timestamp}>
+                              {formatCommentTime(
+                                Math.floor(Date.parse(comment.timestamp) / 1000),
+                                locale,
+                                chartTimeframe,
+                              )}
+                            </time>
+                          </div>
+                          <p className="whitespace-pre-wrap break-words text-xs">
+                            {comment.content}
+                          </p>
+                        </li>
                       ))}
-                    </div>
-                  )}
-                  <ul className="space-y-3">
-                    {activeCommentGroup.comments.map((comment) => (
-                      <li
-                        key={comment.id}
-                        className="border-b border-slate-100 pb-2 last:border-0 last:pb-0 dark:border-slate-700"
-                      >
-                        <div className="mb-1 flex items-center justify-between gap-2 text-[11px] text-slate-500 dark:text-slate-400">
-                          <span className="truncate font-medium">{comment.userDisplayName}</span>
-                          <time className="shrink-0" dateTime={comment.timestamp}>
-                            {formatCommentTime(
-                              Math.floor(Date.parse(comment.timestamp) / 1000),
-                              locale,
-                            )}
-                          </time>
-                        </div>
-                        <p className="whitespace-pre-wrap break-words text-xs">{comment.content}</p>
-                      </li>
-                    ))}
-                  </ul>
+                    </ul>
+                  </div>
                 </div>
-              </div>
+              </>
             )}
           </>
         )}
@@ -886,7 +1104,9 @@ export function PriceChart({
                 className="font-medium"
                 labelClassName="text-slate-700 dark:text-slate-200"
               />
-              <span>{formatPercent(latest.value)}</span>
+              <span>
+                {latest.value === null ? t("trade.priceUnavailable") : formatPercent(latest.value)}
+              </span>
             </span>
           ))}
         </div>
@@ -911,7 +1131,7 @@ export function PriceChart({
           <button
             key={tf}
             onClick={() => onTimeframeChange?.(tf)}
-            className={`flex-1 py-1.5 text-xs font-medium rounded-md transition-colors ${
+            className={`flex-1 py-1.5 text-xs font-medium rounded-md transition-colors motion-reduce:transition-none ${
               chartTimeframe === tf
                 ? "bg-white dark:bg-slate-600 text-slate-900 dark:text-white shadow-sm"
                 : "text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300"

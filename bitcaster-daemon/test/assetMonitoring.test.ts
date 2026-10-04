@@ -76,6 +76,7 @@ test('native asset monitoring skips a complete report on duplicate metadata conf
 test('native asset monitoring submits after startup and each successful scoped commit', async () => {
   let onCommit: (() => void) | undefined
   let amount = 7
+  let accepted = 0
   const requests: unknown[] = []
   const monitoring = createDaemonAssetMonitoring({
     directory: '/profile-a',
@@ -86,6 +87,9 @@ test('native asset monitoring submits after startup and each successful scoped c
       submitAssetMonitoringReport: async (request) => {
         requests.push(request)
       },
+    },
+    onAccepted: () => {
+      accepted++
     },
     fetchImpl: async () => new Response(JSON.stringify({ markets: [] })),
     hasPendingSubmittedOrder: async () => false,
@@ -99,16 +103,60 @@ test('native asset monitoring submits after startup and each successful scoped c
   })
 
   monitoring.start()
-  await waitFor(() => requests.length === 1)
+  await waitFor(() => accepted === 1)
   amount = 8
   onCommit?.()
-  await waitFor(() => requests.length === 2)
+  await waitFor(() => accepted === 2)
   await new Promise((resolve) => setTimeout(resolve, 0))
   onCommit?.()
   await new Promise((resolve) => setTimeout(resolve, 5))
   assert.equal(requests.length, 2)
+  assert.equal(accepted, 2)
   monitoring.stop()
 })
+
+for (const outcome of ['accepted', 'refused', 'stopped'] as const) {
+  test(`a ${outcome} report notifies the live view only after current-profile acceptance`, async () => {
+    let finish!: () => void
+    const pending = new Promise<void>((resolve) => {
+      finish = resolve
+    })
+    let submitted = false
+    let accepted = 0
+    const monitoring = createDaemonAssetMonitoring({
+      directory: '/profile-a',
+      scopeId,
+      walletId: 'b'.repeat(64),
+      engineBaseUrl: 'https://engine.example',
+      remote: {
+        submitAssetMonitoringReport: async () => {
+          submitted = true
+          await pending
+          if (outcome === 'refused') throw new Error('fixture refusal')
+        },
+      },
+      onAccepted: () => {
+        accepted++
+      },
+      fetchImpl: async () => new Response(JSON.stringify({ markets: [] })),
+      hasPendingSubmittedOrder: async () => false,
+      storage: monitoringStorage(),
+      subscribeToCommits: () => () => {},
+    })
+    try {
+      monitoring.start()
+      await waitFor(() => submitted)
+      assert.equal(accepted, 0)
+      if (outcome === 'stopped') monitoring.stop()
+      finish()
+      await new Promise<void>((resolve) => setImmediate(resolve))
+      assert.equal(accepted, outcome === 'accepted' ? 1 : 0)
+    } finally {
+      finish()
+      monitoring.stop()
+    }
+  })
+}
 
 test('native asset monitoring ignores rolled-back changes and stops future commit activity', async () => {
   let onCommit: (() => void) | undefined
@@ -141,9 +189,10 @@ test('native asset monitoring ignores rolled-back changes and stops future commi
   assert.equal(requests, 1)
 })
 
-function row(overrides: { proofId: string; amount: number; state: string }) {
+function row(overrides: { proofId: string; amount?: number; state?: string; unit?: string }) {
   return {
-    ...overrides,
+    amount: 7,
+    state: 'available',
     normalizedMint: 'https://mint.example',
     unit: 'msat',
     keysetId: `00${'a'.repeat(14)}`,
@@ -153,6 +202,7 @@ function row(overrides: { proofId: string; amount: number; state: string }) {
     source: 'target',
     selectability: null,
     nut07State: null,
+    ...overrides,
   }
 }
 

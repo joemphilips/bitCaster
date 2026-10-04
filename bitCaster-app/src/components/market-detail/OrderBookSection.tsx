@@ -160,8 +160,7 @@ export function OrderBookSection({
             <span className="text-xs font-mono font-medium text-slate-700 dark:text-slate-300">
               {spread === null
                 ? t("orderBook.spreadUnavailable")
-                : t("orderBook.spreadPoints", {
-                    count: (spread / divisibility) * 100,
+                : t("orderBook.spreadPercentage", {
                     value: ((spread / divisibility) * 100).toLocaleString(undefined, {
                       maximumFractionDigits: 3,
                     }),

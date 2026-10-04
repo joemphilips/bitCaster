@@ -4,6 +4,7 @@ import {
   updateNativeConfig,
   type NativeConfig,
 } from '@bitcaster-market/daemon/nativeConfig'
+import { normalizeEndpointUrl } from '@bitcaster-market/client-sdk'
 
 export interface CliConfig {
   engineUrl?: string
@@ -28,12 +29,19 @@ export function updateConfig(update: (current: CliConfig) => CliConfig): CliConf
 }
 
 function toNativeConfig(current: NativeConfig, update: CliConfig): NativeConfig {
+  const mintUrl =
+    update.mintUrl === undefined ? undefined : normalizeEndpointUrl(update.mintUrl, 'mint URL')
   return {
     ...current,
     daemon: {
       ...current.daemon,
       ...(update.engineUrl === undefined ? {} : { engineUrl: update.engineUrl }),
-      ...(update.mintUrl === undefined ? {} : { mintUrl: update.mintUrl }),
+      ...(mintUrl === undefined
+        ? {}
+        : {
+            mintUrl,
+            mintUrls: [...new Set([...current.daemon.mintUrls, mintUrl])],
+          }),
       assetMonitoringEnabled: update.assetMonitoringEnabled,
     },
     cli: { trustedEngineUrls: update.trustedEngineUrls },

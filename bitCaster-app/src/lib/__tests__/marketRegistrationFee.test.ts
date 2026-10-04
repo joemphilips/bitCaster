@@ -57,8 +57,14 @@ vi.mock("@/stores/proof-db", () => ({
     mocks.getBoundedCanonicalRegularProofs(...args),
 }));
 
-const { registerConditionWithFee, registrationFeeForPolicy } =
-  await import("../marketRegistrationFee");
+const {
+  registerConditionWithFee,
+  registrationFeeForPolicy,
+  prepareConditionRegistrationFee,
+  deliverPreparedConditionRegistrationFee,
+  deriveConditionRegistrationFeeOperationRef,
+  confirmConditionRegistrationFee,
+} = await import("../marketRegistrationFee");
 
 const request = {
   tags: [["title", "Registration fee"]],
@@ -147,8 +153,18 @@ describe("registerConditionWithFee", () => {
     mocks.getWalletForUnit.mockResolvedValue(mocks.wallet);
     mocks.readOutgoing.mockResolvedValue(null);
     mocks.getBoundedCanonicalRegularProofs.mockResolvedValue([registrationProof()]);
-    mocks.recoverFundedAsset.mockResolvedValue({ kind: "ready", plan: { kind: "ready" } });
-    mocks.executeOutgoing.mockResolvedValue(transfer());
+    mocks.recoverFundedAsset.mockResolvedValue({
+      kind: "ready",
+      plan: { kind: "ready" },
+    });
+    mocks.executeOutgoing.mockImplementation(async ({ transfer: requested }) =>
+      transfer({
+        transferId: requested.transferId,
+        mintUrl: requested.mintUrl,
+        unit: requested.unit,
+        requestedAmount: requested.requestedAmount,
+      }),
+    );
     mocks.classifyBearer.mockResolvedValue(transfer({ deliveryState: "bearer-spent" }));
     mocks.registerCondition.mockResolvedValue({
       condition_id: "cond-1",
@@ -190,7 +206,11 @@ describe("registerConditionWithFee", () => {
         {
           defaultKeysetCreation: "one-vs-rest",
           registrationFees: [
-            { unit: "msat", registrationFeeBase: 10000, registrationFeePerKeyset: 10000 },
+            {
+              unit: "msat",
+              registrationFeeBase: 10000,
+              registrationFeePerKeyset: 10000,
+            },
           ],
         },
         "msat",
@@ -229,7 +249,9 @@ describe("registerConditionWithFee", () => {
     expect(submitted).not.toHaveProperty("outputs");
     expect(mocks.classifyBearer).toHaveBeenCalledWith(
       expect.objectContaining({
-        transfer: expect.objectContaining({ transferId: "ctf-condition-registration:test" }),
+        transfer: expect.objectContaining({
+          transferId: outgoing.transfer.transferId,
+        }),
       }),
     );
   });
@@ -412,7 +434,56 @@ describe("registerConditionWithFee", () => {
     expect(mocks.readOutgoing).toHaveBeenCalledOnce();
     expect(mocks.getWalletForUnit).not.toHaveBeenCalled();
     expect(mocks.executeOutgoing).not.toHaveBeenCalled();
-    expect(mocks.registerCondition).toHaveBeenCalledWith(request);
+    expect(mocks.registerCondition).toHaveBeenCalledWith(request, {
+      mintUrl: "https://mint.example.test",
+    });
+  });
+
+  it("retains the same exact fee operation before separate registration delivery", async () => {
+    const mintUrl = "https://mint.example.test";
+    const operationRef = await deriveConditionRegistrationFeeOperationRef(request, 3);
+    const input = { mintUrl, request, requiredFeeSubunits: 3, operationRef };
+    const prepared = await prepareConditionRegistrationFee(input);
+    expect(mocks.registerCondition).not.toHaveBeenCalled();
+    expect(mocks.executeOutgoing.mock.calls[0][0].transfer.transferId).toBe(operationRef);
+    await deliverPreparedConditionRegistrationFee(prepared, input);
+    expect(mocks.registerCondition.mock.calls[0][0].fee[0].secret).toBe(
+      transfer().token!.proofs[0].secret,
+    );
+    expect(mocks.registerCondition.mock.calls[0][1]).toEqual({ mintUrl });
+    await expect(
+      deliverPreparedConditionRegistrationFee(prepared, {
+        ...input,
+        mintUrl: "https://different-mint.example",
+      }),
+    ).rejects.toThrow("conflicts");
+    await expect(
+      deliverPreparedConditionRegistrationFee(prepared, {
+        ...input,
+        request: { ...request, tags: [["title", "Changed"]] },
+      }),
+    ).rejects.toThrow("conflicts");
+    expect(mocks.registerCondition).toHaveBeenCalledOnce();
+    await expect(
+      prepareConditionRegistrationFee({ ...input, operationRef: "changed" }),
+    ).rejects.toThrow("conflicts");
+    expect(mocks.executeOutgoing).toHaveBeenCalledOnce();
+  });
+
+  it("reconciles the retained spent operation without preparing a replacement", async () => {
+    const operationRef = await deriveConditionRegistrationFeeOperationRef(request, 3);
+    mocks.readOutgoing.mockResolvedValue(
+      transfer({ transferId: operationRef, deliveryState: "bearer-spent" }),
+    );
+    await confirmConditionRegistrationFee({
+      mintUrl: "https://mint.example.test",
+      request,
+      requiredFeeSubunits: 3,
+      operationRef,
+    });
+    expect(mocks.executeOutgoing).not.toHaveBeenCalled();
+    expect(mocks.getWalletForUnit).not.toHaveBeenCalled();
+    expect(mocks.registerCondition).not.toHaveBeenCalled();
   });
 
   it("passes the durable coordinator callbacks without a parallel registration-fee state machine", async () => {

@@ -479,7 +479,7 @@ function factsForAuthority(
     },
     horizon: { notBeforeMs: null, notAfterMs: null, safetyMarginMs: 0 },
     hasOutputs: outputIds.size > 0,
-    inputKeysetRequirement: 'required',
+    inputKeysetRequirement: operation.kind === 'wallet-mint' ? 'none' : 'required',
     keysets: authority.keysets.map((keyset) => ({
       keysetId: keyset.id,
       unit: keyset.unit,
@@ -710,6 +710,7 @@ function assertExactGroups(
 function assertSupportedOperation(operation: DurableCustodyProofOperationInput): void {
   if (
     (operation.kind !== 'wallet-send' &&
+      operation.kind !== 'wallet-mint' &&
       operation.kind !== 'wallet-melt' &&
       operation.kind !== 'wallet-receive' &&
       operation.kind !== 'conditional-keyset-swap' &&
@@ -721,7 +722,9 @@ function assertSupportedOperation(operation: DurableCustodyProofOperationInput):
       operation.kind !== 'proof-consolidation' &&
       operation.kind !== 'ctf-redeem' &&
       operation.kind !== 'ctf-range-refund') ||
-    operation.inputs.length === 0 ||
+    (operation.kind === 'wallet-mint'
+      ? operation.inputs.length !== 0
+      : operation.inputs.length === 0) ||
     (operation.kind !== 'wallet-melt' &&
       Object.values(operation.outputs).every((outputs) => outputs.length === 0))
   ) {

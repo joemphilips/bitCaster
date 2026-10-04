@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import type { Server } from 'node:http'
+import { createOrderTimelineStderrSink } from './orderTimeline.ts'
 import { randomUUID } from 'node:crypto'
 import { constants } from 'node:fs'
 import { open } from 'node:fs/promises'
@@ -10,10 +11,17 @@ import {
   isLoopbackHttpUrl,
 } from '@bitcaster-market/client-sdk'
 import { assertDaemonProfileStorageComplete, profileDir } from './profile.ts'
-import { createDaemonSecrets, createDaemonSecretsFromImport } from './secrets.ts'
+import {
+  createDaemonSecrets,
+  createDaemonSecretsFromImport,
+  readSelectedDaemonSigner,
+  hasUnfinishedDaemonAccountWork,
+} from './secrets.ts'
 import { bootstrapFreshDaemonProfile } from './profileBootstrap.ts'
 import type { CtfRangeRecoveryLoop } from './ctfRangeRecoveryLoop.ts'
 import type { NonRetirementCustodyRecoveryLoop } from './startupRecovery.ts'
+import type { NativeWalletPaymentApproval } from './nativeWalletPaymentOps.ts'
+import type { NativePaymentRequestService } from './nativePaymentRequestService.ts'
 import { configureDataDir } from './dataDir.ts'
 import { freezeNativeConfigAtStartup, readNativeConfig } from './nativeConfig.ts'
 
@@ -42,6 +50,7 @@ switch (command) {
       walletSeedHex: secrets.walletSeedHex,
       nostrSecretKeyHex: secrets.nostrSecretKeyHex,
       nostrPublicKeyHex: secrets.nostrPublicKeyHex,
+      nativeOracleNonceSeedHex: secrets.nativeOracleNonceSeedHex,
       passphrase: process.env.BITCASTER_DAEMON_PASSPHRASE || undefined,
     })
     process.stdout.write('bitcaster-daemon profile initialized\n')
@@ -55,21 +64,32 @@ switch (command) {
     break
   }
   case 'run': {
+    const observeOrderTimeline = createOrderTimelineStderrSink(process.stderr)
     const nativeConfig = freezeNativeConfigAtStartup().config
     await assertDaemonProfileStorageComplete()
     const { acquireDaemonRunLock } = await import('./runLock.ts')
     const { startDaemonServer } = await import('./server.ts')
     const { SignalROrderLifecycleConnection } = await import('./orderHubConnection.ts')
     const { SignalRMarketHubConnection } = await import('./marketHubConnection.ts')
+    const { createMarketWatch } = await import('./marketWatch.ts')
+    const { createLikedMarketWatch } = await import('./likedMarketWatch.ts')
+    const { createWalletWatch } = await import('./walletWatch.ts')
+    const { subscribeToDaemonWalletHoldingsCommits } = await import('./stateSqlite.ts')
     const { readProfile } = await import('./profile.ts')
     const { readSecrets } = await import('./secrets.ts')
     const {
       recoverPreparedWalletSends,
       recoverDurableWalletReceives,
+      recoverDurableWalletProofImports,
       recoverDurableOutgoingCashuTransfers,
     } = await import('./walletOps.ts')
+    const { createNativeLightningOps } = await import('./nativeLightningOps.ts')
+    const { NativeWalletPaymentOps } = await import('./nativeWalletPaymentOps.ts')
+    const { createNativeWalletPaymentRecoveryPager } =
+      await import('./nativeWalletPaymentRecovery.ts')
     const { recoverWalletProofConsolidations } = await import('./walletProofConsolidation.ts')
     const { recoverCompleteSetSplits } = await import('./completeSetConversion.ts')
+    const { recoverDaemonPositionClaims } = await import('./nativePositionClaim.ts')
     const {
       composeStartupCustodyRecovery,
       createCustodyReadinessTracker,
@@ -82,10 +102,12 @@ switch (command) {
       await import('./managedConditionRetirement.ts')
     const { BitcasterEngineClient } = await import('@bitcaster-market/client-sdk/engineClient')
     const { signNip98 } = await import('./nostrAuth.ts')
-    const { ensureState } = await import('./state.ts')
+    const { ensureState, listLocalOrders } = await import('./state.ts')
+    const { readDaemonWalletBalance } = await import('./walletBalance.ts')
     const runLock = await acquireDaemonRunLock()
     const profile = await readProfile()
     const secrets = await readSecrets()
+    const signerEnabled = (await readSelectedDaemonSigner()).enabled
     if (!profile || !secrets) {
       await runLock.release()
       throw new Error('daemon profile storage is incomplete')
@@ -117,6 +139,8 @@ switch (command) {
     let nonRetirementRecoveryLoop: NonRetirementCustodyRecoveryLoop | undefined
     let assetMonitoring: { start(): void; stop(): void } | undefined
     let assetMonitoringStarting = false
+    let nativePaymentRequests: NativePaymentRequestService | undefined
+    const liveViewLifetime = new AbortController()
     let retirementRetryTimer: NodeJS.Timeout | undefined
     let leaseFailure: Error | undefined
     let shutdown: ((reason: string, exitCode?: number) => Promise<void>) | undefined
@@ -124,14 +148,45 @@ switch (command) {
       if (leaseFailure !== undefined) throw leaseFailure
       return fence
     }
+    const nativeLightningOps = createNativeLightningOps({
+      directory: profileDir(),
+      mintUrl: profile.mintUrl,
+      walletSeedHex: secrets.walletSeedHex,
+      getCustodyFence: currentFence,
+    })
+    const nativeWalletPaymentService = new NativeWalletPaymentOps({
+      profile,
+      secrets,
+      getFence: currentFence,
+      deps: { getCustodyFence: currentFence },
+    })
+    const paymentRecovery = createNativeWalletPaymentRecoveryPager((input) =>
+      nativeWalletPaymentService.recoverActivePage(input),
+    )
+    const nativeWalletPaymentOps = {
+      quote: (input: { readonly invoice: string }) => nativeWalletPaymentService.quote(input),
+      pay: async (input: NativeWalletPaymentApproval) => {
+        try {
+          return await nativeWalletPaymentService.pay(input)
+        } finally {
+          paymentRecovery.restart()
+        }
+      },
+      status: (input: { readonly operationId: string }) => nativeWalletPaymentService.status(input),
+      recoverPage: paymentRecovery.recoverPage,
+    }
     let resourcesReleased = false
     const releaseResources = async () => {
       if (resourcesReleased) return
       resourcesReleased = true
+      liveViewLifetime.abort()
       renewal?.stop()
       rangeRecoveryLoop?.stop()
       nonRetirementRecoveryLoop?.stop()
       assetMonitoring?.stop()
+      await nativePaymentRequests?.stop().catch(() => {
+        process.stderr.write('native payment request shutdown failed\n')
+      })
       if (retirementRetryTimer !== undefined) clearTimeout(retirementRetryTimer)
       try {
         await releaseCustodyScopeLease(profileDir(), fence, Date.now())
@@ -152,8 +207,16 @@ switch (command) {
     })
     const retirementEngine = new BitcasterEngineClient({
       baseUrl: profile.engineBaseUrl,
-      authorization: ({ url, method, bodyText, payloadHash }) =>
-        signNip98({ privateKeyHex: secrets.nostrSecretKeyHex }, url, method, bodyText, payloadHash),
+      authorization: signerEnabled
+        ? ({ url, method, bodyText, payloadHash }) =>
+            signNip98(
+              { privateKeyHex: secrets.nostrSecretKeyHex },
+              url,
+              method,
+              bodyText,
+              payloadHash,
+            )
+        : undefined,
     })
     const runAutomaticRetirementScan = async () => {
       const resumed = await resumeDaemonConditionRetirements({
@@ -162,7 +225,8 @@ switch (command) {
         fence: currentFence(),
         walletDependencies: { getCustodyFence: currentFence },
       })
-      if (!nativeConfig.daemon.autoRetireResolvedConditionInventory) return resumed
+      if (!signerEnabled || !nativeConfig.daemon.autoRetireResolvedConditionInventory)
+        return resumed
       const discovered = await retireResolvedDaemonConditions({
         profile,
         secrets,
@@ -176,6 +240,7 @@ switch (command) {
       await runAutomaticRetirementScan()
     }
     const orderHub = new SignalROrderLifecycleConnection({
+      observeOrderTimeline,
       engineBaseUrl: profile.engineBaseUrl,
       nostrSecretKeyHex: secrets.nostrSecretKeyHex,
       onOrderLifecycleChanged: () => {
@@ -191,6 +256,8 @@ switch (command) {
         process.stderr.write(`Order lifecycle event error: ${err.message}\n`)
       },
     })
+    let marketWatch: ReturnType<typeof createMarketWatch> | undefined
+    let walletWatch: ReturnType<typeof createWalletWatch> | undefined
     const marketHub = new SignalRMarketHubConnection({
       engineBaseUrl: profile.engineBaseUrl,
       nostrSecretKeyHex: secrets.nostrSecretKeyHex,
@@ -204,26 +271,61 @@ switch (command) {
         await wakeManagedConditionRetirements()
       },
       onReconnected: async () => {
+        marketWatch?.reconnected()
+        walletWatch?.reconnected()
         await wakeManagedConditionRetirements()
+      },
+      onMarketInvalidated: async (conditionId) => {
+        marketWatch?.invalidate(conditionId)
+        walletWatch?.invalidate(conditionId)
+      },
+      onDisconnected: () => {
+        marketWatch?.disconnected()
+        walletWatch?.disconnected()
       },
       onError: (err: Error) => {
         process.stderr.write(`MarketHub event error: ${err.message}\n`)
       },
     })
+    marketWatch = createMarketWatch({ hub: marketHub, engine: retirementEngine })
+    const likedMarketWatch = createLikedMarketWatch({
+      marketWatch,
+      assertCanWatch: () => {
+        if (!signerEnabled) throw new Error('Application signer is disconnected.')
+      },
+    })
+    walletWatch = createWalletWatch({
+      hub: marketHub,
+      readLocal: async (signal) => {
+        signal.throwIfAborted()
+        const localHoldings = await readDaemonWalletBalance(profileDir())
+        signal.throwIfAborted()
+        return {
+          localHoldings,
+          monitoringEnabled: signerEnabled && nativeConfig.daemon.assetMonitoringEnabled,
+        }
+      },
+      readPortfolio: (signal) => retirementEngine.getPortfolio({ walletId, pageSize: 200 }, signal),
+      subscribeToLocalChanges: (callback) =>
+        subscribeToDaemonWalletHoldingsCommits(profileDir(), callback),
+    })
     try {
       const rangeOrderCoordinator = new DaemonCtfRangeOrderCoordinator(profileDir(), currentFence, {
+        observeOrderTimeline,
         allowInsecureLoopbackHttp: isLoopbackHttpUrl(profile.mintUrl),
       })
       const rangeRecoveryClient = new BitcasterEngineClient({
         baseUrl: profile.engineBaseUrl,
-        authorization: ({ url, method, bodyText, payloadHash }) =>
-          signNip98(
-            { privateKeyHex: secrets.nostrSecretKeyHex },
-            url,
-            method,
-            bodyText,
-            payloadHash,
-          ),
+        authorization: signerEnabled
+          ? ({ url, method, bodyText, payloadHash }) =>
+              signNip98(
+                { privateKeyHex: secrets.nostrSecretKeyHex },
+                url,
+                method,
+                bodyText,
+                payloadHash,
+              )
+          : undefined,
       })
       const logRangeRecovery = (result: {
         readonly recovered: readonly string[]
@@ -238,24 +340,39 @@ switch (command) {
           )
         }
       }
-      const recoverRangeOrders = () =>
-        rangeOrderCoordinator.recover(secrets.walletSeedHex, rangeRecoveryClient)
+      const recoverRangeOrders = async (): Promise<
+        import('./ctfRangeOrderCoordinator.ts').DaemonCtfRangeRecoveryResult
+      > =>
+        signerEnabled
+          ? rangeOrderCoordinator.recover(secrets.walletSeedHex, rangeRecoveryClient)
+          : {
+              recovered: [],
+              pending: (await hasUnfinishedDaemonAccountWork())
+                ? [
+                    {
+                      operationId: 'application-account-recovery',
+                      error: 'Application signer is disconnected.',
+                    },
+                  ]
+                : [],
+            }
       const initialRangeRecovery = await recoverRangeOrders()
       logRangeRecovery(initialRangeRecovery)
-      rangeRecoveryLoop = createCtfRangeRecoveryLoop({
-        recover: recoverRangeOrders,
-        onResult: (result) => {
-          logRangeRecovery(result)
-          void wakeManagedConditionRetirements().catch((error: unknown) => {
-            const message = error instanceof Error ? error.message : String(error)
-            process.stderr.write(`Condition retirement wake failed: ${message}\n`)
-          })
-        },
-        onError: (error: Error) => {
-          process.stderr.write(`Range recovery sweep failed: ${error.message}\n`)
-        },
-      })
-      rangeRecoveryLoop.accept(initialRangeRecovery)
+      if (signerEnabled)
+        rangeRecoveryLoop = createCtfRangeRecoveryLoop({
+          recover: recoverRangeOrders,
+          onResult: (result) => {
+            logRangeRecovery(result)
+            void wakeManagedConditionRetirements().catch((error: unknown) => {
+              const message = error instanceof Error ? error.message : String(error)
+              process.stderr.write(`Condition retirement wake failed: ${message}\n`)
+            })
+          },
+          onError: (error: Error) => {
+            process.stderr.write(`Range recovery sweep failed: ${error.message}\n`)
+          },
+        })
+      rangeRecoveryLoop?.accept(initialRangeRecovery)
       const recoverNonRetirementCustody = async () => {
         const consolidationRecovery = await recoverWalletProofConsolidations({
           secrets,
@@ -267,48 +384,98 @@ switch (command) {
         const receiveRecovery = await recoverDurableWalletReceives(secrets, {
           getCustodyFence: currentFence,
         })
+        const importRecovery = await recoverDurableWalletProofImports(secrets, {
+          getCustodyFence: currentFence,
+        })
         const outgoingRecovery = await recoverDurableOutgoingCashuTransfers(
           secrets,
           {
             getCustodyFence: currentFence,
           },
-          {
-            client: rangeRecoveryClient,
-            accountSubject: secrets.nostrPublicKeyHex,
-          },
+          signerEnabled
+            ? {
+                client: rangeRecoveryClient,
+                accountSubject: secrets.nostrPublicKeyHex,
+              }
+            : undefined,
         )
         const completeSetRecovery = await recoverCompleteSetSplits({
           secrets,
           deps: { getCustodyFence: currentFence },
         })
+        const invoiceRecovery = await nativeLightningOps.recoverPage()
+        const positionClaimRecovery = await recoverDaemonPositionClaims({
+          profile,
+          secrets,
+          fence: currentFence(),
+          walletDependencies: { getCustodyFence: currentFence },
+        })
+        const paymentRecoveryPage = await nativeWalletPaymentOps.recoverPage()
+        const accountRecoveryPending = !signerEnabled && (await hasUnfinishedDaemonAccountWork())
         const recovery = composeStartupCustodyRecovery([
           consolidationRecovery,
           walletRecovery,
           receiveRecovery,
+          importRecovery,
           outgoingRecovery,
           completeSetRecovery,
+          positionClaimRecovery,
+          invoiceRecovery.recovery,
+          paymentRecoveryPage.recovery,
+          ...(accountRecoveryPending
+            ? [
+                {
+                  recovered: [],
+                  pending: [
+                    {
+                      operationId: 'application-account-recovery',
+                      error: 'Application signer is disconnected.',
+                    },
+                  ],
+                },
+              ]
+            : []),
         ])
         const outgoingStatus = outgoingCashuRecoveryStatus(outgoingRecovery)
-        const hasMore = receiveRecovery.hasMore || outgoingRecovery.hasMore
+        const hasMore =
+          receiveRecovery.hasMore ||
+          importRecovery.hasMore ||
+          outgoingRecovery.hasMore ||
+          invoiceRecovery.hasMore ||
+          paymentRecoveryPage.hasMore
         const blockingPending =
+          accountRecoveryPending ||
           consolidationRecovery.pending.length > 0 ||
           walletRecovery.pending.length > 0 ||
           receiveRecovery.pending.length > 0 ||
           receiveRecovery.pendingCount > 0 ||
           receiveRecovery.hasMore ||
+          importRecovery.pendingCount > 0 ||
+          importRecovery.hasMore ||
           completeSetRecovery.pending.length > 0 ||
-          outgoingStatus.blockingPending
+          positionClaimRecovery.pending.length > 0 ||
+          outgoingStatus.blockingPending ||
+          invoiceRecovery.blockingPending ||
+          paymentRecoveryPage.blockingPending
         return {
           recovery,
           hasMore,
+          importHasMore: importRecovery.hasMore,
+          invoiceHasMore: invoiceRecovery.hasMore,
+          paymentHasMore: paymentRecoveryPage.hasMore,
           pending:
             consolidationRecovery.pending.length > 0 ||
             walletRecovery.pending.length > 0 ||
             receiveRecovery.pending.length > 0 ||
             receiveRecovery.pendingCount > 0 ||
             receiveRecovery.hasMore ||
+            importRecovery.pendingCount > 0 ||
+            importRecovery.hasMore ||
             completeSetRecovery.pending.length > 0 ||
-            outgoingStatus.retryPending,
+            positionClaimRecovery.pending.length > 0 ||
+            outgoingStatus.retryPending ||
+            invoiceRecovery.retryPending ||
+            paymentRecoveryPage.retryPending,
           blockingPending,
         }
       }
@@ -330,9 +497,32 @@ switch (command) {
         retryPending: initialNonRetirementRecovery.pending,
         retirementPending: pendingRetirements.length > 0,
       })
+      const { createNativePaymentRequestService } = await import('./nativePaymentRequestService.ts')
+      const { createNativePaymentRequestReceiver } =
+        await import('./nativePaymentRequestReceiver.ts')
+      nativePaymentRequests = createNativePaymentRequestService({
+        profile,
+        secrets,
+        getFence: currentFence,
+        receiver: createNativePaymentRequestReceiver({
+          walletSeedHex: secrets.walletSeedHex,
+          relayUrls: nativeConfig.daemon.nostrRelays,
+        }),
+        isCustodyReady: () => leaseFailure === undefined && readiness.isReady(),
+        triggerCustodyRecovery: () => nonRetirementRecoveryLoop?.trigger(),
+        deps: { getCustodyFence: currentFence },
+      })
+      const refreshNativePaymentRequestReceiver = async () => {
+        try {
+          await nativePaymentRequests?.resumeReceiving()
+        } catch {
+          process.stderr.write('native payment request receiver is unavailable\n')
+        }
+      }
       const startAssetMonitoringWhenReady = async () => {
         if (
           !nativeConfig.daemon.assetMonitoringEnabled ||
+          !signerEnabled ||
           !readiness.isReady() ||
           assetMonitoring ||
           assetMonitoringStarting
@@ -347,6 +537,7 @@ switch (command) {
             walletId,
             engineBaseUrl: profile.engineBaseUrl,
             remote: retirementEngine,
+            onAccepted: () => walletWatch?.refreshPortfolio(),
           })
           assetMonitoring.start()
         } finally {
@@ -362,11 +553,11 @@ switch (command) {
       )
       let orderHubStarted = false
       const startOrderHubWhenReady = async () => {
-        if (!readiness.isReady() || orderHubStarted) return
+        if (!signerEnabled || !readiness.isReady() || orderHubStarted) return
         orderHubStarted = true
         try {
           const state = await ensureState()
-          for (const order of Object.values(state.orders)) {
+          for (const order of await listLocalOrders()) {
             await orderHub.trackOrder(order.marketId, order.orderId)
           }
           await orderHub.start()
@@ -400,18 +591,30 @@ switch (command) {
               result.pending,
             )
           ) {
-            return { pending: readiness.isRetryPending() }
+            return {
+              pending: readiness.isRetryPending(),
+              importHasMore: result.importHasMore,
+              invoiceHasMore: result.invoiceHasMore,
+              paymentHasMore: result.paymentHasMore,
+            }
           }
           process.stderr.write(
             `Automatic non-retirement custody recovery: recovered=${result.recovery.recoveredCount} ` +
               `blockingPending=${result.blockingPending} retryPending=${result.pending} ` +
               `hasMore=${result.hasMore}\n`,
           )
+          await refreshNativePaymentRequestReceiver()
           if (readiness.isReady()) markCustodyReady()
-          return { pending: result.pending }
+          return {
+            pending: result.pending,
+            importHasMore: result.importHasMore,
+            invoiceHasMore: result.invoiceHasMore,
+            paymentHasMore: result.paymentHasMore,
+          }
         } catch (error) {
           const applied = readiness.completeAutomaticNonRetirementScan(generation, true, true)
           if (applied) {
+            await refreshNativePaymentRequestReceiver()
             process.stderr.write('Automatic non-retirement custody recovery remains pending\n')
           }
           throw error
@@ -419,7 +622,11 @@ switch (command) {
       }
       nonRetirementRecoveryLoop = createNonRetirementCustodyRecoveryLoop({
         recover: runAutomaticNonRetirementRecovery,
-        onResult: () => undefined,
+        onResult: (result) => {
+          if (result.importHasMore || result.invoiceHasMore || result.paymentHasMore) {
+            nonRetirementRecoveryLoop?.trigger()
+          }
+        },
         onError: (error: Error) => {
           process.stderr.write(
             `Automatic non-retirement custody recovery failed: ${error.message}\n`,
@@ -428,6 +635,13 @@ switch (command) {
         retryAfterError: () => readiness.isRetryPending(),
       })
       nonRetirementRecoveryLoop.accept({ pending: initialNonRetirementRecovery.pending })
+      if (
+        initialNonRetirementRecovery.importHasMore ||
+        initialNonRetirementRecovery.invoiceHasMore ||
+        initialNonRetirementRecovery.paymentHasMore
+      ) {
+        nonRetirementRecoveryLoop.trigger()
+      }
       const scheduleRetirementRetry = () => {
         if (retirementRetryTimer !== undefined) return
         retirementRetryTimer = setTimeout(() => {
@@ -445,6 +659,7 @@ switch (command) {
           const retirements = await runAutomaticRetirementScan()
           const pending = retirements.filter((entry) => entry.error !== null)
           if (!readiness.completeAutomaticRetirementScan(generation, pending.length > 0)) return
+          await refreshNativePaymentRequestReceiver()
           if (pending.length > 0) {
             for (const entry of pending) {
               process.stderr.write(
@@ -460,19 +675,41 @@ switch (command) {
           }
           if (readiness.isReady()) markCustodyReady()
         } catch (error) {
-          if (readiness.completeAutomaticRetirementScan(generation, true)) scheduleRetirementRetry()
+          if (readiness.completeAutomaticRetirementScan(generation, true)) {
+            await refreshNativePaymentRequestReceiver()
+            scheduleRetirementRetry()
+          }
           throw error
         }
       }
       if (pendingRetirements.length > 0) scheduleRetirementRetry()
       currentFence()
       const server = await startDaemonServer({
+        observeOrderTimeline,
+        watch: (command, signal) => {
+          const lifetime = AbortSignal.any([signal, liveViewLifetime.signal])
+          switch (command.method) {
+            case 'market.watch':
+              if ('liked' in command.params) return likedMarketWatch.watch(lifetime)
+              if (!signerEnabled) throw new Error('Application signer is disconnected.')
+              return marketWatch!.watch(command.params.conditionIds, lifetime)
+            case 'wallet.watch':
+              return walletWatch!.watch(lifetime)
+            case 'wallet.request.watch':
+              throw new Error('Payment request watches require the request service dispatcher')
+          }
+        },
+        nativeLightningOps,
+        nativeWalletPaymentOps,
+        nativePaymentRequests,
         trackOwnedOrder: async (marketId, orderId) => {
           await orderHub.trackOrder(marketId, orderId)
           await startOrderHubWhenReady()
         },
-        prepareSettlementCapability: (input, client, beforeCreateCapability) =>
-          rangeOrderCoordinator.prepare(input, client, beforeCreateCapability),
+        prepareSettlementCapability: (input, client, beforeCreateCapability, consentedFeeFacts) =>
+          rangeOrderCoordinator.prepare(input, client, beforeCreateCapability, consentedFeeFacts),
+        previewSettlementCapabilityFees: (input, client) =>
+          rangeOrderCoordinator.previewFeeFacts(input, client),
         triggerSettlementRecovery: () => rangeRecoveryLoop?.trigger(),
         triggerCustodyRecovery: () => nonRetirementRecoveryLoop?.trigger(),
         getCustodyFence: currentFence,
@@ -504,6 +741,10 @@ switch (command) {
             },
           },
           releaseResources,
+          async () => {
+            liveViewLifetime.abort()
+            await nativePaymentRequests!.stop()
+          },
         )
       } catch (error) {
         await closeServer(server)
@@ -516,6 +757,7 @@ switch (command) {
         )
       })
       if (readiness.isReady()) markCustodyReady()
+      await refreshNativePaymentRequestReceiver()
     } catch (err) {
       await releaseResources().catch(() => undefined)
       throw err
@@ -610,7 +852,7 @@ function mergeRetirementResults(
 }
 
 async function trackManagedConditionMarkets(
-  hub: { trackMarket(marketId: string): Promise<void> },
+  hub: { setManagedMarkets(marketIds: readonly string[]): Promise<void> },
   state: {
     readonly wallet: {
       readonly proofs: ReadonlyArray<{
@@ -632,7 +874,7 @@ async function trackManagedConditionMarkets(
       if (outcome.length > 0) marketIds.add(`${proof.asset.conditionId}-${outcome}`)
     }
   }
-  for (const marketId of [...marketIds].sort()) await hub.trackMarket(marketId)
+  await hub.setManagedMarkets([...marketIds].sort())
 }
 
 async function trackManagedConditionMarket(
@@ -741,6 +983,7 @@ function installShutdownHandlers(
   server: Server,
   runtime: { stop(): Promise<void> } | undefined,
   releaseRunLock: () => Promise<void>,
+  beforeClose?: () => Promise<void>,
 ): (reason: string, exitCode?: number) => Promise<void> {
   let shuttingDown = false
   const shutdown = async (reason: string, exitCode = 0) => {
@@ -748,6 +991,8 @@ function installShutdownHandlers(
     shuttingDown = true
     process.stderr.write(`bitcaster-daemon received ${reason}, shutting down\n`)
     try {
+      // Closing the server first would wait indefinitely for active watch responses.
+      await beforeClose?.()
       await closeServer(server)
       await runtime?.stop()
       await releaseRunLock()

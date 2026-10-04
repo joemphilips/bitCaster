@@ -18,6 +18,7 @@ import {
 } from '@cashu/cashu-ts'
 import { deriveRootCtfOutcomeCollectionId } from '@bitcaster-market/client-sdk/durableCtfRangeOperation'
 import { advanceDaemonKeysetCounter, readAvailableWalletProofsFenced } from '../src/state.ts'
+import { openDaemonStateSqlite } from '../src/stateSqlite.ts'
 import {
   recoverAllDaemonWalletFromSeed,
   type AllKeysetSeedRecoveryTransport,
@@ -255,6 +256,80 @@ test('conditional discovery skips expired and unmatched keysets without fetching
   }
 })
 
+test('regular recovery refuses a keyset counter alias before scan or roster writes', async () => {
+  const fixture = await recoveryFixture('regular-counter-alias')
+  const regular = regularKeyset({ '1': MINT_PUBLIC_KEY })
+  let restoreCalls = 0
+  let loadedMint = false
+  const transport = recoveryTransport({
+    regular: [{ id: regular.id, unit: regular.unit }],
+    regularKeys: [regular],
+    onRestoreCandidates() {
+      restoreCalls += 1
+      return { outputs: [], signatures: [] }
+    },
+  })
+  transport.wallet.loadMint = async () => {
+    loadedMint = true
+  }
+  try {
+    await insertCounterAlias(fixture, 'target_keyset_counters', regular.id)
+    const before = await readRecoveryAuthoritySnapshot(fixture.directory, fixture.fence.scopeId)
+    await assert.rejects(
+      () => recoverAllDaemonWalletFromSeed(request(fixture), dependencies(fixture, transport)),
+      /another mint URL/,
+    )
+    assert.equal(restoreCalls, 0)
+    assert.equal(loadedMint, false)
+    assert.deepEqual(
+      await readRecoveryAuthoritySnapshot(fixture.directory, fixture.fence.scopeId),
+      before,
+    )
+  } finally {
+    await rm(fixture.directory, { recursive: true, force: true })
+  }
+})
+
+test('conditional recovery refuses an alias before unmatched discovery or roster writes', async () => {
+  const fixture = await recoveryFixture('conditional-counter-alias')
+  const conditional = conditionalAuthority()
+  let restoreCalls = 0
+  let fetchedKeys = 0
+  let loadedMint = false
+  const transport = recoveryTransport({
+    conditional: [conditionalDescriptor(conditional)],
+    onRestoreCandidates() {
+      restoreCalls += 1
+      return { outputs: [], signatures: [] }
+    },
+    onConditionalFetch() {
+      fetchedKeys += 1
+      throw new Error('unmatched conditional keysets must not fetch keys')
+    },
+  })
+  transport.wallet.loadMint = async () => {
+    loadedMint = true
+  }
+  try {
+    await insertCounterAlias(fixture, 'custody_keyset_counters', conditional.id)
+    const before = await readRecoveryAuthoritySnapshot(fixture.directory, fixture.fence.scopeId)
+    await assert.rejects(
+      () =>
+        recoverAllDaemonWalletFromSeed(request(fixture, 'msat'), dependencies(fixture, transport)),
+      /another mint URL/,
+    )
+    assert.equal(restoreCalls, 0)
+    assert.equal(fetchedKeys, 0)
+    assert.equal(loadedMint, false)
+    assert.deepEqual(
+      await readRecoveryAuthoritySnapshot(fixture.directory, fixture.fence.scopeId),
+      before,
+    )
+  } finally {
+    await rm(fixture.directory, { recursive: true, force: true })
+  }
+})
+
 test('local conditional counter authority selects a keyset without a discovery match', async () => {
   const fixture = await recoveryFixture('conditional-high-water')
   const conditional = conditionalAuthority()
@@ -483,6 +558,69 @@ async function recoveryFixture(label: string) {
     incarnationId: `all-recovery-${label}`,
   })
   return { directory, walletSeedHex, fence, mutation: { fence, observedAtMs: 3 } }
+}
+
+async function insertCounterAlias(
+  fixture: Awaited<ReturnType<typeof recoveryFixture>>,
+  table: 'target_keyset_counters' | 'custody_keyset_counters',
+  keysetId: string,
+): Promise<void> {
+  const database = await openDaemonStateSqlite(fixture.directory)
+  try {
+    if (table === 'target_keyset_counters') {
+      database
+        .prepare(
+          `INSERT INTO target_keyset_counters (
+             scope_id, normalized_mint, unit, keyset_id, next_counter, updated_at_ms
+           ) VALUES (?, 'https://mint-alias.example', 'sat', ?, 9, 2)`,
+        )
+        .run(fixture.fence.scopeId, keysetId)
+      return
+    }
+    database
+      .prepare(
+        `INSERT INTO custody_keyset_counters (
+           scope_id, normalized_mint, unit, keyset_id,
+           next_counter, revision, updated_at_ms
+         ) VALUES (?, 'https://mint-alias.example', 'sat', ?, 9, 0, 2)`,
+      )
+      .run(fixture.fence.scopeId, keysetId)
+  } finally {
+    database.close()
+  }
+}
+
+async function readRecoveryAuthoritySnapshot(directory: string, scopeId: string) {
+  const database = await openDaemonStateSqlite(directory)
+  try {
+    return {
+      targetCounters: database
+        .prepare(
+          `SELECT * FROM target_keyset_counters WHERE scope_id = ?
+           ORDER BY normalized_mint, unit, keyset_id`,
+        )
+        .all(scopeId),
+      custodyCounters: database
+        .prepare(
+          `SELECT * FROM custody_keyset_counters WHERE scope_id = ?
+           ORDER BY normalized_mint, unit, keyset_id`,
+        )
+        .all(scopeId),
+      recoveryJobs: database
+        .prepare('SELECT * FROM seed_recovery_jobs WHERE scope_id = ? ORDER BY recovery_id')
+        .all(scopeId),
+      recoveryKeysets: database
+        .prepare(
+          `SELECT * FROM seed_recovery_keysets
+           WHERE recovery_id IN (
+             SELECT recovery_id FROM seed_recovery_jobs WHERE scope_id = ?
+           ) ORDER BY recovery_id, keyset_id`,
+        )
+        .all(scopeId),
+    }
+  } finally {
+    database.close()
+  }
 }
 
 function request(

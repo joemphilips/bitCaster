@@ -7,6 +7,42 @@
     "node": ">=22"
   },
   "exports": {
+    "./activityLog": {
+      "types": "./dist/activityLog.d.ts",
+      "import": "./dist/activityLog.js"
+    },
+    "./oracleAnnouncementEncoding": {
+      "types": "./dist/oracleAnnouncementEncoding.d.ts",
+      "import": "./dist/oracleAnnouncementEncoding.js"
+    },
+    "./oraclePublication": {
+      "types": "./dist/oraclePublication.d.ts",
+      "import": "./dist/oraclePublication.js"
+    },
+    "./oracleResolutionExplanation": {
+      "types": "./dist/oracleResolutionExplanation.d.ts",
+      "import": "./dist/oracleResolutionExplanation.js"
+    },
+    "./likedMarketClose": {
+      "types": "./dist/likedMarketClose.d.ts",
+      "import": "./dist/likedMarketClose.js"
+    },
+    "./bookmarks": {
+      "types": "./dist/bookmarks.d.ts",
+      "import": "./dist/bookmarks.js"
+    },
+    "./nip17PaymentRequest": {
+      "types": "./dist/nip17PaymentRequest.d.ts",
+      "import": "./dist/nip17PaymentRequest.js"
+    },
+    "./nostrRelays": {
+      "types": "./dist/nostrRelays.d.ts",
+      "import": "./dist/nostrRelays.js"
+    },
+    "./paymentRequest": {
+      "types": "./dist/paymentRequest.d.ts",
+      "import": "./dist/paymentRequest.js"
+    },
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
@@ -195,6 +231,10 @@
       "types": "./dist/durableWalletOperation.d.ts",
       "import": "./dist/durableWalletOperation.js"
     },
+    "./deterministicOutgoingCashuPreparation": {
+      "types": "./dist/deterministicOutgoingCashuPreparation.d.ts",
+      "import": "./dist/deterministicOutgoingCashuPreparation.js"
+    },
     "./durableOutgoingCashuTransfer": {
       "types": "./dist/durableOutgoingCashuTransfer.d.ts",
       "import": "./dist/durableOutgoingCashuTransfer.js"
@@ -215,6 +255,14 @@
       "types": "./dist/durableBolt11MintQuote.d.ts",
       "import": "./dist/durableBolt11MintQuote.js"
     },
+    "./durableWalletMelt": {
+      "types": "./dist/durableWalletMelt.d.ts",
+      "import": "./dist/durableWalletMelt.js"
+    },
+    "./walletPaymentQuote": {
+      "types": "./dist/walletPaymentQuote.d.ts",
+      "import": "./dist/walletPaymentQuote.js"
+    },
     "./durableWalletProofTransition": {
       "types": "./dist/durableWalletProofTransition.d.ts",
       "import": "./dist/durableWalletProofTransition.js"
@@ -231,7 +279,10 @@
       "types": "./dist/ctfRedeem.d.ts",
       "import": "./dist/ctfRedeem.js"
     },
-    "./ctfRegistration": "./src/ctfRegistration.ts",
+    "./ctfRegistration": {
+      "types": "./dist/ctfRegistration.d.ts",
+      "import": "./dist/ctfRegistration.js"
+    },
     "./conditionalKeysets": {
       "types": "./dist/conditionalKeysets.d.ts",
       "import": "./dist/conditionalKeysets.js"
@@ -340,6 +391,10 @@
       "types": "./dist/tradeTicket.d.ts",
       "import": "./dist/tradeTicket.js"
     },
+    "./tradeComment": {
+      "types": "./dist/tradeComment.d.ts",
+      "import": "./dist/tradeComment.js"
+    },
     "./tradingClient": "./src/tradingClient.ts",
     "./nut16Qr": {
       "types": "./dist/nut16Qr.d.ts",
@@ -371,7 +426,8 @@
     "@ngraveio/bc-ur": "1.1.13",
     "@noble/curves": "^2.2.0",
     "@noble/hashes": "^2.2.0",
-    "cborg": "5.1.7"
+    "cborg": "5.1.7",
+    "nostr-tools": "2.23.9"
   },
   "devDependencies": {
     "esbuild": "0.28.1",

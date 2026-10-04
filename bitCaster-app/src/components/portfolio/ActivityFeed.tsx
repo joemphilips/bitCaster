@@ -49,11 +49,70 @@ const STATUS_BADGES: Record<string, string> = {
 
 interface ActivityFeedProps {
   activity: ActivityItem[];
-  onViewActivity?: (activityId: string) => void;
 }
 
-export function ActivityFeed({ activity, onViewActivity }: ActivityFeedProps) {
+/** Display only. Never replace or merge the durable fill records. */
+function groupRecordedFills(activity: ActivityItem[]): ActivityItem[][] {
+  const groups = new Map<string, ActivityItem[]>();
+  const membership = new Map<ActivityItem, string>();
+  for (const item of activity) {
+    const orderId = item.tradeDetails?.orderId;
+    if (
+      item.status !== "completed" ||
+      (item.type !== "Buy" && item.type !== "Sell") ||
+      !item.walletId ||
+      !/^[0-9a-f]{64}$/.test(item.walletId) ||
+      !item.marketId ||
+      !orderId ||
+      orderId.trim() !== orderId
+    )
+      continue;
+    const key = JSON.stringify([item.walletId, orderId]);
+    membership.set(item, key);
+    const members = groups.get(key);
+    if (members) members.push(item);
+    else groups.set(key, [item]);
+  }
+  const emitted = new Set<string>();
+  return activity.flatMap((item) => {
+    const key = membership.get(item);
+    if (key && emitted.has(key)) return [];
+    const members = key ? groups.get(key)! : [item];
+    const first = members[0];
+    const compatible =
+      members.every(
+        (member) =>
+          member.type === first.type &&
+          member.marketId === first.marketId &&
+          member.baseAsset === first.baseAsset &&
+          member.tradeDetails?.outcomeId === first.tradeDetails?.outcomeId &&
+          member.tradeDetails?.tokenSide === first.tradeDetails?.tokenSide &&
+          member.tradeDetails?.divisibility === first.tradeDetails?.divisibility &&
+          Number.isSafeInteger(member.amountSubunits) &&
+          member.amountSubunits >= 0 &&
+          Number.isSafeInteger(member.tradeDetails?.faceAmountSubunits) &&
+          (member.tradeDetails?.faceAmountSubunits ?? 0) > 0,
+      ) &&
+      new Set(members.map((member) => member.tradeDetails?.fillId)).size === members.length &&
+      Number.isSafeInteger(members.reduce((sum, member) => sum + member.amountSubunits, 0)) &&
+      Number.isSafeInteger(
+        members.reduce((sum, member) => sum + (member.tradeDetails?.faceAmountSubunits ?? 0), 0),
+      );
+    if (!key || !compatible || members.length < 2) return [[item]];
+    emitted.add(key);
+    return [members];
+  });
+}
+
+export function ActivityFeed({ activity }: ActivityFeedProps) {
   const { t, i18n } = useTranslation();
+  const marketLabel = (item: ActivityItem) => {
+    const shortId = item.marketId?.match(/^([0-9a-f]{12})[0-9a-f]{52}(?:-|$)/)?.[1];
+    return (
+      item.marketTitle?.trim() ||
+      (shortId ? t("activityTrade.marketReference", { id: shortId }) : item.marketId)
+    );
+  };
   if (activity.length === 0) {
     return (
       <div className="py-8 text-center text-sm text-slate-400 dark:text-slate-500">
@@ -64,10 +123,35 @@ export function ActivityFeed({ activity, onViewActivity }: ActivityFeedProps) {
 
   return (
     <div className="space-y-1">
-      {activity.map((item) => {
+      {groupRecordedFills(activity).map((members) => {
+        const item = members[0];
+        if (members.length > 1) {
+          return (
+            <details key={JSON.stringify([item.walletId, item.tradeDetails!.orderId])}>
+              <summary className="p-3 rounded-lg cursor-pointer text-sm text-slate-900 dark:text-white">
+                {t(TYPE_META[item.type].labelKey)} · {marketLabel(item)} ·{" "}
+                {t("activityTrade.recordedFills", { count: members.length })}
+                <div className="font-mono">
+                  {activityAmountPrefix(item.type)}
+                  <InlineAmount
+                    amountSubunits={members.reduce((sum, member) => sum + member.amountSubunits, 0)}
+                    baseAsset={normalizeMarketBaseAsset(item.baseAsset)}
+                  />
+                </div>
+                <p className="text-xs text-slate-500">{t("activityTrade.tradeValueBeforeFees")}</p>
+              </summary>
+              {members.map((member) => (
+                <ActivityFeed
+                  key={JSON.stringify([member.walletId, member.id])}
+                  activity={[member]}
+                />
+              ))}
+            </details>
+          );
+        }
         const config = TYPE_META[item.type];
         const Icon = config.icon;
-        const marketLabel = item.marketTitle ?? item.marketId;
+        const label = marketLabel(item);
         const tradeToken = item.tradeDetails
           ? t(tradeTokenLabelKey(item.tradeDetails.tokenSide), {
               outcomeId: item.tradeDetails.outcomeId,
@@ -86,10 +170,9 @@ export function ActivityFeed({ activity, onViewActivity }: ActivityFeedProps) {
         });
 
         return (
-          <button
-            key={item.id}
-            onClick={() => onViewActivity?.(item.id)}
-            className="w-full flex items-center gap-3 p-3 hover:bg-slate-50 dark:hover:bg-slate-700/50 rounded-lg transition-colors text-left"
+          <article
+            key={JSON.stringify([item.walletId ?? null, item.id])}
+            className="w-full grid grid-cols-[2rem_minmax(0,1fr)] items-start gap-x-3 gap-y-2 p-3 rounded-lg text-left sm:flex sm:items-center sm:gap-3"
           >
             {/* Type Icon */}
             <div
@@ -103,11 +186,16 @@ export function ActivityFeed({ activity, onViewActivity }: ActivityFeedProps) {
               <p className="text-sm font-medium text-slate-900 dark:text-white">
                 {t(config.labelKey)}
               </p>
-              {marketLabel && (
-                <p className="text-xs text-slate-500 dark:text-slate-400 truncate">{marketLabel}</p>
+              {label && (
+                <p
+                  className="text-xs text-slate-500 dark:text-slate-400 break-words sm:truncate"
+                  title={item.marketTitle ? undefined : item.marketId}
+                >
+                  {label}
+                </p>
               )}
               {tradeToken && tradeShares && (
-                <p className="text-xs text-slate-500 dark:text-slate-400 truncate">
+                <p className="text-xs text-slate-500 dark:text-slate-400 break-words">
                   {tradeToken} · {t("activityTrade.shares", { amount: tradeShares })}
                 </p>
               )}
@@ -127,7 +215,7 @@ export function ActivityFeed({ activity, onViewActivity }: ActivityFeedProps) {
             </div>
 
             {/* Amount & Status */}
-            <div className="text-right shrink-0">
+            <div className="col-start-2 min-w-0 text-left sm:text-right sm:shrink-0">
               <div className="text-sm font-mono font-medium text-slate-900 dark:text-white">
                 {activityAmountPrefix(item.type)}
                 <InlineAmount
@@ -140,7 +228,7 @@ export function ActivityFeed({ activity, onViewActivity }: ActivityFeedProps) {
                   {t("activityTrade.tradeValueBeforeFees")}
                 </p>
               )}
-              <div className="flex items-center justify-end gap-1 mt-0.5">
+              <div className="flex flex-wrap items-center gap-1 mt-0.5 sm:justify-end">
                 <span className="text-xs text-slate-400 dark:text-slate-500">{date}</span>
                 <span
                   className={`text-[10px] font-medium px-1.5 py-0.5 rounded ${STATUS_BADGES[item.status] ?? ""}`}
@@ -149,7 +237,7 @@ export function ActivityFeed({ activity, onViewActivity }: ActivityFeedProps) {
                 </span>
               </div>
             </div>
-          </button>
+          </article>
         );
       })}
     </div>

@@ -205,7 +205,6 @@ describe("TradingPanel", () => {
         tradeSelection: { side: "yes" as const },
         tradeAmount: 1,
         tradeSide: "Buy" as const,
-        orderType: "market" as const,
         tradePreview: readyPreview(),
         tradeFeeFacts: null,
         walletReady: true,
@@ -249,7 +248,6 @@ describe("TradingPanel", () => {
         tradeAmount={0}
         tradePreview={null}
         tradeSide="Sell"
-        orderType="market"
         {...overrides}
       />,
     );
@@ -264,7 +262,6 @@ describe("TradingPanel", () => {
         tradeAmount={0}
         tradePreview={null}
         tradeSide="Buy"
-        orderType="market"
       />,
     );
 
@@ -273,85 +270,36 @@ describe("TradingPanel", () => {
     expect(screen.getByTestId("detail-deposit-step")).toHaveTextContent("sat-market:1000");
   });
 
-  it("shows the Auto bound and lets the user change or restore it", async () => {
-    const user = userEvent.setup();
-    function Harness() {
-      const [orderType, setOrderType] = useState<"market" | "limit">("market");
-      return (
+  it.each(["Buy", "Sell"] as const)(
+    "shows the accepted %s trade value without a separate protection control",
+    (side) => {
+      render(
         <TradingPanel
           market={makeMarket()}
           tradeSelection={{ side: "yes" }}
           tradeAmount={1}
-          tradePreview={readyPreview({ worstPrice: 320 })}
-          limitOrderPreview={readyPreview({ worstPrice: 320 })}
-          tradeCapacityPreview={readyCapacityPreview()}
-          automaticLimitPrice={600}
-          tradeSide="Buy"
-          orderType={orderType}
-          limitPrice={450}
-          onOrderTypeChange={setOrderType}
-        />
+          tradePreview={readyPreview({ quotePaymentSubunits: 400, worstPrice: 500 })}
+          tradeFeeFacts={feeFacts()}
+          tradeSide={side}
+          sellHoldings={sellHoldings({ Yes: { selectableSubunits: 5_000 } })}
+        />,
       );
-    }
-
-    render(<Harness />);
-
-    expect(screen.queryByText("Market")).not.toBeInTheDocument();
-    expect(screen.queryByText("Limit")).not.toBeInTheDocument();
-    expect(screen.getByTestId("trade-price-protection-toggle")).toHaveTextContent("Change");
-    expect(screen.getByTestId("trade-protected-price")).toHaveAttribute(
-      "data-price-numerator",
-      "600",
-    );
-    expect(screen.queryByTestId("trade-capacity-available")).not.toBeInTheDocument();
-    expect(screen.queryByText(/Snapshot only/)).not.toBeInTheDocument();
-    expect(screen.getByText(/20 percentage points/)).toBeInTheDocument();
-
-    await user.click(screen.getByTestId("trade-price-protection-toggle"));
-
-    expect(screen.getByTestId("trade-protected-price")).toHaveAttribute(
-      "data-price-numerator",
-      "450",
-    );
-    expect(screen.getByTestId("limit-price-input")).toHaveValue(0.45);
-    expect(screen.getByTestId("trade-use-auto")).toBeInTheDocument();
-    await user.click(screen.getByTestId("trade-use-auto"));
-    expect(screen.getByTestId("trade-protected-price")).toHaveAttribute(
-      "data-price-numerator",
-      "600",
-    );
-  });
-
-  it("keeps a Custom price editable when a ready snapshot has zero capacity", async () => {
-    const user = userEvent.setup();
-    function Harness() {
-      const [orderType, setOrderType] = useState<"market" | "limit">("market");
-      return (
-        <TradingPanel
-          market={makeMarket()}
-          tradeSelection={{ side: "yes" }}
-          tradeAmount={1}
-          tradePreview={readyPreview()}
-          limitOrderPreview={readyPreview()}
-          tradeCapacityPreview={readyCapacityPreview({
-            maxFaceAmountSubunits: 0,
-            quotePaymentSubunits: 0,
-            worstPrice: null,
-          })}
-          automaticLimitPrice={600}
-          tradeSide="Buy"
-          orderType={orderType}
-          limitPrice={600}
-          onOrderTypeChange={setOrderType}
-        />
+      expect(screen.queryByTestId("trade-price-protection")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("limit-price-input")).not.toBeInTheDocument();
+      expect(
+        screen.getByText(side === "Buy" ? "Maximum trade payment" : "Minimum trade proceeds"),
+      ).toBeInTheDocument();
+      expect(screen.getByTestId("trade-quote-payment")).toHaveAttribute(
+        "data-quote-payment-subunits",
+        "400",
       );
-    }
-
-    render(<Harness />);
-    expect(screen.queryByTestId("trade-capacity-available")).not.toBeInTheDocument();
-    await user.click(screen.getByTestId("trade-price-protection-toggle"));
-    expect(screen.getByTestId("limit-price-input")).toBeEnabled();
-  });
+      expect(screen.getByTestId("trade-worst-price")).toHaveAttribute(
+        "data-price-numerator",
+        "500",
+      );
+      expect(screen.getByTestId("trade-settlement-input-fee")).toBeInTheDocument();
+    },
+  );
 
   it("does not block trading controls when the local book is empty", async () => {
     const user = userEvent.setup();
@@ -361,10 +309,8 @@ describe("TradingPanel", () => {
         market={makeEmptyBookMarket()}
         tradeSelection={{ side: "yes" }}
         tradeAmount={2}
-        tradePreview={null}
-        limitOrderPreview={loadingPreview()}
+        tradePreview={loadingPreview()}
         tradeSide="Buy"
-        orderType="limit"
         onTradeConfirm={onTradeConfirm}
       />,
     );
@@ -381,6 +327,101 @@ describe("TradingPanel", () => {
     expect(onTradeConfirm).not.toHaveBeenCalled();
   });
 
+  it.each(["Buy", "Sell"] as const)(
+    "shows only a liquidity route for a confirmed empty %s book",
+    async (tradeSide) => {
+      const user = userEvent.setup();
+      render(
+        <TradingPanel
+          market={makeEmptyBookMarket()}
+          isFullyEmptyBook
+          tradeSelection={{ side: "yes" }}
+          tradeAmount={2}
+          tradePreview={loadingPreview()}
+          tradeSide={tradeSide}
+        />,
+      );
+
+      expect(screen.getByTestId("empty-trade-liquidity")).toBeInTheDocument();
+      expect(screen.getAllByRole("tab")).toHaveLength(3);
+      expect(screen.queryByTestId("trade-amount-input")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("trade-confirm")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("fok-preview-loading")).not.toBeInTheDocument();
+      await user.click(screen.getByTestId("open-liquidity-tab"));
+      expect(screen.getByTestId("detail-deposit-step")).toBeInTheDocument();
+    },
+  );
+
+  it.each([
+    ["Buy", "No matching sell orders"],
+    ["Sell", "No matching buy orders"],
+  ] as const)(
+    "shows a terminal missing-price result for the %s side without hiding the whole market",
+    (tradeSide, message) => {
+      render(
+        <TradingPanel
+          market={makeMarket()}
+          tradeSelection={{ side: "yes" }}
+          tradeAmount={1}
+          tradePreview={null}
+          tradeSide={tradeSide}
+          tradeCapacityPreview={readyCapacityPreview({
+            maxFaceAmountSubunits: 0,
+            referencePrice: null,
+            effectiveLimitPrice: null,
+            quotePaymentSubunits: 0,
+            worstPrice: null,
+          })}
+        />,
+      );
+
+      expect(screen.getByTestId("fok-preview-capacity-status")).toHaveTextContent(message);
+      expect(screen.getByTestId("trade-confirm")).toBeDisabled();
+      expect(screen.getByTestId("trade-amount-input")).toBeInTheDocument();
+      expect(screen.queryByTestId("empty-trade-liquidity")).not.toBeInTheDocument();
+      expect(screen.queryByText("Waiting for a price limit")).not.toBeInTheDocument();
+    },
+  );
+
+  it.each(["loading", "error", "market_unavailable", "temporarily_unavailable"] as const)(
+    "does not present %s capacity as zero liquidity",
+    (status) => {
+      const preview = readyCapacityPreview({
+        referencePrice: null,
+        effectiveLimitPrice: null,
+        maxFaceAmountSubunits: null,
+        quotePaymentSubunits: null,
+        worstPrice: null,
+        priceDenominator: null,
+        previewRevision: null,
+      });
+      if (status === "loading" || status === "error") {
+        preview.status = status;
+        preview.response = null;
+      } else {
+        preview.response!.status = status;
+      }
+      render(
+        <TradingPanel
+          market={makeEmptyBookMarket()}
+          tradeSelection={{ side: "yes" }}
+          tradeAmount={1}
+          tradePreview={null}
+          tradeSide="Buy"
+          tradeCapacityPreview={preview}
+        />,
+      );
+      expect(screen.getByTestId("fok-preview-capacity-status")).toHaveTextContent(
+        status === "loading"
+          ? "Checking the current market preview..."
+          : "The market preview is temporarily unavailable.",
+      );
+      expect(screen.getByTestId("trade-confirm")).toBeDisabled();
+      expect(screen.queryByTestId("empty-trade-liquidity")).not.toBeInTheDocument();
+      expect(screen.getByTestId("trade-amount-input")).toBeInTheDocument();
+    },
+  );
+
   it("removes durable funding when an active LIQUIDITY tab becomes disabled", async () => {
     const user = userEvent.setup();
     depositFundingAction.mockClear();
@@ -391,7 +432,6 @@ describe("TradingPanel", () => {
         tradeAmount={0}
         tradePreview={null}
         tradeSide="Buy"
-        orderType="market"
       />,
     );
 
@@ -407,7 +447,6 @@ describe("TradingPanel", () => {
         tradeAmount={0}
         tradePreview={null}
         tradeSide="Buy"
-        orderType="market"
         disabled
       />,
     );
@@ -425,7 +464,6 @@ describe("TradingPanel", () => {
         tradeAmount={2}
         tradePreview={null}
         tradeSide="Buy"
-        orderType="market"
         disabled
       />,
     );
@@ -449,7 +487,6 @@ describe("TradingPanel", () => {
         tradeAmount={0}
         tradePreview={null}
         tradeSide="Buy"
-        orderType="market"
       />,
     );
 
@@ -476,7 +513,6 @@ describe("TradingPanel", () => {
         tradeAmount={0}
         tradePreview={null}
         tradeSide="Buy"
-        orderType="market"
       />,
     );
     expect(screen.queryByTestId("empty-trade-liquidity")).not.toBeInTheDocument();
@@ -496,7 +532,6 @@ describe("TradingPanel", () => {
         tradeAmount={0}
         tradePreview={null}
         tradeSide="Sell"
-        orderType="market"
       />,
     );
     expect(screen.queryByTestId("empty-trade-liquidity")).not.toBeInTheDocument();
@@ -526,7 +561,6 @@ describe("TradingPanel", () => {
         tradeAmount={0}
         tradePreview={null}
         tradeSide="Buy"
-        orderType="market"
       />,
     );
 
@@ -544,7 +578,6 @@ describe("TradingPanel", () => {
         tradeAmount={0}
         tradePreview={null}
         tradeSide="Buy"
-        orderType="market"
       />,
     );
 
@@ -567,7 +600,6 @@ describe("TradingPanel", () => {
         tradeAmount={0}
         tradePreview={null}
         tradeSide="Buy"
-        orderType="market"
       />,
     );
 
@@ -597,7 +629,6 @@ describe("TradingPanel", () => {
         tradeAmount={2}
         tradePreview={null}
         tradeSide="Buy"
-        orderType="market"
         onTradeSelect={onTradeSelect}
         onTradeConfirm={onTradeConfirm}
       />,
@@ -631,7 +662,6 @@ describe("TradingPanel", () => {
         tradeAmount={0}
         tradePreview={null}
         tradeSide="Buy"
-        orderType="market"
       />,
     );
 
@@ -655,7 +685,6 @@ describe("TradingPanel", () => {
         tradeAmount={0}
         tradePreview={null}
         tradeSide="Buy"
-        orderType="market"
       />,
     );
 
@@ -695,7 +724,6 @@ describe("TradingPanel", () => {
         tradeAmount={0}
         tradePreview={null}
         tradeSide="Buy"
-        orderType="market"
       />,
     );
 
@@ -704,18 +732,13 @@ describe("TradingPanel", () => {
     expect(screen.queryByLabelText("market.priceUnavailable")).not.toBeInTheDocument();
   });
 
-  function StatefulLimitTradingPanel({
-    initialLimitPrice = 40,
+  function StatefulAmountTradingPanel({
     initialTradeAmount = 2,
-    onLimitPriceChange,
     onAmountChange,
   }: {
-    initialLimitPrice?: number;
     initialTradeAmount?: number;
-    onLimitPriceChange?: (price: number) => void;
     onAmountChange?: (amount: number) => void;
   }) {
-    const [limitPrice, setLimitPrice] = useState(initialLimitPrice);
     const [tradeAmount, setTradeAmount] = useState(initialTradeAmount);
 
     return (
@@ -723,17 +746,10 @@ describe("TradingPanel", () => {
         market={makeMarket()}
         tradeSelection={{ side: "yes" }}
         tradeAmount={tradeAmount}
-        tradePreview={null}
-        limitOrderPreview={readyPreview()}
+        tradePreview={readyPreview()}
         tradeFeeFacts={feeFacts()}
         feeConsentCurrent
         tradeSide="Buy"
-        orderType="limit"
-        limitPrice={limitPrice}
-        onLimitPriceChange={(price) => {
-          setLimitPrice(price);
-          onLimitPriceChange?.(price);
-        }}
         onAmountChange={(amount) => {
           setTradeAmount(amount);
           onAmountChange?.(amount);
@@ -752,7 +768,6 @@ describe("TradingPanel", () => {
         tradeFeeFacts={feeFacts()}
         feeConsentCurrent
         tradeSide="Buy"
-        orderType="market"
         onTradeConfirm={vi.fn()}
       />,
     );
@@ -765,7 +780,7 @@ describe("TradingPanel", () => {
     expect(screen.getByTestId("trade-worst-price")).toHaveTextContent("0.32 sats (0.0320%)");
     expect(screen.getByTestId("trade-current-latest-price")).toHaveTextContent("0.0280%");
     expect(screen.getByTestId("trade-projected-final-price")).toHaveTextContent("0.0310%");
-    expect(screen.getByText("Quote payment")).toBeInTheDocument();
+    expect(screen.getByText("Maximum trade payment")).toBeInTheDocument();
     expect(screen.getByTestId("trade-quote-payment")).toHaveTextContent("15.000 sats");
     expect(screen.getByTestId("trade-settlement-input-fee")).toHaveTextContent(/^10\.000 sats$/);
     expect(screen.getByTestId("trade-source-preparation-fee")).toHaveTextContent(/^2\.000 sats$/);
@@ -792,7 +807,6 @@ describe("TradingPanel", () => {
         tradePreview={readyPreview()}
         feeConsentCurrent
         tradeSide="Buy"
-        orderType="market"
         onTradeConfirm={vi.fn()}
       />,
     );
@@ -807,13 +821,10 @@ describe("TradingPanel", () => {
         market={makeMarket()}
         tradeSelection={{ side: "yes" }}
         tradeAmount={2}
-        tradePreview={null}
-        limitOrderPreview={readyPreview()}
+        tradePreview={readyPreview()}
         tradeFeeFacts={feeFacts()}
         feeConsentCurrent
         tradeSide="Buy"
-        orderType="limit"
-        limitPrice={500}
         onTradeConfirm={vi.fn()}
         onTopUpRequired={onTopUpRequired}
         tradeFeasibility={{
@@ -841,8 +852,7 @@ describe("TradingPanel", () => {
         market={makeMarket()}
         tradeSelection={{ side: "yes" }}
         tradeAmount={2}
-        tradePreview={null}
-        limitOrderPreview={readyPreview()}
+        tradePreview={readyPreview()}
         tradeFeeFacts={feeFacts({
           sourcePreparationAsset: conditionalAsset,
           consolidationAsset: conditionalAsset,
@@ -850,8 +860,6 @@ describe("TradingPanel", () => {
         })}
         feeConsentCurrent
         tradeSide="Sell"
-        orderType="limit"
-        limitPrice={500}
         onTradeConfirm={vi.fn()}
         tradeFeasibility={{
           canBack: false,
@@ -896,7 +904,8 @@ describe("TradingPanel", () => {
       "aria-describedby",
       "trade-outcome-no-availability",
     );
-    expect(screen.getByText("Held: 2 shares")).toBeInTheDocument();
+    expect(screen.getByText("You have 2 shares that can be sold.")).toBeInTheDocument();
+    expect(screen.queryByText("Held: 2 shares")).not.toBeInTheDocument();
   });
 
   it("shows owned shares separately from the selectable Sell limit", () => {
@@ -1027,7 +1036,8 @@ describe("TradingPanel", () => {
     });
 
     expect(screen.getByTestId("sell-holding-no-outcome-0")).toHaveTextContent("You have 2 shares");
-    expect(screen.getByText("Held: 2 shares")).toBeInTheDocument();
+    expect(screen.getByText("You have 2 shares that can be sold.")).toBeInTheDocument();
+    expect(screen.queryByText("Held: 2 shares")).not.toBeInTheDocument();
     expect(screen.getByTestId("buy-no-Alice")).toHaveAttribute(
       "aria-describedby",
       "sell-holding-no-0",
@@ -1042,7 +1052,6 @@ describe("TradingPanel", () => {
       tradePreview: readyPreview(),
       feeConsentCurrent: true,
       tradeSide: "Sell" as const,
-      orderType: "market" as const,
       onTradeConfirm: vi.fn(),
     };
     const { rerender } = renderSellPanel({
@@ -1066,13 +1075,10 @@ describe("TradingPanel", () => {
         market={makeMarket()}
         tradeSelection={{ side: "yes" }}
         tradeAmount={2}
-        tradePreview={null}
-        limitOrderPreview={readyPreview()}
+        tradePreview={readyPreview()}
         tradeFeeFacts={feeFacts()}
         feeConsentCurrent
         tradeSide="Buy"
-        orderType="limit"
-        limitPrice={500}
         onTradeConfirm={onTradeConfirm}
         tradeFeasibility={{ canBack: true }}
       />,
@@ -1098,7 +1104,6 @@ describe("TradingPanel", () => {
         })}
         feeConsentCurrent={false}
         tradeSide="Buy"
-        orderType="market"
         onTradeConfirm={vi.fn()}
       />,
     );
@@ -1111,25 +1116,21 @@ describe("TradingPanel", () => {
     expect(screen.getByTestId("trade-confirm")).toBeDisabled();
   });
 
-  it("formats a sat-denominated limit preview with authoritative quote and fees", () => {
+  it("formats a sat-denominated FOK preview with authoritative quote and fees", () => {
     render(
       <TradingPanel
         market={makeMarket({ baseAsset: "sat", baseUnit: "sats", divisibility: 1_000 })}
         tradeSelection={{ side: "yes" }}
         tradeAmount={50}
-        tradePreview={null}
         tradeFeeFacts={feeFacts()}
         feeConsentCurrent
         tradeSide="Buy"
-        orderType="limit"
-        limitPrice={300}
-        limitOrderPreview={readyPreview()}
+        tradePreview={readyPreview()}
         onTradeConfirm={vi.fn()}
       />,
     );
 
-    expect(screen.getByText(/Price per share: 0\.30 sats \(30\.0%\)/)).toBeInTheDocument();
-    expect(screen.getByText("Quote payment")).toBeInTheDocument();
+    expect(screen.getByText("Maximum trade payment")).toBeInTheDocument();
     expect(screen.getByTestId("trade-quote-payment")).toHaveTextContent("15.000 sats");
     expect(screen.getByTestId("trade-settlement-input-fee")).toHaveTextContent(/^10\.000 sats$/);
     expect(screen.getByTestId("trade-grand-total")).toHaveTextContent("30.000 sats");
@@ -1148,7 +1149,6 @@ describe("TradingPanel", () => {
         market={makeMarket({ baseAsset: "sat", baseUnit: "sats", divisibility: 1_000 })}
         tradeSelection={{ side: "yes" }}
         tradeAmount={1}
-        tradePreview={null}
         tradeFeeFacts={feeFacts({
           settlementInputFeeSubunits: "1",
           sourcePreparationFeeSubunits: "2",
@@ -1156,9 +1156,7 @@ describe("TradingPanel", () => {
         })}
         feeConsentCurrent
         tradeSide="Buy"
-        orderType="limit"
-        limitPrice={100}
-        limitOrderPreview={readyPreview({
+        tradePreview={readyPreview({
           quotePaymentSubunits: 100,
           averagePrice: 100,
           worstPrice: 100,
@@ -1177,25 +1175,6 @@ describe("TradingPanel", () => {
     expect(screen.getByTestId("trade-grand-total")).toHaveTextContent("0.106 sats");
   });
 
-  it("displays sat-market limit prices as sats, not raw msat subunits", () => {
-    render(
-      <TradingPanel
-        market={makeMarket({ baseAsset: "sat", baseUnit: "sats", divisibility: 1_000 })}
-        tradeSelection={{ side: "yes" }}
-        tradeAmount={1}
-        tradePreview={null}
-        tradeSide="Buy"
-        orderType="limit"
-        limitPrice={850}
-        onTradeConfirm={vi.fn()}
-      />,
-    );
-
-    expect(screen.getByTestId("limit-price-input")).toHaveValue(0.85);
-    expect(screen.getByText(/Price per share: 0\.85 sats \(85\.0%\)/)).toBeInTheDocument();
-    expect(screen.queryByText("8500 sats")).not.toBeInTheDocument();
-  });
-
   it("uses market divisibility when displaying one-share face value", () => {
     render(
       <TradingPanel
@@ -1204,8 +1183,6 @@ describe("TradingPanel", () => {
         tradeAmount={1}
         tradePreview={null}
         tradeSide="Buy"
-        orderType="limit"
-        limitPrice={30}
         onTradeConfirm={vi.fn()}
       />,
     );
@@ -1219,11 +1196,8 @@ describe("TradingPanel", () => {
         market={makeMarket({ baseAsset: "sat", baseUnit: "sats", divisibility: 1_000 })}
         tradeSelection={{ side: "yes" }}
         tradeAmount={50}
-        tradePreview={null}
-        limitOrderPreview={loadingPreview()}
+        tradePreview={loadingPreview()}
         tradeSide="Buy"
-        orderType="limit"
-        limitPrice={30}
         onTradeConfirm={vi.fn()}
       />,
     );
@@ -1242,11 +1216,8 @@ describe("TradingPanel", () => {
         market={makeMarket({ baseAsset: "sat", baseUnit: "sats", divisibility: 1_000 })}
         tradeSelection={{ side: "yes" }}
         tradeAmount={50}
-        tradePreview={null}
-        limitOrderPreview={failedPreview}
+        tradePreview={failedPreview}
         tradeSide="Buy"
-        orderType="limit"
-        limitPrice={30}
         onTradeConfirm={vi.fn()}
       />,
     );
@@ -1265,11 +1236,8 @@ describe("TradingPanel", () => {
         market={makeMarket({ baseAsset: "sat", baseUnit: "sats", divisibility: 1_000 })}
         tradeSelection={{ side: "yes" }}
         tradeAmount={50}
-        tradePreview={null}
-        limitOrderPreview={loadingPreview()}
+        tradePreview={loadingPreview()}
         tradeSide="Buy"
-        orderType="limit"
-        limitPrice={30}
         onTradeConfirm={vi.fn()}
       />,
     );
@@ -1281,13 +1249,10 @@ describe("TradingPanel", () => {
         market={makeMarket({ baseAsset: "sat", baseUnit: "sats", divisibility: 1_000 })}
         tradeSelection={{ side: "yes" }}
         tradeAmount={50}
-        tradePreview={null}
-        limitOrderPreview={readyPreview()}
+        tradePreview={readyPreview()}
         tradeFeeFacts={feeFacts()}
         feeConsentCurrent
         tradeSide="Buy"
-        orderType="limit"
-        limitPrice={30}
         onTradeConfirm={vi.fn()}
       />,
     );
@@ -1305,7 +1270,6 @@ describe("TradingPanel", () => {
         tradeFeeFacts={feeFacts()}
         feeConsentCurrent
         tradeSide="Buy"
-        orderType="market"
         onTradeConfirm={vi.fn()}
       />,
     );
@@ -1331,7 +1295,6 @@ describe("TradingPanel", () => {
         tradeFeeFacts={feeFacts()}
         feeConsentCurrent
         tradeSide="Buy"
-        orderType="market"
         onTradeConfirm={vi.fn()}
       />,
     );
@@ -1359,7 +1322,6 @@ describe("TradingPanel", () => {
           tradeFeeFacts={feeFacts()}
           feeConsentCurrent
           tradeSide="Buy"
-          orderType="market"
           onTradeConfirm={vi.fn()}
         />,
       );
@@ -1397,7 +1359,6 @@ describe("TradingPanel", () => {
         tradeAmount={50}
         tradePreview={nonfillablePreview("insufficient_liquidity", false)}
         tradeSide={tradeSide}
-        orderType="market"
       />,
     );
 
@@ -1413,7 +1374,6 @@ describe("TradingPanel", () => {
         tradeAmount={5}
         tradePreview={nonfillablePreview("price_limit", true)}
         tradeSide="Sell"
-        orderType="market"
       />,
     );
 
@@ -1435,7 +1395,6 @@ describe("TradingPanel", () => {
         tradeAmount={50}
         tradePreview={nonfillablePreview(reason, false)}
         tradeSide="Buy"
-        orderType="market"
       />,
     );
 
@@ -1453,7 +1412,6 @@ describe("TradingPanel", () => {
         tradeAmount={50}
         tradePreview={preview}
         tradeSide="Buy"
-        orderType="market"
       />,
     );
 
@@ -1489,7 +1447,6 @@ describe("TradingPanel", () => {
         tradeFeeFacts={feeFacts()}
         feeConsentCurrent
         tradeSide="Buy"
-        orderType="market"
       />,
     );
 
@@ -1512,7 +1469,6 @@ describe("TradingPanel", () => {
         tradeFeeFacts={feeFacts()}
         feeConsentCurrent
         tradeSide="Buy"
-        orderType="market"
         onTradeConfirm={vi.fn()}
       />,
     );
@@ -1566,12 +1522,11 @@ describe("TradingPanel", () => {
         })}
         feeConsentCurrent
         tradeSide="Sell"
-        orderType="market"
         onTradeConfirm={vi.fn()}
       />,
     );
 
-    expect(screen.getByText("Quote proceeds")).toBeInTheDocument();
+    expect(screen.getByText("Minimum trade proceeds")).toBeInTheDocument();
     expect(screen.getByTestId("trade-quote-payment")).toHaveTextContent("0.050 sats");
     expect(screen.getByTestId("trade-net-proceeds")).toHaveTextContent(scenario.expectedNet);
     expect(screen.getByTestId("trade-settlement-input-fee")).toHaveTextContent(/^0\.100 sats$/);
@@ -1587,7 +1542,7 @@ describe("TradingPanel", () => {
     const onAmountChange = vi.fn();
     const user = userEvent.setup();
 
-    render(<StatefulLimitTradingPanel initialTradeAmount={1} onAmountChange={onAmountChange} />);
+    render(<StatefulAmountTradingPanel initialTradeAmount={1} onAmountChange={onAmountChange} />);
 
     const amountInput = screen.getByTestId("trade-amount-input") as HTMLInputElement;
     await user.clear(amountInput);
@@ -1604,7 +1559,7 @@ describe("TradingPanel", () => {
   it("enables confirmation as soon as a valid share amount is typed", async () => {
     const user = userEvent.setup();
 
-    render(<StatefulLimitTradingPanel initialTradeAmount={0} />);
+    render(<StatefulAmountTradingPanel initialTradeAmount={0} />);
 
     const confirm = screen.getByTestId("trade-confirm");
     expect(confirm).toBeDisabled();
@@ -1612,101 +1567,6 @@ describe("TradingPanel", () => {
     await user.type(screen.getByTestId("trade-amount-input"), "1");
 
     expect(confirm).toBeEnabled();
-  });
-
-  it("allows the limit price to be cleared and replaced before committing on blur", async () => {
-    const onLimitPriceChange = vi.fn();
-    const user = userEvent.setup();
-
-    render(
-      <StatefulLimitTradingPanel initialLimitPrice={40} onLimitPriceChange={onLimitPriceChange} />,
-    );
-
-    const priceInput = screen.getByTestId("limit-price-input") as HTMLInputElement;
-    await user.clear(priceInput);
-
-    expect(priceInput).toHaveValue(null);
-    expect(onLimitPriceChange).not.toHaveBeenCalled();
-
-    await user.type(priceInput, "0.75");
-    expect(priceInput).toHaveValue(0.75);
-    expect(onLimitPriceChange).not.toHaveBeenCalled();
-
-    fireEvent.blur(priceInput);
-
-    expect(onLimitPriceChange).toHaveBeenCalledWith(750);
-    expect(priceInput).toHaveValue(0.75);
-  });
-
-  it("clamps the limit price to the market tick range on blur", async () => {
-    const onLimitPriceChange = vi.fn();
-    const user = userEvent.setup();
-
-    render(
-      <StatefulLimitTradingPanel initialLimitPrice={40} onLimitPriceChange={onLimitPriceChange} />,
-    );
-
-    const priceInput = screen.getByTestId("limit-price-input") as HTMLInputElement;
-    await user.clear(priceInput);
-    await user.type(priceInput, "5000");
-    fireEvent.blur(priceInput);
-
-    expect(onLimitPriceChange).toHaveBeenCalledWith(999);
-    expect(priceInput).toHaveValue(0.999);
-  });
-
-  it("restores the previous valid limit price when the field is empty on blur", async () => {
-    const onLimitPriceChange = vi.fn();
-    const user = userEvent.setup();
-
-    render(
-      <StatefulLimitTradingPanel initialLimitPrice={40} onLimitPriceChange={onLimitPriceChange} />,
-    );
-
-    const priceInput = screen.getByTestId("limit-price-input") as HTMLInputElement;
-    await user.clear(priceInput);
-
-    expect(priceInput).toHaveValue(null);
-
-    fireEvent.blur(priceInput);
-
-    expect(onLimitPriceChange).not.toHaveBeenCalled();
-    expect(priceInput).toHaveValue(0.04);
-  });
-
-  it("does not overwrite an in-progress limit price edit when live props refresh", async () => {
-    const user = userEvent.setup();
-
-    const { rerender } = render(
-      <TradingPanel
-        market={makeMarket()}
-        tradeSelection={{ side: "yes" }}
-        tradeAmount={1}
-        tradePreview={null}
-        tradeSide="Buy"
-        orderType="limit"
-        limitPrice={40}
-      />,
-    );
-
-    const priceInput = screen.getByTestId("limit-price-input") as HTMLInputElement;
-    await user.click(priceInput);
-    await user.clear(priceInput);
-    await user.type(priceInput, "0.75");
-
-    rerender(
-      <TradingPanel
-        market={makeMarket()}
-        tradeSelection={{ side: "yes" }}
-        tradeAmount={1}
-        tradePreview={null}
-        tradeSide="Buy"
-        orderType="limit"
-        limitPrice={60}
-      />,
-    );
-
-    expect(priceInput).toHaveValue(0.75);
   });
 
   it("does not overwrite an in-progress share amount edit when live props refresh", async () => {
@@ -1719,8 +1579,6 @@ describe("TradingPanel", () => {
         tradeAmount={2}
         tradePreview={null}
         tradeSide="Buy"
-        orderType="limit"
-        limitPrice={40}
       />,
     );
 
@@ -1736,8 +1594,6 @@ describe("TradingPanel", () => {
         tradeAmount={9}
         tradePreview={null}
         tradeSide="Buy"
-        orderType="limit"
-        limitPrice={40}
       />,
     );
 
@@ -1748,7 +1604,7 @@ describe("TradingPanel", () => {
     const onAmountChange = vi.fn();
     const user = userEvent.setup();
 
-    render(<StatefulLimitTradingPanel initialTradeAmount={2} onAmountChange={onAmountChange} />);
+    render(<StatefulAmountTradingPanel initialTradeAmount={2} onAmountChange={onAmountChange} />);
 
     const amountInput = screen.getByTestId("trade-amount-input") as HTMLInputElement;
     await user.clear(amountInput);
@@ -1772,8 +1628,6 @@ describe("TradingPanel", () => {
         tradeAmount={2}
         tradePreview={null}
         tradeSide="Buy"
-        orderType="limit"
-        limitPrice={40}
         tradeSubmitStatus={{ kind: "error", message: "Mint is unavailable." }}
         onTradeSubmitStatusDismiss={dismiss}
       />,
@@ -1786,8 +1640,6 @@ describe("TradingPanel", () => {
         tradeAmount={3}
         tradePreview={null}
         tradeSide="Buy"
-        orderType="limit"
-        limitPrice={40}
         tradeSubmitStatus={{ kind: "error", message: "Mint is unavailable." }}
         onTradeSubmitStatusDismiss={dismiss}
       />,
@@ -1798,33 +1650,22 @@ describe("TradingPanel", () => {
     expect(dismiss).toHaveBeenCalledOnce();
   });
 
-  it("respects price ticks for D=1000 and D=1000000", () => {
-    const { rerender } = render(
-      <TradingPanel
-        market={makeMarket({ divisibility: 1_000 })}
-        tradeSelection={{ side: "yes" }}
-        tradeAmount={1}
-        tradePreview={null}
-        tradeSide="Buy"
-        orderType="limit"
-        limitPrice={300}
-      />,
-    );
-
-    expect(screen.getByText(/Price per share: 0\.30 sats \(30\.0%\)/)).toBeInTheDocument();
-
-    rerender(
-      <TradingPanel
-        market={makeMarket({ divisibility: 1_000_000 })}
-        tradeSelection={{ side: "yes" }}
-        tradeAmount={1}
-        tradePreview={null}
-        tradeSide="Buy"
-        orderType="limit"
-        limitPrice={301_000}
-      />,
-    );
-
-    expect(screen.getByText(/Price per share: 301\.00 sats \(30\.1000%\)/)).toBeInTheDocument();
-  });
+  it.each([
+    { divisibility: 1_000, worstPrice: 300, expected: "0.30 sats (30.0%)" },
+    { divisibility: 1_000_000, worstPrice: 301_000, expected: "301.00 sats (30.1000%)" },
+  ] as const)(
+    "shows the accepted price for D=$divisibility",
+    ({ divisibility, worstPrice, expected }) => {
+      render(
+        <TradingPanel
+          market={makeMarket({ divisibility })}
+          tradeSelection={{ side: "yes" }}
+          tradeAmount={1}
+          tradePreview={readyPreview({ priceDenominator: divisibility, worstPrice })}
+          tradeSide="Buy"
+        />,
+      );
+      expect(screen.getByTestId("trade-worst-price")).toHaveTextContent(expected);
+    },
+  );
 });

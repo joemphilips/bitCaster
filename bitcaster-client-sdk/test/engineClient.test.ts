@@ -6,6 +6,7 @@ import {
   BitcasterEngineClient,
   decodeMatchedDelta,
   decodeOrderLifecycleChangedDelta,
+  decodeOrderStatusResponse,
   decodeSettlementGroupStateChangedDelta,
   decodeSubmitOrderResponse,
   EngineClientError,
@@ -15,13 +16,17 @@ import {
   SETTLEMENT_CAPABILITY_RESULT_RESPONSE_BYTES_MAX,
   SUBMIT_ORDER_RESPONSE_BYTES_MAX,
   type EngineAuthorizationRequest,
+  type CreateSettlementCapabilityRequest,
 } from '../src/engineClient.ts'
+import type { components } from '../src/generated/api.ts'
+import { decodeOrderQuotePaymentBounds } from '../src/tradeTicket.ts'
 import { decodeDurableCustodyWalletId } from '../src/durableCustody.ts'
 import {
   deriveDurableRecipientTupleFingerprint,
   type DurableRecipientDeliverySubmission,
 } from '../src/durableRecipientDelivery.ts'
 import { isKind89NostrEvent } from '../src/marketLifecycle.ts'
+import { oracleFixture } from './fixtures/oraclePublication.ts'
 
 const DISPLAY_WALLET_ID = decodeDurableCustodyWalletId('c'.repeat(64))
 
@@ -49,10 +54,7 @@ function durableRecipientStatus(
   submission: DurableRecipientDeliverySubmission,
   state: 'pending' | 'credited',
 ) {
-  const delivery = {
-    ...submission,
-  }
-  delete (delivery as Partial<DurableRecipientDeliverySubmission>).token
+  const { token: _token, ...delivery } = submission
   return {
     delivery,
     tupleFingerprint: deriveDurableRecipientTupleFingerprint(submission),
@@ -100,13 +102,104 @@ test('BitcasterEngineClient.getMarket reads one catalogue row through query ids'
   ])
 })
 
+test('BitcasterEngineClient.getMarketRegistration reads the exact anonymous registration route', async () => {
+  const conditionId = 'condition/one'
+  const body = {
+    conditionId: 'condition/one',
+    creatorPubkey: null,
+    outcomes: ['Yes', 'No'],
+    baseAsset: 'sat',
+    divisibility: 1_000,
+    thumbnailUrl: null,
+    outcomeDetails: [{ name: 'Yes', color: null }, { name: 'No' }],
+  }
+  const requests: Array<{ url: string; method: string | undefined; authorization: string | null }> =
+    []
+  const client = new BitcasterEngineClient({
+    baseUrl: 'https://engine.example',
+    fetchImpl: async (input, init) => {
+      requests.push({
+        url: String(input),
+        method: init?.method ?? 'GET',
+        authorization: new Headers(init?.headers).get('authorization'),
+      })
+      return Response.json(body)
+    },
+  })
+
+  assert.deepEqual(await client.getMarketRegistration(conditionId), body)
+  assert.deepEqual(requests, [
+    {
+      url: 'https://engine.example/api/v1/markets/condition%2Fone/registration',
+      method: 'GET',
+      authorization: null,
+    },
+  ])
+})
+
+test('BitcasterEngineClient.getMarketRegistration maps only 404 to absence', async () => {
+  const missing = new BitcasterEngineClient({
+    baseUrl: 'https://engine.example',
+    fetchImpl: async () => new Response('not found', { status: 404 }),
+  })
+  assert.equal(await missing.getMarketRegistration('missing-condition'), null)
+
+  const unavailable = new BitcasterEngineClient({
+    baseUrl: 'https://engine.example',
+    fetchImpl: async () => new Response('unavailable', { status: 503 }),
+  })
+  await assert.rejects(
+    unavailable.getMarketRegistration('condition-1'),
+    (error: unknown) => error instanceof EngineClientError && error.status === 503,
+  )
+})
+
+test('BitcasterEngineClient.getCreatorMarkets reads the public creator rollup anonymously', async () => {
+  const pubkey = 'ab'.repeat(32)
+  const body = {
+    pubkey,
+    markets: [
+      {
+        conditionId: 'condition-1',
+        totalVolumeSubunits: 12_500,
+        createdAt: '2026-09-01T00:00:00Z',
+        state: 'open',
+      },
+    ],
+  }
+  const requests: Array<{ url: string; authorization: string | null }> = []
+  const client = new BitcasterEngineClient({
+    baseUrl: 'https://engine.example',
+    fetchImpl: async (input, init) => {
+      requests.push({
+        url: String(input),
+        authorization: new Headers(init?.headers).get('authorization'),
+      })
+      return new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    },
+  })
+
+  assert.deepEqual(await client.getCreatorMarkets(pubkey), body)
+  assert.deepEqual(requests, [
+    {
+      url: `https://engine.example/api/v1/creators/${pubkey}/markets`,
+      authorization: null,
+    },
+  ])
+})
+
 test('BitcasterEngineClient reads one bounded condition attestation', async () => {
   const conditionId = 'ab'.repeat(32)
+  const { created_at: createdAt, ...signed } = oracleFixture().attestation
   const body = {
     conditionId,
     attestedOutcome: 'YES',
     oracleWitness: { oracle_sigs: [] },
     registeredAuthority: { eventId: 'event-1' },
+    attestationEvent: { ...signed, createdAt },
   }
   const client = new BitcasterEngineClient({
     baseUrl: 'https://engine.example',
@@ -116,7 +209,39 @@ test('BitcasterEngineClient reads one bounded condition attestation', async () =
         headers: { 'content-type': 'application/json' },
       }),
   })
-  assert.deepEqual(await client.getConditionAttestation(conditionId), body)
+  assert.deepEqual(
+    await client.getConditionAttestation(conditionId),
+    JSON.parse(JSON.stringify(body)),
+  )
+})
+
+test('BitcasterEngineClient refuses missing, altered, or foreign condition attestation events', async () => {
+  const conditionId = 'ab'.repeat(32)
+  const { created_at: createdAt, ...signed } = oracleFixture().attestation
+  const attestationEvent = { ...signed, createdAt }
+  const body = {
+    conditionId,
+    attestedOutcome: 'YES',
+    oracleWitness: { oracle_sigs: [] },
+    registeredAuthority: { eventId: 'event-1' },
+    attestationEvent,
+  }
+  const { attestationEvent: _event, ...missingEvent } = body
+  const cases = [
+    missingEvent,
+    { ...body, conditionId: 'cd'.repeat(32) },
+    { ...body, attestationEvent: { ...attestationEvent, kind: '_89' } },
+    { ...body, attestationEvent: { ...attestationEvent, createdAt: createdAt + 1 } },
+    { ...body, attestationEvent: { ...attestationEvent, sig: '00'.repeat(64) } },
+    { ...body, attestationEvent: { ...attestationEvent, unexpected: true } },
+  ]
+  for (const responseBody of cases) {
+    const client = new BitcasterEngineClient({
+      baseUrl: 'https://engine.example',
+      fetchImpl: async () => new Response(JSON.stringify(responseBody), { status: 200 }),
+    })
+    await assert.rejects(() => client.getConditionAttestation(conditionId))
+  }
 })
 
 test('BitcasterEngineClient.queryMarkets uses OpenAPI query parameter names', async () => {
@@ -137,13 +262,13 @@ test('BitcasterEngineClient.queryMarkets uses OpenAPI query parameter names', as
     pageSize: 5,
     state: 'All',
     sort: 'Trending',
-    tag: 'sports',
+    tag: ['sports', 'politics'],
     creatorPubkey: 'npub1creator',
     cursor: 'next-page',
   })
 
   assert.deepEqual(requests, [
-    'https://engine.example/api/v1/markets/query?state=All&sort=Trending&tag=sports&creator_pubkey=npub1creator&search=weather&page_size=5&cursor=next-page',
+    'https://engine.example/api/v1/markets/query?state=All&sort=Trending&tag=sports&tag=politics&creator_pubkey=npub1creator&search=weather&page_size=5&cursor=next-page',
   ])
 })
 
@@ -274,6 +399,8 @@ test('BitcasterEngineClient.getMarketPriceHistory reads primitive series', async
         JSON.stringify({
           conditionId: 'condition-1',
           timeframe: '24h',
+          snapshotEventOrder: 'source-42',
+          asOf: '2026-05-25T11:00:00Z',
           outcomes: [
             {
               outcomeId: 'YES',
@@ -299,6 +426,8 @@ test('BitcasterEngineClient.getMarketPriceHistory reads primitive series', async
   const history = await client.getMarketPriceHistory('condition-1', '24h')
 
   assert.equal(history.outcomes[0].outcomeId, 'YES')
+  assert.equal(history.snapshotEventOrder, 'source-42')
+  assert.equal(history.asOf, '2026-05-25T11:00:00Z')
   assert.equal(history.outcomes[0].data[0].price, 42)
   assert.equal(history.outcomes[0].data[0].eventOrder, '00000000000000000042')
   assert.deepEqual(requests, [
@@ -321,8 +450,24 @@ test('BitcasterEngineClient.getMarketComments reads condition-keyed comments', a
               content: 'hello',
               createdAt: '2026-05-25T10:00:00Z',
               authorPubkey: 'a'.repeat(64),
+              trade: {
+                fillId: '56ab09f2-4ce0-4f37-80ad-8d5846476042',
+                outcomeId: 'YES',
+                executedAt: '2026-05-25T10:01:00Z',
+                price: 420,
+                priceDenominator: 1000,
+                faceAmountSubunits: 5_000,
+              },
+            },
+            {
+              commentId: 'cff87ca8-552c-4db0-8214-3eb88900e8eb',
+              content: 'coordinate pending',
+              createdAt: '2026-05-25T10:02:00Z',
+              authorPubkey: 'b'.repeat(64),
+              trade: null,
             },
           ],
+          snapshotEventOrder: 'source-43',
         }),
         {
           status: 200,
@@ -335,10 +480,87 @@ test('BitcasterEngineClient.getMarketComments reads condition-keyed comments', a
   const response = await client.getMarketComments('condition-1')
 
   assert.equal(response.comments[0].content, 'hello')
+  assert.equal(response.snapshotEventOrder, 'source-43')
   assert.equal(response.comments[0].createdAt, '2026-05-25T10:00:00Z')
   assert.equal(response.comments[0].authorPubkey, 'a'.repeat(64))
+  assert.deepEqual(response.comments[0].trade, {
+    fillId: '56ab09f2-4ce0-4f37-80ad-8d5846476042',
+    outcomeId: 'YES',
+    executedAt: '2026-05-25T10:01:00Z',
+    price: 420,
+    priceDenominator: 1000,
+    faceAmountSubunits: 5_000,
+  })
+  assert.equal(response.comments[1].trade, null)
   assert.deepEqual(requests, ['https://engine.example/api/v1/markets/condition-1/comments'])
 })
+
+for (const kind of ['comments', 'history'] as const) {
+  for (const [options, expectedQuery] of [
+    [undefined, ''],
+    [{ refresh: false }, ''],
+    [{ minimumEventOrder: 'source /+?&=Ω' }, 'minimumEventOrder=source+%2F%2B%3F%26%3D%CE%A9'],
+    [{ refresh: true }, 'refresh=true'],
+    [
+      { minimumEventOrder: 'source /+?&=Ω', refresh: true },
+      'minimumEventOrder=source+%2F%2B%3F%26%3D%CE%A9&refresh=true',
+    ],
+  ] as const) {
+    test(`public ${kind} snapshot read preserves opaque metadata and query (${expectedQuery || 'none'})`, async () => {
+      const signal = new AbortController().signal
+      const body =
+        kind === 'comments'
+          ? { conditionId: 'condition', snapshotEventOrder: null, comments: [] }
+          : {
+              conditionId: 'condition',
+              snapshotEventOrder: 'server-position',
+              asOf: '2026-10-03T00:00:00Z',
+              timeframe: '7d',
+              outcomes: [],
+            }
+      const expected =
+        kind === 'comments'
+          ? `/comments${expectedQuery ? `?${expectedQuery}` : ''}`
+          : `/price-history?timeframe=7d${expectedQuery ? `&${expectedQuery}` : ''}`
+      let calls = 0
+      const client = new BitcasterEngineClient({
+        baseUrl: 'https://engine.example',
+        fetchImpl: async (input, init) => {
+          calls++
+          assert.equal(String(input), `https://engine.example/api/v1/markets/condition${expected}`)
+          assert.equal(new Headers(init?.headers).has('authorization'), false)
+          if (options !== undefined) assert.equal(init?.signal, signal)
+          return Response.json(body)
+        },
+      })
+      const readOptions = options === undefined ? undefined : { ...options, signal }
+      const result =
+        kind === 'comments'
+          ? await client.getMarketComments('condition', readOptions)
+          : await client.getMarketPriceHistory('condition', undefined, readOptions)
+      assert.deepEqual(result, body)
+      assert.equal(calls, 1)
+    })
+  }
+
+  test(`unavailable ${kind} snapshot remains an error without a fallback or retry`, async () => {
+    let calls = 0
+    const client = new BitcasterEngineClient({
+      baseUrl: 'https://engine.example',
+      fetchImpl: async () => {
+        calls++
+        return Response.json({ title: 'Unavailable' }, { status: 503 })
+      },
+    })
+    await assert.rejects(
+      kind === 'comments'
+        ? client.getMarketComments('condition', { refresh: true })
+        : client.getMarketPriceHistory('condition', 'all', { refresh: true }),
+      (error: unknown) => error instanceof EngineClientError && error.status === 503,
+    )
+    assert.equal(calls, 1)
+  })
+}
 
 test('BitcasterEngineClient.getParticipationScore reads authenticated Score state', async () => {
   const requests: Array<{ url: string; auth?: string }> = []
@@ -1024,7 +1246,7 @@ test('BitcasterEngineClient mirrors settlement-capability lifecycle routes', asy
   const policy = {
     coordinatorPubkey: '79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798',
   }
-  const createRequest = {
+  const createRequest: CreateSettlementCapabilityRequest = {
     stageIdempotencyKey: 'stage-1',
     clientOrderId: 'client-order-1',
     marketId: capability.marketId,
@@ -1039,6 +1261,8 @@ test('BitcasterEngineClient mirrors settlement-capability lifecycle routes', asy
       collateralUnit: 'msat' as const,
       timeInForce: 'FOK' as const,
       expiresAt: null,
+      maxQuotePaymentSubunits: 400,
+      minQuotePaymentSubunits: null,
     },
     artifact: 'Y2Fub25pY2FsLWFydGlmYWN0',
   }
@@ -1269,6 +1493,109 @@ test('BitcasterEngineClient reads an order status without continuation state', a
     divisibility: 1_000,
     activeSettlementGroup: null,
   })
+})
+
+function quoteBoundStatusWire(): components['schemas']['OrderStatusResponse'] {
+  return {
+    orderId: '11111111-1111-4111-8111-111111111111',
+    marketId: 'condition-1-YES',
+    status: 'failed',
+    remainingAmountSubunits: 1_000,
+    filledAmountSubunits: 0,
+    fills: [],
+    amountSubunits: 1_000,
+    outcomeId: 'YES',
+    side: 'Buy',
+    price: 500,
+    placedAt: '2026-07-29T00:00:00.000Z',
+    timeInForce: 'FOK',
+    expiresAt: null,
+    tokenSide: 'Outcome',
+    baseAsset: 'sat',
+    divisibility: 1_000,
+    activeSettlementGroup: null,
+  }
+}
+
+for (const scenario of [
+  {
+    name: 'Buy FOK',
+    side: 'Buy',
+    timeInForce: 'FOK',
+    bounds: { maxQuotePaymentSubunits: Number.MAX_SAFE_INTEGER, minQuotePaymentSubunits: null },
+  },
+  {
+    name: 'Sell FOK',
+    side: 'Sell',
+    timeInForce: 'FOK',
+    bounds: { maxQuotePaymentSubunits: null, minQuotePaymentSubunits: 0 },
+  },
+  {
+    name: 'nullable internal GTC',
+    side: 'Buy',
+    timeInForce: 'GTC',
+    bounds: { maxQuotePaymentSubunits: null, minQuotePaymentSubunits: null },
+  },
+  { name: 'absent internal GTC', side: 'Sell', timeInForce: 'GTC', bounds: {} },
+  { name: 'optional FOK omission', side: 'Buy', timeInForce: 'FOK', bounds: {} },
+] as const) {
+  test(`getOrderStatus preserves exact optional quote bounds: ${scenario.name}`, async () => {
+    const body: components['schemas']['OrderStatusResponse'] = {
+      ...quoteBoundStatusWire(),
+      side: scenario.side,
+      timeInForce: scenario.timeInForce,
+      ...scenario.bounds,
+    }
+    const client = new BitcasterEngineClient({
+      baseUrl: 'https://engine.example',
+      fetchImpl: async () =>
+        new Response(JSON.stringify(body), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+    })
+    const decoded = await client.getOrderStatus(body.marketId, body.orderId)
+    assert.ok(decoded)
+    for (const field of ['maxQuotePaymentSubunits', 'minQuotePaymentSubunits'] as const) {
+      assert.equal(Object.hasOwn(decoded, field), Object.hasOwn(body, field))
+      assert.equal(decoded[field], body[field])
+    }
+  })
+}
+
+for (const field of ['maxQuotePaymentSubunits', 'minQuotePaymentSubunits'] as const) {
+  for (const value of [
+    -1,
+    0.5,
+    Number.MAX_SAFE_INTEGER + 1,
+    NaN,
+    Infinity,
+    '500',
+    false,
+    undefined,
+  ]) {
+    test(`decodeOrderStatusResponse refuses invalid ${field}: ${String(value)}`, () => {
+      assert.throws(
+        () => decodeOrderStatusResponse({ ...quoteBoundStatusWire(), [field]: value }),
+        /order quote-payment bound is invalid/,
+      )
+    })
+  }
+}
+
+test('decodeOrderStatusResponse rejects unknown fields and keeps consent authority separate', () => {
+  assert.throws(() => decodeOrderStatusResponse({ ...quoteBoundStatusWire(), unknownBound: 500 }))
+  for (const side of ['Buy', 'Sell'] as const) {
+    const decoded = decodeOrderStatusResponse({
+      ...quoteBoundStatusWire(),
+      side,
+      maxQuotePaymentSubunits: 500,
+      minQuotePaymentSubunits: 500,
+    })
+    assert.equal(decoded.maxQuotePaymentSubunits, 500)
+    assert.equal(decoded.minQuotePaymentSubunits, 500)
+    assert.throws(() => decodeOrderQuotePaymentBounds(side, decoded), /order quote payment bound/)
+  }
 })
 
 test('BitcasterEngineClient bounds result streams before Response.json allocation', async () => {

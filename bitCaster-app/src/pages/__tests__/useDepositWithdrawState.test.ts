@@ -1,4 +1,9 @@
 import { renderHook, act } from "@testing-library/react";
+import { createElement, type ReactNode } from "react";
+import { WalletBackupPresentationProvider } from "@/hooks/WalletBackupPresentation";
+import type { EncryptedWalletBackupDriverState } from "@/hooks/useEncryptedWalletBackupDriver";
+import { BrowserWalletRecoveryRequiredError } from "@/lib/browserWalletNewWritePermission";
+import i18n from "@/i18n";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { useDepositWithdrawState } from "../useDepositWithdrawState";
 import { useWalletStore } from "@/stores/wallet";
@@ -129,6 +134,64 @@ beforeEach(() => {
 
 describe("useDepositWithdrawState", () => {
   const onDismiss = vi.fn();
+
+  it("keeps the amount while the app backup retries and never auto-submits or bypasses the quote guard", async () => {
+    let value: EncryptedWalletBackupDriverState = {
+      recoveryStatus: { kind: "failed" },
+      retryRecovery: vi.fn(),
+    };
+    const wrapper = ({ children }: { children: ReactNode }) =>
+      createElement(WalletBackupPresentationProvider, { value, children });
+    const { result, rerender } = renderHook(() => useDepositWithdrawState("deposit", onDismiss), {
+      wrapper,
+    });
+    act(() => result.current.onNumpadPress("2"));
+    act(() => result.current.onNumpadPress("3"));
+    await act(async () => result.current.onCreateInvoice());
+    await act(async () => result.current.onCreateInvoice());
+    expect(createBrowserDurableBolt11MintQuote).not.toHaveBeenCalled();
+    value = { ...value, recoveryStatus: { kind: "preparing", reason: "authentication" } };
+    rerender();
+    await act(async () => result.current.onCreateInvoice());
+    expect(result.current.amountSats).toBe(23);
+    expect(createBrowserDurableBolt11MintQuote).not.toHaveBeenCalled();
+    value = { ...value, recoveryStatus: { kind: "ready" } };
+    rerender();
+    expect(createBrowserDurableBolt11MintQuote).not.toHaveBeenCalled();
+    createBrowserDurableBolt11MintQuote.mockRejectedValue(
+      new BrowserWalletRecoveryRequiredError("startup-authentication-pending"),
+    );
+    await act(async () => result.current.onCreateInvoice());
+    expect(createBrowserDurableBolt11MintQuote).toHaveBeenCalledWith({
+      amount: 23_000,
+      mintUrl: "http://localhost:8085",
+      unit: "msat",
+    });
+    expect(result.current.error).toBe(
+      "Wallet backup is not ready. Wait for it to finish, or use Retry wallet backup if it has stopped.",
+    );
+    expect(result.current.amountSats).toBe(23);
+    expect(result.current.bolt11).toBeNull();
+    expect(subscribeActiveBrowserDurableBolt11MintQuote).not.toHaveBeenCalled();
+  });
+
+  it("uses Japanese wallet language for a startup refusal instead of the internal message", async () => {
+    await i18n.changeLanguage("ja");
+    try {
+      createBrowserDurableBolt11MintQuote.mockRejectedValue(
+        new BrowserWalletRecoveryRequiredError("startup-authentication-pending"),
+      );
+      const { result } = renderHook(() => useDepositWithdrawState("deposit", onDismiss));
+      act(() => result.current.onNumpadPress("1"));
+      await act(async () => result.current.onCreateInvoice());
+      expect(result.current.error).toBe(
+        "ウォレットバックアップの準備が完了していません。完了を待つか、停止している場合は「バックアップを再試行」を選んでください。",
+      );
+      expect(result.current.bolt11).toBeNull();
+    } finally {
+      await i18n.changeLanguage("en");
+    }
+  });
 
   describe("initial state", () => {
     it("starts with chooser view for deposit mode", () => {

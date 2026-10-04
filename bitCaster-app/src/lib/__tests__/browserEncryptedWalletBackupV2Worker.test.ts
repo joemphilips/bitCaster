@@ -39,6 +39,7 @@ import { EncryptedWalletBackupV2DexieAuthorityStore } from "../../stores/encrypt
 import {
   createBrowserProofBackupAuthorityRow,
   createBrowserRemoteProofBackupAuthorityRow,
+  requireBrowserLiveProofBackupAuthorityTableRow,
 } from "../../stores/browser-proof-backup-authority";
 import {
   BrowserDurableCustodyAdapter,
@@ -474,179 +475,233 @@ describe("browser V2 backup worker", () => {
     expect(fixture.remote.appliedMutations).toBe(1);
   });
 
-  it("waits for terminal classification acknowledgement before managed removal", async () => {
-    const fixture = await terminalWorkerFixture(1, true, {
-      deferTerminalClassification: true,
-    });
-    const initialDesired = (
-      await fixture.database.encryptedWalletBackupV2DesiredAssets.toArray()
-    )[0];
-    if (initialDesired === undefined) throw new Error("test desired asset is missing");
-    const localAssetKey = initialDesired.localAssetKey;
-    const remote = createRuntimeDriverRemote(fixture.remote);
-    const reportError = vi.fn();
-    let removalWaitStarted = false;
-    let classificationPublicationStarted = false;
-    let releaseClassificationPublication!: () => void;
-    const classificationPublicationGate = new Promise<void>((resolve) => {
-      releaseClassificationPublication = resolve;
-    });
-    let removalSettled = false;
-    enableBackupGate();
-    const driver = createRuntimeDriverForFixture(fixture, fixture.seed, remote, {
-      runtime: { subtle: crypto.subtle, getRandomValues: randomValues },
-      reportError,
-      scheduleManagedRemoveTimeout: () => {
-        removalWaitStarted = true;
-        return () => undefined;
-      },
-    });
+  it.each(["local", "restored"] as const)(
+    "waits for terminal classification acknowledgement before managed removal of %s-origin proofs",
+    async (origin) => {
+      const fixture = await terminalWorkerFixture(1, true, {
+        deferTerminalClassification: true,
+      });
+      const initialDesired = (
+        await fixture.database.encryptedWalletBackupV2DesiredAssets.toArray()
+      )[0];
+      if (initialDesired === undefined) throw new Error("test desired asset is missing");
+      const localAssetKey = initialDesired.localAssetKey;
+      const remote = createRuntimeDriverRemote(fixture.remote);
+      const reportError = vi.fn();
+      let removalWaitStarted = false;
+      let classificationPublicationStarted = false;
+      let releaseClassificationPublication!: () => void;
+      const classificationPublicationGate = new Promise<void>((resolve) => {
+        releaseClassificationPublication = resolve;
+      });
+      let exclusionPublicationStarted = false;
+      let releaseExclusionPublication!: () => void;
+      const exclusionPublicationGate = new Promise<void>((resolve) => {
+        releaseExclusionPublication = resolve;
+      });
+      let removalSettled = false;
+      enableBackupGate();
+      const driver = createRuntimeDriverForFixture(fixture, fixture.seed, remote, {
+        runtime: { subtle: crypto.subtle, getRandomValues: randomValues },
+        reportError,
+        scheduleManagedRemoveTimeout: () => {
+          removalWaitStarted = true;
+          return () => undefined;
+        },
+      });
 
-    try {
-      await vi.waitFor(
-        () =>
-          expect(
-            requireBrowserWalletNewWritePermission({
-              database: fixture.database,
-              scopeId: fixture.scopeId,
-            }),
-          ).resolves.toBeUndefined(),
-        { timeout: 15_000 },
-      );
-      await vi.waitFor(
-        async () => {
-          const desired = await fixture.database.encryptedWalletBackupV2DesiredAssets.get([
+      try {
+        await vi.waitFor(
+          () =>
+            expect(
+              requireBrowserWalletNewWritePermission({
+                database: fixture.database,
+                scopeId: fixture.scopeId,
+              }),
+            ).resolves.toBeUndefined(),
+          { timeout: 15_000 },
+        );
+        await vi.waitFor(
+          async () => {
+            const desired = await fixture.database.encryptedWalletBackupV2DesiredAssets.get([
+              fixture.scopeId,
+              localAssetKey,
+            ]);
+            expect(desired).toMatchObject({
+              activeProofCount: 2,
+              syncState: "acknowledged",
+              removalIntent: null,
+            });
+            expect(fixture.remote.evidence().bundles).toHaveLength(1);
+          },
+          { timeout: 15_000 },
+        );
+        expect(remote.discoverEnrollmentEpoch).toHaveBeenCalledOnce();
+
+        if (origin === "restored") await restoreWorkerProofOrigins(fixture);
+        fixture.remote.afterCommit = async () => {
+          classificationPublicationStarted = true;
+          await classificationPublicationGate;
+        };
+        const classifications = await fixture.classifyTerminalProofs();
+        await vi.waitFor(() => expect(classificationPublicationStarted).toBe(true), {
+          timeout: 15_000,
+        });
+        expect(fixture.remote.appliedMutations).toBe(2);
+
+        const classifiedRows = (await fixture.database.custodyProofs.toArray()).map(
+          decodeBrowserCustodyProofRow,
+        );
+        const target = classifiedRows.find(
+          ({ selectability }) => selectability === "verified-losing",
+        );
+        const sibling = classifiedRows.find(({ selectability }) => selectability === "selectable");
+        if (target === undefined || sibling === undefined)
+          throw new Error("test terminal proof pair is missing");
+        const terminalAuthority = await fixture.database.custodyProofBackupAuthorities.get([
+          fixture.scopeId,
+          target.proofId,
+        ]);
+        expect(terminalAuthority).toMatchObject({
+          backupState: origin === "restored" ? "remote-backed" : "local-only",
+          admissionOperationId: origin === "restored" ? null : expect.any(String),
+          terminalOperationId: classifications[0]!.operationId,
+          terminalAuthority: {
+            kind: "local-operation",
+            operationId: classifications[0]!.operationId,
+          },
+        });
+
+        const removal = driver.removeManagedProofs({
+          asset: fixture.asset,
+          targets: [
+            {
+              proofId: target.proofId,
+              proofFingerprint: target.proofFingerprint,
+              proofRevision: target.revision,
+            },
+          ],
+        });
+        let removalFailure: unknown;
+        void removal.then(
+          () => {
+            removalSettled = true;
+          },
+          (error: unknown) => {
+            removalFailure = error;
+            removalSettled = true;
+          },
+        );
+        await vi.waitFor(() => expect(removalWaitStarted || removalSettled).toBe(true), {
+          timeout: 15_000,
+        });
+
+        expect(removalFailure).toBeUndefined();
+        expect(removalWaitStarted).toBe(true);
+        expect(removalSettled).toBe(false);
+        expect(await fixture.database.custodyProofs.count()).toBe(2);
+        expect(
+          await fixture.database.custodyProofs.get([fixture.scopeId, target.proofId]),
+        ).toMatchObject({ selectability: "verified-losing" });
+        expect(
+          await fixture.database.encryptedWalletBackupV2DesiredAssets.get([
             fixture.scopeId,
             localAssetKey,
-          ]);
-          expect(desired).toMatchObject({
-            activeProofCount: 2,
-            syncState: "acknowledged",
-            removalIntent: null,
-          });
-          expect(fixture.remote.evidence().bundles).toHaveLength(1);
-        },
-        { timeout: 15_000 },
-      );
-      expect(remote.discoverEnrollmentEpoch).toHaveBeenCalledOnce();
+          ]),
+        ).toMatchObject({ syncState: "pending", removalIntent: null, activeProofCount: 2 });
 
-      fixture.remote.afterCommit = async () => {
-        classificationPublicationStarted = true;
-        await classificationPublicationGate;
-      };
-      await fixture.classifyTerminalProofs();
-      await vi.waitFor(() => expect(classificationPublicationStarted).toBe(true), {
-        timeout: 15_000,
-      });
-      expect(fixture.remote.appliedMutations).toBe(2);
-
-      const classifiedRows = (await fixture.database.custodyProofs.toArray()).map(
-        decodeBrowserCustodyProofRow,
-      );
-      const target = classifiedRows.find(
-        ({ selectability }) => selectability === "verified-losing",
-      );
-      const sibling = classifiedRows.find(({ selectability }) => selectability === "selectable");
-      if (target === undefined || sibling === undefined)
-        throw new Error("test terminal proof pair is missing");
-
-      const removal = driver.removeManagedProofs({
-        asset: fixture.asset,
-        targets: [
-          {
-            proofId: target.proofId,
-            proofFingerprint: target.proofFingerprint,
-            proofRevision: target.revision,
+        releaseClassificationPublication();
+        fixture.remote.afterCommit = async () => {
+          exclusionPublicationStarted = true;
+          await exclusionPublicationGate;
+        };
+        await expect(removal).resolves.toMatchObject({ kind: "started" });
+        await vi.waitFor(() => expect(exclusionPublicationStarted).toBe(true), { timeout: 15_000 });
+        expect(
+          await fixture.database.custodyProofs.get([fixture.scopeId, target.proofId]),
+        ).toMatchObject({
+          proofBody: target.proofBody,
+          selectability: "pending-removal",
+        });
+        expect(
+          await fixture.database.custodyProofBackupAuthorities.get([
+            fixture.scopeId,
+            target.proofId,
+          ]),
+        ).toMatchObject({
+          backupState: origin === "restored" ? "remote-backed" : "local-only",
+          terminalOperationId: classifications[0]!.operationId,
+          terminalAuthority: {
+            kind: "local-operation",
+            operationId: classifications[0]!.operationId,
           },
-        ],
-      });
-      void removal.then(
-        () => {
-          removalSettled = true;
-        },
-        () => {
-          removalSettled = true;
-        },
-      );
-      await vi.waitFor(() => expect(removalWaitStarted).toBe(true), { timeout: 15_000 });
+        });
+        releaseExclusionPublication();
+        fixture.remote.afterCommit = null;
 
-      expect(removalSettled).toBe(false);
-      expect(await fixture.database.custodyProofs.count()).toBe(2);
-      expect(
-        await fixture.database.custodyProofs.get([fixture.scopeId, target.proofId]),
-      ).toMatchObject({ selectability: "verified-losing" });
-      expect(
-        await fixture.database.encryptedWalletBackupV2DesiredAssets.get([
+        await vi.waitFor(
+          async () => {
+            expect(
+              await fixture.database.custodyProofBackupAuthorities.get([
+                fixture.scopeId,
+                target.proofId,
+              ]),
+            ).toMatchObject({
+              recordKind: "completed-removal",
+              acknowledgementKind: "receipt",
+              receiptDigest: expect.any(String),
+            });
+          },
+          { timeout: 15_000 },
+        );
+
+        const completedAuthority = await fixture.database.custodyProofBackupAuthorities.get([
           fixture.scopeId,
+          target.proofId,
+        ]);
+        expect(completedAuthority).toMatchObject({
+          recordKind: "completed-removal",
+          proofId: target.proofId,
           localAssetKey,
-        ]),
-      ).toMatchObject({ syncState: "pending", removalIntent: null, activeProofCount: 2 });
+          acknowledgementKind: "receipt",
+          acknowledgedHeadVersion: expect.any(Number),
+          acknowledgedActiveSetDigest: expect.any(String),
+          receiptDigest: expect.any(String),
+        });
+        expect(await fixture.database.custodyProofs.get([fixture.scopeId, target.proofId])).toBe(
+          undefined,
+        );
+        expect(
+          await fixture.database.custodyProofs.get([fixture.scopeId, sibling.proofId]),
+        ).toMatchObject({ selectability: "selectable" });
+        expect(
+          await fixture.database.encryptedWalletBackupV2DesiredAssets.get([
+            fixture.scopeId,
+            localAssetKey,
+          ]),
+        ).toMatchObject({ syncState: "acknowledged", activeProofCount: 1, removalIntent: null });
 
-      releaseClassificationPublication();
-      fixture.remote.afterCommit = null;
-      await expect(removal).resolves.toMatchObject({ kind: "started" });
-
-      await vi.waitFor(
-        async () => {
-          expect(
-            await fixture.database.custodyProofBackupAuthorities.get([
-              fixture.scopeId,
-              target.proofId,
-            ]),
-          ).toMatchObject({
-            recordKind: "completed-removal",
-            acknowledgementKind: "receipt",
-            receiptDigest: expect.any(String),
-          });
-        },
-        { timeout: 15_000 },
-      );
-
-      const completedAuthority = await fixture.database.custodyProofBackupAuthorities.get([
-        fixture.scopeId,
-        target.proofId,
-      ]);
-      expect(completedAuthority).toMatchObject({
-        recordKind: "completed-removal",
-        proofId: target.proofId,
-        localAssetKey,
-        acknowledgementKind: "receipt",
-        acknowledgedHeadVersion: expect.any(Number),
-        acknowledgedActiveSetDigest: expect.any(String),
-        receiptDigest: expect.any(String),
-      });
-      expect(await fixture.database.custodyProofs.get([fixture.scopeId, target.proofId])).toBe(
-        undefined,
-      );
-      expect(
-        await fixture.database.custodyProofs.get([fixture.scopeId, sibling.proofId]),
-      ).toMatchObject({ selectability: "selectable" });
-      expect(
-        await fixture.database.encryptedWalletBackupV2DesiredAssets.get([
-          fixture.scopeId,
-          localAssetKey,
-        ]),
-      ).toMatchObject({ syncState: "acknowledged", activeProofCount: 1, removalIntent: null });
-
-      const finalDescriptor = fixture.remote.evidence().bundles[0];
-      if (finalDescriptor === undefined) throw new Error("test final backup is missing");
-      const finalBackup = await decryptEncryptedWalletBackupV2ProofSetBundle({
-        keyHandle: fixture.input.keyHandle,
-        seed: fixture.seed,
-        expectedAsset: fixture.asset,
-        custodyRevision: BigInt(finalDescriptor.custodyRevision),
-        runtime: { subtle: crypto.subtle, getRandomValues: randomValues },
-        descriptor: finalDescriptor,
-        objects: fixture.remote.storedObjects(finalDescriptor),
-      });
-      expect(finalBackup.proofs.map(({ proofId }) => proofId)).toEqual([sibling.proofId]);
-      expect(reportError).not.toHaveBeenCalled();
-    } finally {
-      releaseClassificationPublication();
-      fixture.remote.afterCommit = null;
-      driver.stop();
-    }
-  });
+        const finalDescriptor = fixture.remote.evidence().bundles[0];
+        if (finalDescriptor === undefined) throw new Error("test final backup is missing");
+        const finalBackup = await decryptEncryptedWalletBackupV2ProofSetBundle({
+          keyHandle: fixture.input.keyHandle,
+          seed: fixture.seed,
+          expectedAsset: fixture.asset,
+          custodyRevision: BigInt(finalDescriptor.custodyRevision),
+          runtime: { subtle: crypto.subtle, getRandomValues: randomValues },
+          descriptor: finalDescriptor,
+          objects: fixture.remote.storedObjects(finalDescriptor),
+        });
+        expect(finalBackup.proofs.map(({ proofId }) => proofId)).toEqual([sibling.proofId]);
+        expect(reportError).not.toHaveBeenCalled();
+      } finally {
+        releaseClassificationPublication();
+        releaseExclusionPublication();
+        fixture.remote.afterCommit = null;
+        driver.stop();
+      }
+    },
+  );
 
   it("reuses an authenticated remote seal with the predecessor revision", async () => {
     const fixture = await terminalWorkerFixture();
@@ -1589,46 +1644,133 @@ describe("browser V2 backup worker", () => {
     }
   });
 
-  it("retains exact removal bytes across restart until current-head recovery commits", async () => {
-    const { fixture, target } = await preparedExplicitRemovalFixture(false);
-    fixture.remote.failAfterCommit = true;
-    fixture.remote.readObjectFailure = new EncryptedWalletBackupV2HttpTransportError("unavailable");
+  it.each(["remote-seal", "local-operation"] as const)(
+    "retains exact restored %s removal bytes across restart until current-head recovery commits",
+    async (terminalOrigin) => {
+      const { fixture, target } = await preparedExplicitRemovalFixture(
+        false,
+        false,
+        terminalOrigin,
+      );
+      fixture.remote.failAfterCommit = true;
+      fixture.remote.readObjectFailure = new EncryptedWalletBackupV2HttpTransportError(
+        "unavailable",
+      );
 
-    await expect(
-      runBrowserEncryptedWalletBackupV2WorkerCycle({
-        ...fixture.input,
-        remoteOrigin: "https://backup.example",
-        lockManager: immediateLockManager,
-      }),
-    ).resolves.toEqual({ kind: "retry-pending", minimumRetryDelayMilliseconds: 5_000 });
-    const prepared = await fixture.store.readPreparedMutation();
-    expect(prepared).not.toBeNull();
-    const preparedDigest = prepared?.requestDigest;
-    fixture.database.close();
-    const reopened = new BitcasterDB(browserWalletDatabaseName(fixture.scopeId));
-    openDatabases.push(reopened);
-    fixture.remote.failures.push(new EncryptedWalletBackupV2HttpTransportError("replay-rejected"));
+      await expect(
+        runBrowserEncryptedWalletBackupV2WorkerCycle({
+          ...fixture.input,
+          remoteOrigin: "https://backup.example",
+          lockManager: immediateLockManager,
+        }),
+      ).resolves.toEqual({ kind: "retry-pending", minimumRetryDelayMilliseconds: 5_000 });
+      const prepared = await fixture.store.readPreparedMutation();
+      expect(prepared).not.toBeNull();
+      const preparedDigest = prepared?.requestDigest;
+      const preparedBytes = prepared!.canonicalUploadGroup.slice();
+      const mutationCount = fixture.remote.mutations.length;
+      fixture.database.close();
+      const reopened = new BitcasterDB(browserWalletDatabaseName(fixture.scopeId));
+      openDatabases.push(reopened);
+      fixture.remote.failures.push(
+        new EncryptedWalletBackupV2HttpTransportError("replay-rejected"),
+      );
 
-    await expect(
-      runBrowserEncryptedWalletBackupV2WorkerCycle({
-        ...fixture.input,
+      await expect(
+        runBrowserEncryptedWalletBackupV2WorkerCycle({
+          ...fixture.input,
+          database: reopened,
+          remoteOrigin: "https://backup.example",
+          lockManager: immediateLockManager,
+        }),
+      ).resolves.toEqual({ kind: "committed" });
+      const reopenedStore = new EncryptedWalletBackupV2DexieAuthorityStore({
         database: reopened,
-        remoteOrigin: "https://backup.example",
-        lockManager: immediateLockManager,
-      }),
-    ).resolves.toEqual({ kind: "committed" });
-    const reopenedStore = new EncryptedWalletBackupV2DexieAuthorityStore({
-      database: reopened,
-      scopeId: fixture.scopeId,
-      realm: REALM,
-      walletId: fixture.input.keyHandle.walletId,
-      enrollmentEpoch: 1,
-      requestAuthPublicKey: fixture.input.keyHandle.requestAuthPublicKey,
-    });
-    expect(preparedDigest).toEqual(expect.any(String));
-    expect(await reopenedStore.readPreparedMutation()).toBeNull();
-    expect(await reopened.custodyProofs.get([fixture.scopeId, target.proofId])).toBeUndefined();
-  });
+        scopeId: fixture.scopeId,
+        realm: REALM,
+        walletId: fixture.input.keyHandle.walletId,
+        enrollmentEpoch: 1,
+        requestAuthPublicKey: fixture.input.keyHandle.requestAuthPublicKey,
+      });
+      expect(preparedDigest).toEqual(expect.any(String));
+      expect(fixture.remote.mutations).toHaveLength(mutationCount + 1);
+      const retriedBytes = fixture.remote.mutations.at(-1)!.bytes;
+      const exactRetryBytes =
+        retriedBytes.length === preparedBytes.length &&
+        retriedBytes.every((byte, index) => byte === preparedBytes[index]);
+      expect(exactRetryBytes, "Cold retry must preserve exact canonical upload-group bytes.").toBe(
+        true,
+      );
+      expect(await reopenedStore.readPreparedMutation()).toBeNull();
+      expect(await reopened.custodyProofs.get([fixture.scopeId, target.proofId])).toBeUndefined();
+    },
+  );
+
+  it.each([
+    {
+      failure: "transport-failure",
+      result: { kind: "retry-pending", minimumRetryDelayMilliseconds: 5_000 },
+      state: "pending-removal",
+    },
+    { failure: "conflict", result: { kind: "conflict-recovered" }, state: "verified-losing" },
+    {
+      failure: "quota-exceeded",
+      result: { kind: "service-quota-pending" },
+      state: "verified-losing",
+    },
+  ] as const)(
+    "retains restored locally classified custody after a $failure removal write",
+    async ({ failure, result, state }) => {
+      const { fixture, target } = await preparedExplicitRemovalFixture(
+        true,
+        false,
+        "local-operation",
+      );
+      const key = [fixture.scopeId, target.proofId] as [string, string];
+      const acceptedBefore = await fixture.store.readAcceptedHead();
+      const authorityBefore = requireBrowserLiveProofBackupAuthorityTableRow(
+        await fixture.database.custodyProofBackupAuthorities.get(key),
+        key,
+      );
+      if (authorityBefore === undefined) throw new Error("test restored authority is missing");
+      fixture.remote.failures.push(failure);
+      await expect(
+        runBrowserEncryptedWalletBackupV2WorkerCycle({
+          ...fixture.input,
+          remoteOrigin: "https://backup.example",
+          lockManager: immediateLockManager,
+        }),
+      ).resolves.toEqual(result);
+      expect(await fixture.database.custodyProofs.get(key)).toMatchObject({
+        proofBody: target.proofBody,
+        proofFingerprint: target.proofFingerprint,
+        selectability: state,
+      });
+      expect(authorityBefore).toMatchObject({
+        backupState: "remote-backed",
+        admissionOperationId: null,
+        terminalAuthority: { kind: "local-operation" },
+      });
+      expect(await fixture.database.custodyProofBackupAuthorities.get(key)).toMatchObject({
+        backupState: "remote-backed",
+        admissionOperationId: null,
+        backupRecordId: authorityBefore.backupRecordId,
+        backupRecordCommitment: authorityBefore.backupRecordCommitment,
+        derivationLocator: authorityBefore.derivationLocator,
+        terminalOperationId: authorityBefore.terminalOperationId,
+        terminalAuthority: authorityBefore.terminalAuthority,
+        proofState: state,
+        proofRevision: state === "pending-removal" ? target.revision + 1 : target.revision + 2,
+        updatedAtMs: expect.any(Number),
+      });
+      expect(await fixture.store.readAcceptedHead()).toMatchObject({
+        headVersion: acceptedBefore!.headVersion,
+        activeSetDigest: acceptedBefore!.activeSetDigest,
+      });
+      expect(fixture.remote.evidence().bundles).toHaveLength(1);
+      expect(await fixture.database.custodyProofs.count()).toBe(2);
+    },
+  );
 
   it("rolls back exact-head acknowledgement without deleting prepared removal evidence", async () => {
     const { fixture, target } = await preparedExplicitRemovalFixture(true);
@@ -2144,6 +2286,37 @@ async function readCurrentOrdinaryProofIds(
   return new Set(restored.proofs.map(({ proofId }) => proofId));
 }
 
+/** Restore only from the real authenticated and decrypted current proof bundle. */
+async function restoreWorkerProofOrigins(
+  fixture: Awaited<ReturnType<typeof terminalWorkerFixture>>,
+): Promise<void> {
+  const descriptor = fixture.remote.evidence().bundles[0];
+  if (descriptor === undefined) throw new Error("test current backup is missing");
+  const restored = await decryptEncryptedWalletBackupV2ProofSetBundle({
+    keyHandle: fixture.input.keyHandle,
+    seed: fixture.seed,
+    expectedAsset: fixture.asset,
+    custodyRevision: BigInt(descriptor.custodyRevision),
+    runtime: { subtle: crypto.subtle, getRandomValues: randomValues },
+    descriptor,
+    objects: fixture.remote.storedObjects(descriptor),
+  });
+  for (const entry of restored.proofs) {
+    const raw = await fixture.database.custodyProofs.get([fixture.scopeId, entry.proofId]);
+    if (raw === undefined) throw new Error("test restored proof is missing");
+    const proof = decodeBrowserCustodyProofRow(raw);
+    await fixture.database.custodyProofBackupAuthorities.put(
+      createBrowserRemoteProofBackupAuthorityRow({
+        proof,
+        observedAtMs: 10,
+        derivationLocator: entry.locator,
+        restoreProofId: entry.proofId,
+        restoreProofCommitment: digestEncryptedWalletBackupV2TerminalProofCommitment(entry),
+      }),
+    );
+  }
+}
+
 async function terminalWorkerFixture(
   losingCount = 1,
   includeSibling = true,
@@ -2259,18 +2432,22 @@ async function terminalWorkerFixture(
   });
   await database.encryptedWalletBackupV2DesiredAssets.put(initialDesired);
   const classifyTerminalProofs = async () => {
+    const classifications = [];
     for (const [index, predecessor] of predecessors.entries()) {
-      await commitBrowserCtfTerminalOperation({
-        adapter: custody,
-        scope,
-        owner: { ...owner, observedAtMs: 10 + index * 10 },
-        operationId: `ctf-redeem-worker-${index}`,
-        mintUrl: "https://mint.example",
-        proofs: [proofFromWorkerRow(predecessor)],
-        predecessorProofs: [predecessor],
-        publicKey: CTF_PUBLIC_KEY,
-      });
+      classifications.push(
+        await commitBrowserCtfTerminalOperation({
+          adapter: custody,
+          scope,
+          owner: { ...owner, observedAtMs: 10 + index * 10 },
+          operationId: `ctf-redeem-worker-${index}`,
+          mintUrl: "https://mint.example",
+          proofs: [proofFromWorkerRow(predecessor)],
+          predecessorProofs: [predecessor],
+          publicKey: CTF_PUBLIC_KEY,
+        }),
+      );
     }
+    return classifications;
   };
   if (options.deferTerminalClassification !== true) await classifyTerminalProofs();
   const siblingLocator = { ...locators[locators.length - 1]!, counter: losingCount + 1 };
@@ -2421,8 +2598,14 @@ async function prepareRemoteSealReuse(
   });
 }
 
-async function preparedExplicitRemovalFixture(includeSibling: boolean, includeOtherAsset = false) {
-  const fixture = await terminalWorkerFixture(1, includeSibling);
+async function preparedExplicitRemovalFixture(
+  includeSibling: boolean,
+  includeOtherAsset = false,
+  terminalOrigin: "remote-seal" | "local-operation" = "remote-seal",
+) {
+  const fixture = await terminalWorkerFixture(1, includeSibling, {
+    deferTerminalClassification: terminalOrigin === "local-operation",
+  });
   if (includeOtherAsset) {
     const unrelated = await prepareEncryptedWalletBackupV2TransportBundle({
       keyHandle: fixture.input.keyHandle,
@@ -2438,7 +2621,15 @@ async function preparedExplicitRemovalFixture(includeSibling: boolean, includeOt
       stalePreparedMutation: { mutationId: "00".repeat(16), requestDigest: "00".repeat(32) },
     });
   }
-  await prepareRemoteSealReuse(fixture);
+  if (terminalOrigin === "local-operation") {
+    await expect(runBrowserEncryptedWalletBackupV2WorkerCycle(fixture.input)).resolves.toEqual({
+      kind: "committed",
+    });
+    await restoreWorkerProofOrigins(fixture);
+    await fixture.classifyTerminalProofs();
+  } else {
+    await prepareRemoteSealReuse(fixture);
+  }
   await expect(
     runBrowserEncryptedWalletBackupV2WorkerCycle({
       ...fixture.input,

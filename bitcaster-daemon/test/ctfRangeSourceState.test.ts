@@ -216,6 +216,7 @@ test('mixed range source commits and replays canonical authorization without leg
         divisibility: preparation.divisibility,
         authorizationExpiresAtUnixSeconds: preparation.expiry,
         preparationBytes: encodeCtfRangeOrderPreparationArtifact(preparation),
+        feeConsentBytes: null,
         createdAtMs: 11,
       })
     })
@@ -386,6 +387,8 @@ function persistedPreparation() {
     tokenSide: 'Outcome' as const,
     side: 'Sell' as const,
     price: 2,
+    maxQuotePaymentSubunits: null,
+    minQuotePaymentSubunits: 2,
     amountSubunits: 1_000,
     minimumFillAmountSubunits: 1_000,
     baseAsset: 'sat' as const,

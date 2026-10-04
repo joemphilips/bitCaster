@@ -9,6 +9,11 @@ import {
   type MarketBaseAsset,
   type MarketDivisibility,
 } from './marketUnits.ts'
+import {
+  MAX_MARKET_CREATION_REQUEST_BYTES,
+  prepareMarketCreationRequest,
+  type PreparedMarketCreationRequest,
+} from './marketCreationRequest.ts'
 
 export interface CreateMarketOutcome {
   name: string
@@ -111,27 +116,25 @@ export async function createMarketViaEngine(
   metadata: CreateMarketRequest,
   thumbnailBytes?: MarketThumbnailBytes,
 ): Promise<CreateMarketResponse> {
+  return createPreparedMarketViaEngine(
+    client,
+    conditionId,
+    await prepareMarketCreationRequest(metadata, thumbnailBytes),
+  )
+}
+
+export async function createPreparedMarketViaEngine(
+  client: BitcasterEngineClient,
+  conditionId: string,
+  prepared: PreparedMarketCreationRequest,
+): Promise<CreateMarketResponse> {
   const { baseUrl, fetchImpl, authorization } = getEngineClientInternals(client)
   const url = `${baseUrl}/api/v1/markets/${encodeURIComponent(conditionId)}`
-  const formData = new FormData()
-  formData.append('metadata', JSON.stringify(metadata))
-  if (thumbnailBytes) {
-    formData.append(
-      'thumbnail',
-      new Blob([toArrayBuffer(thumbnailBytes.data)], {
-        type: thumbnailBytes.contentType,
-      }),
-      thumbnailBytes.filename,
-    )
-  }
-
-  // Multipart bodies need pre-serialization so the NIP-98 `payload` tag binds
-  // to the exact bytes (including the random multipart boundary) that fetch
-  // will ship. Construct a transient Request to serialize, hash, then send the
-  // same bytes with the same Content-Type so server-side SHA-256 matches.
-  const serialized = new Request(url, { method: 'POST', body: formData })
-  const bodyBytes = await serialized.arrayBuffer()
-  const contentType = serialized.headers.get('Content-Type') ?? 'multipart/form-data'
+  if (prepared.bodyBytes.byteLength > MAX_MARKET_CREATION_REQUEST_BYTES)
+    throw new Error('Market creation exceeds the 6 MiB request limit.')
+  // Freeze the exact authorized delivery across an asynchronous signer call.
+  const bodyBytes = prepared.bodyBytes.slice(0)
+  const { contentType } = prepared
   const payloadHash = await sha256Hex(bodyBytes)
   const headers: Record<string, string> = { 'Content-Type': contentType }
   if (authorization) {
@@ -267,10 +270,54 @@ function parseMarketOutcomeDetails(
     names.add(detail.name)
 
     const color = detail.color
-    if (color !== undefined && (typeof color !== 'string' || !/^#[0-9A-F]{6}$/.test(color))) {
+    if (
+      color !== undefined &&
+      color !== null &&
+      (typeof color !== 'string' || !/^#[0-9A-F]{6}$/.test(color))
+    ) {
       throw new Error('create-market response had invalid outcome details')
     }
-    return { name: detail.name, ...(color !== undefined ? { color } : {}) }
+    return { name: detail.name, ...(typeof color === 'string' ? { color } : {}) }
+  })
+}
+
+export function recoverCreatedMarketResponse(
+  value: unknown,
+  expected: {
+    conditionId: string
+    creatorPubkey: string
+    outcomes: readonly string[]
+    baseAsset: MarketBaseAsset
+    divisibility: number
+  },
+): CreateMarketResponse | null {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return null
+  const entry = value as Record<string, unknown>
+  if (
+    entry.conditionId !== expected.conditionId ||
+    entry.creatorPubkey !== expected.creatorPubkey ||
+    entry.baseAsset !== expected.baseAsset ||
+    entry.divisibility !== expected.divisibility ||
+    !Array.isArray(entry.outcomes) ||
+    expected.outcomes.length < 2
+  )
+    return null
+  const actual = new Set(entry.outcomes)
+  const required = new Set(expected.outcomes)
+  if (
+    actual.size !== entry.outcomes.length ||
+    required.size !== expected.outcomes.length ||
+    actual.size !== required.size ||
+    !expected.outcomes.every((outcome) => actual.has(outcome))
+  )
+    return null
+  return parseCreateMarketResponse({
+    conditionId: entry.conditionId,
+    marketsCreated: entry.outcomes.map((outcome) => `${entry.conditionId}-${outcome}`),
+    baseAsset: entry.baseAsset,
+    divisibility: entry.divisibility,
+    thumbnailUrl: entry.thumbnailUrl ?? null,
+    ...(entry.outcomeDetails === undefined ? {} : { outcomeDetails: entry.outcomeDetails }),
   })
 }
 
@@ -328,11 +375,4 @@ function readProblemDetail(body: unknown): unknown {
     message?: unknown
   }
   return problem.detail ?? problem.title ?? problem.message ?? JSON.stringify(body)
-}
-
-function toArrayBuffer(data: ArrayBuffer | ArrayBufferView): ArrayBuffer {
-  if (data instanceof ArrayBuffer) return data
-  const copy = new Uint8Array(data.byteLength)
-  copy.set(new Uint8Array(data.buffer, data.byteOffset, data.byteLength))
-  return copy.buffer
 }

@@ -1,9 +1,11 @@
 #!/usr/bin/env node
 
 import {
+  Amount,
   Mint as CashuMint,
   Wallet as CashuWallet,
   getEncodedToken,
+  splitAmount,
   type MintQuoteResponse,
   type MintKeys,
   type PartialMintQuoteResponse,
@@ -31,8 +33,8 @@ if (!mode || !mintUrl || !rawAmount) {
 }
 
 const amountMinorUnits = Number(rawAmount)
-if (!Number.isInteger(amountMinorUnits) || amountMinorUnits <= 0) {
-  throw new Error(`amount must be a positive integer: ${rawAmount}`)
+if (!Number.isSafeInteger(amountMinorUnits) || amountMinorUnits <= 0) {
+  throw new Error('amount must be a positive safe integer')
 }
 
 if (mode === 'sats') {
@@ -88,18 +90,31 @@ async function mintRegularProofs(
   const keyset = await getActiveCollateralKeyset(mint, unit)
   const wallet = new CashuWallet(mint, { unit })
   await wallet.loadMint()
-  const grossAmountSubunits = computeGrossCtfInputAmountSubunits({
-    faceAmountSubunits,
-    keyset: {
-      id: keyset.id,
-      keys: keyset.keys,
-      input_fee_ppk: keyset.input_fee_ppk ?? 0,
-    },
-  })
-  const mintAmountSubunits = exactOutput ? faceAmountSubunits : grossAmountSubunits
+  const mintAmountSubunits = exactOutput
+    ? faceAmountSubunits
+    : regularMintAmountWithFeeHeadroom(wallet, keyset, faceAmountSubunits)
   const quote = await wallet.createMintQuote(mintAmountSubunits)
   await waitForPaidQuote(wallet, quote)
   return wallet.mintProofs(mintAmountSubunits, quote.quote)
+}
+
+function regularMintAmountWithFeeHeadroom(
+  wallet: CashuWallet,
+  keyset: MintKeys,
+  faceAmountSubunits: number,
+): number {
+  // Exact net can be unreachable at a proof-count fee step. Regular fixture
+  // tokens need at least the requested value; CTF splits keep the exact planner.
+  let gross = faceAmountSubunits
+  for (let attempt = 0; attempt < 32; attempt += 1) {
+    const proofCount = splitAmount(Amount.from(gross), keyset.keys).length
+    const fee = wallet.getFeesForKeyset(proofCount, keyset.id).toNumber()
+    if (gross - fee >= faceAmountSubunits) return gross
+    gross = faceAmountSubunits + fee
+    if (!Number.isSafeInteger(gross))
+      throw new Error('regular mint amount exceeds the safe integer bound')
+  }
+  throw new Error('regular mint fee headroom did not converge within its bound')
 }
 
 async function mintRegularProofsForCtfSplit(

@@ -9,6 +9,7 @@ import {
   type DurableCustodyExactArtifact,
   type DurableCustodyRecord,
 } from '@bitcaster-market/client-sdk/durableCustody'
+import { assertCounterMintBinding } from './counterMintBindingSqlite.ts'
 
 export const CUSTODY_ACTIVE_PAGE_LIMIT = 256
 export const CUSTODY_ACTIVE_PAGE_BYTES_MAX = 4 * 1_024 * 1_024
@@ -403,6 +404,22 @@ export class DurableCustodySqliteStore {
           replayCutoffObserved: number
         }
       | undefined
+    const rejection = this.#database
+      .prepare(
+        `SELECT code, predecessor_disposition AS predecessorDisposition,
+         rejection_handle AS rejectionHandle, rejection_fingerprint AS rejectionFingerprint,
+         rejection_artifact_id AS rejectionArtifactId
+       FROM custody_terminal_mint_rejections WHERE scope_id = ? AND operation_id = ?`,
+      )
+      .get(row.scopeId, operationId) as
+      | {
+          code: 13015
+          predecessorDisposition: 'retain'
+          rejectionHandle: string
+          rejectionFingerprint: string
+          rejectionArtifactId: string
+        }
+      | undefined
     const record: DurableCustodyRecord = {
       schemaVersion: 1,
       revision: row.revision,
@@ -465,7 +482,18 @@ export class DurableCustodySqliteStore {
               ? null
               : this.#artifactReference(row.scopeId, row.resultArtifactId),
         },
-        terminalMintRejection: null,
+        terminalMintRejection:
+          rejection === undefined
+            ? null
+            : {
+                kind: 'authenticated-terminal-mint-rejection',
+                code: rejection.code,
+                predecessorDisposition: rejection.predecessorDisposition,
+                rejectionHandle: rejection.rejectionHandle,
+                rejectionFingerprint: rejection.rejectionFingerprint,
+                exactRejection: this.#artifactReference(row.scopeId, rejection.rejectionArtifactId),
+                selectedSuccessorProofIds: [],
+              },
         proofStorage: {
           storageClass: row.proofStorageClass,
           pinReasons: this.#pinReasons(row.scopeId, operationId),
@@ -635,7 +663,10 @@ export class DurableCustodySqliteStore {
         artifactKind(input.reference.artifactId),
         body,
         input.reference.fingerprint,
-        input.reference.artifactId.endsWith(':private') ? 1 : 0,
+        input.reference.artifactId.endsWith(':private') ||
+          input.reference.artifactId.endsWith(':terminal-mint-rejection')
+          ? 1
+          : 0,
         input.createdAtMs,
       )
     if (result.changes !== 1) {
@@ -645,6 +676,7 @@ export class DurableCustodySqliteStore {
 
   putProofCas(row: CustodyProofSqliteRow, expectedRevision: number | null): void {
     assertProofRow(row)
+    this.assertProofNotRetired(row.scopeId, row.proofId)
     if (expectedRevision === null) {
       if (row.revision !== 0) throw new Error('new custody proof revision is invalid')
       const inserted = this.#database.prepare(CUSTODY_PROOF_INSERT_SQL).run(...proofSqlValues(row))
@@ -702,6 +734,7 @@ export class DurableCustodySqliteStore {
     const read = this.#database.prepare(CUSTODY_PROOF_SELECT_SQL)
     for (const { proof, expectedRevision } of rows) {
       assertProofRow(proof)
+      this.assertProofNotRetired(proof.scopeId, proof.proofId)
       if (expectedRevision === null) {
         if (proof.revision !== 0) throw new Error('new custody proof revision is invalid')
         const inserted = insert.run(...proofSqlValues(proof))
@@ -723,8 +756,20 @@ export class DurableCustodySqliteStore {
     return decodeProofSqlRow(this.#database.prepare(CUSTODY_PROOF_SELECT_SQL).get(scopeId, proofId))
   }
 
+  assertProofNotRetired(scopeId: string, proofId: string): void {
+    if (
+      this.#database
+        .prepare(
+          'SELECT 1 FROM target_wallet_proofs WHERE scope_id = ? AND retired_custody_proof_id = ? LIMIT 1',
+        )
+        .get(scopeId, proofId) !== undefined
+    )
+      throw new Error('custody proof is permanently retired')
+  }
+
   putCounterCas(row: CustodyCounterSqliteRow, expectedRevision: number | null): void {
     assertCounterRow(row)
+    assertCounterMintBinding(this.#database, row.scopeId, row.keysetId, row.normalizedMint)
     if (expectedRevision === null) {
       if (row.revision !== 0) {
         throw new Error('new custody counter revision is invalid')
@@ -1008,6 +1053,7 @@ function artifactKind(artifactId: string): string {
   if (artifactId.endsWith(':output')) return 'output-plan'
   if (artifactId.endsWith(':private')) return 'private-material'
   if (artifactId.endsWith(':result')) return 'exact-result'
+  if (artifactId.endsWith(':terminal-mint-rejection')) return 'terminal-mint-rejection'
   if (artifactId.endsWith(':delivery')) return 'delivery-payload'
   throw new Error('custody artifact identifier is unsupported by target v1')
 }

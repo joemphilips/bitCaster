@@ -20,6 +20,24 @@ export interface CtfRangeOrderFeeFacts {
   readonly sourceMode: CtfRangeSourceMode
 }
 
+export function decodeCtfRangeOrderFeeFacts(value: unknown): CtfRangeOrderFeeFacts {
+  const facts = requireFeeFacts(value, 'CTF range fee consent')
+  const record = value as Record<string, unknown>
+  const fields = [
+    'settlementInputFeeSubunits',
+    'sourcePreparationFeeSubunits',
+    'consolidationFeeSubunits',
+    'settlementAsset',
+    'sourcePreparationAsset',
+    'consolidationAsset',
+    'sourceMode',
+  ]
+  if (Object.keys(record).length !== fields.length || fields.some((field) => !(field in record))) {
+    throw new Error('CTF range fee consent has invalid fields')
+  }
+  return facts
+}
+
 /**
  * Composes exact fee facts from the shared source plan and authorization.
  * The consolidation cost is supplied separately because consolidation is a

@@ -7,6 +7,7 @@ import {
   type Proof,
   type SerializedBlindedSignature,
 } from "@cashu/cashu-ts";
+import { runDurableWalletMeltOperation } from "@bitcaster/client-sdk/durableWalletMelt";
 import {
   assertDurableCustodyMintOperationAuthority,
   prepareDurableCustodyMintOperationAuthority,
@@ -26,17 +27,11 @@ import {
   bindDurableCustodyProofOperation,
 } from "@bitcaster/client-sdk/durableCustodyProofOperationRecord";
 import {
-  decodeDurableWalletOperation,
-  hydrateDurableWalletProof,
   requireDurableWalletOperationFromCustody,
-  serializeDurableWalletProof,
+  serializeDurableWalletMeltOperation,
   toDurableCustodyProofOperationInput,
   type DurableWalletMeltOperation,
 } from "@bitcaster/client-sdk/durableWalletOperation";
-import {
-  deserializeDurableCustodyOutput,
-  serializeDurableCustodyOutput,
-} from "@bitcaster/client-sdk/durableCustodyProofOperation";
 import {
   decodeDurableCustodyProofMaterialRecord,
   deserializeDurableCustodyProofArtifact,
@@ -54,6 +49,20 @@ const SCOPE_LEASE_MS = 10 * 60 * 1_000;
 const RECOVERY_PAGE_LIMIT = 64;
 const PRODUCT_MSAT_ERROR = "browser wallet melt requires msat";
 const WALLET_MELT_OPERATION_PREFIX = "wallet-melt:";
+
+type BrowserMeltOperationSnapshot = NonNullable<
+  Awaited<ReturnType<BrowserDurableCustodyAdapter["readOperationSnapshot"]>>
+>;
+
+interface BrowserMeltProtocolInput {
+  readonly input: BrowserDurableWalletMeltInput;
+  readonly scope: ReturnType<typeof browserWalletScope>;
+  readonly adapter: BrowserDurableCustodyAdapter;
+  readonly owner: DurableCustodyOwnerAuthorization;
+  readonly now: () => number;
+  readonly snapshot: BrowserMeltOperationSnapshot;
+  readonly operation: DurableWalletMeltOperation;
+}
 
 export interface BrowserDurableWalletMeltWallet {
   prepareMelt(
@@ -179,21 +188,24 @@ export async function recoverBrowserDurableWalletMeltsInPass(input: {
             const operation = meltOperationFromSnapshot(snapshot.record, snapshot.artifacts);
             const wallet = await input.walletForMint(operation.mintUrl, "msat");
             input.context.requireCapturedProfile();
-            await resumeRecoveredMeltWithSnapshot({
-              input: {
-                quote: persistedMeltQuote(operation),
-                mintUrl: operation.mintUrl,
-                proofs: [],
-                wallet,
-                context: input.context,
+            await runMeltProtocolWithSnapshot(
+              {
+                input: {
+                  quote: persistedMeltQuote(operation),
+                  mintUrl: operation.mintUrl,
+                  proofs: [],
+                  wallet,
+                  context: input.context,
+                },
+                scope,
+                adapter,
+                owner,
+                now,
+                snapshot,
+                operation,
               },
-              scope,
-              adapter,
-              owner,
-              now,
-              snapshot,
-              operation,
-            });
+              "recover",
+            );
             input.context.requireCapturedProfile();
           } catch {
             pending += 1;
@@ -245,7 +257,12 @@ async function runMeltWithOwner(
     const canonicalProofs = await canonicalMeltProofs(adapter, scope, input);
     const preview = await input.wallet.prepareMelt("bolt11", input.quote, canonicalProofs);
     input.context.requireCapturedProfile();
-    const operation = serializeMeltOperation(operationId, input.mintUrl, preview);
+    const operation = serializeDurableWalletMeltOperation({
+      operationId,
+      mintUrl: input.mintUrl,
+      unit: "msat",
+      preview,
+    });
     const binding = createMeltBinding(scope, operation, input.wallet);
     const predecessors = await meltPredecessorRows(adapter, scope.scopeId, operation);
     await adapter.transact(
@@ -265,179 +282,66 @@ async function runMeltWithOwner(
   }
 
   const operation = meltOperationFromSnapshot(snapshot.record, snapshot.artifacts);
-  const resume = wasPersistedBeforeCall ? resumeRecoveredMeltWithSnapshot : resumeMeltWithSnapshot;
-  return resume({ input, scope, adapter, owner, now, snapshot, operation });
+  return runMeltProtocolWithSnapshot(
+    { input, scope, adapter, owner, now, snapshot, operation },
+    wasPersistedBeforeCall ? "recover" : "execute",
+  );
 }
 
-async function resumeMeltWithSnapshot(input: {
-  input: BrowserDurableWalletMeltInput;
-  scope: ReturnType<typeof browserWalletScope>;
-  adapter: BrowserDurableCustodyAdapter;
-  owner: DurableCustodyOwnerAuthorization;
-  now: () => number;
-  snapshot: Awaited<ReturnType<BrowserDurableCustodyAdapter["readOperationSnapshot"]>> & {};
-  operation: DurableWalletMeltOperation;
-}): Promise<BrowserDurableWalletMeltResult> {
+async function runMeltProtocolWithSnapshot(
+  input: BrowserMeltProtocolInput,
+  mode: "execute" | "recover",
+): Promise<BrowserDurableWalletMeltResult> {
   input.input.context.requireCapturedProfile();
   const { scope, adapter, owner, now, operation } = input;
-  let snapshot = input.snapshot;
-  const context = input.input.context;
-  if (snapshot.record.operation.result.state === "applied") {
-    const verified = readMeltResult(snapshot.record, snapshot.artifacts);
-    return { paid: true, change: verified.proofs.map(({ proof }) => proof) };
-  }
-  if (snapshot.record.operation.result.state === "verified-staged") {
-    const verified = readMeltResult(snapshot.record, snapshot.artifacts);
-    await applyMeltResult({
-      input: input.input,
-      scope,
-      adapter,
-      owner,
-      now,
-      snapshot,
-      operation,
-      verified,
-    });
-    return { paid: true, change: verified.proofs.map(({ proof }) => proof) };
-  }
-
-  const response = await input.input.wallet.completeMelt(hydrateMeltPreview(operation));
-  context.requireCapturedProfile();
-  if (response.quote.quote !== operation.preview.quote.quote) {
-    throw new Error("browser wallet melt response quote is foreign");
-  }
-  if (response.quote.state !== "PAID") {
-    if (response.quote.state === "UNPAID") {
-      await releaseUnpaidMelt({ scope, adapter, owner, now, record: snapshot.record });
-      return { paid: false, change: [] };
-    }
-    throw new Error("browser wallet melt remains pending");
-  }
-  return stageAndApplyMeltChange({
-    input: input.input,
-    scope,
-    adapter,
-    owner,
-    now,
-    snapshot,
+  const snapshot = input.snapshot;
+  const result = await runDurableWalletMeltOperation({
+    mode,
     operation,
-    change: response.change ?? [],
+    resultState: snapshot.record.operation.result.state,
+    transport: {
+      completeMelt: async (preview) => {
+        const response = await input.input.wallet.completeMelt(preview);
+        input.input.context.requireCapturedProfile();
+        return response;
+      },
+      checkMeltQuote: (method, quote) => input.input.wallet.checkMeltQuote(method, quote),
+      createMeltChangeProofs: (outputData, signatures) =>
+        input.input.wallet.createMeltChangeProofs(outputData, signatures),
+    },
+    store: {
+      readAppliedResult: async () =>
+        readMeltResult(snapshot.record, snapshot.artifacts).proofs.map(({ proof }) => proof),
+      applyStagedResult: async () => {
+        const verified = readMeltResult(snapshot.record, snapshot.artifacts);
+        await applyMeltResult({
+          input: input.input,
+          scope,
+          adapter,
+          owner,
+          now,
+          snapshot,
+          operation,
+          verified,
+        });
+        return verified.proofs.map(({ proof }) => proof);
+      },
+      stageAndApplyPaidChange: (change) =>
+        stageAndApplyMeltChange({
+          input: input.input,
+          scope,
+          adapter,
+          owner,
+          now,
+          snapshot,
+          operation,
+          change,
+        }).then(({ change: proofs }) => proofs),
+      releaseUnpaidReservation: () =>
+        releaseUnpaidMelt({ scope, adapter, owner, now, record: snapshot.record }),
+    },
   });
-}
-
-async function resumeRecoveredMeltWithSnapshot(input: {
-  input: BrowserDurableWalletMeltInput;
-  scope: ReturnType<typeof browserWalletScope>;
-  adapter: BrowserDurableCustodyAdapter;
-  owner: DurableCustodyOwnerAuthorization;
-  now: () => number;
-  snapshot: Awaited<ReturnType<BrowserDurableCustodyAdapter["readOperationSnapshot"]>> & {};
-  operation: DurableWalletMeltOperation;
-}): Promise<BrowserDurableWalletMeltResult> {
-  input.input.context.requireCapturedProfile();
-  const { scope, adapter, owner, now, operation } = input;
-  let snapshot = input.snapshot;
-  if (snapshot.record.operation.result.state === "applied") {
-    const verified = readMeltResult(snapshot.record, snapshot.artifacts);
-    return { paid: true, change: verified.proofs.map(({ proof }) => proof) };
-  }
-  if (snapshot.record.operation.result.state === "verified-staged") {
-    const verified = readMeltResult(snapshot.record, snapshot.artifacts);
-    await applyMeltResult({
-      input: input.input,
-      scope,
-      adapter,
-      owner,
-      now,
-      snapshot,
-      operation,
-      verified,
-    });
-    return { paid: true, change: verified.proofs.map(({ proof }) => proof) };
-  }
-
-  const preview = hydrateMeltPreview(operation);
-  const status = await checkPersistedMeltQuote(input.input.wallet, operation.preview.quote.quote);
-  if (status.state === "PAID") {
-    const change = input.input.wallet.createMeltChangeProofs(
-      preview.outputData,
-      status.change ?? [],
-    );
-    return stageAndApplyMeltChange({
-      input: input.input,
-      scope,
-      adapter,
-      owner,
-      now,
-      snapshot,
-      operation,
-      change,
-    });
-  }
-  if (status.state !== "UNPAID") {
-    throw new Error("browser wallet melt remains pending");
-  }
-
-  let response: Awaited<ReturnType<BrowserDurableWalletMeltWallet["completeMelt"]>>;
-  try {
-    response = await input.input.wallet.completeMelt(preview);
-    input.input.context.requireCapturedProfile();
-  } catch (error) {
-    const refreshed = await checkPersistedMeltQuote(
-      input.input.wallet,
-      operation.preview.quote.quote,
-    );
-    if (refreshed.state === "PAID") {
-      const change = input.input.wallet.createMeltChangeProofs(
-        preview.outputData,
-        refreshed.change ?? [],
-      );
-      return stageAndApplyMeltChange({
-        input: input.input,
-        scope,
-        adapter,
-        owner,
-        now,
-        snapshot,
-        operation,
-        change,
-      });
-    }
-    throw error;
-  }
-  if (response.quote.quote !== operation.preview.quote.quote) {
-    throw new Error("browser wallet melt response quote is foreign");
-  }
-  if (response.quote.state === "PAID") {
-    return stageAndApplyMeltChange({
-      input: input.input,
-      scope,
-      adapter,
-      owner,
-      now,
-      snapshot,
-      operation,
-      change: response.change ?? [],
-    });
-  }
-  if (response.quote.state === "UNPAID") {
-    await releaseUnpaidMelt({ scope, adapter, owner, now, record: snapshot.record });
-    return { paid: false, change: [] };
-  }
-  throw new Error("browser wallet melt remains pending");
-}
-
-async function checkPersistedMeltQuote(
-  wallet: BrowserDurableWalletMeltWallet,
-  quote: string,
-): Promise<
-  Pick<MeltQuoteBaseResponse, "quote" | "state"> & {
-    change?: SerializedBlindedSignature[];
-  }
-> {
-  const status = await wallet.checkMeltQuote("bolt11", quote);
-  if (status.quote !== quote) throw new Error("browser wallet melt status quote is foreign");
-  return status;
+  return { paid: result.state === "paid", change: result.proofs };
 }
 
 async function stageAndApplyMeltChange(input: {
@@ -515,51 +419,6 @@ async function canonicalMeltProofs(
       return deserializeDurableCustodyProofArtifact({ schemaVersion: 1, ...material });
     }),
   );
-}
-
-function serializeMeltOperation(
-  operationId: string,
-  mintUrl: string,
-  preview: MeltPreview<MeltQuoteResponse>,
-): DurableWalletMeltOperation {
-  return decodeDurableWalletOperation({
-    schemaVersion: 1,
-    operationId,
-    kind: "wallet-melt",
-    mintUrl,
-    unit: "msat",
-    preview: {
-      method: preview.method,
-      inputs: preview.inputs.map(serializeDurableWalletProof),
-      outputData: preview.outputData.map((output) => {
-        const serialized = serializeDurableCustodyOutput(output);
-        return { ...serialized, ephemeralE: serialized.ephemeralE ?? null };
-      }),
-      keysetId: preview.keysetId,
-      quote: {
-        quote: preview.quote.quote,
-        amount: Amount.from(preview.quote.amount).toString(),
-      },
-      requestOptions: { preferAsync: false, extraPayload: {} },
-    },
-  }) as DurableWalletMeltOperation;
-}
-
-function hydrateMeltPreview(
-  operation: DurableWalletMeltOperation,
-): MeltPreview<Pick<MeltQuoteResponse, "quote">> {
-  return {
-    method: operation.preview.method,
-    inputs: operation.preview.inputs.map(hydrateDurableWalletProof),
-    outputData: operation.preview.outputData.map(({ ephemeralE, ...output }) =>
-      deserializeDurableCustodyOutput({
-        ...output,
-        ...(ephemeralE === null ? {} : { ephemeralE }),
-      }),
-    ),
-    keysetId: operation.preview.keysetId,
-    quote: { quote: operation.preview.quote.quote },
-  };
 }
 
 function createMeltBinding(

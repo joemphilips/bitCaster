@@ -10,12 +10,15 @@ import {
 } from '@bitcaster-market/client-sdk'
 import { createCtfProofOperationCompletion } from '@bitcaster-market/client-sdk/ctfSplit'
 import {
+  bindRangePreparationCapability,
   encodeCanonicalRangePreparation,
   insertRangePreparation,
   linkRangePreparationSource,
+  transitionRangePreparation,
 } from '../src/ctfRangeOrderJournalSqlite.ts'
 import { bootstrapFreshDaemonProfile } from '../src/profileBootstrap.ts'
 import { claimCustodyScopeLease, renewCustodyScopeLease } from '../src/profileFencing.ts'
+import { createDaemonCounterSource } from '../src/walletOps.ts'
 import {
   openDaemonStateSqlite,
   subscribeToDaemonWalletHoldingsCommits,
@@ -40,6 +43,7 @@ import {
   readAvailableWalletProofGroupPage,
   readAvailableWalletProofPage,
   readDaemonKeysetCounters,
+  readExactBoundCounter,
   readState,
   recordDiscoveredOrder,
   recordOrderStatus,
@@ -273,6 +277,7 @@ test('monitoring observers ignore lease commits and receive holdings commits', a
 
 test('order writes preserve range custody rows and do not notify wallet holdings', async () => {
   await withProfile(async (home) => {
+    const sourceEngineOrderId = '44444444-4444-4444-8444-444444444444'
     let notifications = 0
     const unsubscribe = subscribeToDaemonWalletHoldingsCommits(home, () => {
       notifications += 1
@@ -314,7 +319,7 @@ test('order writes preserve range custody rows and do not notify wallet holdings
           rangeOperationId: 'range-operation-source',
           sourceOperationId: 'range-source-operation',
           authorizationId: 'range-authorization-source',
-          clientOrderId: 'range-client-source',
+          clientOrderId: 'source-client-order',
           orderRouteId: 'condition-1-YES',
           normalizedMint: 'http://localhost:8086',
           conditionId: 'condition-1',
@@ -331,6 +336,7 @@ test('order writes preserve range custody rows and do not notify wallet holdings
             rangeOperationId: 'range-operation-source',
             authorizationId: 'range-authorization-source',
           }),
+          feeConsentBytes: null,
           createdAtMs: 1,
         })
         linkRangePreparationSource(database, {
@@ -338,6 +344,26 @@ test('order writes preserve range custody rows and do not notify wallet holdings
           rangeOperationId: 'range-operation-source',
           sourceOperationId: 'range-source-operation',
           reservationId: 'range-source-reservation',
+        })
+        transitionRangePreparation(database, {
+          scopeId: mutation.fence.scopeId,
+          rangeOperationId: 'range-operation-source',
+          expectedRevision: 0,
+          from: 'prepared',
+          to: 'capability-requested',
+          updatedAtMs: 2,
+        })
+        bindRangePreparationCapability(database, {
+          scopeId: mutation.fence.scopeId,
+          rangeOperationId: 'range-operation-source',
+          expectedRevision: 1,
+          updatedAtMs: 3,
+          capability: {
+            artifactId: '11111111-1111-4111-8111-111111111111',
+            bindingDigest: '22'.repeat(32),
+            artifactDigest: '33'.repeat(32),
+            orderId: sourceEngineOrderId,
+          },
         })
         const removedMetadata = database
           .prepare('DELETE FROM target_state_metadata WHERE scope_id = ?')
@@ -359,7 +385,7 @@ test('order writes preserve range custody rows and do not notify wallet holdings
         'condition-1-YES',
         'source-client-order',
         {
-          orderId: 'source-engine-order',
+          orderId: sourceEngineOrderId,
           status: 'submitted',
           baseAsset: 'sat',
           divisibility: 1_000,
@@ -372,7 +398,7 @@ test('order writes preserve range custody rows and do not notify wallet holdings
         'sat',
         1_000,
       )
-      assert.equal(submitted.orderId, 'source-engine-order')
+      assert.equal(submitted.orderId, sourceEngineOrderId)
       const submittedRow = await readOrderRowMetadata(
         home,
         mutation.fence.scopeId,
@@ -400,7 +426,7 @@ test('order writes preserve range custody rows and do not notify wallet holdings
       const discovered = await recordDiscoveredOrder(
         'condition-1-YES',
         'source-client-order',
-        { orderId: 'source-engine-order', status: 'filled' },
+        { orderId: sourceEngineOrderId, status: 'filled' },
         'Outcome',
         'Buy',
         500,
@@ -420,10 +446,11 @@ test('order writes preserve range custody rows and do not notify wallet holdings
       assert.ok(discoveredRow.updatedAtMs >= discoveredRow.createdAtMs)
       assert.deepEqual(await readOrderWriteAuthoritySnapshot(home, mutation.fence.scopeId), before)
 
-      const cancelled = await recordOrderStatus('condition-1-YES', 'source-engine-order', {
-        orderId: 'source-engine-order',
+      const cancelled = await recordOrderStatus('condition-1-YES', sourceEngineOrderId, {
+        orderId: sourceEngineOrderId,
         status: 'cancelled',
       })
+      assert.ok(cancelled)
       assert.equal(cancelled.status, 'cancelled')
       const cancelledRow = await readOrderRowMetadata(
         home,
@@ -450,10 +477,7 @@ test('order writes preserve range custody rows and do not notify wallet holdings
           divisibility: 1_000,
         }),
       ])
-      assert.deepEqual(concurrent.map(({ orderId }) => orderId).sort(), [
-        'concurrent-engine-a',
-        'concurrent-engine-b',
-      ])
+      assert.deepEqual(concurrent, [null, null])
       assert.deepEqual(await readOrderWriteAuthoritySnapshot(home, mutation.fence.scopeId), before)
 
       const rollbackBefore = await readOrderWriteAuthoritySnapshot(home, mutation.fence.scopeId)
@@ -465,7 +489,7 @@ test('order writes preserve range custody rows and do not notify wallet holdings
                 `UPDATE daemon_orders SET status = 'rollback-status'
                  WHERE scope_id = ? AND order_id = ?`,
               )
-              .run(mutation.fence.scopeId, 'source-engine-order')
+              .run(mutation.fence.scopeId, sourceEngineOrderId)
             throw new Error('order write rollback')
           }),
         /order write rollback/,
@@ -474,7 +498,7 @@ test('order writes preserve range custody rows and do not notify wallet holdings
         await readOrderWriteAuthoritySnapshot(home, mutation.fence.scopeId),
         rollbackBefore,
       )
-      assert.equal((await readState())?.orders['source-engine-order']?.status, 'cancelled')
+      assert.equal((await readState())?.orders[sourceEngineOrderId]?.status, 'cancelled')
       assert.equal(notifications, notificationsBeforeOrders)
 
       const finalDatabase = await openDaemonStateSqlite(home)
@@ -586,6 +610,144 @@ test('keyset counters bind the mint and unit and fail closed on a split authorit
       () => reserveDaemonKeysetCounter(SHARED_KEYSET_ID, 1, mutation, sat),
       /one-sided or mismatched/,
     )
+  })
+})
+
+test('keyset counters refuse a second mint before adapter use, reservation, or advance', async () => {
+  await withProfile(async (home) => {
+    const mutation = await claimMutation(home, 'counter-mint-alias')
+    const first = { normalizedMint: 'https://mint-one.example', unit: 'sat' as const }
+    const second = { normalizedMint: 'https://mint-two.example', unit: 'msat' as const }
+    await reserveDaemonKeysetCounter(SHARED_KEYSET_ID, 2, mutation, first)
+    const before = await readCounterAuthoritySnapshot(home, mutation.fence.scopeId)
+
+    const secondMintCounter = createDaemonCounterSource(() => mutation, second)
+    let mintMutationCount = 0
+    await assert.rejects(async () => {
+      const range = await secondMintCounter.reserve(SHARED_KEYSET_ID, 1)
+      mintMutationCount += 1
+      return range
+    }, /another mint URL/)
+    assert.equal(mintMutationCount, 0)
+    assert.deepEqual(await readCounterAuthoritySnapshot(home, mutation.fence.scopeId), before)
+
+    await assert.rejects(
+      () => advanceDaemonKeysetCounter(SHARED_KEYSET_ID, 12, mutation, second),
+      /another mint URL/,
+    )
+    assert.deepEqual(await readCounterAuthoritySnapshot(home, mutation.fence.scopeId), before)
+    await assert.rejects(
+      () => reserveDaemonKeysetCounter(SHARED_KEYSET_ID, 0, mutation, second),
+      /another mint URL/,
+    )
+    assert.deepEqual(await readCounterAuthoritySnapshot(home, mutation.fence.scopeId), before)
+
+    const database = await openDaemonStateSqlite(home)
+    try {
+      assert.throws(
+        () => readExactBoundCounter(database, mutation.fence.scopeId, SHARED_KEYSET_ID, second),
+        /another mint URL/,
+      )
+    } finally {
+      database.close()
+    }
+    assert.deepEqual(await readCounterAuthoritySnapshot(home, mutation.fence.scopeId), before)
+  })
+})
+
+test('existing counter aliases in either table fail closed for reads and no-op mutations', async () => {
+  for (const table of ['target_keyset_counters', 'custody_keyset_counters'] as const) {
+    await withProfile(async (home) => {
+      const mutation = await claimMutation(home, `counter-alias-${table}`)
+      const requested = { normalizedMint: 'https://mint-one.example', unit: 'msat' as const }
+      const database = await openDaemonStateSqlite(home)
+      try {
+        insertCounterAlias(database, table, mutation.fence.scopeId, SHARED_KEYSET_ID)
+        const before = readCounterAuthoritySnapshotFromDatabase(database, mutation.fence.scopeId)
+        assert.throws(
+          () =>
+            readExactBoundCounter(database, mutation.fence.scopeId, SHARED_KEYSET_ID, requested),
+          /another mint URL/,
+        )
+        assert.deepEqual(
+          readCounterAuthoritySnapshotFromDatabase(database, mutation.fence.scopeId),
+          before,
+        )
+
+        await assert.rejects(
+          () => reserveDaemonKeysetCounter(SHARED_KEYSET_ID, 0, mutation, requested),
+          /another mint URL/,
+        )
+        assert.deepEqual(
+          readCounterAuthoritySnapshotFromDatabase(database, mutation.fence.scopeId),
+          before,
+        )
+        await assert.rejects(
+          () => advanceDaemonKeysetCounter(SHARED_KEYSET_ID, 0, mutation, requested),
+          /another mint URL/,
+        )
+        assert.deepEqual(
+          readCounterAuthoritySnapshotFromDatabase(database, mutation.fence.scopeId),
+          before,
+        )
+      } finally {
+        database.close()
+      }
+    })
+  }
+})
+
+test('different keysets can keep counter authority under different mint URLs', async () => {
+  await withProfile(async (home) => {
+    const mutation = await claimMutation(home, 'counter-distinct-mints')
+    const first = { normalizedMint: 'https://mint-one.example', unit: 'sat' as const }
+    const second = { normalizedMint: 'https://mint-two.example', unit: 'msat' as const }
+    assert.deepEqual(await reserveDaemonKeysetCounter(COUNTER_KEYSET_ID, 2, mutation, first), {
+      start: 0,
+      count: 2,
+    })
+    assert.deepEqual(
+      await reserveDaemonKeysetCounter(MAXIMUM_BATCH_KEYSET_ID, 3, mutation, second),
+      {
+        start: 0,
+        count: 3,
+      },
+    )
+    assert.deepEqual(await readDaemonKeysetCounters(first), { [COUNTER_KEYSET_ID]: 2 })
+    assert.deepEqual(await readDaemonKeysetCounters(second), { [MAXIMUM_BATCH_KEYSET_ID]: 3 })
+  })
+})
+
+test('competing first counter reservations establish one mint URL for a keyset', async () => {
+  await withProfile(async (home) => {
+    const mutation = await claimMutation(home, 'counter-competing-first-use')
+    const bindings = [
+      { normalizedMint: 'https://mint-one.example', unit: 'sat' as const },
+      { normalizedMint: 'https://mint-two.example', unit: 'msat' as const },
+    ] as const
+    const results = await Promise.allSettled(
+      bindings.map((binding) => reserveDaemonKeysetCounter(SHARED_KEYSET_ID, 1, mutation, binding)),
+    )
+    assert.equal(results.filter(({ status }) => status === 'fulfilled').length, 1)
+    const refusal = results.find(({ status }) => status === 'rejected')
+    assert.ok(refusal && refusal.status === 'rejected')
+    assert.match(String(refusal.reason), /another mint URL/)
+
+    const database = await openDaemonStateSqlite(home)
+    try {
+      const snapshot = readCounterAuthoritySnapshotFromDatabase(database, mutation.fence.scopeId)
+      assert.equal(snapshot.target.length, 1)
+      assert.equal(snapshot.custody.length, 1)
+      assert.equal(snapshot.target[0]?.normalized_mint, snapshot.custody[0]?.normalized_mint)
+      assert.equal(
+        bindings
+          .map(({ normalizedMint }) => normalizedMint)
+          .filter((url) => url === snapshot.target[0]?.normalized_mint).length,
+        1,
+      )
+    } finally {
+      database.close()
+    }
   })
 })
 
@@ -1442,6 +1604,62 @@ function snapshotSqlRows(
     count: rows.length,
     digest: createHash('sha256').update(JSON.stringify(normalizedRows)).digest('hex'),
   }
+}
+
+async function readCounterAuthoritySnapshot(home: string, scopeId: string) {
+  const database = await openDaemonStateSqlite(home)
+  try {
+    return readCounterAuthoritySnapshotFromDatabase(database, scopeId)
+  } finally {
+    database.close()
+  }
+}
+
+function readCounterAuthoritySnapshotFromDatabase(
+  database: Awaited<ReturnType<typeof openDaemonStateSqlite>>,
+  scopeId: string,
+) {
+  return {
+    target: database
+      .prepare(
+        `SELECT scope_id, normalized_mint, unit, keyset_id, next_counter, updated_at_ms
+         FROM target_keyset_counters WHERE scope_id = ?
+         ORDER BY normalized_mint, unit, keyset_id`,
+      )
+      .all(scopeId) as Array<Record<string, unknown>>,
+    custody: database
+      .prepare(
+        `SELECT scope_id, normalized_mint, unit, keyset_id, next_counter, revision, updated_at_ms
+         FROM custody_keyset_counters WHERE scope_id = ?
+         ORDER BY normalized_mint, unit, keyset_id`,
+      )
+      .all(scopeId) as Array<Record<string, unknown>>,
+  }
+}
+
+function insertCounterAlias(
+  database: Awaited<ReturnType<typeof openDaemonStateSqlite>>,
+  table: 'target_keyset_counters' | 'custody_keyset_counters',
+  scopeId: string,
+  keysetId: string,
+): void {
+  if (table === 'target_keyset_counters') {
+    database
+      .prepare(
+        `INSERT INTO target_keyset_counters (
+           scope_id, normalized_mint, unit, keyset_id, next_counter, updated_at_ms
+         ) VALUES (?, 'https://mint-alias.example', 'sat', ?, 7, 2)`,
+      )
+      .run(scopeId, keysetId)
+    return
+  }
+  database
+    .prepare(
+      `INSERT INTO custody_keyset_counters (
+         scope_id, normalized_mint, unit, keyset_id, next_counter, revision, updated_at_ms
+       ) VALUES (?, 'https://mint-alias.example', 'sat', ?, 7, 0, 2)`,
+    )
+    .run(scopeId, keysetId)
 }
 
 function normalizeSqlSnapshotValue(value: unknown): unknown {

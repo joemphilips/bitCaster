@@ -9,6 +9,8 @@ import {
   decodeCtfRangeOrderPreparationPageCursor,
   decodeCtfRangeOrderPreparationPageLimit,
   decodeCtfRangeOrderPreparationRecord,
+  decodeCtfRangeOrderFeeConsentArtifact,
+  encodeCtfRangeOrderFeeConsentArtifact,
   encodeCtfRangeOrderPreparationArtifact,
   sameCtfRangeOrderPreparationCapability,
   sameCtfRangeOrderPreparationIdentity,
@@ -85,6 +87,64 @@ test('strict identity validation preserves exact replay', () => {
         orderRouteId: 'condition-2-YES',
       }),
     /foreign condition/,
+  )
+})
+
+test('fee consent is bounded canonical preparation identity', () => {
+  const facts = {
+    settlementInputFeeSubunits: '1',
+    sourcePreparationFeeSubunits: '2',
+    consolidationFeeSubunits: '3',
+    settlementAsset: { kind: 'regular', unit: 'msat' },
+    sourcePreparationAsset: { kind: 'regular', unit: 'msat' },
+    consolidationAsset: { kind: 'regular', unit: 'msat' },
+    sourceMode: 'wallet-send',
+  }
+  const bytes = encodeCtfRangeOrderFeeConsentArtifact(facts)
+  assert.deepEqual(decodeCtfRangeOrderFeeConsentArtifact(bytes), facts)
+  const identity = preparationIdentity()
+  assert.equal(
+    sameCtfRangeOrderPreparationIdentity(identity, { ...identity, feeConsentBytes: bytes }),
+    false,
+  )
+  assert.throws(
+    () => decodeCtfRangeOrderFeeConsentArtifact(Buffer.from('{"sourceMode":"wallet-send"}')),
+    /invalid/,
+  )
+  assert.throws(
+    () => decodeCtfRangeOrderFeeConsentArtifact(Buffer.from(' '.repeat(4_097))),
+    /byte limit/,
+  )
+  assert.throws(
+    () => encodeCtfRangeOrderFeeConsentArtifact({ ...facts, sourcePreparationFeeSubunits: '-1' }),
+    /invalid/,
+  )
+})
+
+test('absent legacy browser consent reads as null but malformed consent stays invalid', () => {
+  const identity = preparationIdentity()
+  const { feeConsentBytes: _, ...legacy } = identity
+  assert.equal(decodeCtfRangeOrderPreparationIdentity(legacy).feeConsentBytes, null)
+  assert.equal(decodeCtfRangeOrderPreparationIdentity(identity).feeConsentBytes, null)
+  const legacyRecord = {
+    ...legacy,
+    lifecycleState: 'prepared',
+    revision: 0,
+    capability: null,
+    updatedAtMs: identity.createdAtMs,
+  }
+  assert.equal(decodeCtfRangeOrderPreparationRecord(legacyRecord).feeConsentBytes, null)
+  assert.throws(
+    () => decodeCtfRangeOrderPreparationIdentity({ ...identity, feeConsentBytes: undefined }),
+    /fee consent bytes/,
+  )
+  assert.throws(
+    () => decodeCtfRangeOrderPreparationIdentity({ ...identity, feeConsentBytes: 'not bytes' }),
+    /fee consent bytes/,
+  )
+  assert.throws(
+    () => decodeCtfRangeOrderPreparationIdentity({ ...legacy, unrelated: true }),
+    /fields/,
   )
 })
 
@@ -368,6 +428,7 @@ function preparationIdentity() {
       rangeOperationId: 'range-1',
       authorizationId: 'authorization-1',
     }),
+    feeConsentBytes: null,
     createdAtMs: 10,
   }
 }

@@ -1,6 +1,6 @@
 ---
-title: "bitCaster 101"
-description: "What is bitCaster and what can you do with it?"
+title: 'bitCaster 101'
+description: 'What is bitCaster and what can you do with it?'
 sidebar:
   order: 1
 ---
@@ -21,6 +21,13 @@ The browser serves casual participants and market creators. Professional and
 automated traders can use the CLI, daemon, and SDK. Every client uses the same
 order book and settlement protocol.
 
+The command-line interface (CLI) is also intended for your own graphical
+interface (GUI), terminal interface (TUI), scripts, or trading AI agents.
+It is an application interface, not just a debugging tool.
+The design goal is to expose every web-app operation and its required data
+through the CLI. Command coverage is still incomplete during development.
+Use `bitcaster-cli --help` to check the available commands.
+
 The browser app and protocol specifications are public. The matching engine
 is closed source. Your wallet stores Cashu ecash tokens in your browser.
 The web app can store an encrypted recovery copy that the server cannot
@@ -33,11 +40,13 @@ For an overview of Cashu itself, see the [Bitcoin Design guide on ecash](https:/
 
 ### Buy and sell market shares
 
-Choose a market, an outcome, and how many shares to buy or sell. Review the
-price and fees before you confirm. Price protection sets a maximum buy price
-or a minimum sell price. Auto allows 20 percentage points from the current
-best executable price. A Buy price of 10% gives a 30% cap, not 12%.
-Choose Custom to change the limit. Review the actual quote before confirming.
+Choose a market, an outcome, and how many shares to buy or sell.
+Review the quoted cost or sale proceeds and the separate fees before confirming.
+The order cannot buy for more, or sell for less, than the trade value you accept.
+Equal or better execution is allowed. If the current orders give a worse deal,
+the whole order is refused. Review a fresh quote before confirming a new order.
+The estimated last fill price describes the last match in your proposed order.
+It is not a promise of the next orderbook midpoint.
 The form checks your entered quantity and its fees. It warns when the current
 orders cannot fill that quantity within your price limit. A preview does not
 reserve liquidity. Your order fills in full
@@ -52,10 +61,11 @@ Check the selected outcome before confirming. In the example above, Alpha
 means that Alpha wins. Not Alpha means that Beta or Gamma wins.
 
 After settlement, Activity shows each confirmed fill for the active wallet.
-Each entry shows Buy or Sell, the outcome, the number of shares, and the trade
-value before fees. This value is not the net change in your wallet balance.
-An order with several fills can create several entries. A pending or failed
-order does not appear as a completed trade.
+When the order is known, Activity groups its recorded fills in one expandable
+row. Expand the row to see each fill's outcome, shares, and trade value before
+fees. This value is not the net change in your wallet balance. A group does not
+mean that the whole order has completed. Fills without a known order stay
+separate. A pending or failed order does not appear as a completed trade.
 
 ### Create your own market
 
@@ -67,7 +77,9 @@ You can fund the market-making bot after creation. You can add funding more
 than once. This funding is a non-refundable subsidy, not an investment that
 gives you shares, fees, or a right to withdraw. Keep it separate from funding
 your own trading wallet. If there is no available liquidity, the trade form
-directs you to the Liquidity tab.
+directs you to the Liquidity tab. When all outcome books are empty, Buy and
+Sell show that message instead of an order form. A missing or failed book
+request is not treated as an empty market.
 
 ### Become an oracle
 
@@ -79,9 +91,12 @@ When a market's oracle key is a Nostr public key, you should audit the oracle yo
 
 ### Use the supported mint
 
-The first release supports one Cashu mint operated by bitCaster. The app does
-not support selecting or using another mint. The mint software and protocol
-specification remain public.
+The first release supports one Cashu mint operated by bitCaster.
+Native CLI settings can save and select mint endpoints.
+These settings do not extend trading support to another mint.
+Changing the selected endpoint does not move or convert existing funds.
+Keep access to the original mint for its funds and unfinished operations.
+The mint software and protocol specification remain public.
 
 ## How it works
 
@@ -134,6 +149,32 @@ Your Nostr signing key is a separate secret. Back up both the wallet recovery
 phrase and any Nostr secret key shown in the app. If you already use a Nostr
 account, connect it instead of generating a new one.
 
+Settings also shows the connected Nostr profile and a refresh control.
+Profile names are display information, not proof of identity.
+Use only your saved relay destinations. An empty relay list is an explicit
+opt-out from Nostr relay traffic, not a request to use fallback relays.
+Liked markets and other preferences are not a backup of wallet funds.
+
+The native CLI uses separate wallet profiles instead of replacing one in place.
+Select a profile with `--datadir`. Import seed and signer files only into a fresh
+profile. Keep the old profile while it has funds or unfinished work.
+Initialization imports keys; it does not recover funds.
+`wallet recover-seed` requires explicit acknowledgment of seed-candidate disclosure
+to the mint. See [CLI wallet and signer commands](/technical/#select-and-import-a-native-wallet-profile).
+
+### When wallet backup pauses an action
+
+Wait while **Preparing wallet backup** is shown. Do not keep pressing Continue.
+Top-up and other new wallet changes stay paused until backup preparation or recovery completes.
+If **Wallet backup stopped** is shown, use **Retry wallet backup**.
+If **Wallet actions are paused** is shown, follow its reason and use **Retry recovery**.
+Close an unused second wallet tab when the message asks you to do so.
+Sign in or reload when the message says the backup driver is unavailable.
+Keep the page open while a retry is pending.
+Retrying does not guarantee that unresolved work or an unpaid invoice is cleared.
+The local wallet keeps its funds and unfinished work while recovery is incomplete.
+Do not delete wallet data or start another payment to bypass the pause.
+
 ## Find a market
 
 Use search, tags, and filters on the market list. The controls stay available
@@ -143,12 +184,23 @@ while results load, when loading fails, and when no markets match. Use
 Tag counts and advanced filters apply to the loaded results, not the whole
 catalogue. Load more results when you need to look further.
 
+Save a market as liked to find it again. The CLI provides `market liked`,
+`market like`, and `market unlike`. Use `market liked --local` to read saved IDs
+without relay or catalogue requests. These preferences can be public on relays.
+See [Liked markets and live watches](/technical/#keep-liked-markets) for command details.
+
 ## Market detail pages
 
 The market chart shows recorded trades for each primitive outcome. If only one
 outcome has traded, only that line is shown; bitCaster does not invent prices
 for outcomes that have not traded. Before any confirmed trade, the market
 shows **No trades yet** or an em dash.
+
+When you point at a historical date, the price is the last confirmed trade at
+or before that date. Pointer height does not set the price.
+An outcome with no confirmed trade at or before that date has no available price.
+Categorical lines connect confirmed points across alignment gaps.
+Those connections do not add trades or invent prices for untraded outcomes.
 
 If the service cannot read confirmed-trade prices, market details are
 temporarily unavailable. Try again later. This error does not mean that the
@@ -164,6 +216,17 @@ payments increase it. Trades do not reduce it. It is not current order-book
 liquidity.
 
 Trade comments are optional and public inside bitCaster. A comment is shown only after the attached order produces a settled trade, so the comment feed is limited to verified traders for that market. P20 comments are not published to public Nostr relays.
+
+Chart comment bubbles point to the time and price of the associated confirmed
+trade. Hover over, focus, or tap a bubble to read the comment. A comment stays
+in the comment list when its trade point is unavailable or outside the chart
+view. The list shows when the comment was written.
+
+Each chart comment shows its public author, text, and written date. The author
+is the public key that signed the comment. If a public Nostr profile is
+available, the app shows its display name. Otherwise, it shows a shortened
+public key. Profile lookup does not block the market page. A profile name is
+display information, not proof of identity.
 
 ## Getting started
 

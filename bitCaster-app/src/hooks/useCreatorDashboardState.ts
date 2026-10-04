@@ -8,7 +8,11 @@ import { resolveCreatorPubkey } from "@/lib/identityOps";
 import { useCreatorMarketsStore, type StoredCreatorMarket } from "@/stores/creatorMarkets";
 import { useSettingsStore } from "@/stores/settings";
 import { assertNever } from "@/lib/enumDiscipline";
-import type { CreatedMarket, CreatedMarketStatus } from "@/types/portfolio";
+import type {
+  CreatedMarket,
+  CreatedMarketStatus,
+  CreatorEngineDataStatus,
+} from "@/types/portfolio";
 import type { DashboardStats } from "@/types/market-management";
 
 interface UseCreatorDashboardStateResult {
@@ -18,18 +22,19 @@ interface UseCreatorDashboardStateResult {
   stats: DashboardStats;
   /** Merged client + backend view used by the `MyMarkets` row list. */
   markets: CreatedMarket[];
-  /** True on initial mount while the first backend fetch is in-flight. */
+  /** True while the selected creator's engine read is in-flight. */
   isLoading: boolean;
-  /** Non-null if the backend fetch failed. Markets still render from the local store. */
+  /** Non-null if the engine read failed. Known engine data remains visibly stale. */
   error: string | null;
-  /** Manually re-fetch backend volume data (e.g. on a retry button). */
+  engineDataStatus: CreatorEngineDataStatus;
+  /** Manually re-fetch engine state and volume. */
   refresh: () => void;
 }
 
 function toCreatedMarketStatus(
   state: CreatorMarketEntry["state"] | null | undefined,
 ): CreatedMarketStatus {
-  if (state == null) return "active";
+  if (state == null) return "unknown";
 
   switch (state) {
     case "open":
@@ -46,16 +51,15 @@ function toCreatedMarketStatus(
  * components. Each market combines:
  *
  *  - Local wizard record (title, thumbnail, createdAt, creator fee %) — always present.
- *  - Backend volume lookup by conditionId — falls back to `0` when catalogue
- *    volume is not available yet.
+ *  - Engine lifecycle and confirmed volume, with explicit display freshness.
  *
  * Fees are stubbed to `0` for v1 since the matching engine does not accrue
- * them. Status is always `active` until the public API exposes resolution
- * state; a local oracle attestation is metadata only, not lifecycle truth.
+ * them. Local oracle and relay metadata cannot establish trading lifecycle.
  */
 function buildCreatedMarket(
   stored: StoredCreatorMarket,
   backendByConditionId: Map<string, CreatorMarketEntry>,
+  currentConditionIds: ReadonlySet<string>,
 ): CreatedMarket {
   const backend = backendByConditionId.get(stored.conditionId);
   return {
@@ -63,6 +67,11 @@ function buildCreatedMarket(
     title: stored.title,
     imageUrl: stored.thumbnailUrl ?? "",
     status: toCreatedMarketStatus(backend?.state),
+    engineDataStatus: !backend
+      ? "unavailable"
+      : currentConditionIds.has(stored.conditionId)
+        ? "current"
+        : "stale",
     createdDate: stored.createdAt,
     baseAsset: normalizeMarketBaseAsset(stored.baseAsset),
     divisibility: normalizeMarketDivisibility(stored.divisibility, stored.baseAsset),
@@ -85,11 +94,36 @@ function emptyStats(): DashboardStats {
   };
 }
 
+interface CreatorEngineSnapshot {
+  pubkey: string | null;
+  markets: CreatorMarketEntry[];
+  currentConditionIds: string[];
+  isLoading: boolean;
+  error: string | null;
+}
+
+function mergeEngineSnapshot(previous: CreatorMarketEntry[], incoming: CreatorMarketEntry[]) {
+  const previousClosed = new Map(
+    previous
+      .filter((market) => toCreatedMarketStatus(market.state) === "resolved")
+      .map((market) => [market.conditionId, market]),
+  );
+  const currentConditionIds: string[] = [];
+  const markets = incoming.map((market) => {
+    const closed = previousClosed.get(market.conditionId);
+    previousClosed.delete(market.conditionId);
+    // A delayed open snapshot cannot reopen a confirmed closure.
+    if (closed && toCreatedMarketStatus(market.state) === "active") return closed;
+    currentConditionIds.push(market.conditionId);
+    return market;
+  });
+  return { markets: [...markets, ...previousClosed.values()], currentConditionIds };
+}
+
 /**
  * Powers the creator dashboard. Pulls markets from the client-side store
  * (authoritative source of "what I have created") and enriches them with
- * backend volume data. Safe to call when the user has no wallet — returns an
- * empty state instead of throwing.
+ * engine state and volume. It does not fetch without a creator identity.
  */
 export function useCreatorDashboardState(): UseCreatorDashboardStateResult {
   const nostrSignerMode = useSettingsStore((s) => s.nostrSignerMode);
@@ -107,37 +141,59 @@ export function useCreatorDashboardState(): UseCreatorDashboardStateResult {
     [nostrSignerMode, nsecSecret, nostrProfilePubkey],
   );
 
-  const [backendMarkets, setBackendMarkets] = useState<CreatorMarketEntry[]>([]);
-  // Initial state is `false` unconditionally. The effect below flips this to
-  // `true` as soon as a pubkey is available — initializing from `pubkey` here
-  // would race against Zustand's persist hydration, which is async on mount
-  // and would briefly flash the empty state before the loading skeleton.
-  const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [backend, setBackend] = useState<CreatorEngineSnapshot>({
+    pubkey: null,
+    markets: [],
+    currentConditionIds: [],
+    isLoading: false,
+    error: null,
+  });
   const [refreshTick, setRefreshTick] = useState(0);
 
   useEffect(() => {
     if (!pubkey) {
-      setBackendMarkets([]);
-      setIsLoading(false);
-      setError(null);
+      setBackend({
+        pubkey: null,
+        markets: [],
+        currentConditionIds: [],
+        isLoading: false,
+        error: null,
+      });
       return;
     }
 
     let cancelled = false;
-    setIsLoading(true);
-    setError(null);
+    setBackend((previous) => ({
+      pubkey,
+      markets: previous.pubkey === pubkey ? previous.markets : [],
+      currentConditionIds: [],
+      isLoading: true,
+      error: null,
+    }));
     void (async () => {
       try {
         const response = await fetchCreatorMarkets(pubkey);
         if (cancelled) return;
-        setBackendMarkets(response.markets);
+        if (response.pubkey !== pubkey)
+          throw new Error("Creator market response did not match the selected creator");
+        setBackend((previous) => ({
+          pubkey,
+          ...mergeEngineSnapshot(
+            previous.pubkey === pubkey ? previous.markets : [],
+            response.markets,
+          ),
+          isLoading: false,
+          error: null,
+        }));
       } catch (err) {
         if (cancelled) return;
-        setError(err instanceof Error ? err.message : "Failed to load creator markets");
-        setBackendMarkets([]);
-      } finally {
-        if (!cancelled) setIsLoading(false);
+        setBackend((previous) => ({
+          pubkey,
+          markets: previous.pubkey === pubkey ? previous.markets : [],
+          currentConditionIds: [],
+          isLoading: false,
+          error: err instanceof Error ? err.message : "Failed to load creator markets",
+        }));
       }
     })();
 
@@ -152,11 +208,16 @@ export function useCreatorDashboardState(): UseCreatorDashboardStateResult {
 
   const markets = useMemo<CreatedMarket[]>(() => {
     const backendByConditionId = new Map<string, CreatorMarketEntry>();
-    for (const entry of backendMarkets) {
-      backendByConditionId.set(entry.conditionId, entry);
+    if (backend.pubkey === pubkey) {
+      for (const entry of backend.markets) backendByConditionId.set(entry.conditionId, entry);
     }
-    return storedMarkets.map((m) => buildCreatedMarket(m, backendByConditionId));
-  }, [storedMarkets, backendMarkets]);
+    const currentConditionIds = new Set(
+      backend.pubkey === pubkey ? backend.currentConditionIds : [],
+    );
+    return storedMarkets.map((m) =>
+      buildCreatedMarket(m, backendByConditionId, currentConditionIds),
+    );
+  }, [storedMarkets, backend, pubkey]);
 
   const stats = useMemo<DashboardStats>(() => {
     const base = emptyStats();
@@ -171,6 +232,10 @@ export function useCreatorDashboardState(): UseCreatorDashboardStateResult {
         case "refunded":
           base.refundedMarketsCount += 1;
           break;
+        case "unknown":
+          break;
+        default:
+          assertNever(market.status);
       }
       base.totalVolumeSubunits += market.volume;
       base.totalFeesEarnedSats += market.creatorFeesEarned;
@@ -178,12 +243,22 @@ export function useCreatorDashboardState(): UseCreatorDashboardStateResult {
     return base;
   }, [markets]);
 
+  const scopedBackend = backend.pubkey === pubkey ? backend : null;
+  const engineDataStatus: CreatorEngineDataStatus =
+    !pubkey || markets.some((market) => market.engineDataStatus === "unavailable")
+      ? "unavailable"
+      : markets.some((market) => market.engineDataStatus === "stale")
+        ? "stale"
+        : !scopedBackend || scopedBackend.isLoading || scopedBackend.error
+          ? "unavailable"
+          : "current";
   return {
     pubkey,
     stats,
     markets,
-    isLoading,
-    error,
+    isLoading: pubkey !== null && (scopedBackend?.isLoading ?? true),
+    error: scopedBackend?.error ?? null,
+    engineDataStatus,
     refresh,
   };
 }

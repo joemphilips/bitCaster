@@ -457,6 +457,8 @@ function request(clientOrderId: string, side: 'Buy' | 'Sell'): CtfRangeOrderRequ
     tokenSide: 'Outcome',
     side,
     price: 2,
+    maxQuotePaymentSubunits: side === 'Buy' ? 2 : null,
+    minQuotePaymentSubunits: side === 'Sell' ? 2 : null,
     amountSubunits: 1_000,
     minimumFillAmountSubunits: 1_000,
     baseAsset: 'sat',

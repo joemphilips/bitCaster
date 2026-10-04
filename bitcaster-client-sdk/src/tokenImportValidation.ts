@@ -493,6 +493,10 @@ export interface ValidatedTokenImportProof {
   resolvedKeysetId: string
   source: TokenImportKeysetSource
   activity: TokenImportKeysetActivity
+  conditionalMetadata?: Pick<
+    TokenImportKeysetMetadata,
+    'conditionId' | 'outcomeCollection' | 'outcomeCollectionId'
+  >
 }
 
 export interface ValidatedTokenImport {
@@ -557,6 +561,7 @@ interface ClassifiedKeyset {
   resolvedKeysetId: string
   source: TokenImportKeysetSource
   activity: TokenImportKeysetActivity
+  conditionalMetadata?: ValidatedTokenImportProof['conditionalMetadata']
 }
 
 interface ResolutionLifetime {
@@ -978,6 +983,15 @@ function addLookupClassifications(
       resolvedKeysetId: match.keysetId,
       source: match.source,
       activity: match.active ? 'active' : 'inactive',
+      ...(match.source === 'conditional'
+        ? {
+            conditionalMetadata: {
+              conditionId: match.conditionId,
+              outcomeCollection: match.outcomeCollection,
+              outcomeCollectionId: match.outcomeCollectionId,
+            },
+          }
+        : {}),
     })
   }
 }

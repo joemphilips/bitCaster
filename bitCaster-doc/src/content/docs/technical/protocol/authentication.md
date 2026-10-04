@@ -28,7 +28,11 @@ no body omit the `payload` tag.
 
 For multipart requests, calculate the digest from the exact bytes that you
 send. Keep the matching `Content-Type` boundary with those bytes. The service
-rejects bodies larger than 1 MiB before it calculates the digest.
+rejects bodies above the endpoint's size limit before it calculates the digest.
+The default limit is 1 MiB. Market creation accepts a complete multipart body
+up to 6 MiB, including a thumbnail up to 5 MiB and metadata up to 65,536 UTF-16
+code units. Multipart boundaries also count toward the total size.
+An oversized body returns `413 Payload Too Large`.
 
 ## Wallet and settlement boundary
 

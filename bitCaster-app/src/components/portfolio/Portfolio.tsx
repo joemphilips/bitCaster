@@ -19,18 +19,22 @@ function MonitoringStatus({
   onDismissError,
   onRetryAssets,
   onDismissAssetError,
+  refreshing,
 }: {
   monitoring: PortfolioProps["monitoring"];
   onDismissError?: () => void;
   onRetryAssets?: () => void;
   onDismissAssetError?: () => void;
+  refreshing?: boolean;
 }) {
   const { t } = useTranslation();
   if (!monitoring) return null;
   const error = monitoring.error ?? monitoring.assetPageError;
   const needsAttention = error || monitoring.stale || monitoring.incomplete;
   const states = [
+    monitoring.retainingDisplay && t("portfolio.monitoringRetained"),
     monitoring.stale && t("portfolio.monitoringStale"),
+    (refreshing || monitoring.building) && t("common.loading"),
     monitoring.incomplete && t("portfolio.monitoringIncomplete"),
     monitoring.unvaluedAssetCount > 0 &&
       t("portfolio.monitoringUnvalued", { count: monitoring.unvaluedAssetCount }),
@@ -48,7 +52,14 @@ function MonitoringStatus({
       <span className="flex-1">
         {error
           ? monitoring.error
-            ? t("portfolio.monitoringUnavailable")
+            ? [
+                t(
+                  monitoring.retainingDisplay
+                    ? "portfolio.monitoringRetainedUnavailable"
+                    : "portfolio.monitoringUnavailable",
+                ),
+                ...states,
+              ].join(" ")
             : t("portfolio.assetPageUnavailable")
           : states.join(" ")}
       </span>
@@ -156,6 +167,7 @@ export function Portfolio(props: PortfolioProps) {
         onDismissError={props.onDismissMonitoringError}
         onRetryAssets={props.onRetryLoadMoreAssets}
         onDismissAssetError={props.onDismissAssetPageError}
+        refreshing={props.stats.totalValueLoading}
       />
 
       {/* Profile + Chart Section */}
@@ -257,9 +269,7 @@ export function Portfolio(props: PortfolioProps) {
               <LoadMoreAssets monitoring={props.monitoring} onLoadMore={props.onLoadMoreAssets} />
             </>
           )}
-          {mainTab === "activity" && (
-            <ActivityFeed activity={props.activity} onViewActivity={props.onViewActivity} />
-          )}
+          {mainTab === "activity" && <ActivityFeed activity={props.activity} />}
         </div>
       </div>
 

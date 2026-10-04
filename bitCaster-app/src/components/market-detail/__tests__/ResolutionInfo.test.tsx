@@ -1,9 +1,53 @@
 import { render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+const { readExplanation } = vi.hoisted(() => ({ readExplanation: vi.fn() }));
+vi.mock("@/lib/oracleAttestation", () => ({
+  readBrowserResolutionExplanation: (...args: unknown[]) => readExplanation(...args),
+}));
 import { ResolutionInfo } from "../ResolutionInfo";
 import type { ResolutionDetails } from "@/types/market-detail";
 
 describe("ResolutionInfo", () => {
+  it("loads the verified companion after paint and renders HTML-looking content as plain text", async () => {
+    readExplanation.mockResolvedValueOnce("<b>Official result</b>\nSecond line");
+    const { container } = render(
+      <ResolutionInfo
+        resolution={{
+          conditionId: "condition",
+          criteria: "Rule",
+          source: "oracle",
+          resolutionDate: null,
+          status: "resolved",
+          finalOutcome: "YES",
+        }}
+      />,
+    );
+    expect(screen.getByText("Final Outcome")).toBeVisible();
+    expect(await screen.findByText(/<b>Official result<\/b>/)).toBeVisible();
+    expect(container.querySelector("b")).toBeNull();
+    expect(screen.getByRole("region", { name: "Verified oracle explanation" })).toBeVisible();
+  });
+  it("keeps optional explanation failure separate from verified resolution", async () => {
+    readExplanation.mockRejectedValueOnce(new Error("relay unavailable"));
+    render(
+      <ResolutionInfo
+        resolution={{
+          conditionId: "other",
+          criteria: "Rule",
+          source: "oracle",
+          resolutionDate: null,
+          status: "resolved",
+          finalOutcome: "NO",
+        }}
+      />,
+    );
+    expect(
+      await screen.findByText(
+        "The optional explanation is unavailable. Verified resolution is unchanged.",
+      ),
+    ).toBeVisible();
+    expect(screen.getByText("NO")).toBeVisible();
+  });
   it.each([
     { status: "open" as const, finalOutcome: undefined },
     { status: "resolved" as const, finalOutcome: "Yes" },

@@ -18,6 +18,19 @@ import i18n from "@/i18n";
 const cashuMocks = vi.hoisted(() => ({
   loadMint: vi.fn().mockResolvedValue(undefined),
   walletConstructor: vi.fn(),
+  mintInfo: vi.fn().mockResolvedValue({
+    name: "test mint",
+    pubkey: "abc",
+    version: "test",
+    nuts: {
+      4: { methods: [] },
+      5: { methods: [] },
+    },
+  }),
+  mintKeysets: vi.fn().mockResolvedValue({ keysets: [] }),
+  mintKeys: vi.fn().mockResolvedValue({
+    keysets: [{ id: "test-keyset", unit: "sat", keys: {} }],
+  }),
 }));
 
 const persistenceMocks = vi.hoisted(() => ({ request: vi.fn() }));
@@ -45,23 +58,15 @@ vi.mock("@cashu/cashu-ts", () => {
     constructor(public readonly url: string) {}
 
     async getInfo() {
-      return {
-        name: "test mint",
-        pubkey: "abc",
-        version: "test",
-        nuts: {
-          4: { methods: [] },
-          5: { methods: [] },
-        },
-      };
+      return cashuMocks.mintInfo();
     }
 
     async getKeySets() {
-      return { keysets: [] };
+      return cashuMocks.mintKeysets();
     }
 
     async getKeys() {
-      return { keysets: [{ id: KEYSET_ID, unit: "sat", keys: {} }] };
+      return cashuMocks.mintKeys();
     }
   }
 
@@ -938,29 +943,41 @@ describe("useWalletStore", () => {
     });
 
     it("_addMintWithoutActivating registers the mint but leaves activeMintUrl untouched", async () => {
-      vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
-        const u = String(input);
-        if (u.endsWith("/v1/info")) {
-          return Response.json({
-            name: "test mint",
-            pubkey: "abc",
-            version: "test",
-            nuts: {
-              4: { methods: [] },
-              5: { methods: [] },
-            },
-          });
-        }
-        if (u.endsWith("/v1/keysets")) return new Response('{"keysets":[]}');
-        if (u.endsWith("/v1/keys"))
-          return new Response('{"keysets":[{"id":"k","unit":"sat","keys":{}}]}');
-        return new Response("{}");
+      cashuMocks.mintInfo.mockResolvedValueOnce({
+        name: "test mint",
+        pubkey: "abc",
+        version: "test",
+        description_long: "full mint details",
+        nuts: { 4: { methods: [] }, 5: { methods: [] } },
+      });
+      cashuMocks.mintKeysets.mockResolvedValueOnce({
+        keysets: [
+          { id: KEYSET_ID, unit: "sat", active: true, input_fee_ppk: 0 },
+          { id: "older-keyset", unit: "msat", active: false, input_fee_ppk: 123 },
+        ],
+      });
+      cashuMocks.mintKeys.mockResolvedValueOnce({
+        keysets: [
+          { id: KEYSET_ID, unit: "sat", keys: { 1: "sat-key" } },
+          { id: "second-keyset", unit: "msat", keys: { 1: "msat-key" } },
+        ],
       });
 
       await useWalletStore.getState()._addMintWithoutActivating("https://attacker.example");
 
       const state = useWalletStore.getState();
-      expect(state.mints.map((m) => m.url)).toContain("https://attacker.example");
+      const storedMint = state.mints.find((mint) => mint.url === "https://attacker.example");
+      expect(storedMint).toMatchObject({
+        info: { description_long: "full mint details" },
+        keysets: [
+          { id: KEYSET_ID, input_fee_ppk: 0 },
+          { id: "older-keyset", input_fee_ppk: 123 },
+        ],
+        keys: { id: KEYSET_ID, keys: { 1: "sat-key" } },
+      });
+      expect(cashuMocks.mintInfo).toHaveBeenCalledTimes(1);
+      expect(cashuMocks.mintKeysets).toHaveBeenCalledTimes(1);
+      expect(cashuMocks.mintKeys).toHaveBeenCalledTimes(1);
       // Critical assertion: untrusted-input registration MUST NOT change the
       // user's active mint. If this assertion ever fails, the activating add-mint anti-
       // pattern has been re-introduced — re-read Rule 5 in

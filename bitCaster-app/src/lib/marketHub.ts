@@ -237,6 +237,11 @@ export function parseOrderCancelled(payload: unknown): OrderCancelled | null {
 type OrderBookHandler = (snapshot: OrderBookSnapshot) => void;
 type MarketStatusHandler = (status: MarketStatusChanged) => void;
 type ConfirmedTradeRecordedHandler = (message: ConfirmedTradeRecordedMessage) => void;
+export interface MarketCommentsChangedMessage {
+  conditionId: string;
+  eventOrder: string;
+}
+type MarketCommentsChangedHandler = (message: MarketCommentsChangedMessage) => void;
 type MarketFundingUpdatedHandler = (message: MarketFundingUpdatedMessage) => void;
 type OrderCancelledHandler = (cancelled: OrderCancelled) => void;
 type MarketRejoinedHandler = () => void;
@@ -297,6 +302,7 @@ let _startPromise: Promise<void> | null = null;
 const _orderBookHandlers = new Map<string, Set<OrderBookHandler>>();
 const _orderCancelledHandlers = new Map<string, Set<OrderCancelledHandler>>();
 const _confirmedTradeRecordedHandlers = new Map<string, Set<ConfirmedTradeRecordedHandler>>();
+const _marketCommentsChangedHandlers = new Map<string, Set<MarketCommentsChangedHandler>>();
 const _marketFundingUpdatedHandlers = new Map<string, Set<MarketFundingUpdatedHandler>>();
 const _marketJoinCounts = new Map<string, number>();
 const _desiredMarketJoins = new Set<string>();
@@ -375,6 +381,26 @@ function buildConnection(): HubConnection {
         handler(message);
       } catch (err) {
         console.warn("[marketHub] ConfirmedTradeRecorded handler threw:", err);
+      }
+    }
+  });
+
+  conn.on("MarketCommentsChanged", (payload: unknown) => {
+    if (!payload || typeof payload !== "object") return;
+    const raw = payload as Record<string, unknown>;
+    if (
+      typeof raw.conditionId !== "string" ||
+      !raw.conditionId ||
+      typeof raw.eventOrder !== "string" ||
+      !raw.eventOrder
+    )
+      return;
+    const message = { conditionId: raw.conditionId, eventOrder: raw.eventOrder };
+    for (const handler of _marketCommentsChangedHandlers.get(message.conditionId) ?? []) {
+      try {
+        handler(message);
+      } catch (err) {
+        console.warn("[marketHub] MarketCommentsChanged handler threw:", err);
       }
     }
   });
@@ -852,6 +878,23 @@ export function onConfirmedTradeRecorded(
   };
 }
 
+/** Register for committed comment changes for one condition. */
+export function onMarketCommentsChanged(
+  conditionId: string,
+  handler: MarketCommentsChangedHandler,
+): () => void {
+  let handlers = _marketCommentsChangedHandlers.get(conditionId);
+  if (!handlers) {
+    handlers = new Set();
+    _marketCommentsChangedHandlers.set(conditionId, handlers);
+  }
+  handlers.add(handler);
+  return () => {
+    handlers.delete(handler);
+    if (handlers.size === 0) _marketCommentsChangedHandlers.delete(conditionId);
+  };
+}
+
 /** Register for committed funding observations for one condition. */
 export function onMarketFundingUpdated(
   conditionId: string,
@@ -910,6 +953,7 @@ export async function disconnect(): Promise<void> {
   _appliedPortfolioValuationSet = null;
   _orderBookHandlers.clear();
   _confirmedTradeRecordedHandlers.clear();
+  _marketCommentsChangedHandlers.clear();
   _marketFundingUpdatedHandlers.clear();
   _marketStatusHandlers.clear();
   _marketRejoinedHandlers.clear();

@@ -145,6 +145,7 @@ export function browserRangeJournalIdentity(
     divisibility: preparation.divisibility,
     authorizationExpiresAtUnixSeconds: preparation.expiry,
     preparationBytes: encodePersistedCtfRangeOrderPreparation(preparation),
+    feeConsentBytes: null,
     createdAtMs,
   };
 }

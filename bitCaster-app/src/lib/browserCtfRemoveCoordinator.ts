@@ -1181,11 +1181,8 @@ async function requireTerminalAuthority(
     return proofCommitment;
   }
   const operationId = authority.terminalAuthority.operationId;
-  if (
-    authority.backupState !== "local-only" ||
-    authority.terminalOperationId !== operationId ||
-    authority.admissionOperationId.length === 0
-  ) {
+  // Proof origin is validated separately. A restored proof can be classified locally.
+  if (authority.terminalOperationId !== operationId) {
     throw new Error("browser CTF removal local terminal authority is foreign");
   }
   const validate = ({

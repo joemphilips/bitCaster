@@ -6,11 +6,50 @@ import {
   CreateMarketError,
   createMarketViaEngine,
   parseCreateMarketResponse,
+  recoverCreatedMarketResponse,
   submitOracleAttestationViaEngine,
 } from '../src/marketLifecycle.ts'
 import { signNip98 } from '../../bitcaster-daemon/src/nostrAuth.ts'
 
 const TEST_NOSTR_PRIVATE_KEY = `${'0'.repeat(62)}01`
+
+test('creation recovery accepts only the exact creator, condition, outcome set, and units', () => {
+  const expected = {
+    conditionId: 'condition',
+    creatorPubkey: 'creator',
+    outcomes: ['Yes', 'No'],
+    baseAsset: 'sat' as const,
+    divisibility: 1000 as const,
+  }
+  const entry = {
+    ...expected,
+    outcomes: ['No', 'Yes'],
+    thumbnailUrl: '/thumbnail',
+    outcomeDetails: [
+      { name: 'No', color: '#AABBCC' },
+      { name: 'Yes', color: null },
+    ],
+  }
+  assert.deepEqual(recoverCreatedMarketResponse(entry, expected), {
+    conditionId: 'condition',
+    marketsCreated: ['condition-No', 'condition-Yes'],
+    baseAsset: 'sat',
+    divisibility: 1000,
+    thumbnailUrl: '/thumbnail',
+    outcomeDetails: [{ name: 'No', color: '#AABBCC' }, { name: 'Yes' }],
+  })
+  for (const changed of [
+    null,
+    { ...entry, conditionId: 'other' },
+    { ...entry, creatorPubkey: 'other' },
+    { ...entry, outcomes: ['Yes', 'Yes'] },
+    { ...entry, outcomes: ['Yes', 'Other'] },
+    { ...entry, outcomes: ['Yes'] },
+    { ...entry, baseAsset: 'msat' },
+    { ...entry, divisibility: 10000 },
+  ])
+    assert.equal(recoverCreatedMarketResponse(changed, expected), null)
+})
 
 test('createMarketViaEngine signs a NIP-98 payload tag for the exact serialized multipart bytes', async () => {
   let authPayloadHash: string | undefined

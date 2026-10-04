@@ -286,6 +286,21 @@ describe("nip17-listener", () => {
     expect(mocks.markReceivedSpy).not.toHaveBeenCalled();
   });
 
+  it("ignores malformed message fields before token encoding or mint ingress", async () => {
+    for (const malformed of [
+      null,
+      [],
+      { id: "req-1", mint: {}, unit: "msat", proofs: [] },
+      { id: "req-1", mint: "http://mint.example", unit: "msat", proofs: {} },
+      { id: "req-1", mint: "http://mint.example", unit: "msat", proofs: [null] },
+    ]) {
+      await __handleIncomingDMForTests(JSON.stringify(malformed));
+    }
+    expect(mocks.encodeToken).not.toHaveBeenCalled();
+    expect(mocks.ingressReceiveCashuToken).not.toHaveBeenCalled();
+    expect(mocks.markReceivedSpy).not.toHaveBeenCalled();
+  });
+
   it("rejects unsolicited or wrong-mint DMs before wallet ingress", async () => {
     await __handleIncomingDMForTests(
       JSON.stringify({
@@ -344,12 +359,53 @@ describe("nip17-listener", () => {
     await Promise.all([first, second]);
   });
 
+  it("stops an active listener on empty selection and does not restore defaults", async () => {
+    await startNip17Listener("wallet-a", ["wss://custom.example/Path?Key=A"]);
+    expect(mocks.subscribeNip17DMs).toHaveBeenLastCalledWith(
+      expect.any(String),
+      expect.any(String),
+      expect.any(Function),
+      ["wss://custom.example/Path?Key=A"],
+      expect.any(AbortSignal),
+    );
+    const unsubscribe = mocks.subscribers[0]!.unsubscribe;
+    await startNip17Listener("wallet-a", []);
+    expect(unsubscribe).toHaveBeenCalledOnce();
+    expect(mocks.subscribeNip17DMs).toHaveBeenCalledOnce();
+    expect(__getNip17ListenerHandleForTests()).toBeNull();
+    await startNip17Listener("wallet-a", ["wss://nos.lol"]);
+    expect(mocks.subscribeNip17DMs).toHaveBeenLastCalledWith(
+      expect.any(String),
+      expect.any(String),
+      expect.any(Function),
+      ["wss://nos.lol"],
+      expect.any(AbortSignal),
+    );
+  });
+
+  it("fences a pending listener when the user removes all relays", async () => {
+    const subscription = deferred<() => void>();
+    mocks.subscribeNip17DMs.mockReturnValueOnce(subscription.promise);
+    const starting = startNip17Listener("wallet-a", ["wss://custom.example"]);
+    const signal = mocks.subscribeNip17DMs.mock.calls.at(-1)![4] as AbortSignal;
+    await startNip17Listener("wallet-a", []);
+    expect(signal.aborted).toBe(true);
+    const unsubscribe = vi.fn();
+    subscription.resolve(unsubscribe);
+    await starting;
+    expect(unsubscribe).toHaveBeenCalledOnce();
+    expect(mocks.subscribeNip17DMs).toHaveBeenCalledOnce();
+    expect(__getNip17ListenerHandleForTests()).toBeNull();
+  });
+
   it("unsubscribes and fences a start that completes after stop", async () => {
     const subscription = deferred<() => void>();
     mocks.subscribeNip17DMs.mockReturnValueOnce(subscription.promise);
     const starting = startNip17Listener("wallet-a", ["wss://relay.example"]);
+    const signal = mocks.subscribeNip17DMs.mock.calls.at(-1)![4] as AbortSignal;
 
     stopNip17Listener();
+    expect(signal.aborted).toBe(true);
     const unsubscribe = vi.fn();
     subscription.resolve(unsubscribe);
     await starting;

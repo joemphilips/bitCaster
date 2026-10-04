@@ -1,7 +1,8 @@
-import { render, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import App from "../App";
+import { useWalletBackupPresentation } from "@/hooks/WalletBackupPresentation";
 
 const mocks = vi.hoisted(() => ({
   wallet: {
@@ -18,6 +19,7 @@ const mocks = vi.hoisted(() => ({
   rehydrateIdentity: vi.fn(),
   recoverBolt11: vi.fn(),
   recoverMelts: vi.fn(),
+  backup: { recoveryStatus: { kind: "failed" }, retryRecovery: vi.fn() },
 }));
 
 vi.mock("react-i18next", () => ({
@@ -31,7 +33,14 @@ vi.mock("@/components/shell", () => ({
 }));
 vi.mock("@/components/shell/SettlementProgress", () => ({ SettlementProgress: () => null }));
 vi.mock("@/components/ui/Toast", () => ({ ToastContainer: () => null }));
-vi.mock("@/pages/MarketsPage", () => ({ MarketsPage: () => null }));
+vi.mock("@/pages/MarketsPage", () => ({
+  MarketsPage: () => {
+    const backup = useWalletBackupPresentation();
+    return (
+      <button onClick={backup?.retryRecovery}>App backup: {backup?.recoveryStatus.kind}</button>
+    );
+  },
+}));
 vi.mock("@/pages/MarketDetailPage", () => ({ MarketDetailPage: () => null }));
 vi.mock("@/pages/PortfolioPage", () => ({ PortfolioPage: () => null }));
 vi.mock("@/pages/CreatorPage", () => ({ CreatorPage: () => null }));
@@ -66,7 +75,7 @@ vi.mock("@/stores/useActivityLogSync", () => ({ useActivityLogSync: vi.fn() }));
 vi.mock("@/hooks/useOrderSettlementLifecycle", () => ({ useOrderSettlementLifecycle: vi.fn() }));
 vi.mock("@/hooks/useLikedMarketCloseReconcile", () => ({ useLikedMarketCloseReconcile: vi.fn() }));
 vi.mock("@/hooks/useEncryptedWalletBackupDriver", () => ({
-  useEncryptedWalletBackupDriver: () => undefined,
+  useEncryptedWalletBackupDriver: () => mocks.backup,
 }));
 vi.mock("@/hooks/useAssetMonitoringReporter", () => ({ useAssetMonitoringReporter: vi.fn() }));
 vi.mock("@/hooks/useBrowserCtfRangeOrderRecovery", () => ({
@@ -117,6 +126,45 @@ beforeEach(() => {
 });
 
 describe("App NIP-17 listener lifecycle", () => {
+  it("shares the single app-owned backup state and Retry with route content", () => {
+    mocks.backup.retryRecovery.mockClear();
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: "App backup: failed" }));
+    expect(mocks.backup.retryRecovery).toHaveBeenCalledOnce();
+  });
+
+  it("passes explicit opt-out to the listener and cleans up the old subscription", async () => {
+    const view = render(<App />);
+    await waitFor(() => expect(mocks.startListener).toHaveBeenCalledOnce());
+    mocks.settings.relays = [];
+    view.rerender(<App />);
+    await waitFor(() => expect(mocks.startListener).toHaveBeenLastCalledWith("wallet-a", []));
+    expect(mocks.stopListener).toHaveBeenCalledOnce();
+  });
+
+  it("restarts when two exact relay sets have the same delimiter-joined representation", async () => {
+    mocks.settings.relays = [
+      {
+        url: "wss://custom.example/Path?Key=A|wss://other.example",
+        connectionStatus: "disconnected",
+      },
+    ];
+    const view = render(<App />);
+    await waitFor(() => expect(mocks.startListener).toHaveBeenCalledOnce());
+    mocks.settings.relays = [
+      { url: "wss://custom.example/Path?Key=A", connectionStatus: "disconnected" },
+      { url: "wss://other.example", connectionStatus: "disconnected" },
+    ];
+    view.rerender(<App />);
+    await waitFor(() =>
+      expect(mocks.startListener).toHaveBeenLastCalledWith("wallet-a", [
+        "wss://custom.example/Path?Key=A",
+        "wss://other.example",
+      ]),
+    );
+    expect(mocks.startListener).toHaveBeenCalledTimes(2);
+    expect(mocks.stopListener).toHaveBeenCalledOnce();
+  });
   it("stops the listener when the wallet profile becomes empty", async () => {
     const view = render(<App />);
     await waitFor(() =>

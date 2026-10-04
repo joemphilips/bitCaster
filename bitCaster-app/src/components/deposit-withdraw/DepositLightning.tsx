@@ -4,6 +4,11 @@ import type { MintInfo } from "@/types/deposit-withdraw";
 import { MintSelector } from "./MintSelector";
 import { AmountDisplay } from "./AmountDisplay";
 import { Numpad } from "./Numpad";
+import {
+  useWalletBackupPresentation,
+  walletBackupPausesNewChanges,
+} from "@/hooks/WalletBackupPresentation";
+import { EncryptedWalletBackupRecoveryStatus } from "@/components/shell/EncryptedWalletBackupRecoveryStatus";
 
 interface DepositLightningProps {
   mints: MintInfo[];
@@ -30,6 +35,7 @@ export function DepositLightning({
   onCreateInvoice,
   onClose,
 }: DepositLightningProps) {
+  const walletBackup = useWalletBackupPresentation();
   return (
     <div className="fixed inset-0 z-[70] bg-slate-900 flex flex-col">
       {/* Header */}
@@ -49,6 +55,11 @@ export function DepositLightning({
       {/* Content */}
       <div data-testid="deposit-lightning-content" className="min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto flex min-h-full w-full max-w-md flex-col">
+          {walletBackup && (
+            <div className="px-5 pt-2">
+              <EncryptedWalletBackupRecoveryStatus {...walletBackup} />
+            </div>
+          )}
           {statusMessage && <div className="px-5 pt-2">{statusMessage}</div>}
           {depositReminder && <div className="px-5 pt-2">{depositReminder}</div>}
 
@@ -73,7 +84,7 @@ export function DepositLightning({
           <div className="px-5 py-6">
             <button
               onClick={() => onCreateInvoice?.()}
-              disabled={amountSats === 0}
+              disabled={amountSats === 0 || walletBackupPausesNewChanges(walletBackup)}
               className="w-full py-4 rounded-xl text-base font-bold uppercase tracking-wide transition-colors disabled:opacity-40 disabled:cursor-not-allowed bg-slate-200 text-slate-900 hover:bg-white active:bg-slate-300 disabled:hover:bg-slate-200"
             >
               Create Invoice

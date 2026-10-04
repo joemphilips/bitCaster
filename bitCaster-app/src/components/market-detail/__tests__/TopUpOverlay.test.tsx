@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import i18n from "@/i18n";
@@ -7,6 +7,8 @@ import {
   setActiveBrowserWalletProfile,
 } from "@/lib/browserWalletProfile";
 import { TopUpOverlay } from "../TopUpOverlay";
+import { WalletBackupPresentationProvider } from "@/hooks/WalletBackupPresentation";
+import { BrowserWalletRecoveryRequiredError } from "@/lib/browserWalletNewWritePermission";
 
 const createBrowserDurableBolt11MintQuote = vi.fn();
 const subscribeActiveBrowserDurableBolt11MintQuote = vi.fn();
@@ -97,6 +99,106 @@ describe("TopUpOverlay", () => {
     walletSeedReminderAcknowledgedScopeId = null;
     setActiveBrowserWalletProfile(walletMnemonic);
   });
+
+  it.each(["authentication", "leadership-wait", "retry", "driver-unavailable"] as const)(
+    "shows %s inside the top-up dialog and prevents repeated quote clicks",
+    async (reason) => {
+      render(
+        <WalletBackupPresentationProvider
+          value={{ recoveryStatus: { kind: "preparing", reason }, retryRecovery: vi.fn() }}
+        >
+          <TopUpOverlay deficit={10_000} baseAsset="sat" onCancel={vi.fn()} onSuccess={vi.fn()} />
+        </WalletBackupPresentationProvider>,
+      );
+      const dialog = screen.getByRole("dialog");
+      expect(
+        within(dialog).getByRole("status", { name: "Preparing wallet backup" }),
+      ).toBeInTheDocument();
+      expect(screen.getByTestId("top-up-continue")).toBeDisabled();
+      await userEvent.click(screen.getByTestId("top-up-continue"));
+      await userEvent.click(screen.getByTestId("top-up-method-ecash"));
+      fireEvent.change(screen.getByTestId("top-up-ecash-input"), {
+        target: { value: "cashuAtoken" },
+      });
+      expect(screen.getByTestId("top-up-ecash-submit")).toBeDisabled();
+      expect(createBrowserDurableBolt11MintQuote).not.toHaveBeenCalled();
+      expect(ingressReceiveCashuToken).not.toHaveBeenCalled();
+      expect(ensureImplicitWallet).not.toHaveBeenCalled();
+    },
+  );
+
+  it("retries only app-owned backup, keeps the entered amount, and needs a new click after ready", async () => {
+    const retryRecovery = vi.fn();
+    const overlay = (
+      <TopUpOverlay deficit={10_000} baseAsset="sat" onCancel={vi.fn()} onSuccess={vi.fn()} />
+    );
+    const { rerender } = render(
+      <WalletBackupPresentationProvider
+        value={{ recoveryStatus: { kind: "failed" }, retryRecovery }}
+      >
+        {overlay}
+      </WalletBackupPresentationProvider>,
+    );
+    fireEvent.change(screen.getByTestId("top-up-amount-input"), { target: { value: "23" } });
+    expect(
+      within(screen.getByRole("dialog")).getByRole("status", { name: "Wallet backup stopped" }),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId("top-up-continue")).toBeDisabled();
+    await userEvent.click(screen.getByRole("button", { name: "Retry wallet backup" }));
+    expect(retryRecovery).toHaveBeenCalledOnce();
+    rerender(
+      <WalletBackupPresentationProvider
+        value={{ recoveryStatus: { kind: "preparing", reason: "authentication" }, retryRecovery }}
+      >
+        {overlay}
+      </WalletBackupPresentationProvider>,
+    );
+    expect(screen.getByTestId("top-up-amount-input")).toHaveValue(23);
+    expect(screen.getByTestId("top-up-continue")).toBeDisabled();
+    rerender(
+      <WalletBackupPresentationProvider
+        value={{ recoveryStatus: { kind: "ready" }, retryRecovery }}
+      >
+        {overlay}
+      </WalletBackupPresentationProvider>,
+    );
+    expect(screen.getByTestId("top-up-amount-input")).toHaveValue(23);
+    expect(createBrowserDurableBolt11MintQuote).not.toHaveBeenCalled();
+    expect(screen.getByTestId("top-up-continue")).toBeEnabled();
+    await userEvent.click(screen.getByTestId("top-up-continue"));
+    expect(createBrowserDurableBolt11MintQuote).toHaveBeenCalledWith({
+      amount: 23_000,
+      mintUrl: "https://mint.example",
+      unit: "msat",
+    });
+  });
+
+  it.each(["en", "ja"])(
+    "does not authorize from ready presentation and explains an authoritative startup refusal in %s",
+    async (language) => {
+      await i18n.changeLanguage(language);
+      createBrowserDurableBolt11MintQuote.mockRejectedValue(
+        new BrowserWalletRecoveryRequiredError("startup-authentication-pending"),
+      );
+      render(
+        <WalletBackupPresentationProvider
+          value={{ recoveryStatus: { kind: "ready" }, retryRecovery: vi.fn() }}
+        >
+          <TopUpOverlay deficit={10_000} baseAsset="sat" onCancel={vi.fn()} onSuccess={vi.fn()} />
+        </WalletBackupPresentationProvider>,
+      );
+      await userEvent.click(screen.getByTestId("top-up-continue"));
+      expect(
+        await screen.findByText(
+          language === "en"
+            ? "Wallet backup is not ready. Wait for it to finish, or use Retry wallet backup if it has stopped."
+            : "ウォレットバックアップの準備が完了していません。完了を待つか、停止している場合は「バックアップを再試行」を選んでください。",
+        ),
+      ).toBeInTheDocument();
+      expect(screen.queryByText(/authenticating this wallet/)).not.toBeInTheDocument();
+      expect(subscribeActiveBrowserDurableBolt11MintQuote).not.toHaveBeenCalled();
+    },
+  );
 
   it("shows a dismissible per-open seed reminder while allowing top-up deposits", async () => {
     const { unmount } = render(

@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { isLoopbackHttpUrl, validateMarketCreateEngineUrl } from '../src/engineUrlSecurity.ts'
+import {
+  isLoopbackHttpUrl,
+  normalizeEndpointUrl,
+  validateMarketCreateEngineUrl,
+} from '../src/engineUrlSecurity.ts'
 
 test('engine URL policy accepts HTTPS and explicit loopback HTTP forms', () => {
   assert.equal(validateMarketCreateEngineUrl('https://engine.example', false).ok, true)
@@ -11,4 +15,27 @@ test('engine URL policy accepts HTTPS and explicit loopback HTTP forms', () => {
   }
   assert.equal(isLoopbackHttpUrl('http://engine.example'), false)
   assert.equal(validateMarketCreateEngineUrl('http://engine.example', true).ok, false)
+})
+
+test('endpoint URL normalization trims trailing slashes and preserves base paths', () => {
+  assert.equal(
+    normalizeEndpointUrl('https://engine.example///', 'engine URL'),
+    'https://engine.example',
+  )
+  assert.equal(
+    normalizeEndpointUrl('https://engine.example/api///', 'trusted engine URL'),
+    'https://engine.example/api',
+  )
+  assert.equal(
+    normalizeEndpointUrl('http://localhost:5000///', 'engine URL'),
+    'http://localhost:5000',
+  )
+  assert.throws(
+    () => normalizeEndpointUrl('http://engine.example', 'engine URL'),
+    /expected https or loopback http URL/,
+  )
+  assert.throws(
+    () => normalizeEndpointUrl('ftp://engine.example', 'engine URL'),
+    /expected http or https URL/,
+  )
 })

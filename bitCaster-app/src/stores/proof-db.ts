@@ -572,6 +572,7 @@ export interface BrowserParticipationScoreDeliveryPointerRow {
 export const DURABLE_BOLT11_MINT_QUOTE_OPERATION_METADATA_KEY = "durableBolt11MintQuoteRecordId";
 
 export class BitcasterDB extends Dexie {
+  marketCreations!: Table<import("@bitcaster/client-sdk").MarketCreationRecord, [string, string]>;
   proofs!: Table<StoredProofRow>;
   proofOperations!: Table<ProofOperationRecord>;
   ctfRangePreparations!: Table<CtfRangeOrderPreparationRecord, [string, string]>;
@@ -820,6 +821,9 @@ export class BitcasterDB extends Dexie {
             row.localRecoveryVersion = 0;
           });
       });
+    this.version(20).stores({
+      marketCreations: "&[walletScopeId+creationId], [walletScopeId+creatorId]",
+    });
     this.encryptedWalletBackupEnrollmentResults = this.table(
       "encryptedWalletBackupWalletEnrollmentResults",
     );

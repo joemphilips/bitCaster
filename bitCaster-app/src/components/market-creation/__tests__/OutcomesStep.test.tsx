@@ -71,7 +71,26 @@ describe("OutcomesStep market unit controls", () => {
 });
 
 describe("OutcomesStep outcome colors", () => {
-  it("supports explicit colors and an automatic reset for every categorical outcome", async () => {
+  it("shows visible distinct palette defaults without gray placeholders", () => {
+    render(<OutcomesStep outcomeType="categorical" outcomes={makeOutcomes(8)} />);
+    const colors = makeOutcomes(8).map(
+      (outcome) => (screen.getByLabelText(`Color for ${outcome.label}`) as HTMLInputElement).value,
+    );
+    expect(colors).toEqual([
+      "#59a14f",
+      "#e15759",
+      "#f28e2b",
+      "#4e79a7",
+      "#76b7b2",
+      "#edc948",
+      "#b07aa1",
+      "#ff9da7",
+    ]);
+    expect(new Set(colors).size).toBe(8);
+    expect(colors).not.toContain("#808080");
+  });
+
+  it("supports explicit colors and requests another Automatic choice for each outcome", async () => {
     const user = userEvent.setup();
     const onOutcomeColorChange = vi.fn();
     const outcomes = makeOutcomes(2).map((outcome, index) =>
@@ -92,6 +111,9 @@ describe("OutcomesStep outcome colors", () => {
 
     await user.click(screen.getByRole("button", { name: "Use automatic color for Outcome 0" }));
     expect(onOutcomeColorChange).toHaveBeenLastCalledWith("o0", null);
+    expect(
+      screen.getByRole("button", { name: "Use automatic color for Outcome 0" }),
+    ).not.toHaveAttribute("aria-pressed");
     expect(screen.getAllByRole("button", { name: /Use automatic color for Outcome/ })).toHaveLength(
       2,
     );

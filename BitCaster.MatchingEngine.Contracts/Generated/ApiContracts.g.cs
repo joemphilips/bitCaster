@@ -446,7 +446,7 @@ namespace BitCaster.MatchingEngine.Contracts
         public System.Guid ReportId { get; }
 
         /// <summary>
-        /// True for the first report and for a wallet switch.
+        /// True for the first report for this account-wallet pair or to start a new interval for this pair.
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("startsNewInterval")]
         public bool StartsNewInterval { get; }
@@ -764,12 +764,14 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class SettlementOrderIntent
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public SettlementOrderIntent(long @amountSubunits, BaseAsset @baseAsset, CollateralUnit @collateralUnit, System.DateTimeOffset? @expiresAt, long @minimumFillAmountSubunits, string @outcomeId, int @price, OrderSide @side, SettlementCapabilityTimeInForce @timeInForce, TokenSide @tokenSide)
+        public SettlementOrderIntent(long @amountSubunits, BaseAsset @baseAsset, CollateralUnit @collateralUnit, System.DateTimeOffset? @expiresAt, long? @maxQuotePaymentSubunits, long @minimumFillAmountSubunits, long? @minQuotePaymentSubunits, string @outcomeId, int @price, OrderSide @side, SettlementCapabilityTimeInForce @timeInForce, TokenSide @tokenSide)
         {
             this.OutcomeId = @outcomeId;
             this.TokenSide = @tokenSide;
             this.Side = @side;
             this.Price = @price;
+            this.MaxQuotePaymentSubunits = @maxQuotePaymentSubunits;
+            this.MinQuotePaymentSubunits = @minQuotePaymentSubunits;
             this.AmountSubunits = @amountSubunits;
             this.MinimumFillAmountSubunits = @minimumFillAmountSubunits;
             this.BaseAsset = @baseAsset;
@@ -795,6 +797,20 @@ namespace BitCaster.MatchingEngine.Contracts
 
         [System.Text.Json.Serialization.JsonPropertyName("price")]
         public int Price { get; }
+
+        /// <summary>
+        /// Required nonnegative aggregate quote-payment maximum in msat for Buy FOK. Use the accepted preview payment. Absent or null for Sell. This bound does not include mint fees or replace the per-fill price.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("maxQuotePaymentSubunits")]
+        public long? MaxQuotePaymentSubunits { get; }
+
+        /// <summary>
+        /// Required nonnegative aggregate quote-payment minimum in msat for Sell FOK. Use the accepted preview payment. Absent or null for Buy. This bound does not include mint fees or replace the per-fill price.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("minQuotePaymentSubunits")]
+        public long? MinQuotePaymentSubunits { get; }
 
         /// <summary>
         /// Conditional-token face amount in the market collateral sub-unit.
@@ -1699,12 +1715,13 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class ConditionAttestationResponse
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public ConditionAttestationResponse(string @attestedOutcome, string @conditionId, OracleWitness @oracleWitness, RegisteredConditionAuthority @registeredAuthority)
+        public ConditionAttestationResponse(OracleNostrEvent @attestationEvent, string @attestedOutcome, string @conditionId, OracleWitness @oracleWitness, RegisteredConditionAuthority @registeredAuthority)
         {
             this.ConditionId = @conditionId;
             this.AttestedOutcome = @attestedOutcome;
             this.OracleWitness = @oracleWitness;
             this.RegisteredAuthority = @registeredAuthority;
+            this.AttestationEvent = @attestationEvent;
         }
 
         /// <summary>
@@ -1724,6 +1741,13 @@ namespace BitCaster.MatchingEngine.Contracts
 
         [System.Text.Json.Serialization.JsonPropertyName("registeredAuthority")]
         public RegisteredConditionAuthority RegisteredAuthority { get; }
+
+        /// <summary>
+        /// Exact signed kind-89 event retained with the verified resolution. Its createdAt field carries the original NIP-01 created_at value.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("attestationEvent")]
+        public OracleNostrEvent AttestationEvent { get; }
 
         private System.Collections.Generic.IDictionary<string, object>? _additionalProperties;
 
@@ -2093,7 +2117,7 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class OrderStatusResponse
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public OrderStatusResponse(SettlementGroupSummary? @activeSettlementGroup, long @amountSubunits, BaseAsset @baseAsset, OrderStatusResponseDivisibility @divisibility, System.DateTimeOffset? @expiresAt, long @filledAmountSubunits, System.Collections.Generic.List<Fill> @fills, string @marketId, System.Guid @orderId, string @outcomeId, System.DateTimeOffset @placedAt, int @price, long @remainingAmountSubunits, OrderSide @side, OrderLifecycleStatus @status, TimeInForce @timeInForce, TokenSide @tokenSide)
+        public OrderStatusResponse(SettlementGroupSummary? @activeSettlementGroup, long @amountSubunits, BaseAsset @baseAsset, OrderStatusResponseDivisibility @divisibility, System.DateTimeOffset? @expiresAt, long @filledAmountSubunits, System.Collections.Generic.List<Fill> @fills, string @marketId, long? @maxQuotePaymentSubunits, long? @minQuotePaymentSubunits, System.Guid @orderId, string @outcomeId, System.DateTimeOffset @placedAt, int @price, long @remainingAmountSubunits, OrderSide @side, OrderLifecycleStatus @status, TimeInForce @timeInForce, TokenSide @tokenSide)
         {
             this.OrderId = @orderId;
             this.MarketId = @marketId;
@@ -2108,6 +2132,8 @@ namespace BitCaster.MatchingEngine.Contracts
             this.PlacedAt = @placedAt;
             this.TimeInForce = @timeInForce;
             this.ExpiresAt = @expiresAt;
+            this.MaxQuotePaymentSubunits = @maxQuotePaymentSubunits;
+            this.MinQuotePaymentSubunits = @minQuotePaymentSubunits;
             this.ActiveSettlementGroup = @activeSettlementGroup;
             this.TokenSide = @tokenSide;
             this.BaseAsset = @baseAsset;
@@ -2175,6 +2201,18 @@ namespace BitCaster.MatchingEngine.Contracts
 
         [System.Text.Json.Serialization.JsonPropertyName("expiresAt")]
         public System.DateTimeOffset? ExpiresAt { get; }
+
+        /// <summary>
+        /// The immutable accepted Buy FOK aggregate quote-payment maximum in msat. Null when not applicable.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("maxQuotePaymentSubunits")]
+        public long? MaxQuotePaymentSubunits { get; }
+
+        /// <summary>
+        /// The immutable accepted Sell FOK aggregate quote-payment minimum in msat. Null when not applicable.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("minQuotePaymentSubunits")]
+        public long? MinQuotePaymentSubunits { get; }
 
         /// <summary>
         /// Current nonterminal settlement group for this order, or null when no group currently owns an unconfirmed fill.
@@ -2934,7 +2972,7 @@ namespace BitCaster.MatchingEngine.Contracts
         public string Name { get; }
 
         /// <summary>
-        /// Optional server-resolved display color. Present colors use uppercase #RRGGBB. Older records can omit color.
+        /// Optional server-resolved display color. Present colors use uppercase #RRGGBB. Older records can omit color or return null.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("color")]
@@ -3076,6 +3114,73 @@ namespace BitCaster.MatchingEngine.Contracts
     }
 
     [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class MarketRegistrationResponse
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public MarketRegistrationResponse(BaseAsset @baseAsset, string @conditionId, string? @creatorPubkey, int @divisibility, System.Collections.Generic.List<MarketOutcomeDetails> @outcomeDetails, System.Collections.Generic.List<string> @outcomes, string? @thumbnailUrl)
+        {
+            this.ConditionId = @conditionId;
+            this.CreatorPubkey = @creatorPubkey;
+            this.Outcomes = @outcomes;
+            this.BaseAsset = @baseAsset;
+            this.Divisibility = @divisibility;
+            this.ThumbnailUrl = @thumbnailUrl;
+            this.OutcomeDetails = @outcomeDetails;
+        }
+
+        /// <summary>
+        /// Registered condition ID.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("conditionId")]
+        public string ConditionId { get; }
+
+        /// <summary>
+        /// Creator Nostr pubkey recorded at registration, or null for legacy markets.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("creatorPubkey")]
+        public string? CreatorPubkey { get; }
+
+        /// <summary>
+        /// Registered outcome identity names, in registration order.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("outcomes")]
+        public System.Collections.Generic.List<string> Outcomes { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("baseAsset")]
+        [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<BaseAsset>))]
+        public BaseAsset BaseAsset { get; }
+
+        /// <summary>
+        /// Immutable registered market price denominator. Current markets use 1000; 1000000 is reserved for a future numeric trade representation.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("divisibility")]
+        public int Divisibility { get; }
+
+        /// <summary>
+        /// Public thumbnail URL, or null when no thumbnail was registered.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("thumbnailUrl")]
+        public string? ThumbnailUrl { get; }
+
+        /// <summary>
+        /// Registered display details aligned with the outcome identity list.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("outcomeDetails")]
+        public System.Collections.Generic.List<MarketOutcomeDetails> OutcomeDetails { get; }
+
+        private System.Collections.Generic.IDictionary<string, object>? _additionalProperties;
+
+        [System.Text.Json.Serialization.JsonExtensionData]
+        public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
+        {
+            get { return _additionalProperties ?? (_additionalProperties = new System.Collections.Generic.Dictionary<string, object>()); }
+            set { _additionalProperties = value; }
+        }
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
     public partial class MarketPriceHistoryPoint
     {
         [System.Text.Json.Serialization.JsonConstructor]
@@ -3089,7 +3194,7 @@ namespace BitCaster.MatchingEngine.Contracts
         }
 
         /// <summary>
-        /// Opaque canonical ordering identity for this confirmed trade. Compare values with ordinal string ordering. The greater value identifies the newer event, including when timestamps are equal. Use this value when merging history with confirmed live trades.
+        /// Opaque source position for this confirmed trade. Pass the value unchanged to minimumEventOrder when requesting a snapshot. Do not compare positions on the client. Do not merge live trade points into retained history snapshots.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("eventOrder")]
@@ -3165,12 +3270,26 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class MarketPriceHistoryResponse
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public MarketPriceHistoryResponse(string @conditionId, System.Collections.Generic.List<MarketOutcomePriceHistory> @outcomes, MarketPriceHistoryResponseTimeframe @timeframe)
+        public MarketPriceHistoryResponse(System.DateTimeOffset @asOf, string @conditionId, System.Collections.Generic.List<MarketOutcomePriceHistory> @outcomes, string? @snapshotEventOrder, MarketPriceHistoryResponseTimeframe @timeframe)
         {
+            this.SnapshotEventOrder = @snapshotEventOrder;
+            this.AsOf = @asOf;
             this.ConditionId = @conditionId;
             this.Timeframe = @timeframe;
             this.Outcomes = @outcomes;
         }
+
+        /// <summary>
+        /// Applied source position proven for this snapshot. Treat this value as opaque.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("snapshotEventOrder")]
+        public string? SnapshotEventOrder { get; }
+
+        /// <summary>
+        /// Server evaluation time for the selected history window.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("asOf")]
+        public System.DateTimeOffset AsOf { get; }
 
         [System.Text.Json.Serialization.JsonPropertyName("conditionId")]
         public string ConditionId { get; }
@@ -3197,12 +3316,13 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class MarketComment
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public MarketComment(string @authorPubkey, System.Guid @commentId, string @content, System.DateTimeOffset @createdAt)
+        public MarketComment(string @authorPubkey, System.Guid @commentId, string @content, System.DateTimeOffset @createdAt, MarketCommentTrade? @trade)
         {
             this.CommentId = @commentId;
             this.Content = @content;
             this.CreatedAt = @createdAt;
             this.AuthorPubkey = @authorPubkey;
+            this.Trade = @trade;
         }
 
         /// <summary>
@@ -3226,6 +3346,73 @@ namespace BitCaster.MatchingEngine.Contracts
         [System.Text.Json.Serialization.JsonPropertyName("authorPubkey")]
         public string AuthorPubkey { get; }
 
+        /// <summary>
+        /// Confirmed fill coordinate for this comment. Null when the exact coordinate is unavailable.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("trade")]
+        public MarketCommentTrade? Trade { get; }
+
+        private System.Collections.Generic.IDictionary<string, object>? _additionalProperties;
+
+        [System.Text.Json.Serialization.JsonExtensionData]
+        public System.Collections.Generic.IDictionary<string, object> AdditionalProperties
+        {
+            get { return _additionalProperties ?? (_additionalProperties = new System.Collections.Generic.Dictionary<string, object>()); }
+            set { _additionalProperties = value; }
+        }
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class MarketCommentTrade
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public MarketCommentTrade(System.DateTimeOffset @executedAt, long? @faceAmountSubunits, System.Guid @fillId, string @outcomeId, int @price, int @priceDenominator)
+        {
+            this.FaceAmountSubunits = @faceAmountSubunits;
+            this.FillId = @fillId;
+            this.OutcomeId = @outcomeId;
+            this.ExecutedAt = @executedAt;
+            this.Price = @price;
+            this.PriceDenominator = @priceDenominator;
+        }
+
+        /// <summary>
+        /// Linked confirmed fill size in market face-amount subunits. Null means unknown size.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("faceAmountSubunits")]
+        public long? FaceAmountSubunits { get; }
+
+        /// <summary>
+        /// Confirmed fill associated with the comment.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("fillId")]
+        public System.Guid FillId { get; }
+
+        /// <summary>
+        /// Primitive outcome route used by public trade history.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("outcomeId")]
+        public string OutcomeId { get; }
+
+        /// <summary>
+        /// Confirmed fill time used by public trade history.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("executedAt")]
+        public System.DateTimeOffset ExecutedAt { get; }
+
+        /// <summary>
+        /// Primitive outcome price numerator used by public trade history.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("price")]
+        public int Price { get; }
+
+        /// <summary>
+        /// Market divisibility used as the price denominator.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("priceDenominator")]
+        public int PriceDenominator { get; }
+
         private System.Collections.Generic.IDictionary<string, object>? _additionalProperties;
 
         [System.Text.Json.Serialization.JsonExtensionData]
@@ -3241,11 +3428,18 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class MarketCommentsResponse
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public MarketCommentsResponse(System.Collections.Generic.List<MarketComment> @comments, string @conditionId)
+        public MarketCommentsResponse(System.Collections.Generic.List<MarketComment> @comments, string @conditionId, string? @snapshotEventOrder)
         {
+            this.SnapshotEventOrder = @snapshotEventOrder;
             this.ConditionId = @conditionId;
             this.Comments = @comments;
         }
+
+        /// <summary>
+        /// Applied source position proven for this snapshot. Treat this value as opaque.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("snapshotEventOrder")]
+        public string? SnapshotEventOrder { get; }
 
         [System.Text.Json.Serialization.JsonPropertyName("conditionId")]
         public string ConditionId { get; }

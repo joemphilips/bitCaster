@@ -1,96 +1,570 @@
-import { nip19 } from "nostr-tools";
+import { NDKEvent, type NostrEvent, type NDKKind } from "@nostr-dev-kit/ndk";
 import { finalizeEvent } from "nostr-tools/pure";
 import { hexToBytes } from "nostr-tools/utils";
+import {
+  BitcasterEngineClient,
+  deriveDlcConditionId,
+  verifyDlcOracleResolution,
+  submitOracleAttestationViaEngine,
+  type ConditionAttestationResponse,
+} from "@bitcaster/client-sdk";
+import {
+  publishOracleOutcome,
+  retryOraclePublication,
+  type OraclePublicationBinding,
+  type PreparedOracleAttestation,
+  type VerifiedOraclePublicationEvidence,
+} from "@bitcaster/client-sdk/oraclePublication";
+import {
+  createOracleExplanationTemplate,
+  readSignedOracleEvent,
+  verifyOracleResolutionExplanation,
+  type OracleExplanationContext,
+} from "@bitcaster/client-sdk/oracleResolutionExplanation";
 import type { components } from "@/generated/api";
+import {
+  creatorOraclePublicationStore,
+  useCreatorMarketsStore,
+  type StoredCreatorMarket,
+} from "@/stores/creatorMarkets";
+import { useSettingsStore } from "@/stores/settings";
+import {
+  decodeOracleAnnouncement,
+  decodeOracleAttestation,
+  ensureKormirNsec,
+  prepareEnumAttestation,
+} from "./kormir";
+import { resolveNsecIdentity } from "./identityOps";
+import { withTemporaryRelayNdk } from "./nostr";
+import { sha256Hex } from "./markets";
+import { announcementContentFromTlv } from "@bitcaster/client-sdk/oracleAnnouncementEncoding";
 
 export type OracleNostrEvent = components["schemas"]["OracleNostrEvent"];
+type RegisteredAuthority = components["schemas"]["RegisteredConditionAuthority"];
+type OracleAuthoritySource =
+  | { readonly announcementTlvHex: string }
+  | { readonly registeredAuthority: unknown };
+// The additive read field uses the existing public wire event.
+export type OracleAttestationReadPort = (conditionId: string) => Promise<
+  | (ConditionAttestationResponse & {
+      readonly attestationEvent: OracleNostrEvent;
+    })
+  | null
+>;
 
-const KIND_DLC_ORACLE_ATTESTATION = 89 as const;
-
-/**
- * Wrap a kormir-produced DLC `oracle_attestation` payload in a signed NIP-01
- * kind-89 envelope, ready to POST to the matching engine's
- * `oracle-attestation` endpoint.
- *
- * Why this is NOT a signer
- * ------------------------
- * The cryptographically load-bearing signature — the BIP-340 schnorr signature
- * over `tagged_hash("DLC/oracle/attestation/v0", R‖P‖outcome)` produced against
- * the announcement's *committed* nonce `R` — is created by kormir
- * (`kormir.sign_enum_event`, surfaced as {@link signEnumAttestation}). This
- * module never recomputes that signature. The earlier hand-rolled signer that
- * lived here produced a *fresh-nonce* schnorr signature with a different
- * message (`tagged_hash(tag, outcome)`); the CDK mint enforces the committed-
- * nonce DLC scheme and rejected those attestations at redeem time, leaving
- * markets "closed but unclaimable". That signer has been retired.
- *
- * The only signature this function makes is the *outer* NIP-01 event-id
- * signature (via {@link finalizeEvent}), which authenticates the envelope to
- * relays and the engine. The engine recomputes the event id and schnorr-
- * verifies that outer signature, then base64-decodes `content` and verifies
- * each embedded DLC signature against the announcement's committed nonce.
- *
- * @param nsec - the oracle's secp256k1 private key (`nsec1…` bech32 or 64-hex).
- *   This MUST be the same key kormir signed the attestation with, otherwise the
- *   envelope pubkey and the TLV oracle pubkey disagree and the engine rejects.
- * @param attestationHex - hex-encoded rust-dlc `OracleAttestation` bytes, exactly
- *   as returned by {@link signEnumAttestation} / `kormir.sign_enum_event`.
- * @param announcementEventId - Nostr kind-88 announcement event id tagged by
- *   the kind-89 attestation.
- */
-export function buildOracleAttestationEvent(
-  nsec: string,
-  attestationHex: string,
-  announcementEventId: string,
-): OracleNostrEvent {
-  const privateKey = decodeNsecToBytes(nsec);
-  const content = base64FromBytes(decodeAttestationHex(attestationHex));
-  const signed = finalizeEvent(
-    {
-      kind: KIND_DLC_ORACLE_ATTESTATION,
-      created_at: Math.floor(Date.now() / 1000),
-      tags: [["e", announcementEventId]],
-      content,
-    },
-    privateKey,
-  );
-
+export function oracleEventToWire(eventJson: string): OracleNostrEvent {
+  const event = readSignedOracleEvent(eventJson, 89);
   return {
-    id: signed.id,
-    pubkey: signed.pubkey,
-    createdAt: signed.created_at,
-    kind: KIND_DLC_ORACLE_ATTESTATION,
-    tags: signed.tags,
-    content: signed.content,
-    sig: signed.sig,
+    id: event.id,
+    pubkey: event.pubkey,
+    createdAt: event.created_at,
+    kind: 89,
+    tags: event.tags.map((tag) => [...tag]),
+    content: event.content,
+    sig: event.sig,
   };
 }
 
-function decodeAttestationHex(attestationHex: string): Uint8Array {
-  const trimmed = attestationHex.trim();
-  if (!/^[0-9a-fA-F]*$/.test(trimmed) || trimmed.length === 0 || trimmed.length % 2 !== 0) {
-    throw new Error("Oracle attestation must be a non-empty even-length hex string");
-  }
-  return hexToBytes(trimmed);
+export function oracleWireEventJson(event: OracleNostrEvent): string {
+  const json = JSON.stringify({
+    id: event.id,
+    pubkey: event.pubkey,
+    created_at: event.createdAt,
+    kind: event.kind,
+    tags: event.tags,
+    content: event.content,
+    sig: event.sig,
+  });
+  readSignedOracleEvent(json, 89);
+  return json;
 }
 
-function decodeNsecToBytes(nsec: string): Uint8Array {
-  const trimmed = nsec.trim();
-  if (trimmed.startsWith("nsec1")) {
-    const decoded = nip19.decode(trimmed);
-    if (decoded.type !== "nsec") throw new Error("Expected an nsec private key");
-    return decoded.data;
-  }
-  if (/^[0-9a-fA-F]{64}$/.test(trimmed)) {
-    return hexToBytes(trimmed);
-  }
-  throw new Error("Expected an nsec1... or 64-character hex private key");
+function artifactHex(content: string): string {
+  if (content.length > 64 * 1024) throw new Error("Oracle artifact exceeds the local limit.");
+  return Array.from(atob(content), (byte) => byte.charCodeAt(0).toString(16).padStart(2, "0")).join(
+    "",
+  );
 }
 
-function base64FromBytes(bytes: Uint8Array): string {
-  let binary = "";
-  for (const byte of bytes) {
-    binary += String.fromCharCode(byte);
+/** Decode the original signed commitment. The attestation cannot supply authority. */
+export async function retainedOracleAuthority(
+  binding: OraclePublicationBinding,
+  source: OracleAuthoritySource,
+) {
+  const event = readSignedOracleEvent(binding.announcementEventJson, 88);
+  const hex = artifactHex(event.content);
+  const announcement = await decodeOracleAnnouncement(hex);
+  if (
+    event.pubkey !== binding.oraclePubkey ||
+    announcement.oraclePubkey !== binding.oraclePubkey ||
+    announcement.eventId !== binding.oracleEventId ||
+    JSON.stringify(announcement.outcomes) !== JSON.stringify(binding.outcomes) ||
+    announcement.noncePoints.length !== 1 ||
+    deriveDlcConditionId({
+      eventId: announcement.eventId,
+      outcomeCount: announcement.outcomes.length,
+      oraclePublicKeys: [announcement.oraclePubkey],
+    }) !== binding.conditionId
+  )
+    throw new Error("Original oracle announcement does not match this market.");
+  const noncePoint = announcement.noncePoints[0]!.replace(/^(02|03)(?=[0-9a-f]{64}$)/, "");
+  const announcementIdentity = await registeredAnnouncementIdentity(
+    binding,
+    event.content,
+    noncePoint,
+    source,
+  );
+  return {
+    announcementEventId: event.id,
+    outcomes: announcement.outcomes,
+    threshold: 1,
+    oracles: [
+      {
+        oraclePublicKey: announcement.oraclePubkey,
+        noncePoint,
+        announcementIdentity,
+      },
+    ],
+  };
+}
+
+async function registeredAnnouncementIdentity(
+  binding: OraclePublicationBinding,
+  content: string,
+  noncePoint: string,
+  source: OracleAuthoritySource,
+): Promise<string> {
+  if ("announcementTlvHex" in source) {
+    if (announcementContentFromTlv(source.announcementTlvHex) !== content)
+      throw new Error("Original announcement bytes do not match the signed announcement.");
+    return sha256Hex(new Uint8Array(hexToBytes(source.announcementTlvHex)));
   }
-  return btoa(binary);
+  const value = source.registeredAuthority;
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw new Error("Registered oracle authority is unavailable.");
+  const registered = value as Partial<RegisteredAuthority>;
+  const oracle =
+    Array.isArray(registered.oracles) && registered.oracles.length === 1
+      ? registered.oracles[0]
+      : undefined;
+  if (
+    registered.eventId !== binding.oracleEventId ||
+    registered.threshold !== 1 ||
+    JSON.stringify(registered.outcomes) !== JSON.stringify(binding.outcomes) ||
+    !oracle ||
+    typeof oracle !== "object" ||
+    oracle.oraclePublicKey !== binding.oraclePubkey ||
+    oracle.noncePoint !== noncePoint ||
+    typeof oracle.announcementIdentity !== "string" ||
+    !/^[0-9a-f]{64}$/.test(oracle.announcementIdentity)
+  )
+    throw new Error("Registered oracle authority does not match the original signed announcement.");
+  return oracle.announcementIdentity;
+}
+
+export async function verifyRetainedOracleAttestation(
+  binding: OraclePublicationBinding,
+  outcome: string,
+  artifact: PreparedOracleAttestation,
+  source: OracleAuthoritySource,
+): Promise<VerifiedOraclePublicationEvidence> {
+  const authority = await retainedOracleAuthority(binding, source);
+  const event = readSignedOracleEvent(artifact.eventJson, 89);
+  const decoded = await decodeOracleAttestation(artifact.attestationHex);
+  if (
+    event.pubkey !== binding.oraclePubkey ||
+    artifactHex(event.content) !== artifact.attestationHex ||
+    event.tags.length !== 1 ||
+    JSON.stringify(event.tags[0]) !== JSON.stringify(["e", authority.announcementEventId]) ||
+    decoded.eventId !== binding.oracleEventId ||
+    decoded.oraclePubkey !== binding.oraclePubkey ||
+    decoded.outcomes.length !== 1 ||
+    decoded.outcomes[0] !== outcome ||
+    decoded.signatures.length !== 1
+  )
+    throw new Error("Saved oracle attestation does not match the original announcement.");
+  verifyDlcOracleResolution(authority, {
+    schemaVersion: 1,
+    source: "dlc-oracle-attestation",
+    resolvedOutcome: outcome,
+    attestations: [
+      {
+        oraclePublicKey: decoded.oraclePubkey,
+        signature: decoded.signatures[0]!,
+      },
+    ],
+  });
+  return {
+    conditionId: binding.conditionId,
+    oracleEventId: binding.oracleEventId,
+    oraclePubkey: binding.oraclePubkey,
+    outcome,
+    announcementEventId: authority.announcementEventId,
+    attestationEventId: event.id,
+  };
+}
+
+async function withOracleEngine<T>(
+  action: (client: BitcasterEngineClient) => Promise<T>,
+): Promise<T> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 8_000);
+  try {
+    const client = new BitcasterEngineClient({
+      baseUrl: window.location.origin,
+      fetchImpl: (input, init) =>
+        fetch(input, {
+          ...init,
+          signal: init?.signal
+            ? AbortSignal.any([init.signal, controller.signal])
+            : controller.signal,
+        }),
+    });
+    return await action(client);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+const readEngineAttestation: OracleAttestationReadPort = (conditionId) =>
+  withOracleEngine((client) => client.getConditionAttestation(conditionId));
+
+export async function verifiedEngineOracleEvidence(
+  binding: OraclePublicationBinding,
+  artifact: PreparedOracleAttestation,
+  outcome: string,
+  read = readEngineAttestation,
+  announcementTlvHex?: string,
+): Promise<VerifiedOraclePublicationEvidence> {
+  const response = await read(binding.conditionId);
+  if (
+    response === null ||
+    response.conditionId !== binding.conditionId ||
+    response.attestedOutcome !== outcome ||
+    !response.attestationEvent ||
+    oracleWireEventJson(response.attestationEvent) !==
+      oracleWireEventJson(oracleEventToWire(artifact.eventJson))
+  )
+    throw new Error("Matching verified engine attestation evidence is unavailable.");
+  await verifyRetainedOracleAttestation(binding, outcome, artifact, {
+    registeredAuthority: response.registeredAuthority,
+  });
+  if (announcementTlvHex) {
+    const retained = await retainedOracleAuthority(binding, { announcementTlvHex });
+    const registered = await retainedOracleAuthority(binding, {
+      registeredAuthority: response.registeredAuthority,
+    });
+    if (retained.oracles[0]!.announcementIdentity !== registered.oracles[0]!.announcementIdentity)
+      throw new Error("Registered announcement identity does not match the original bytes.");
+  }
+  return {
+    conditionId: binding.conditionId,
+    oracleEventId: binding.oracleEventId,
+    oraclePubkey: binding.oraclePubkey,
+    outcome,
+    announcementEventId: readSignedOracleEvent(binding.announcementEventJson, 88).id,
+    attestationEventId: readSignedOracleEvent(artifact.eventJson, 89).id,
+  };
+}
+
+async function boundedRelay<T>(
+  relays: string[],
+  action: Parameters<typeof withTemporaryRelayNdk<T>>[2],
+) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 8_000);
+  try {
+    return await withTemporaryRelayNdk({ relays, signal: controller.signal }, undefined, action);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export async function publishRetainedOracleEvent(
+  relays: string[],
+  eventJson: string,
+): Promise<string> {
+  const signed = JSON.parse(eventJson) as NostrEvent;
+  const acknowledged = await boundedRelay(relays, async (ndk) => {
+    const event = new NDKEvent(ndk, signed);
+    const relays = await event.publish();
+    if (event.id !== signed.id || relays.size === 0)
+      throw new Error("Oracle relay delivery is unconfirmed.");
+    return signed.id;
+  });
+  if (!acknowledged) throw new Error("Oracle relay delivery is unavailable.");
+  return acknowledged;
+}
+
+async function recoverAnnouncement(market: StoredCreatorMarket, relays: string[]) {
+  const oracle = market.oracle;
+  if (!oracle?.announcementEventId || !oracle.announcementHex)
+    throw new Error(
+      "Restore the original signed oracle announcement before resolving this market.",
+    );
+  if (oracle.announcementEventJson) return oracle.announcementEventJson;
+  const json = await boundedRelay(relays, async (ndk) => {
+    const event = await ndk.fetchEvent({
+      ids: [oracle.announcementEventId!],
+      kinds: [88 as NDKKind],
+      limit: 1,
+    });
+    return event ? JSON.stringify(event.rawEvent()) : null;
+  });
+  if (
+    !json ||
+    readSignedOracleEvent(json, 88).id !== oracle.announcementEventId ||
+    readSignedOracleEvent(json, 88).content !== announcementContentFromTlv(oracle.announcementHex)
+  )
+    throw new Error(
+      "The original signed oracle announcement is unavailable. Retry recovery without changing the outcome.",
+    );
+  return json;
+}
+
+function browserOracleAdapters(
+  binding: OraclePublicationBinding,
+  announcementHex: string,
+  relays: string[],
+  store: ReturnType<typeof creatorOraclePublicationStore>,
+  read: OracleAttestationReadPort,
+) {
+  const requireSigner = () => {
+    const settings = useSettingsStore.getState();
+    const identity = resolveNsecIdentity(settings.nsecSecret);
+    if (
+      !identity ||
+      settings.nostrSignerMode !== "nsec" ||
+      identity.publicKey !== binding.oraclePubkey
+    )
+      throw new Error("Use the original oracle key to sign this outcome.");
+    return identity;
+  };
+  return {
+    store,
+    async prepareAttestation(saved: OraclePublicationBinding, chosen: string) {
+      requireSigner();
+      await ensureKormirNsec([], useSettingsStore.getState().nsecSecret!);
+      requireSigner();
+      const artifact = await prepareEnumAttestation(
+        [],
+        saved.oracleEventId,
+        chosen,
+        saved.announcementEventJson,
+        announcementHex,
+      );
+      return {
+        attestationHex: artifact.artifactHex,
+        eventJson: artifact.eventJson,
+      };
+    },
+    verifyAttestation: (
+      saved: OraclePublicationBinding,
+      chosen: string,
+      artifact: PreparedOracleAttestation,
+    ) =>
+      verifyRetainedOracleAttestation(saved, chosen, artifact, {
+        announcementTlvHex: announcementHex,
+      }),
+    publishRelay: async (json: string) => ({
+      eventId: await publishRetainedOracleEvent(relays, json),
+    }),
+    async submitEngine(saved: OraclePublicationBinding, json: string) {
+      const artifact = {
+        attestationHex: artifactHex(readSignedOracleEvent(json, 89).content),
+        eventJson: json,
+      };
+      const outcome = (await decodeOracleAttestation(artifact.attestationHex)).outcomes[0]!;
+      // A lost response is reconciled by the verified read, not by an HTTP status.
+      try {
+        await withOracleEngine((client) =>
+          submitOracleAttestationViaEngine(client, binding.conditionId, oracleEventToWire(json)),
+        );
+      } catch {
+        return verifiedEngineOracleEvidence(saved, artifact, outcome, read, announcementHex);
+      }
+      return verifiedEngineOracleEvidence(saved, artifact, outcome, read, announcementHex);
+    },
+    async prepareExplanation(context: OracleExplanationContext, text: string) {
+      const signer = requireSigner();
+      return JSON.stringify(
+        finalizeEvent(
+          createOracleExplanationTemplate(context, text, Math.floor(Date.now() / 1000)),
+          hexToBytes(signer.privateKeyHex),
+        ),
+      );
+    },
+  };
+}
+
+export async function publishBrowserOracleOutcome(
+  conditionId: string,
+  outcome: string,
+  explanation: string | undefined,
+  relays: string[],
+  store = useCreatorMarketsStore,
+  read = readEngineAttestation,
+) {
+  if (!store.getState().hasOraclePersistence())
+    throw new Error("Durable creator storage is unavailable.");
+  const market = store.getState().markets.find((item) => item.conditionId === conditionId);
+  if (!market?.oracle) throw new Error("Creator oracle record is unavailable.");
+  const announcementEventJson = await recoverAnnouncement(market, relays);
+  const announcement = readSignedOracleEvent(announcementEventJson, 88);
+  const binding: OraclePublicationBinding = {
+    conditionId,
+    oracleEventId: market.oracle.eventId,
+    oraclePubkey: announcement.pubkey,
+    outcomes: market.oracle.outcomes,
+    announcementEventJson,
+  };
+  if (!market.oracle.announcementHex)
+    throw new Error("Original announcement bytes are unavailable.");
+  await retainedOracleAuthority(binding, { announcementTlvHex: market.oracle.announcementHex });
+  if (
+    announcement.id !== market.oracle.announcementEventId ||
+    (market.oracle.engineBaseUrl && market.oracle.engineBaseUrl !== window.location.origin)
+  )
+    throw new Error("Original oracle preparation does not match this destination.");
+  await store.getState().retainOraclePreparation(conditionId, {
+    ...market.oracle,
+    oraclePubkey: announcement.pubkey,
+    announcementEventJson,
+    engineBaseUrl: window.location.origin,
+  });
+  if (
+    market.oracle.attestationHex &&
+    (!market.oracle.attestationEventJson || !market.oracle.chosenOutcome)
+  ) {
+    // An already-published legacy envelope must be recovered, never signed again.
+    const response = market.oracle.attestationEventJson ? null : await read(conditionId);
+    if (
+      (!market.oracle.attestationEventJson && !response?.attestationEvent) ||
+      !market.oracle.attestedOutcome
+    )
+      throw new Error("Restore the exact previously signed attestation before retrying delivery.");
+    const artifact = {
+      attestationHex: market.oracle.attestationHex,
+      eventJson:
+        market.oracle.attestationEventJson ?? oracleWireEventJson(response!.attestationEvent),
+    };
+    await verifyRetainedOracleAttestation(binding, market.oracle.attestedOutcome, artifact, {
+      announcementTlvHex: market.oracle.announcementHex,
+    });
+    const engineEvidence = response
+      ? await verifiedEngineOracleEvidence(
+          binding,
+          artifact,
+          market.oracle.attestedOutcome,
+          async () => response,
+          market.oracle.announcementHex,
+        )
+      : null;
+    await store.getState().saveOraclePublication(conditionId, {
+      binding,
+      chosenOutcome: market.oracle.attestedOutcome,
+      attestation: artifact,
+      relayPublished: false,
+      engineEvidence,
+      explanationEventJson: null,
+      explanationRelayPublished: false,
+    });
+  }
+  const publicationStore = creatorOraclePublicationStore(store);
+  const retained = await publicationStore.read(conditionId);
+  if (retained && retained.chosenOutcome !== outcome)
+    throw new Error("The saved oracle outcome cannot change.");
+  if (retained === null && explanation !== undefined)
+    await store.getState().saveOracleExplanationDraft(conditionId, explanation);
+  const originalDraft = await store.getState().readOracleExplanationDraft(conditionId);
+  const adapters = browserOracleAdapters(
+    binding,
+    market.oracle.announcementHex,
+    relays,
+    publicationStore,
+    read,
+  );
+  const result =
+    retained?.attestation && (retained.explanationEventJson || !originalDraft?.trim())
+      ? await retryOraclePublication(adapters, binding)
+      : await publishOracleOutcome(
+          adapters,
+          binding,
+          outcome,
+          originalDraft?.trim() ? originalDraft : undefined,
+        );
+  store.getState().saveOraclePublicationFailures(conditionId, result.failures);
+  return result;
+}
+
+/** This optional read runs after first paint and never supplies trading authority. */
+export async function readBrowserResolutionExplanation(
+  conditionId: string,
+  relays: string[],
+  read = readEngineAttestation,
+): Promise<string | null> {
+  const response = await read(conditionId);
+  if (!response?.attestationEvent || response.conditionId !== conditionId) return null;
+  const eventJson = oracleWireEventJson(response.attestationEvent);
+  const attestation = readSignedOracleEvent(eventJson, 89);
+  const parent = attestation.tags.find((tag) => tag[0] === "e")?.[1];
+  if (!parent) return null;
+  return (
+    (await boundedRelay(relays, async (ndk) => {
+      const original = await ndk.fetchEvent({
+        ids: [parent],
+        authors: [attestation.pubkey],
+        kinds: [88 as NDKKind],
+        limit: 1,
+      });
+      if (!original) return null;
+      const announcementEventJson = JSON.stringify(original.rawEvent());
+      const decoded = await decodeOracleAnnouncement(
+        artifactHex(readSignedOracleEvent(announcementEventJson, 88).content),
+      );
+      const binding = {
+        conditionId,
+        oracleEventId: decoded.eventId,
+        oraclePubkey: attestation.pubkey,
+        outcomes: decoded.outcomes,
+        announcementEventJson,
+      };
+      await verifyRetainedOracleAttestation(
+        binding,
+        response.attestedOutcome,
+        {
+          attestationHex: artifactHex(attestation.content),
+          eventJson,
+        },
+        { registeredAuthority: response.registeredAuthority },
+      );
+      const context = {
+        oraclePubkey: attestation.pubkey,
+        announcementEventJson,
+        attestationEventJson: eventJson,
+      };
+      const events = await ndk.fetchEvents({
+        kinds: [1111],
+        authors: [attestation.pubkey],
+        "#e": [attestation.id],
+        limit: 12,
+      });
+      const candidates = [];
+      for (const event of events) {
+        if (candidates.length === 12) break;
+        candidates.push(event);
+      }
+      for (const event of candidates.sort(
+        (a, b) => (a.created_at ?? 0) - (b.created_at ?? 0) || a.id.localeCompare(b.id),
+      )) {
+        try {
+          return verifyOracleResolutionExplanation(context, JSON.stringify(event.rawEvent()))
+            .content;
+        } catch {
+          /* A foreign companion is not resolution evidence. */
+        }
+      }
+      return null;
+    })) ?? null
+  );
 }

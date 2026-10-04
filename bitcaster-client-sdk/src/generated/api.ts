@@ -15,9 +15,29 @@ export interface paths {
     put?: never
     /**
      * Register a new market on the matching engine
-     * @description Validates the condition exists in the mint, creates market order books, and optionally stores a thumbnail. The authenticated pubkey from the NIP-98 header is recorded as the market creator — no creator field in the request body is needed.
+     * @description Validates the condition exists in the mint, creates market order books, and optionally stores a thumbnail. The authenticated pubkey from the NIP-98 header is recorded as the market creator — no creator field in the request body is needed. The complete multipart request must not exceed 6 MiB, including metadata, the thumbnail, and multipart boundaries.
      */
     post: operations['createMarket']
+    delete?: never
+    options?: never
+    head?: never
+    patch?: never
+    trace?: never
+  }
+  '/api/v1/markets/{conditionId}/registration': {
+    parameters: {
+      query?: never
+      header?: never
+      path?: never
+      cookie?: never
+    }
+    /**
+     * Fetch public registration facts for a market
+     * @description Returns the stored registration identity and unit facts without reading market prices, the catalogue, or mint data. This response does not claim that trades or prices are available. A missing registration returns 404; a failed registration read remains an error.
+     */
+    get: operations['getMarketRegistration']
+    put?: never
+    post?: never
     delete?: never
     options?: never
     head?: never
@@ -73,7 +93,7 @@ export interface paths {
     }
     /**
      * Fetch verified trade comments for a market
-     * @description Returns engine-indexed comments attached to orders in this condition after those orders have produced at least one settled fill. The response is condition-keyed and returns the public kind-1 author pubkey while intentionally omitting order ids, fill ids, ephemeral pubkeys, and counterparty ids.
+     * @description Returns engine-indexed comments attached to orders in this condition after those orders have produced at least one settled fill. The response is condition-keyed and returns the public kind-1 author pubkey. It includes the associated confirmed fill id only inside trade when its exact price coordinate is available. It omits order ids, ephemeral pubkeys, and counterparty ids.
      */
     get: operations['getMarketComments']
     put?: never
@@ -419,8 +439,8 @@ export interface paths {
     get?: never
     put?: never
     /**
-     * Submit one complete display-only asset holdings report
-     * @description Accepts one complete best-effort holdings snapshot for the authenticated account and canonical wallet id. The engine does not verify proof ownership and does not accept a seed signature or backup state. An exact retry of the latest report returns no content. Reusing the latest report id with different content, or using an invalid interval or wallet lifecycle, returns a conflict.
+     * Submit one complete display-only asset holdings report for an account-wallet pair
+     * @description Accepts one complete best-effort holdings snapshot for the authenticated account and canonical wallet id. Each account-wallet pair has an independent monitoring interval. The engine does not verify proof ownership and does not accept a seed signature or backup state. An exact retry of the latest report returns no content. Reusing the latest report id with different content, or using an invalid interval, returns a report conflict.
      */
     post: operations['submitAssetMonitoringReport']
     delete?: never
@@ -436,7 +456,10 @@ export interface paths {
       path?: never
       cookie?: never
     }
-    /** Read the active wallet asset-monitoring summary */
+    /**
+     * Read the selected account-wallet asset-monitoring summary
+     * @description Reads only the wallet id selected by the authenticated account. Each account-wallet pair has an independent monitoring interval. A pair without a report returns an empty stale summary with no `asOf` value.
+     */
     get: operations['getAssetMonitoringSummary']
     put?: never
     post?: never
@@ -453,7 +476,10 @@ export interface paths {
       path?: never
       cookie?: never
     }
-    /** Read one page of active wallet monitored assets */
+    /**
+     * Read one page of monitored assets for the selected account-wallet pair
+     * @description Reads one page for the wallet id selected by the authenticated account. Its interval and cursors are independent of other wallet ids used by that account.
+     */
     get: operations['getAssetMonitoringAssets']
     put?: never
     post?: never
@@ -470,7 +496,10 @@ export interface paths {
       path?: never
       cookie?: never
     }
-    /** Read bounded estimated active wallet value history */
+    /**
+     * Read bounded estimated value history for the selected account-wallet pair
+     * @description Reads history for the wallet id selected by the authenticated account. Each account-wallet pair has an independent monitoring interval.
+     */
     get: operations['getAssetMonitoringHistory']
     put?: never
     post?: never
@@ -487,7 +516,10 @@ export interface paths {
       path?: never
       cookie?: never
     }
-    /** Read the bounded active wallet portfolio first-paint data */
+    /**
+     * Read bounded first-paint portfolio data for the selected account-wallet pair
+     * @description Returns portfolio data for the wallet id selected by the authenticated account. Each account-wallet pair has an independent monitoring interval.
+     */
     get: operations['getPortfolio']
     put?: never
     post?: never
@@ -750,7 +782,7 @@ export interface components {
        * @description Client-generated report identifier for exact retry handling.
        */
       reportId: string
-      /** @description True for the first report and for a wallet switch. */
+      /** @description True for the first report for this account-wallet pair or to start a new interval for this pair. */
       startsNewInterval: boolean
       holdings: components['schemas']['AssetMonitoringReportedHolding'][]
     }
@@ -855,6 +887,16 @@ export interface components {
       tokenSide: components['schemas']['TokenSide']
       side: components['schemas']['OrderSide']
       price: components['schemas']['Probability']
+      /**
+       * Format: int64
+       * @description Required nonnegative aggregate quote-payment maximum in msat for Buy FOK. Use the accepted preview payment. Absent or null for Sell. This bound does not include mint fees or replace the per-fill price.
+       */
+      maxQuotePaymentSubunits?: number | null
+      /**
+       * Format: int64
+       * @description Required nonnegative aggregate quote-payment minimum in msat for Sell FOK. Use the accepted preview payment. Absent or null for Buy. This bound does not include mint fees or replace the per-fill price.
+       */
+      minQuotePaymentSubunits?: number | null
       /** @description Conditional-token face amount in the market collateral sub-unit. */
       amountSubunits: components['schemas']['CollateralSubunits']
       /** @description Minimum aggregate conditional-token face amount that this order accepts in one matching round. It must not exceed amountSubunits and must be a whole tradable unit for the market divisibility. */
@@ -1196,6 +1238,8 @@ export interface components {
       attestedOutcome: string
       oracleWitness: components['schemas']['OracleWitness']
       registeredAuthority: components['schemas']['RegisteredConditionAuthority']
+      /** @description Exact signed kind-89 event retained with the verified resolution. Its createdAt field carries the original NIP-01 created_at value. */
+      attestationEvent: components['schemas']['OracleNostrEvent']
     }
     RegisteredConditionAuthority: {
       eventId: string
@@ -1321,6 +1365,16 @@ export interface components {
       timeInForce: components['schemas']['TimeInForce']
       /** Format: date-time */
       expiresAt?: string | null
+      /**
+       * Format: int64
+       * @description The immutable accepted Buy FOK aggregate quote-payment maximum in msat. Null when not applicable.
+       */
+      maxQuotePaymentSubunits?: number | null
+      /**
+       * Format: int64
+       * @description The immutable accepted Sell FOK aggregate quote-payment minimum in msat. Null when not applicable.
+       */
+      minQuotePaymentSubunits?: number | null
       /** @description Current nonterminal settlement group for this order, or null when no group currently owns an unconfirmed fill. */
       activeSettlementGroup: components['schemas']['SettlementGroupSummary'] | null
       tokenSide: components['schemas']['TokenSide']
@@ -1529,8 +1583,8 @@ export interface components {
     MarketOutcomeDetails: {
       /** @description Exact outcome identity name from the corresponding outcomes list. */
       name: string
-      /** @description Optional server-resolved display color. Present colors use uppercase #RRGGBB. Older records can omit color. */
-      color?: string
+      /** @description Optional server-resolved display color. Present colors use uppercase #RRGGBB. Older records can omit color or return null. */
+      color?: string | null
     }
     /** @description JSON payload embedded in the multipart `metadata` field of the createMarket endpoint. This request contains market metadata only. It accepts no opening probability and no initial funding payment or proof. Use the separate post-creation funding flow for bot funding. */
     CreateMarketRequest: {
@@ -1570,8 +1624,26 @@ export interface components {
        */
       divisibility: 1000 | 1000000
     }
+    MarketRegistrationResponse: {
+      /** @description Registered condition ID. */
+      conditionId: string
+      /** @description Creator Nostr pubkey recorded at registration, or null for legacy markets. */
+      creatorPubkey: string | null
+      /** @description Registered outcome identity names, in registration order. */
+      outcomes: string[]
+      baseAsset: components['schemas']['BaseAsset']
+      /**
+       * Format: int32
+       * @description Immutable registered market price denominator. Current markets use 1000; 1000000 is reserved for a future numeric trade representation.
+       */
+      divisibility: number
+      /** @description Public thumbnail URL, or null when no thumbnail was registered. */
+      thumbnailUrl: string | null
+      /** @description Registered display details aligned with the outcome identity list. */
+      outcomeDetails: components['schemas']['MarketOutcomeDetails'][]
+    }
     MarketPriceHistoryPoint: {
-      /** @description Opaque canonical ordering identity for this confirmed trade. Compare values with ordinal string ordering. The greater value identifies the newer event, including when timestamps are equal. Use this value when merging history with confirmed live trades. */
+      /** @description Opaque source position for this confirmed trade. Pass the value unchanged to minimumEventOrder when requesting a snapshot. Do not compare positions on the client. Do not merge live trade points into retained history snapshots. */
       eventOrder: string
       /** Format: date-time */
       timestamp: string
@@ -1594,6 +1666,13 @@ export interface components {
       data: components['schemas']['MarketPriceHistoryPoint'][]
     }
     MarketPriceHistoryResponse: {
+      /** @description Applied source position proven for this snapshot. Treat this value as opaque. */
+      snapshotEventOrder: string | null
+      /**
+       * Format: date-time
+       * @description Server evaluation time for the selected history window.
+       */
+      asOf: string
       conditionId: string
       /** @enum {string} */
       timeframe: '1h' | '24h' | '7d' | '30d' | 'all'
@@ -1613,8 +1692,41 @@ export interface components {
       createdAt: string
       /** @description Nostr pubkey that signed the comment. */
       authorPubkey: string
+      /** @description Confirmed fill coordinate for this comment. Null when the exact coordinate is unavailable. */
+      trade: components['schemas']['MarketCommentTrade'] | null
+    }
+    MarketCommentTrade: {
+      /**
+       * Format: int64
+       * @description Linked confirmed fill size in market face-amount subunits. Null means unknown size.
+       */
+      faceAmountSubunits?: number | null
+      /**
+       * Format: uuid
+       * @description Confirmed fill associated with the comment.
+       */
+      fillId: string
+      /** @description Primitive outcome route used by public trade history. */
+      outcomeId: string
+      /**
+       * Format: date-time
+       * @description Confirmed fill time used by public trade history.
+       */
+      executedAt: string
+      /**
+       * Format: int32
+       * @description Primitive outcome price numerator used by public trade history.
+       */
+      price: number
+      /**
+       * Format: int32
+       * @description Market divisibility used as the price denominator.
+       */
+      priceDenominator: number
     }
     MarketCommentsResponse: {
+      /** @description Applied source position proven for this snapshot. Treat this value as opaque. */
+      snapshotEventOrder: string | null
       conditionId: string
       comments: components['schemas']['MarketComment'][]
     }
@@ -1842,11 +1954,11 @@ export interface operations {
     requestBody: {
       content: {
         'multipart/form-data': {
-          /** @description JSON-encoded CreateMarketRequest object containing market title, description, outcomes, and category tags. */
+          /** @description JSON-encoded CreateMarketRequest object containing market title, description, outcomes, and category tags. Maximum length is 65,536 UTF-16 code units. */
           metadata: string
           /**
            * Format: binary
-           * @description Optional thumbnail image (JPEG, PNG, or WebP, max 5 MB).
+           * @description Optional thumbnail image (JPEG, PNG, or WebP, max 5 MiB).
            */
           thumbnail?: string
         }
@@ -1886,6 +1998,64 @@ export interface operations {
         content: {
           'application/json': string
         }
+      }
+      /** @description The complete request body exceeds the 6 MiB limit. */
+      413: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+    }
+  }
+  getMarketRegistration: {
+    parameters: {
+      query?: never
+      header?: never
+      path: {
+        /** @description The condition identifier (hex string derived from the oracle announcement). */
+        conditionId: components['parameters']['ConditionId']
+      }
+      cookie?: never
+    }
+    requestBody?: never
+    responses: {
+      /** @description Stored public market registration facts */
+      200: {
+        headers: {
+          [name: string]: unknown
+        }
+        content: {
+          'application/json': components['schemas']['MarketRegistrationResponse']
+        }
+      }
+      /** @description Invalid condition ID */
+      400: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+      /** @description No market registration exists for this condition ID */
+      404: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+      /** @description Anonymous or authenticated market-query rate limit exceeded */
+      429: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+      /** @description The registration authority could not be read */
+      500: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
       }
     }
   }
@@ -1937,6 +2107,10 @@ export interface operations {
   getMarketPriceHistory: {
     parameters: {
       query?: {
+        /** @description Opaque source position from a server response. Do not compare positions on the client. */
+        minimumEventOrder?: string
+        /** @description Capture the current source position once. Wait for that position before returning the snapshot. */
+        refresh?: boolean
         timeframe?: '1h' | '24h' | '7d' | '30d' | 'all'
       }
       header?: never
@@ -1957,8 +2131,15 @@ export interface operations {
           'application/json': components['schemas']['MarketPriceHistoryResponse']
         }
       }
-      /** @description Invalid condition id or timeframe */
+      /** @description Invalid condition id, timeframe, or event order */
       400: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+      /** @description The snapshot could not prove the requested position within the read deadline. */
+      503: {
         headers: {
           [name: string]: unknown
         }
@@ -1968,7 +2149,12 @@ export interface operations {
   }
   getMarketComments: {
     parameters: {
-      query?: never
+      query?: {
+        /** @description Opaque source position from a server response. Do not compare positions on the client. */
+        minimumEventOrder?: string
+        /** @description Capture the current source position once. Wait for that position before returning the snapshot. */
+        refresh?: boolean
+      }
       header?: never
       path: {
         /** @description The condition identifier (hex string derived from the oracle announcement). */
@@ -1987,8 +2173,15 @@ export interface operations {
           'application/json': components['schemas']['MarketCommentsResponse']
         }
       }
-      /** @description Invalid condition id */
+      /** @description Invalid condition id or event order */
       400: {
+        headers: {
+          [name: string]: unknown
+        }
+        content?: never
+      }
+      /** @description The snapshot could not prove the requested position within the read deadline. */
+      503: {
         headers: {
           [name: string]: unknown
         }
@@ -3043,12 +3236,14 @@ export interface operations {
         }
         content?: never
       }
-      /** @description Latest-report idempotency or wallet interval lifecycle conflict. */
+      /** @description ProblemDetails.code is `asset-monitoring-baseline-required` when this account-wallet pair has no accepted baseline. It is `asset-monitoring-report-conflict` for changed latest-report content or another report conflict. A client may retry only the baseline-required response with `startsNewInterval: true`, and only when it has no pending submitted order. Other or unknown conflict codes do not permit an automatic interval restart. */
       409: {
         headers: {
           [name: string]: unknown
         }
-        content?: never
+        content: {
+          'application/problem+json': components['schemas']['ProblemDetails']
+        }
       }
       /** @description Request exceeds the 1 MiB report limit. */
       413: {
@@ -3078,7 +3273,7 @@ export interface operations {
     }
     requestBody?: never
     responses: {
-      /** @description Bounded active-wallet monitoring summary. */
+      /** @description Bounded summary for the selected account-wallet pair. */
       200: {
         headers: {
           'Cache-Control': components['headers']['AssetMonitoringNoStore']
@@ -3101,14 +3296,6 @@ export interface operations {
       /** @description Missing or invalid authentication. */
       401: {
         headers: {
-          [name: string]: unknown
-        }
-        content?: never
-      }
-      /** @description Wallet is not active for the authenticated account. */
-      409: {
-        headers: {
-          'Cache-Control': components['headers']['AssetMonitoringNoStore']
           [name: string]: unknown
         }
         content?: never
@@ -3139,7 +3326,7 @@ export interface operations {
     }
     requestBody?: never
     responses: {
-      /** @description Canonically ordered bounded active-wallet asset page. */
+      /** @description Canonically ordered bounded asset page for the selected account-wallet pair. */
       200: {
         headers: {
           'Cache-Control': components['headers']['AssetMonitoringNoStore']
@@ -3149,7 +3336,7 @@ export interface operations {
           'application/json': components['schemas']['AssetMonitoringAssetsResponse']
         }
       }
-      /** @description Malformed wallet id, page size, or cursor. */
+      /** @description Malformed wallet id, page size, or invalid or stale cursor. */
       400: {
         headers: {
           'Cache-Control': components['headers']['AssetMonitoringNoStore']
@@ -3162,14 +3349,6 @@ export interface operations {
       /** @description Missing or invalid authentication. */
       401: {
         headers: {
-          [name: string]: unknown
-        }
-        content?: never
-      }
-      /** @description Wallet is not active for the authenticated account. */
-      409: {
-        headers: {
-          'Cache-Control': components['headers']['AssetMonitoringNoStore']
           [name: string]: unknown
         }
         content?: never
@@ -3199,7 +3378,7 @@ export interface operations {
     }
     requestBody?: never
     responses: {
-      /** @description At most 300 deterministic value points from compact active-interval facts. */
+      /** @description At most 300 deterministic value points from compact facts in the selected account-wallet interval. */
       200: {
         headers: {
           'Cache-Control': components['headers']['AssetMonitoringNoStore']
@@ -3222,14 +3401,6 @@ export interface operations {
       /** @description Missing or invalid authentication. */
       401: {
         headers: {
-          [name: string]: unknown
-        }
-        content?: never
-      }
-      /** @description Wallet is not active for the authenticated account. */
-      409: {
-        headers: {
-          'Cache-Control': components['headers']['AssetMonitoringNoStore']
           [name: string]: unknown
         }
         content?: never
@@ -3260,7 +3431,7 @@ export interface operations {
     }
     requestBody?: never
     responses: {
-      /** @description Bounded active-wallet monitoring summary, asset page, and value history. */
+      /** @description Bounded summary, asset page, and value history for the selected account-wallet pair. */
       200: {
         headers: {
           'Cache-Control': components['headers']['AssetMonitoringNoStore']
@@ -3283,14 +3454,6 @@ export interface operations {
       /** @description Missing or invalid authentication. */
       401: {
         headers: {
-          [name: string]: unknown
-        }
-        content?: never
-      }
-      /** @description Wallet is not active for the authenticated account. */
-      409: {
-        headers: {
-          'Cache-Control': components['headers']['AssetMonitoringNoStore']
           [name: string]: unknown
         }
         content?: never

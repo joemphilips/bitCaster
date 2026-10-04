@@ -774,29 +774,49 @@ test('a 512-proof transfer retains complete custody evidence and splits into exa
   ])
 })
 
-test('coordinator executes once, recovers the persisted send result, and accepts a lost post-mint response', async () => {
+test('coordinator executes once, recovers persisted random outputs, and accepts a lost post-mint response', async () => {
+  const walletSendOperation = coordinatorWalletSendOperation()
+  const keepOutput = walletSendOperation.preview.keepOutputs[0]
+  assert.ok(keepOutput)
+  const randomKeepOutput: DurableWalletProof = {
+    id: keepOutput.blindedMessage.id,
+    amount: keepOutput.blindedMessage.amount,
+    secret: keepOutput.secret,
+    C: TOKEN_C,
+    dleq: null,
+    p2pkE: null,
+    witness: null,
+  }
   const prepared = createDurableOutgoingCashuTransfer({
     transferId: 'coordinator-1',
     walletScopeId: 'wallet-1',
     requestedAmount: '2',
-    walletSendOperation: coordinatorWalletSendOperation(),
+    walletSendOperation,
+    keepProofDerivationLocators: [null],
     deliveryIntent: {
       policy: 'bearer-spend-classification',
       tokenBytesLimit: 1024,
       tokenProofLimit: 1,
     },
   })
+  assert.deepEqual(prepared.keepProofDerivationLocators, [null])
   const mintedSend = hydrateDurableWalletProof(sendProof())
   let swaps = 0
+  let preparations = 0
   let postMint = 0
+  let restoredRandomOutputs = 0
   const persist = async () => {
     postMint += 1
     return admitDurableOutgoingCashuToken({
       transfer: prepared,
-      keepProofs: [],
+      keepProofs: [randomKeepOutput],
       sendProofs: [sendProof()],
       encodedToken: encodedToken([sendProof()]),
-      custodyRevisions: custodyRevisions(prepared.walletSendOperation, [], [sendProof()]),
+      custodyRevisions: custodyRevisions(
+        prepared.walletSendOperation,
+        [randomKeepOutput],
+        [sendProof()],
+      ),
       dueAtMs: prepared.recovery.dueAtMs,
     })
   }
@@ -818,18 +838,30 @@ test('coordinator executes once, recovers the persisted send result, and accepts
         })) as never,
       completeSwap: async () => {
         swaps += 1
-        return { keep: [], send: [mintedSend] }
+        return { keep: [hydrateDurableWalletProof(randomKeepOutput)], send: [mintedSend] }
       },
     },
-    restoreExactOutputs: async () => ({ keep: [], send: [mintedSend] }),
+    restoreExactOutputs: async ({ outputs }) => {
+      restoredRandomOutputs += 1
+      assert.deepEqual(
+        outputs.keep.map(({ secret }) => secret),
+        [randomKeepOutput.secret],
+      )
+      return { keep: [hydrateDurableWalletProof(randomKeepOutput)], send: [mintedSend] }
+    },
     postMint: { persistMinted: persist },
   }
   const executed = await runDurableOutgoingCashuTransfer({
     ...common,
-    preMint: { prepare: async () => prepared },
+    preMint: {
+      prepare: async () => {
+        preparations += 1
+        return prepared
+      },
+    },
   })
   assert.equal(executed.deliveryState, 'delivery-pending')
-  assert.deepEqual({ swaps, postMint }, { swaps: 1, postMint: 1 })
+  assert.deepEqual({ preparations, swaps, postMint }, { preparations: 1, swaps: 1, postMint: 1 })
 
   const walletOperationStore = {
     loadOperation: async () => ({
@@ -844,20 +876,38 @@ test('coordinator executes once, recovers the persisted send result, and accepts
   const recovered = await runDurableOutgoingCashuTransfer({
     ...common,
     mode: 'recover',
-    preMint: { prepare: async () => prepared, recover: async () => prepared },
+    preMint: {
+      prepare: async () => {
+        preparations += 1
+        return prepared
+      },
+      recover: async () => prepared,
+    },
     walletOperationStore,
   })
   assert.equal(recovered.deliveryState, 'delivery-pending')
-  assert.deepEqual({ swaps, postMint }, { swaps: 1, postMint: 2 })
+  assert.deepEqual(
+    { preparations, swaps, postMint, restoredRandomOutputs },
+    { preparations: 1, swaps: 1, postMint: 2, restoredRandomOutputs: 1 },
+  )
 
   const lostResponse = await runDurableOutgoingCashuTransfer({
     ...common,
     mode: 'recover',
-    preMint: { prepare: async () => prepared, recover: async () => executed },
+    preMint: {
+      prepare: async () => {
+        preparations += 1
+        return prepared
+      },
+      recover: async () => executed,
+    },
     walletOperationStore,
   })
   assert.equal(lostResponse.deliveryState, 'delivery-pending')
-  assert.deepEqual({ swaps, postMint }, { swaps: 1, postMint: 2 })
+  assert.deepEqual(
+    { preparations, swaps, postMint, restoredRandomOutputs },
+    { preparations: 1, swaps: 1, postMint: 2, restoredRandomOutputs: 1 },
+  )
 
   const foreignOperation = decodeDurableWalletOperation({
     ...prepared.walletSendOperation,
@@ -1097,7 +1147,7 @@ function coordinatorWalletSendOperation() {
       inputs: [
         hydrateDurableWalletProof({
           id: KEYSET_ID,
-          amount: '2',
+          amount: '4',
           secret: 'input-coordinator',
           C: TOKEN_C,
           dleq: null,
@@ -1106,7 +1156,7 @@ function coordinatorWalletSendOperation() {
         }),
       ],
       sendOutputs: [OutputData.createSingleData('2', KEYSET_ID, 'send-secret', 5n)],
-      keepOutputs: [],
+      keepOutputs: [OutputData.createSingleData('2', KEYSET_ID, 'random-keep-secret', 7n)],
     },
   })
 }

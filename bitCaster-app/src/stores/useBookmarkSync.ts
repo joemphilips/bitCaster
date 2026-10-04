@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from "react";
+import { unionBookmarkMarkets } from "@bitcaster/client-sdk/bookmarks";
 import { resolveNsecIdentity } from "@/lib/identityOps";
 import { fetchBookmarks, publishBookmarks } from "@/lib/nip78Bookmarks";
 import { bookmarkSetsEqual, useBookmarkStore } from "./bookmarks";
 import { useSettingsStore } from "./settings";
+import { effectiveRelayUrls } from "@/lib/relayDefaults";
 
 const PUBLISH_DEBOUNCE_MS = 800;
 
@@ -22,6 +24,8 @@ const PUBLISH_DEBOUNCE_MS = 800;
 export function useBookmarkSync(): void {
   const nostrSignerMode = useSettingsStore((s) => s.nostrSignerMode);
   const nsecSecret = useSettingsStore((s) => s.nsecSecret);
+  const relaySelectionKey = useSettingsStore((s) => JSON.stringify(s.relays.map(({ url }) => url)));
+  const relays = effectiveRelayUrls(useSettingsStore.getState().relays);
   const markets = useBookmarkStore((s) => s.markets);
   const replace = useBookmarkStore((s) => s.replace);
   const [initialSyncDone, setInitialSyncDone] = useState(false);
@@ -33,15 +37,17 @@ export function useBookmarkSync(): void {
     setInitialSyncDone(false);
     lastPublished.current = null;
     keysRef.current = null;
-    if (nostrSignerMode !== "nsec") return;
+    if (nostrSignerMode !== "nsec" || relays.length === 0) return;
 
     const keys = resolveNsecIdentity(nsecSecret);
     if (!keys) return;
     keysRef.current = keys;
 
     let cancelled = false;
+    const controller = new AbortController();
+    const options = { relays, signal: controller.signal };
     void (async () => {
-      const remote = await fetchBookmarks(keys.publicKey).catch(() => null);
+      const remote = await fetchBookmarks(keys.publicKey, options).catch(() => null);
       if (cancelled) return;
 
       const local = useBookmarkStore.getState().markets;
@@ -52,39 +58,45 @@ export function useBookmarkSync(): void {
         lastPublished.current = [...local];
         setInitialSyncDone(true);
         if (local.length > 0) {
-          await publishBookmarks(keys.privateKeyHex, local).catch(() => {});
+          await publishBookmarks(keys.privateKeyHex, local, options).catch(() => {});
         }
         return;
       }
 
-      const merged = Array.from(new Set([...local, ...remote]));
+      const merged = unionBookmarkMarkets(local, remote);
       lastPublished.current = merged;
       replace(merged);
       setInitialSyncDone(true);
 
-      const remoteHasAll = local.every((id) => remote.includes(id));
-      if (!remoteHasAll) {
-        await publishBookmarks(keys.privateKeyHex, merged).catch(() => {});
+      if (!bookmarkSetsEqual(merged, remote)) {
+        await publishBookmarks(keys.privateKeyHex, merged, options).catch(() => {});
       }
     })();
 
     return () => {
       cancelled = true;
+      controller.abort();
     };
-  }, [nostrSignerMode, nsecSecret, replace]);
+  }, [nostrSignerMode, nsecSecret, replace, relaySelectionKey]);
 
   // Publish to relays whenever the local set changes after the initial sync.
   useEffect(() => {
-    if (nostrSignerMode !== "nsec" || !initialSyncDone) return;
+    if (nostrSignerMode !== "nsec" || !initialSyncDone || relays.length === 0) return;
     const keys = keysRef.current;
     if (!keys) return;
     if (lastPublished.current && bookmarkSetsEqual(lastPublished.current, markets)) return;
 
     const snapshot = [...markets];
+    const controller = new AbortController();
     const handle = setTimeout(() => {
       lastPublished.current = snapshot;
-      publishBookmarks(keys.privateKeyHex, snapshot).catch(() => {});
+      publishBookmarks(keys.privateKeyHex, snapshot, { relays, signal: controller.signal }).catch(
+        () => {},
+      );
     }, PUBLISH_DEBOUNCE_MS);
-    return () => clearTimeout(handle);
-  }, [nostrSignerMode, markets, initialSyncDone]);
+    return () => {
+      clearTimeout(handle);
+      controller.abort();
+    };
+  }, [nostrSignerMode, markets, initialSyncDone, relaySelectionKey]);
 }

@@ -45,6 +45,7 @@ import { useBrowserCtfRangeOrderRecovery } from "@/hooks/useBrowserCtfRangeOrder
 import { DEFAULT_MARKET_BASE_ASSET } from "@bitcaster/client-sdk/marketUnits";
 import { browserWalletScopeIdFromMnemonic } from "@/lib/browserWalletProfile";
 import { resumeBrowserEncryptedWalletBackupV2AfterRecovery } from "@/lib/encryptedWalletBackupDriver";
+import { WalletBackupPresentationProvider } from "@/hooks/WalletBackupPresentation";
 
 const RANGE_RECOVERY_RETRY_MS = 15_000;
 
@@ -299,7 +300,7 @@ function AppRoutes() {
   // missed payments that arrived while the user wasn't on the Receive
   // view — P5 item 5 regression.
   const mnemonic = useWalletStore((s) => s.mnemonic);
-  const relayUrlsKey = useSettingsStore((s) => s.relays.map((r) => r.url).join("|"));
+  const relayUrlsKey = useSettingsStore((s) => JSON.stringify(s.relays.map((r) => r.url)));
   useEffect(() => {
     if (!mnemonic) return;
     const relays = effectiveRelayUrls(useSettingsStore.getState().relays);
@@ -364,7 +365,7 @@ function AppRoutes() {
 
   const isWizard = (WIZARD_PATHS as readonly string[]).includes(location.pathname);
   return (
-    <>
+    <WalletBackupPresentationProvider value={walletBackupRecovery}>
       {isWizard ? (
         <WizardRoutes />
       ) : (
@@ -373,7 +374,7 @@ function AppRoutes() {
           walletBackupRecovery={walletBackupRecovery}
         />
       )}
-    </>
+    </WalletBackupPresentationProvider>
   );
 }
 

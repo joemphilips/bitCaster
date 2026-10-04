@@ -1,9 +1,26 @@
-import { fireEvent, render, screen } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { MemoryRouter, Route, Routes } from "react-router";
 import { MarketCreationWizard } from "../MarketCreationWizard";
 import i18n from "@/i18n";
 import { useSettingsStore } from "@/stores/settings";
+import { useWalletStore } from "@/stores/wallet";
 import type { MarketCreationWizardProps, WizardDraft } from "@/types/market-creation";
+
+const executeBrowserMarketFundingDelivery = vi.hoisted(() => vi.fn());
+vi.mock("@/lib/browserMarketFundingDelivery", () => ({
+  BrowserMarketFundingInsufficientBalanceError: class extends Error {},
+  readBrowserMarketFundingHeadId: vi.fn().mockResolvedValue(null),
+  executeBrowserMarketFundingDelivery,
+}));
+vi.mock("@/lib/identityOps", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/identityOps")>()),
+  resolveCreatorPubkey: () => "subject-1",
+}));
+vi.mock("@/stores/wallet", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/stores/wallet")>()),
+  useBalance: () => 200_000_000,
+}));
 
 function makeDraft(outcomeType: "yesno" | "categorical"): WizardDraft {
   return {
@@ -76,9 +93,66 @@ function makeProps(outcomeType: "yesno" | "categorical"): MarketCreationWizardPr
 }
 
 describe("MarketCreationWizard outcome-step rendering", () => {
+  let previousWalletState: ReturnType<typeof useWalletStore.getState>;
+
+  afterEach(() => {
+    cleanup();
+    useWalletStore.setState(previousWalletState);
+    vi.useRealTimers();
+  });
+
   beforeEach(async () => {
+    previousWalletState = useWalletStore.getState();
     await i18n.changeLanguage("en");
-    useSettingsStore.setState({ nostrSignerMode: "nsec", nsecSecret: "nsec-test" });
+    executeBrowserMarketFundingDelivery.mockReset();
+    useSettingsStore.setState({
+      nostrSignerMode: "nsec",
+      nsecSecret: "nsec-test",
+    });
+  });
+
+  it("keeps paid creation resume visible before the key gate and does not expose editable draft fields", () => {
+    useSettingsStore.setState({ nostrSignerMode: "nip07", nsecSecret: null });
+    const onResumeCreation = vi.fn();
+    const onDismissCreationError = vi.fn();
+    render(
+      <MarketCreationWizard
+        {...makeProps("yesno")}
+        retainedCreation={{
+          title: "Saved original title",
+          mintConfirmed: true,
+        }}
+        submitError="The paid creation is incomplete."
+        onResumeCreation={onResumeCreation}
+        onDismissCreationError={onDismissCreationError}
+      />,
+    );
+    expect(screen.getByTestId("market-creation-resume")).toBeInTheDocument();
+    expect(screen.getByText("Saved original title")).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent(
+      i18n.t("marketCreation.creationMintConfirmed"),
+    );
+    expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Create Market" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("resume-market-creation"));
+    expect(onResumeCreation).toHaveBeenCalledTimes(1);
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: i18n.t("marketCreation.dismissCreationError"),
+      }),
+    );
+    expect(onDismissCreationError).toHaveBeenCalledTimes(1);
+  });
+
+  it("disables resume while the saved creation is loading", () => {
+    render(
+      <MarketCreationWizard
+        {...makeProps("yesno")}
+        retainedCreation={{ title: "Saved market", mintConfirmed: false }}
+        isLoadingCreation
+      />,
+    );
+    expect(screen.getByTestId("resume-market-creation")).toBeDisabled();
   });
 
   it("renders binary drafts directly in review without an outcomes editor", () => {
@@ -114,7 +188,7 @@ describe("MarketCreationWizard outcome-step rendering", () => {
     expect(onOutcomeColorChange).toHaveBeenCalledWith("alpha", "#124578");
   });
 
-  it("previews explicit and automatic colors in categorical review", () => {
+  it("previews manual and visible palette colors in categorical review", () => {
     const props = makeProps("categorical");
     props.draft.currentStep = 4;
     props.draft.stepOutcomes!.outcomes![0] = {
@@ -124,6 +198,45 @@ describe("MarketCreationWizard outcome-step rendering", () => {
     render(<MarketCreationWizard {...props} />);
 
     expect(screen.getByText("#123456")).toBeInTheDocument();
-    expect(screen.getByText("Automatic")).toBeInTheDocument();
+    expect(screen.getByText("#59A14F")).toBeInTheDocument();
+    expect(screen.queryByText("Automatic")).not.toBeInTheDocument();
+  });
+
+  it("keeps the created market handoff after draft reset and opens it only after the credit countdown", async () => {
+    useWalletStore.setState({
+      mnemonic: "test mnemonic",
+      activeMintUrl: "https://mint.example",
+    });
+    executeBrowserMarketFundingDelivery.mockResolvedValue({
+      progress: "credited",
+      transfer: { transferId: "payment-1", requestedAmount: "100000" },
+    });
+    const props = makeProps("yesno");
+    props.draft.currentStep = 1;
+    props.createdMarketConditionId = "a".repeat(64);
+    props.createdMarketOutcomeCount = 2;
+    props.createdMarketBaseAsset = "sat";
+    props.createdMarketDivisibility = 1_000;
+    vi.useFakeTimers();
+    render(
+      <MemoryRouter initialEntries={["/creator/new"]}>
+        <Routes>
+          <Route path="/creator/new" element={<MarketCreationWizard {...props} />} />
+          <Route path="/markets/:id" element={<div data-testid="market-detail-page" />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+    expect(screen.getByRole("heading", { name: "Market created!" })).toBeInTheDocument();
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Attract Traders" })));
+    fireEvent.change(screen.getByTestId("amm-funding-custom-budget"), {
+      target: { value: "100" },
+    });
+    await act(async () => fireEvent.click(screen.getByTestId("confirm-amm-funding")));
+    expect(screen.getByTestId("amm-funding-success")).toBeInTheDocument();
+    act(() => vi.advanceTimersByTime(4_999));
+    expect(screen.queryByTestId("market-detail-page")).not.toBeInTheDocument();
+    act(() => vi.advanceTimersByTime(1));
+    expect(screen.getByTestId("market-detail-page")).toBeInTheDocument();
+    expect(executeBrowserMarketFundingDelivery).toHaveBeenCalledOnce();
   });
 });

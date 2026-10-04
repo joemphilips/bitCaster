@@ -110,6 +110,144 @@ test('explicit ordinary recovery co-commits selectable and spent proofs with cur
   }
 })
 
+test('empty recovery batches advance the scan cursor without reserving native counters', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'bitcaster-recovery-empty-counter-range-'))
+  try {
+    const fixture = await createRecoveryFixture({
+      directory,
+      walletSeedHex: 'a1'.repeat(64),
+      nostrSecretKeyHex: 'b2'.repeat(32),
+      incarnationId: 'recovery-empty-counter-range',
+      invocationId: 'recovery-empty-counter-range',
+    })
+    await setRecoveryCounter(fixture, 4)
+    const cursor = await runRecovery(fixture, {
+      recoveryId: 'recovery-empty-counter-range',
+      disclosureAcknowledged: true,
+      batches: [
+        {
+          observation: {
+            expectedRevision: 0,
+            startCounter: 0,
+            requestedCount: 300,
+            lastCounterWithSignature: null,
+            scanThroughCounter: 4,
+          },
+          proofs: [],
+        },
+      ],
+    })
+    assert.equal(cursor.nextCounter, 300)
+    assert.equal(cursor.state, 'completed')
+    await withRecoveryDatabase(directory, (database) => {
+      assert.equal(readRecoveryCursor(database, 'recovery-empty-counter-range'), 300)
+      assert.deepEqual(readRecoveryCounters(database, fixture.profile.walletScopeId), {
+        target: 4,
+        custody: 4,
+      })
+    })
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('recovery keeps a higher retained counter after spent-only signatures', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'bitcaster-recovery-spent-counter-range-'))
+  try {
+    const fixture = await createRecoveryFixture({
+      directory,
+      walletSeedHex: 'a2'.repeat(64),
+      nostrSecretKeyHex: 'b3'.repeat(32),
+      incarnationId: 'recovery-spent-counter-range',
+      invocationId: 'recovery-spent-counter-range',
+    })
+    await setRecoveryCounter(fixture, 10)
+    const cursor = await runRecovery(fixture, {
+      recoveryId: 'recovery-spent-counter-range',
+      disclosureAcknowledged: true,
+      batches: [
+        {
+          observation: {
+            expectedRevision: 0,
+            startCounter: 0,
+            requestedCount: 300,
+            lastCounterWithSignature: 2,
+            scanThroughCounter: 10,
+          },
+          proofs: [observed(fixture.profile.walletScopeId, 'spent-only', 'SPENT', 'spent')],
+        },
+      ],
+    })
+    assert.equal(cursor.nextCounter, 300)
+    assert.equal(cursor.state, 'active')
+    await withRecoveryDatabase(directory, (database) => {
+      assert.equal(readRecoveryCursor(database, 'recovery-spent-counter-range'), 300)
+      assert.deepEqual(readRecoveryCounters(database, fixture.profile.walletScopeId), {
+        target: 10,
+        custody: 10,
+      })
+      assert.deepEqual(readRecoveryJob(database, 'recovery-spent-counter-range'), {
+        importedProofs: 0,
+        ignoredSpentProofs: 1,
+        revision: 1,
+        state: 'active',
+      })
+      assert.equal(readRowCount(database, 'custody_proofs'), 0)
+    })
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('recovery advances paired counters past the retained mark through the last signature', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'bitcaster-recovery-new-counter-range-'))
+  try {
+    const fixture = await createRecoveryFixture({
+      directory,
+      walletSeedHex: 'a3'.repeat(64),
+      nostrSecretKeyHex: 'b4'.repeat(32),
+      incarnationId: 'recovery-new-counter-range',
+      invocationId: 'recovery-new-counter-range',
+    })
+    await setRecoveryCounter(fixture, 4)
+    const cursor = await runRecovery(fixture, {
+      recoveryId: 'recovery-new-counter-range',
+      disclosureAcknowledged: true,
+      batches: [
+        {
+          observation: {
+            expectedRevision: 0,
+            startCounter: 0,
+            requestedCount: 7,
+            lastCounterWithSignature: 6,
+            scanThroughCounter: 4,
+          },
+          proofs: [
+            observed(fixture.profile.walletScopeId, 'above-retained', 'UNSPENT', 'selectable'),
+            observed(fixture.profile.walletScopeId, 'above-retained-spent', 'SPENT', 'spent'),
+          ],
+        },
+      ],
+    })
+    assert.equal(cursor.nextCounter, 7)
+    await withRecoveryDatabase(directory, (database) => {
+      assert.equal(readRecoveryCursor(database, 'recovery-new-counter-range'), 7)
+      assert.deepEqual(readRecoveryCounters(database, fixture.profile.walletScopeId), {
+        target: 7,
+        custody: 7,
+      })
+      assert.deepEqual(readRecoveryJob(database, 'recovery-new-counter-range'), {
+        importedProofs: 1,
+        ignoredSpentProofs: 1,
+        revision: 1,
+        state: 'active',
+      })
+    })
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
 test('recovery commit rolls its counter back with a failed proof insert', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'bitcaster-recovery-counter-atomic-'))
   try {
@@ -1130,6 +1268,17 @@ function runRecovery(
   })
 }
 
+async function setRecoveryCounter(fixture: RecoveryFixture, nextCounter: number): Promise<void> {
+  await withDaemonHome(fixture.directory, () =>
+    advanceDaemonKeysetCounter(
+      KEYSET_ID,
+      nextCounter,
+      { fence: fixture.fence, observedAtMs: 3 },
+      MSAT_RECOVERY_COUNTER_BINDING,
+    ),
+  )
+}
+
 function runRecoveryWithContext(
   fixture: RecoveryFixture,
   recoveryId: string,
@@ -1284,6 +1433,32 @@ function readRowCount(
 ): number {
   return (database.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get() as { count: number })
     .count
+}
+
+function readRecoveryCursor(database: DatabaseSync, recoveryId: string): number {
+  return (
+    database
+      .prepare(
+        `SELECT next_counter AS nextCounter FROM seed_recovery_keysets
+         WHERE recovery_id = ? AND keyset_id = ?`,
+      )
+      .get(recoveryId, KEYSET_ID) as { nextCounter: number }
+  ).nextCounter
+}
+
+function readRecoveryCounters(database: DatabaseSync, scopeId: string) {
+  const read = (table: 'target_keyset_counters' | 'custody_keyset_counters') =>
+    (
+      database
+        .prepare(
+          `SELECT next_counter AS nextCounter FROM ${table}
+           WHERE scope_id = ? AND normalized_mint = ? AND unit = ? AND keyset_id = ?`,
+        )
+        .get(scopeId, MSAT_RECOVERY_COUNTER_BINDING.normalizedMint, 'msat', KEYSET_ID) as
+        | { nextCounter: number }
+        | undefined
+    )?.nextCounter ?? null
+  return { target: read('target_keyset_counters'), custody: read('custody_keyset_counters') }
 }
 
 function observed(

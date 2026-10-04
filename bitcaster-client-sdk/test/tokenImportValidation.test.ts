@@ -25,6 +25,27 @@ const REGULAR_SHORT_ID = REGULAR_FULL_ID.slice(0, 16)
 const CONDITIONAL_FULL_ID = `02${'34'.repeat(32)}`
 const CONDITIONAL_SHORT_ID = CONDITIONAL_FULL_ID.slice(0, 16)
 
+test('product-wallet classification retains exact conditional registry metadata for each proof', async () => {
+  const decoded = token('https://mint.example', 'msat', [CONDITIONAL_FULL_ID])
+  const conditionalMetadata = {
+    conditionId: 'ab'.repeat(32),
+    outcomeCollection: 'YES',
+    outcomeCollectionId: 'cd'.repeat(32),
+  }
+  const result = await validateProductWalletTokenImport({
+    encodedToken: getEncodedToken(decoded),
+    resolveKeysets: async () =>
+      lookup([], [{ ...metadata(CONDITIONAL_FULL_ID, 'msat'), ...conditionalMetadata }]),
+  })
+  assert.deepEqual(result.proofs[0]?.conditionalMetadata, conditionalMetadata)
+  assert.equal(result.proofs[0]?.resolvedKeysetId, CONDITIONAL_FULL_ID)
+  const regular = await validateProductWalletTokenImport({
+    encodedToken: getEncodedToken(token('https://mint.example', 'msat', [REGULAR_FULL_ID])),
+    resolveKeysets: matchingResolver('regular', REGULAR_FULL_ID, 'msat'),
+  })
+  assert.equal(regular.proofs[0]?.conditionalMetadata, undefined)
+})
+
 function token(
   mint = 'https://mint.example',
   unit = 'sat',
@@ -810,7 +831,9 @@ test('paged conditional discovery deduplicates inclusive rows and has no fixed p
     fetchConditionalPage: async (query) => {
       queries.push(query)
       const keysets = registry.filter(
-        ({ registered_at }) => query.since === undefined || registered_at >= query.since,
+        ({ registered_at }) =>
+          query.since === undefined ||
+          (typeof registered_at === 'number' && registered_at >= query.since),
       )
       return { keysets: keysets.slice(0, query.limit) }
     },

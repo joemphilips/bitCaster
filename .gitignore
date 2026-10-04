@@ -12,6 +12,7 @@ dist/
 
 # Rust / CDK (built locally)
 target/
+/bitcaster-daemon/native/
 
 # .NET / Aspire
 bin/
@@ -36,3 +37,7 @@ artifacts/
 /.stryker-tmp/
 /bitCaster-app/.stryker-tmp/
 /stryker-incremental.json
+
+# Machine-local mutation sandboxes and worktrees.
+/.stryker-tmp-app-reuse/
+/.worktrees/

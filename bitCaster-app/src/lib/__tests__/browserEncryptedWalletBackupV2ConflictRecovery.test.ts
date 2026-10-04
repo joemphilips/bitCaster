@@ -8,13 +8,16 @@ import {
   deriveKeysetId,
   hashToCurve,
   Keyset,
+  Mint,
   HttpResponseError,
   NetworkError,
   OutputData,
   pointFromHex,
   RateLimitError,
+  Wallet,
   type Proof,
   type ProofState,
+  type RequestFn,
   type Wallet as CashuWallet,
 } from "@cashu/cashu-ts";
 import { bytesToHex } from "@noble/curves/utils.js";
@@ -45,7 +48,10 @@ import { deriveDurableCustodyScopeId } from "@bitcaster/client-sdk/durableCustod
 import { deriveDurableWalletProofSecret } from "@bitcaster/client-sdk/durableWalletProofDerivationLocator";
 import { deriveRootCtfOutcomeCollectionId } from "@bitcaster/client-sdk/durableCtfRangeOperation";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createBrowserProofBackupAuthorityRow } from "../../stores/browser-proof-backup-authority";
+import {
+  createBrowserProofBackupAuthorityRow,
+  requireBrowserLiveProofBackupAuthorityTableRow,
+} from "../../stores/browser-proof-backup-authority";
 import {
   createEncryptedWalletBackupV2DesiredAssetRow,
   createEncryptedWalletBackupV2RemovalIntent,
@@ -110,6 +116,124 @@ afterEach(async () => {
 });
 
 describe("browser encrypted wallet backup V2 conflict recovery", () => {
+  it("retains ordinary custody and refusal after a cold CTF fetch failure, then reloads exact proofs once", async () => {
+    const fixture = await conflictFixture();
+    const ctf = {
+      kind: "ctf" as const,
+      conditionId: CONDITION_ID,
+      outcomeLabel: OUTCOME_LABEL,
+      outcomeCollectionId: OUTCOME_COLLECTION_ID,
+      registeredAt: 1,
+      finalExpiry: null,
+    };
+    const ordinary = { kind: "ordinary" as const };
+    const first = await installRemoteBundles(fixture, [
+      { proofAsset: ordinary, counter: 400, custodyRevision: 2n },
+    ]);
+    const cold = await coldConflictWallet(fixture, ctf);
+    await expect(
+      recoverBrowserEncryptedWalletBackupV2Conflict({
+        ...fixture.input,
+        loadWallet: async () => cold.wallet,
+      }),
+    ).resolves.toMatchObject({ kind: "completed" });
+    const originalIds = (await fixture.database.custodyProofs.toArray())
+      .map(({ proofId }) => proofId)
+      .sort();
+    expect(originalIds).toEqual(first.expectedProofIds.sort());
+
+    const mixed = await installRemoteBundles(
+      fixture,
+      [
+        { proofAsset: ordinary, counter: 400, custodyRevision: 2n },
+        { proofAsset: ctf, counter: 500, custodyRevision: 3n },
+      ],
+      { headVersion: 2 },
+    );
+    await fixture.store.markCompetingHeadRecoveryRequired({
+      collectedHeadEvidence: mixed.headEvidence,
+    });
+    cold.failConditionalRead = true;
+    await expect(
+      recoverBrowserEncryptedWalletBackupV2Conflict({
+        ...fixture.input,
+        loadWallet: async () => cold.wallet,
+      }),
+    ).resolves.toEqual({ kind: "incomplete", reason: "remote-unavailable" });
+    expect(
+      (await fixture.database.custodyProofs.toArray()).map(({ proofId }) => proofId).sort(),
+    ).toEqual(originalIds);
+    await expect(fixture.store.readNewWritePermission()).resolves.toMatchObject({
+      canWrite: false,
+      localRecoveryStatus: "recovery-required",
+    });
+    expect(
+      await fixture.database.walletCounterCursors.get([fixture.scopeId, KEYSET]),
+    ).toMatchObject({ next: 401 });
+    expect(await fixture.database.custodyConditionalKeysets.count()).toBe(0);
+
+    fixture.database.close();
+    await fixture.database.open();
+    const retry = await coldConflictWallet(fixture, ctf);
+    await expect(
+      recoverBrowserEncryptedWalletBackupV2Conflict({
+        ...fixture.input,
+        loadWallet: async () => retry.wallet,
+      }),
+    ).resolves.toMatchObject({ kind: "completed", headVersion: 2 });
+    const restoredIds = (await fixture.database.custodyProofs.toArray())
+      .map(({ proofId }) => proofId)
+      .sort();
+    expect(restoredIds).toEqual(mixed.expectedProofIds.sort());
+    expect(await fixture.database.custodyConditionalKeysets.toArray()).toMatchObject([
+      {
+        keysetId: fixtureKeysetId(ctf),
+        conditionId: CONDITION_ID,
+        outcomeCollection: OUTCOME_LABEL,
+        outcomeCollectionId: OUTCOME_COLLECTION_ID,
+        registeredAtUnixSeconds: 1,
+        finalExpiryUnixSeconds: null,
+      },
+    ]);
+    const authorities = (await fixture.database.custodyProofBackupAuthorities.toArray()).map(
+      (row) => requireBrowserLiveProofBackupAuthorityTableRow(row, [fixture.scopeId, row.proofId])!,
+    );
+    expect(
+      authorities.every(
+        (row) => row.backupState === "remote-backed" && row.admissionOperationId === null,
+      ),
+    ).toBe(true);
+    expect(authorities.map(({ proofId }) => proofId).sort()).toEqual(restoredIds);
+    expect(
+      await fixture.database.walletCounterCursors.get([fixture.scopeId, KEYSET]),
+    ).toMatchObject({ next: 401 });
+    expect(
+      await fixture.database.walletCounterCursors.get([fixture.scopeId, fixtureKeysetId(ctf)]),
+    ).toMatchObject({ next: 501 });
+    await expect(fixture.store.readNewWritePermission()).resolves.toMatchObject({ canWrite: true });
+    await fixture.store.markCompetingHeadRecoveryRequired({
+      collectedHeadEvidence: mixed.headEvidence,
+    });
+    await expect(
+      recoverBrowserEncryptedWalletBackupV2Conflict({
+        ...fixture.input,
+        loadWallet: async () => retry.wallet,
+      }),
+    ).resolves.toMatchObject({ kind: "completed" });
+    expect(
+      (await fixture.database.custodyProofs.toArray()).map(({ proofId }) => proofId).sort(),
+    ).toEqual(restoredIds);
+    expect(
+      await fixture.database.walletCounterCursors.get([fixture.scopeId, fixtureKeysetId(ctf)]),
+    ).toMatchObject({ next: 501 });
+    expect(
+      [...cold.requests, ...retry.requests].every(
+        ({ method, pathname }) => method === "GET" || pathname === "/v1/checkstate",
+      ),
+    ).toBe(true);
+    expect(fixture.remote.writeMutation).not.toHaveBeenCalled();
+  });
+
   it("recovers a remote-only terminal-sealed CTF bundle without loading the mint", async () => {
     const fixture = await conflictFixture({ conditionalAsset: true });
     await installRemoteBundles(
@@ -763,6 +887,7 @@ interface Fixture {
   readonly wallet: CashuWallet & { checkProofsStates: ReturnType<typeof vi.fn> };
   readonly remote: EncryptedWalletBackupV2RemotePort & {
     readDescriptorPage: ReturnType<typeof vi.fn>;
+    writeMutation: ReturnType<typeof vi.fn>;
   };
   readonly secondHeadVersion: number;
   readonly beforeSecondHead: ((fixture: Fixture) => Promise<void>) | undefined;
@@ -1051,6 +1176,7 @@ function activeRangePreparation(scopeId: string) {
     divisibility: 1_000 as const,
     authorizationExpiresAtUnixSeconds: 1_000,
     preparationBytes: encodeCtfRangeOrderPreparationArtifact({ version: 1 }),
+    feeConsentBytes: null,
     createdAtMs: 1,
     lifecycleState: "prepared" as const,
     revision: 0,
@@ -1072,8 +1198,12 @@ async function installRemoteBundles(
     readonly counter: number;
     readonly custodyRevision: bigint;
   }[],
-  options?: { readonly failOnObjectRead?: number; readonly terminalSealed?: boolean },
-): Promise<void> {
+  options?: {
+    readonly failOnObjectRead?: number;
+    readonly terminalSealed?: boolean;
+    readonly headVersion?: number;
+  },
+) {
   const prepared = await Promise.all(
     bundles.map(async ({ proofAsset, counter, custodyRevision }) => {
       const { keysetId, keyset } = fixtureKeyset(proofAsset);
@@ -1133,7 +1263,7 @@ async function installRemoteBundles(
         ],
         runtime: fixture.input.runtime,
       });
-      return { bundle, keyset, proof };
+      return { bundle, keyset, proof, proofAsset };
     }),
   );
   const descriptors = prepared
@@ -1143,14 +1273,14 @@ async function installRemoteBundles(
     realm: fixture.input.keyHandle.realm,
     walletId: fixture.input.keyHandle.walletId,
     enrollmentEpoch: 1,
-    headVersion: 1,
+    headVersion: options?.headVersion ?? 1,
     bundles: descriptors,
   });
   const secondHead = createEncryptedWalletBackupV2CurrentHead({
     realm: fixture.input.keyHandle.realm,
     walletId: fixture.input.keyHandle.walletId,
     enrollmentEpoch: 1,
-    headVersion: fixture.secondHeadVersion,
+    headVersion: options?.headVersion ?? fixture.secondHeadVersion,
     bundles: descriptors,
   });
   const firstPages = enumerateEncryptedWalletBackupV2DescriptorPages({
@@ -1179,12 +1309,14 @@ async function installRemoteBundles(
   });
   const remoteSecrets = new Set(prepared.map(({ proof }) => proof.secret));
   const keysets = new Map(prepared.map(({ keyset }) => [keyset.id, keyset]));
+  const getKeyset = (keysetId: string) => {
+    const keyset = keysets.get(keysetId);
+    if (keyset === undefined) throw new Error("browser V2 restore keyset is missing");
+    return keyset;
+  };
   Object.assign(fixture.wallet, {
-    getKeyset: (keysetId: string) => {
-      const keyset = keysets.get(keysetId);
-      if (keyset === undefined) throw new Error("browser V2 restore keyset is missing");
-      return keyset;
-    },
+    getKeyset,
+    keyChain: { loadConditionalKeyset: async (keysetId: string) => getKeyset(keysetId) },
     checkProofsStates: vi.fn(async (proofs: readonly { readonly secret: string }[]) =>
       proofs.map(({ secret }) => ({
         Y: hashToCurve(new TextEncoder().encode(secret)).toHex(true),
@@ -1203,6 +1335,87 @@ async function installRemoteBundles(
     if (object === undefined) throw new Error("test remote object is absent");
     return object;
   });
+  return {
+    headEvidence: collectEncryptedWalletBackupV2DescriptorPages(firstPages),
+    expectedProofIds: prepared.map(
+      ({ proof, proofAsset }) =>
+        createBrowserCustodyProofRow({
+          scopeId: fixture.scopeId,
+          normalizedMint: MINT,
+          unit: "msat",
+          proof,
+          asset:
+            proofAsset.kind === "ordinary"
+              ? { kind: "regular" }
+              : {
+                  kind: "conditional",
+                  conditionId: proofAsset.conditionId,
+                  outcomeCollection: proofAsset.outcomeLabel,
+                },
+          receivedAtMs: 1,
+        }).proofId,
+    ),
+  };
+}
+
+async function coldConflictWallet(
+  fixture: Fixture,
+  asset: Extract<EncryptedWalletBackupV2ProofSetAsset, { kind: "ctf" }>,
+) {
+  const { keysetId } = fixtureKeyset(asset);
+  const requests: { method: string; pathname: string }[] = [];
+  const state = { failConditionalRead: false, requests, wallet: null as unknown as CashuWallet };
+  const request: RequestFn = async <T>(input: Parameters<RequestFn>[0]): Promise<T> => {
+    const pathname = new URL(input.endpoint).pathname;
+    requests.push({ method: input.method ?? "GET", pathname });
+    let response: unknown;
+    switch (pathname) {
+      case "/v1/info":
+        response = { name: "cold conflict fixture", nuts: {} };
+        break;
+      case "/v1/keysets":
+        response = { keysets: [{ id: KEYSET, unit: "msat", active: true, input_fee_ppk: 0 }] };
+        break;
+      case "/v1/keys":
+        response = { keysets: [{ id: KEYSET, unit: "msat", keys: { "1": MINT_PUBLIC_KEY } }] };
+        break;
+      case "/v1/conditional_keysets":
+        if (state.failConditionalRead) throw new NetworkError("conditional registry unavailable");
+        response = {
+          keysets: [
+            {
+              id: keysetId,
+              unit: "msat",
+              active: true,
+              input_fee_ppk: 0,
+              final_expiry: asset.finalExpiry,
+              condition_id: asset.conditionId,
+              outcome_collection: asset.outcomeLabel,
+              outcome_collection_id: asset.outcomeCollectionId,
+              registered_at: asset.registeredAt,
+            },
+          ],
+        };
+        break;
+      case `/v1/keys/${keysetId}`:
+        response = { keysets: [{ id: keysetId, unit: "msat", keys: { "1": MINT_PUBLIC_KEY } }] };
+        break;
+      case "/v1/checkstate": {
+        const { Ys } = input.requestBody as { Ys: string[] };
+        response = { states: Ys.map((Y) => ({ Y, state: "UNSPENT", witness: null })) };
+        break;
+      }
+      default:
+        throw new Error("Unexpected cold conflict mint request");
+    }
+    return response as T;
+  };
+  state.wallet = new Wallet(new Mint(MINT, { customRequest: request }), {
+    unit: "msat",
+    bip39seed: fixture.input.seed,
+  });
+  await state.wallet.loadMint();
+  return state;
 }
 
 async function issueRemoteTerminalSeal(

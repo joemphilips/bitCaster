@@ -187,6 +187,76 @@ test('requires the exact input and output keyset authority', () => {
   )
 })
 
+test('wallet mint verifies and restores exact msat outputs without predecessor proofs', () => {
+  const prepared = preparedMint('mint:1')
+  const adapter = new FaultInjectingDurableCustodyAdapter({ ...scopeState(), scope: MELT_SCOPE })
+  adapter.run((transaction) =>
+    bindDurableCustodyProofOperation(transaction, prepared.record, prepared.artifacts),
+  )
+  const record = adapter.readOperation()!
+  const verified = prepareDurableCustodyVerifiedMintResult({
+    record,
+    exactAuthority: prepared.exactAuthority,
+    result: { receive: [proofForOutput(prepared.output, MSAT_KEYSET_ID)] },
+  })
+  adapter.run((transaction) =>
+    stageDurableCustodyPreparedMintResult({
+      transaction,
+      record,
+      prepared: verified,
+      authorization: OWNER,
+    }),
+  )
+  const restored = readDurableCustodyVerifiedMintResult({
+    record: adapter.readOperation()!,
+    exactAuthority: prepared.exactAuthority,
+    exactResult: verified.exactResult,
+  })
+  assert.equal(restored.proofs.length, 1)
+  assert.equal(restored.proofs[0]!.dleqState, 'verified')
+  assert.equal(restored.proofs[0]!.group, 'receive')
+  assert.equal(restored.resultFingerprint, verified.resultFingerprint)
+})
+
+test('wallet mint rejects foreign outputs and missing or invalid DLEQ', () => {
+  const prepared = preparedMint('mint:invalid-result')
+  const proof = proofForOutput(prepared.output, MSAT_KEYSET_ID)
+  for (const invalid of [
+    proofForOutput(OutputData.createSingleData(1, MSAT_KEYSET_ID, 'foreign', 13n), MSAT_KEYSET_ID),
+    { ...proof, dleq: undefined },
+    { ...proof, dleq: { ...proof.dleq!, e: '0'.repeat(64) } },
+  ]) {
+    assert.throws(() =>
+      prepareDurableCustodyVerifiedMintResult({
+        record: prepared.record,
+        exactAuthority: prepared.exactAuthority,
+        result: { receive: [invalid] },
+      }),
+    )
+  }
+})
+
+test('wallet mint input exemption does not permit empty swaps or input-bearing mints', () => {
+  const prepared = preparedMint('mint:invalid-authority')
+  const proof = proofForOutput(prepared.output, MSAT_KEYSET_ID)
+  for (const operation of [
+    { ...prepared.operation, inputs: [proof] },
+    { ...prepared.operation, outputs: { receive: [] } },
+    { ...prepared.operation, kind: 'wallet-send' as const },
+    { ...prepared.operation, kind: 'wallet-receive' as const },
+    { ...prepared.operation, kind: 'wallet-melt' as const },
+  ]) {
+    assert.throws(
+      () =>
+        prepareDurableCustodyMintOperationAuthority({
+          operation,
+          keysets: prepared.authority.keysets,
+        }),
+      /operation kind is unsupported/,
+    )
+  }
+})
+
 test('accepts an exact CTF range refund as a mint-verified operation', () => {
   const prepared = preparedSend('refund:1')
   const authority = prepareDurableCustodyMintOperationAuthority({
@@ -518,6 +588,50 @@ function preparedSend(
   return { ...authority, artifacts, record, operation, output }
 }
 
+function preparedMint(operationId: string) {
+  const output = OutputData.createSingleData(1, MSAT_KEYSET_ID, `mint:${operationId}`, 11n)
+  const operation = {
+    operationId,
+    kind: 'wallet-mint' as const,
+    mintUrl: MINT_URL,
+    inputs: [],
+    outputs: { receive: [serializeDurableCustodyOutput(output)] },
+    metadata: { unit: 'msat' },
+  }
+  const authority = prepareDurableCustodyMintOperationAuthority({
+    operation,
+    keysets: [
+      {
+        canonicalMintUrl: MINT_URL,
+        id: MSAT_KEYSET_ID,
+        unit: 'msat',
+        keys: KEYS,
+        inputFeePpk: 0,
+        finalExpiry: null,
+        identity: { kind: 'regular' },
+      },
+    ],
+  })
+  const artifacts = {
+    requestBody: authority.exactRequest,
+    output: authority.exactOutput,
+    privateMaterial: authority.exactAuthority,
+  }
+  const record = createDurableCustodyProofOperation({
+    scope: MELT_SCOPE,
+    operation,
+    facts: authority.facts,
+    inventoryAccountId: MELT_SCOPE.inventoryAccountId,
+    exactBoundary: {
+      method: 'POST',
+      path: '/v1/mint/bolt11',
+      idempotencyKey: operationId,
+      ...artifacts,
+    },
+  })
+  return { ...authority, operation, record, artifacts, output }
+}
+
 function preparedMelt(operationId: string, outputCount: number) {
   const input = OutputData.createSingleData(1, MSAT_KEYSET_ID, `melt-input:${operationId}`, 7n)
   const outputs = Array.from({ length: outputCount }, (_, index) =>
@@ -597,7 +711,7 @@ function preparedCtfRedeem(operationId: string) {
     inventoryAccountId: SCOPE.inventoryAccountId,
     exactBoundary: {
       method: 'POST',
-      path: '/v1/ctf/redeem',
+      path: '/v1/redeem_outcome',
       idempotencyKey: operationId,
       ...artifacts,
     },

@@ -956,6 +956,193 @@ it("does not authenticate startup from a retry outcome", async () => {
   driver.stop();
 });
 
+it("presents preparing until the real startup authentication finishes", async () => {
+  enableBackupGate();
+  const fixture = await readyEnrolledFixture();
+  const startup = deferred<{ kind: "idle" }>();
+  const worker = vi.fn().mockReturnValue(startup.promise);
+  const statuses = vi.fn();
+  const driver = createBrowserEncryptedWalletBackupV2RuntimeDriver({
+    configuration,
+    ...fixture,
+    remote: runtimeRemote(),
+    runWorkerCycle: worker as never,
+    runtime: crypto,
+    signal: new AbortController().signal,
+    isCurrentProfile: () => true,
+    leadership: immediateLeadership,
+    onRecoveryStatusChange: statuses,
+  });
+  try {
+    await vi.waitFor(() => expect(worker).toHaveBeenCalledOnce());
+    expect(statuses).toHaveBeenLastCalledWith({ kind: "preparing", reason: "authentication" });
+    expect(statuses).not.toHaveBeenCalledWith({ kind: "ready" });
+    await expect(requireBrowserWalletNewWritePermission(fixture)).rejects.toMatchObject({
+      reason: "startup-authentication-pending",
+    });
+    startup.resolve({ kind: "idle" });
+    await vi.waitFor(() => expect(statuses).toHaveBeenLastCalledWith({ kind: "ready" }));
+    await expect(requireBrowserWalletNewWritePermission(fixture)).resolves.toBeUndefined();
+  } finally {
+    startup.resolve({ kind: "idle" });
+    driver.stop();
+  }
+});
+
+it.each(["leadership", "startup"] as const)(
+  "presents terminal %s failure without inventing a conflict or clearing durable work",
+  async (stage) => {
+    enableBackupGate();
+    const fixture = await readyEnrolledFixture();
+    const desired = await putRemovalDesired(fixture, "pending");
+    const statuses = vi.fn(),
+      reportError = vi.fn();
+    const failure = new Error("private proof token marker");
+    const worker =
+      stage === "startup"
+        ? vi.fn().mockRejectedValue(failure)
+        : vi.fn().mockResolvedValue({ kind: "idle" });
+    const driver = createBrowserEncryptedWalletBackupV2RuntimeDriver({
+      configuration,
+      ...fixture,
+      remote: runtimeRemote(),
+      runWorkerCycle: worker as never,
+      runtime: crypto,
+      signal: new AbortController().signal,
+      isCurrentProfile: () => true,
+      leadership:
+        stage === "leadership"
+          ? {
+              hold: async () => {
+                throw failure;
+              },
+            }
+          : immediateLeadership,
+      onRecoveryStatusChange: statuses,
+      reportError,
+    });
+    try {
+      await vi.waitFor(() => expect(reportError).toHaveBeenCalledOnce());
+      expect(statuses).toHaveBeenLastCalledWith({ kind: "failed" });
+      expect(statuses.mock.calls.flat().some((status) => status.kind === "recovering")).toBe(false);
+      expect(JSON.stringify(statuses.mock.calls)).not.toContain("private proof token marker");
+      await expect(readRecoveryStatus(fixture)).resolves.toMatchObject({
+        localRecoveryStatus: "ready",
+        localRecoveryVersion: 0,
+      });
+      expect(
+        await fixture.database.encryptedWalletBackupV2DesiredAssets.get([
+          fixture.scopeId,
+          desired.localAssetKey,
+        ]),
+      ).toMatchObject({ syncState: "pending" });
+      await expect(requireBrowserWalletNewWritePermission(fixture)).rejects.toMatchObject({
+        reason: "startup-authentication-pending",
+      });
+      driver.resumeAfterRecovery();
+      expect(statuses).toHaveBeenLastCalledWith({ kind: "failed" });
+    } finally {
+      driver.stop();
+    }
+  },
+);
+
+it("a replacement driver reauthenticates after terminal failure without discarding pending work", async () => {
+  enableBackupGate();
+  const fixture = await readyEnrolledFixture();
+  const desired = await putRemovalDesired(fixture, "pending");
+  const statuses = vi.fn();
+  const first = createBrowserEncryptedWalletBackupV2RuntimeDriver({
+    configuration,
+    ...fixture,
+    remote: runtimeRemote(),
+    runWorkerCycle: vi.fn().mockRejectedValue(new Error("bounded failure")) as never,
+    runtime: crypto,
+    signal: new AbortController().signal,
+    isCurrentProfile: () => true,
+    leadership: immediateLeadership,
+    onRecoveryStatusChange: statuses,
+    reportError: vi.fn(),
+  });
+  try {
+    await vi.waitFor(() => expect(statuses).toHaveBeenLastCalledWith({ kind: "failed" }));
+  } finally {
+    first.stop();
+  }
+  const startup = deferred<{ kind: "idle" }>();
+  const worker = vi.fn().mockReturnValue(startup.promise);
+  const second = createBrowserEncryptedWalletBackupV2RuntimeDriver({
+    configuration,
+    ...fixture,
+    remote: runtimeRemote(),
+    runWorkerCycle: worker as never,
+    runtime: crypto,
+    signal: new AbortController().signal,
+    isCurrentProfile: () => true,
+    leadership: immediateLeadership,
+    onRecoveryStatusChange: statuses,
+  });
+  try {
+    await vi.waitFor(() => expect(worker).toHaveBeenCalledOnce());
+    await expect(requireBrowserWalletNewWritePermission(fixture)).rejects.toMatchObject({
+      reason: "startup-authentication-pending",
+    });
+    startup.resolve({ kind: "idle" });
+    await vi.waitFor(() => expect(statuses).toHaveBeenLastCalledWith({ kind: "ready" }));
+    await expect(requireBrowserWalletNewWritePermission(fixture)).resolves.toBeUndefined();
+    expect(
+      await fixture.database.encryptedWalletBackupV2DesiredAssets.get([
+        fixture.scopeId,
+        desired.localAssetKey,
+      ]),
+    ).toMatchObject({ syncState: "pending" });
+    await expect(readRecoveryStatus(fixture)).resolves.toMatchObject({
+      localRecoveryStatus: "ready",
+      localRecoveryVersion: 0,
+    });
+  } finally {
+    startup.resolve({ kind: "idle" });
+    second.stop();
+  }
+});
+
+it("keeps genuine conflict presentation while an explicit recovery retry reads its authority", async () => {
+  const fixture = await runtimeFixture();
+  await persistRecoveryRequiredHead(fixture);
+  const blocked = deferred<void>();
+  const statuses = vi.fn();
+  let calls = 0;
+  const recovery = vi.fn(async () => {
+    if (++calls === 2) await blocked.promise;
+  });
+  const driver = createBrowserEncryptedWalletBackupV2RuntimeDriver({
+    configuration,
+    ...fixture,
+    remote: runtimeRemote(),
+    runWorkerCycle: vi.fn().mockResolvedValue({ kind: "idle" }) as never,
+    runtime: crypto,
+    signal: new AbortController().signal,
+    isCurrentProfile: () => true,
+    leadership: immediateLeadership,
+    onRecoveryStatusChange: statuses,
+    recovery,
+  });
+  try {
+    await vi.waitFor(() => expect(recovery).toHaveBeenCalledOnce());
+    expect(statuses).toHaveBeenLastCalledWith({ kind: "recovering", reason: null });
+    statuses.mockClear();
+    driver.resumeAfterRecovery();
+    await vi.waitFor(() => expect(recovery).toHaveBeenCalledTimes(2));
+    expect(statuses.mock.calls.every(([status]) => status.kind === "recovering")).toBe(true);
+    await expect(readRecoveryStatus(fixture)).resolves.toMatchObject({
+      localRecoveryStatus: "recovery-required",
+    });
+  } finally {
+    blocked.resolve();
+    driver.stop();
+  }
+});
+
 it("reports the bounded lifecycle through retry and authentication without repeating healthy state", async () => {
   enableBackupGate();
   const fixture = await readyEnrolledFixture();

@@ -22,6 +22,36 @@ const ID_BYTES_MAX = 16_384
 const SOURCE_PURPOSE = 'ctf-range-authorization-source'
 const CONSOLIDATION_PURPOSE = 'ctf-range-authorization-consolidation'
 
+/** The wallet_order alias can be a retained cache row or one candidate status. */
+export const NATIVE_RANGE_ORDER_OWNERSHIP_SQL = `EXISTS (
+  SELECT 1 FROM daemon_ctf_range_preparations AS preparation
+  WHERE preparation.scope_id = wallet_order.scope_id
+    AND preparation.engine_order_id = wallet_order.order_id
+    AND preparation.order_route_id = wallet_order.market_id
+    AND preparation.client_order_id = wallet_order.client_order_id
+    AND preparation.capability_artifact_id IS NOT NULL
+    AND preparation.capability_binding_digest IS NOT NULL
+    AND preparation.capability_artifact_digest IS NOT NULL
+)`
+
+export function hasNativeRangeOrderOwnership(
+  database: DatabaseSync,
+  scopeId: string,
+  marketId: string,
+  orderId: string,
+  clientOrderId: string | null,
+): boolean {
+  return (
+    database
+      .prepare(
+        `SELECT 1 FROM (
+    SELECT ? AS scope_id, ? AS market_id, ? AS order_id, ? AS client_order_id
+  ) AS wallet_order WHERE ${NATIVE_RANGE_ORDER_OWNERSHIP_SQL}`,
+      )
+      .get(scopeId, marketId, orderId, clientOrderId) !== undefined
+  )
+}
+
 export type RangePreparationLifecycle = CtfRangeOrderPreparationLifecycle
 export type RangePreparationCapability = CtfRangeOrderPreparationCapability
 export type InsertRangePreparation = CtfRangeOrderPreparationIdentity & {
@@ -85,11 +115,12 @@ export function insertRangePreparation(
          client_order_id, order_route_id, normalized_mint, condition_id, unit,
          token_side, side, price_subunits, amount_subunits,
          minimum_fill_amount_subunits, consolidate_proofs, divisibility,
-         authorization_expires_at_unix_seconds, preparation_body, lifecycle_state, revision,
+         authorization_expires_at_unix_seconds, preparation_body, fee_consent_body,
+         lifecycle_state, revision,
          capability_artifact_id, capability_binding_digest, capability_artifact_digest,
          engine_order_id, created_at_ms, updated_at_ms
        ) VALUES (
-         ?, ?, ?, ?, ?, ?, ?, ?, 'msat', ?, ?, ?, ?, ?, ?, ?, ?, ?, 'prepared', 0,
+         ?, ?, ?, ?, ?, ?, ?, ?, 'msat', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'prepared', 0,
          NULL, NULL, NULL, NULL, ?, ?
        )
        ON CONFLICT DO NOTHING`,
@@ -112,6 +143,7 @@ export function insertRangePreparation(
       input.divisibility,
       input.authorizationExpiresAtUnixSeconds,
       input.preparationBytes,
+      input.feeConsentBytes,
       input.createdAtMs,
       input.createdAtMs,
     )
@@ -436,6 +468,7 @@ function decodePreparationRow(row: Record<string, unknown>): RangePreparationRec
     divisibility: row.divisibility,
     authorizationExpiresAtUnixSeconds: row.authorization_expires_at_unix_seconds,
     preparationBytes: row.preparation_body,
+    feeConsentBytes: row.fee_consent_body,
     createdAtMs: row.created_at_ms,
     lifecycleState: row.lifecycle_state,
     revision: row.revision,

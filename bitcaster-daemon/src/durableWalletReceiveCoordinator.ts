@@ -33,8 +33,13 @@ import {
 } from './durableCustodyUnitOfWork.ts'
 import type { CustodyScopeFence } from './profileFencing.ts'
 import { createDaemonStateSqliteSession } from './stateSqlite.ts'
+import type { StateSqliteFaultPhase } from './stateSqlite.ts'
 import { admitExactAvailableWalletProofsFromDatabase, readExactBoundCounter } from './state.ts'
 import type { CashuWalletLike } from './walletOps.ts'
+import {
+  NativePaymentRequestReceiptSqlite,
+  type NativePaymentRequestReceiptBinding,
+} from './nativePaymentRequestReceiptSqlite.ts'
 
 export interface PreparedDaemonWalletReceive {
   readonly operation: DurableWalletReceiveOperation
@@ -50,6 +55,7 @@ export class DaemonDurableWalletReceiveCoordinator {
   readonly #storage
   readonly #getFence: () => CustodyScopeFence
   readonly #now: () => number
+  readonly #injectFault: ((phase: StateSqliteFaultPhase) => void) | undefined
   readonly #restoreExactOutputs: (
     mintUrl: string,
     outputs: Record<string, StoredReceiveOutput[]>,
@@ -63,18 +69,25 @@ export class DaemonDurableWalletReceiveCoordinator {
       outputs: Record<string, StoredReceiveOutput[]>,
     ) => Promise<Record<string, Proof[]>>,
     now: () => number = Date.now,
+    injectFault?: (phase: StateSqliteFaultPhase) => void,
   ) {
     this.#storage = createDaemonStateSqliteSession(directory)
     this.#getFence = getFence
     this.#restoreExactOutputs = restoreExactOutputs
     this.#now = now
+    this.#injectFault = injectFault
   }
 
   async execute(input: {
     readonly prepared: PreparedDaemonWalletReceive
     readonly wallet: CashuWalletLike
+    readonly receipt?: NativePaymentRequestReceiptBinding
   }): Promise<DaemonWalletReceiveResult> {
-    const custodyOperationId = await this.#bind(input.prepared.operation, input.wallet)
+    const custodyOperationId = await this.#bind(
+      input.prepared.operation,
+      input.wallet,
+      input.receipt,
+    )
     const result = await this.#run(
       'execute',
       input.prepared.operation.operationId,
@@ -84,6 +97,45 @@ export class DaemonDurableWalletReceiveCoordinator {
     if (result.state === 'nonterminal')
       throw new Error('daemon wallet receive did not reach a terminal state')
     return { proofs: result.proofs, operationId: input.prepared.operation.operationId }
+  }
+
+  /** Resume the saved operation. Do not prepare another output range. */
+  async resumePaymentRequest(requestId: string, wallet: CashuWalletLike): Promise<void> {
+    const { receipt, operation } = await this.#loadPaymentRequest(requestId)
+    await this.#run('recover', operation.operationId, receipt.operationId, wallet)
+  }
+
+  async paymentRequestResult(requestId: string): Promise<readonly Proof[] | null> {
+    const { loaded } = await this.#loadPaymentRequest(requestId)
+    return loaded.record.operation.result.state === 'applied'
+      ? this.#verifiedProofs(loaded.record, loaded.exactAuthority, loaded.exactResult)
+      : null
+  }
+
+  async #loadPaymentRequest(requestId: string) {
+    const receipt = await withDurableCustodyFencedRead(
+      this.#storage,
+      this.#getFence(),
+      this.#now(),
+      (database) =>
+        new NativePaymentRequestReceiptSqlite(database).getReceipt(
+          this.#getFence().scopeId,
+          requestId,
+        ),
+    )
+    if (receipt === null || receipt.kind !== 'regular')
+      throw new Error('payment request regular receipt is missing')
+    const loaded = await this.#loadRecord(receipt.operationId)
+    if (loaded === null) throw new Error('payment request receive operation is missing')
+    const operation = this.#operationFromRecord(loaded.record, loaded.exactAuthority)
+    await withDurableCustodyFencedRead(this.#storage, this.#getFence(), this.#now(), (database) =>
+      new NativePaymentRequestReceiptSqlite(database).bindRegular(
+        receipt,
+        receipt.operationId,
+        operation,
+      ),
+    )
+    return { receipt, loaded, operation }
   }
 
   async recover(input: {
@@ -145,7 +197,11 @@ export class DaemonDurableWalletReceiveCoordinator {
     }
   }
 
-  async #bind(operation: DurableWalletReceiveOperation, wallet: CashuWalletLike): Promise<string> {
+  async #bind(
+    operation: DurableWalletReceiveOperation,
+    wallet: CashuWalletLike,
+    receipt?: NativePaymentRequestReceiptBinding,
+  ): Promise<string> {
     const custody = toDurableCustodyProofOperationInput(operation)
     const authority = prepareDurableCustodyMintOperationAuthority({
       operation: custody,
@@ -168,25 +224,43 @@ export class DaemonDurableWalletReceiveCoordinator {
     })
     const observedAtMs = this.#now()
     const fence = this.#getFence()
-    await withDurableCustodyUnitOfWork(this.#storage, fence, observedAtMs, (database) => {
-      const store = new DurableCustodySqliteStore(database)
-      const existing = store.getOperation(record.operation.operationId)
-      if (existing !== null) {
-        assertDurableCustodyMintOperationAuthority(existing, authority.exactAuthority)
-        return
-      }
-      assertPersistedCounterRange(database, fence.scopeId, operation)
-      applyDurableCustodyTransaction(
-        new DurableCustodyTransactionSqlite(database, fence.scopeId, observedAtMs),
-        selection(record, owner(fence, observedAtMs), null),
-        (transaction) =>
-          bindDurableCustodyProofOperation(transaction, record, {
-            requestBody: authority.exactRequest,
-            output: authority.exactOutput,
-            privateMaterial: authority.exactAuthority,
-          }),
-      )
-    })
+    await withDurableCustodyUnitOfWork(
+      this.#storage,
+      fence,
+      observedAtMs,
+      (database) => {
+        const store = new DurableCustodySqliteStore(database)
+        const existing = store.getOperation(record.operation.operationId)
+        if (existing !== null) {
+          assertDurableCustodyMintOperationAuthority(existing, authority.exactAuthority)
+          if (receipt !== undefined)
+            new NativePaymentRequestReceiptSqlite(database).bindRegular(
+              receipt,
+              record.operation.operationId,
+              operation,
+            )
+          return
+        }
+        assertPersistedCounterRange(database, fence.scopeId, operation)
+        applyDurableCustodyTransaction(
+          new DurableCustodyTransactionSqlite(database, fence.scopeId, observedAtMs),
+          selection(record, owner(fence, observedAtMs), null),
+          (transaction) =>
+            bindDurableCustodyProofOperation(transaction, record, {
+              requestBody: authority.exactRequest,
+              output: authority.exactOutput,
+              privateMaterial: authority.exactAuthority,
+            }),
+        )
+        if (receipt !== undefined)
+          new NativePaymentRequestReceiptSqlite(database).bindRegular(
+            receipt,
+            record.operation.operationId,
+            operation,
+          )
+      },
+      this.#transactionOptions(),
+    )
     return record.operation.operationId
   }
 
@@ -260,28 +334,34 @@ export class DaemonDurableWalletReceiveCoordinator {
     if (loaded.record.operation.result.state === 'none') {
       const observedAtMs = this.#now()
       const fence = this.#getFence()
-      await withDurableCustodyUnitOfWork(this.#storage, fence, observedAtMs, (database) => {
-        const store = new DurableCustodySqliteStore(database)
-        const current = requiredRecord(store, custodyOperationId)
-        if (current.operation.result.state !== 'none') return
-        const transaction = new DurableCustodyTransactionSqlite(
-          database,
-          fence.scopeId,
-          observedAtMs,
-          [current],
-        )
-        applyDurableCustodyTransaction(
-          transaction,
-          selection(current, owner(fence, observedAtMs), current.revision),
-          (selected) =>
-            stageDurableCustodyPreparedMintResult({
-              transaction: selected,
-              record: current,
-              prepared,
-              authorization: owner(fence, observedAtMs),
-            }),
-        )
-      })
+      await withDurableCustodyUnitOfWork(
+        this.#storage,
+        fence,
+        observedAtMs,
+        (database) => {
+          const store = new DurableCustodySqliteStore(database)
+          const current = requiredRecord(store, custodyOperationId)
+          if (current.operation.result.state !== 'none') return
+          const transaction = new DurableCustodyTransactionSqlite(
+            database,
+            fence.scopeId,
+            observedAtMs,
+            [current],
+          )
+          applyDurableCustodyTransaction(
+            transaction,
+            selection(current, owner(fence, observedAtMs), current.revision),
+            (selected) =>
+              stageDurableCustodyPreparedMintResult({
+                transaction: selected,
+                record: current,
+                prepared,
+                authorization: owner(fence, observedAtMs),
+              }),
+          )
+        },
+        this.#transactionOptions(),
+      )
     }
     await this.#applyStaged(custodyOperationId)
     return 'completed'
@@ -301,78 +381,88 @@ export class DaemonDurableWalletReceiveCoordinator {
     })
     const observedAtMs = this.#now()
     const fence = this.#getFence()
-    await withDurableCustodyUnitOfWork(this.#storage, fence, observedAtMs, (database) => {
-      const store = new DurableCustodySqliteStore(database)
-      const current = requiredRecord(store, custodyOperationId)
-      if (current.operation.result.state === 'applied') return
-      const successors = verified.proofs.map(({ material, dleqState }) => ({
-        proof: createCustodyProofSqliteRowFromMaterial({
-          scopeId: current.scope.scopeId,
-          normalizedMint: current.operation.custodyContext.normalizedMint,
-          unit: receiveUnitFromRecord(current),
-          material,
-          baseAsset: 'sat',
-          conditionId: null,
-          outcomeSetId: null,
-          productBinding: null,
-          signatureVerified: true,
-          dleqState,
-          nut07State: 'UNSPENT',
-          selectability: 'retained',
-          storageClass: current.operation.proofStorage.storageClass,
-          reservationOperationId: null,
-          revision: 0,
-          nowMs: observedAtMs,
-        }),
-        expectedRevision: null,
-      }))
-      const authorization = owner(fence, observedAtMs)
-      const transaction = new DurableCustodyTransactionSqlite(
-        database,
-        fence.scopeId,
-        observedAtMs,
-        [current],
-      )
-      transaction.stageSuccessorProofCas(custodyOperationId, successors)
-      applyDurableCustodyTransaction(
-        transaction,
-        selection(current, authorization, current.revision),
-        (selected) => {
-          selected.applyVerifiedResult({
-            operationId: custodyOperationId,
-            expectedRevision: current.revision,
-            authorization,
-            outputPlanFingerprint: current.operation.outputPlan.outputPlanFingerprint,
-            resultHandle: requiredText(current.operation.result.resultHandle),
-            resultFingerprint: requiredText(current.operation.result.resultFingerprint),
-            successorAdmission: {
-              scopeId: current.scope.scopeId,
+    await withDurableCustodyUnitOfWork(
+      this.#storage,
+      fence,
+      observedAtMs,
+      (database) => {
+        const store = new DurableCustodySqliteStore(database)
+        const current = requiredRecord(store, custodyOperationId)
+        if (current.operation.result.state === 'applied') return
+        const successors = verified.proofs.map(({ material, dleqState }) => ({
+          proof: createCustodyProofSqliteRowFromMaterial({
+            scopeId: current.scope.scopeId,
+            normalizedMint: current.operation.custodyContext.normalizedMint,
+            unit: receiveUnitFromRecord(current),
+            material,
+            baseAsset: 'sat',
+            conditionId: null,
+            outcomeSetId: null,
+            productBinding: null,
+            signatureVerified: true,
+            dleqState,
+            nut07State: 'UNSPENT',
+            selectability: 'retained',
+            storageClass: current.operation.proofStorage.storageClass,
+            reservationOperationId: null,
+            revision: 0,
+            nowMs: observedAtMs,
+          }),
+          expectedRevision: null,
+        }))
+        const authorization = owner(fence, observedAtMs)
+        const transaction = new DurableCustodyTransactionSqlite(
+          database,
+          fence.scopeId,
+          observedAtMs,
+          [current],
+        )
+        transaction.stageSuccessorProofCas(custodyOperationId, successors)
+        applyDurableCustodyTransaction(
+          transaction,
+          selection(current, authorization, current.revision),
+          (selected) => {
+            selected.applyVerifiedResult({
               operationId: custodyOperationId,
-              admissionId: `wallet-receive:${requiredText(current.operation.result.resultFingerprint)}`,
-              proofRows: successors.map(({ proof, expectedRevision }) => ({
-                proofId: proof.proofId,
-                expectedRevision,
-                admittedRevision: proof.revision,
-              })),
-            },
-          })
-        },
-      )
-      transaction.rebuildActiveWorkIndex({
-        scopeId: current.scope.scopeId,
-        operationRows: [
-          { operationId: custodyOperationId, expectedRevision: current.revision + 1 },
-        ],
-      })
-      for (const { proof } of verified.proofs) {
-        admitExactAvailableWalletProofsFromDatabase(database, {
-          mintUrl: current.operation.custodyContext.normalizedMint,
-          proofs: [proof],
-          asset: { kind: 'sats', baseAsset: 'sat', unit: receiveUnitFromRecord(current) },
-          nowMs: observedAtMs,
+              expectedRevision: current.revision,
+              authorization,
+              outputPlanFingerprint: current.operation.outputPlan.outputPlanFingerprint,
+              resultHandle: requiredText(current.operation.result.resultHandle),
+              resultFingerprint: requiredText(current.operation.result.resultFingerprint),
+              successorAdmission: {
+                scopeId: current.scope.scopeId,
+                operationId: custodyOperationId,
+                admissionId: `wallet-receive:${requiredText(current.operation.result.resultFingerprint)}`,
+                proofRows: successors.map(({ proof, expectedRevision }) => ({
+                  proofId: proof.proofId,
+                  expectedRevision,
+                  admittedRevision: proof.revision,
+                })),
+              },
+            })
+          },
+        )
+        transaction.rebuildActiveWorkIndex({
+          scopeId: current.scope.scopeId,
+          operationRows: [
+            { operationId: custodyOperationId, expectedRevision: current.revision + 1 },
+          ],
         })
-      }
-    })
+        for (const { proof } of verified.proofs) {
+          admitExactAvailableWalletProofsFromDatabase(database, {
+            mintUrl: current.operation.custodyContext.normalizedMint,
+            proofs: [proof],
+            asset: { kind: 'sats', baseAsset: 'sat', unit: receiveUnitFromRecord(current) },
+            nowMs: observedAtMs,
+          })
+        }
+      },
+      this.#transactionOptions(),
+    )
+  }
+
+  #transactionOptions() {
+    return this.#injectFault === undefined ? {} : { injectFault: this.#injectFault }
   }
 
   async #loadRecord(custodyOperationId: string) {

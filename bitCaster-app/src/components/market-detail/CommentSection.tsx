@@ -1,16 +1,15 @@
 import { useRef, useState, useEffect } from "react";
-import { Heart, ChevronUp, ChevronDown } from "lucide-react";
+import { ChevronUp, ChevronDown } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { Comment } from "@/types/market-detail";
 import { formatTimeAgo } from "@/lib/format";
 
 interface CommentSectionProps {
   comments: Comment[];
-  onCommentLike?: (commentId: string) => void;
   onLoadMoreComments?: () => void;
 }
 
-function CommentRow({ comment, onLike }: { comment: Comment; onLike?: () => void }) {
+function CommentRow({ comment }: { comment: Comment }) {
   return (
     <div className="py-4 border-b border-slate-100 dark:border-slate-700/50 last:border-0">
       {/* Header */}
@@ -40,30 +39,11 @@ function CommentRow({ comment, onLike }: { comment: Comment; onLike?: () => void
       <p className="text-sm text-slate-600 dark:text-slate-300 leading-relaxed mb-2 pl-11">
         {comment.content}
       </p>
-
-      {/* Actions */}
-      <div className="pl-11">
-        <button
-          onClick={onLike}
-          className={`inline-flex items-center gap-1.5 text-xs transition-colors ${
-            comment.isLiked
-              ? "text-red-500"
-              : "text-slate-400 dark:text-slate-500 hover:text-red-500"
-          }`}
-        >
-          <Heart className={`w-3.5 h-3.5 ${comment.isLiked ? "fill-current" : ""}`} />
-          {comment.likeCount}
-        </button>
-      </div>
     </div>
   );
 }
 
-export function CommentSection({
-  comments,
-  onCommentLike,
-  onLoadMoreComments,
-}: CommentSectionProps) {
+export function CommentSection({ comments, onLoadMoreComments }: CommentSectionProps) {
   const { t } = useTranslation();
   const scrollRef = useRef<HTMLDivElement>(null);
   const [canScrollUp, setCanScrollUp] = useState(false);
@@ -131,11 +111,7 @@ export function CommentSection({
           ) : (
             <>
               {comments.map((comment) => (
-                <CommentRow
-                  key={comment.id}
-                  comment={comment}
-                  onLike={() => onCommentLike?.(comment.id)}
-                />
+                <CommentRow key={comment.id} comment={comment} />
               ))}
               {comments.length >= 3 && (
                 <button

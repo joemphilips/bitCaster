@@ -26,6 +26,7 @@ import {
   withDurableCustodyFencedRead,
   withDurableCustodyUnitOfWork,
 } from './durableCustodyUnitOfWork.ts'
+import { assertCounterMintBinding } from './counterMintBindingSqlite.ts'
 import {
   createDaemonStateSqliteSession,
   type DaemonStateSqliteSession,
@@ -270,6 +271,28 @@ export class SeedRecoverySqliteStore implements EmergencySeedRecoveryCasStore {
     )
   }
 
+  async assertRecoveryKeysetMintBindings(input: {
+    readonly walletScopeId: string
+    readonly mintUrl: string
+    readonly keysetIds: readonly string[]
+  }): Promise<void> {
+    const { walletScopeId, mintUrl, keysetIds } = input
+    if (walletScopeId !== this.#fence.scopeId) {
+      throw new Error('seed recovery counter scope is foreign')
+    }
+    await withDurableCustodyFencedRead(
+      this.#storage,
+      this.#fence,
+      this.#observedAtMs,
+      (database) => {
+        assertNoRecoveryOwnerBlocker(database, walletScopeId)
+        for (const keysetId of keysetIds) {
+          assertCounterMintBinding(database, walletScopeId, keysetId, mintUrl)
+        }
+      },
+    )
+  }
+
   async commitRecoveryBatch(raw: EmergencySeedRecoveryCoCommit): Promise<void> {
     const input = validateEmergencySeedRecoveryCoCommit(raw)
     const staged = this.#staged.get(batchKey(input.recoveryJobId, input.expectedCursor.keysetId))
@@ -300,11 +323,15 @@ export class SeedRecoverySqliteStore implements EmergencySeedRecoveryCasStore {
     assertNoRecoveryOwnerBlocker(database, input.walletScopeId)
     const existing = readRecoveryRows(database, input)
     assertRecoveryCursorCas(input.expectedCursor, existing.cursor)
+    const counterMinimum =
+      input.observation.lastCounterWithSignature === null
+        ? 0
+        : input.observation.lastCounterWithSignature + 1
     advanceDaemonKeysetCounterFromDatabase(
       database,
       this.#fence.scopeId,
       input.nextCursor.keysetId,
-      input.nextCursor.nextCounter,
+      counterMinimum,
       this.#observedAtMs,
       {
         normalizedMint: input.expectedCursor.mintUrl,

@@ -1,15 +1,19 @@
 import type { CurrentOdds, LatestConfirmedTrade, Market, FilterState } from "@/types/market";
 import type { MarketDetail, OrderBook, Order, PriceHistory } from "@/types/market-detail";
 import type { MarketSort } from "@/hooks/useMarketSort";
-import type { Proof, SerializedBlindedMessage, SerializedBlindedSignature } from "@cashu/cashu-ts";
 import type { components } from "@/generated/api";
 import {
   BitcasterEngineClient,
   CreateMarketError,
   createMarketViaEngine,
+  createPreparedMarketViaEngine,
+  type PreparedMarketCreationRequest,
   submitOracleAttestationViaEngine,
+  createTradeCommentTemplate,
+  tradeCommentToWire,
 } from "@bitcaster/client-sdk";
 import type { WalletId } from "@bitcaster/client-sdk/durableCustody";
+import type { MarketSnapshotReadOptions } from "@bitcaster/client-sdk/engineClient";
 import {
   marketUnitLabel,
   normalizeMarketBaseAsset,
@@ -17,11 +21,15 @@ import {
 } from "@bitcaster/client-sdk/marketUnits";
 import { getNdk } from "@/lib/nostr";
 import { resolveApiSigningUrl } from "@/lib/hubUrl";
-import { windowPriceHistory } from "@/lib/priceHistory";
+import { canonicalizeOutcomeSet } from "@/lib/outcomeSets";
 export { windowPriceHistory } from "@/lib/priceHistory";
 import { NDKEvent, type NDKSigner } from "@nostr-dev-kit/ndk";
 import { bytesToHex } from "nostr-tools/utils";
-import { toWireAmountBearing } from "@bitcaster/client-sdk/ctfRegistration";
+import {
+  registerCtfCondition,
+  type CtfConditionRegistrationRequest,
+} from "@bitcaster/client-sdk/ctfRegistration";
+export { MintError } from "@bitcaster/client-sdk/ctfRegistration";
 import {
   decodeDurableRecipientDeliverySubmission,
   type DurableRecipientDeliveryStatus,
@@ -161,6 +169,7 @@ export interface GetMarketsResult {
 
 export type MarketCatalogueEntry = components["schemas"]["MarketCatalogueEntry"];
 export type MarketCatalogueResponse = components["schemas"]["MarketCatalogueResponse"];
+export type MarketRegistrationResponse = components["schemas"]["MarketRegistrationResponse"];
 
 const MAX_REGISTERED_PRIMITIVE_OUTCOMES = 8;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -359,7 +368,10 @@ export function mapCatalogueEntryToMarket(entry: MarketCatalogueEntry): Market {
   const outcomes = orderAtomicOutcomes(registeredPrimitiveOutcomeIds);
   const isYesNo = isYesNoUniverse(outcomes);
   const outcomeColors = new Map(
-    (entry.outcomeDetails ?? []).map((detail) => [detail.name, detail.color] as const),
+    (entry.outcomeDetails ?? []).map(
+      (detail) =>
+        [detail.name, typeof detail.color === "string" ? detail.color : undefined] as const,
+    ),
   );
 
   const closingDate = entry.deadline ?? null;
@@ -504,7 +516,10 @@ function mapCatalogueEntryToMarketDetail(entry: MarketCatalogueEntry): MarketDet
   const outcomes = orderAtomicOutcomes(registeredPrimitiveOutcomeIds);
   const isYesNo = isYesNoUniverse(outcomes);
   const outcomeColors = new Map(
-    (entry.outcomeDetails ?? []).map((detail) => [detail.name, detail.color] as const),
+    (entry.outcomeDetails ?? []).map(
+      (detail) =>
+        [detail.name, typeof detail.color === "string" ? detail.color : undefined] as const,
+    ),
   );
   const mappedOutcomes = outcomes.map((label) => ({
     ...(!isYesNo && outcomeColors.get(label) ? { color: outcomeColors.get(label) } : {}),
@@ -581,6 +596,7 @@ function mapCatalogueEntryToMarketDetail(entry: MarketCatalogueEntry): MarketDet
         },
     outcomes: mappedOutcomes,
     resolution: {
+      conditionId: entry.conditionId,
       criteria: description || title,
       source: "oracle" as const,
       resolutionDate,
@@ -648,6 +664,18 @@ export async function fetchEngineCatalogueEntry(
   }
 }
 
+/**
+ * Read exact registration metadata for recovery after an uncertain create.
+ * This anonymous read does not depend on the enriched, eventually projected catalogue.
+ */
+export async function fetchMarketRegistrationForRecovery(
+  conditionId: string,
+): Promise<MarketRegistrationResponse | null> {
+  return new BitcasterEngineClient({
+    baseUrl: window.location.origin,
+  }).getMarketRegistration(conditionId);
+}
+
 export class MarketDetailUnavailableError extends Error {
   constructor() {
     super("Market details are temporarily unavailable.");
@@ -697,26 +725,20 @@ export async function fetchMarketDetail(conditionId: string): Promise<MarketDeta
 export async function fetchMarketPriceHistory(
   conditionId: string,
   timeframe: PriceHistory["timeframe"] = "7d",
+  options: MarketSnapshotReadOptions = {},
 ): Promise<MarketPriceHistoryResponse> {
-  const params = new URLSearchParams({ timeframe });
-  const response = await fetch(
-    `/api/v1/markets/${encodeURIComponent(conditionId)}/price-history?${params}`,
-    { headers: { Accept: "application/json" } },
-  );
-  if (!response.ok) {
-    throw new Error(`Failed to fetch price history: ${response.status}`);
-  }
-  return (await response.json()) as MarketPriceHistoryResponse;
+  return new BitcasterEngineClient({
+    baseUrl: window.location.origin,
+  }).getMarketPriceHistory(conditionId, timeframe, options);
 }
 
-export async function fetchMarketComments(conditionId: string): Promise<MarketCommentsResponse> {
-  const response = await fetch(`/api/v1/markets/${encodeURIComponent(conditionId)}/comments`, {
-    headers: { Accept: "application/json" },
-  });
-  if (!response.ok) {
-    throw new Error(`Failed to fetch comments: ${response.status}`);
-  }
-  return (await response.json()) as MarketCommentsResponse;
+export async function fetchMarketComments(
+  conditionId: string,
+  options: MarketSnapshotReadOptions = {},
+): Promise<MarketCommentsResponse> {
+  return new BitcasterEngineClient({
+    baseUrl: window.location.origin,
+  }).getMarketComments(conditionId, options);
 }
 
 export function applyMarketComments(
@@ -727,11 +749,12 @@ export function applyMarketComments(
     ...market,
     comments: response.comments.map((comment) => ({
       id: comment.commentId,
-      userId: `comment:${comment.commentId}`,
-      userDisplayName: "Verified trader",
+      userId: comment.authorPubkey,
+      userDisplayName: `${comment.authorPubkey.slice(0, 8)}…${comment.authorPubkey.slice(-8)}`,
       userAvatarUrl: undefined,
       content: comment.content,
       timestamp: comment.createdAt,
+      trade: comment.trade,
       likeCount: 0,
       isLiked: false,
     })),
@@ -762,20 +785,24 @@ export function applyMarketPriceHistory(
   response: MarketPriceHistoryResponse,
 ): MarketDetail {
   const byOutcomeLabel = new Map(
-    (market.outcomes ?? []).map((outcome) => [outcome.label, outcome.id] as const),
+    (market.outcomes ?? []).map(
+      (outcome) => [outcome.label, canonicalizeOutcomeSet([outcome.label])] as const,
+    ),
   );
   const toPriceHistory = (
     data: MarketPriceHistoryResponse["outcomes"][number]["data"],
-  ): PriceHistory =>
-    windowPriceHistory({
-      timeframe: response.timeframe as PriceHistory["timeframe"],
-      data: data.map((point) =>
-        normalizePricePoint(
-          point,
-          normalizeMarketDivisibility(market.divisibility, market.baseAsset),
-        ),
+  ): PriceHistory => ({
+    timeframe: response.timeframe as PriceHistory["timeframe"],
+    asOf: response.asOf,
+    snapshotEventOrder: response.snapshotEventOrder,
+    receivedAt: performance.now(),
+    data: data.map((point) =>
+      normalizePricePoint(
+        point,
+        normalizeMarketDivisibility(market.divisibility, market.baseAsset),
       ),
-    });
+    ),
+  });
   const histories = Object.fromEntries(
     response.outcomes.map((outcome) => {
       const outcomeId = byOutcomeLabel.get(outcome.outcomeId) ?? outcome.outcomeId;
@@ -784,32 +811,37 @@ export function applyMarketPriceHistory(
   );
   const primary =
     market.type === "yesno"
-      ? windowPriceHistory({
+      ? {
           timeframe: response.timeframe as PriceHistory["timeframe"],
-          data: response.outcomes.flatMap((outcome) =>
-            outcome.data.map((point) => {
-              return normalizePricePoint(
-                outcome.outcomeId.toLowerCase() === "no"
-                  ? { ...point, price: market.divisibility - point.price }
-                  : point,
-                market.divisibility,
-              );
-            }),
-          ),
-        })
+          asOf: response.asOf,
+          snapshotEventOrder: response.snapshotEventOrder,
+          receivedAt: performance.now(),
+          data: response.outcomes
+            .flatMap((outcome) =>
+              outcome.data.map((point) => {
+                return normalizePricePoint(
+                  outcome.outcomeId.toLowerCase() === "no"
+                    ? { ...point, price: market.divisibility - point.price }
+                    : point,
+                  market.divisibility,
+                );
+              }),
+            )
+            .sort((left, right) => Date.parse(left.timestamp) - Date.parse(right.timestamp)),
+        }
       : histories[Object.keys(histories)[0]];
 
   if (market.type === "categorical") {
     return {
       ...market,
-      priceHistory: primary ?? market.priceHistory,
+      priceHistory: primary ?? toPriceHistory([]),
       outcomePriceHistories: histories,
     };
   }
 
   return {
     ...market,
-    priceHistory: primary ?? market.priceHistory,
+    priceHistory: primary ?? toPriceHistory([]),
   };
 }
 
@@ -858,21 +890,27 @@ export async function signTradeComment(
   const ndk = getNdk();
   if (!ndk.signer) throw new Error("No Nostr signer configured — connect in Settings first");
   const event = new NDKEvent(ndk);
-  event.kind = 1;
-  event.created_at = Math.floor(Date.now() / 1000);
-  event.content = content;
-  event.tags = [["r", `${window.location.origin}/markets/${encodeURIComponent(conditionId)}`]];
+  const template = createTradeCommentTemplate({
+    conditionId,
+    marketUrl: `${window.location.origin}/markets/${encodeURIComponent(conditionId)}`,
+    content,
+    createdAt: Math.floor(Date.now() / 1000),
+  });
+  event.kind = template.kind;
+  event.created_at = template.created_at;
+  event.content = template.content;
+  event.tags = template.tags;
   await event.sign();
   const raw = event.rawEvent();
-  return {
+  return tradeCommentToWire({
     id: raw.id ?? "",
     pubkey: raw.pubkey ?? "",
-    createdAt: raw.created_at ?? event.created_at,
+    created_at: raw.created_at ?? template.created_at,
     kind: 1,
     tags: raw.tags ?? event.tags,
     content: raw.content ?? content,
     sig: raw.sig ?? "",
-  };
+  });
 }
 
 export function createAuthenticatedBrowserEngineClient(signer?: NDKSigner): BitcasterEngineClient {
@@ -892,63 +930,16 @@ export function createAuthenticatedBrowserEngineClient(signer?: NDKSigner): Bitc
 // Market Creation API
 // =============================================================================
 
-export class MintError extends Error {
-  constructor(
-    public readonly code: number,
-    public readonly detail: string,
-  ) {
-    super(`[Mint] ${detail}`);
-    this.name = "MintError";
-  }
-}
-
-/** Parse a non-OK mint response into a MintError with the CDK error code. */
-async function parseMintError(response: Response, fallbackPrefix: string): Promise<MintError> {
-  let code = 0;
-  let detail = `${fallbackPrefix}: ${response.status}`;
-  try {
-    const text = await response.text();
-    try {
-      const body = JSON.parse(text);
-      code = typeof body.code === "number" ? body.code : 0;
-      detail = body.detail ?? body.message ?? text;
-    } catch {
-      detail = text;
-    }
-  } catch {
-    /* empty */
-  }
-  return new MintError(code, detail);
-}
-
-export async function registerCondition(params: {
-  tags: string[][];
-  announcementHex: string;
-  collateral?: string;
-  outcomeCollections?: readonly string[];
-  fee?: readonly Proof[];
-  outputs?: readonly SerializedBlindedMessage[];
-}): Promise<{
-  condition_id: string;
-  keysets: Record<string, string>;
-  change?: SerializedBlindedSignature[];
-}> {
-  const response = await fetch("/v1/conditions", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      tags: params.tags,
-      announcements: [params.announcementHex],
-      ...(params.collateral ? { collateral: params.collateral } : {}),
-      ...(params.outcomeCollections ? { outcome_collections: params.outcomeCollections } : {}),
-      ...(params.fee ? { fee: params.fee.map(toWireAmountBearing) } : {}),
-      ...(params.outputs ? { outputs: params.outputs.map(toWireAmountBearing) } : {}),
-    }),
+export function registerCondition(
+  params: CtfConditionRegistrationRequest,
+  options?: { mintUrl: string },
+) {
+  return registerCtfCondition(params, {
+    endpoint:
+      options === undefined
+        ? "/v1/conditions"
+        : `${options.mintUrl.replace(/\/+$/, "")}/v1/conditions`,
   });
-  if (!response.ok) {
-    throw await parseMintError(response, "Failed to register condition");
-  }
-  return response.json();
 }
 
 /**
@@ -957,7 +948,7 @@ export async function registerCondition(params: {
  * REST verbs whose token's `payload` does not match the digest of the bytes
  * the server actually receives.
  */
-async function sha256Hex(data: BufferSource): Promise<string> {
+export async function sha256Hex(data: BufferSource): Promise<string> {
   const hash = await crypto.subtle.digest("SHA-256", data);
   return bytesToHex(new Uint8Array(hash));
 }
@@ -1035,6 +1026,31 @@ export async function createMarket(
   )) as unknown as CreateMarketResponse;
 }
 
+export async function createPreparedMarket(
+  conditionId: string,
+  request: PreparedMarketCreationRequest,
+  requireActiveBinding: () => void,
+): Promise<import("@bitcaster/client-sdk").CreateMarketResponse> {
+  requireActiveBinding();
+  return createPreparedMarketViaEngine(
+    new BitcasterEngineClient({
+      baseUrl: window.location.origin,
+      authorization: async ({ url, method, bodyText, payloadHash }) => {
+        requireActiveBinding();
+        const header = await generateNip98Header(
+          url,
+          method,
+          await resolveAuthorizationPayloadHash(bodyText, payloadHash),
+        );
+        requireActiveBinding();
+        return header;
+      },
+    }),
+    conditionId,
+    request,
+  );
+}
+
 export async function submitOracleAttestation(
   conditionId: string,
   event: OracleNostrEvent,
@@ -1098,9 +1114,9 @@ export async function getParticipationScore(): Promise<ParticipationScoreRespons
 
 /**
  * Fetch the list of markets the matching engine has indexed under a given
- * creator pubkey. The engine returns volume/created-at for markets it knows
- * about; the client is responsible for merging this with its own store so
- * markets the backend hasn't indexed still show up as `0` volume.
+ * creator pubkey. The response supplies engine lifecycle and confirmed volume.
+ * Local discovery metadata does not establish engine state. Missing or failed
+ * enrichment must remain visibly unavailable, not imply an active market.
  */
 export async function fetchCreatorMarkets(pubkey: string): Promise<CreatorMarketsResponse> {
   const response = await fetch(`/api/v1/creators/${pubkey}/markets`);

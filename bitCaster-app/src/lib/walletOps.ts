@@ -1,4 +1,8 @@
-import { PaymentRequest, PaymentRequestTransportType, type Proof } from "@cashu/cashu-ts";
+import { PaymentRequest, type Proof } from "@cashu/cashu-ts";
+import {
+  createAmountlessCashuPaymentRequest,
+  normalizePaymentRequestMintUrl,
+} from "@bitcaster/client-sdk/paymentRequest";
 import { captureBrowserMintPersistenceContext, receiveAndStoreTokenRecoverably } from "@/lib/cashu";
 import { deriveNostrKeyPair, getNostrNprofile } from "@/lib/nip17";
 import { normalizeUrl } from "@/lib/url";
@@ -12,11 +16,8 @@ import {
   type CashuProofUnit,
   type MarketBaseAsset,
 } from "@bitcaster/client-sdk/marketUnits";
-import {
-  effectiveRelayUrls,
-  isAllowedNostrRelayUrl,
-  isKnownPublicNostrRelayUrl,
-} from "@/lib/relayDefaults";
+import { effectiveRelayUrls } from "@/lib/relayDefaults";
+import { normalizeNostrRelayUrl } from "@bitcaster/client-sdk/nostrRelays";
 import {
   decodeTokenImportLocally,
   validateProductWalletTokenImport,
@@ -78,24 +79,7 @@ export function userRemoveMint(url: string): void {
 }
 
 export function normalizeRelayUrl(wssUrl: string): string {
-  const trimmed = wssUrl.trim();
-  let parsed: URL;
-  try {
-    parsed = new URL(trimmed);
-  } catch {
-    throw new Error("Relay URL must start with wss://");
-  }
-  if (parsed.protocol !== "wss:" && parsed.protocol !== "ws:") {
-    throw new Error("Relay URL must start with wss:// or local ws://");
-  }
-  const normalized = trimmed.endsWith("/") ? trimmed.slice(0, -1) : trimmed;
-  if (isKnownPublicNostrRelayUrl(normalized)) {
-    throw new Error("Public Nostr relays are not supported. Use a bitCaster-owned relay.");
-  }
-  if (!isAllowedNostrRelayUrl(normalized)) {
-    throw new Error("Relay URL must be the configured bitCaster relay or a local relay.");
-  }
-  return normalized;
+  return normalizeNostrRelayUrl(wssUrl);
 }
 
 export function getRelayUrlValidationError(wssUrl: string): string | null {
@@ -234,34 +218,14 @@ export function userCreatePaymentRequest(mintUrl: string): CreatedWalletPaymentR
 
   const keyPair = deriveNostrKeyPair(mnemonic);
   const configuredRelays = effectiveRelayUrls(useSettingsStore.getState().relays);
-  const nprofile = getNostrNprofile(
-    keyPair.publicKey,
-    configuredRelays.length > 0 ? configuredRelays : undefined,
-  );
+  const nprofile = getNostrNprofile(keyPair.publicKey, configuredRelays);
 
   // cashu-ts leaves the id undefined unless we provide one; the NIP-17 inbox
   // needs it echoed back by the payer to correlate the received token.
   const id = crypto.randomUUID().split("-")[0];
-  const canonicalMintUrl = normalizeUrl(mintUrl);
-  const request = new PaymentRequest(
-    [
-      {
-        type: PaymentRequestTransportType.NOSTR,
-        target: nprofile,
-        tags: [["n", "17"]],
-      },
-    ],
-    id,
-    undefined,
-    "msat",
-    [canonicalMintUrl],
-    undefined,
-  );
+  const canonicalMintUrl = normalizePaymentRequestMintUrl(mintUrl);
+  const created = createAmountlessCashuPaymentRequest({ id, mintUrl: canonicalMintUrl, nprofile });
   usePaymentRequestInbox.getState().registerPending(id, canonicalMintUrl, walletScopeId);
 
-  return {
-    encoded: request.toEncodedRequest(),
-    id,
-    request,
-  };
+  return created;
 }

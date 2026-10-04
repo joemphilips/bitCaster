@@ -3,6 +3,7 @@ import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
 import {
   registrationFeeForPolicy,
   requiredMarketCreationOutcomeCollections,
+  MAX_CONDITION_REGISTRATION_FEE_SUBUNITS,
 } from "@bitcaster/client-sdk/ctfRegistration";
 import {
   createEncryptedWalletBackupV2AssetIdentity,
@@ -32,7 +33,7 @@ import { MintError, registerCondition } from "@/lib/markets";
 import { getBoundedCanonicalRegularProofs, type StoredProof } from "@/stores/proof-db";
 import i18n from "@/i18n";
 
-export const MAX_CONDITION_REGISTRATION_FEE_SUBUNITS = 1_000_000;
+export { MAX_CONDITION_REGISTRATION_FEE_SUBUNITS } from "@bitcaster/client-sdk/ctfRegistration";
 const REGISTRATION_FEE_TOKEN_BYTES_LIMIT = 61_440;
 const REGISTRATION_FEE_TOKEN_PROOF_LIMIT = 512;
 
@@ -75,8 +76,36 @@ export async function registerConditionWithFee(input: {
   request: ConditionRegistrationRequest;
   requiredFeeSubunits: number;
 }): Promise<ConditionRegistrationResult> {
+  return deliverPreparedConditionRegistrationFee(
+    await prepareConditionRegistrationFee(input),
+    input,
+  );
+}
+
+type RegistrationFeeContext = ReturnType<typeof captureBrowserMintPersistenceContext>;
+export type PreparedConditionRegistrationFee =
+  | { readonly kind: "fee-free" }
+  | {
+      readonly kind: "already-spent";
+      readonly transfer: DurableOutgoingCashuTransfer;
+      readonly context: RegistrationFeeContext;
+    }
+  | {
+      readonly kind: "prepared";
+      readonly transfer: DurableOutgoingCashuTransfer;
+      readonly context: RegistrationFeeContext;
+      readonly wallet: Awaited<ReturnType<typeof getWalletForUnit>>;
+    };
+
+/** Keep the existing exact-token owner separate from its registration delivery. */
+export async function prepareConditionRegistrationFee(input: {
+  mintUrl: string;
+  request: ConditionRegistrationRequest;
+  requiredFeeSubunits: number;
+  operationRef?: string | null;
+}): Promise<PreparedConditionRegistrationFee> {
   if (input.requiredFeeSubunits <= 0) {
-    return registerCondition(input.request);
+    return { kind: "fee-free" };
   }
   if (
     !Number.isSafeInteger(input.requiredFeeSubunits) ||
@@ -91,9 +120,17 @@ export async function registerConditionWithFee(input: {
   }
 
   const feeUnit = requireCashuProofUnit(registrationFeeUnit(input.request));
-  const transferId = await buildOperationId(input.request, input.requiredFeeSubunits);
+  const transferId = await deriveConditionRegistrationFeeOperationRef(
+    input.request,
+    input.requiredFeeSubunits,
+  );
+  if (input.operationRef !== undefined && input.operationRef !== transferId)
+    throw new Error("Condition registration fee operation conflicts with the retained creation.");
   const context = captureBrowserMintPersistenceContext();
-  const terminal = await readBrowserDurableOutgoingCashuTransfer({ transferId, context });
+  const terminal = await readBrowserDurableOutgoingCashuTransfer({
+    transferId,
+    context,
+  });
   if (terminal?.deliveryState === "bearer-spent") {
     assertTerminalRegistrationFeeTransfer({
       transfer: terminal,
@@ -102,7 +139,8 @@ export async function registerConditionWithFee(input: {
       unit: feeUnit,
       amount: input.requiredFeeSubunits,
     });
-    return registerCondition(input.request);
+    context.requireCapturedProfile();
+    return { kind: "already-spent", transfer: terminal, context };
   }
   const wallet = await getWalletForUnit(input.mintUrl, feeUnit);
   context.requireCapturedProfile();
@@ -162,7 +200,87 @@ export async function registerConditionWithFee(input: {
       }),
     context,
   });
-  return submitRegistrationFeeToken({ transfer, request: input.request, wallet, context });
+  context.requireCapturedProfile();
+  return { kind: "prepared", transfer, wallet, context };
+}
+
+export async function deliverPreparedConditionRegistrationFee(
+  prepared: PreparedConditionRegistrationFee,
+  input: {
+    mintUrl: string;
+    request: ConditionRegistrationRequest;
+    requiredFeeSubunits: number;
+  },
+): Promise<ConditionRegistrationResult> {
+  switch (prepared.kind) {
+    case "fee-free":
+      return registerCondition(input.request, { mintUrl: input.mintUrl });
+    case "already-spent":
+      assertTerminalRegistrationFeeTransfer({
+        transfer: prepared.transfer,
+        transferId: await deriveConditionRegistrationFeeOperationRef(
+          input.request,
+          input.requiredFeeSubunits,
+        ),
+        mintUrl: input.mintUrl,
+        unit: requireCashuProofUnit(registrationFeeUnit(input.request)),
+        amount: input.requiredFeeSubunits,
+      });
+      prepared.context.requireCapturedProfile();
+      return registerCondition(input.request, { mintUrl: input.mintUrl });
+    case "prepared":
+      assertTerminalRegistrationFeeTransfer({
+        transfer: prepared.transfer,
+        transferId: await deriveConditionRegistrationFeeOperationRef(
+          input.request,
+          input.requiredFeeSubunits,
+        ),
+        mintUrl: input.mintUrl,
+        unit: requireCashuProofUnit(registrationFeeUnit(input.request)),
+        amount: input.requiredFeeSubunits,
+      });
+      prepared.context.requireCapturedProfile();
+      return submitRegistrationFeeToken({
+        ...prepared,
+        request: input.request,
+        mintUrl: input.mintUrl,
+      });
+  }
+}
+
+/** Reconcile only the retained operation. Do not select proofs or prepare a replacement. */
+export async function confirmConditionRegistrationFee(input: {
+  mintUrl: string;
+  request: ConditionRegistrationRequest;
+  requiredFeeSubunits: number;
+  operationRef: string | null;
+}): Promise<void> {
+  if (input.requiredFeeSubunits === 0) return;
+  const expected = await deriveConditionRegistrationFeeOperationRef(
+    input.request,
+    input.requiredFeeSubunits,
+  );
+  if (expected !== input.operationRef)
+    throw new Error("Condition registration fee operation conflicts with the retained creation.");
+  const context = captureBrowserMintPersistenceContext();
+  const transfer = await readBrowserDurableOutgoingCashuTransfer({
+    transferId: expected,
+    context,
+  });
+  context.requireCapturedProfile();
+  if (transfer === null) return;
+  const unit = requireCashuProofUnit(registrationFeeUnit(input.request));
+  assertTerminalRegistrationFeeTransfer({
+    transfer,
+    transferId: expected,
+    mintUrl: input.mintUrl,
+    unit,
+    amount: input.requiredFeeSubunits,
+  });
+  if (transfer.deliveryState === "bearer-spent") return;
+  const wallet = await getWalletForUnit(input.mintUrl, unit);
+  context.requireCapturedProfile();
+  await classifyRegistrationFeeSpend({ transfer, wallet, context });
 }
 
 /** Reject an improbable transfer-id collision before a terminal idempotent retry skips wallet I/O. */
@@ -191,29 +309,33 @@ async function submitRegistrationFeeToken(input: {
   readonly request: ConditionRegistrationRequest;
   readonly wallet: Awaited<ReturnType<typeof getWalletForUnit>>;
   readonly context: ReturnType<typeof captureBrowserMintPersistenceContext>;
+  readonly mintUrl: string;
 }): Promise<ConditionRegistrationResult> {
   if (input.transfer.deliveryIntent.policy !== "bearer-spend-classification") {
     throw new Error("Condition registration fee transfer has the wrong delivery policy.");
   }
   if (input.transfer.deliveryState === "bearer-spent") {
-    return registerCondition(input.request);
+    return registerCondition(input.request, { mintUrl: input.mintUrl });
   }
   if (input.transfer.token === null) {
     throw new Error("Condition registration fee transfer has no stored token.");
   }
 
   try {
-    const response = await registerCondition({
-      ...input.request,
-      fee: input.transfer.token.proofs.map(hydrateDurableWalletProof),
-    });
+    const response = await registerCondition(
+      {
+        ...input.request,
+        fee: input.transfer.token.proofs.map(hydrateDurableWalletProof),
+      },
+      { mintUrl: input.mintUrl },
+    );
     await classifyRegistrationFeeSpend(input);
     return response;
   } catch (error) {
     if (error instanceof MintError && error.code === 13044) {
       const classified = await classifyRegistrationFeeSpend(input);
       if (classified.deliveryState === "bearer-spent") {
-        return registerCondition(input.request);
+        return registerCondition(input.request, { mintUrl: input.mintUrl });
       }
     }
     throw mapRegistrationFeeMintError(error);
@@ -252,7 +374,11 @@ function ordinaryRegistrationFeeAsset(
   mintUrl: string,
   unit: CashuProofUnit,
 ): EncryptedWalletBackupV2AssetIdentity {
-  return createEncryptedWalletBackupV2AssetIdentity({ mintUrl, unit, asset: { kind: "ordinary" } });
+  return createEncryptedWalletBackupV2AssetIdentity({
+    mintUrl,
+    unit,
+    asset: { kind: "ordinary" },
+  });
 }
 
 async function preflightRegistrationFeeAsset(input: {
@@ -332,7 +458,7 @@ function requireCashuProofUnit(value: string | null | undefined): CashuProofUnit
   return unit;
 }
 
-async function buildOperationId(
+export async function deriveConditionRegistrationFeeOperationRef(
   request: ConditionRegistrationRequest,
   requiredFeeSubunits: number,
 ): Promise<string> {

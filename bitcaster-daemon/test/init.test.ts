@@ -34,13 +34,14 @@ const nostrSecretKeyHex = '01'.padStart(64, '0')
 
 test('fresh init publishes one complete SQLite authority', async () => {
   await withFreshHome(async (home) => {
-    await runDaemonInit(home, {
+    const initOutput = await runDaemonInit(home, {
       walletSeedHex,
       nostrSecretKeyHex,
       engineUrl: 'https://engine.example/',
       mintUrl: 'https://mint.example/',
     })
 
+    let nativeOracleNonceSeedHex = ''
     await withDaemonHome(home, async () => {
       const profile = await readProfile()
       const secrets = await readSecrets()
@@ -52,11 +53,18 @@ test('fresh init publishes one complete SQLite authority', async () => {
       )
       assert.equal(secrets?.walletSeedHex, walletSeedHex)
       assert.equal(secrets?.nostrSecretKeyHex, nostrSecretKeyHex)
+      nativeOracleNonceSeedHex = secrets?.nativeOracleNonceSeedHex ?? ''
+      assert.equal(/^[0-9a-f]{64}$/.test(nativeOracleNonceSeedHex), true)
+      assert.equal(nativeOracleNonceSeedHex !== nostrSecretKeyHex, true)
       assert.match((await readRpcToken()) ?? '', /^[A-Za-z0-9_-]{43}$/)
       assert.equal(await ensureRpcToken(), await readRpcToken())
       assert.equal(profilePath(), secretsPath())
       assert.equal(profilePath(), rpcTokenPath())
     })
+    assert.equal(initOutput, 'bitcaster-daemon profile initialized\n')
+    assert.equal(initOutput.includes(nativeOracleNonceSeedHex), false)
+    assert.equal(initOutput.includes(walletSeedHex), false)
+    assert.equal(initOutput.includes(nostrSecretKeyHex), false)
 
     assert.deepEqual(await readdir(home), ['config.json', 'daemon-state.sqlite'])
     if (process.platform !== 'win32') {
@@ -76,10 +84,11 @@ test('retained lifecycle connections start after custody recovery', async () => 
 
 test('fresh init defaults endpoints and generates identity', async () => {
   await withFreshHome(async (home) => {
-    await runMain(home, ['init'], {
+    const initOutput = await runMain(home, ['init'], {
       BITCASTER_ENGINE_URL: 'https://ignored-engine.example',
       BITCASTER_MINT_URL: 'https://ignored-mint.example',
     })
+    assert.equal(initOutput, 'bitcaster-daemon profile initialized\n')
     await withDaemonHome(home, async () => {
       const profile = await readProfile()
       const secrets = await readSecrets()
@@ -87,8 +96,22 @@ test('fresh init defaults endpoints and generates identity', async () => {
       assert.equal(profile?.mintUrl, 'http://localhost:8085')
       assert.match(secrets?.walletSeedHex ?? '', /^[0-9a-f]{128}$/)
       assert.match(secrets?.nostrSecretKeyHex ?? '', /^[0-9a-f]{64}$/)
+      assert.equal(/^[0-9a-f]{64}$/.test(secrets?.nativeOracleNonceSeedHex ?? ''), true)
+      assert.equal(secrets?.nativeOracleNonceSeedHex !== secrets?.nostrSecretKeyHex, true)
     })
   })
+})
+
+test('repeated imports of the same wallet and Nostr identity get independent nonce seeds', () => {
+  const first = createDaemonSecretsFromImport({ walletSeedHex, nostrSecretKeyHex })
+  const second = createDaemonSecretsFromImport({ walletSeedHex, nostrSecretKeyHex })
+  const firstSeed = first.nativeOracleNonceSeedHex
+  const secondSeed = second.nativeOracleNonceSeedHex
+  assert.equal(/^[0-9a-f]{64}$/.test(firstSeed), true)
+  assert.equal(/^[0-9a-f]{64}$/.test(secondSeed), true)
+  assert.equal(firstSeed !== nostrSecretKeyHex, true)
+  assert.equal(secondSeed !== nostrSecretKeyHex, true)
+  assert.equal(firstSeed !== secondSeed, true)
 })
 
 test('wallet seed import requires 64 lowercase bytes while the Nostr key remains 32 bytes', () => {
@@ -116,6 +139,10 @@ test('init refuses argv secrets and incomplete secret-file imports', async () =>
     await assert.rejects(
       () => runMain(home, ['init', '--wallet-seed-hex', walletSeedHex]),
       /Unknown init option: --wallet-seed-hex/,
+    )
+    await assert.rejects(
+      () => runMain(home, ['init', '--native-oracle-nonce-seed-hex-file', '/unused']),
+      /Unknown init option: --native-oracle-nonce-seed-hex-file/,
     )
     const source = await createSecretSource({ walletSeedHex })
     try {
@@ -313,10 +340,9 @@ async function runDaemonInit(
     mintUrl?: string
   },
   extraEnv: NodeJS.ProcessEnv = {},
-): Promise<void> {
+): Promise<string> {
   if (secrets === undefined) {
-    await runMain(home, ['init'], extraEnv)
-    return
+    return runMain(home, ['init'], extraEnv)
   }
   const source = await createSecretSource(secrets)
   try {
@@ -330,8 +356,10 @@ async function runDaemonInit(
             daemon: {
               engineUrl: secrets.engineUrl ?? 'http://localhost:5000',
               mintUrl: secrets.mintUrl ?? 'http://localhost:8085',
+              mintUrls: [secrets.mintUrl ?? 'http://localhost:8085'],
               autoRetireResolvedConditionInventory: false,
               assetMonitoringEnabled: false,
+              nostrRelays: [],
             },
             cli: { trustedEngineUrls: [] },
           },
@@ -348,7 +376,7 @@ async function runDaemonInit(
       '--nostr-secret-key-hex-file',
       source.nostrSecretKeyFile,
     ]
-    await runMain(home, args, extraEnv)
+    return await runMain(home, args, extraEnv)
   } finally {
     await rm(source.directory, { recursive: true, force: true })
   }
@@ -358,8 +386,8 @@ async function runMain(
   home: string,
   args: string[],
   extraEnv: NodeJS.ProcessEnv = {},
-): Promise<void> {
-  await execFileAsync(
+): Promise<string> {
+  const { stdout } = await execFileAsync(
     process.execPath,
     ['--experimental-strip-types', mainPath, '--datadir', home, ...args],
     {
@@ -369,6 +397,7 @@ async function runMain(
       },
     },
   )
+  return stdout
 }
 
 async function createSecretSource(input: {

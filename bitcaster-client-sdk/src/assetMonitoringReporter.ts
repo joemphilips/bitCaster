@@ -12,6 +12,7 @@ export const ASSET_MONITORING_CATALOGUE_PAGE_IDS_MAX = 50
 export const ASSET_MONITORING_CATALOGUE_RESPONSE_BYTES_MAX = 512 * 1024
 export const ASSET_MONITORING_REPORT_RETRY_DELAY_MS = 1_000
 export const ASSET_MONITORING_REPORT_RETRY_DELAY_MAX_MS = 30_000
+const ASSET_MONITORING_BASELINE_REQUIRED_CODE = 'asset-monitoring-baseline-required'
 const CANONICAL_CONDITION_ID = /^[0-9a-f]{64}$/
 
 export interface AssetMonitoringCatalogueEntry {
@@ -138,7 +139,13 @@ export class AssetMonitoringReporter {
       this.#markAccepted(snapshot)
       return 'done'
     } catch (error) {
-      if (!(error instanceof EngineClientError) || error.status !== 409) {
+      if (
+        !(
+          error instanceof EngineClientError &&
+          error.status === 409 &&
+          error.code === ASSET_MONITORING_BASELINE_REQUIRED_CODE
+        )
+      ) {
         return this.#isCurrentRevision(revision) && isTransientReportError(error) ? 'retry' : 'done'
       }
     }

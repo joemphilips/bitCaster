@@ -7,48 +7,41 @@
  */
 
 import type { ActivityItem } from "@/types/portfolio";
-import { decodeActivityItem } from "@/stores/activity-log";
+import {
+  ACTIVITY_LOG_D_TAG,
+  decodeActivityLogPayload,
+  encodeActivityLogPayload,
+} from "@bitcaster/client-sdk/activityLog";
 import { fetchPrivateNip78Content, publishPrivateNip78 } from "./nip78Private";
+import type { RelayOperationOptions } from "./nostr";
 
-export const ACTIVITY_LOG_D_TAG = "bitcaster:activity-log" as const;
-
-interface ActivityLogPayload {
-  items: ActivityItem[];
-}
+export { ACTIVITY_LOG_D_TAG } from "@bitcaster/client-sdk/activityLog";
 
 export async function publishNip78ActivityLog(
   privateKeyHex: string,
   items: ActivityItem[],
+  options?: RelayOperationOptions,
 ): Promise<void> {
-  const decodedItems = items.flatMap((item) => {
-    const decoded = decodeActivityItem(item);
-    return decoded === null ? [] : [decoded];
-  });
-  if (decodedItems.length !== items.length) {
-    throw new Error("Activity log contains an invalid item.");
-  }
   await publishPrivateNip78(
     privateKeyHex,
     ACTIVITY_LOG_D_TAG,
-    JSON.stringify({ items: decodedItems } satisfies ActivityLogPayload),
+    encodeActivityLogPayload(items),
+    options,
   );
 }
 
 export async function fetchNip78ActivityLog(
   pubkey: string,
   privateKeyHex: string,
+  options?: RelayOperationOptions,
 ): Promise<ActivityItem[] | null> {
-  const content = await fetchPrivateNip78Content(pubkey, ACTIVITY_LOG_D_TAG, privateKeyHex);
+  const content = await fetchPrivateNip78Content(
+    pubkey,
+    ACTIVITY_LOG_D_TAG,
+    privateKeyHex,
+    options,
+  );
   if (!content) return null;
 
-  try {
-    const parsed = JSON.parse(content) as Partial<ActivityLogPayload>;
-    if (!Array.isArray(parsed.items)) return null;
-    return parsed.items.flatMap((item) => {
-      const decoded = decodeActivityItem(item);
-      return decoded === null ? [] : [decoded];
-    });
-  } catch {
-    return null;
-  }
+  return decodeActivityLogPayload(content);
 }

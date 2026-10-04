@@ -54,9 +54,11 @@ import {
   buildPersistedCtfRangeOrderPreparation,
   createCtfRangeOrderPreparationKeysetResolver,
   planPersistedCtfRangeOrderAuthorization,
+  decodeCtfRangeOrderPreparationFromRecord,
   type CtfRangeOrderRequest,
   type PersistedCtfRangeOrderPreparation,
 } from "@bitcaster/client-sdk/ctfRangeOrderProtocol";
+import { encodeCtfRangeOrderFeeConsentArtifact } from "@bitcaster/client-sdk/ctfRangeOrderJournal";
 import { composeCtfRangeOrderFeeFacts } from "@bitcaster/client-sdk/ctfRangeOrderFeeComposition";
 import { calculateSettlementCapabilityV1Tariff } from "@bitcaster/client-sdk/participationScore";
 import {
@@ -325,6 +327,7 @@ describe("browser CTF range order coordinator", () => {
         round: 0,
         inputs: [proof],
         plannedRound: { inputs: ["2"], outputs: ["1"], fee: "1" },
+        consentedFeeFacts: coordinatorFeeFacts(preparation),
       }),
     ).rejects.toThrow("new writes are refused");
 
@@ -441,6 +444,7 @@ describe("browser CTF range order coordinator", () => {
       round: 0,
       inputs,
       plannedRound: { inputs: ["2", "2", "2"], outputs: ["4", "1"], fee: "1" },
+      consentedFeeFacts: coordinatorFeeFacts(preparation),
     });
 
     const retainedOperationKey = `${preparation.sourceOperationId}:consolidation:0`;
@@ -512,6 +516,7 @@ describe("browser CTF range order coordinator", () => {
         round: 0,
         inputs,
         plannedRound: { inputs: ["2", "2", "2"], outputs: ["4", "1"], fee: "1" },
+        consentedFeeFacts: coordinatorFeeFacts(preparation),
       }),
     ).rejects.toThrow("browser CTF consolidation encountered a completed-removal marker");
 
@@ -531,6 +536,10 @@ describe("browser CTF range order coordinator", () => {
 
   it("uses canonical successors as the exact inputs of the next consolidation round", async () => {
     const preparation = persistedPreparation("range-consolidation-chain");
+    const consentedFeeFacts = {
+      ...coordinatorFeeFacts(preparation),
+      consolidationFeeSubunits: "2",
+    };
     const inputs = [
       sourceProof(preparation.offerKeyset.id, 2, "fragment-a"),
       sourceProof(preparation.offerKeyset.id, 2, "fragment-b"),
@@ -547,6 +556,7 @@ describe("browser CTF range order coordinator", () => {
       round: 0,
       inputs,
       plannedRound: { inputs: ["2", "2", "2"], outputs: ["4", "1"], fee: "1" },
+      consentedFeeFacts,
     });
     const firstSuccessors = await getBoundedCanonicalRangeProofsForKeyset(
       preparation.mintUrl,
@@ -564,6 +574,7 @@ describe("browser CTF range order coordinator", () => {
       round: 1,
       inputs: firstSuccessors,
       plannedRound: { inputs: ["4", "1"], outputs: ["4"], fee: "1" },
+      consentedFeeFacts,
     });
 
     const rows = await database.custodyProofs.toArray();
@@ -580,7 +591,103 @@ describe("browser CTF range order coordinator", () => {
       database,
     );
     expect(finalProofs.map(({ amount }) => amountToNumber(amount))).toEqual([4]);
+    const journal = await readCtfRangePreparation(
+      walletScopeId(),
+      preparation.operationId,
+      database,
+    );
+    expect(journal?.feeConsentBytes && bytesToHex(sha256(journal.feeConsentBytes))).toBe(
+      bytesToHex(sha256(encodeCtfRangeOrderFeeConsentArtifact(consentedFeeFacts))),
+    );
+    const recovered = await createCoordinator(database, sourceWallet(), engineMock()).recoverPage({
+      seed: SEED,
+      limit: 8,
+    });
+    expect(recovered.recoveredOperationIds).toEqual([preparation.operationId]);
+    const recoveredJournal = await readCtfRangePreparation(
+      walletScopeId(),
+      preparation.operationId,
+      database,
+    );
+    expect(
+      recoveredJournal?.feeConsentBytes && bytesToHex(sha256(recoveredJournal.feeConsentBytes)),
+    ).toBe(bytesToHex(sha256(encodeCtfRangeOrderFeeConsentArtifact(consentedFeeFacts))));
   });
+
+  it.each(["quote", "fees"] as const)(
+    "refuses changed %s consent before the next consolidation mint call",
+    async (change) => {
+      const preparation = persistedPreparation("range-immutable-" + change);
+      const consentedFeeFacts = {
+        ...coordinatorFeeFacts(preparation),
+        consolidationFeeSubunits: "2",
+      };
+      const inputs = [2, 2, 2].map((amount, index) =>
+        sourceProof(preparation.offerKeyset.id, amount, "fragment-" + index),
+      );
+      const database = createDatabase(inputs.map((proof) => storedSourceProof(proof)));
+      let mintCalls = 0;
+      const coordinator = createCoordinator(
+        database,
+        sourceWallet({
+          onComplete: async () => {
+            mintCalls += 1;
+          },
+        }),
+        engineMock(),
+        { counterSource: inMemoryCounterSource() },
+      );
+      await coordinator.consolidateRound({
+        seed: SEED,
+        preparation,
+        round: 0,
+        inputs,
+        plannedRound: { inputs: ["2", "2", "2"], outputs: ["4", "1"], fee: "1" },
+        consentedFeeFacts,
+      });
+      const successors = await getBoundedCanonicalRangeProofsForKeyset(
+        preparation.mintUrl,
+        {
+          scopeId: walletScopeId(),
+          unit: "msat",
+          keysetId: preparation.offerKeyset.id,
+          asset: { kind: "regular" },
+        },
+        database,
+      );
+      await expect(
+        coordinator.consolidateRound({
+          seed: SEED,
+          preparation:
+            change === "quote"
+              ? { ...preparation, request: { ...preparation.request, maxQuotePaymentSubunits: 3 } }
+              : preparation,
+          round: 1,
+          inputs: successors,
+          plannedRound: { inputs: ["4", "1"], outputs: ["4"], fee: "1" },
+          consentedFeeFacts:
+            change === "fees"
+              ? { ...consentedFeeFacts, consolidationFeeSubunits: "3" }
+              : consentedFeeFacts,
+        }),
+      ).rejects.toMatchObject({ code: "custody-commit-failed" });
+      expect(mintCalls).toBe(1);
+      expect(await database.custodyReservations.count()).toBe(0);
+      const retained = await readCtfRangePreparation(
+        walletScopeId(),
+        preparation.operationId,
+        database,
+      );
+      expect(
+        retained &&
+          decodeCtfRangeOrderPreparationFromRecord(retained).request.maxQuotePaymentSubunits,
+      ).toBe(2);
+      expect(retained?.feeConsentBytes && bytesToHex(sha256(retained.feeConsentBytes))).toBe(
+        bytesToHex(sha256(encodeCtfRangeOrderFeeConsentArtifact(consentedFeeFacts))),
+      );
+      expect(successors.map(({ amount }) => amountToNumber(amount))).toEqual([4, 1]);
+    },
+  );
 
   it("recovers a staged consolidation after canonical admission rolls back", async () => {
     const preparation = persistedPreparation("range-consolidation-rollback");
@@ -611,6 +718,7 @@ describe("browser CTF range order coordinator", () => {
         round: 0,
         inputs,
         plannedRound: { inputs: ["2", "2", "2"], outputs: ["4", "1"], fee: "1" },
+        consentedFeeFacts: coordinatorFeeFacts(preparation),
       }),
     ).rejects.toMatchObject({ code: "custody-commit-failed" });
 
@@ -672,6 +780,7 @@ describe("browser CTF range order coordinator", () => {
         round: 0,
         inputs,
         plannedRound: { inputs: ["2", "2", "2"], outputs: ["4", "1"], fee: "1" },
+        consentedFeeFacts: coordinatorFeeFacts(preparation),
       }),
     ).rejects.toMatchObject({ code: "mint-source-uncertain" });
 
@@ -800,6 +909,12 @@ describe("browser CTF range order coordinator", () => {
     ).toBe("dispatch-intent");
     const journal = await readCtfRangePreparation(scopeId, preparation.operationId, database);
     expect(journal?.lifecycleState).toBe("order-submitted");
+    expect(journal && decodeCtfRangeOrderPreparationFromRecord(journal).request).toEqual(
+      preparation.request,
+    );
+    expect(journal?.feeConsentBytes && bytesToHex(sha256(journal.feeConsentBytes))).toBe(
+      bytesToHex(sha256(encodeCtfRangeOrderFeeConsentArtifact(coordinatorFeeFacts(preparation)))),
+    );
     expect(journal?.capability?.artifactDigest).toMatch(/^[0-9a-f]{64}$/);
     const mirroredProofs = await database.proofs.toArray();
     expect(mirroredProofs.some(({ secret }) => secret === "source-proof")).toBe(false);
@@ -2393,6 +2508,48 @@ describe("browser CTF range order coordinator", () => {
     ).toBe("terminal");
   });
 
+  it.each([
+    { field: "maximum", maxQuotePaymentSubunits: 3, minQuotePaymentSubunits: null },
+    { field: "minimum", maxQuotePaymentSubunits: 2, minQuotePaymentSubunits: 1 },
+  ])(
+    "retains recovery authority when order status changes the accepted $field bound",
+    async (bounds) => {
+      const preparation = persistedPreparation("range-status-bound-" + bounds.field);
+      const database = createDatabase();
+      let now = 20_000;
+      let refundCalls = 0;
+      const engine = engineMock({
+        submitResponse: { status: "cancelled", remainingAmountSubunits: 1_000 },
+        orderStatus: { ...discoveredOrderStatus(), ...bounds, status: "cancelled" },
+      });
+      const coordinator = createCoordinator(database, sourceWallet(), engine, {
+        now: () => now,
+        createMintRecovery: refundableRecovery(preparation),
+        executeRefundSwap: async (_mintUrl, request) => {
+          refundCalls += 1;
+          return { signatures: request.outputs.map(signBlindedMessage) };
+        },
+      });
+      await coordinator.prepareAndSubmit({
+        seed: SEED,
+        preparation,
+        candidates: [sourceProof(preparation.offerKeyset.id)],
+      });
+      now = preparation.expiry * 1_000;
+      expect(await coordinator.recoverPage({ seed: SEED, limit: 8 })).toMatchObject({
+        recoveredOperationIds: [],
+        pending: [{ operationId: preparation.operationId, code: "recovery-pending" }],
+      });
+      expect(refundCalls).toBe(0);
+      expect(engine.submitCalls).toBe(1);
+      expect(await database.custodyReservations.count()).toBeGreaterThan(0);
+      expect(
+        (await readCtfRangePreparation(walletScopeId(), preparation.operationId, database))
+          ?.lifecycleState,
+      ).toBe("order-submitted");
+    },
+  );
+
   it("reports a cancelled FOK as awaiting authorization expiry, then refunds it", async () => {
     const database = createDatabase();
     const preparation = persistedPreparation("range-cancelled-fok-wait");
@@ -3404,6 +3561,8 @@ function discoveredOrderStatus(): OrderStatusResponse {
     outcomeId: "YES",
     side: "Buy",
     price: 2,
+    maxQuotePaymentSubunits: 2,
+    minQuotePaymentSubunits: null,
     placedAt: "2026-07-31T09:00:00.000Z",
     timeInForce: "FOK",
     tokenSide: "Outcome",
@@ -3442,7 +3601,12 @@ function persistedPreparation(
   mintFacts = reviewedMintFacts(),
 ) {
   return buildPersistedCtfRangeOrderPreparation({
-    request: { ...rangeRequest(timeInForce), ...order },
+    request: {
+      ...rangeRequest(timeInForce),
+      ...order,
+      maxQuotePaymentSubunits: order.side === "Sell" ? null : 2,
+      minQuotePaymentSubunits: order.side === "Sell" ? 2 : null,
+    },
     coordinatorPublicKey: COORDINATOR_PUBLIC_KEY,
     mintFacts,
     market: {
@@ -3498,6 +3662,8 @@ function rangeRequest(timeInForce: "FOK"): CtfRangeOrderRequest {
     tokenSide: "Outcome",
     side: "Buy",
     price: 2,
+    maxQuotePaymentSubunits: 2,
+    minQuotePaymentSubunits: null,
     amountSubunits: 1_000,
     minimumFillAmountSubunits: 1_000,
     baseAsset: "sat",

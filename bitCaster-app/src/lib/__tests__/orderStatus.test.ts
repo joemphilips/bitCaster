@@ -135,6 +135,7 @@ describe("mapConfirmedTradeActivities", () => {
         status: "completed",
         marketId: trade.marketId,
         tradeDetails: {
+          orderId: trade.orderId,
           fillId: firstFillId,
           outcomeId: "YES",
           tokenSide: "Outcome",

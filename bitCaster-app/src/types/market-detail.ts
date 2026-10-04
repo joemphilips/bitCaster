@@ -14,6 +14,7 @@ import type { MarketState } from "@/hooks/useMarketState";
 import type { UseFokOrderPreviewResult } from "@/hooks/useFokOrderPreview";
 import type { UseFokOrderCapacityPreviewResult } from "@/hooks/useFokOrderCapacityPreview";
 import type { CtfRangeOrderFeeFacts } from "@bitcaster/client-sdk/ctfRangeOrderFeeComposition";
+import type { components } from "@/generated/api";
 
 // =============================================================================
 // Resolution Types
@@ -24,6 +25,7 @@ export type ResolutionStatus = "open" | "pending_resolution" | "resolved" | "dis
 export type ResolutionSource = "oracle" | "manual" | "community" | "smart_contract";
 
 export interface ResolutionDetails {
+  conditionId?: string;
   criteria: string;
   source: ResolutionSource;
   sourceDescription?: string;
@@ -83,6 +85,10 @@ export interface PricePoint {
 export interface PriceHistory {
   data: PricePoint[];
   timeframe: ChartTimeframe;
+  asOf?: string;
+  snapshotEventOrder?: string | null;
+  /** Monotonic receipt time for the server evaluation time. */
+  receivedAt?: number;
 }
 
 export type ChartTimeframe = "1h" | "24h" | "7d" | "30d" | "all";
@@ -109,6 +115,7 @@ export interface Comment {
   userAvatarUrl?: string;
   content: string;
   timestamp: string;
+  trade: components["schemas"]["MarketComment"]["trade"];
   likeCount: number;
   isLiked: boolean;
 }
@@ -356,9 +363,6 @@ export interface MarketDetailProps {
   /** Called when user posts a comment */
   onCommentPost?: (content: string) => void;
 
-  /** Called when user likes a comment */
-  onCommentLike?: (commentId: string) => void;
-
   /** Called when user scrolls to load more trades */
   onLoadMoreTrades?: () => void;
 
@@ -380,26 +384,9 @@ export interface MarketDetailProps {
   /** Called when the trade pane tab changes. */
   onTradeTabChange?: (tab: TradeTab) => void;
 
-  /** Current order type (market or limit) */
-  orderType: OrderType;
-
-  /** Called when user toggles between market and limit order */
-  onOrderTypeChange?: (type: OrderType) => void;
-
-  /** Preview for limit orders (null if not applicable) */
-  limitOrderPreview?: FokOrderPreviewState | null;
-
-  /** Current limit price (in market's base unit) */
-  limitPrice?: number;
-
-  /** Read-only capacity at the current Auto or Custom price limit. */
+  /** Read-only capacity across the full legal discovery range. */
   tradeCapacityPreview?: UseFokOrderCapacityPreviewResult | null;
-
-  /** The server-derived Auto price limit for the selected route and side. */
-  automaticLimitPrice?: number | null;
-
-  /** Called when user changes limit price */
-  onLimitPriceChange?: (price: number) => void;
+  isFullyEmptyBook?: boolean;
 
   /** Canonical selectable and reserved conditional holdings for each outcome set. */
   sellHoldings?: SellHoldingsState;

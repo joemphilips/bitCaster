@@ -9,7 +9,7 @@ import {
   loadCtfRangeMintMetadata,
   type CtfRangeMintMetadataClient,
 } from "@bitcaster/client-sdk/ctfRangeMintMetadata";
-import type { TradeTicket } from "@bitcaster/client-sdk/tradeTicket";
+import { decodeOrderQuotePaymentBounds, type TradeTicket } from "@bitcaster/client-sdk/tradeTicket";
 import {
   planCtfRangeCapabilitySource,
   type CtfRangeCapabilitySourcePlan,
@@ -481,6 +481,7 @@ async function executeConsolidationRounds(
       round,
       inputs: proofs,
       plannedRound,
+      consentedFeeFacts: input.consentedFeeFacts,
     });
     committedFeeSubunits = (BigInt(committedFeeSubunits) + BigInt(plannedRound.fee)).toString();
     current = readyRangeSourcePlan(
@@ -726,6 +727,7 @@ async function loadBrowserRangePreparation(input: {
       browserCtfRangeOrderErrorMessage("invalid-order-type"),
     );
   }
+  const bounds = decodeOrderQuotePaymentBounds(input.ticket.request.side, input.ticket.request);
   const engine = createAuthenticatedBrowserEngineClient();
   const mint = new CashuMint(input.mintUrl) as unknown as CtfRangeMintMetadataClient;
   const [policy, mintFacts] = await Promise.all([
@@ -741,6 +743,7 @@ async function loadBrowserRangePreparation(input: {
   const preparation = buildBrowserCtfRangeOrderPreparation({
     request: {
       ...input.ticket.request,
+      ...bounds,
       clientOrderId: input.clientOrderId,
       marketId: input.ticket.marketId,
       conditionId: input.market.id,

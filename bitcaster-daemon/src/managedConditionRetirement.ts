@@ -419,6 +419,18 @@ function proofMatchesOutcome(record: StoredProofRecord, outcome: string): boolea
   return record.asset.kind === 'Outcome' && record.asset.outcomeSetId.split('|').includes(outcome)
 }
 
+export function verifyDaemonConditionAttestation(
+  fence: CustodyScopeFence,
+  profile: DaemonProfile,
+  conditionId: string,
+  response: ConditionAttestationResponse,
+): { resolution: ReturnType<typeof verifyDlcConditionResolution>; oracleWitness: string } {
+  return verifyAttestation(
+    inventoryBinding(fence, profile, canonicalConditionId(conditionId)),
+    response,
+  )
+}
+
 function verifyAttestation(
   binding: ManagedConditionInventoryBinding,
   response: ConditionAttestationResponse,

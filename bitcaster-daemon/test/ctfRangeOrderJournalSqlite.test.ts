@@ -16,6 +16,7 @@ import {
 } from '../src/ctfRangeOrderJournalSqlite.ts'
 import { FINAL_PROFILE_SCHEMA_SQL } from '../src/profileSchemaManifest.ts'
 import { configureDaemonStateSqlite } from '../src/stateSqlite.ts'
+import { encodeCtfRangeOrderFeeConsentArtifact } from '@bitcaster-market/client-sdk/ctfRangeOrderJournal'
 
 const SCOPE_ID = `custody:wallet:${'11'.repeat(32)}`
 const MINT_URL = 'https://mint.example'
@@ -40,6 +41,7 @@ test('range preparation insert is exact and canonical bytes fail closed', (t) =>
   assert.equal(replayed.revision, 0)
   assert.equal(restored?.clientOrderId, input.clientOrderId)
   assert.equal(restored?.consolidateProofs, false)
+  assert.equal(restored?.feeConsentBytes, null)
   assert.equal(
     Buffer.from(restored?.preparationBytes ?? []).toString('utf8'),
     '{"authorizationId":"authorization-range-1","rangeOperationId":"range-1"}',
@@ -60,6 +62,25 @@ test('range preparation insert is exact and canonical bytes fail closed', (t) =>
       }),
     /conflicts with its persisted authority/,
   )
+  const feeConsentBytes = encodeCtfRangeOrderFeeConsentArtifact({
+    settlementInputFeeSubunits: '1',
+    sourcePreparationFeeSubunits: '1',
+    consolidationFeeSubunits: '0',
+    settlementAsset: { kind: 'regular', unit: 'msat' },
+    sourcePreparationAsset: { kind: 'regular', unit: 'msat' },
+    consolidationAsset: { kind: 'regular', unit: 'msat' },
+    sourceMode: 'wallet-send',
+  })
+  assert.throws(
+    () => insertRangePreparation(database, { ...input, feeConsentBytes }),
+    /conflicts with its persisted authority/,
+  )
+  seedProofOperation(database, 'source-with-consent', 'reservation-with-consent', 'source')
+  const withConsent = insertRangePreparation(database, {
+    ...preparationInput('range-with-consent', 'source-with-consent', 'client-with-consent', 11),
+    feeConsentBytes,
+  })
+  assert.deepEqual(withConsent.feeConsentBytes, feeConsentBytes)
   assert.throws(
     () =>
       insertRangePreparation(database, {
@@ -471,6 +492,7 @@ function preparationInput(
       rangeOperationId,
       authorizationId: `authorization-${rangeOperationId}`,
     }),
+    feeConsentBytes: null,
     createdAtMs,
   }
 }

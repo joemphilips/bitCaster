@@ -212,6 +212,24 @@ describe("browser market funding delivery", () => {
     expect(acknowledgeBrowserDurableOutgoingCashuRecipient).toHaveBeenCalledOnce();
   });
 
+  it("rejects supplied metadata that conflicts with the stored transfer before transport", async () => {
+    const readStatus = vi.fn();
+    const submit = vi.fn();
+
+    await expect(
+      reconcileBrowserMarketFundingDelivery({
+        transfer: transfer(),
+        metadata: { ...input, requestedAmount: "12000" },
+        readStatus,
+        submit,
+        context: context(),
+      }),
+    ).rejects.toThrow(/metadata conflicts/);
+
+    expect(readStatus).not.toHaveBeenCalled();
+    expect(submit).not.toHaveBeenCalled();
+  });
+
   it("keeps received distinct from credited and refuses a conflicting status", async () => {
     const receivedResult = await reconcileBrowserMarketFundingDelivery({
       transfer: transfer(),

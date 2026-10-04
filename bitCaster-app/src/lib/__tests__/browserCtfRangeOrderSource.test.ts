@@ -385,6 +385,8 @@ function persistedPreparation(operationId: string): PersistedCtfRangeOrderPrepar
     tokenSide: "Outcome",
     side: "Sell",
     price: 2,
+    maxQuotePaymentSubunits: null,
+    minQuotePaymentSubunits: 2,
     amountSubunits: 1_000,
     minimumFillAmountSubunits: 1_000,
     baseAsset: "sat",

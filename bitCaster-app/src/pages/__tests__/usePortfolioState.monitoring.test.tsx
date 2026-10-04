@@ -20,7 +20,7 @@ const mocks = vi.hoisted(() => ({
     disposeCalls: number;
   }>,
   readCustody: vi.fn(),
-  activeScopeId: "current-scope",
+  activeScopeId: "custody:wallet:" + "a".repeat(64),
   localQueries: [] as (() => Promise<unknown>)[],
   localQueryDependencies: [] as unknown[][],
   positionSnapshot: null as null | {
@@ -30,6 +30,8 @@ const mocks = vi.hoisted(() => ({
   activityItems: [] as ActivityItem[],
   liveQueryCalls: 0,
   localFundsState: "available" as "available" | "null" | "undefined",
+  walletMnemonic: "test mnemonic",
+  signerRevision: 0,
 }));
 
 const monitoredConditionId = "b".repeat(64);
@@ -67,12 +69,15 @@ vi.mock("dexie-react-hooks", () => ({
     mocks.localQueryDependencies.push(dependencies);
     mocks.liveQueryCalls += 1;
     return mocks.liveQueryCalls % 2 === 1
-      ? (mocks.positionSnapshot ?? { positions: [localPosition], marketCatalogue: new Map() })
+      ? {
+          scopeId: "custody:wallet:" + "a".repeat(64),
+          ...(mocks.positionSnapshot ?? { positions: [localPosition], marketCatalogue: new Map() }),
+        }
       : mocks.localFundsState === "null"
         ? null
         : mocks.localFundsState === "undefined"
           ? undefined
-          : [localFund];
+          : { scopeId: "custody:wallet:" + "a".repeat(64), funds: [localFund] };
   }),
 }));
 
@@ -82,7 +87,7 @@ vi.mock("@/stores/portfolio-custody", () => ({
 }));
 vi.mock("@/stores/wallet", () => ({
   useWalletStore: (selector: (state: object) => unknown) =>
-    selector({ setupComplete: true, mnemonic: "test mnemonic", mints: [] }),
+    selector({ setupComplete: true, mnemonic: mocks.walletMnemonic, mints: [] }),
 }));
 vi.mock("@/stores/settings", () => ({
   useSettingsStore: (selector: (state: object) => unknown) => selector({ nostrProfile: null }),
@@ -92,9 +97,15 @@ vi.mock("@/stores/activity-log", () => ({
     selector({ items: mocks.activityItems }),
 }));
 vi.mock("@/lib/browserWalletProfile", () => ({
-  browserWalletIdFromMnemonic: () => activeWalletId,
-  browserWalletScopeIdFromMnemonic: () => "current-scope",
+  browserWalletIdFromMnemonic: () =>
+    mocks.walletMnemonic === "test mnemonic" ? activeWalletId : "c".repeat(64),
+  browserWalletScopeIdFromMnemonic: (mnemonic: string) =>
+    "custody:wallet:" + (mnemonic === "test mnemonic" ? "a" : "c").repeat(64),
   activeBrowserWalletScopeId: () => mocks.activeScopeId,
+}));
+vi.mock("@/lib/nostr", () => ({
+  getNostrSignerRevision: () => mocks.signerRevision,
+  subscribeToNostrSignerRevision: () => () => {},
 }));
 vi.mock("@/lib/markets", () => ({
   createAuthenticatedBrowserEngineClient: () => ({
@@ -418,7 +429,7 @@ describe("usePortfolioState monitoring facade", () => {
     mocks.getPortfolio.mockReset();
     mocks.getAssetMonitoringAssets.mockReset();
     mocks.readCustody.mockReset();
-    mocks.activeScopeId = "current-scope";
+    mocks.activeScopeId = "custody:wallet:" + "a".repeat(64);
     mocks.portfolioObservers.length = 0;
     mocks.localQueries.length = 0;
     mocks.localQueryDependencies.length = 0;
@@ -426,7 +437,104 @@ describe("usePortfolioState monitoring facade", () => {
     mocks.activityItems.length = 0;
     mocks.liveQueryCalls = 0;
     mocks.localFundsState = "available";
+    mocks.walletMnemonic = "test mnemonic";
+    mocks.signerRevision = 0;
   });
+
+  it("retains the last complete display through a building response and a failed refresh", async () => {
+    vi.useFakeTimers();
+    const pending = deferred<AssetMonitoringPortfolioResponse>();
+    mocks.getPortfolio
+      .mockResolvedValueOnce(completePortfolioResponse())
+      .mockReturnValueOnce(pending.promise)
+      .mockRejectedValueOnce(new Error("unavailable"));
+    const { result } = renderHook(() => usePortfolioState());
+    await act(async () => {});
+    const previousChart = result.current.plChartData;
+    act(() => publishPortfolioInvalidation({ walletId: activeWalletId }));
+    await act(async () => vi.advanceTimersByTimeAsync(10_000));
+    expect(result.current.stats.totalValueSats).toBe(15_000);
+    expect(result.current.stats.totalValueKnown).toBe(true);
+    await act(async () => pending.resolve(buildingUnvaluedPortfolioResponse()));
+    expect(result.current.stats.totalValueKnown).toBe(true);
+    expect(result.current.stats.totalValueSats).toBe(15_000);
+    expect(result.current.plChartData).toEqual(previousChart);
+    expect(result.current.monitoring).toMatchObject({ stale: true, building: true });
+    expect(
+      result.current.positions.filter((position) => position.id.startsWith("monitoring:")),
+    ).toHaveLength(1);
+    expect(result.current.positions.every((position) => position.canClaimPayout !== true)).toBe(
+      true,
+    );
+    await act(async () => vi.advanceTimersByTimeAsync(10_000));
+    expect(result.current.monitoring.error).toBe("unavailable");
+    expect(result.current.stats.totalValueSats).toBe(15_000);
+    expect(result.current.stats.totalValueKnown).toBe(true);
+  });
+
+  it("does not retain an unavailable initial estimate", async () => {
+    mocks.localFundsState = "undefined";
+    mocks.getPortfolio.mockRejectedValue(new Error("unavailable"));
+    const { result } = renderHook(() => usePortfolioState());
+    await waitFor(() => expect(result.current.monitoring.error).toBe("unavailable"));
+    expect(result.current.monitoring.retainingDisplay).toBe(false);
+    expect(result.current.stats.totalValueKnown).toBe(false);
+    expect(result.current.plChartData.ALL).toHaveLength(0);
+  });
+
+  it("retains display estimates during claim recovery without retaining custody actions", async () => {
+    mocks.getPortfolio.mockResolvedValue(completePortfolioResponse());
+    const { result, rerender } = renderHook(() => usePortfolioState());
+    await waitFor(() => expect(result.current.stats.totalValueKnown).toBe(true));
+    mocks.positionSnapshot = {
+      positions: [{ ...localPosition, claimRecoveryPending: true, canClaimPayout: true }],
+      marketCatalogue: new Map(),
+    };
+    mocks.localFundsState = "undefined";
+    rerender();
+    expect(result.current.stats.totalValueSats).toBe(15_000);
+    expect(result.current.stats.totalValueLoading).toBe(true);
+    expect(result.current.monitoring.stale).toBe(true);
+    mocks.positionSnapshot = { positions: [], marketCatalogue: new Map() };
+    rerender();
+    expect(result.current.positions.every((position) => position.canClaimPayout !== true)).toBe(
+      true,
+    );
+  });
+
+  it.each(["wallet", "account"] as const)(
+    "clears retained values on %s scope change and rejects the previous response",
+    async (scope) => {
+      vi.useFakeTimers();
+      const old = deferred<AssetMonitoringPortfolioResponse>();
+      const next = deferred<AssetMonitoringPortfolioResponse>();
+      mocks.getPortfolio
+        .mockResolvedValueOnce(completePortfolioResponse())
+        .mockReturnValueOnce(old.promise)
+        .mockReturnValueOnce(next.promise);
+      const { result, rerender } = renderHook(() => usePortfolioState());
+      await act(async () => {});
+      act(() => publishPortfolioInvalidation({ walletId: activeWalletId }));
+      await act(async () => vi.advanceTimersByTimeAsync(10_000));
+      if (scope === "wallet") {
+        mocks.walletMnemonic = "another mnemonic";
+        mocks.activeScopeId = "custody:wallet:" + "c".repeat(64);
+      } else mocks.signerRevision += 1;
+      rerender();
+      expect(result.current.stats.totalValueSats).not.toBe(15_000);
+      expect(result.current.plChartData.ALL).toHaveLength(0);
+      if (scope === "wallet") {
+        expect(result.current.positions).toHaveLength(0);
+        expect(result.current.funds).toHaveLength(0);
+        expect(result.current.stats.totalValueKnown).toBe(false);
+      }
+      await act(async () => old.resolve(completePortfolioResponse("ALL", 99_000)));
+      expect(result.current.stats.totalValueSats).not.toBe(99_000);
+      expect(mocks.getPortfolio).toHaveBeenCalledTimes(3);
+      await act(async () => next.resolve(completePortfolioResponse("ALL", 23_000)));
+      expect(result.current.stats.totalValueSats).toBe(23_000);
+    },
+  );
 
   it.each(
     ["winner", "loser"].flatMap((outcome) => [
@@ -531,7 +639,7 @@ describe("usePortfolioState monitoring facade", () => {
 
       const positions = ((await mocks.localQueries[0]!()) as PortfolioPositionSnapshot).positions;
 
-      expect(mocks.readCustody).toHaveBeenCalledWith("current-scope");
+      expect(mocks.readCustody).toHaveBeenCalledWith("custody:wallet:" + "a".repeat(64));
       expect(positions.map(({ mintUrl, outcomeLabel }) => ({ mintUrl, outcomeLabel }))).toEqual([
         { mintUrl: "https://mint-a.example", outcomeLabel: "Alpha" },
         { mintUrl: "https://mint-b.example", outcomeLabel: "Alpha" },

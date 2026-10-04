@@ -81,6 +81,16 @@ channels:
       subscription for that condition. The REST market catalogue remains
       authoritative when a client reconnects or misses a live delta.
 
+  marketCommentsChanged:
+    address: MarketCommentsChanged
+    messages:
+      marketCommentsChangedMessage:
+        $ref: '#/components/messages/MarketCommentsChangedMessage'
+    description: >
+      Server sends this best-effort invalidation after a comment source event
+      commits. Every per-outcome market group for the condition receives it.
+      The message does not prove that the comment snapshot is ready.
+
   marketFundingUpdated:
     address: MarketFundingUpdated
     messages:
@@ -213,6 +223,18 @@ operations:
     messages:
       - $ref: '#/channels/confirmedTradeRecorded/messages/confirmedTradeRecordedMessage'
 
+  marketCommentsChanged:
+    action: receive
+    channel:
+      $ref: '#/channels/marketCommentsChanged'
+    summary: Receive committed comment source invalidation
+    description: >
+      Use eventOrder as the opaque minimumEventOrder for the comment read.
+      Coalesce invalidations while a read is active. Refresh after reconnect.
+      A snapshot can require time to include the committed source event.
+    messages:
+      - $ref: '#/channels/marketCommentsChanged/messages/marketCommentsChangedMessage'
+
   marketFundingUpdated:
     action: receive
     channel:
@@ -339,6 +361,21 @@ components:
             type: string
           latestConfirmedTrade:
             $ref: '#/components/schemas/LatestConfirmedTrade'
+
+    MarketCommentsChangedMessage:
+      payload:
+        type: object
+        additionalProperties: false
+        required:
+          - conditionId
+          - eventOrder
+        properties:
+          conditionId:
+            type: string
+          eventOrder:
+            type: string
+            minLength: 1
+            description: Exact opaque source position of the committed comment.
 
     MarketFundingUpdatedMessage:
       payload:

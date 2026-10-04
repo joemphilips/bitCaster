@@ -8,6 +8,8 @@ import {
   type Proof,
   type ProofState,
   type MintPreview,
+  type MeltPreview,
+  type MeltQuoteResponse,
   type SwapPreview,
   type ConditionalSwapPreview,
 } from '@cashu/cashu-ts'
@@ -21,6 +23,7 @@ import {
   hydrateDurableWalletMintPreview,
   hydrateDurableWalletSendPreview,
   serializeDurableWalletMintOperation,
+  serializeDurableWalletMeltOperation,
   serializeDurableWalletProof,
   serializeDurableWalletReceiveOperation,
   serializeDurableWalletSendOperation,
@@ -123,6 +126,87 @@ test('wallet melt accepts a realistic NUT-08 zero blank through custody serializ
   const recovered = requireDurableWalletOperationFromCustody(custody)
   assert.equal(recovered.kind, 'wallet-melt')
   assert.equal(recovered.preview.outputData[0]?.blindedMessage.amount, '0')
+})
+
+test('wallet melt serializer preserves the exact msat BOLT11 preview representation', () => {
+  const input: Proof = {
+    id: KEYSET_ID,
+    amount: Amount.from('2'),
+    secret: 'melt-input',
+    C: 'melt-input-signature',
+  }
+  const blank = OutputData.createSingleData(0, KEYSET_ID, 'melt-blank', 7n)
+  const quote: MeltQuoteResponse = {
+    quote: 'melt-quote',
+    amount: Amount.from('10'),
+    unit: 'msat',
+    state: 'UNPAID',
+    expiry: 123,
+    request: 'lnbc-invoice',
+    fee_reserve: Amount.from('1'),
+    payment_preimage: null,
+  }
+  const preview: MeltPreview<MeltQuoteResponse> = {
+    method: 'bolt11',
+    inputs: [input],
+    outputData: [blank],
+    keysetId: KEYSET_ID,
+    quote,
+  }
+  const operation = serializeDurableWalletMeltOperation({
+    operationId: 'wallet-melt-exact',
+    mintUrl: 'https://mint.example',
+    unit: 'msat',
+    preview,
+  })
+  const serializedBlank = serializeDurableCustodyOutput(blank)
+
+  assert.deepEqual(operation, {
+    schemaVersion: 1,
+    operationId: 'wallet-melt-exact',
+    kind: 'wallet-melt',
+    mintUrl: 'https://mint.example',
+    unit: 'msat',
+    preview: {
+      method: 'bolt11',
+      inputs: [
+        {
+          id: KEYSET_ID,
+          amount: '2',
+          secret: 'melt-input',
+          C: 'melt-input-signature',
+          dleq: null,
+          p2pkE: null,
+          witness: null,
+        },
+      ],
+      outputData: [{ ...serializedBlank, ephemeralE: serializedBlank.ephemeralE ?? null }],
+      keysetId: KEYSET_ID,
+      quote: { quote: 'melt-quote', amount: '10' },
+      requestOptions: { preferAsync: false, extraPayload: {} },
+    },
+  })
+
+  assert.throws(
+    () =>
+      serializeDurableWalletMeltOperation({
+        operationId: 'bad-unit',
+        mintUrl: 'https://mint.example',
+        unit: 'sat',
+        preview,
+      }),
+    /requires msat/,
+  )
+  assert.throws(
+    () =>
+      serializeDurableWalletMeltOperation({
+        operationId: 'bad-method',
+        mintUrl: 'https://mint.example',
+        unit: 'msat',
+        preview: { ...preview, method: 'bolt12' },
+      }),
+    /requires bolt11/,
+  )
 })
 
 test('wallet mint, send, and receive output serializers still reject zero amounts', () => {

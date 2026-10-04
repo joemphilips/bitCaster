@@ -18,7 +18,7 @@ describe("OrderBookSection", () => {
       />,
     );
 
-    expect(screen.getByText("1 percentage point")).toBeInTheDocument();
+    expect(screen.getByText("1%")).toBeInTheDocument();
     expect(screen.getByText("5.0%")).toBeInTheDocument();
     expect(screen.getByText("6.0%")).toBeInTheDocument();
     expect(screen.getByText("1 share")).toBeInTheDocument();
@@ -184,7 +184,7 @@ describe("OrderBookSection", () => {
         asks: [{ price: 60, amount: 1_000, total: 1_000 }],
         spread: 10,
       },
-      "1 percentage point",
+      "1%",
     ],
     [
       "one-tick spread",
@@ -193,7 +193,7 @@ describe("OrderBookSection", () => {
         asks: [{ price: 51, amount: 1_000, total: 1_000 }],
         spread: 1,
       },
-      "0.1 percentage points",
+      "0.1%",
     ],
     [
       "one-sided",
@@ -264,7 +264,7 @@ describe("OrderBookSection", () => {
       />,
     );
 
-    expect(screen.getByTestId("order-book-spread-row")).toHaveTextContent("20 percentage points");
+    expect(screen.getByTestId("order-book-spread-row")).toHaveTextContent("20%");
   });
 
   it("does not show another route's depth or spread for a missing categorical route", () => {
@@ -309,7 +309,7 @@ describe("OrderBookSection", () => {
       />,
     );
 
-    expect(screen.getByTestId("order-book-spread-row")).toHaveTextContent("30 percentage points");
+    expect(screen.getByTestId("order-book-spread-row")).toHaveTextContent("30%");
   });
 
   it("bounds each side to ten nearest levels and reflects updated depth", () => {

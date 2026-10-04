@@ -16,6 +16,7 @@ import {
   type CtfRangeOrderPreparationRecord,
 } from './ctfRangeOrderJournal.ts'
 import { assertOrderRouteBelongsToCondition } from './orderRoute.ts'
+import { decodeOrderQuotePaymentBounds } from './tradeTicket.ts'
 import { decodeCanonicalMintOrigin } from './durableCustody.ts'
 import { assertCanonicalNut02V2KeysetId } from './durableSeedDerivedPolicy.ts'
 import type {
@@ -71,6 +72,8 @@ const REQUEST_FIELDS = [
   'tokenSide',
   'side',
   'price',
+  'maxQuotePaymentSubunits',
+  'minQuotePaymentSubunits',
   'amountSubunits',
   'minimumFillAmountSubunits',
   'baseAsset',
@@ -123,6 +126,8 @@ export interface CtfRangeOrderRequest {
   readonly tokenSide: 'Outcome' | 'Complement'
   readonly side: 'Buy' | 'Sell'
   readonly price: number
+  readonly maxQuotePaymentSubunits: number | null
+  readonly minQuotePaymentSubunits: number | null
   readonly amountSubunits: number
   readonly minimumFillAmountSubunits: number
   readonly baseAsset: 'sat'
@@ -336,6 +341,8 @@ export function createCtfRangeSettlementCapabilityRequest(
       tokenSide: request.tokenSide,
       side: request.side,
       price: request.price,
+      maxQuotePaymentSubunits: request.maxQuotePaymentSubunits,
+      minQuotePaymentSubunits: request.minQuotePaymentSubunits,
       amountSubunits: request.amountSubunits,
       minimumFillAmountSubunits: request.minimumFillAmountSubunits,
       baseAsset: request.baseAsset,
@@ -476,6 +483,7 @@ function decodeCtfRangeOrderRequest(value: unknown): CtfRangeOrderRequest {
     'range preparation request time in force',
   )
   const expiresAt = decodeOrderExpiry(request.expiresAt)
+  const side = requireClosed(request.side, ['Buy', 'Sell'], 'range preparation request side')
   return {
     clientOrderId: requireText(request.clientOrderId, 'range preparation request client order id'),
     marketId,
@@ -486,7 +494,8 @@ function decodeCtfRangeOrderRequest(value: unknown): CtfRangeOrderRequest {
       ['Outcome', 'Complement'],
       'range preparation request token side',
     ),
-    side: requireClosed(request.side, ['Buy', 'Sell'], 'range preparation request side'),
+    side,
+    ...decodeOrderQuotePaymentBounds(side, request),
     price,
     amountSubunits,
     minimumFillAmountSubunits,

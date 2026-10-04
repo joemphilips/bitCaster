@@ -195,7 +195,7 @@ export function MarketHeader({ market, onShare }: MarketHeaderProps) {
         {/* Title */}
         <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <h1
-            className={`text-2xl md:text-3xl font-bold leading-tight ${market.imageUrl ? "text-white" : "text-slate-900 dark:text-white"}`}
+            className={`min-w-0 [overflow-wrap:anywhere] text-2xl md:text-3xl font-bold leading-tight ${market.imageUrl ? "text-white" : "text-slate-900 dark:text-white"}`}
           >
             {market.title}
           </h1>

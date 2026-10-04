@@ -58,6 +58,8 @@ export interface WizardStepReviewAndCreate {
 export type WizardStep = 1 | 2 | 3 | 4;
 
 export interface WizardDraft {
+  /** References one immutable local preparation. It carries no proof or oracle secret. */
+  creation?: import("@/lib/browserMarketCreation").BrowserMarketCreationPointer;
   currentStep: WizardStep;
   lastModified: string;
   stepGetStarted: WizardStepGetStarted | null;
@@ -71,6 +73,10 @@ export interface WizardDraft {
 // =============================================================================
 
 export interface MarketCreationWizardProps {
+  retainedCreation?: { title: string; mintConfirmed: boolean } | null;
+  isLoadingCreation?: boolean;
+  onResumeCreation?: () => void;
+  onDismissCreationError?: () => void;
   /** Current wizard draft state */
   draft: WizardDraft;
 

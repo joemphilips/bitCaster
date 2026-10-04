@@ -30,21 +30,50 @@ import type {
 } from "./kormir-wasm-pkg/kormir_wasm";
 import { nip19 } from "nostr-tools";
 import { getPublicKey } from "nostr-tools/pure";
+import { normalizeOracleAnnouncementTags } from "@bitcaster/client-sdk";
 
 // Re-export the wasm-bindgen types under friendlier names so callers do not
 // have to reach into the generated `kormir-wasm-pkg` directory.
 export type Kormir = KormirType;
 export type { KormirAnnouncement, KormirAttestation };
 
-type KormirModule = typeof import("./kormir-wasm-pkg/kormir_wasm");
-type StoredKormirEvent = {
-  event_name?: unknown;
-  announcement?: unknown;
-  attestation?: unknown;
-  announcement_event_id?: unknown;
+export type PreparedOracleArtifact = {
+  artifactHex: string;
+  eventJson: string;
 };
 
-const NIP88_TITLE_MAX_CHARS = 100;
+export async function decodeOracleAnnouncement(artifactHex: string) {
+  const module = await loadKormirModule();
+  const value = await module.Kormir.decode_announcement(artifactHex);
+  try {
+    return {
+      eventId: value.event_id,
+      oraclePubkey: normalizeKormirPublicKey(value.oracle_public_key),
+      outcomes: [...value.outcomes],
+      noncePoints: [...value.oracle_nonces],
+      announcementSignature: value.announcement_signature,
+    };
+  } finally {
+    value.free();
+  }
+}
+
+export async function decodeOracleAttestation(artifactHex: string) {
+  const module = await loadKormirModule();
+  const value = await module.Kormir.decode_attestation(artifactHex);
+  try {
+    return {
+      eventId: value.event_id,
+      oraclePubkey: normalizeKormirPublicKey(value.oracle_public_key),
+      outcomes: [...value.outcomes],
+      signatures: [...value.signatures],
+    };
+  } finally {
+    value.free();
+  }
+}
+
+type KormirModule = typeof import("./kormir-wasm-pkg/kormir_wasm");
 
 let modulePromise: Promise<KormirModule> | null = null;
 let instancePromise: Promise<KormirType> | null = null;
@@ -195,17 +224,6 @@ export function resetKormir(): void {
   instanceRelayKey = null;
 }
 
-function plainTextTagValue(value: string): string {
-  return value
-    .replace(/[\r\n\t]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function truncateNip88Title(title: string): string {
-  return Array.from(plainTextTagValue(title)).slice(0, NIP88_TITLE_MAX_CHARS).join("");
-}
-
 /**
  * Create an enum oracle event, publish its announcement to the connected
  * relays, and return the announcement encoded as a hex string (the shape
@@ -226,17 +244,67 @@ export async function createEnumAnnouncement(
   title = eventId,
   description = title,
 ): Promise<string> {
+  const tags = normalizeOracleAnnouncementTags(title, description);
   const kormir = await getKormir(relays);
   try {
     return await kormir.create_enum_event(
       eventId,
       outcomes,
       maturityEpoch,
-      truncateNip88Title(title),
-      plainTextTagValue(description),
+      tags.title,
+      tags.description,
     );
   } catch (err) {
     throw new Error(`Failed to create DLC oracle announcement: ${describeThrown(err)}`);
+  }
+}
+
+export async function prepareEnumAnnouncement(
+  relays: string[],
+  eventId: string,
+  outcomes: string[],
+  maturityEpoch: number,
+  title = eventId,
+  description = title,
+): Promise<PreparedOracleArtifact> {
+  const tags = normalizeOracleAnnouncementTags(title, description);
+  const kormir = await getKormir(relays);
+  // The caller must save the exact envelope before payment or publication.
+  const prepared = await kormir.prepare_enum_event(
+    eventId,
+    outcomes,
+    maturityEpoch,
+    tags.title,
+    tags.description,
+  );
+  try {
+    return {
+      artifactHex: prepared.artifact_hex,
+      eventJson: prepared.nostr_event_json,
+    };
+  } finally {
+    prepared.free();
+  }
+}
+
+export async function prepareEnumAttestation(
+  relays: string[],
+  eventId: string,
+  outcome: string,
+  announcementEventJson: string,
+  announcementHex?: string,
+): Promise<PreparedOracleArtifact> {
+  const kormir = await getKormir(relays);
+  if (announcementHex) await importEnumAnnouncement(relays, announcementHex);
+  // Local preparation validates the retained announcement and rejects a conflicting outcome.
+  const prepared = await kormir.prepare_enum_attestation(eventId, outcome, announcementEventJson);
+  try {
+    return {
+      artifactHex: prepared.artifact_hex,
+      eventJson: prepared.nostr_event_json,
+    };
+  } finally {
+    prepared.free();
   }
 }
 
@@ -272,72 +340,12 @@ export async function importEnumAnnouncement(
 }
 
 /**
- * Sign a previously-created enum event with the given outcome, publish the
- * attestation to the connected relays, and return the attestation encoded as
- * a hex string.
- *
- * `announcementHex` (optional) is the TLV-hex of the event's announcement. When
- * provided it is re-imported first (via {@link importEnumAnnouncement}) so a
- * fresh browser profile — which restored only the oracle nsec and lost kormir's
- * nonce-index store — can still re-sign. The import is non-destructive and a
- * no-op when the event is already present, so passing it is always safe.
- */
-export async function signEnumAttestation(
-  relays: string[],
-  eventId: string,
-  outcome: string,
-  announcementHex?: string,
-): Promise<string> {
-  const kormir = await getKormir(relays);
-  if (announcementHex) {
-    // Recover the committed-nonce material on a fresh profile before signing.
-    // Idempotent: no-op when the event already exists locally.
-    await importEnumAnnouncement(relays, announcementHex);
-  }
-  try {
-    return await kormir.sign_enum_event(eventId, outcome);
-  } catch (err) {
-    const stored = await findStoredKormirEvent(kormir, eventId).catch(() => null);
-    if (typeof stored?.attestation === "string" && stored.attestation.length > 0) {
-      console.warn(
-        "DLC oracle attestation was signed locally, but publishing to Nostr failed. Continuing with the local attestation hex.",
-        describeThrown(err),
-      );
-      return stored.attestation;
-    }
-    throw new Error(`Failed to sign DLC oracle attestation: ${describeThrown(err)}`);
-  }
-}
-
-export async function getOracleAnnouncementEventId(
-  relays: string[],
-  eventId: string,
-): Promise<string | null> {
-  const kormir = await getKormir(relays);
-  const stored = await findStoredKormirEvent(kormir, eventId);
-  return typeof stored?.announcement_event_id === "string" ? stored.announcement_event_id : null;
-}
-
-/**
  * Return the oracle public key (hex-encoded 32-byte x-only Schnorr key).
  * This matches the Nostr pubkey derived from the same nsec.
  */
 export async function getOraclePublicKey(relays: string[]): Promise<string> {
   const kormir = await getKormir(relays);
   return kormir.get_public_key();
-}
-
-async function findStoredKormirEvent(
-  kormir: KormirType,
-  eventId: string,
-): Promise<StoredKormirEvent | null> {
-  const events = await kormir.list_events();
-  if (!Array.isArray(events)) return null;
-  return (
-    events.find(
-      (event): event is StoredKormirEvent => isRecord(event) && event.event_name === eventId,
-    ) ?? null
-  );
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

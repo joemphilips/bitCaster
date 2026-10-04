@@ -5,10 +5,17 @@ import { MarketCreationPage } from "../MarketCreationPage";
 import type { MarketCreationWizardProps } from "@/types/market-creation";
 
 const mockCreateMarket = vi.hoisted(() => vi.fn());
+const creationResume = vi.hoisted(() => ({
+  resume: vi.fn(),
+  dismiss: vi.fn(),
+  retained: null as { title: string; mintConfirmed: boolean } | null,
+}));
 const walletState = vi.hoisted(() => ({
   mnemonic: "",
   ensureImplicitWallet: vi.fn(async () => undefined),
-  recoverFromMnemonic: vi.fn(async (_words: string[] = []) => ({ valid: true })),
+  recoverFromMnemonic: vi.fn(async (_words: string[] = []) => ({
+    valid: true,
+  })),
 }));
 const validSeedPhrase =
   "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
@@ -46,6 +53,10 @@ vi.mock("@/hooks/useMarketCreationState", () => ({
     categoryTags: [],
     isSubmitting: false,
     submitError: null,
+    retainedCreation: creationResume.retained,
+    isLoadingCreation: false,
+    onResumeCreation: creationResume.resume,
+    onDismissCreationError: creationResume.dismiss,
     registrationFeePrompt: null,
     registrationFeeTopUp: null,
     registrationFeeTopUpStage: "closed",
@@ -84,6 +95,13 @@ vi.mock("@/components/market-creation", () => ({
     <div>
       <div>creation wizard</div>
       <div data-testid="draft-title">{props.draft.stepBasicInfo?.title}</div>
+      {props.retainedCreation && (
+        <div data-testid="market-creation-resume">
+          <span>{props.retainedCreation.title}</span>
+          <button onClick={props.onResumeCreation}>Resume saved creation</button>
+          <button onClick={props.onDismissCreationError}>Dismiss creation message</button>
+        </div>
+      )}
       <button type="button" onClick={props.onCreateMarket}>
         Create Market
       </button>
@@ -102,11 +120,31 @@ describe("MarketCreationPage", () => {
       return { valid: true };
     });
     mockCreateMarket.mockReset();
+    creationResume.retained = null;
+    creationResume.resume.mockReset();
+    creationResume.dismiss.mockReset();
   });
 
   it("renders the sat-only creation wizard", () => {
     render(<MarketCreationPage />);
     expect(screen.getByText("creation wizard")).toBeInTheDocument();
+  });
+
+  it("forwards the saved creation and exact resume action without starting wallet setup or a new creation", async () => {
+    creationResume.retained = {
+      title: "Saved paid market",
+      mintConfirmed: true,
+    };
+    const user = userEvent.setup();
+    render(<MarketCreationPage />);
+    expect(screen.getByTestId("market-creation-resume")).toHaveTextContent("Saved paid market");
+    await user.click(screen.getByRole("button", { name: "Resume saved creation" }));
+    await user.click(screen.getByRole("button", { name: "Dismiss creation message" }));
+    expect(creationResume.resume).toHaveBeenCalledOnce();
+    expect(creationResume.dismiss).toHaveBeenCalledOnce();
+    expect(mockCreateMarket).not.toHaveBeenCalled();
+    expect(walletState.ensureImplicitWallet).not.toHaveBeenCalled();
+    expect(screen.queryByRole("heading", { name: /wallet setup/i })).not.toBeInTheDocument();
   });
 
   it("opens wallet setup before creation and preserves the draft when canceled", async () => {

@@ -1,6 +1,6 @@
 ---
-title: "Ecash"
-description: "Cashu ecash の概要と、bitCaster が sat 建て条件付きトークンを使う方法。"
+title: 'Ecash'
+description: 'Cashu ecash の概要と、bitCaster が sat 建て条件付きトークンを使う方法。'
 sidebar:
   order: 0
 ---
@@ -35,6 +35,58 @@ ecash を送る場合は、表示されたトークンをコピーまたは保�
 トークンは現金として扱い、送信先の相手だけに渡してください。
 
 ウォレットへの入金と、マーケットのボットへの資金提供は別の操作です。[ボットへの資金提供](/ja/user-guide/core-concepts/funding-bot-liquidity/)は、返金されない補助金です。使用可能なウォレット残高は増えません。
+
+## CLI で Cashu の支払いリクエストを受け取る
+
+設定済みのデーモンを起動してから、リクエストを作成します。
+
+```bash
+bitcaster-cli wallet request create
+```
+
+返された `encoded` の値を送信者に渡してください。
+リクエストには固定の金額を設定しません。設定済みのミントの msat トークンを受け付けます。
+受取アドレスは、Nostr のログイン鍵ではなく、ウォレットシードに属します。
+CLI はこのリクエストで支払いを受け取ります。読み取ったリクエストへの支払い機能ではありません。
+
+返された `requestId` で進行状況を確認します。
+
+```bash
+bitcaster-cli wallet request status <request-id>
+bitcaster-cli wallet request watch <request-id>
+```
+
+`awaiting` は、受取記録がまだ保存されていない状態です。
+`pending` は、受け取りの処理が完了していない状態です。
+`credited` の場合にだけ、ウォレットへの反映が確定しています。
+結果の `amountMsat` フィールドの単位は、sats ではなく msat です。
+受取記録の保存や Nostr メッセージの到着だけでは、支払いは完了していません。
+
+Ctrl+C で監視を終了します。保存済みのリクエストやデーモンの受信処理は取り消しません。
+支払いを受け取る間は、デーモンを起動したままにしてください。
+再起動後は、ウォレットの復旧により新しい操作が許可されると、保存済みリクエストの受信を再開します。
+
+保存済みリクエストの一覧取得と、未完了の受け取りの再試行には、次のコマンドを使います。
+
+```bash
+bitcaster-cli wallet request list --page-size 32
+bitcaster-cli wallet request list --cursor <nextCursor> --page-size 32
+bitcaster-cli wallet request recover <request-id>
+```
+
+`nextCursor` は変更せずに渡してください。`null` なら終了です。
+`recover` は、保存済みの受取記録とウォレットの復旧記録を再利用します。
+新しいリクエストを作成する操作ではなく、ミントが利用可能である保証もありません。
+操作が保留中の間は、ネイティブウォレットのプロファイルを保持してください。
+
+## ミントの手数料
+
+ミントは proof を消費するときに入力手数料を請求します。
+手数料は proof の数と、各 proof の keyset に設定された料率で決まります。
+通常の ecash と条件付きトークンの両方に入力手数料がかかる場合があります。
+ミントが新しい keyset の料率を変更しても、既存の proof の料率は変わりません。
+確定前にウォレットの見積もりを確認してください。
+その後の注文が成立しなくても、個別の準備操作にはそれぞれ手数料がかかる場合があります。
 
 ## 信頼モデル
 

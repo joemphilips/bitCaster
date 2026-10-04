@@ -1,21 +1,19 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
+import {
+  bookmarkSetsEqual,
+  normalizeBookmarkMarkets,
+  setMarketBookmark,
+  unionBookmarkMarkets,
+} from "@bitcaster/client-sdk/bookmarks";
+
+export { bookmarkSetsEqual } from "@bitcaster/client-sdk/bookmarks";
 
 interface BookmarkState {
   markets: string[];
   toggle: (marketId: string) => void;
   /** Replace the bookmark set wholesale (used by the Nostr sync hook). */
   replace: (marketIds: string[]) => void;
-}
-
-/** Order-insensitive equality for bookmark lists. */
-export function bookmarkSetsEqual(a: readonly string[], b: readonly string[]): boolean {
-  if (a.length !== b.length) return false;
-  const setA = new Set(a);
-  for (const x of b) {
-    if (!setA.has(x)) return false;
-  }
-  return true;
 }
 
 /**
@@ -49,16 +47,13 @@ export const useBookmarkStore = create<BookmarkState>()(
       markets: [],
       toggle: (marketId) => {
         set((state) => {
-          const has = state.markets.includes(marketId);
           return {
-            markets: has
-              ? state.markets.filter((id) => id !== marketId)
-              : [...state.markets, marketId],
+            markets: setMarketBookmark(state.markets, marketId, !state.markets.includes(marketId)),
           };
         });
       },
       replace: (marketIds) => {
-        const deduped = Array.from(new Set(marketIds));
+        const deduped = normalizeBookmarkMarkets(marketIds);
         if (bookmarkSetsEqual(get().markets, deduped)) return;
         set({ markets: deduped });
       },
@@ -73,7 +68,7 @@ export const useBookmarkStore = create<BookmarkState>()(
         const memory = current.markets;
         return {
           ...current,
-          markets: Array.from(new Set([...memory, ...disk])),
+          markets: unionBookmarkMarkets(memory, disk),
         };
       },
     },

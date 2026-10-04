@@ -51,6 +51,19 @@ describe("browser CTF range order journal", () => {
     );
   });
 
+  it("reads a prior browser preparation without native fee consent authority", async () => {
+    const database = createDatabase();
+    const input = identity("range-legacy-consent", "client-legacy-consent", 11);
+    const inserted = await insertCtfRangePreparation(input, database);
+    const { feeConsentBytes: _, ...legacy } = inserted;
+    await database.ctfRangePreparations.put(legacy as typeof inserted);
+
+    expect(await readCtfRangePreparation(input.scopeId, input.rangeOperationId, database)).toEqual(
+      inserted,
+    );
+    expect(await insertCtfRangePreparation(input, database)).toEqual(inserted);
+  });
+
   it("binds capability and advances lifecycle with revision CAS", async () => {
     const database = createDatabase();
     const input = identity("range-bind", "client-bind", 20);
@@ -263,6 +276,7 @@ function identity(
     divisibility: 1_000,
     authorizationExpiresAtUnixSeconds: 1_000,
     preparationBytes: encodeCtfRangeOrderPreparationArtifact({ version: 1 }),
+    feeConsentBytes: null,
     createdAtMs,
   };
 }

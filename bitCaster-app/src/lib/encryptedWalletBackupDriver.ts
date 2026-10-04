@@ -30,6 +30,7 @@ import {
   type EncryptedWalletBackupConfiguration,
 } from "./encryptedWalletBackupConfig";
 import { getNdk } from "./nostr";
+import { assertNever } from "./enumDiscipline";
 import { EncryptedWalletBackupEnrollmentDexieStore } from "../stores/encrypted-wallet-backup-enrollment-db";
 import {
   clearEncryptedWalletBackupRetryScheduler,
@@ -90,6 +91,11 @@ export interface BrowserEncryptedWalletBackupV2RuntimeDriver {
 
 export type BrowserEncryptedWalletBackupV2RecoveryStatus =
   | { readonly kind: "ready" }
+  | {
+      readonly kind: "preparing";
+      readonly reason: "authentication" | "leadership-wait" | "retry" | "driver-unavailable";
+    }
+  | { readonly kind: "failed" }
   | {
       readonly kind: "recovering";
       readonly reason: BrowserEncryptedWalletBackupV2ConflictRecoveryIncompleteReason | null;
@@ -240,6 +246,7 @@ class BrowserEncryptedWalletBackupV2RuntimeDriverImpl implements BrowserEncrypte
   #authenticationSession: BrowserWalletBackupAuthenticationSession | undefined;
   #sessionAuthenticated = false;
   #diagnosticState: EncryptedWalletBackupDriverState | undefined;
+  #recoveryStatusKind: BrowserEncryptedWalletBackupV2RecoveryStatus["kind"] | undefined;
   readonly #removeReadinessWaiters = new Set<() => void>();
 
   constructor(input: BrowserEncryptedWalletBackupV2RuntimeDriverInput) {
@@ -559,8 +566,7 @@ class BrowserEncryptedWalletBackupV2RuntimeDriverImpl implements BrowserEncrypte
       );
     } catch (error) {
       if (this.#isActive()) {
-        this.#reportTerminal();
-        this.#reportError(error);
+        this.#fail(error);
       }
     } finally {
       this.#stopLeader();
@@ -1026,7 +1032,29 @@ class BrowserEncryptedWalletBackupV2RuntimeDriverImpl implements BrowserEncrypte
 
   #notifyRecoveryStatus(status: BrowserEncryptedWalletBackupV2RecoveryStatus): void {
     if (!this.#isActive()) return;
-    this.#input.onRecoveryStatusChange?.(status);
+    const current: BrowserEncryptedWalletBackupV2RecoveryStatus =
+      status.kind === "ready" && !this.#sessionAuthenticated
+        ? { kind: "preparing", reason: "authentication" }
+        : status;
+    this.#recoveryStatusKind = current.kind;
+    this.#input.onRecoveryStatusChange?.(current);
+  }
+
+  #notifyPreparingStatus(reason: "authentication" | "leadership-wait" | "retry"): void {
+    // A retry still owns the conflict message until an authoritative permission read clears it.
+    if (this.#sessionAuthenticated) return;
+    switch (this.#recoveryStatusKind) {
+      case "recovering":
+        return;
+      case "ready":
+      case "preparing":
+      case "failed":
+      case undefined:
+        this.#notifyRecoveryStatus({ kind: "preparing", reason });
+        return;
+      default:
+        assertNever(this.#recoveryStatusKind);
+    }
   }
 
   async #recoverPreparedBackup(keyHandle: EncryptedWalletBackupV2KeyHandle): Promise<boolean> {
@@ -1119,6 +1147,30 @@ class BrowserEncryptedWalletBackupV2RuntimeDriverImpl implements BrowserEncrypte
     if (!this.#isActive() || this.#diagnosticState === state) return;
     this.#diagnosticState = state;
     console.info(`encrypted-backup-driver-state=${state}`);
+    switch (state) {
+      case "key-handle":
+      case "leadership-active":
+      case "enrollment":
+      case "startup":
+        this.#notifyPreparingStatus("authentication");
+        break;
+      case "leadership-wait":
+        this.#notifyPreparingStatus("leadership-wait");
+        break;
+      case "retry":
+      case "service-quota":
+        this.#notifyPreparingStatus("retry");
+        break;
+      case "authenticated":
+        break;
+      case "recovery-paused":
+        break;
+      case "terminal":
+        this.#notifyRecoveryStatus({ kind: "failed" });
+        break;
+      default:
+        assertNever(state);
+    }
   }
 
   #reportTerminal(): void {

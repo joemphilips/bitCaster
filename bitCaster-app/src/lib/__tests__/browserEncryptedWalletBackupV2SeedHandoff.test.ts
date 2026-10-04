@@ -1019,6 +1019,7 @@ function rangeRecord(scopeId: string, lifecycleState: "prepared" | "terminal", o
     divisibility: 1_000 as const,
     authorizationExpiresAtUnixSeconds: 1_000,
     preparationBytes: encodeCtfRangeOrderPreparationArtifact({ version: 1 }),
+    feeConsentBytes: null,
     createdAtMs: ordinal + 1,
     lifecycleState,
     revision: 0,

@@ -19,6 +19,7 @@ import {
   applyDurableCustodyProofImport,
   bindDurableCustodyProofImport,
   DURABLE_CUSTODY_PROOF_IMPORT_PAGE_PROOF_LIMIT_MAX,
+  DURABLE_CUSTODY_PROOF_IMPORT_BATCH_PROOF_LIMIT_MAX,
   prepareDurableCustodyProofImport,
   stageDurableCustodyProofImport,
   type DurableCustodyProofImportKeyset,
@@ -26,14 +27,28 @@ import {
 } from '@bitcaster-market/client-sdk/durableCustodyProofImport'
 import { serializeDurableCustodyProofArtifact } from '@bitcaster-market/client-sdk/durableCustodyProofMaterial'
 import type { DurableCustodyMintKeysetAuthority } from '@bitcaster-market/client-sdk/durableCustodyMintResult'
+import { canonicalizeTokenImportMintUrl } from '@bitcaster-market/client-sdk/tokenImportValidation'
 import { createCustodyProofSqliteRow } from './custodyProofSqliteRow.ts'
 import {
   DurableCustodySqliteStore,
   type CustodyProofSqliteRow,
 } from './durableCustodySqliteStore.ts'
 import { DurableCustodyTransactionSqlite } from './durableCustodyTransactionSqlite.ts'
-import { withDurableCustodyUnitOfWork } from './durableCustodyUnitOfWork.ts'
+import {
+  withDurableCustodyFencedRead,
+  withDurableCustodyUnitOfWork,
+} from './durableCustodyUnitOfWork.ts'
 import type { CustodyScopeFence } from './profileFencing.ts'
+import {
+  WalletProofImportSqlite,
+  encodeWalletProofImportSource,
+  type WalletProofImportSource,
+} from './walletProofImportSqlite.ts'
+import {
+  NativePaymentRequestReceiptSqlite,
+  paymentRequestReceiptBinding,
+  type NativePaymentRequestReceiptBinding,
+} from './nativePaymentRequestReceiptSqlite.ts'
 import { createDaemonStateSqliteSession } from './stateSqlite.ts'
 import type { StateSqliteFaultPhase } from './stateSqlite.ts'
 import {
@@ -75,26 +90,192 @@ export class DurableWalletProofImportCoordinator {
     ) => Promise<readonly ProofState[]>
   }): Promise<void> {
     if (input.proofs.length === 0) throw new Error('cashu outcome token did not include proofs')
+    if (input.mintUrl !== canonicalizeTokenImportMintUrl(input.mintUrl, true))
+      throw new Error('wallet proof import mint identity is not canonical')
+    if (
+      input.proofs.length > DURABLE_CUSTODY_PROOF_IMPORT_BATCH_PROOF_LIMIT_MAX ||
+      input.keysets.length > 256
+    )
+      throw new Error('wallet proof import source exceeds bounds')
     const scope = walletScope(this.#getFence())
-    const orderedProofs = orderUniqueProofs(input.proofs, scope.scopeId, input.mintUrl)
+    const source = createOutcomeImportSource(
+      scope,
+      input.mintUrl,
+      input.asset,
+      input.proofs,
+      input.keysets,
+    )
+    const existing = await this.#read((database) =>
+      new WalletProofImportSqlite(database).load(scope.scopeId, source.rootId),
+    )
+    if (existing !== null) {
+      // A new user action must still respect an explicit removal.
+      await this.#read((database) => {
+        for (const proof of source.proofs) {
+          if (
+            database
+              .prepare(
+                `SELECT 1 FROM target_wallet_proofs WHERE scope_id = ? AND normalized_mint = ? AND secret = ? AND retired_at_ms IS NOT NULL`,
+              )
+              .get(scope.scopeId, source.mintUrl, proof.secret) !== undefined
+          )
+            throw new Error('cashu outcome proof conflicts with retired wallet custody')
+        }
+      })
+      await this.#resume(existing, input.checkProofsStates, 2048)
+      return
+    }
+    const { keysets, pages } = this.#prepare(source)
+    verifyProofSignatures(source.proofs, keysets)
+    await requireUnspentProofs(source.proofs, input.checkProofsStates)
+
+    await this.#preflightLocalConflicts(scope, input.mintUrl, input.asset, source.proofs, pages)
+    await withDurableCustodyUnitOfWork(
+      this.#storage,
+      this.#getFence(),
+      this.#now(),
+      (database) => {
+        new WalletProofImportSqlite(database).save(
+          source,
+          pages.map(({ prepared }) => prepared.record.operation.operationId),
+        )
+      },
+      this.#transactionOptions(),
+    )
+    await this.#resume(source, input.checkProofsStates, 2048)
+  }
+
+  async receivePaymentRequest(input: {
+    readonly receipt: NativePaymentRequestReceiptBinding
+    readonly mintUrl: string
+    readonly groups: readonly {
+      readonly asset: OutcomeAsset
+      readonly proofs: readonly Proof[]
+      readonly keysets: readonly DurableCustodyMintKeysetAuthority[]
+    }[]
+    readonly checkProofsStates: (
+      proofs: readonly Pick<Proof, 'id' | 'secret'>[],
+    ) => Promise<readonly ProofState[]>
+  }): Promise<void> {
+    const scope = walletScope(this.#getFence())
+    if (
+      scope.scopeId !== input.receipt.scopeId ||
+      input.groups.length < 1 ||
+      input.groups.length > 16
+    )
+      throw new Error('payment request import scope or group count is invalid')
+    const existing = await this.#read((database) =>
+      new NativePaymentRequestReceiptSqlite(database).assertCandidate(input.receipt),
+    )
+    if (existing !== null) {
+      await this.recoverPaymentRequest(input.receipt.requestId, input.checkProofsStates)
+      return
+    }
+    const sources = input.groups.map((group) =>
+      createOutcomeImportSource(scope, input.mintUrl, group.asset, group.proofs, group.keysets),
+    )
+    if (
+      sources.reduce((bytes, source) => bytes + encodeWalletProofImportSource(source).length, 0) >
+      16 * 1024 * 1024
+    )
+      throw new Error('payment request conditional source exceeds artifact bound')
+    const plans = sources.map((source) => ({ source, ...this.#prepare(source) }))
+    for (const { source, keysets, pages } of plans) {
+      verifyProofSignatures(source.proofs, keysets)
+      await requireUnspentProofs(source.proofs, input.checkProofsStates)
+      await this.#preflightLocalConflicts(scope, source.mintUrl, source.asset, source.proofs, pages)
+    }
+    await withDurableCustodyUnitOfWork(
+      this.#storage,
+      this.#getFence(),
+      this.#now(),
+      (database) => {
+        const imports = new WalletProofImportSqlite(database)
+        for (const { source, pages } of plans) {
+          const operationIds = pages.map(({ prepared }) => prepared.record.operation.operationId)
+          if (imports.load(source.scopeId, source.rootId) === null)
+            imports.save(source, operationIds)
+          else imports.assertPages(source, operationIds)
+        }
+        new NativePaymentRequestReceiptSqlite(database).bindConditional(input.receipt, sources)
+      },
+      this.#transactionOptions(),
+    )
+    for (const source of sources) await this.#resume(source, input.checkProofsStates, 2048)
+  }
+
+  async recoverPaymentRequest(
+    requestId: string,
+    checkProofsStates: (
+      proofs: readonly Pick<Proof, 'id' | 'secret'>[],
+    ) => Promise<readonly ProofState[]>,
+  ): Promise<void> {
+    const sources = await this.#paymentRequestSources(requestId)
+    for (const source of sources)
+      await this.#resume(source, checkProofsStates, Math.floor(256 / sources.length))
+  }
+
+  async paymentRequestApplied(requestId: string): Promise<boolean> {
+    const sources = await this.#paymentRequestSources(requestId)
+    for (const source of sources) {
+      const { pages } = this.#prepare(source)
+      await this.#read((database) =>
+        new WalletProofImportSqlite(database).assertPages(
+          source,
+          pages.map(({ prepared }) => prepared.record.operation.operationId),
+        ),
+      )
+      for (const [index, { prepared, proofs }] of pages.entries()) {
+        if (!(await this.#isAppliedPage(source, prepared, index))) return false
+        await this.#apply(prepared, source.mintUrl, source.asset, proofs, source.fingerprint, true)
+      }
+    }
+    return true
+  }
+
+  #paymentRequestSources(requestId: string): Promise<readonly WalletProofImportSource[]> {
+    const scopeId = this.#getFence().scopeId
+    return this.#read((database) => {
+      const receipts = new NativePaymentRequestReceiptSqlite(database)
+      const sources = receipts.assertGroups(scopeId, requestId).map((rootId) => {
+        const source = new WalletProofImportSqlite(database).load(scopeId, rootId)
+        if (source === null) throw new Error('payment request import source is missing')
+        return source
+      })
+      const request = receipts.getRequest(scopeId, requestId)
+      if (request === null) throw new Error('payment request is missing')
+      receipts.assertCandidate(
+        paymentRequestReceiptBinding({
+          scopeId,
+          requestId,
+          mintUrl: request.mintUrl,
+          proofs: sources.flatMap((source) => [...source.proofs]),
+        }),
+      )
+      return sources
+    })
+  }
+
+  #prepare(source: WalletProofImportSource) {
+    const scope = walletScope(this.#getFence())
+    if (scope.scopeId !== source.scopeId) throw new Error('wallet proof import scope is foreign')
+    if (source.mintUrl !== canonicalizeTokenImportMintUrl(source.mintUrl, true))
+      throw new Error('wallet proof import mint identity is not canonical')
+    const orderedProofs = orderUniqueProofs(source.proofs, scope.scopeId, source.mintUrl)
     const proofSetFingerprint = deriveDurableCustodyArtifactFingerprint({
       kind: 'wallet-outcome-proof-import-v1',
       scopeId: scope.scopeId,
-      normalizedMint: input.mintUrl,
-      asset: input.asset,
+      normalizedMint: source.mintUrl,
+      asset: source.asset,
       proofs: orderedProofs.map(({ proof }) => serializeDurableCustodyProofArtifact(proof)),
     })
-    const rootSourceOperationId = `wallet-outcome-proof-import:${proofSetFingerprint}`
-    const keysets = importKeysets(input.keysets, input.mintUrl, input.asset)
-    verifyProofSignatures(
-      orderedProofs.map(({ proof }) => proof),
-      keysets,
+    if (
+      source.fingerprint !== proofSetFingerprint ||
+      source.rootId !== `wallet-outcome-proof-import:${proofSetFingerprint}`
     )
-    await requireUnspentProofs(
-      orderedProofs.map(({ proof }) => proof),
-      input.checkProofsStates,
-    )
-
+      throw new Error('wallet proof import source authority is inconsistent')
+    const rootSourceOperationId = source.rootId
+    const keysets = importKeysets(source.keysets, source.mintUrl, source.asset)
     const pageCount = Math.ceil(
       orderedProofs.length / DURABLE_CUSTODY_PROOF_IMPORT_PAGE_PROOF_LIMIT_MAX,
     )
@@ -114,8 +295,8 @@ export class DurableWalletProofImportCoordinator {
       const prepared = prepareDurableCustodyProofImport({
         scope,
         sourceOperationId,
-        normalizedMint: input.mintUrl,
-        unit: input.asset.unit,
+        normalizedMint: source.mintUrl,
+        unit: source.asset.unit,
         inventoryAccountId: null,
         keysets: keysets.filter((keyset) => pageKeysetIds.has(keyset.keysetId)),
         proofs: page.map(({ proof }) => proof),
@@ -131,20 +312,159 @@ export class DurableWalletProofImportCoordinator {
       pages.push({ prepared, proofs: page.map(({ proof }) => proof) })
     }
 
-    await this.#preflightLocalConflicts(scope, input.mintUrl, input.asset, orderedProofs, pages)
+    return { keysets, pages }
+  }
 
-    for (const { prepared, proofs } of pages) {
-      await this.#bind(prepared)
-      await this.#stage(prepared)
-      await this.#apply(prepared, input.mintUrl, input.asset, proofs, proofSetFingerprint)
+  async #resume(
+    source: WalletProofImportSource,
+    checkProofsStates: Parameters<
+      DurableWalletProofImportCoordinator['importOutcomeProofs']
+    >[0]['checkProofsStates'],
+    pageLimit = 256,
+  ): Promise<boolean> {
+    const { keysets, pages } = this.#prepare(source)
+    await this.#read((database) =>
+      new WalletProofImportSqlite(database).assertPages(
+        source,
+        pages.map(({ prepared }) => prepared.record.operation.operationId),
+      ),
+    )
+    let processed = 0
+    for (const [pageIndex, { prepared, proofs }] of pages.entries()) {
+      const applied = await this.#isAppliedPage(source, prepared, pageIndex)
+      if (!applied) {
+        if (processed >= pageLimit) return false
+        verifyProofSignatures(proofs, keysets)
+        await requireUnspentProofs(proofs, checkProofsStates)
+        await this.#preflightLocalConflicts(
+          prepared.record.scope,
+          source.mintUrl,
+          source.asset,
+          proofs,
+          [{ prepared, proofs }],
+        )
+        await this.#bind(prepared, source.rootId, pageIndex)
+        processed += 1
+      }
+      if (!applied) await this.#stage(prepared)
+      await this.#apply(prepared, source.mintUrl, source.asset, proofs, source.fingerprint, applied)
     }
+    await withDurableCustodyUnitOfWork(
+      this.#storage,
+      this.#getFence(),
+      this.#now(),
+      (database) => new WalletProofImportSqlite(database).complete(source.scopeId, source.rootId),
+      this.#transactionOptions(),
+    )
+    return true
+  }
+
+  #isAppliedPage(
+    source: WalletProofImportSource,
+    prepared: PreparedDurableCustodyProofImport,
+    pageIndex: number,
+  ): Promise<boolean> {
+    return this.#read((database) => {
+      const operation = new DurableCustodySqliteStore(database).getOperation(
+        prepared.record.operation.operationId,
+      )
+      const link = database
+        .prepare(
+          `SELECT bound_operation_id FROM wallet_proof_import_pages WHERE scope_id = ? AND root_id = ? AND page_index = ?`,
+        )
+        .get(source.scopeId, source.rootId, pageIndex)
+      if (operation !== null) {
+        if (link?.bound_operation_id !== operation.operation.operationId)
+          throw new Error('wallet proof import page operation link is missing')
+        assertDurableCustodyImmutableAuthorityMatches(operation, prepared.record)
+      } else if (link?.bound_operation_id !== null)
+        throw new Error('wallet proof import page operation is missing')
+      return operation?.operation.result.state === 'applied'
+    })
+  }
+
+  async recover(input: {
+    readonly checkProofsStates: (
+      mintUrl: string,
+      asset: OutcomeAsset,
+      proofs: readonly Pick<Proof, 'id' | 'secret'>[],
+    ) => Promise<readonly ProofState[]>
+  }) {
+    const scopeId = this.#getFence().scopeId
+    const roots = await this.#read((database) => {
+      const cursor =
+        database
+          .prepare(`SELECT root_id FROM wallet_proof_import_recovery_cursors WHERE scope_id = ?`)
+          .get(scopeId)?.root_id ?? ''
+      const rows = database
+        .prepare(
+          `SELECT root_id FROM wallet_proof_import_roots WHERE scope_id = ? AND state = 'active' AND root_id > ? ORDER BY root_id LIMIT 2`,
+        )
+        .all(scopeId, cursor)
+      return rows.length > 0
+        ? rows
+        : database
+            .prepare(
+              `SELECT root_id FROM wallet_proof_import_roots WHERE scope_id = ? AND state = 'active' ORDER BY root_id LIMIT 2`,
+            )
+            .all(scopeId)
+    })
+    const recovered: string[] = []
+    const pending: Array<{ operationId: string; error: string }> = []
+    let unfinished = false
+    for (const row of roots.slice(0, 1)) {
+      const rootId = String(row.root_id)
+      try {
+        const source = await this.#read((database) =>
+          new WalletProofImportSqlite(database).load(scopeId, rootId),
+        )
+        if (source === null) throw new Error('wallet proof import source is missing')
+        if (
+          await this.#resume(source, (proofs) =>
+            input.checkProofsStates(source.mintUrl, source.asset, proofs),
+          )
+        )
+          recovered.push(rootId)
+        else unfinished = true
+      } catch {
+        pending.push({
+          operationId: rootId,
+          error: 'conditional proof import recovery remains pending',
+        })
+      }
+    }
+    await withDurableCustodyUnitOfWork(this.#storage, this.#getFence(), this.#now(), (database) =>
+      database
+        .prepare(
+          `INSERT INTO wallet_proof_import_recovery_cursors VALUES (?, ?) ON CONFLICT(scope_id) DO UPDATE SET root_id = excluded.root_id`,
+        )
+        .run(scopeId, roots.length > 1 ? roots[0]!.root_id : null),
+    )
+    const remaining = await this.#read((database) =>
+      database
+        .prepare(
+          `SELECT count(*) AS count FROM wallet_proof_import_roots WHERE scope_id = ? AND state = 'active'`,
+        )
+        .get(scopeId),
+    )
+    return {
+      recovered,
+      recoveredCount: recovered.length,
+      pending,
+      pendingCount: Number(remaining?.count),
+      hasMore: roots.length > 1 || unfinished,
+    }
+  }
+
+  #read<T>(read: (database: import('node:sqlite').DatabaseSync) => T): Promise<T> {
+    return withDurableCustodyFencedRead(this.#storage, this.#getFence(), this.#now(), read)
   }
 
   async #preflightLocalConflicts(
     scope: DurableCustodyScope,
     mintUrl: string,
     asset: OutcomeAsset,
-    orderedProofs: readonly { readonly proof: Proof; readonly proofId: string }[],
+    orderedProofs: readonly Proof[],
     pages: readonly {
       readonly prepared: PreparedDurableCustodyProofImport
       readonly proofs: readonly Proof[]
@@ -158,7 +478,7 @@ export class DurableWalletProofImportCoordinator {
     await withDurableCustodyUnitOfWork(this.#storage, fence, observedAtMs, (database) => {
       assertAvailableWalletProofImportHasNoConflictsFromDatabase(database, {
         mintUrl,
-        proofs: orderedProofs.map(({ proof }) => toCashuProofRecord(proof)),
+        proofs: orderedProofs.map(toCashuProofRecord),
         asset,
       })
 
@@ -201,7 +521,11 @@ export class DurableWalletProofImportCoordinator {
     })
   }
 
-  async #bind(prepared: PreparedDurableCustodyProofImport): Promise<void> {
+  async #bind(
+    prepared: PreparedDurableCustodyProofImport,
+    rootId: string,
+    pageIndex: number,
+  ): Promise<void> {
     const fence = this.#getFence()
     const observedAtMs = this.#now()
     await withDurableCustodyUnitOfWork(
@@ -222,6 +546,12 @@ export class DurableWalletProofImportCoordinator {
             expectedRevision,
           ),
           (transaction) => bindDurableCustodyProofImport({ transaction, prepared }),
+        )
+        new WalletProofImportSqlite(database).bindPage(
+          fence.scopeId,
+          rootId,
+          pageIndex,
+          prepared.record.operation.operationId,
         )
       },
       this.#transactionOptions(),
@@ -267,10 +597,12 @@ export class DurableWalletProofImportCoordinator {
     asset: OutcomeAsset,
     proofs: readonly Proof[],
     proofSetFingerprint: string,
+    appliedReplay: boolean,
   ): Promise<void> {
     const fence = this.#getFence()
     const observedAtMs = this.#now()
-    await withDurableCustodyUnitOfWork(
+    const readOrWrite = appliedReplay ? withDurableCustodyFencedRead : withDurableCustodyUnitOfWork
+    await readOrWrite(
       this.#storage,
       fence,
       observedAtMs,
@@ -279,6 +611,8 @@ export class DurableWalletProofImportCoordinator {
           prepared.record.operation.operationId,
         )
         if (current === null) throw new Error('wallet proof import custody operation is missing')
+        if (appliedReplay && current.operation.result.state !== 'applied')
+          throw new Error('wallet proof import applied lineage is missing')
         const transaction = new DurableCustodyTransactionSqlite(
           database,
           fence.scopeId,
@@ -334,14 +668,25 @@ export class DurableWalletProofImportCoordinator {
                 })),
               },
             })
-            admitExactAvailableWalletProofsFromDatabase(database, {
-              mintUrl,
-              proofs: proofs.map(toCashuProofRecord),
-              asset,
-              nowMs: observedAtMs,
-            })
+            if (current.operation.result.state === 'verified-staged')
+              admitExactAvailableWalletProofsFromDatabase(database, {
+                mintUrl,
+                proofs: proofs.map(toCashuProofRecord),
+                asset,
+                nowMs: observedAtMs,
+              })
           },
         )
+        if (current.operation.result.state === 'verified-staged')
+          transaction.rebuildActiveWorkIndex({
+            scopeId: fence.scopeId,
+            operationRows: [
+              {
+                operationId: current.operation.operationId,
+                expectedRevision: current.revision + 1,
+              },
+            ],
+          })
       },
       this.#transactionOptions(),
     )
@@ -440,6 +785,39 @@ function orderUniqueProofs(
     throw new Error('cashu outcome token contains duplicate proofs')
   }
   return ordered
+}
+
+function createOutcomeImportSource(
+  scope: DurableCustodyScope,
+  mintUrl: string,
+  asset: OutcomeAsset,
+  proofs: readonly Proof[],
+  keysets: readonly DurableCustodyMintKeysetAuthority[],
+): WalletProofImportSource {
+  if (
+    proofs.length < 1 ||
+    proofs.length > DURABLE_CUSTODY_PROOF_IMPORT_BATCH_PROOF_LIMIT_MAX ||
+    keysets.length < 1 ||
+    keysets.length > 256
+  )
+    throw new Error('wallet proof import source exceeds bounds')
+  const ordered = orderUniqueProofs(proofs, scope.scopeId, mintUrl).map(({ proof }) => proof)
+  const fingerprint = deriveDurableCustodyArtifactFingerprint({
+    kind: 'wallet-outcome-proof-import-v1',
+    scopeId: scope.scopeId,
+    normalizedMint: mintUrl,
+    asset,
+    proofs: ordered.map(serializeDurableCustodyProofArtifact),
+  })
+  return {
+    rootId: `wallet-outcome-proof-import:${fingerprint}`,
+    scopeId: scope.scopeId,
+    mintUrl,
+    asset,
+    proofs: ordered,
+    keysets,
+    fingerprint,
+  }
 }
 
 function importKeysets(

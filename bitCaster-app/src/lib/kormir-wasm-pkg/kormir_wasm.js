@@ -454,8 +454,9 @@ export class Kormir {
      * (a public protocol artifact, mirrored client-side) carries the committed
      * nonce point(s); because nonce keys are derived deterministically from the
      * signing key, the original index is recovered by a bounded scan and the
-     * announcement is re-saved. After this call `sign_enum_event(event_id, …)`
-     * succeeds and produces the same committed-nonce signature the mint expects.
+     * announcement is re-saved. Use `prepare_enum_attestation` with the retained
+     * signed kind-88 JSON to restore its exact Nostr ID before signing.
+     * This produces the same committed-nonce signature the mint expects.
      *
      * `announcement_tlv_hex` is the TLV-enveloped hex returned by
      * `create_enum_event` (and stored by the client). Returns the event_id.
@@ -486,6 +487,42 @@ export class Kormir {
         return ret;
     }
     /**
+     * @param {string} event_id
+     * @param {string} outcome
+     * @param {string} announcement_event_json
+     * @returns {Promise<PreparedOracleEvent>}
+     */
+    prepare_enum_attestation(event_id, outcome, announcement_event_json) {
+        const ptr0 = passStringToWasm0(event_id, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(outcome, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ptr2 = passStringToWasm0(announcement_event_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len2 = WASM_VECTOR_LEN;
+        const ret = wasm.kormir_prepare_enum_attestation(this.__wbg_ptr, ptr0, len0, ptr1, len1, ptr2, len2);
+        return ret;
+    }
+    /**
+     * @param {string} event_id
+     * @param {string[]} outcomes
+     * @param {number} event_maturity_epoch
+     * @param {string} title
+     * @param {string} description
+     * @returns {Promise<PreparedOracleEvent>}
+     */
+    prepare_enum_event(event_id, outcomes, event_maturity_epoch, title, description) {
+        const ptr0 = passStringToWasm0(event_id, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passArrayJsValueToWasm0(outcomes, wasm.__wbindgen_malloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ptr2 = passStringToWasm0(title, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len2 = WASM_VECTOR_LEN;
+        const ptr3 = passStringToWasm0(description, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len3 = WASM_VECTOR_LEN;
+        const ret = wasm.kormir_prepare_enum_event(this.__wbg_ptr, ptr0, len0, ptr1, len1, event_maturity_epoch, ptr2, len2, ptr3, len3);
+        return ret;
+    }
+    /**
      * @param {string} str
      * @returns {Promise<void>}
      */
@@ -510,6 +547,56 @@ export class Kormir {
     }
 }
 if (Symbol.dispose) Kormir.prototype[Symbol.dispose] = Kormir.prototype.free;
+
+export class PreparedOracleEvent {
+    static __wrap(ptr) {
+        const obj = Object.create(PreparedOracleEvent.prototype);
+        obj.__wbg_ptr = ptr;
+        PreparedOracleEventFinalization.register(obj, obj.__wbg_ptr, obj);
+        return obj;
+    }
+    __destroy_into_raw() {
+        const ptr = this.__wbg_ptr;
+        this.__wbg_ptr = 0;
+        PreparedOracleEventFinalization.unregister(this);
+        return ptr;
+    }
+    free() {
+        const ptr = this.__destroy_into_raw();
+        wasm.__wbg_preparedoracleevent_free(ptr, 0);
+    }
+    /**
+     * @returns {string}
+     */
+    get artifact_hex() {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const ret = wasm.preparedoracleevent_artifact_hex(this.__wbg_ptr);
+            deferred1_0 = ret[0];
+            deferred1_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+        }
+    }
+    /**
+     * @returns {string}
+     */
+    get nostr_event_json() {
+        let deferred1_0;
+        let deferred1_1;
+        try {
+            const ret = wasm.preparedoracleevent_nostr_event_json(this.__wbg_ptr);
+            deferred1_0 = ret[0];
+            deferred1_1 = ret[1];
+            return getStringFromWasm0(ret[0], ret[1]);
+        } finally {
+            wasm.__wbindgen_free(deferred1_0, deferred1_1, 1);
+        }
+    }
+}
+if (Symbol.dispose) PreparedOracleEvent.prototype[Symbol.dispose] = PreparedOracleEvent.prototype.free;
 function __wbg_get_imports() {
     const import0 = {
         __proto__: null,
@@ -765,6 +852,10 @@ function __wbg_get_imports() {
             const ret = JSON.parse(getStringFromWasm0(arg0, arg1));
             return ret;
         }, arguments); },
+        __wbg_preparedoracleevent_new: function(arg0) {
+            const ret = PreparedOracleEvent.__wrap(arg0);
+            return ret;
+        },
         __wbg_process_44c7a14e11e9f69e: function(arg0) {
             const ret = arg0.process;
             return ret;
@@ -929,27 +1020,27 @@ function __wbg_get_imports() {
             return ret;
         },
         __wbindgen_cast_0000000000000001: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 744, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 759, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h3562bd6c9b3b21b1);
             return ret;
         },
         __wbindgen_cast_0000000000000002: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("CloseEvent")], shim_idx: 506, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("CloseEvent")], shim_idx: 521, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h3b0d0e3aed8f0326);
             return ret;
         },
         __wbindgen_cast_0000000000000003: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("Event")], shim_idx: 216, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("Event")], shim_idx: 231, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h2f5ba8bb4de46f76);
             return ret;
         },
         __wbindgen_cast_0000000000000004: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("MessageEvent")], shim_idx: 506, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("MessageEvent")], shim_idx: 521, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h3b0d0e3aed8f0326_3);
             return ret;
         },
         __wbindgen_cast_0000000000000005: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [], shim_idx: 536, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [], shim_idx: 551, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
             const ret = makeMutClosure(arg0, arg1, wasm_bindgen__convert__closures_____invoke__h07296c2edf232334);
             return ret;
         },
@@ -1034,6 +1125,9 @@ const EventDataFinalization = (typeof FinalizationRegistry === 'undefined')
 const KormirFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_kormir_free(ptr, 1));
+const PreparedOracleEventFinalization = (typeof FinalizationRegistry === 'undefined')
+    ? { register: () => {}, unregister: () => {} }
+    : new FinalizationRegistry(ptr => wasm.__wbg_preparedoracleevent_free(ptr, 1));
 
 function addToExternrefTable0(obj) {
     const idx = wasm.__externref_table_alloc();

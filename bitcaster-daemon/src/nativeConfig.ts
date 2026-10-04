@@ -18,6 +18,10 @@ import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { dataDir } from './dataDir.ts'
 import { normalizeEndpointUrl } from './endpoint.ts'
+import {
+  DEFAULT_PUBLIC_NOSTR_RELAYS,
+  normalizeNostrRelayUrls,
+} from '@bitcaster-market/client-sdk/nostrRelays'
 
 export const NATIVE_CONFIG_VERSION = 2
 export const DEFAULT_ENGINE_URL = 'http://localhost:5000'
@@ -30,8 +34,10 @@ export interface NativeConfig {
   readonly daemon: {
     readonly engineUrl: string
     readonly mintUrl: string
+    readonly mintUrls: readonly string[]
     readonly autoRetireResolvedConditionInventory: boolean
     readonly assetMonitoringEnabled: boolean
+    readonly nostrRelays: readonly string[]
   }
   readonly cli: {
     readonly trustedEngineUrls: readonly string[]
@@ -62,8 +68,10 @@ export function defaultNativeConfig(): NativeConfig {
     daemon: {
       engineUrl: DEFAULT_ENGINE_URL,
       mintUrl: DEFAULT_MINT_URL,
+      mintUrls: [DEFAULT_MINT_URL],
       autoRetireResolvedConditionInventory: false,
       assetMonitoringEnabled: false,
+      nostrRelays: [...DEFAULT_PUBLIC_NOSTR_RELAYS],
     },
     cli: { trustedEngineUrls: [] },
   }
@@ -97,10 +105,14 @@ function readNativeConfigFile(allowMissing: boolean, directory: string): NativeC
 
 export function updateNativeConfig(
   update: (current: NativeConfig) => NativeConfig,
+  options: { readonly directory?: string; readonly expectedRevision?: string | null } = {},
 ): NativeConfigSnapshot {
-  const directory = dataDir()
+  const directory = options.directory ?? dataDir()
   return withConfigWriteLock(directory, () => {
     const current = readNativeConfig(true, directory)
+    if (options.expectedRevision !== undefined && current.revision !== options.expectedRevision) {
+      throw new Error('native config changed before write')
+    }
     const config = parseNativeConfig(JSON.stringify(update(current.config)))
     writeNativeConfig(config, current.revision, directory)
     return readNativeConfig(false, directory)
@@ -148,7 +160,14 @@ export function parseNativeConfig(raw: string): NativeConfig {
   }
   const daemon = strictObject(
     root.daemon,
-    ['engineUrl', 'mintUrl', 'autoRetireResolvedConditionInventory', 'assetMonitoringEnabled'],
+    [
+      'engineUrl',
+      'mintUrl',
+      'mintUrls',
+      'autoRetireResolvedConditionInventory',
+      'assetMonitoringEnabled',
+      'nostrRelays',
+    ],
     'config.daemon',
   )
   const cli = strictObject(root.cli, ['trustedEngineUrls'], 'config.cli')
@@ -157,6 +176,12 @@ export function parseNativeConfig(raw: string): NativeConfig {
   }
   if (typeof daemon.assetMonitoringEnabled !== 'boolean') {
     throw new Error('config.daemon.assetMonitoringEnabled must be boolean')
+  }
+  if (
+    !Array.isArray(daemon.nostrRelays) ||
+    daemon.nostrRelays.some((value) => typeof value !== 'string')
+  ) {
+    throw new Error('config.daemon.nostrRelays must be an array of strings')
   }
   if (!Array.isArray(cli.trustedEngineUrls)) {
     throw new Error('config.cli.trustedEngineUrls must be an array')
@@ -173,16 +198,34 @@ export function parseNativeConfig(raw: string): NativeConfig {
   if (typeof daemon.engineUrl !== 'string' || typeof daemon.mintUrl !== 'string') {
     throw new Error('config daemon endpoints must be strings')
   }
+  const mintUrl = normalizeEndpointUrl(daemon.mintUrl, 'mint URL')
+  const mintUrls = parseMintUrls(daemon.mintUrls)
+  if (!mintUrls.includes(mintUrl)) {
+    throw new Error('config.daemon.mintUrl must be in mintUrls')
+  }
   return {
     version: NATIVE_CONFIG_VERSION,
     daemon: {
       engineUrl: normalizeEndpointUrl(daemon.engineUrl, 'engine URL'),
-      mintUrl: normalizeEndpointUrl(daemon.mintUrl, 'mint URL'),
+      mintUrl,
+      mintUrls,
       autoRetireResolvedConditionInventory: daemon.autoRetireResolvedConditionInventory,
       assetMonitoringEnabled: daemon.assetMonitoringEnabled,
+      nostrRelays: normalizeNostrRelayUrls(daemon.nostrRelays),
     },
     cli: { trustedEngineUrls },
   }
+}
+
+function parseMintUrls(value: unknown): string[] {
+  if (!Array.isArray(value) || value.length === 0 || value.some((url) => typeof url !== 'string')) {
+    throw new Error('config.daemon.mintUrls must be a nonempty array of strings')
+  }
+  const mintUrls = value.map((url: string) => normalizeEndpointUrl(url, 'mint URL'))
+  if (new Set(mintUrls).size !== mintUrls.length) {
+    throw new Error('config.daemon.mintUrls must not contain duplicates')
+  }
+  return mintUrls
 }
 
 function writeNativeConfig(
@@ -198,6 +241,9 @@ function writeNativeConfig(
   const path = nativeConfigPath(directory)
   const temp = `${path}.${process.pid}.${Date.now()}.tmp`
   const text = `${JSON.stringify(config, null, 2)}\n`
+  if (Buffer.byteLength(text, 'utf8') > MAX_CONFIG_BYTES) {
+    throw new Error('native config exceeds 64 KiB')
+  }
   let fd: number | undefined
   try {
     fd = openSync(

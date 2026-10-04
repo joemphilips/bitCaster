@@ -1,5 +1,3 @@
-import type { components } from "@/generated/api";
-
 // =============================================================================
 // Wallet & Currency Types
 // =============================================================================
@@ -53,6 +51,8 @@ export interface PortfolioStats {
 }
 
 export interface PortfolioMonitoringState {
+  /** The shown estimate is retained in memory, not current custody or spending authority. */
+  retainingDisplay?: boolean;
   stale: boolean;
   incomplete: boolean;
   building: boolean;
@@ -150,53 +150,28 @@ export interface Fund {
 // Activity Types (replaces OrderHistoryItem)
 // =============================================================================
 
-export type ActivityType =
-  | "deposit"
-  | "withdrawal"
-  | "Buy"
-  | "Sell"
-  | "payout_claimed"
-  | "creator_fee_claimed";
-export type ActivityStatus = "pending" | "completed" | "Failed";
-
-export interface TradeActivityDetails {
-  fillId: string;
-  outcomeId: string;
-  tokenSide: components["schemas"]["TokenSide"];
-  faceAmountSubunits: number;
-  divisibility: import("./market").ProductMarketDivisibility;
-}
-
-export interface ActivityItem {
-  id: string;
-  /** Missing only on legacy history whose wallet cannot be inferred. */
-  walletId?: string;
-  type: ActivityType;
-  amountSubunits: number;
-  baseAsset: "sat";
-  date: string;
-  status: ActivityStatus;
-  txId: string | null;
-  lightningInvoice: string | null;
-  failureReason?: string;
-  marketId?: string;
-  marketTitle?: string;
-  positionId?: string;
-  /** Exact confirmed fill values. Old manually added Buy/Sell rows may omit them. */
-  tradeDetails?: TradeActivityDetails;
-}
+export type {
+  ActivityType,
+  ActivityStatus,
+  TradeActivityDetails,
+  ActivityItem,
+} from "@bitcaster/client-sdk/activityLog";
+import type { ActivityItem } from "@bitcaster/client-sdk/activityLog";
 
 // =============================================================================
 // Created Market Types
 // =============================================================================
 
-export type CreatedMarketStatus = "active" | "resolved" | "refunded";
+export type CreatedMarketStatus = "active" | "resolved" | "refunded" | "unknown";
+export type CreatorEngineDataStatus = "current" | "stale" | "unavailable";
 
 export interface CreatedMarket {
   id: string;
   title: string;
   imageUrl: string;
   status: CreatedMarketStatus;
+  /** Display freshness only. It does not authorize oracle or lifecycle changes. */
+  engineDataStatus?: CreatorEngineDataStatus;
   createdDate: string;
   baseAsset: "sat";
   divisibility: import("./market").ProductMarketDivisibility;
@@ -205,21 +180,7 @@ export interface CreatedMarket {
   volume: number;
   creatorFeesEarned: number;
   creatorFeePercent: number;
-  oracle?: {
-    type: "self";
-    eventId: string;
-    announcementEventId?: string;
-    outcomes: string[];
-    /**
-     * TLV-hex of the kormir DLC oracle announcement. Mirrored client-side so a
-     * fresh browser profile can re-import the committed-nonce material before
-     * re-signing the attestation (P22 B1b).
-     */
-    announcementHex?: string;
-    attestationHex?: string;
-    attestedOutcome?: string;
-    attestedAt?: string;
-  };
+  oracle?: import("@/stores/creatorMarkets").StoredCreatorOracleMetadata;
 }
 
 // =============================================================================
@@ -283,9 +244,6 @@ export interface PortfolioProps {
 
   /** Called when user clicks to view a market they created */
   onViewMarket?: (marketId: string) => void;
-
-  /** Called when user clicks to view activity item details */
-  onViewActivity?: (activityId: string) => void;
 
   /** Called when user switches positions sub-tab */
   onPositionsTabChange?: (tab: "active" | "closed") => void;

@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { persist } from "zustand/middleware";
+import { createJSONStorage, persist } from "zustand/middleware";
 import type { WizardDraft } from "@/types/market-creation";
 
 export function defaultDraft(): WizardDraft {
@@ -19,13 +19,20 @@ interface MarketDraftState {
   hasSavedDraft: boolean;
   setDraft: (updater: (prev: WizardDraft) => WizardDraft) => void;
   clearDraft: () => void;
+  completeCreation: (creationId: string) => void;
+  hasCreationPersistence: () => boolean;
 }
+
+// Persist's unavailable-storage fallback still accepts memory-only writes.
+// Creation must know whether this instance retained a real storage adapter.
+const draftStorage = createJSONStorage<MarketDraftState>(() => window.localStorage);
 
 export const useMarketDraftStore = create<MarketDraftState>()(
   persist(
     (set, get) => ({
       draft: defaultDraft(),
       hasSavedDraft: false,
+      hasCreationPersistence: () => draftStorage !== undefined,
       setDraft: (updater) => {
         const prev = get().draft;
         const next = updater(prev);
@@ -34,10 +41,26 @@ export const useMarketDraftStore = create<MarketDraftState>()(
         if (next === prev) return;
         set({ draft: next, hasSavedDraft: true });
       },
-      clearDraft: () => set({ draft: defaultDraft(), hasSavedDraft: false }),
+      // Starting over must not lose the reference to unfinished paid work.
+      clearDraft: () => {
+        const creation = get().draft.creation;
+        set({
+          draft: {
+            ...defaultDraft(),
+            ...(creation === undefined ? {} : { creation }),
+          },
+          hasSavedDraft: creation !== undefined,
+        });
+      },
+      completeCreation: (creationId) => {
+        if (get().draft.creation?.creationId !== creationId)
+          throw new Error("Creation draft reference changed during completion.");
+        set({ draft: defaultDraft(), hasSavedDraft: false });
+      },
     }),
     {
       name: "bitcaster-market-draft",
+      storage: draftStorage,
       // Thumbnail previews are stored as `blob:` object URLs that die with
       // the page that created them. Drop any stale reference on rehydrate so
       // the resumed wizard doesn't render a broken image.
