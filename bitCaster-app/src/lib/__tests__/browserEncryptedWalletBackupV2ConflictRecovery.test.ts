@@ -1382,6 +1382,7 @@ async function coldConflictWallet(
       case "/v1/conditional_keysets":
         if (state.failConditionalRead) throw new NetworkError("conditional registry unavailable");
         response = {
+          next_cursor: null,
           keysets: [
             {
               id: keysetId,

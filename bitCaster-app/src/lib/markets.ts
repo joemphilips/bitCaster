@@ -1,3 +1,4 @@
+import { collectCtfListing, CTF_LISTING_PAGE_SIZE } from "@bitcaster/client-sdk/ctfListing";
 import type { CurrentOdds, LatestConfirmedTrade, Market, FilterState } from "@/types/market";
 import type { MarketDetail, OrderBook, Order, PriceHistory } from "@/types/market-detail";
 import type { MarketSort } from "@/hooks/useMarketSort";
@@ -115,6 +116,7 @@ export function extractCategoryTagIds(tags: string[][]): string[] {
 
 interface ConditionsResponse {
   conditions: ConditionInfo[];
+  next_cursor: string | null;
 }
 
 /**
@@ -123,12 +125,19 @@ interface ConditionsResponse {
  * call mintd directly before value is spent, locked, claimed, or resolved.
  */
 export async function fetchConditions(): Promise<ConditionInfo[]> {
-  const response = await fetch("/v1/conditions");
-  if (!response.ok) {
-    throw new Error(`Failed to fetch conditions: ${response.status}`);
-  }
-  const data: ConditionsResponse = await response.json();
-  return data.conditions;
+  return collectCtfListing({
+    fetchPage: async (cursor) => {
+      const query = new URLSearchParams({ limit: String(CTF_LISTING_PAGE_SIZE) });
+      if (cursor !== undefined) query.set("cursor", cursor);
+      const response = await fetch(`/v1/conditions?${query}`);
+      if (!response.ok) throw new Error(`Failed to fetch conditions: ${response.status}`);
+      const page: ConditionsResponse = await response.json();
+      return { items: page.conditions, next_cursor: page.next_cursor };
+    },
+    getId: (condition) => condition.condition_id,
+    maxRecords: 10_000,
+    maxPages: 100,
+  });
 }
 
 // =============================================================================

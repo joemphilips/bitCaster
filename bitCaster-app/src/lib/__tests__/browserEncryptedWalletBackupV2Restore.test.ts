@@ -1646,6 +1646,7 @@ async function coldRestoreWallet(
       case "/v1/conditional_keysets":
         options?.onConditionalRead?.();
         response = {
+          next_cursor: null,
           keysets:
             options?.conditionalPresent === false
               ? []

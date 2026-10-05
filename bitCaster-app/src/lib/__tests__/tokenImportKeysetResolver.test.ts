@@ -1,3 +1,4 @@
+import fixture from "../../../../bitcaster-client-sdk/test/fixtures/ctf-pagination-real-registration-sqlite.json";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { TokenImportKeysetRequest } from "@bitcaster/client-sdk/tokenImportValidation";
 import { resolveTokenImportKeysets } from "@/lib/tokenImportKeysetResolver";
@@ -19,8 +20,8 @@ function request(
   };
 }
 
-function response(keysets: unknown[]) {
-  return new Response(JSON.stringify({ keysets }), {
+function response(keysets: unknown[], nextCursor: string | null = null) {
+  return new Response(JSON.stringify({ keysets, next_cursor: nextCursor }), {
     status: 200,
     headers: { "Content-Type": "application/json" },
   });
@@ -77,7 +78,7 @@ describe("resolveTokenImportKeysets", () => {
     expect(result.regularKeysets).toEqual([{ keysetId: fullId, unit: "sat", active: true }]);
   });
 
-  it("resolves a conditional keyset from the next inclusive registry page", async () => {
+  it("resolves a conditional keyset from the next cursor registry page", async () => {
     const prefix = "01d8a2e36a064e11";
     const fullId = `${prefix}${"ab".repeat(25)}`;
     const firstPage = Array.from({ length: 100 }, (_, index) => ({
@@ -93,13 +94,13 @@ describe("resolveTokenImportKeysets", () => {
         const url = new URL(String(input));
         if (url.pathname.endsWith("/keysets")) return response([]);
         conditionalUrls.push(url);
-        if (url.searchParams.has("since")) {
+        if (url.searchParams.has("cursor")) {
           return response([
             firstPage.at(-1),
             { id: fullId, unit: "sat", active: true, registered_at: 100 },
           ]);
         }
-        return response(firstPage);
+        return response(firstPage, "opaque+?/=");
       }),
     );
 
@@ -107,7 +108,41 @@ describe("resolveTokenImportKeysets", () => {
 
     expect(result.conditionalKeysets).toEqual([{ keysetId: fullId, unit: "sat", active: true }]);
     expect(conditionalUrls.map((url) => url.searchParams.get("limit"))).toEqual(["100", "100"]);
-    expect(conditionalUrls.map((url) => url.searchParams.get("since"))).toEqual([null, "99"]);
+    expect(conditionalUrls.map((url) => url.searchParams.get("cursor"))).toEqual([
+      null,
+      "opaque+?/=",
+    ]);
+  });
+
+  it("uses all three real producer pages without an active-only filter", async () => {
+    const target = fixture.keysets_pages[2].keysets[1];
+    const urls: URL[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: URL | RequestInfo) => {
+        const url = new URL(String(input));
+        if (url.pathname.endsWith("/keysets")) return response([]);
+        urls.push(url);
+        expect(url.searchParams.has("active")).toBe(false);
+        const cursor = url.searchParams.get("cursor");
+        const index =
+          cursor === null
+            ? 0
+            : fixture.keysets_pages.findIndex(
+                (_page, index) =>
+                  index > 0 && fixture.keysets_pages[index - 1].next_cursor === cursor,
+              );
+        expect(index).toBeGreaterThanOrEqual(0);
+        expect(Object.fromEntries(url.searchParams)).toEqual(
+          Object.fromEntries(new URL(fixture.keysets_queries[index], url.origin).searchParams),
+        );
+        return Response.json(fixture.keysets_pages[index]);
+      }),
+    );
+    const result = await resolveTokenImportKeysets(request([target.id]));
+    expect(result.conditionalKeysets).toHaveLength(1);
+    expect(result.conditionalKeysets[0].keysetId).toBe(target.id);
+    expect(urls).toHaveLength(3);
   });
 
   it("enforces the combined regular and conditional candidate bound", async () => {

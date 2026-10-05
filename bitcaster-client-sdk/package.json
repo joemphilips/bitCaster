@@ -283,6 +283,10 @@
       "types": "./dist/ctfRegistration.d.ts",
       "import": "./dist/ctfRegistration.js"
     },
+    "./ctfListing": {
+      "types": "./dist/ctfListing.d.ts",
+      "import": "./dist/ctfListing.js"
+    },
     "./conditionalKeysets": {
       "types": "./dist/conditionalKeysets.d.ts",
       "import": "./dist/conditionalKeysets.js"

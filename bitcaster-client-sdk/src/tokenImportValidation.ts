@@ -1,3 +1,4 @@
+import { readCtfListingCursor } from './ctfListing.ts'
 import { getDecodedToken, getDecodedTokenBinary, type Token } from '@cashu/cashu-ts'
 import {
   readAllocationBoundedJsonResponse,
@@ -113,7 +114,7 @@ export interface SelectTokenImportKeysetCandidatesInput {
 
 export interface TokenImportConditionalKeysetPageQuery {
   readonly limit: 100
-  readonly since?: number
+  readonly cursor?: string
 }
 
 export interface SelectPagedTokenImportKeysetCandidatesInput {
@@ -166,7 +167,7 @@ export function selectTokenImportKeysetCandidates(
 }
 
 /**
- * Resolves candidates from the inclusive, timestamp-paged CTF keyset registry.
+ * Resolves candidates from the cursor-paged CTF keyset registry.
  * The transport callback remains responsible for bounded HTTP and destination
  * policy. This helper retains only matching candidate metadata across pages.
  */
@@ -194,12 +195,13 @@ export async function selectPagedTokenImportKeysetCandidates(
 
   const conditionalById = new Map<string, TokenImportKeysetMetadata>()
   const registeredAtById = new Map<string, number>()
-  let since: number | undefined
+  let cursor: string | undefined
+  const cursors = new Set<string>()
   let page: unknown = firstPage
 
   while (true) {
     assertTokenImportResolverRequestLive(input.request)
-    const parsedPage = parseConditionalKeysetPage(page, since)
+    const parsedPage = parseConditionalKeysetPage(page)
     const pageCandidates = selectCandidatesFromWireResponse(page, input.request, 'conditional')
 
     for (const candidate of pageCandidates) {
@@ -235,19 +237,16 @@ export async function selectPagedTokenImportKeysetCandidates(
       }
     }
 
-    if (parsedPage.keysets.length < TOKEN_IMPORT_CONDITIONAL_KEYSET_PAGE_SIZE) {
-      break
-    }
-
-    const lastRegisteredAt = parsedPage.lastRegisteredAt
-    if (lastRegisteredAt === undefined || (since !== undefined && lastRegisteredAt <= since)) {
+    if (parsedPage.nextCursor === null) break
+    if (cursors.has(parsedPage.nextCursor)) {
       fail('keyset_resolution_indeterminate', 'Mint conditional keyset pagination did not advance')
     }
-    since = lastRegisteredAt
+    cursors.add(parsedPage.nextCursor)
+    cursor = parsedPage.nextCursor
     assertTokenImportResolverRequestLive(input.request)
     page = await input.fetchConditionalPage({
       limit: TOKEN_IMPORT_CONDITIONAL_KEYSET_PAGE_SIZE,
-      since,
+      cursor,
     })
     assertTokenImportResolverRequestLive(input.request)
   }
@@ -384,13 +383,10 @@ interface ParsedConditionalKeysetPage {
   readonly keysets: readonly unknown[]
   readonly registeredAtById: ReadonlyMap<string, number>
   readonly conflictingRegisteredAtIds: ReadonlySet<string>
-  readonly lastRegisteredAt?: number
+  readonly nextCursor: string | null
 }
 
-function parseConditionalKeysetPage(
-  value: unknown,
-  since: number | undefined,
-): ParsedConditionalKeysetPage {
+function parseConditionalKeysetPage(value: unknown): ParsedConditionalKeysetPage {
   if (!isRecord(value) || !Array.isArray(value.keysets)) {
     fail('keyset_resolution_indeterminate', 'Mint returned an invalid conditional keyset page')
   }
@@ -410,7 +406,6 @@ function parseConditionalKeysetPage(
       typeof registeredAt !== 'number' ||
       !Number.isSafeInteger(registeredAt) ||
       registeredAt < 0 ||
-      (since !== undefined && registeredAt < since) ||
       (lastRegisteredAt !== undefined && registeredAt < lastRegisteredAt)
     ) {
       fail('keyset_resolution_indeterminate', 'Mint conditional keyset timestamps are invalid')
@@ -430,7 +425,15 @@ function parseConditionalKeysetPage(
     keysets: value.keysets,
     registeredAtById,
     conflictingRegisteredAtIds,
-    lastRegisteredAt,
+    nextCursor: readTokenImportCursor(value.next_cursor),
+  }
+}
+
+function readTokenImportCursor(value: unknown): string | null {
+  try {
+    return readCtfListingCursor(value)
+  } catch {
+    fail('keyset_resolution_indeterminate', 'Mint returned an invalid conditional keyset cursor')
   }
 }
 

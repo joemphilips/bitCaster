@@ -1,3 +1,4 @@
+import { collectCtfListing, CTF_LISTING_PAGE_SIZE } from '@bitcaster-market/client-sdk/ctfListing'
 import { randomUUID } from 'node:crypto'
 import { constants } from 'node:fs'
 import { open } from 'node:fs/promises'
@@ -890,7 +891,17 @@ function createAllKeysetRecoveryTransport(
   return {
     wallet,
     listRegularKeysets: () => mint.getKeySets(),
-    listConditionalKeysets: () => mint.getConditionalKeysets(),
+    listConditionalKeysets: async () => ({
+      keysets: await collectCtfListing({
+        fetchPage: async (cursor) => {
+          const page = await mint.getConditionalKeysets({ limit: CTF_LISTING_PAGE_SIZE, cursor })
+          return { items: page.keysets, next_cursor: page.next_cursor }
+        },
+        getId: (keyset) => keyset.id,
+        maxRecords: 10_000,
+        maxPages: 100,
+      }),
+    }),
     async getConditionalKeyset(id) {
       const keys = await mint.getKeys(id)
       const keyset = keys.keysets.find((candidate) => candidate.id === id)

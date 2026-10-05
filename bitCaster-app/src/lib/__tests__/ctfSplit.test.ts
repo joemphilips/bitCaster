@@ -112,7 +112,7 @@ const { MockAmount, MockOutputData, MockCtfMint, ctfMintState } = vi.hoisted(() 
     }
 
     async getConditionalKeysets() {
-      return { keysets: ctfMintState.conditionalKeysets };
+      return { keysets: ctfMintState.conditionalKeysets, next_cursor: null };
     }
 
     async ctfConvert(request: {

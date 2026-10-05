@@ -817,32 +817,31 @@ test('exact keyset classification requires explicit loopback HTTP permission', (
   )
 })
 
-test('paged conditional discovery deduplicates inclusive rows and has no fixed page ceiling', async () => {
+test('paged conditional discovery follows opaque cursors across a large registry without a fixed page ceiling', async () => {
   const prefix = REGULAR_SHORT_ID
   const registry = Array.from({ length: 1_700 }, (_, index) =>
     conditionalKeyset(`01${index.toString(16).padStart(64, '0')}`, index),
   )
   registry[1_650] = conditionalKeyset(REGULAR_FULL_ID, 1_650)
-  const queries: Array<{ limit: number; since?: number }> = []
+  const queries: Array<{ limit: number; cursor?: string }> = []
 
   const result = await selectPagedTokenImportKeysetCandidates({
     request: keysetRequest([prefix], { maxCandidates: 1 }),
     regularResponse: Promise.resolve({ keysets: [] }),
     fetchConditionalPage: async (query) => {
       queries.push(query)
-      const keysets = registry.filter(
-        ({ registered_at }) =>
-          query.since === undefined ||
-          (typeof registered_at === 'number' && registered_at >= query.since),
-      )
-      return { keysets: keysets.slice(0, query.limit) }
+      const offset = query.cursor === undefined ? 0 : Number(query.cursor)
+      return {
+        keysets: registry.slice(offset, offset + query.limit),
+        next_cursor: offset + query.limit < registry.length ? String(offset + query.limit) : null,
+      }
     },
   })
 
-  assert.equal(queries.length, 18)
+  assert.equal(queries.length, 17)
   assert.deepEqual(result.conditionalKeysets, [metadata(REGULAR_FULL_ID)])
-  assert.equal(queries[0]?.since, undefined)
-  assert.equal(queries[1]?.since, 99)
+  assert.equal(queries[0]?.cursor, undefined)
+  assert.equal(queries[1]?.cursor, '100')
 })
 
 test('paged conditional discovery preserves a later prefix collision', async () => {
@@ -857,9 +856,10 @@ test('paged conditional discovery preserves a later prefix collision', async () 
     request: keysetRequest([prefix]),
     regularResponse: Promise.resolve({ keysets: [] }),
     fetchConditionalPage: async (query) =>
-      query.since === undefined
-        ? { keysets: firstPage }
+      query.cursor === undefined
+        ? { keysets: firstPage, next_cursor: 'page-two' }
         : {
+            next_cursor: null,
             keysets: [firstPage[99], conditionalKeyset(collision, 100, { unit: 'msat' })],
           },
   })
@@ -879,7 +879,7 @@ test('paged conditional discovery preserves a later prefix collision', async () 
   )
 })
 
-test('paged conditional discovery rejects a full same-timestamp page that cannot advance', async () => {
+test('paged conditional discovery rejects a repeated cursor on a same-timestamp page', async () => {
   const sameTimestampPage = Array.from({ length: 100 }, (_, index) =>
     conditionalKeyset(`01${index.toString(16).padStart(64, '0')}`, 7),
   )
@@ -890,7 +890,7 @@ test('paged conditional discovery rejects a full same-timestamp page that cannot
       regularResponse: Promise.resolve({ keysets: [] }),
       fetchConditionalPage: async () => {
         calls += 1
-        return { keysets: sameTimestampPage }
+        return { keysets: sameTimestampPage, next_cursor: 'repeat' }
       },
     }),
     'keyset_resolution_indeterminate',
@@ -909,9 +909,10 @@ test('paged conditional discovery rejects conflicting metadata for a repeated ma
       request: keysetRequest([REGULAR_SHORT_ID]),
       regularResponse: Promise.resolve({ keysets: [] }),
       fetchConditionalPage: async (query) =>
-        query.since === undefined
-          ? { keysets: firstPage }
+        query.cursor === undefined
+          ? { keysets: firstPage, next_cursor: 'page-two' }
           : {
+              next_cursor: null,
               keysets: [
                 conditionalKeyset(REGULAR_FULL_ID, 99, { active: false }),
                 conditionalKeyset(`${REGULAR_SHORT_ID}${'cd'.repeat(25)}`, 100),
@@ -935,7 +936,7 @@ test('paged conditional discovery rejects malformed page timestamps and ordering
       selectPagedTokenImportKeysetCandidates({
         request: keysetRequest([REGULAR_SHORT_ID]),
         regularResponse: Promise.resolve({ keysets: [] }),
-        fetchConditionalPage: async () => ({ keysets }),
+        fetchConditionalPage: async () => ({ keysets, next_cursor: null }),
       }),
       'keyset_resolution_indeterminate',
     )
@@ -950,6 +951,7 @@ test('paged conditional discovery enforces the combined candidate cap incrementa
         keysets: [{ id: REGULAR_FULL_ID, unit: 'sat', active: true }],
       }),
       fetchConditionalPage: async () => ({
+        next_cursor: null,
         keysets: [conditionalKeyset(`${REGULAR_SHORT_ID}${'ff'.repeat(25)}`, 0)],
       }),
     }),
@@ -967,7 +969,7 @@ test('paged conditional discovery checks request liveness after each page', asyn
       fetchConditionalPage: async () => {
         calls += 1
         controller.abort()
-        return { keysets: [] }
+        return { keysets: [], next_cursor: null }
       },
     }),
     /Mint keyset lookup deadline elapsed/,

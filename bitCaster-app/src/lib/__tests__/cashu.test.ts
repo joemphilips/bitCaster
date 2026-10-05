@@ -84,10 +84,19 @@ it("receives a multi-proof conditional v4 token through real ingress and validat
     if (url === `${mint}/v1/keysets`) {
       return new Response(JSON.stringify({ keysets: [] }), { status: 200 });
     }
-    if (url === `${mint}/v1/conditional_keysets`) {
+    if (url === `${mint}/v1/conditional_keysets?limit=100`) {
       return new Response(
         JSON.stringify({
-          keysets: [{ id: keysetId, unit: "msat", active: true, condition_id: conditionId }],
+          next_cursor: null,
+          keysets: [
+            {
+              id: keysetId,
+              unit: "msat",
+              active: true,
+              condition_id: conditionId,
+              registered_at: 0,
+            },
+          ],
         }),
         { status: 200 },
       );
@@ -147,7 +156,7 @@ it("receives a multi-proof conditional v4 token through real ingress and validat
     expect(receive).toHaveBeenCalledOnce();
     expect(fetchMock.mock.calls.map(([url]) => String(url))).toEqual([
       `${mint}/v1/keysets`,
-      `${mint}/v1/conditional_keysets`,
+      `${mint}/v1/conditional_keysets?limit=100`,
     ]);
     expect(receive).toHaveBeenCalledWith(
       expect.objectContaining({

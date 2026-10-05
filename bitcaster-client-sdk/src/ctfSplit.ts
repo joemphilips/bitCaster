@@ -1,3 +1,4 @@
+import { collectCtfListing, CTF_LISTING_PAGE_SIZE } from './ctfListing.ts'
 import {
   Amount,
   CheckStateEnum,
@@ -841,7 +842,9 @@ export class CashuMintCtfSplitTransport implements CtfSplitTransport {
     getCtfCondition(conditionId: string): Promise<CtfConditionInfo>
     getConditionalKeysets(query?: {
       active?: boolean
-    }): Promise<{ keysets: CtfConditionalKeysetInfo[] }>
+      limit?: number
+      cursor?: string
+    }): Promise<{ keysets: CtfConditionalKeysetInfo[]; next_cursor: string | null }>
     ctfConvert(request: CtfConvertRequest): Promise<CtfConvertResponse>
   }
 
@@ -850,7 +853,9 @@ export class CashuMintCtfSplitTransport implements CtfSplitTransport {
       getCtfCondition(conditionId: string): Promise<CtfConditionInfo>
       getConditionalKeysets(query?: {
         active?: boolean
-      }): Promise<{ keysets: CtfConditionalKeysetInfo[] }>
+        limit?: number
+        cursor?: string
+      }): Promise<{ keysets: CtfConditionalKeysetInfo[]; next_cursor: string | null }>
       ctfConvert(request: CtfConvertRequest): Promise<CtfConvertResponse>
     }
   }
@@ -869,17 +874,24 @@ export class CashuMintCtfSplitTransport implements CtfSplitTransport {
     selection?: CtfRootPartitionSelection,
   ): Promise<Record<string, string>> {
     const condition = await this.mint.getCtfCondition(conditionId)
-    let conditionalKeysets: CtfConditionalKeysetInfo[] = []
-    try {
-      conditionalKeysets = (await this.mint.getConditionalKeysets({ active: true })).keysets
-    } catch {
-      conditionalKeysets = []
-    }
+    const conditionalKeysets = await this.getConditionalKeysets({ active: true })
     return selectRootPartitionKeysets(condition, selection, conditionalKeysets)
   }
 
   async getConditionalKeysets(query?: { active?: boolean }): Promise<CtfConditionalKeysetInfo[]> {
-    return (await this.mint.getConditionalKeysets(query)).keysets
+    return collectCtfListing({
+      fetchPage: async (cursor) => {
+        const page = await this.mint.getConditionalKeysets({
+          ...query,
+          limit: CTF_LISTING_PAGE_SIZE,
+          cursor,
+        })
+        return { items: page.keysets, next_cursor: page.next_cursor }
+      },
+      getId: (keyset) => keyset.id,
+      maxRecords: 10_000,
+      maxPages: 100,
+    })
   }
 
   async postSplit(

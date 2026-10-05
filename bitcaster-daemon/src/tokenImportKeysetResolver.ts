@@ -29,10 +29,10 @@ export function createDaemonTokenImportKeysetResolver(
         request,
         options,
       ),
-      fetchConditionalPage: ({ limit, since }) => {
+      fetchConditionalPage: ({ limit, cursor }) => {
         const conditionalUrl = mintEndpoint(request.canonicalMintUrl, 'conditional_keysets')
         conditionalUrl.searchParams.set('limit', String(limit))
-        if (since !== undefined) conditionalUrl.searchParams.set('since', String(since))
+        if (cursor !== undefined) conditionalUrl.searchParams.set('cursor', cursor)
         return fetchKeysets(conditionalUrl, request, options)
       },
     })

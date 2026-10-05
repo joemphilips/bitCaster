@@ -3995,6 +3995,7 @@ function fakeMint(
     getConditionalKeysets: async () => {
       calls.getConditionalKeysets += 1
       return {
+        next_cursor: null,
         keysets: [
           {
             id: RECEIVE_KEYSET_ID,

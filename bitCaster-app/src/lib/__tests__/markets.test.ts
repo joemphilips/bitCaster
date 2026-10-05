@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   fetchMarketDetail,
+  fetchConditions,
   fetchMarketPriceHistory,
   fetchMarketComments,
   filterMarkets,
@@ -31,6 +32,38 @@ import { outcomeSetIdsForMarketBooks, resolveOutcomeSets } from "@/lib/outcomeSe
 import type { MarketCatalogueEntry, MarketCommentsResponse } from "../markets";
 import type { FilterState, Market } from "@/types/market";
 import type { MarketDetail } from "@/types/market-detail";
+
+describe("complete condition catalogue", () => {
+  afterEach(() => vi.unstubAllGlobals());
+  it("follows a cursor after a short page and does not return a partial list on failure", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        Response.json({
+          conditions: [{ condition_id: "first" }],
+          next_cursor: "opaque+?/=",
+        }),
+      )
+      .mockResolvedValueOnce(
+        Response.json({ conditions: [{ condition_id: "second" }], next_cursor: null }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+    expect((await fetchConditions()).map((condition) => condition.condition_id)).toEqual([
+      "first",
+      "second",
+    ]);
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      "/v1/conditions?limit=100",
+      "/v1/conditions?limit=100&cursor=opaque%2B%3F%2F%3D",
+    ]);
+    fetchMock
+      .mockResolvedValueOnce(
+        Response.json({ conditions: [{ condition_id: "first" }], next_cursor: "second" }),
+      )
+      .mockResolvedValueOnce(new Response(null, { status: 503 }));
+    await expect(fetchConditions()).rejects.toThrow("Failed to fetch conditions: 503");
+  });
+});
 
 describe("condition registration adapter", () => {
   afterEach(() => vi.unstubAllGlobals());

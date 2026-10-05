@@ -1,3 +1,4 @@
+import { collectCtfListing, CTF_LISTING_PAGE_SIZE } from '@bitcaster-market/client-sdk/ctfListing'
 import {
   Amount,
   Mint as CashuMint,
@@ -70,6 +71,7 @@ import {
   type DurableCustodyProofOperationInput,
 } from '@bitcaster-market/client-sdk/durableCustodyProofOperation'
 import {
+  CTF_COLLATERAL_UNIT,
   defaultCollateralUnit,
   normalizeMarketBaseAsset,
 } from '@bitcaster-market/client-sdk/marketUnits'
@@ -1900,7 +1902,7 @@ export async function resolveCtfConsolidationOutputKeysets(
     return deps.resolveOutputKeysetByCollection(mintUrl, conditionId)
   }
   const keysets = await listMintAndConditionalKeysets(mintUrl)
-  const collateralUnit = defaultCollateralUnit(undefined)
+  const collateralUnit = CTF_COLLATERAL_UNIT
   const activeCollateral = keysets.find(
     (keyset) =>
       keyset.active && keyset.unit === collateralUnit && keyset.condition_id === undefined,
@@ -1910,7 +1912,8 @@ export async function resolveCtfConsolidationOutputKeysets(
   }
   const entries: Array<[string, string]> = [[COLLATERAL_COLLECTION, activeCollateral.id]]
   for (const keyset of keysets) {
-    if (!keyset.active || keyset.condition_id !== conditionId) continue
+    if (!keyset.active || keyset.unit !== collateralUnit || keyset.condition_id !== conditionId)
+      continue
     for (const collection of [keyset.outcome_collection, keyset.outcome_collection_id]) {
       if (collection) entries.push([collection, keyset.id])
     }
@@ -2125,26 +2128,21 @@ async function listMintAndConditionalKeysets(mintUrl: string): Promise<
     outcome_collection_id?: string
   }>
 > {
-  const mint = new CashuMint(mintUrl) as CashuMint & {
-    getConditionalKeysets(query?: { active?: boolean }): Promise<{
-      keysets: Array<{
-        id: string
-        unit: string
-        active?: boolean
-        input_fee_ppk?: number
-        condition_id?: string
-        outcome_collection?: string
-        outcome_collection_id?: string
-      }>
-    }>
-  }
+  const mint = new CashuMint(mintUrl)
   const regular = (await mint.getKeySets()).keysets
-  let conditional: Awaited<ReturnType<typeof mint.getConditionalKeysets>>['keysets'] = []
-  try {
-    conditional = (await mint.getConditionalKeysets({ active: true })).keysets
-  } catch {
-    conditional = []
-  }
+  const conditional = await collectCtfListing({
+    fetchPage: async (cursor) => {
+      const page = await mint.getConditionalKeysets({
+        active: true,
+        limit: CTF_LISTING_PAGE_SIZE,
+        cursor,
+      })
+      return { items: page.keysets, next_cursor: page.next_cursor }
+    },
+    getId: (keyset) => keyset.id,
+    maxRecords: 10_000,
+    maxPages: 100,
+  })
   return [...regular, ...conditional]
 }
 
