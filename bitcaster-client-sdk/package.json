@@ -19,6 +19,10 @@
       "types": "./dist/oraclePublication.d.ts",
       "import": "./dist/oraclePublication.js"
     },
+    "./oracleBackup": {
+      "types": "./dist/oracleBackup.d.ts",
+      "import": "./dist/oracleBackup.js"
+    },
     "./oracleResolutionExplanation": {
       "types": "./dist/oracleResolutionExplanation.d.ts",
       "import": "./dist/oracleResolutionExplanation.js"

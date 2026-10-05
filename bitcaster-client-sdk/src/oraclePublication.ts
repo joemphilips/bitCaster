@@ -93,6 +93,10 @@ export interface OraclePublicationResult {
   readonly failures: readonly OraclePublicationFailureStage[]
 }
 
+export interface OraclePublicationOptions {
+  readonly engineDelivery: 'synchronize' | 'relay-only'
+}
+
 /** Validate a loaded port view without adding another storage owner. DLC verification remains a port. */
 export function snapshotOraclePublicationRecord(
   record: OraclePublicationRecord,
@@ -116,7 +120,9 @@ export async function publishOracleOutcome(
   input: OraclePublicationBinding,
   outcome: string,
   explanationText?: string,
+  options: OraclePublicationOptions = { engineDelivery: 'synchronize' },
 ): Promise<OraclePublicationResult> {
+  const synchronizeEngine = engineDeliveryEnabled(options)
   const binding = snapshotBinding(input)
   if (!binding.outcomes.includes(outcome)) throw new Error('Oracle outcome is foreign.')
   let retained = await adapters.store.read(binding.conditionId)
@@ -148,20 +154,32 @@ export async function publishOracleOutcome(
     }
   }
   current = await attemptRelay(adapters, current, failures)
-  current = await attemptEngine(adapters, current, failures)
+  if (synchronizeEngine) current = await attemptEngine(adapters, current, failures)
   current = await attemptExplanationRelay(adapters, current, failures)
   return { record: current, failures }
+}
+
+function engineDeliveryEnabled(options: OraclePublicationOptions): boolean {
+  switch (options.engineDelivery) {
+    case 'synchronize':
+      return true
+    case 'relay-only':
+      return false
+    default:
+      throw new Error('Oracle publication delivery mode is invalid.')
+  }
 }
 
 /** Reload the saved choice. Retry without a signer or a new outcome selection. */
 export async function retryOraclePublication(
   adapters: OraclePublicationAdapters,
   binding: OraclePublicationBinding,
+  options: OraclePublicationOptions = { engineDelivery: 'synchronize' },
 ): Promise<OraclePublicationResult> {
   const stored = await adapters.store.read(binding.conditionId)
   if (stored === null || stored.attestation === null)
     throw new Error('Signed oracle publication is unavailable.')
-  return publishOracleOutcome(adapters, binding, stored.chosenOutcome)
+  return publishOracleOutcome(adapters, binding, stored.chosenOutcome, undefined, options)
 }
 
 async function retainExplanation(

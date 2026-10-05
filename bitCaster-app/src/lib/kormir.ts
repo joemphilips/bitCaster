@@ -30,7 +30,11 @@ import type {
 } from "./kormir-wasm-pkg/kormir_wasm";
 import { nip19 } from "nostr-tools";
 import { getPublicKey } from "nostr-tools/pure";
-import { normalizeOracleAnnouncementTags } from "@bitcaster/client-sdk";
+import {
+  normalizeOracleAnnouncementTags,
+  OracleBackupError,
+  type OracleBackupValidator,
+} from "@bitcaster/client-sdk";
 
 // Re-export the wasm-bindgen types under friendlier names so callers do not
 // have to reach into the generated `kormir-wasm-pkg` directory.
@@ -40,6 +44,21 @@ export type { KormirAnnouncement, KormirAttestation };
 export type PreparedOracleArtifact = {
   artifactHex: string;
   eventJson: string;
+};
+
+/** Validate private authority without constructing an oracle or changing IndexedDB. */
+export const browserOracleBackupValidator: OracleBackupValidator = {
+  async validateAuthority(privateDtoJson, expectedOraclePubkey) {
+    try {
+      const module = await loadKormirModule();
+      return JSON.parse(
+        module.Kormir.validate_enum_authority(privateDtoJson, expectedOraclePubkey),
+      );
+    } catch {
+      // The WASM input contains private authority. Do not expose nested errors.
+      throw new OracleBackupError("invalid-record");
+    }
+  },
 };
 
 export async function decodeOracleAnnouncement(artifactHex: string) {

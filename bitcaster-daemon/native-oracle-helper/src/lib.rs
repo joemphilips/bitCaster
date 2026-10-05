@@ -9,7 +9,10 @@ use kormir::bitcoin::Network;
 use kormir::lightning::io::Cursor;
 use kormir::lightning::util::ser::{Readable, Writeable};
 use kormir::nostr::{Event, EventBuilder, EventId, JsonUtil, Kind, Tag};
-use kormir::storage::{OracleEventData, Storage};
+use kormir::private_backup::{
+    validate_enum_authority, validate_enum_authority_json, PrivateEnumAuthority,
+};
+use kormir::storage::{same_event, OracleEventData, Storage};
 use kormir::{Oracle, OracleAnnouncement, OracleAttestation};
 use serde::{Deserialize, Serialize};
 
@@ -50,6 +53,43 @@ impl Failure {
 #[derive(Deserialize)]
 #[serde(tag = "action", rename_all = "kebab-case", deny_unknown_fields)]
 enum Request {
+    ValidateAuthority {
+        version: u8,
+        #[serde(rename = "privateDtoJson")]
+        private_dto_json: String,
+        #[serde(rename = "expectedOraclePubkey")]
+        expected_oracle_pubkey: String,
+    },
+    ExportEnumAuthority {
+        version: u8,
+        #[serde(rename = "oracleSecretKeyHex")]
+        oracle_secret_key_hex: String,
+        #[serde(rename = "nonceSeedHex")]
+        nonce_seed_hex: String,
+        #[serde(rename = "reservedNonceIndex")]
+        reserved_nonce_index: u32,
+        #[serde(rename = "announcementTlvHex")]
+        announcement_tlv_hex: String,
+        #[serde(rename = "announcementEventJson")]
+        announcement_event_json: String,
+        #[serde(rename = "signedOutcome")]
+        signed_outcome: Option<String>,
+        #[serde(rename = "attestationHex")]
+        attestation_hex: Option<String>,
+        #[serde(rename = "attestationEventJson")]
+        attestation_event_json: Option<String>,
+        #[serde(rename = "publicationRecordJson")]
+        publication_record_json: Option<String>,
+    },
+    SignExplicitEnum {
+        version: u8,
+        #[serde(rename = "oracleSecretKeyHex")]
+        oracle_secret_key_hex: String,
+        #[serde(rename = "privateDtoJson")]
+        private_dto_json: String,
+        #[serde(rename = "chosenOutcome")]
+        chosen_outcome: String,
+    },
     VerifyEnum {
         version: u8,
         #[serde(rename = "eventId")]
@@ -186,12 +226,36 @@ impl RequestStorage {
                 signatures: Vec::new(),
                 announcement_event_id: Some(announcement_event_id),
                 attestation_event_id: None,
+                private_authority: Default::default(),
             }))),
         }
     }
 }
 
 impl Storage for RequestStorage {
+    async fn compare_exchange_event(
+        &self,
+        expected: Option<OracleEventData>,
+        next: OracleEventData,
+    ) -> Result<bool, kormir::error::Error> {
+        if next.event_id != self.expected_event_id {
+            return Err(kormir::error::Error::StorageFailure);
+        }
+        let mut record = self
+            .record
+            .lock()
+            .map_err(|_| kormir::error::Error::StorageFailure)?;
+        let matches = match (record.as_ref(), expected.as_ref()) {
+            (None, None) => true,
+            (Some(current), Some(expected)) => same_event(current, expected)?,
+            _ => false,
+        };
+        if matches {
+            *record = Some(next);
+        }
+        Ok(matches)
+    }
+
     async fn get_next_nonce_indexes(&self, count: usize) -> Result<Vec<u32>, kormir::error::Error> {
         if count != 1 {
             return Err(kormir::error::Error::StorageFailure);
@@ -230,6 +294,7 @@ impl Storage for RequestStorage {
             signatures: Vec::new(),
             announcement_event_id: None,
             attestation_event_id: None,
+            private_authority: Default::default(),
         });
         Ok(event_id)
     }
@@ -303,6 +368,82 @@ pub fn execute(input: &[u8]) -> (Vec<u8>, bool) {
 
 async fn dispatch(request: Request) -> HelperResult<serde_json::Value> {
     match request {
+        Request::ValidateAuthority {
+            version,
+            private_dto_json,
+            expected_oracle_pubkey,
+        } => {
+            if version != 1 {
+                return Err(Failure::InvalidRequest);
+            }
+            let validated =
+                validate_enum_authority_json(&private_dto_json, Some(&expected_oracle_pubkey))
+                    .map_err(|_| Failure::InvalidAnnouncement)?;
+            Ok(
+                serde_json::json!({ "version": 1, "ok": true, "action": "validate-authority", "summary": validated.summary }),
+            )
+        }
+        Request::ExportEnumAuthority {
+            version,
+            oracle_secret_key_hex,
+            nonce_seed_hex,
+            reserved_nonce_index,
+            announcement_tlv_hex,
+            announcement_event_json,
+            signed_outcome,
+            attestation_hex,
+            attestation_event_json,
+            publication_record_json,
+        } => {
+            if version != 1 {
+                return Err(Failure::InvalidRequest);
+            }
+            validate_nonce_index(reserved_nonce_index)?;
+            let signing_key = parse_secret(&oracle_secret_key_hex)?;
+            let master = parse_nonce_master(&nonce_seed_hex, &signing_key)?;
+            let nonce = master
+                .derive_priv(
+                    &Secp256k1::new(),
+                    &[ChildNumber::from_hardened_idx(reserved_nonce_index)
+                        .map_err(|_| Failure::InvalidRequest)?],
+                )
+                .map_err(|_| Failure::InternalFailure)?
+                .private_key;
+            let dto = PrivateEnumAuthority {
+                schema_version: 1,
+                announcement_tlv_hex,
+                announcement_event_json,
+                nonce_scalar_hex: Some(hex::encode(nonce.secret_bytes())),
+                signed_outcome,
+                attestation_hex,
+                attestation_event_json,
+                publication_record_json,
+            };
+            let pubkey = signing_key
+                .x_only_public_key(&Secp256k1::new())
+                .0
+                .to_string();
+            validate_enum_authority(&dto, Some(&pubkey))
+                .map_err(|_| Failure::InvalidAnnouncement)?;
+            let json = serde_json::to_string(&dto).map_err(|_| Failure::InternalFailure)?;
+            Ok(
+                serde_json::json!({ "version": 1, "ok": true, "action": "export-enum-authority", "privateDtoJson": json }),
+            )
+        }
+        Request::SignExplicitEnum {
+            version,
+            oracle_secret_key_hex,
+            private_dto_json,
+            chosen_outcome,
+        } => {
+            sign_explicit_enum(
+                version,
+                &oracle_secret_key_hex,
+                &private_dto_json,
+                chosen_outcome,
+            )
+            .await
+        }
         Request::VerifyEnum {
             version,
             event_id,
@@ -482,6 +623,86 @@ async fn dispatch(request: Request) -> HelperResult<serde_json::Value> {
             serde_json::to_value(response).map_err(|_| Failure::InternalFailure)
         }
     }
+}
+
+async fn sign_explicit_enum(
+    version: u8,
+    oracle_secret_key_hex: &str,
+    private_dto_json: &str,
+    chosen_outcome: String,
+) -> HelperResult<serde_json::Value> {
+    if version != 1 {
+        return Err(Failure::InvalidRequest);
+    }
+    validate_text(&chosen_outcome, MAX_OUTCOME_BYTES)?;
+    let signing_key = parse_secret(oracle_secret_key_hex)?;
+    let pubkey = signing_key
+        .x_only_public_key(&Secp256k1::new())
+        .0
+        .to_string();
+    let validated = validate_enum_authority_json(private_dto_json, Some(&pubkey))
+        .map_err(|_| Failure::InvalidAnnouncement)?;
+    let dto: PrivateEnumAuthority =
+        serde_json::from_str(private_dto_json).map_err(|_| Failure::InvalidAnnouncement)?;
+    if dto.nonce_scalar_hex.is_none() {
+        return Err(Failure::InvalidRequest);
+    }
+    if !validated.summary.outcomes.contains(&chosen_outcome)
+        || dto
+            .signed_outcome
+            .as_ref()
+            .is_some_and(|choice| choice != &chosen_outcome)
+    {
+        return Err(Failure::InvalidOutcome);
+    }
+    let event_id = validated.summary.event_id;
+    let (attestation_hex, event_json) = match (dto.attestation_hex, dto.attestation_event_json) {
+        (Some(hex), Some(json)) => (hex, json),
+        (None, None) => {
+            let announcement = validated.data.announcement.clone();
+            let parent_id = validated
+                .data
+                .announcement_event_id
+                .clone()
+                .ok_or(Failure::InvalidAnnouncement)?;
+            let storage = RequestStorage {
+                reserved_index: 0,
+                expected_event_id: event_id.clone(),
+                allocated: Arc::new(Mutex::new(true)),
+                record: Arc::new(Mutex::new(Some(validated.data))),
+            };
+            // Explicit authority never allocates or derives a nonce from this master.
+            let oracle = Oracle::from_signing_key(storage, signing_key)
+                .map_err(|_| Failure::InternalFailure)?;
+            let attestation = oracle
+                .sign_enum_event(event_id.clone(), chosen_outcome.clone())
+                .await
+                .map_err(map_sign_error)?;
+            attestation
+                .validate(&Secp256k1::new(), &announcement)
+                .map_err(|_| Failure::NonceMismatch)?;
+            let event = kormir::nostr_events::create_attestation_event(
+                &oracle.nostr_keys(),
+                &attestation,
+                EventId::from_hex(&parent_id).map_err(|_| Failure::InvalidAnnouncement)?,
+            )
+            .map_err(|_| Failure::InternalFailure)?;
+            (hex::encode(attestation.encode()), event.as_json())
+        }
+        _ => return Err(Failure::InvalidAnnouncement),
+    };
+    let event = Event::from_json(&event_json).map_err(|_| Failure::InvalidAnnouncement)?;
+    serde_json::to_value(SignEnumResponse {
+        version: 1,
+        ok: true,
+        action: "sign-explicit-enum",
+        event_id,
+        chosen_outcome,
+        attestation_hex,
+        attestation_nostr_event_id: event.id.to_hex(),
+        attestation_nostr_event_json: event_json,
+    })
+    .map_err(|_| Failure::InternalFailure)
 }
 
 // Verification has no secret, nonce allocator, storage, signing, or publication path.

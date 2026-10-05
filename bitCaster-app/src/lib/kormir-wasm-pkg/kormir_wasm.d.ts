@@ -54,12 +54,15 @@ export class Kormir {
     private constructor();
     free(): void;
     [Symbol.dispose](): void;
+    acknowledge_enum_publication(event_id: string, exact_publication_record_json: string): Promise<void>;
     static create_announcement_nostr_event_json(nsec: string, announcement_hex: string, title: string, description: string): string;
     static create_attestation_nostr_event_json(nsec: string, attestation_hex: string, announcement_event_id: string): string;
     create_enum_event(event_id: string, outcomes: string[], event_maturity_epoch: number, title: string, description: string): Promise<string>;
     static decode_announcement(str: string): Promise<Announcement>;
     static decode_attestation(str: string): Promise<Attestation>;
+    export_enum_authority(event_id: string, announcement_event_json: string, publication_record_json?: string | null): Promise<string>;
     get_public_key(): string;
+    import_enum_authority(private_dto_json: string): Promise<string>;
     /**
      * Re-imports a previously-created announcement so its outcome can be
      * re-signed on a profile whose local event store was lost (fresh browser
@@ -81,6 +84,11 @@ export class Kormir {
     prepare_enum_event(event_id: string, outcomes: string[], event_maturity_epoch: number, title: string, description: string): Promise<PreparedOracleEvent>;
     static restore(str: string): Promise<void>;
     sign_enum_event(event_id: string, outcome: string): Promise<string>;
+    staged_enum_publication(event_id: string): Promise<string | undefined>;
+    /**
+     * Side-effect-free validation. Returns public facts only.
+     */
+    static validate_enum_authority(private_dto_json: string, expected_oracle_pubkey?: string | null): string;
 }
 
 export class PreparedOracleEvent {
@@ -95,25 +103,12 @@ export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembl
 
 export interface InitOutput {
     readonly memory: WebAssembly.Memory;
-    readonly __wbg_kormir_free: (a: number, b: number) => void;
-    readonly kormir_create_announcement_nostr_event_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number, number, number];
-    readonly kormir_create_attestation_nostr_event_json: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
-    readonly kormir_create_enum_event: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => any;
-    readonly kormir_decode_announcement: (a: number, b: number) => any;
-    readonly kormir_decode_attestation: (a: number, b: number) => any;
-    readonly kormir_get_public_key: (a: number) => [number, number];
-    readonly kormir_import_enum_event: (a: number, b: number, c: number) => any;
-    readonly kormir_list_events: (a: number) => any;
-    readonly kormir_new: (a: number, b: number) => any;
-    readonly kormir_prepare_enum_attestation: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => any;
-    readonly kormir_prepare_enum_event: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => any;
-    readonly kormir_restore: (a: number, b: number) => any;
-    readonly kormir_sign_enum_event: (a: number, b: number, c: number, d: number, e: number) => any;
     readonly __wbg_announcement_free: (a: number, b: number) => void;
     readonly __wbg_attestation_free: (a: number, b: number) => void;
     readonly __wbg_eventdata_free: (a: number, b: number) => void;
     readonly __wbg_get_announcement_event_maturity_epoch: (a: number) => number;
     readonly __wbg_get_eventdata_event_maturity_epoch: (a: number) => number;
+    readonly __wbg_kormir_free: (a: number, b: number) => void;
     readonly __wbg_preparedoracleevent_free: (a: number, b: number) => void;
     readonly __wbg_set_announcement_event_maturity_epoch: (a: number, b: number) => void;
     readonly __wbg_set_eventdata_event_maturity_epoch: (a: number, b: number) => void;
@@ -136,20 +131,38 @@ export interface InitOutput {
     readonly eventdata_observed_outcome: (a: number) => [number, number];
     readonly eventdata_outcomes: (a: number) => [number, number];
     readonly eventdata_value: (a: number) => any;
+    readonly kormir_acknowledge_enum_publication: (a: number, b: number, c: number, d: number, e: number) => any;
+    readonly kormir_create_announcement_nostr_event_json: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number, number, number];
+    readonly kormir_create_attestation_nostr_event_json: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
+    readonly kormir_create_enum_event: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => any;
+    readonly kormir_decode_announcement: (a: number, b: number) => any;
+    readonly kormir_decode_attestation: (a: number, b: number) => any;
+    readonly kormir_export_enum_authority: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => any;
+    readonly kormir_get_public_key: (a: number) => [number, number];
+    readonly kormir_import_enum_authority: (a: number, b: number, c: number) => any;
+    readonly kormir_import_enum_event: (a: number, b: number, c: number) => any;
+    readonly kormir_list_events: (a: number) => any;
+    readonly kormir_new: (a: number, b: number) => any;
+    readonly kormir_prepare_enum_attestation: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => any;
+    readonly kormir_prepare_enum_event: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => any;
+    readonly kormir_restore: (a: number, b: number) => any;
+    readonly kormir_sign_enum_event: (a: number, b: number, c: number, d: number, e: number) => any;
+    readonly kormir_staged_enum_publication: (a: number, b: number, c: number) => any;
+    readonly kormir_validate_enum_authority: (a: number, b: number, c: number, d: number) => [number, number, number, number];
     readonly preparedoracleevent_artifact_hex: (a: number) => [number, number];
     readonly preparedoracleevent_nostr_event_json: (a: number) => [number, number];
     readonly rustsecp256k1zkp_v0_10_0_default_error_callback_fn: (a: number, b: number) => void;
     readonly rustsecp256k1zkp_v0_10_0_default_illegal_callback_fn: (a: number, b: number) => void;
-    readonly rustsecp256k1_v0_10_0_context_create: (a: number) => number;
-    readonly rustsecp256k1_v0_10_0_context_destroy: (a: number) => void;
     readonly rustsecp256k1_v0_10_0_default_error_callback_fn: (a: number, b: number) => void;
     readonly rustsecp256k1_v0_10_0_default_illegal_callback_fn: (a: number, b: number) => void;
-    readonly wasm_bindgen__convert__closures_____invoke__h3562bd6c9b3b21b1: (a: number, b: number, c: any) => [number, number];
-    readonly wasm_bindgen__convert__closures_____invoke__h2f5ba8bb4de46f76: (a: number, b: number, c: any) => [number, number];
-    readonly wasm_bindgen__convert__closures_____invoke__h161a1786752a0847: (a: number, b: number, c: any, d: any) => void;
-    readonly wasm_bindgen__convert__closures_____invoke__h3b0d0e3aed8f0326: (a: number, b: number, c: any) => void;
-    readonly wasm_bindgen__convert__closures_____invoke__h3b0d0e3aed8f0326_3: (a: number, b: number, c: any) => void;
-    readonly wasm_bindgen__convert__closures_____invoke__h07296c2edf232334: (a: number, b: number) => void;
+    readonly rustsecp256k1_v0_10_0_context_destroy: (a: number) => void;
+    readonly rustsecp256k1_v0_10_0_context_create: (a: number) => number;
+    readonly wasm_bindgen_22d01eaa64b637c9___convert__closures_____invoke___wasm_bindgen_22d01eaa64b637c9___JsValue__core_9b3796e30d99ddb7___result__Result_____wasm_bindgen_22d01eaa64b637c9___JsError___true_: (a: number, b: number, c: any) => [number, number];
+    readonly wasm_bindgen_22d01eaa64b637c9___convert__closures_____invoke___web_sys_a18a933391699c2c___features__gen_Event__Event__core_9b3796e30d99ddb7___result__Result_____rexie_6c96cc34a9f1040a___error__Error___true_: (a: number, b: number, c: any) => [number, number];
+    readonly wasm_bindgen_22d01eaa64b637c9___convert__closures_____invoke___js_sys_906205379446b025___Function_fn_wasm_bindgen_22d01eaa64b637c9___JsValue_____wasm_bindgen_22d01eaa64b637c9___sys__Undefined___js_sys_906205379446b025___Function_fn_wasm_bindgen_22d01eaa64b637c9___JsValue_____wasm_bindgen_22d01eaa64b637c9___sys__Undefined_______true_: (a: number, b: number, c: any, d: any) => void;
+    readonly wasm_bindgen_22d01eaa64b637c9___convert__closures_____invoke___web_sys_a18a933391699c2c___features__gen_CloseEvent__CloseEvent______true_: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen_22d01eaa64b637c9___convert__closures_____invoke___web_sys_a18a933391699c2c___features__gen_CloseEvent__CloseEvent______true__3: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen_22d01eaa64b637c9___convert__closures_____invoke_______true_: (a: number, b: number) => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
     readonly __wbindgen_exn_store: (a: number) => void;

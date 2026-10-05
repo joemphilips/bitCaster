@@ -374,3 +374,131 @@ fn helper_process_emits_only_a_fixed_error_for_secret_input() {
     assert!(argument_stdout.contains("invalid-request"));
     assert!(!argument_stdout.contains(&secret));
 }
+
+fn export_request(announcement: &Value, index: u32) -> Value {
+    json!({
+        "version": 1, "action": "export-enum-authority",
+        "oracleSecretKeyHex": oracle_secret(), "nonceSeedHex": nonce_seed(),
+        "reservedNonceIndex": index,
+        "announcementTlvHex": announcement["announcementTlvHex"],
+        "announcementEventJson": announcement["announcementNostrEventJson"],
+        "signedOutcome": null, "attestationHex": null,
+        "attestationEventJson": null, "publicationRecordJson": null
+    })
+}
+
+fn explicit_request(dto: &Value, outcome: &str) -> Value {
+    json!({"version":1, "action":"sign-explicit-enum", "oracleSecretKeyHex":oracle_secret(),
+        "privateDtoJson":dto.to_string(), "chosenOutcome":outcome})
+}
+
+fn authority_fixture(index: u32) -> (Value, Value) {
+    let mut request = create_request("portable-market", &["YES", "NO"]);
+    request["reservedNonceIndex"] = json!(index);
+    let (announcement, success) = invoke(request);
+    assert!(success, "creation failed");
+    let (export, success) = invoke(export_request(&announcement, index));
+    assert!(success, "export failed");
+    let dto = serde_json::from_str(export["privateDtoJson"].as_str().unwrap()).unwrap();
+    (announcement, dto)
+}
+
+#[test]
+fn retained_index_above_255_exports_and_explicit_authority_signs_the_committed_nonce() {
+    let (announcement, dto) = authority_fixture(1024);
+    let (validated, success) = invoke(json!({"version":1,"action":"validate-authority",
+        "privateDtoJson":dto.to_string(), "expectedOraclePubkey":announcement["oraclePublicKeyHex"]}));
+    assert!(success, "validation failed");
+    assert_eq!(validated["summary"]["eventId"], "portable-market");
+    let (signed, success) = invoke(explicit_request(&dto, "YES"));
+    assert!(success, "explicit signing failed");
+    let (decoded, _) = decode_tlv(announcement["announcementTlvHex"].as_str().unwrap());
+    let bytes = hex::decode(signed["attestationHex"].as_str().unwrap()).unwrap();
+    let attestation = OracleAttestation::read(&mut Cursor::new(&bytes)).unwrap();
+    attestation.validate(&Secp256k1::new(), &decoded).unwrap();
+    let mut legacy_request = sign_request(&announcement, "YES");
+    legacy_request["reservedNonceIndex"] = json!(1024);
+    let (legacy, success) = invoke(legacy_request);
+    assert!(success, "retained signing failed");
+    assert!(
+        signed["attestationHex"] == legacy["attestationHex"],
+        "nonce/signature mismatch"
+    );
+}
+
+#[test]
+fn explicit_retry_keeps_exact_kind_89_and_refuses_opposite_choice_and_terminal_nonce() {
+    let (announcement, mut dto) = authority_fixture(300);
+    dto["signedOutcome"] = json!("YES");
+    let (opposite, success) = invoke(explicit_request(&dto, "NO"));
+    assert!(!success);
+    assert_eq!(opposite["code"], "invalid-outcome");
+    let (signed, success) = invoke(explicit_request(&dto, "YES"));
+    assert!(success, "signing failed");
+    dto["signedOutcome"] = json!("YES");
+    dto["attestationHex"] = signed["attestationHex"].clone();
+    dto["attestationEventJson"] = signed["attestationNostrEventJson"].clone();
+    let (retry, success) = invoke(explicit_request(&dto, "YES"));
+    assert!(success, "retry failed");
+    assert!(
+        retry["attestationNostrEventJson"] == dto["attestationEventJson"],
+        "exact artifact changed"
+    );
+    let (opposite, success) = invoke(explicit_request(&dto, "NO"));
+    assert!(!success);
+    assert_eq!(opposite["code"], "invalid-outcome");
+    let mut changed_artifact = dto.clone();
+    changed_artifact["attestationEventJson"] = json!("{}");
+    let (changed, success) = invoke(explicit_request(&changed_artifact, "YES"));
+    assert!(!success);
+    assert_eq!(changed["code"], "invalid-announcement");
+    dto["nonceScalarHex"] = Value::Null;
+    let (_, success) = invoke(json!({"version":1, "action":"validate-authority",
+        "privateDtoJson":dto.to_string(), "expectedOraclePubkey":announcement["oraclePublicKeyHex"]}));
+    assert!(success, "terminal validation failed");
+    let (terminal, success) = invoke(explicit_request(&dto, "YES"));
+    assert!(!success);
+    assert_eq!(terminal["code"], "invalid-request");
+}
+
+#[test]
+fn private_authority_rejects_owner_scalar_trailing_bytes_and_changed_artifacts_with_fixed_errors() {
+    let (announcement, dto) = authority_fixture(301);
+    let mut invalid = Vec::new();
+    let mut scalar = dto.clone();
+    scalar["nonceScalarHex"] = json!("04".repeat(32));
+    invalid.push(scalar);
+    let mut trailing = dto.clone();
+    trailing["announcementTlvHex"] =
+        json!(format!("{}00", dto["announcementTlvHex"].as_str().unwrap()));
+    invalid.push(trailing);
+    let mut bad_event = dto.clone();
+    bad_event["announcementEventJson"] = json!("{}");
+    invalid.push(bad_event);
+    let mut extra = dto.clone();
+    extra["seed"] = json!(nonce_seed());
+    invalid.push(extra);
+    let mut oversize = dto.clone();
+    oversize["publicationRecordJson"] = json!("x".repeat(65_536));
+    invalid.push(oversize);
+    for candidate in invalid {
+        let (result, success) = invoke(explicit_request(&candidate, "YES"));
+        assert!(!success);
+        assert_eq!(result.as_object().unwrap().len(), 3);
+        assert_eq!(result["code"], "invalid-announcement");
+        assert!(
+            !result
+                .to_string()
+                .contains(dto["nonceScalarHex"].as_str().unwrap()),
+            "secret leaked"
+        );
+    }
+    let (owner, success) = invoke(json!({"version":1,"action":"validate-authority",
+        "privateDtoJson":dto.to_string(),"expectedOraclePubkey":"00".repeat(32)}));
+    assert!(!success);
+    assert_eq!(owner["code"], "invalid-announcement");
+    let mut wrong_index = export_request(&announcement, 300);
+    wrong_index["nonceSeedHex"] = json!("05".repeat(32));
+    let (_, success) = invoke(wrong_index);
+    assert!(!success);
+}

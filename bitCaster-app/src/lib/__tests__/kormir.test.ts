@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   __setKormirModuleForTest,
+  browserOracleBackupValidator,
   createEnumAnnouncement,
   ensureKormirNsec,
   getKormir,
@@ -32,6 +33,7 @@ interface FakeKormir {
 function buildFakeModule(publicKey = "02abc") {
   const defaultInit = vi.fn().mockResolvedValue({});
   const restore = vi.fn().mockResolvedValue(undefined);
+  const validateAuthority = vi.fn();
   let nextId = 0;
   const newFn = vi.fn().mockImplementation(async (_relays: string[]) => {
     nextId += 1;
@@ -53,11 +55,13 @@ function buildFakeModule(publicKey = "02abc") {
       default: defaultInit,
       Kormir: {
         restore,
+        validate_enum_authority: validateAuthority,
         new: newFn,
       },
     } as unknown as Parameters<typeof __setKormirModuleForTest>[0],
     init: defaultInit,
     restore,
+    validateAuthority,
     newFn,
   };
 }
@@ -66,6 +70,36 @@ describe("kormir wrapper", () => {
   beforeEach(() => {
     __setKormirModuleForTest(null);
     resetKormir();
+  });
+
+  it("validates private authority without opening or changing the oracle store", async () => {
+    const { module, validateAuthority, restore, newFn } = buildFakeModule();
+    __setKormirModuleForTest(module);
+    const summary = {
+      eventId: "event_1",
+      oraclePubkey: "a".repeat(64),
+      outcomes: ["YES", "NO"],
+      noncePoint: "b".repeat(64),
+    };
+    validateAuthority.mockReturnValue(JSON.stringify(summary));
+
+    await expect(
+      browserOracleBackupValidator.validateAuthority("private DTO", summary.oraclePubkey),
+    ).resolves.toEqual(summary);
+    expect(validateAuthority).toHaveBeenCalledWith("private DTO", summary.oraclePubkey);
+    expect(restore).not.toHaveBeenCalled();
+    expect(newFn).not.toHaveBeenCalled();
+  });
+
+  it("replaces nested private validation errors with a fixed diagnostic", async () => {
+    const { module, validateAuthority } = buildFakeModule();
+    __setKormirModuleForTest(module);
+    validateAuthority.mockImplementation(() => {
+      throw new Error("private scalar must not escape");
+    });
+    await expect(
+      browserOracleBackupValidator.validateAuthority("private DTO", "a".repeat(64)),
+    ).rejects.toThrow("Private oracle backup: invalid-record.");
   });
 
   it("caches the Kormir instance across getKormir calls", async () => {

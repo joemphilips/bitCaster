@@ -660,3 +660,241 @@ test('helper resolution follows the installed daemon package native directory', 
     assert.ok(mock.calls[0].options.cwd?.endsWith('/bitcaster-daemon/'))
   })
 })
+
+function privateDto(announcement: SignedNostrEvent, overrides: Record<string, unknown> = {}) {
+  return {
+    schemaVersion: 1 as const,
+    announcementTlvHex: ANNOUNCEMENT_TLV_HEX,
+    announcementEventJson: JSON.stringify(announcement),
+    nonceScalarHex: '03'.repeat(32),
+    signedOutcome: null,
+    attestationHex: null,
+    attestationEventJson: null,
+    publicationRecordJson: null,
+    ...overrides,
+  }
+}
+
+function authorityResponse(announcement: SignedNostrEvent, override: Record<string, unknown> = {}) {
+  return {
+    version: 1,
+    ok: true,
+    action: 'validate-authority',
+    summary: {
+      eventId: 'market-event-7',
+      oraclePubkey: announcement.pubkey,
+      outcomes: ['YES', 'NO'],
+      noncePoint: '11'.repeat(32),
+      ...override,
+    },
+  }
+}
+
+test('private validator uses private stdin and returns only bounded public metadata', async () => {
+  await withAdapter(async (fixture) => {
+    const announcement = makeNostrEvent(88, [], ANNOUNCEMENT_CONTENT)
+    const dtoJson = JSON.stringify(privateDto(announcement))
+    const mock = fakeSpawn({ stdout: successResponse(authorityResponse(announcement)) })
+    const adapter = createNativeOracleHelperAdapter({
+      resolveExecutable: () => fixture.path,
+      spawnProcess: mock.spawn,
+    })
+    const summary = await adapter.validateAuthority(dtoJson, announcement.pubkey)
+    assert.equal(summary.eventId, 'market-event-7')
+    assert.equal(Object.keys(summary).length, 4)
+    const sent = JSON.parse(mock.calls[0].input().toString('utf8'))
+    assert.equal(sent.action, 'validate-authority')
+    assert.ok(sent.privateDtoJson === dtoJson, 'private DTO changed')
+    assert.equal(mock.calls[0].args.length, 0)
+    assert.equal(Object.keys(mock.calls[0].options.env ?? {}).length, 0)
+    for (const override of [
+      { oraclePubkey: '00'.repeat(32) },
+      { noncePoint: 'bad' },
+      { outcomes: ['Yes', 'Yes'] },
+    ]) {
+      const bad = fakeSpawn({ stdout: successResponse(authorityResponse(announcement, override)) })
+      await assert.rejects(
+        createNativeOracleHelperAdapter({
+          resolveExecutable: () => fixture.path,
+          spawnProcess: bad.spawn,
+        }).validateAuthority(dtoJson, announcement.pubkey),
+        { reason: 'malformed-response', uncertain: false },
+      )
+    }
+  })
+})
+
+test('retained export sends its exact index and refuses changed helper authority', async () => {
+  await withAdapter(async (fixture) => {
+    const announcement = makeNostrEvent(88, [], ANNOUNCEMENT_CONTENT)
+    const {
+      schemaVersion: _schema,
+      nonceScalarHex: _nonce,
+      ...authority
+    } = privateDto(announcement)
+    const request = {
+      ...authority,
+      oracleSecretKeyHex: ORACLE_SECRET,
+      nonceSeedHex: NONCE_SEED,
+      reservedNonceIndex: 1024,
+    }
+    const dtoJson = JSON.stringify(privateDto(announcement))
+    const mock = fakeSpawn({
+      stdout: successResponse({
+        version: 1,
+        ok: true,
+        action: 'export-enum-authority',
+        privateDtoJson: dtoJson,
+      }),
+    })
+    const adapter = createNativeOracleHelperAdapter({
+      resolveExecutable: () => fixture.path,
+      spawnProcess: mock.spawn,
+    })
+    assert.ok((await adapter.exportEnumAuthority(request)) === dtoJson, 'export DTO changed')
+    const sent = JSON.parse(mock.calls[0].input().toString('utf8'))
+    assert.equal(sent.action, 'export-enum-authority')
+    assert.equal(sent.reservedNonceIndex, 1024)
+    assert.equal(mock.calls[0].args.length, 0)
+    const bad = fakeSpawn({
+      stdout: successResponse({
+        version: 1,
+        ok: true,
+        action: 'export-enum-authority',
+        privateDtoJson: JSON.stringify(privateDto(announcement, { signedOutcome: 'No' })),
+      }),
+    })
+    await assert.rejects(
+      createNativeOracleHelperAdapter({
+        resolveExecutable: () => fixture.path,
+        spawnProcess: bad.spawn,
+      }).exportEnumAuthority(request),
+      { reason: 'malformed-response', uncertain: false },
+    )
+  })
+})
+
+test('explicit signing validates owner then preserves the retained exact kind-89 artifact', async () => {
+  await withAdapter(async (fixture) => {
+    const announcement = makeNostrEvent(88, [], ANNOUNCEMENT_CONTENT)
+    const request = makeSignRequest(JSON.stringify(announcement))
+    const signedResponse = successSignResponse(request, announcement)
+    const dtoJson = JSON.stringify(
+      privateDto(announcement, {
+        signedOutcome: 'YES',
+        attestationHex: signedResponse.attestationHex,
+        attestationEventJson: signedResponse.attestationNostrEventJson,
+      }),
+    )
+    const validation = fakeSpawn({ stdout: successResponse(authorityResponse(announcement)) })
+    const signing = fakeSpawn({
+      stdout: successResponse({ ...signedResponse, action: 'sign-explicit-enum' }),
+    })
+    let launches = 0
+    const adapter = createNativeOracleHelperAdapter({
+      resolveExecutable: () => fixture.path,
+      spawnProcess: ((...args: Parameters<typeof validation.spawn>) =>
+        (++launches === 1 ? validation.spawn : signing.spawn)(...args)) as typeof validation.spawn,
+    })
+    const signed = await adapter.signExplicitEnum({
+      oracleSecretKeyHex: ORACLE_SECRET,
+      privateDtoJson: dtoJson,
+      chosenOutcome: 'YES',
+    })
+    assert.ok(
+      signed.attestationNostrEventJson === signedResponse.attestationNostrEventJson,
+      'exact artifact changed',
+    )
+    const sent = JSON.parse(signing.calls[0].input().toString('utf8'))
+    assert.equal(sent.action, 'sign-explicit-enum')
+    assert.equal('nonceSeedHex' in sent, false)
+    assert.equal('reservedNonceIndex' in sent, false)
+    assert.equal(signing.calls[0].args.length, 0)
+    for (const [privateDtoJson, chosenOutcome] of [
+      [dtoJson, 'NO'],
+      [JSON.stringify(privateDto(announcement, { nonceScalarHex: null })), 'YES'],
+      ['x'.repeat(65_536), 'YES'],
+    ]) {
+      await assert.rejects(
+        adapter.signExplicitEnum({
+          oracleSecretKeyHex: ORACLE_SECRET,
+          privateDtoJson,
+          chosenOutcome,
+        }),
+        { reason: 'invalid-request', uncertain: false },
+      )
+    }
+    assert.equal(launches, 2)
+  })
+})
+
+test('private validation process failures redact secrets and are never uncertain signing', async () => {
+  await withAdapter(async (fixture) => {
+    const announcement = makeNostrEvent(88, [], ANNOUNCEMENT_CONTENT)
+    const dtoJson = JSON.stringify(privateDto(announcement))
+    const mock = fakeSpawn({ emitError: true })
+    await assert.rejects(
+      createNativeOracleHelperAdapter({
+        resolveExecutable: () => fixture.path,
+        spawnProcess: mock.spawn,
+      }).validateAuthority(dtoJson, announcement.pubkey),
+      (error: unknown) => {
+        assert.ok(error instanceof NativeOracleHelperError)
+        assert.equal(error.uncertain, false)
+        assert.equal(error.message.includes('03'.repeat(32)), false)
+        assert.equal(error.message.includes(dtoJson), false)
+        return true
+      },
+    )
+  })
+})
+
+test('explicit retry refuses replacement bytes from a helper after a choice was retained', async () => {
+  await withAdapter(async (fixture) => {
+    const announcement = makeNostrEvent(88, [], ANNOUNCEMENT_CONTENT)
+    const retained = successSignResponse(
+      makeSignRequest(JSON.stringify(announcement)),
+      announcement,
+    )
+    const dtoJson = JSON.stringify(
+      privateDto(announcement, {
+        signedOutcome: 'YES',
+        attestationHex: retained.attestationHex,
+        attestationEventJson: retained.attestationNostrEventJson,
+      }),
+    )
+    const alteredEvent = makeNostrEvent(
+      89,
+      [['e', announcement.id]],
+      Buffer.from('cafe', 'hex').toString('base64'),
+    )
+    const validation = fakeSpawn({ stdout: successResponse(authorityResponse(announcement)) })
+    const signing = fakeSpawn({
+      stdout: successResponse({
+        ...retained,
+        action: 'sign-explicit-enum',
+        attestationHex: 'cafe',
+        attestationNostrEventId: alteredEvent.id,
+        attestationNostrEventJson: JSON.stringify(alteredEvent),
+      }),
+    })
+    let launches = 0
+    const adapter = createNativeOracleHelperAdapter({
+      resolveExecutable: () => fixture.path,
+      spawnProcess: ((...args: Parameters<typeof validation.spawn>) =>
+        (++launches === 1 ? validation.spawn : signing.spawn)(...args)) as typeof validation.spawn,
+    })
+    await assert.rejects(
+      adapter.signExplicitEnum({
+        oracleSecretKeyHex: ORACLE_SECRET,
+        privateDtoJson: dtoJson,
+        chosenOutcome: 'YES',
+      }),
+      {
+        reason: 'malformed-response',
+        uncertain: true,
+      },
+    )
+    assert.equal(launches, 2)
+  })
+})

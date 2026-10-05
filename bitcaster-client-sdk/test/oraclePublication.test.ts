@@ -96,6 +96,45 @@ function harness() {
   }
 }
 
+test('relay-only publication skips engine contact and later synchronizes the exact saved event', async () => {
+  const h = harness()
+  h.adapters.submitEngine = async (_, json) => {
+    h.calls.push('engine')
+    h.sent.push(json)
+    return h.evidence
+  }
+  const first = await publishOracleOutcome(h.adapters, h.binding, 'YES', undefined, {
+    engineDelivery: 'relay-only',
+  })
+  assert.equal(h.calls.includes('engine'), false)
+  assert.equal(first.record.relayPublished, true)
+  assert.equal(first.record.engineEvidence, null)
+  assert.equal(first.failures.length, 0)
+  h.adapters.prepareAttestation = async () => {
+    throw new Error('Signer unavailable after restore')
+  }
+  const second = await retryOraclePublication(h.adapters, h.binding)
+  assert.equal(second.record.engineEvidence?.attestationEventId, h.evidence.attestationEventId)
+  assert.equal(h.sent.length, 2)
+  assert.equal(
+    h.sent[0] === h.artifact.eventJson && h.sent[1] === h.artifact.eventJson,
+    true,
+    'Saved artifact changed.',
+  )
+})
+
+test('an invalid delivery mode refuses before local signing or external effects', async () => {
+  const h = harness()
+  await assert.rejects(
+    publishOracleOutcome(h.adapters, h.binding, 'YES', undefined, {
+      engineDelivery: 'unknown' as 'relay-only',
+    }),
+    /delivery mode is invalid/,
+  )
+  assert.equal(h.calls.length, 0)
+  assert.equal(h.reload(), null)
+})
+
 test('choice and exact signed events are saved before any delivery', async () => {
   const h = harness()
   const result = await publishOracleOutcome(h.adapters, h.binding, 'YES', 'The result is YES.')

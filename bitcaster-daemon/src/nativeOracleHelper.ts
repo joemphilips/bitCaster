@@ -2,6 +2,12 @@ import { accessSync, constants, lstatSync } from 'node:fs'
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
+import {
+  snapshotOraclePrivateAuthority,
+  type OracleBackupValidator,
+  type OraclePrivateAuthority,
+  type OracleEnumAuthoritySummary,
+} from '@bitcaster-market/client-sdk/oracleBackup'
 import { announcementContentFromTlv } from '@bitcaster-market/client-sdk/oracleAnnouncementEncoding'
 
 export const NATIVE_ORACLE_HELPER_INPUT_BYTES_MAX = 1024 * 1024
@@ -14,6 +20,8 @@ export const NATIVE_ORACLE_HELPER_EVENT_JSON_BYTES_MAX = 256 * 1024
 export const NATIVE_ORACLE_HELPER_HEX_TEXT_BYTES_MAX = 48 * 1024
 export const NATIVE_ORACLE_HELPER_OUTCOME_BYTES_MAX = 191
 export const NATIVE_ORACLE_NONCE_INDEX_LIMIT = 2 ** 31
+
+const PRIVATE_AUTHORITY_BYTES_MAX = 65_535
 
 const HELPER_NAME = 'bitcaster-oracle-helper'
 const HELPER_ERROR_CODES = [
@@ -73,6 +81,21 @@ export interface NativeOracleSignEnumRequest {
   readonly announcementNostrEventJson: string
 }
 
+export interface NativeOracleExportEnumAuthorityRequest extends Omit<
+  OraclePrivateAuthority,
+  'schemaVersion' | 'nonceScalarHex'
+> {
+  readonly oracleSecretKeyHex: string
+  readonly nonceSeedHex: string
+  readonly reservedNonceIndex: number
+}
+
+export interface NativeOracleSignExplicitEnumRequest {
+  readonly oracleSecretKeyHex: string
+  readonly privateDtoJson: string
+  readonly chosenOutcome: string
+}
+
 export interface NativeOracleVerifyEnumRequest {
   readonly eventId: string
   readonly oraclePublicKeyHex: string
@@ -109,7 +132,11 @@ export interface NativeOracleSignEnumResponse {
   readonly attestationNostrEventJson: string
 }
 
-export interface NativeOracleHelper {
+export interface NativeOracleHelper extends OracleBackupValidator {
+  exportEnumAuthority(request: NativeOracleExportEnumAuthorityRequest): Promise<string>
+  signExplicitEnum(
+    request: NativeOracleSignExplicitEnumRequest,
+  ): Promise<NativeOracleSignEnumResponse>
   assertAvailable(): void
   createEnum(request: NativeOracleCreateEnumRequest): Promise<NativeOracleCreateEnumResponse>
   signEnum(request: NativeOracleSignEnumRequest): Promise<NativeOracleSignEnumResponse>
@@ -183,6 +210,25 @@ export function signEnum(
   return defaultAdapter.signEnum(request)
 }
 
+export function validateAuthority(
+  privateDtoJson: string,
+  expectedOraclePubkey: string,
+): Promise<OracleEnumAuthoritySummary> {
+  return defaultAdapter.validateAuthority(privateDtoJson, expectedOraclePubkey)
+}
+
+export function exportEnumAuthority(
+  request: NativeOracleExportEnumAuthorityRequest,
+): Promise<string> {
+  return defaultAdapter.exportEnumAuthority(request)
+}
+
+export function signExplicitEnum(
+  request: NativeOracleSignExplicitEnumRequest,
+): Promise<NativeOracleSignEnumResponse> {
+  return defaultAdapter.signExplicitEnum(request)
+}
+
 export function createNativeOracleHelperAdapter(
   options: NativeOracleHelperAdapterOptions = {},
 ): NativeOracleHelper {
@@ -193,6 +239,91 @@ export function createNativeOracleHelperAdapter(
     assertAvailable() {
       const executablePath = resolvePath(resolveExecutable)
       assertExecutable(executablePath)
+    },
+    async validateAuthority(privateDtoJson, expectedOraclePubkey) {
+      try {
+        if (
+          !isBoundedString(privateDtoJson, PRIVATE_AUTHORITY_BYTES_MAX) ||
+          !isLowerHex(expectedOraclePubkey, 32)
+        )
+          throw helperError('invalid-request')
+        const payload = encodeRequest({
+          version: 1,
+          action: 'validate-authority',
+          privateDtoJson,
+          expectedOraclePubkey,
+        })
+        const response = await invokeHelper(resolveExecutable, spawnProcess, timeoutMs, payload)
+        return validateAuthorityResponse(response, expectedOraclePubkey)
+      } catch (error) {
+        if (error instanceof NativeOracleHelperError)
+          throw new NativeOracleHelperError(error.reason, false, error.helperCode)
+        throw helperError('malformed-response')
+      }
+    },
+    async exportEnumAuthority(request) {
+      validateSecretRequest(request)
+      const pubkey = deriveOraclePublicKey(request.oracleSecretKeyHex)
+      const payload = encodeRequest({ version: 1, action: 'export-enum-authority', ...request })
+      try {
+        const response = await invokeHelper(resolveExecutable, spawnProcess, timeoutMs, payload)
+        const value = exactRecord(response, ['version', 'ok', 'action', 'privateDtoJson'])
+        if (value.version !== 1 || value.ok !== true || value.action !== 'export-enum-authority')
+          throw helperError('malformed-response')
+        const dto = readPrivateDto(value.privateDtoJson, 'malformed-response')
+        if (
+          dto.nonceScalarHex === null ||
+          (Object.keys(dto) as (keyof OraclePrivateAuthority)[]).some(
+            (key) =>
+              key !== 'schemaVersion' && key !== 'nonceScalarHex' && dto[key] !== request[key],
+          )
+        )
+          throw helperError('malformed-response')
+        parseSignedEvent(dto.announcementEventJson, 88, pubkey)
+        return value.privateDtoJson as string
+      } catch (error) {
+        if (error instanceof NativeOracleHelperError)
+          throw new NativeOracleHelperError(error.reason, false, error.helperCode)
+        throw helperError('malformed-response')
+      }
+    },
+    async signExplicitEnum(request) {
+      if (
+        !request ||
+        !isLowerHex(request.oracleSecretKeyHex, 32) ||
+        !isBoundedString(request.chosenOutcome, NATIVE_ORACLE_HELPER_OUTCOME_BYTES_MAX)
+      )
+        throw helperError('invalid-request')
+      const dto = readPrivateDto(request.privateDtoJson, 'invalid-request')
+      if (
+        dto.nonceScalarHex === null ||
+        (dto.signedOutcome !== null && dto.signedOutcome !== request.chosenOutcome)
+      )
+        throw helperError('invalid-request')
+      const pubkey = deriveOraclePublicKey(request.oracleSecretKeyHex)
+      const announcement = parseSignedEvent(
+        dto.announcementEventJson,
+        88,
+        pubkey,
+        'invalid-request',
+      )
+      const summary = await this.validateAuthority(request.privateDtoJson, pubkey)
+      const payload = encodeRequest({ version: 1, action: 'sign-explicit-enum', ...request })
+      const response = await invokeHelper(resolveExecutable, spawnProcess, timeoutMs, payload)
+      const signed = validateSignResponse(
+        response,
+        { eventId: summary.eventId, chosenOutcome: request.chosenOutcome },
+        announcement,
+        pubkey,
+        'sign-explicit-enum',
+      )
+      if (
+        dto.attestationHex !== null &&
+        (signed.attestationHex !== dto.attestationHex ||
+          signed.attestationNostrEventJson !== dto.attestationEventJson)
+      )
+        throw helperError('malformed-response', true)
+      return signed
     },
     async createEnum(request) {
       const payload = encodeCreateRequest(request)
@@ -227,6 +358,43 @@ export function createNativeOracleHelperAdapter(
 }
 
 const defaultAdapter = createNativeOracleHelperAdapter()
+
+function readPrivateDto(
+  value: unknown,
+  reason: NativeOracleHelperErrorReason,
+): OraclePrivateAuthority {
+  if (!isBoundedString(value, PRIVATE_AUTHORITY_BYTES_MAX)) throw helperError(reason)
+  try {
+    return snapshotOraclePrivateAuthority(JSON.parse(value))
+  } catch {
+    throw helperError(reason)
+  }
+}
+
+function validateAuthorityResponse(
+  response: unknown,
+  expectedPubkey: string,
+): OracleEnumAuthoritySummary {
+  const value = exactRecord(response, ['version', 'ok', 'action', 'summary'])
+  const summary = exactRecord(value.summary, ['eventId', 'oraclePubkey', 'outcomes', 'noncePoint'])
+  if (
+    value.version !== 1 ||
+    value.ok !== true ||
+    value.action !== 'validate-authority' ||
+    !isBoundedString(summary.eventId, 512) ||
+    summary.oraclePubkey !== expectedPubkey ||
+    !isLowerHex(summary.noncePoint, 32) ||
+    !Array.isArray(summary.outcomes) ||
+    summary.outcomes.length < 2 ||
+    summary.outcomes.length > 8 ||
+    new Set(summary.outcomes).size !== summary.outcomes.length ||
+    !summary.outcomes.every((outcome) =>
+      isBoundedString(outcome, NATIVE_ORACLE_HELPER_OUTCOME_BYTES_MAX),
+    )
+  )
+    throw helperError('malformed-response')
+  return summary as unknown as OracleEnumAuthoritySummary
+}
 
 function encodeCreateRequest(request: NativeOracleCreateEnumRequest): Buffer {
   validateSecretRequest(request)
@@ -603,9 +771,10 @@ function validateCreateResponse(
 
 function validateSignResponse(
   response: unknown,
-  request: NativeOracleSignEnumRequest,
+  request: Pick<NativeOracleSignEnumRequest, 'eventId' | 'chosenOutcome'>,
   announcementEvent: NostrEvent,
   expectedPublicKey: string,
+  expectedAction = 'sign-enum',
 ): NativeOracleSignEnumResponse {
   const value = exactRecord(response, [
     'version',
@@ -620,7 +789,7 @@ function validateSignResponse(
   if (
     value.version !== 1 ||
     value.ok !== true ||
-    value.action !== 'sign-enum' ||
+    value.action !== expectedAction ||
     value.eventId !== request.eventId ||
     value.chosenOutcome !== request.chosenOutcome ||
     !isBoundedLowerHexText(value.attestationHex, NATIVE_ORACLE_HELPER_HEX_TEXT_BYTES_MAX) ||
