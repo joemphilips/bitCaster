@@ -2,6 +2,15 @@ import type { DatabaseSync } from 'node:sqlite'
 import { createHash } from 'node:crypto'
 import {
   encodeOracleBackup,
+  prepareOracleBackupDelivery,
+  buildTerminalOracleBackupRecord,
+  assertOracleBackupDeliveryOwner,
+  type OraclePublicationBinding,
+  snapshotOracleBackupDeliveryState,
+  confirmOracleBackupDelivery,
+  commitOracleBackupDelivery,
+  type OracleBackupDeliveryState,
+  type OracleBackupTerminalAdmission,
   mergeOraclePublicationRecords,
   type OracleBackupRecord,
   type OraclePrivateAuthority,
@@ -22,7 +31,10 @@ import {
   type VerifiedOraclePublicationEvidence,
 } from '@bitcaster-market/client-sdk'
 import type { NativeOracleHelper } from './nativeOracleHelper.ts'
-import { createDaemonStateSqliteSession } from './stateSqlite.ts'
+import {
+  createDaemonStateSqliteSession,
+  type StateSqliteTransactionOptions,
+} from './stateSqlite.ts'
 import { readProfileSecretAuthority } from './profileBootstrap.ts'
 import {
   protectNativeOracleSigner,
@@ -123,10 +135,139 @@ export class NativeOracleSignerUnavailableError extends Error {
 
 export function createNativeOracleCreationStore(
   directory: string,
-  options: { passphrase?: string } = {},
+  options: {
+    passphrase?: string
+    terminalCommitFault?: StateSqliteTransactionOptions['injectFault']
+    backupDeliveryWriteFault?: StateSqliteTransactionOptions['injectFault']
+  } = {},
 ) {
   const session = createDaemonStateSqliteSession(directory)
   return {
+    /** Private delivery port. Never return encrypted envelopes in status or RPC. */
+    async readBackupDelivery(conditionId: string): Promise<OracleBackupDeliveryState | null> {
+      exactConditionId(conditionId)
+      return session.read((database) => {
+        const record = readAuthority(database, conditionId)
+        if (record === null) throw new NativeOracleStoreError('not-found')
+        return readBackupDelivery(database, record)
+      })
+    },
+
+    async prepareBackupDelivery(
+      conditionId: string,
+      helper: NativeOracleHelper,
+      nowSeconds: number,
+      observedEvents: readonly unknown[] = [],
+    ): Promise<OracleBackupDeliveryState> {
+      exactConditionId(conditionId)
+      const captured = await session.read((database) => {
+        const record = readAuthority(database, conditionId)
+        if (record === null || record.announcement === null)
+          throw new NativeOracleStoreError('not-found')
+        return { record, previous: readBackupDelivery(database, record) }
+      })
+      // Terminal export does not retire a nonce or require its private seed.
+      const publication = nativeOraclePublicationRecord(captured.record)
+      const backup =
+        publication?.relayPublished && publication.attestation !== null
+          ? buildTerminalOracleBackupRecord({
+              binding: oracleBinding(captured.record),
+              announcementTlvHex: captured.record.announcement!.announcementTlvHex,
+              destinations: oracleDestinations(captured.record),
+              publication,
+            })
+          : await this.exportBackup(conditionId, helper)
+      let privateKey: Uint8Array | null = null
+      try {
+        const secret =
+          captured.record.kind === 'created'
+            ? (await this.readCreationSigner(captured.record.creationId)).secretKeyHex
+            : await session.read((database) => {
+                const authority = readProfileSecretAuthority(
+                  database,
+                  options.passphrase ?? process.env.BITCASTER_DAEMON_PASSPHRASE,
+                )
+                if (authority.nostrPublicKeyHex !== captured.record.creatorPublicKeyHex)
+                  throw new NativeOracleStoreError('conflict')
+                return authority.nostrSecretKeyHex
+              })
+        privateKey = Buffer.from(secret, 'hex')
+      } catch {
+        // The shared builder reports missing preparation authority without secret details.
+      }
+      const candidate = await prepareOracleBackupDelivery({
+        record: backup,
+        previous: captured.previous,
+        privateKey,
+        validator: helper,
+        nowSeconds,
+        observedEvents,
+      })
+      return session.transaction(
+        (database) => {
+          const latest = readAuthority(database, conditionId)
+          if (
+            latest === null ||
+            JSON.stringify(latest) !== JSON.stringify(captured.record) ||
+            JSON.stringify(readBackupDelivery(database, latest)) !==
+              JSON.stringify(captured.previous)
+          )
+            throw new NativeOracleStoreError('conflict')
+          writeBackupDelivery(database, latest, candidate)
+          const saved = readBackupDelivery(database, latest)
+          if (JSON.stringify(saved) !== JSON.stringify(candidate))
+            throw new NativeOracleStoreError('invalid-state')
+          return saved!
+        },
+        { injectFault: options.backupDeliveryWriteFault },
+      )
+    },
+
+    async confirmBackupDelivery(
+      conditionId: string,
+      acknowledgment: Parameters<typeof confirmOracleBackupDelivery>[1],
+    ): Promise<OracleBackupDeliveryState> {
+      exactConditionId(conditionId)
+      return session.transaction(
+        (database) => {
+          const record = readAuthority(database, conditionId)
+          if (record === null) throw new NativeOracleStoreError('not-found')
+          const current = readBackupDelivery(database, record)
+          if (current === null) throw new NativeOracleStoreError('invalid-state')
+          const changed = confirmOracleBackupDelivery(current, acknowledgment)
+          writeBackupDelivery(database, record, changed)
+          return readBackupDelivery(database, record)!
+        },
+        { injectFault: options.backupDeliveryWriteFault },
+      )
+    },
+
+    async commitBackupTerminal(
+      conditionId: string,
+      admission: OracleBackupTerminalAdmission,
+    ): Promise<OracleBackupDeliveryState> {
+      exactConditionId(conditionId)
+      return session.transaction(
+        (database) => {
+          const record = readAuthority(database, conditionId)
+          if (record === null) throw new NativeOracleStoreError('not-found')
+          const current = readBackupDelivery(database, record)
+          const publication = nativeOraclePublicationRecord(record)
+          if (current === null || publication === null)
+            throw new NativeOracleStoreError('invalid-state')
+          const changed = commitOracleBackupDelivery(current, admission, publication)
+          if (record.kind === 'created')
+            database
+              .prepare('UPDATE daemon_oracle_creations SET backup_terminal=1 WHERE condition_id=?')
+              .run(conditionId)
+          else removeImportedNonce(database, conditionId)
+          writeBackupDelivery(database, record, changed)
+          return readBackupDelivery(database, record)!
+        },
+        { injectFault: options.terminalCommitFault },
+      )
+    },
+
     async readAuthorityByConditionId(
       conditionId: string,
     ): Promise<NativeOracleAuthorityRecord | null> {
@@ -240,21 +381,6 @@ export function createNativeOracleCreationStore(
       if (JSON.stringify(latest) !== JSON.stringify(record))
         throw new NativeOracleStoreError('conflict')
       return JSON.parse(encoded) as OracleBackupRecord
-    },
-
-    async terminalizeAuthority(conditionId: string): Promise<NativeOracleAuthorityRecord> {
-      const current = await this.readAuthorityByConditionId(conditionId)
-      if (current === null) throw new NativeOracleStoreError('not-found')
-      if (current.kind === 'imported') return this.terminalizeImported(conditionId)
-      return session.transaction((database) => {
-        const record = requireCreation(database, current.creationId)
-        if (record.attestation === null || !record.relayPublished)
-          throw new NativeOracleStoreError('invalid-state')
-        database
-          .prepare('UPDATE daemon_oracle_creations SET backup_terminal=1 WHERE creation_id=?')
-          .run(record.creationId)
-        return { ...requireCreation(database, record.creationId), kind: 'created' }
-      })
     },
 
     async importBackup(
@@ -511,17 +637,6 @@ export function createNativeOracleCreationStore(
           conditionId,
           mergeOraclePublicationRecords(publication, changed),
         )
-        return decodeImport(requireImport(database, conditionId))
-      })
-    },
-
-    async terminalizeImported(conditionId: string): Promise<NativeImportedOracleRecord> {
-      exactConditionId(conditionId)
-      return session.transaction((database) => {
-        const record = decodeImport(requireImport(database, conditionId))
-        if (record.attestation === null || !record.relayPublished)
-          throw new NativeOracleStoreError('invalid-state')
-        removeImportedNonce(database, conditionId)
         return decodeImport(requireImport(database, conditionId))
       })
     },
@@ -898,7 +1013,7 @@ const SELECT_CREATION = `SELECT creation_id AS creationId, event_id AS eventId,
   wallet_scope_id AS walletScopeId,
   (SELECT wallet_id FROM custody_scopes WHERE scope_id = wallet_scope_id) AS walletId,
   creator_public_key_hex AS creatorPublicKeyHex,
-  nonce_index AS nonceIndex, canonical_input AS canonicalInput, created_at_ms AS createdAtMs, backup_terminal AS backupTerminal,
+  nonce_index AS nonceIndex, canonical_input AS canonicalInput, created_at_ms AS createdAtMs, backup_terminal AS backupTerminal, backup_delivery_json AS backupDeliveryJson,
   condition_id AS conditionId, announcement_hex AS announcementTlvHex,
   announcement_event_json AS announcementNostrEventJson, chosen_outcome AS chosenOutcome,
   explanation_draft AS explanationDraft,
@@ -920,6 +1035,7 @@ type CreationRow = NativeOracleCreationInput & {
   creatorPublicKeyHex: string
   nonceIndex: number
   createdAtMs: number
+  backupDeliveryJson: string | null
   backupTerminal: number
   conditionId: string | null
   announcementTlvHex: string | null
@@ -948,6 +1064,7 @@ type CreationRow = NativeOracleCreationInput & {
 function decodeRow(row: unknown): NativeOracleCreationRecord | null {
   if (row === undefined) return null
   const value = row as CreationRow
+  validateDeliveryJson(value.backupDeliveryJson)
   return {
     creationId: value.creationId,
     eventId: value.eventId,
@@ -1213,7 +1330,7 @@ const SELECT_IMPORT = `SELECT condition_id AS conditionId, event_id AS eventId,
   wallet_scope_id AS walletScopeId, oracle_pubkey AS oraclePubkey,
   announcement_hex AS announcementTlvHex, announcement_event_json AS announcementEventJson,
   outcomes_json AS outcomesJson, destinations_json AS destinationsJson,
-  publication_json AS publicationJson, explanation_draft AS explanationDraft,
+  publication_json AS publicationJson, explanation_draft AS explanationDraft, backup_delivery_json AS backupDeliveryJson,
   nonce_protection AS protection, nonce_kdf AS kdf, nonce_salt AS salt,
   nonce_iv AS iv, nonce_auth_tag AS authTag, nonce_body AS body FROM daemon_oracle_imports`
 
@@ -1227,6 +1344,7 @@ type ImportRow = Omit<ProtectedSecretBody, 'protection' | 'body'> & {
   outcomesJson: string
   destinationsJson: string
   publicationJson: string | null
+  backupDeliveryJson: string | null
   explanationDraft: string | null
   protection: ProtectedSecretBody['protection'] | null
   body: Uint8Array | null
@@ -1234,6 +1352,7 @@ type ImportRow = Omit<ProtectedSecretBody, 'protection' | 'body'> & {
 
 function decodeImport(row: unknown): NativeImportedOracleRecord {
   const value = row as ImportRow
+  validateDeliveryJson(value.backupDeliveryJson)
   const publication =
     value.publicationJson === null
       ? null
@@ -1527,5 +1646,82 @@ function publicationProgress(
       )
         throw new NativeOracleStoreError('conflict')
       return snapshotOraclePublicationRecord({ ...publication, explanationRelayPublished: true })
+  }
+}
+
+function deliveryTable(record: NativeOracleAuthorityRecord): string {
+  return record.kind === 'created' ? 'daemon_oracle_creations' : 'daemon_oracle_imports'
+}
+
+function readBackupDelivery(
+  database: DatabaseSync,
+  record: NativeOracleAuthorityRecord,
+): OracleBackupDeliveryState | null {
+  const raw = database
+    .prepare(
+      `SELECT backup_delivery_json AS delivery FROM ${deliveryTable(record)} WHERE condition_id=?`,
+    )
+    .get(record.announcement!.conditionId) as { delivery: string | null }
+  if (raw.delivery === null) return null
+  try {
+    const state = snapshotOracleBackupDeliveryState(JSON.parse(raw.delivery))
+    assertOracleBackupDeliveryOwner(state, {
+      binding: oracleBinding(record),
+      relayUrls: oracleDestinations(record).relayUrls,
+      publication: nativeOraclePublicationRecord(record),
+    })
+    return state
+  } catch {
+    throw new NativeOracleStoreError('invalid-state')
+  }
+}
+
+function writeBackupDelivery(
+  database: DatabaseSync,
+  record: NativeOracleAuthorityRecord,
+  state: OracleBackupDeliveryState,
+): void {
+  const saved = snapshotOracleBackupDeliveryState(state)
+  database
+    .prepare(`UPDATE ${deliveryTable(record)} SET backup_delivery_json=? WHERE condition_id=?`)
+    .run(JSON.stringify(saved), record.announcement!.conditionId)
+}
+
+function oracleDestinations(
+  record: NativeOracleAuthorityRecord,
+): OracleBackupRecord['destinations'] {
+  if (record.kind === 'imported') return record.destinations
+  const canonical = JSON.parse(record.canonicalInput) as {
+    destination: { mintUrl: string; engineBaseUrl: string; relayUrls: readonly string[] }
+  }
+  return {
+    mintUrl: canonical.destination.mintUrl,
+    engineUrl: canonical.destination.engineBaseUrl,
+    relayUrls: normalizeNostrRelayUrls(canonical.destination.relayUrls),
+  }
+}
+
+function oracleBinding(record: NativeOracleAuthorityRecord): OraclePublicationBinding {
+  const outcomes =
+    record.kind === 'imported'
+      ? record.outcomes
+      : normalizeMarketCreationInput(
+          (JSON.parse(record.canonicalInput) as { market: MarketCreationInput }).market,
+        ).outcomeLabels
+  return {
+    conditionId: record.announcement!.conditionId,
+    oracleEventId: record.eventId,
+    oraclePubkey: record.creatorPublicKeyHex,
+    outcomes,
+    announcementEventJson: record.announcement!.announcementNostrEventJson,
+  }
+}
+
+function validateDeliveryJson(raw: string | null): void {
+  if (raw === null) return
+  try {
+    snapshotOracleBackupDeliveryState(JSON.parse(raw))
+  } catch {
+    throw new NativeOracleStoreError('invalid-state')
   }
 }

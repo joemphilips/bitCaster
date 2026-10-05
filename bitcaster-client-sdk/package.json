@@ -19,6 +19,10 @@
       "types": "./dist/oraclePublication.d.ts",
       "import": "./dist/oraclePublication.js"
     },
+    "./oracleBackupDelivery": {
+      "types": "./dist/oracleBackupDelivery.d.ts",
+      "import": "./dist/oracleBackupDelivery.js"
+    },
     "./oracleBackup": {
       "types": "./dist/oracleBackup.d.ts",
       "import": "./dist/oracleBackup.js"

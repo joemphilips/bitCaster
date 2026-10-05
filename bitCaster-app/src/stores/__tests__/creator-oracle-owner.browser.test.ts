@@ -9,12 +9,24 @@ import {
   creatorOracleMetadata as metadata,
   creatorOraclePublication as publication,
 } from "@/test/creatorOracleFixture";
+import {
+  fixture,
+  deliveryOwner,
+  saveRelayConfirmedResult,
+} from "@/test/oracleBackupProviderFixture";
+import { importBrowserOracleBackup } from "@/lib/browserOracleBackup";
+import { createBrowserOracleBackupDeliveryAdapters } from "@/lib/browserOracleBackupDelivery";
+import { publishBrowserOracleOutcome } from "@/lib/oracleAttestation";
+import { useSettingsStore } from "@/stores/settings";
+import { resetKormir } from "@/lib/kormir";
 import { publicCreatorMarket } from "@/lib/nip78CreatorMarkets";
 
 const tabs: Window[] = [];
 beforeEach(() => {
   expect(navigator.locks).toBeDefined();
   localStorage.clear();
+  resetKormir();
+  useSettingsStore.setState({ nostrSignerMode: "nsec", nsecSecret: "11".repeat(32) });
 });
 afterEach(() => {
   for (const tab of tabs.splice(0)) tab.close();
@@ -40,6 +52,7 @@ async function openOwnerTab() {
   expect(tab.navigator.locks).toBeDefined();
   return {
     tab,
+    owner: module,
     store: module.createCreatorMarketsStore(),
     publication: module.creatorOraclePublicationStore,
   };
@@ -180,3 +193,149 @@ it("keeps metadata durable after a later write failure and refuses an expired lo
     "expired",
   );
 });
+
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
+it("retains one encrypted stage across independent tabs, different conditions, and mirror writes", async () => {
+  const f = await fixture();
+  const g = await fixture();
+  await deliveryOwner("created", f);
+  await deliveryOwner("created", g);
+  const a = await openOwnerTab();
+  const b = await openOwnerTab();
+  const adapterA = createBrowserOracleBackupDeliveryAdapters({
+    store: a.store,
+    nowSeconds: () => 1_800_000_002,
+  });
+  const adapterB = createBrowserOracleBackupDeliveryAdapters({
+    store: b.store,
+    nowSeconds: () => 1_800_000_002,
+  });
+  const [first, second, other] = await Promise.all([
+    adapterA.store.prepare(f.record.conditionId),
+    adapterB.store.prepare(f.record.conditionId),
+    adapterA.store.prepare(g.record.conditionId),
+    b.store.getState().mergeRemoteMarkets([creatorMarketFixture("c".repeat(64))]),
+  ]);
+  expect(first.current!.eventJson === second.current!.eventJson).toBe(true);
+  expect(first.current!.eventId === other.current!.eventId).toBe(false);
+  const reopened = createCreatorMarketsStore();
+  expect(reopened.getState().markets.length).toBe(3);
+  expect(
+    (await reopened.getState().readOracleBackupDelivery(f.record.conditionId))?.current
+      ?.eventJson === first.current!.eventJson,
+  ).toBe(true);
+  expect(
+    (await reopened.getState().readOracleBackupDelivery(g.record.conditionId))?.current
+      ?.eventJson === other.current!.eventJson,
+  ).toBe(true);
+  await saveRelayConfirmedResult(f, reopened);
+  const terminal = await createBrowserOracleBackupDeliveryAdapters({
+    store: reopened,
+    nowSeconds: () => 1_800_000_001,
+  }).store.prepare(f.record.conditionId);
+  await expect(
+    a.store.getState().confirmOracleBackupDelivery(f.record.conditionId, {
+      kind: "backup",
+      eventId: first.current!.eventId,
+      relayUrl: f.record.destinations.relayUrls[0],
+    }),
+  ).rejects.toThrow("invalid-acknowledgment");
+  expect(
+    (await b.store.getState().readOracleBackupDelivery(f.record.conditionId))?.current
+      ?.eventJson === terminal.current!.eventJson,
+  ).toBe(true);
+});
+
+it("keeps independent-tab signing outside an in-progress encrypted stage write", async () => {
+  const f = await fixture();
+  f.record = { ...f.record, destinations: { ...f.record.destinations, relayUrls: [] } };
+  const entered = deferred();
+  const release = deferred();
+  let pause = true;
+  const owner = createCreatorMarketsStore(() => ({
+    getItem: (key) => localStorage.getItem(key),
+    removeItem: (key) => localStorage.removeItem(key),
+    setItem: async (key, value) => {
+      if (pause && JSON.parse(value).state.importedOracles[0]?.backupDelivery?.current) {
+        entered.resolve();
+        await release.promise;
+      }
+      localStorage.setItem(key, value);
+    },
+  }));
+  await importBrowserOracleBackup(f.record, owner);
+  const second = await openOwnerTab();
+  const queued = deferred();
+  const signingOwner = second.owner.createCreatorMarketsStore(undefined, () => ({
+    request: async (name, action) => {
+      queued.resolve();
+      return await second.tab.navigator.locks.request(name, action);
+    },
+  }));
+  const preparing = createBrowserOracleBackupDeliveryAdapters({
+    store: owner,
+    nowSeconds: () => 1_800_000_002,
+  }).store.prepare(f.record.conditionId);
+  let signing: ReturnType<typeof publishBrowserOracleOutcome>;
+  try {
+    await providerBarrier(entered.promise, "stage write");
+    signing = publishBrowserOracleOutcome(
+      f.record.conditionId,
+      "YES",
+      undefined,
+      [],
+      signingOwner,
+      async () => {
+        throw new Error("Relay-only signing cannot read the engine.");
+      },
+      { engineDelivery: "relay-only" },
+    );
+    await providerBarrier(queued.promise, "signing lock");
+    expect((await owner.getState().readOraclePublication(f.record.conditionId)) === null).toBe(
+      true,
+    );
+  } finally {
+    pause = false;
+    release.resolve();
+  }
+  const initial = await preparing;
+  const result = await signing;
+  expect(result.record.chosenOutcome).toBe("YES");
+  expect(result.record.attestation != null).toBe(true);
+  expect(result.record.relayPublished).toBe(false);
+  expect(
+    (await signingOwner.getState().readOracleBackupDelivery(f.record.conditionId))?.current
+      ?.eventJson === initial.current!.eventJson,
+  ).toBe(true);
+  await creatorOraclePublicationStore(signingOwner).confirmRelay(
+    f.record.conditionId,
+    JSON.parse(result.record.attestation!.eventJson).id,
+  );
+  const terminal = await createBrowserOracleBackupDeliveryAdapters({
+    store: signingOwner,
+    nowSeconds: () => 1_800_000_002,
+  }).store.prepare(f.record.conditionId);
+  expect(terminal.current?.mode).toBe("terminal");
+  expect(terminal.knownEventIds.includes(initial.current!.eventId)).toBe(true);
+});
+
+async function providerBarrier(promise: Promise<void>, phase: string) {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      promise,
+      new Promise<void>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`Provider barrier timed out: ${phase}.`)), 3000);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}

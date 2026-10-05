@@ -8,10 +8,11 @@ import type {
   OraclePublicationBinding,
   OraclePublicationRecord,
 } from "@bitcaster/client-sdk/oraclePublication";
+import { buildTerminalOracleBackupRecord } from "@bitcaster/client-sdk/oracleBackupDelivery";
 import {
   useCreatorMarketsStore,
   type BrowserOracleLockedPort,
-  type BrowserOracleOwner,
+  browserOracleOwnerAuthority,
 } from "@/stores/creatorMarkets";
 import { useSettingsStore } from "@/stores/settings";
 import { resolveNsecIdentity } from "./identityOps";
@@ -60,32 +61,7 @@ export async function preflightBrowserOracleCreation(preparation: MarketCreation
   }
 }
 
-export function browserOracleOwnerAuthority(owner: BrowserOracleOwner) {
-  switch (owner.kind) {
-    case "imported":
-      return {
-        binding: owner.oracle.binding,
-        announcementHex: owner.oracle.announcementHex,
-        destinations: owner.oracle.destinations,
-      };
-    case "created": {
-      const oracle = owner.market.oracle;
-      if (!oracle?.announcementEventJson || !oracle.announcementHex || !oracle.oraclePubkey)
-        throw new OracleBackupError("invalid-record");
-      return {
-        binding: {
-          conditionId: owner.market.conditionId,
-          oracleEventId: oracle.eventId,
-          oraclePubkey: oracle.oraclePubkey,
-          outcomes: oracle.outcomes,
-          announcementEventJson: oracle.announcementEventJson,
-        },
-        announcementHex: oracle.announcementHex,
-        destinations: oracle.destinations,
-      };
-    }
-  }
-}
+export { browserOracleOwnerAuthority } from "@/stores/creatorMarkets";
 
 async function requireOracleCore(expectedPubkey: string) {
   const settings = useSettingsStore.getState();
@@ -173,29 +149,48 @@ export async function importBrowserOracleBackup(
 }
 
 /** Return portable authority only through this private boundary; never persist it in the creator document. */
+export async function exportLockedBrowserOracleBackup(
+  conditionId: string,
+  locked: BrowserOracleLockedPort,
+): Promise<OracleBackupRecord> {
+  const owner = await locked.readOwner(conditionId);
+  if (!owner) throw new OracleBackupError("invalid-record");
+  const { binding, announcementHex, destinations } = browserOracleOwnerAuthority(owner);
+  if (!destinations) throw new OracleBackupError("invalid-record");
+  const delivery = await locked.readBackupDelivery(conditionId);
+  const publication = await locked.read(conditionId);
+  let record: OracleBackupRecord;
+  if (delivery?.terminalAdmission && !delivery.terminalCommitPending && publication) {
+    record = buildTerminalOracleBackupRecord({
+      binding,
+      announcementTlvHex: announcementHex,
+      destinations,
+      publication,
+    });
+  } else {
+    const result = await reconcileLockedBrowserOracle(locked, binding, announcementHex);
+    record = {
+      schemaVersion: 1,
+      conditionId,
+      oraclePubkey: binding.oraclePubkey,
+      oracleEventId: binding.oracleEventId,
+      authority: result.authority,
+      destinations,
+    };
+  }
+  return JSON.parse(
+    await encodeOracleBackup(record, browserOracleBackupValidator),
+  ) as OracleBackupRecord;
+}
+
 export async function exportBrowserOracleBackup(
   conditionId: string,
   store: CreatorStore = useCreatorMarketsStore,
 ): Promise<OracleBackupRecord> {
   try {
-    return await store.getState().withOracleMutation(async (locked) => {
-      const owner = await locked.readOwner(conditionId);
-      if (!owner) throw new OracleBackupError("invalid-record");
-      const { binding, announcementHex, destinations } = browserOracleOwnerAuthority(owner);
-      if (!destinations) throw new OracleBackupError("invalid-record");
-      const result = await reconcileLockedBrowserOracle(locked, binding, announcementHex);
-      const record: OracleBackupRecord = {
-        schemaVersion: 1,
-        conditionId,
-        oraclePubkey: binding.oraclePubkey,
-        oracleEventId: binding.oracleEventId,
-        authority: result.authority,
-        destinations,
-      };
-      return JSON.parse(
-        await encodeOracleBackup(record, browserOracleBackupValidator),
-      ) as OracleBackupRecord;
-    });
+    return await store
+      .getState()
+      .withOracleMutation((locked) => exportLockedBrowserOracleBackup(conditionId, locked));
   } catch (error) {
     if (error instanceof OracleBackupError && error.reason === "oversized") throw error;
     throw new OracleBackupError("invalid-record");

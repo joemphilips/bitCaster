@@ -540,7 +540,7 @@ test('profile replacement before live token return prevents CLI command and watc
   assert.equal(calls, 0)
 })
 
-for (const version of [10, 13]) {
+for (const version of [10, 13, 14]) {
   test(`native custody cutover refuses schema version ${version} without changing profile bytes or modes`, async () => {
     const directory = join(await freshRoot(`claim-old-schema-${version}`), 'profile')
     await bootstrap(directory)
@@ -578,7 +578,7 @@ test('a missing Activity display table is refused without schema repair', async 
 test('production schema manifest is pinned and excludes source-only recovery authority', () => {
   assert.equal(finalProfileSchemaManifestDigest(), FINAL_PROFILE_SCHEMA_MANIFEST_DIGEST)
   const manifest = getFinalProfileSchemaManifest()
-  assert.equal(FINAL_PROFILE_SCHEMA_VERSION, 14)
+  assert.equal(FINAL_PROFILE_SCHEMA_VERSION, 15)
   assert.equal(Object.isFrozen(manifest), true)
   assert.equal(Object.isFrozen(manifest.objects), true)
   const names = new Set(manifest.objects.map((object) => object.name))

@@ -6,6 +6,113 @@ export const NATIVE_ORACLE_HEX_BYTES_MAX = 48 * 1024
 export const NATIVE_ORACLE_EVENT_JSON_BYTES_MAX = 256 * 1024
 export const NATIVE_ORACLE_OUTCOME_BYTES_MAX = 191
 
+const backupDeliveryColumn = `backup_delivery_json TEXT CHECK (backup_delivery_json IS NULL OR (
+  length(CAST(backup_delivery_json AS BLOB)) BETWEEN 1 AND 262144
+  AND json_valid(backup_delivery_json) AND json_type(backup_delivery_json) IS 'object'
+  AND condition_id IS NOT NULL
+  AND json_extract(backup_delivery_json,'$.schemaVersion') IS 1
+  AND json_type(backup_delivery_json,'$.binding') IS 'object'
+  AND json_extract(backup_delivery_json,'$.binding.conditionId') IS condition_id
+  AND json_type(backup_delivery_json,'$.binding.oraclePubkey') IS 'text'
+  AND length(json_extract(backup_delivery_json,'$.binding.announcementEventId')) IS 64
+  AND json_type(backup_delivery_json,'$.relayUrls') IS 'array'
+  AND json_array_length(backup_delivery_json,'$.relayUrls') BETWEEN 0 AND 64
+  AND json_type(backup_delivery_json,'$.knownEventIds') IS 'array'
+  AND json_array_length(backup_delivery_json,'$.knownEventIds') BETWEEN 0 AND 64
+  AND (json_extract(backup_delivery_json,'$.current.mode') IS 'terminal' OR json_array_length(backup_delivery_json,'$.knownEventIds') <= 63)
+  AND json_type(backup_delivery_json,'$.timestampHighWater') IS 'integer'
+  AND json_extract(backup_delivery_json,'$.timestampHighWater') BETWEEN 0 AND 9007199254740991
+  AND (json_type(backup_delivery_json,'$.terminalCommitPending') IS 'true' OR json_type(backup_delivery_json,'$.terminalCommitPending') IS 'false')
+  AND (json_type(backup_delivery_json,'$.current') IS 'null' OR (
+    json_type(backup_delivery_json,'$.current') IS 'object'
+    AND ((json_extract(backup_delivery_json,'$.current.mode') IS 'initial' AND json_extract(backup_delivery_json,'$.current.generation') IS 1 AND json_type(backup_delivery_json,'$.current.attestationEventId') IS 'null')
+      OR (json_extract(backup_delivery_json,'$.current.mode') IS 'terminal' AND json_extract(backup_delivery_json,'$.current.generation') IS 2 AND length(json_extract(backup_delivery_json,'$.current.attestationEventId')) IS 64))
+    AND length(json_extract(backup_delivery_json,'$.current.eventId')) IS 64
+    AND json_type(backup_delivery_json,'$.current.eventJson') IS 'text'
+    AND json_valid(json_extract(backup_delivery_json,'$.current.eventJson'))
+    AND json_type(backup_delivery_json,'$.current.acknowledgedRelayIndexes') IS 'array'
+    AND json_array_length(backup_delivery_json,'$.current.acknowledgedRelayIndexes') BETWEEN 0 AND 64
+  ))
+  AND (json_type(backup_delivery_json,'$.deletion') IS 'null' OR (
+    json_type(backup_delivery_json,'$.deletion') IS 'object'
+    AND json_extract(backup_delivery_json,'$.current.mode') IS 'terminal'
+    AND length(json_extract(backup_delivery_json,'$.deletion.eventId')) IS 64
+    AND json_type(backup_delivery_json,'$.deletion.eventJson') IS 'text'
+    AND json_valid(json_extract(backup_delivery_json,'$.deletion.eventJson'))
+    AND json_type(backup_delivery_json,'$.deletion.acknowledgedRelayIndexes') IS 'array'
+    AND json_array_length(backup_delivery_json,'$.deletion.acknowledgedRelayIndexes') BETWEEN 0 AND 64
+  ))
+  AND ((json_type(backup_delivery_json,'$.terminalAdmission') IS 'null' AND json_extract(backup_delivery_json,'$.terminalCommitPending') IS 0 AND json_extract(backup_delivery_json,'$.current.mode') IS NOT 'terminal') OR (
+    json_type(backup_delivery_json,'$.terminalAdmission') IS 'object'
+    AND json_extract(backup_delivery_json,'$.current.mode') IS 'terminal'
+    AND json_extract(backup_delivery_json,'$.terminalAdmission.generation') IS 2
+    AND json_extract(backup_delivery_json,'$.terminalAdmission.backupEventId') IS json_extract(backup_delivery_json,'$.current.eventId')
+    AND json_extract(backup_delivery_json,'$.terminalAdmission.announcementEventId') IS json_extract(backup_delivery_json,'$.binding.announcementEventId')
+    AND json_extract(backup_delivery_json,'$.terminalAdmission.attestationEventId') IS json_extract(backup_delivery_json,'$.current.attestationEventId')
+  ))
+))`
+
+function backupDeliveryTriggers(table: string, pubkey: string): readonly string[] {
+  const attestation =
+    table === 'daemon_oracle_creations'
+      ? 'NEW.attestation_event_json'
+      : "json_extract(NEW.publication_json,'$.attestation.eventJson')"
+  const published =
+    table === 'daemon_oracle_creations' ? 'NEW.attestation_relay_published' : 'NEW.relay_published'
+  const terminal =
+    table === 'daemon_oracle_creations' ? 'NEW.backup_terminal = 1' : 'NEW.nonce_body IS NULL'
+  return [
+    `CREATE TRIGGER ${table}_delivery_validate BEFORE UPDATE OF backup_delivery_json ON ${table}
+      WHEN NEW.backup_delivery_json IS NOT NULL AND (
+        (SELECT count(*) FROM json_each(NEW.backup_delivery_json)) != 9
+        OR EXISTS (SELECT 1 FROM json_each(NEW.backup_delivery_json) WHERE key NOT IN ('schemaVersion','binding','relayUrls','timestampHighWater','knownEventIds','current','deletion','terminalAdmission','terminalCommitPending'))
+        OR (SELECT count(*) FROM json_each(NEW.backup_delivery_json,'$.binding')) != 3
+        OR (json_type(NEW.backup_delivery_json,'$.current') IS 'object' AND (SELECT count(*) FROM json_each(NEW.backup_delivery_json,'$.current')) != 6)
+        OR (json_type(NEW.backup_delivery_json,'$.deletion') IS 'object' AND (SELECT count(*) FROM json_each(NEW.backup_delivery_json,'$.deletion')) != 3)
+        OR (json_type(NEW.backup_delivery_json,'$.terminalAdmission') IS 'object' AND (SELECT count(*) FROM json_each(NEW.backup_delivery_json,'$.terminalAdmission')) != 4)
+        OR EXISTS (SELECT value FROM json_each(NEW.backup_delivery_json,'$.relayUrls') GROUP BY value HAVING count(*) > 1)
+        OR EXISTS (SELECT value FROM json_each(NEW.backup_delivery_json,'$.knownEventIds') GROUP BY value HAVING count(*) > 1)
+        OR EXISTS (SELECT value FROM json_each(NEW.backup_delivery_json,'$.current.acknowledgedRelayIndexes') GROUP BY value HAVING count(*) > 1)
+        OR EXISTS (SELECT value FROM json_each(NEW.backup_delivery_json,'$.deletion.acknowledgedRelayIndexes') GROUP BY value HAVING count(*) > 1)
+        OR json_extract(NEW.backup_delivery_json,'$.binding.oraclePubkey') IS NOT NEW.${pubkey}
+        OR json_extract(NEW.backup_delivery_json,'$.binding.announcementEventId') IS NOT json_extract(NEW.announcement_event_json,'$.id')
+        OR (json_type(NEW.backup_delivery_json,'$.current') IS 'object' AND (
+          json_extract(json_extract(NEW.backup_delivery_json,'$.current.eventJson'),'$.id') IS NOT json_extract(NEW.backup_delivery_json,'$.current.eventId')
+          OR json_extract(json_extract(NEW.backup_delivery_json,'$.current.eventJson'),'$.kind') IS NOT 30078
+          OR json_extract(json_extract(NEW.backup_delivery_json,'$.current.eventJson'),'$.pubkey') IS NOT NEW.${pubkey}
+          OR json_extract(json_extract(NEW.backup_delivery_json,'$.current.eventJson'),'$.created_at') > json_extract(NEW.backup_delivery_json,'$.timestampHighWater')))
+        OR (json_extract(NEW.backup_delivery_json,'$.current.mode') IS 'terminal' AND (
+          ${published} IS NOT 1
+          OR json_extract(${attestation},'$.id') IS NOT json_extract(NEW.backup_delivery_json,'$.current.attestationEventId')
+          OR (json_extract(NEW.backup_delivery_json,'$.terminalCommitPending') IS 0 AND NOT (${terminal}))))
+        OR EXISTS (SELECT 1 FROM json_each(NEW.backup_delivery_json,'$.relayUrls') WHERE type != 'text' OR length(CAST(value AS BLOB)) NOT BETWEEN 1 AND 2048)
+        OR EXISTS (SELECT 1 FROM json_each(NEW.backup_delivery_json,'$.knownEventIds') WHERE type != 'text' OR length(value) != 64 OR value GLOB '*[^0-9a-f]*')
+        OR EXISTS (SELECT 1 FROM json_each(NEW.backup_delivery_json,'$.current.acknowledgedRelayIndexes') WHERE type != 'integer' OR value < 0 OR value >= json_array_length(NEW.backup_delivery_json,'$.relayUrls'))
+        OR EXISTS (SELECT 1 FROM json_each(NEW.backup_delivery_json,'$.deletion.acknowledgedRelayIndexes') WHERE type != 'integer' OR value < 0 OR value >= json_array_length(NEW.backup_delivery_json,'$.relayUrls'))
+      ) BEGIN SELECT RAISE(ABORT, 'oracle backup delivery is invalid'); END`,
+    `CREATE TRIGGER ${table}_delivery_monotonic BEFORE UPDATE OF backup_delivery_json ON ${table}
+      WHEN OLD.backup_delivery_json IS NOT NULL AND (
+        NEW.backup_delivery_json IS NULL
+        OR json_extract(NEW.backup_delivery_json,'$.timestampHighWater') < json_extract(OLD.backup_delivery_json,'$.timestampHighWater')
+        OR json_extract(NEW.backup_delivery_json,'$.binding') IS NOT json_extract(OLD.backup_delivery_json,'$.binding')
+        OR json_extract(NEW.backup_delivery_json,'$.relayUrls') IS NOT json_extract(OLD.backup_delivery_json,'$.relayUrls')
+        OR (json_type(OLD.backup_delivery_json,'$.current') IS 'object' AND json_type(NEW.backup_delivery_json,'$.current') IS NOT 'object')
+        OR (json_extract(NEW.backup_delivery_json,'$.current.eventId') IS json_extract(OLD.backup_delivery_json,'$.current.eventId') AND EXISTS (
+          SELECT 1 FROM json_each(OLD.backup_delivery_json,'$.current.acknowledgedRelayIndexes') old
+          WHERE NOT EXISTS (SELECT 1 FROM json_each(NEW.backup_delivery_json,'$.current.acknowledgedRelayIndexes') fresh WHERE fresh.value = old.value)))
+        OR (json_type(OLD.backup_delivery_json,'$.deletion') IS 'object' AND json_type(NEW.backup_delivery_json,'$.deletion') IS 'object' AND (
+          json_extract(NEW.backup_delivery_json,'$.deletion.eventJson') IS NOT json_extract(OLD.backup_delivery_json,'$.deletion.eventJson')
+          OR EXISTS (SELECT 1 FROM json_each(OLD.backup_delivery_json,'$.deletion.acknowledgedRelayIndexes') old
+            WHERE NOT EXISTS (SELECT 1 FROM json_each(NEW.backup_delivery_json,'$.deletion.acknowledgedRelayIndexes') fresh WHERE fresh.value = old.value))))
+        OR (json_extract(OLD.backup_delivery_json,'$.current.mode') IS 'terminal' AND (
+          json_extract(NEW.backup_delivery_json,'$.current.eventId') IS NOT json_extract(OLD.backup_delivery_json,'$.current.eventId')
+          OR json_extract(NEW.backup_delivery_json,'$.terminalAdmission') IS NOT json_extract(OLD.backup_delivery_json,'$.terminalAdmission')
+          OR json_extract(NEW.backup_delivery_json,'$.terminalCommitPending') > json_extract(OLD.backup_delivery_json,'$.terminalCommitPending')))
+        OR (json_extract(NEW.backup_delivery_json,'$.current.mode') IS json_extract(OLD.backup_delivery_json,'$.current.mode') AND json_extract(NEW.backup_delivery_json,'$.current.eventJson') IS NOT json_extract(OLD.backup_delivery_json,'$.current.eventJson'))
+      ) BEGIN SELECT RAISE(ABORT, 'oracle backup delivery cannot move backwards'); END`,
+  ]
+}
+
 export const NATIVE_ORACLE_SCHEMA_SQL = [
   `CREATE TABLE daemon_oracle_nonce_allocator (
     singleton INTEGER PRIMARY KEY NOT NULL CHECK (singleton = 1),
@@ -60,6 +167,7 @@ export const NATIVE_ORACLE_SCHEMA_SQL = [
       AND json_valid(explanation_event_json) AND json_type(explanation_event_json) = 'object'
     )),
     explanation_relay_published INTEGER NOT NULL DEFAULT 0 CHECK (explanation_relay_published IN (0, 1)),
+    ${backupDeliveryColumn},
     backup_terminal INTEGER NOT NULL DEFAULT 0 CHECK (backup_terminal IN (0, 1)),
     created_at_ms INTEGER NOT NULL CHECK (created_at_ms >= 0),
     creation_metadata_json TEXT CHECK (creation_metadata_json IS NULL OR (
@@ -161,6 +269,7 @@ export const NATIVE_ORACLE_SCHEMA_SQL = [
     oracle_pubkey TEXT NOT NULL CHECK (length(oracle_pubkey) = 64 AND oracle_pubkey NOT GLOB '*[^0-9a-f]*'),
     announcement_hex TEXT NOT NULL CHECK (length(announcement_hex) BETWEEN 2 AND ${NATIVE_ORACLE_HEX_BYTES_MAX} AND length(announcement_hex) % 2 = 0 AND announcement_hex NOT GLOB '*[^0-9a-f]*'),
     announcement_event_json TEXT NOT NULL CHECK (length(CAST(announcement_event_json AS BLOB)) BETWEEN 1 AND 65535 AND json_valid(announcement_event_json) AND json_type(announcement_event_json) = 'object'),
+    ${backupDeliveryColumn},
     outcomes_json TEXT NOT NULL CHECK (length(CAST(outcomes_json AS BLOB)) BETWEEN 1 AND 65535 AND json_valid(outcomes_json) AND json_type(outcomes_json) = 'array'),
     destinations_json TEXT NOT NULL CHECK (length(CAST(destinations_json AS BLOB)) BETWEEN 1 AND 65535 AND json_valid(destinations_json) AND json_type(destinations_json) = 'object'),
     chosen_outcome TEXT CHECK (chosen_outcome IS NULL OR length(CAST(chosen_outcome AS BLOB)) BETWEEN 1 AND ${NATIVE_ORACLE_OUTCOME_BYTES_MAX}),
@@ -234,4 +343,6 @@ export const NATIVE_ORACLE_SCHEMA_SQL = [
   `CREATE TRIGGER oracle_creation_announcement_no_import_collision BEFORE UPDATE OF condition_id ON daemon_oracle_creations
     WHEN EXISTS (SELECT 1 FROM daemon_oracle_imports WHERE condition_id = NEW.condition_id)
     BEGIN SELECT RAISE(ABORT, 'oracle authority conflicts'); END`,
+  ...backupDeliveryTriggers('daemon_oracle_creations', 'creator_public_key_hex'),
+  ...backupDeliveryTriggers('daemon_oracle_imports', 'oracle_pubkey'),
 ] as const

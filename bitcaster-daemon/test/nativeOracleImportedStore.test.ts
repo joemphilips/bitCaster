@@ -99,6 +99,20 @@ async function withProfile(run: (directory: string) => Promise<void>, passphrase
   }
 }
 
+async function commitTerminalBackup(
+  store: ReturnType<typeof createNativeOracleCreationStore>,
+  conditionId: string,
+) {
+  const stage = await store.prepareBackupDelivery(conditionId, helper, 100)
+  assert.equal(stage.current!.mode, 'terminal')
+  await store.confirmBackupDelivery(conditionId, {
+    kind: 'backup',
+    eventId: stage.current!.eventId,
+    relayUrl: stage.relayUrls[0],
+  })
+  return store.commitBackupTerminal(conditionId, stage.terminalAdmission!)
+}
+
 function ports(
   directory: string,
   hooks: Partial<NativeOraclePublicationPorts> = {},
@@ -246,7 +260,15 @@ test(
     await withProfile(async (directory) => {
       const store = createNativeOracleCreationStore(directory)
       await store.importBackup(backup, helper)
-      await assert.rejects(store.terminalizeAuthority(backup.conditionId), /invalid-state/)
+      await assert.rejects(
+        store.commitBackupTerminal(backup.conditionId, {
+          backupEventId: '00'.repeat(32),
+          announcementEventId: '00'.repeat(32),
+          attestationEventId: '00'.repeat(32),
+          generation: 2,
+        }),
+        /invalid-state/,
+      )
       await publishNativeMarketOutcome(
         ports(directory),
         backup.conditionId,
@@ -254,7 +276,7 @@ test(
         'Test explanation.',
         relayOnly,
       )
-      await store.terminalizeAuthority(backup.conditionId)
+      await commitTerminalBackup(store, backup.conditionId)
       terminal = await createNativeOracleCreationStore(directory).exportBackup(
         backup.conditionId,
         helper,
@@ -410,7 +432,7 @@ test(
         undefined,
         relayOnly,
       )
-      await store.terminalizeAuthority(conditionId)
+      await commitTerminalBackup(store, conditionId)
       assert.ok(
         (await store.exportBackup(conditionId, helper)).authority.nonceScalarHex === null,
         'Terminal backup retained a scalar.',
@@ -568,7 +590,7 @@ test(
       )
       const exact = relay.record.attestation!.eventJson
       assert.equal(relay.record.engineEvidence, null)
-      await store.terminalizeAuthority(backup.conditionId)
+      await commitTerminalBackup(store, backup.conditionId)
       let submissions = 0
       const syncPorts = ports(directory, {
         async readSigner() {

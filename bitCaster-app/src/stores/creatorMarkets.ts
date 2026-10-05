@@ -1,6 +1,15 @@
 import { create } from "zustand";
 import type { StateStorage } from "zustand/middleware";
-import type { OracleBackupRecord } from "@bitcaster/client-sdk";
+import { OracleBackupError, type OracleBackupRecord } from "@bitcaster/client-sdk";
+import {
+  assertOracleBackupDeliveryOwner,
+  snapshotOracleBackupDeliveryState,
+  confirmOracleBackupDelivery,
+  commitOracleBackupDelivery,
+  type OracleBackupDeliveryState,
+  type OracleBackupDeliveryAcknowledgment,
+  type OracleBackupTerminalAdmission,
+} from "@bitcaster/client-sdk/oracleBackupDelivery";
 import { announcementContentFromTlv } from "@bitcaster/client-sdk/oracleAnnouncementEncoding";
 import type { ProductMarketDivisibility } from "@/types/market";
 import {
@@ -50,6 +59,8 @@ export interface StoredCreatorMarket {
 
 export interface StoredCreatorOracleMetadata {
   type: "self";
+  /** Exact encrypted transport state remains local. Public mirrors use an allowlist. */
+  backupDelivery?: OracleBackupDeliveryState;
   destinations?: BrowserOracleDestinations;
   importComplete?: boolean;
   /** DLC oracle event_id passed to kormir when the announcement was created. */
@@ -88,6 +99,7 @@ export interface StoredImportedOracleMetadata {
   destinations: BrowserOracleDestinations;
   publication: OraclePublicationRecord | null;
   importComplete: boolean;
+  backupDelivery?: OracleBackupDeliveryState;
   explanationDraft?: string;
   publicationFailures?: OraclePublicationFailureStage[];
 }
@@ -108,6 +120,16 @@ export interface BrowserOracleLockedPort {
   retainImportMetadata(input: BrowserOracleImportMetadata): Promise<BrowserOracleOwner>;
   markImportComplete(conditionId: string): Promise<void>;
   retainPreparation(conditionId: string, oracle: StoredCreatorOracleMetadata): Promise<void>;
+  readBackupDelivery(conditionId: string): Promise<OracleBackupDeliveryState | null>;
+  saveBackupPreparation(conditionId: string, state: OracleBackupDeliveryState): Promise<void>;
+  confirmBackupDelivery(
+    conditionId: string,
+    ack: OracleBackupDeliveryAcknowledgment,
+  ): Promise<OracleBackupDeliveryState>;
+  commitBackupTerminal(
+    conditionId: string,
+    admission: OracleBackupTerminalAdmission,
+  ): Promise<OracleBackupDeliveryState>;
 }
 export interface CreatorDocument {
   markets: StoredCreatorMarket[];
@@ -140,6 +162,15 @@ interface CreatorMarketsState extends CreatorDocument {
     failures: readonly OraclePublicationFailureStage[],
   ): Promise<void>;
   withOracleMutation<T>(action: (locked: BrowserOracleLockedPort) => Promise<T>): Promise<T>;
+  readOracleBackupDelivery(conditionId: string): Promise<OracleBackupDeliveryState | null>;
+  confirmOracleBackupDelivery(
+    conditionId: string,
+    ack: OracleBackupDeliveryAcknowledgment,
+  ): Promise<OracleBackupDeliveryState>;
+  commitOracleBackupTerminal(
+    conditionId: string,
+    admission: OracleBackupTerminalAdmission,
+  ): Promise<OracleBackupDeliveryState>;
 }
 
 function creatorOracleEqual(
@@ -278,6 +309,45 @@ function requireOwner(document: CreatorDocument, conditionId: string): BrowserOr
 function oracleIn(owner: BrowserOracleOwner) {
   return owner.kind === "created" ? owner.market.oracle! : owner.oracle;
 }
+export function browserOracleOwnerAuthority(owner: BrowserOracleOwner) {
+  switch (owner.kind) {
+    case "imported":
+      return {
+        binding: owner.oracle.binding,
+        announcementHex: owner.oracle.announcementHex,
+        destinations: owner.oracle.destinations,
+      };
+    case "created": {
+      const oracle = owner.market.oracle;
+      if (!oracle?.announcementEventJson || !oracle.announcementHex || !oracle.oraclePubkey)
+        throw new OracleBackupError("invalid-record");
+      return {
+        binding: {
+          conditionId: owner.market.conditionId,
+          oracleEventId: oracle.eventId,
+          oraclePubkey: oracle.oraclePubkey,
+          outcomes: oracle.outcomes,
+          announcementEventJson: oracle.announcementEventJson,
+        },
+        announcementHex: oracle.announcementHex,
+        destinations: oracle.destinations,
+      };
+    }
+  }
+}
+function backupDeliveryIn(owner: BrowserOracleOwner): OracleBackupDeliveryState | null {
+  const input = oracleIn(owner)?.backupDelivery;
+  if (input === undefined) return null;
+  const state = snapshotOracleBackupDeliveryState(input);
+  const { binding, destinations } = browserOracleOwnerAuthority(owner);
+  if (!destinations) throw new Error("Original oracle destinations are unavailable.");
+  assertOracleBackupDeliveryOwner(state, {
+    binding,
+    relayUrls: destinations.relayUrls,
+    publication: publicationIn(owner),
+  });
+  return state;
+}
 function snapshotImport(input: BrowserOracleImportMetadata): BrowserOracleImportMetadata {
   const binding = snapshotOraclePublicationRecord({
     binding: input.binding,
@@ -348,6 +418,11 @@ function snapshotImportedOracle(
     ...(record.publicationFailures === undefined
       ? {}
       : { publicationFailures: [...record.publicationFailures] }),
+    ...(record.backupDelivery === undefined
+      ? {}
+      : {
+          backupDelivery: snapshotOracleBackupDeliveryState(record.backupDelivery),
+        }),
   };
 }
 function assertPreparation(
@@ -404,6 +479,7 @@ export function createCreatorMarketsStore(
       ...document.importedOracles.map((oracle) => oracle.binding.conditionId),
     ];
     if (new Set(ids).size !== ids.length) throw new Error("Duplicate oracle owner.");
+    for (const id of ids) backupDeliveryIn(ownerIn(document, id)!);
     return document;
   }
   async function readDocument() {
@@ -417,9 +493,9 @@ export function createCreatorMarketsStore(
       if (!storage) throw new Error("Durable creator storage is unavailable.");
       const encoded = JSON.stringify({ state: document, version: 0 });
       await storage.setItem(STORAGE_KEY, encoded);
-      const saved = await readDocument();
-      if (JSON.stringify(saved) !== JSON.stringify(document))
-        throw new Error("Creator document was not saved.");
+      const savedBytes = await storage.getItem(STORAGE_KEY);
+      if (savedBytes !== encoded) throw new Error("Creator document was not saved.");
+      const saved = decode(savedBytes);
       revision++;
       set((cached) => ({
         markets: creatorMarketsEqual(cached.markets, saved.markets)
@@ -447,6 +523,54 @@ export function createCreatorMarketsStore(
         const port: BrowserOracleLockedPort = {
           readOwner: async (id) => ownerIn(await document(), id),
           read: async (id) => publicationIn(ownerIn(await document(), id)),
+          readBackupDelivery: async (id) => backupDeliveryIn(requireOwner(await document(), id)),
+          saveBackupPreparation: async (id, input) => {
+            const doc = await document();
+            const owner = requireOwner(doc, id);
+            const previous = backupDeliveryIn(owner);
+            const next = snapshotOracleBackupDeliveryState(input);
+            const { binding, destinations } = browserOracleOwnerAuthority(owner);
+            if (!destinations) throw new Error("Original oracle destinations are unavailable.");
+            assertOracleBackupDeliveryOwner(next, {
+              binding,
+              relayUrls: destinations.relayUrls,
+              publication: publicationIn(owner),
+            });
+            if (
+              previous?.current?.mode === "terminal" &&
+              JSON.stringify(previous) !== JSON.stringify(next)
+            )
+              throw new Error("The saved terminal backup cannot change.");
+            if (
+              previous?.current &&
+              next.current?.mode === "initial" &&
+              JSON.stringify(previous) !== JSON.stringify(next)
+            )
+              throw new Error("Retry the exact saved oracle backup.");
+            oracleIn(owner).backupDelivery = next;
+            await write(doc);
+          },
+          confirmBackupDelivery: async (id, ack) => {
+            const doc = await document();
+            const owner = requireOwner(doc, id);
+            const current = backupDeliveryIn(owner);
+            if (!current) throw new Error("Oracle backup preparation is unavailable.");
+            const next = confirmOracleBackupDelivery(current, ack);
+            oracleIn(owner).backupDelivery = next;
+            await write(doc);
+            return backupDeliveryIn(requireOwner(await document(), id))!;
+          },
+          commitBackupTerminal: async (id, admission) => {
+            const doc = await document();
+            const owner = requireOwner(doc, id);
+            const current = backupDeliveryIn(owner);
+            const publication = publicationIn(owner);
+            if (!current || !publication) throw new Error("Terminal oracle backup is unavailable.");
+            const next = commitOracleBackupDelivery(current, admission, publication);
+            oracleIn(owner).backupDelivery = next;
+            await write(doc);
+            return backupDeliveryIn(requireOwner(await document(), id))!;
+          },
           readDraft: async (id) => {
             const owner = ownerIn(await document(), id);
             return owner ? oracleIn(owner)?.explanationDraft : undefined;
@@ -609,6 +733,12 @@ export function createCreatorMarketsStore(
     return {
       ...empty(),
       withOracleMutation,
+      readOracleBackupDelivery: async (id) =>
+        backupDeliveryIn(requireOwner(await readDocument(), id)),
+      confirmOracleBackupDelivery: (id, ack) =>
+        withOracleMutation((port) => port.confirmBackupDelivery(id, ack)),
+      commitOracleBackupTerminal: (id, admission) =>
+        withOracleMutation((port) => port.commitBackupTerminal(id, admission)),
       hasOraclePersistence: () => storage !== undefined && getLockManager() !== undefined,
       readOracleOwner: async (id) => ownerIn(await readDocument(), id),
       readOraclePublication: async (id) => publicationIn(ownerIn(await readDocument(), id)),

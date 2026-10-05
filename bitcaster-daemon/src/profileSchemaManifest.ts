@@ -14,10 +14,10 @@ import {
 
 export const FINAL_PROFILE_APPLICATION_ID = 0x4243444d
 // The unit reset intentionally refuses every pre-release profile authority.
-export const FINAL_PROFILE_SCHEMA_VERSION = 14
+export const FINAL_PROFILE_SCHEMA_VERSION = 15
 export const FINAL_PROFILE_SCHEMA_NAME = 'bitcaster-daemon-profile'
 export const FINAL_PROFILE_SCHEMA_MANIFEST_DIGEST =
-  'f6e5a16a6e984ed2d49df739986fc1882af97bb5331bdfc8fc9636c7b155205f'
+  'fc13f1764e4b4add56c62e74441fe4d10bd3e53f95ed4ee4c837732e648edd9f'
 
 const artifactBytesMax = 16 * 1_024 * 1_024
 const recordBytesMax = 64 * 1_024
