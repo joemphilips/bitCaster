@@ -1,8 +1,11 @@
 // @vitest-environment node
+import { isDeepStrictEqual } from "node:util";
+import { BROWSER_D4_CONDITION } from "../../test/browserD4OracleFixture";
 import "fake-indexeddb/auto";
 import { schnorr } from "@noble/curves/secp256k1.js";
 import { deriveConditionalKeysetId, type Proof, type Wallet as CashuWallet } from "@cashu/cashu-ts";
 import {
+  verifyEncryptedWalletBackupV2RestoredProofSet,
   collectEncryptedWalletBackupV2DescriptorPages,
   createEncryptedWalletBackupV2AssetIdentity,
   createEncryptedWalletBackupV2CurrentHead,
@@ -15,6 +18,7 @@ import {
   issueEncryptedWalletBackupV2BundleSupersessionReceipt,
   prepareEncryptedWalletBackupV2ProofSetBundle,
   prepareEncryptedWalletBackupV2TransportBundle,
+  encodeDurableWalletProofDerivationLocatorCbor,
   deriveRootCtfOutcomeCollectionId,
   type EncryptedWalletBackupV2BundleDescriptor,
   type EncryptedWalletBackupV2BundleObjectWire,
@@ -26,7 +30,10 @@ import {
 } from "@bitcaster/client-sdk";
 import { deriveDurableCustodyScopeId } from "@bitcaster/client-sdk/durableCustody";
 import { deriveDurableWalletProofSecret } from "@bitcaster/client-sdk/durableWalletProofDerivationLocator";
-import { deserializeDurableCustodyProofArtifact } from "@bitcaster/client-sdk/durableCustodyProofMaterial";
+import {
+  deserializeDurableCustodyProofArtifact,
+  serializeDurableCustodyProofArtifact,
+} from "@bitcaster/client-sdk/durableCustodyProofMaterial";
 import { encodeCanonicalBackupCbor } from "@bitcaster/client-sdk/encryptedWalletBackupCbor";
 import { EncryptedWalletBackupV2HttpTransportError } from "@bitcaster/client-sdk/encryptedWalletBackupV2HttpAdapter";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -55,6 +62,7 @@ import {
 } from "../browserEncryptedWalletBackupV2Worker";
 import { createBrowserEncryptedWalletBackupV2RuntimeDriver } from "../encryptedWalletBackupDriver";
 import { requireBrowserWalletNewWritePermission } from "../browserWalletNewWritePermission";
+import { admitBrowserEncryptedWalletBackupV2SealedAsset } from "../browserEncryptedWalletBackupV2Admission";
 import { startBrowserCtfRemove } from "../browserCtfRemoveCoordinator";
 import { commitBrowserCtfTerminalOperation } from "../../test/browserEncryptedWalletBackupV2CommittedTerminalFixture";
 import { admitBrowserReceivedProofs } from "../browserCustodyProofReceive";
@@ -66,7 +74,7 @@ const SIGNING_PUBLIC_KEY = toHex(schnorr.getPublicKey(SIGNING_PRIVATE_KEY));
 const REGULAR_KEYSET = `01${"33".repeat(32)}`;
 const ORDINARY_MINT = "https://mint.example";
 const PUBLIC_KEY = `02${"22".repeat(32)}`;
-const CTF_CONDITION_ID = "aa".repeat(32);
+const CTF_CONDITION_ID = BROWSER_D4_CONDITION;
 const CTF_OUTCOME = "YES";
 const CTF_OUTCOME_ID = deriveRootCtfOutcomeCollectionId({
   conditionId: CTF_CONDITION_ID,
@@ -987,6 +995,40 @@ describe("browser V2 backup worker", () => {
     );
   });
 
+  it.each([false, true])("preserves history with stale remote head=%s", async (stale) => {
+    const fixture = await terminalWorkerFixture();
+    await prepareRemoteSealReuse(fixture, 0, true);
+    const before = await fixture.database.custodyProofs.toArray();
+    expect(before.some(({ selectability }) => selectability === "retained-unverified")).toBe(true);
+    if (stale) fixture.remote.replaceHead(fixture.remote.evidence().bundles);
+    const cycle = runBrowserEncryptedWalletBackupV2WorkerCycle({
+      ...fixture.input,
+      remoteOrigin: "https://backup.example",
+    });
+    if (stale) {
+      await expect(cycle).resolves.toEqual({ kind: "conflict-recovered" });
+      expect(fixture.remote.mutations).toHaveLength(1);
+    } else {
+      await expect(cycle).resolves.toEqual({ kind: "committed" });
+      expect(fixture.remote.mutations).toHaveLength(2);
+      const descriptor = fixture.remote.evidence().bundles[0]!;
+      const restored = await decryptEncryptedWalletBackupV2ProofSetBundle({
+        keyHandle: fixture.input.keyHandle,
+        seed: fixture.seed,
+        expectedAsset: fixture.asset,
+        custodyRevision: BigInt(descriptor.custodyRevision),
+        runtime: { subtle: crypto.subtle, getRandomValues: randomValues },
+        descriptor,
+        objects: fixture.remote.storedObjects(descriptor),
+      });
+      expect(restored.proofs).toHaveLength(2);
+      expect(
+        restored.proofs.filter(({ terminalSeal }) => terminalSeal?.schemaVersion === 1),
+      ).toHaveLength(1);
+    }
+    expect(await fixture.database.custodyProofs.toArray()).toEqual(before);
+  });
+
   it("refuses a wrong enrollment epoch without custody mutation", async () => {
     const wrongEpoch = await terminalWorkerFixture();
     await prepareRemoteSealReuse(wrongEpoch);
@@ -1189,7 +1231,14 @@ describe("browser V2 backup worker", () => {
           ]);
           const asset = fixture.assets.get(localAssetKey);
           if (!desired || !asset) throw new Error("test asset is absent");
-          return { desired, asset, proofs: [], losingProofs: [], counterHighWaterMarks: [] };
+          return {
+            desired,
+            asset,
+            proofs: [],
+            losingProofs: [],
+            refusalHistories: [],
+            counterHighWaterMarks: [],
+          };
         },
       },
     };
@@ -1643,6 +1692,189 @@ describe("browser V2 backup worker", () => {
       expect(fixture.remote.readObjectFailure).toBeNull();
     }
   });
+
+  it("restores and removes 256 sealed losing proofs after an exact upload retry", async () => {
+    const fixture = await terminalWorkerFixture(256, false, { terminalGroupSize: 128 });
+    await expect(runBrowserEncryptedWalletBackupV2WorkerCycle(fixture.input)).resolves.toEqual({
+      kind: "committed",
+    });
+    expect(await fixture.store.readPreparedMutation()).toBeNull();
+    expect(
+      (await fixture.database.encryptedWalletBackupV2DesiredAssets.toArray())[0]?.syncState,
+    ).toBe("acknowledged");
+    const originals = (await fixture.database.custodyProofs.toArray()).map(
+      decodeBrowserCustodyProofRow,
+    );
+    const exactProofSet = (rows: typeof originals) =>
+      rows
+        .map((row) => ({
+          proofId: row.proofId,
+          proofFingerprint: row.proofFingerprint,
+          proof: proofFromWorkerRow(row),
+        }))
+        .sort((a, b) => a.proofId.localeCompare(b.proofId));
+    const originalProofSet = exactProofSet(originals);
+    const descriptor = fixture.remote.evidence().bundles[0]!;
+    const unverified = await decryptEncryptedWalletBackupV2ProofSetBundle({
+      keyHandle: fixture.input.keyHandle,
+      seed: fixture.seed,
+      expectedAsset: fixture.asset,
+      custodyRevision: BigInt(descriptor.custodyRevision),
+      runtime: fixture.input.runtime,
+      descriptor,
+      objects: fixture.remote.storedObjects(descriptor),
+    });
+    const offline = vi.fn(() => {
+      throw new Error("sealed restore must not query the mint");
+    });
+    const verified = await verifyEncryptedWalletBackupV2RestoredProofSet({
+      seed: fixture.seed,
+      expectedAsset: fixture.asset,
+      unverified,
+      port: { resolveKeyset: offline, verifyProofs: offline, checkProofStates: offline },
+    });
+    expect(verified.proofs).toHaveLength(256);
+    expect(verified.proofs.every(({ terminalSeal }) => terminalSeal?.schemaVersion === 2)).toBe(
+      true,
+    );
+    expect(offline).not.toHaveBeenCalled();
+
+    await fixture.database.delete();
+    const restored = new BitcasterDB(browserWalletDatabaseName(fixture.scopeId));
+    openDatabases.push(restored);
+    await restored.open();
+    await admitBrowserEncryptedWalletBackupV2SealedAsset({
+      database: restored,
+      scopeId: fixture.scopeId,
+      seed: fixture.seed,
+      verified,
+      asset: fixture.asset,
+      custodyRevision: BigInt(descriptor.custodyRevision),
+      sourceOperationId: "large-holding-restore",
+      collectedHeadEvidence: fixture.remote.evidence(),
+      realm: REALM,
+      enrollmentEpoch: 1,
+      isCurrentProfile: () => true,
+      lockManager: immediateLockManager,
+    });
+    const restoredStore = new EncryptedWalletBackupV2DexieAuthorityStore({
+      database: restored,
+      scopeId: fixture.scopeId,
+      realm: REALM,
+      walletId: fixture.input.keyHandle.walletId,
+      enrollmentEpoch: 1,
+      requestAuthPublicKey: fixture.input.keyHandle.requestAuthPublicKey,
+    });
+    await restoredStore.acceptCompetingHead({
+      collectedHeadEvidence: fixture.remote.evidence(),
+      stalePreparedMutation: { mutationId: "00".repeat(16), requestDigest: "00".repeat(32) },
+    });
+    const rows = (await restored.custodyProofs.toArray()).map(decodeBrowserCustodyProofRow);
+    expect(rows).toHaveLength(256);
+    expect(
+      isDeepStrictEqual(exactProofSet(rows), originalProofSet),
+      "restore preserves exact original proofs",
+    ).toBe(true);
+    expect(
+      rows.every(
+        (row) => row.selectability === "verified-losing" && row.reservationOperationId === null,
+      ),
+    ).toBe(true);
+    expect(await restored.proofs.count()).toBe(0);
+    expect(await restored.custodyOperations.count()).toBe(0);
+    expect(
+      (await restored.custodyProofBackupAuthorities.toArray()).every(
+        (row) => "terminalAuthority" in row && row.terminalAuthority?.kind === "remote-seal",
+      ),
+    ).toBe(true);
+    await expect(
+      runBrowserEncryptedWalletBackupV2WorkerCycle({
+        ...fixture.input,
+        database: restored,
+        remoteOrigin: "https://backup.example",
+        lockManager: immediateLockManager,
+      }),
+    ).resolves.toEqual({ kind: "committed" });
+    await expect(
+      startBrowserCtfRemove({
+        database: restored,
+        scopeId: fixture.scopeId,
+        keyHandle: fixture.input.keyHandle,
+        enrollmentEpoch: 1,
+        asset: fixture.asset,
+        assetLocator: descriptor.assetLocator,
+        targets: rows.map((row) => ({
+          proofId: row.proofId,
+          proofFingerprint: row.proofFingerprint,
+          proofRevision: row.revision,
+        })),
+        observedAtMs: Date.now(),
+        lockManager: immediateLockManager,
+      }),
+    ).resolves.toMatchObject({ kind: "started" });
+    expect(
+      (await restored.custodyProofs.toArray()).filter(
+        (row) => row.selectability === "pending-removal",
+      ),
+    ).toHaveLength(256);
+    fixture.remote.failures.push("transport-failure");
+    const input = {
+      ...fixture.input,
+      database: restored,
+      remoteOrigin: "https://backup.example",
+      lockManager: immediateLockManager,
+    };
+    await expect(runBrowserEncryptedWalletBackupV2WorkerCycle(input)).resolves.toEqual({
+      kind: "retry-pending",
+      minimumRetryDelayMilliseconds: 5_000,
+    });
+    const prepared = await restoredStore.readPreparedMutation();
+    expect(prepared).not.toBeNull();
+    const bytes = prepared!.canonicalUploadGroup.slice();
+    restored.close();
+    await restored.open();
+    const pending = await restored.custodyProofs.toArray();
+    expect(pending).toHaveLength(256);
+    expect(
+      isDeepStrictEqual(exactProofSet(pending.map(decodeBrowserCustodyProofRow)), originalProofSet),
+      "pending removal preserves exact original proofs",
+    ).toBe(true);
+    const reopenedPrepared = await restoredStore.readPreparedMutation();
+    expect(reopenedPrepared?.requestDigest).toBe(prepared!.requestDigest);
+    expect(
+      isDeepStrictEqual(reopenedPrepared?.canonicalUploadGroup, bytes),
+      "reopen preserves exact prepared upload",
+    ).toBe(true);
+    expect([...new Set(pending.map((row) => row.selectability))]).toEqual(["pending-removal"]);
+    expect(
+      pending.every(
+        (row) => row.selectability === "pending-removal" && row.reservationOperationId === null,
+      ),
+    ).toBe(true);
+    expect(
+      (await restored.encryptedWalletBackupV2DesiredAssets.toArray())[0]?.removalIntent?.state,
+    ).toBe("pending");
+    await expect(runBrowserEncryptedWalletBackupV2WorkerCycle(input)).resolves.toEqual({
+      kind: "committed",
+    });
+    const retried = fixture.remote.mutations.at(-1)!.bytes;
+    expect(
+      retried.length === bytes.length && retried.every((byte, index) => byte === bytes[index]),
+      "retry preserves the prepared upload",
+    ).toBe(true);
+    expect(await restoredStore.readPreparedMutation()).toBeNull();
+    expect(await restored.custodyProofs.count()).toBe(0);
+    const markers = await restored.custodyProofBackupAuthorities.toArray();
+    expect(markers).toHaveLength(256);
+    expect(markers.map((row) => row.proofId).sort()).toEqual(
+      originals.map((row) => row.proofId).sort(),
+    );
+    expect(
+      markers.every((row) => "recordKind" in row && row.recordKind === "completed-removal"),
+    ).toBe(true);
+    expect(await restored.encryptedWalletBackupV2DesiredAssets.count()).toBe(0);
+    expect(fixture.remote.evidence().bundles).toHaveLength(0);
+  }, 120_000);
 
   it.each(["remote-seal", "local-operation"] as const)(
     "retains exact restored %s removal bytes across restart until current-head recovery commits",
@@ -2103,7 +2335,14 @@ async function workerFixture(assetCount: number) {
       const row = await database.encryptedWalletBackupV2DesiredAssets.get([scopeId, localAssetKey]);
       const asset = assets.get(localAssetKey);
       if (!row || !asset) throw new Error("test asset is absent");
-      return { desired: row, asset, proofs: [], losingProofs: [], counterHighWaterMarks: [] };
+      return {
+        desired: row,
+        asset,
+        proofs: [],
+        losingProofs: [],
+        refusalHistories: [],
+        counterHighWaterMarks: [],
+      };
     },
     prepare: async ({ snapshot, keyHandle: handle }) =>
       prepareEncryptedWalletBackupV2TransportBundle({
@@ -2312,6 +2551,7 @@ async function restoreWorkerProofOrigins(
         derivationLocator: entry.locator,
         restoreProofId: entry.proofId,
         restoreProofCommitment: digestEncryptedWalletBackupV2TerminalProofCommitment(entry),
+        terminalSeal: entry.terminalSeal,
       }),
     );
   }
@@ -2320,7 +2560,10 @@ async function restoreWorkerProofOrigins(
 async function terminalWorkerFixture(
   losingCount = 1,
   includeSibling = true,
-  options: { readonly deferTerminalClassification?: boolean } = {},
+  options: {
+    readonly deferTerminalClassification?: boolean;
+    readonly terminalGroupSize?: number;
+  } = {},
 ) {
   const seed = new Uint8Array(64).fill(19);
   const keyHandle = await createEncryptedWalletBackupV2KeyHandle({
@@ -2433,16 +2676,19 @@ async function terminalWorkerFixture(
   await database.encryptedWalletBackupV2DesiredAssets.put(initialDesired);
   const classifyTerminalProofs = async () => {
     const classifications = [];
-    for (const [index, predecessor] of predecessors.entries()) {
+    const groupSize = options.terminalGroupSize ?? 1;
+    for (let index = 0; index < predecessors.length; index += groupSize) {
+      const group = predecessors.slice(index, index + groupSize);
       classifications.push(
         await commitBrowserCtfTerminalOperation({
           adapter: custody,
+          database: database,
           scope,
-          owner: { ...owner, observedAtMs: 10 + index * 10 },
+          owner: { ...owner, observedAtMs: 10 + (index / groupSize) * 10 },
           operationId: `ctf-redeem-worker-${index}`,
           mintUrl: "https://mint.example",
-          proofs: [proofFromWorkerRow(predecessor)],
-          predecessorProofs: [predecessor],
+          proofs: group.map(proofFromWorkerRow),
+          predecessorProofs: group,
           publicKey: CTF_PUBLIC_KEY,
         }),
       );
@@ -2532,6 +2778,7 @@ async function terminalWorkerFixture(
 async function prepareRemoteSealReuse(
   fixture: Awaited<ReturnType<typeof terminalWorkerFixture>>,
   losingIndex = 0,
+  historical = false,
 ): Promise<void> {
   await expect(runBrowserEncryptedWalletBackupV2WorkerCycle(fixture.input)).resolves.toEqual({
     kind: "committed",
@@ -2571,14 +2818,75 @@ async function prepareRemoteSealReuse(
   );
   if (predecessorTarget?.terminalSeal === undefined)
     throw new Error("test predecessor terminal seal is missing");
+  let preservedProof = losing;
+  let preservedSeal = predecessorTarget.terminalSeal;
+  if (historical) {
+    preservedSeal = {
+      schemaVersion: 1,
+      kind: "ctf-verified-losing",
+      operationIdDigest: preservedSeal.operationIdDigest,
+      requestDigest: preservedSeal.requestDigest,
+      code: 13015,
+      classifiedAtMs: preservedSeal.classifiedAtMs,
+      proofCommitment: preservedSeal.proofCommitment,
+    };
+    preservedProof = { ...losing, selectability: "retained-unverified" };
+    await fixture.database.custodyProofs.put(preservedProof);
+    const bundle = await prepareEncryptedWalletBackupV2TransportBundle({
+      keyHandle: fixture.input.keyHandle,
+      asset: fixture.asset,
+      custodyRevision: BigInt(predecessor.custodyRevision),
+      declaredAmount: BigInt(predecessorProofs.proofs.length),
+      canonicalPayload: encodeCanonicalBackupCbor([
+        2,
+        "encrypted-wallet-backup-v2-proof-set",
+        predecessorProofs.proofs.map((entry) => [
+          entry.mintUrl,
+          entry.unit,
+          entry.asset.kind === "ordinary"
+            ? [0]
+            : [
+                1,
+                entry.asset.conditionId,
+                entry.asset.outcomeLabel,
+                entry.asset.outcomeCollectionId,
+                entry.asset.registeredAt,
+                entry.asset.finalExpiry,
+              ],
+          serializeDurableCustodyProofArtifact(entry.proof),
+          encodeDurableWalletProofDerivationLocatorCbor(entry.locator),
+          entry.terminalSeal === undefined
+            ? null
+            : [
+                1,
+                "ctf-verified-losing",
+                entry.terminalSeal.operationIdDigest,
+                entry.terminalSeal.requestDigest,
+                13015,
+                entry.terminalSeal.classifiedAtMs,
+                entry.terminalSeal.proofCommitment,
+              ],
+        ]),
+        predecessorProofs.counterHighWaterMarks.map((mark) => [
+          mark.mintUrl,
+          mark.unit,
+          mark.keysetId,
+          mark.nextCounter,
+        ]),
+      ]),
+      runtime: { subtle: crypto.subtle, getRandomValues: randomValues },
+    });
+    fixture.remote.replaceHead([bundle.descriptor], bundle.objects);
+  }
   await fixture.database.custodyProofBackupAuthorities.put(
     createBrowserRemoteProofBackupAuthorityRow({
-      proof: losing,
+      proof: preservedProof,
       observedAtMs: 30,
       derivationLocator: expectedLocator,
       restoreProofId: losing.proofId,
       restoreProofCommitment:
         digestEncryptedWalletBackupV2TerminalProofCommitment(predecessorTarget),
+      terminalSeal: preservedSeal,
     }),
   );
   await fixture.database.encryptedWalletBackupV2DesiredAssets.put({

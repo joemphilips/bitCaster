@@ -1634,7 +1634,7 @@ function registerWalletCommand(program: Command): void {
   wallet
     .command('claim <conditionId> <outcomeCollection>')
     .description(
-      'Claim one exact outcome collection. Return operation IDs for recovery and status.',
+      'Claim one exact outcome collection. Return operation IDs and oracle verification status.',
     )
     .option('--dry-run', 'Print the wallet.claimPosition request without calling the daemon')
     .addHelpText(

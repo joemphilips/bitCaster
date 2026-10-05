@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
+import { readFileSync } from 'node:fs'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -248,6 +249,7 @@ for (const losing of [false, true])
         }
         if (fault === 'before-commit')
           assert.equal((await claimDaemonPosition(common)).legs[0]?.state, 'pending')
+        else if (losing) assert.equal((await claimDaemonPosition(common)).legs[0]?.state, 'pending')
         else await assert.rejects(claimDaemonPosition(common), /injected Claim commit boundary/)
         assert.equal(injected, true)
         const target = Object.values((await readState())!.proofOperations).find(
@@ -846,7 +848,7 @@ test('stale fence, foreign reservation, and changed target refuse without partia
 })
 
 test('a losing historical-keyset leg does not block the next leg or get reselected on retry', async () => {
-  const fixture = await createFixture()
+  const fixture = await createFixture('11'.repeat(64), 'NO')
   try {
     await fixture.add('losing-old', HISTORICAL_ID)
     await fixture.add('next-leg', CURRENT_ID)
@@ -881,7 +883,7 @@ test('a definitive non-losing refusal is not reported as a pending claim', async
       { operationId, reservationId: operationId, reason: 'definitive local refusal' },
       { fence: fixture.common.fence, observedAtMs: Date.now() },
     )
-    await assert.rejects(claimDaemonPosition(fixture.common), /non-losing failure code/)
+    await assert.rejects(claimDaemonPosition(fixture.common), /non-refusal failure/)
     assert.equal((await getProofOperation(operationId))?.state, 'Failed')
     assert.equal(fixture.wallet.requests.length, 1)
   } finally {
@@ -954,7 +956,7 @@ test('claim requires ready custody and redacts invalid requests before network I
   }
 })
 
-async function createFixture(seed = '11'.repeat(64)) {
+async function createFixture(seed = '11'.repeat(64), resolvedOutcome = 'YES') {
   const directory = await mkdtemp(join(tmpdir(), 'bitcaster-position-claim-'))
   const previous = process.env.BITCASTER_DAEMON_HOME
   process.env.BITCASTER_DAEMON_HOME = directory
@@ -979,7 +981,7 @@ async function createFixture(seed = '11'.repeat(64)) {
   const tag = sha256(utf8ToBytes('DLC/oracle/attestation/v0'))
   const signature = bytesToHex(
     schnorr.sign(
-      sha256(concatBytes(tag, tag, utf8ToBytes('YES'))),
+      sha256(concatBytes(tag, tag, utf8ToBytes(resolvedOutcome))),
       PRIVATE_KEY,
       new Uint8Array(32),
     ),
@@ -990,6 +992,20 @@ async function createFixture(seed = '11'.repeat(64)) {
     oraclePublicKeys: [oraclePublicKey],
   })
   const wallet = new ClaimWallet()
+  wallet.conditionInfo = {
+    condition_id: conditionId,
+    threshold: 1,
+    collateral: 'msat',
+    announcements: ['01'],
+    attestation: {
+      status: 'attested',
+      winning_outcome: resolvedOutcome,
+      oracle_sigs: [
+        { oracle_pubkey: oraclePublicKey, oracle_sig: signature, outcome: resolvedOutcome },
+      ],
+    },
+  }
+
   await writeState(emptyDaemonState())
   const profile = (await readProfile())!
   const common = {
@@ -1002,7 +1018,7 @@ async function createFixture(seed = '11'.repeat(64)) {
     engine: {
       getConditionAttestation: async () => ({
         conditionId,
-        attestedOutcome: 'YES',
+        attestedOutcome: resolvedOutcome,
         attestationEvent: {
           id: signedEvent.id,
           pubkey: signedEvent.pubkey,
@@ -1013,7 +1029,9 @@ async function createFixture(seed = '11'.repeat(64)) {
           sig: signedEvent.sig,
         },
         oracleWitness: {
-          oracle_sigs: [{ oracle_pubkey: oraclePublicKey, oracle_sig: signature, outcome: 'YES' }],
+          oracle_sigs: [
+            { oracle_pubkey: oraclePublicKey, oracle_sig: signature, outcome: resolvedOutcome },
+          ],
         },
         registeredAuthority: {
           eventId,
@@ -1023,7 +1041,9 @@ async function createFixture(seed = '11'.repeat(64)) {
             {
               oraclePublicKey,
               noncePoint: signature.slice(0, 64),
-              announcementIdentity: '44'.repeat(32),
+              announcementIdentity: createHash('sha256')
+                .update(Buffer.from('AQ==', 'base64'))
+                .digest('hex'),
             },
           ],
         },
@@ -1114,7 +1134,13 @@ class ClaimWallet {
   loseResponse = false
   states: CheckStateEnum = CheckStateEnum.UNSPENT
   alterResult?: (proofs: Proof[]) => Proof[]
+  conditionInfo: unknown
+  evidenceError?: Error
   readonly mint = {
+    getCtfCondition: async () => {
+      if (this.evidenceError) throw this.evidenceError
+      return this.conditionInfo
+    },
     getKeySets: async () => ({
       keysets: [...this.keysets.values()],
     }),
@@ -1387,3 +1413,140 @@ function digest(value: unknown): string {
   )
   return createHash('sha256').update(canonical).digest('hex')
 }
+
+for (const evidence of [
+  'unavailable',
+  'missing-registration',
+  'invalid-registration',
+  'foreign-registration',
+  'winning',
+] as const) {
+  test(`native ${evidence} refusal survives SQLite reopen without losing or Remove authority`, async () => {
+    const fixture = await createFixture()
+    try {
+      await fixture.add('refusal-input', CURRENT_ID)
+      fixture.wallet.error = new MintOperationError(13015, 'mint refusal')
+      const common = { ...fixture.common }
+      if (evidence === 'unavailable') fixture.wallet.evidenceError = new Error('evidence timeout')
+      if (evidence === 'missing-registration')
+        common.engine = { getConditionAttestation: async () => null } as never
+      if (evidence === 'invalid-registration')
+        (fixture.wallet.conditionInfo as { announcements: string[] }).announcements = ['02']
+      if (evidence === 'foreign-registration')
+        common.engine = {
+          getConditionAttestation: async () => ({
+            ...(await fixture.common.engine.getConditionAttestation()),
+            conditionId: 'ff'.repeat(32),
+          }),
+        } as never
+      const result = await claimDaemonPosition(common)
+      assert.equal(result.legs[0]!.state, 'pending')
+      assert.equal(
+        result.legs[0]!.oracleEvidence!.status,
+        evidence === 'winning' ? 'verified' : 'unverified',
+      )
+      const original = await inspectClaim(fixture, result.legs[0]!.operationId)
+      assert.equal(original.record.operation.state, 'dispatch-intent')
+      assert.equal(original.reservations, 1)
+      assert.equal(original.predecessors[0]!.selectability, 'locked')
+      const reopened = await openDaemonStateSqlite(fixture.directory)
+      reopened.close()
+      assert.equal((await claimDaemonPosition(common)).legs[0]!.state, 'pending')
+      await assert.rejects(
+        previewDaemonPositionRemove({ ...fixture.common, isCustodyReady: () => true }),
+      )
+      assert.equal((await inspectClaim(fixture, result.legs[0]!.operationId)).reservations, 1)
+      if (evidence !== 'winning')
+        assert.equal(
+          (await getProofOperation(result.legs[0]!.operationId))!.metadata.oracleWitness,
+          '',
+        )
+    } finally {
+      await fixture.dispose()
+    }
+  })
+}
+
+test('native timeout then unverified refusal restores exact SPENT outputs after reopen', async () => {
+  const fixture = await createFixture()
+  try {
+    await fixture.add('uncertain-refusal', CURRENT_ID)
+    fixture.wallet.evidenceError = new Error('evidence unavailable')
+    fixture.wallet.loseResponse = true
+    const first = await claimDaemonPosition(fixture.common)
+    const id = first.legs[0]!.operationId
+    const frozen = (await getProofOperation(id))!
+    const requestHash = fixture.wallet.requestHash()
+    fixture.wallet.loseResponse = false
+    fixture.wallet.error = new MintOperationError(13015, 'refusal after timeout')
+    assert.equal((await claimDaemonPosition(fixture.common)).legs[0]!.state, 'pending')
+    assert.equal(fixture.wallet.requestHash(), requestHash)
+    assert.equal((await inspectClaim(fixture, id)).reservations, 1)
+    const reopened = await openDaemonStateSqlite(fixture.directory)
+    reopened.close()
+    fixture.wallet.states = CheckStateEnum.SPENT
+    const final = await claimDaemonPosition({
+      ...fixture.common,
+      walletDependencies: {
+        ...fixture.common.walletDependencies,
+        restoreOutputGroups: async () => ({ regular: fixture.wallet.results }),
+      },
+    })
+    assert.equal(final.legs[0]!.state, 'completed')
+    const completed = (await getProofOperation(id))!
+    assert.equal(digest(completed.inputs), digest(frozen.inputs))
+    assert.equal(digest(completed.outputs), digest(frozen.outputs))
+    assert.equal(digest(completed.metadata), digest(frozen.metadata))
+    assert.equal(fixture.wallet.requests.length, 2)
+    assert.equal((await inspectClaim(fixture, id)).record.operation.state, 'reconciled')
+  } finally {
+    await fixture.dispose()
+  }
+})
+
+test('native real producer sat evidence stays unverified for msat Claim while valid payout succeeds', async () => {
+  const info = JSON.parse(
+    readFileSync(new URL('./fixtures/d4/condition-info.json', import.meta.url), 'utf8'),
+  )
+  const registration = JSON.parse(
+    readFileSync(new URL('./fixtures/d4/registered-authority.json', import.meta.url), 'utf8'),
+  )
+  assert.equal(
+    createHash('sha256')
+      .update(readFileSync(new URL('./fixtures/d4/condition-info.json', import.meta.url)))
+      .digest('hex'),
+    '941830cf8af43623452e9d08eb5d5953e64f481b753502413c50579ec7eadfcf',
+  )
+  assert.equal(info.collateral, 'sat')
+  const fixture = await createFixture()
+  try {
+    // Native held keys are generated for msat. Captured producer oracle bytes remain sat.
+    await fixture.add('real-producer-native', CURRENT_ID, 'YES', info.condition_id)
+    fixture.wallet.conditionInfo = info
+    const common = {
+      ...fixture.common,
+      conditionId: info.condition_id,
+      engine: {
+        getConditionAttestation: async () => ({
+          conditionId: info.condition_id,
+          registeredAuthority: registration,
+        }),
+      },
+    }
+    const result = await claimDaemonPosition(common as never)
+    assert.equal(result.legs[0]!.state, 'completed')
+    assert.equal(result.legs[0]!.oracleEvidence!.status, 'unverified')
+    assert.ok(result.legs[0]!.payoutAmountSubunits > 0)
+    assert.equal((await getProofOperation(result.legs[0]!.operationId))!.metadata.oracleWitness, '')
+    assert.equal(
+      fixture.wallet.requests[0]!.inputs.some((proof) => proof.witness !== undefined),
+      false,
+    )
+    assert.equal(
+      (await inspectClaim(fixture, result.legs[0]!.operationId)).record.operation.state,
+      'reconciled',
+    )
+  } finally {
+    await fixture.dispose()
+  }
+})

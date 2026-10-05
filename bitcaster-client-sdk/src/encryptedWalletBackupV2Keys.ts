@@ -4,6 +4,7 @@ import { encodeCanonicalBackupCbor } from './encryptedWalletBackupCbor.ts'
 import {
   deriveEncryptedWalletBackupV2Hkdf,
   deriveEncryptedWalletBackupV2RequestAuthScalar,
+  deriveEncryptedWalletBackupV2TerminalSealKey,
   registerEncryptedWalletBackupV2KeyHandle,
   requireEncryptedWalletBackupV2KeyAuthority,
   type EncryptedWalletBackupV2KeyAuthority,
@@ -88,6 +89,7 @@ async function deriveKeyAuthority(
     encryptionRoot,
     requestAuthRoot,
     assetLocatorRoot,
+    terminalSealKey: deriveEncryptedWalletBackupV2TerminalSealKey(seed),
     runtime,
   })
 }

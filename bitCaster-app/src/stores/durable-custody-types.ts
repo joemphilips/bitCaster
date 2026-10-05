@@ -17,6 +17,7 @@ export type BrowserCustodyProofSelectability =
   | "selectable"
   | "locked"
   | "verified-losing"
+  | "retained-unverified"
   | "pending-removal"
   | "spent";
 
@@ -79,7 +80,8 @@ export function decodeBrowserCustodyProofRow(value: unknown): BrowserCustodyProo
     row.reservationOperationId === null ? null : proofText(row.reservationOperationId);
   if (
     (selectability === "locked") !== (reservationOperationId !== null) ||
-    (selectability === "verified-losing" && asset.assetKind !== "conditional") ||
+    ((selectability === "verified-losing" || selectability === "retained-unverified") &&
+      asset.assetKind !== "conditional") ||
     (selectability === "pending-removal" &&
       (asset.assetKind !== "conditional" || reservationOperationId !== null)) ||
     row.baseAsset !== "sat"
@@ -145,6 +147,7 @@ function proofSelectability(value: unknown): BrowserCustodyProofSelectability {
     value === "selectable" ||
     value === "locked" ||
     value === "verified-losing" ||
+    value === "retained-unverified" ||
     value === "pending-removal" ||
     value === "spent"
   )

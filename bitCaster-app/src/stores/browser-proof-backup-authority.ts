@@ -5,6 +5,8 @@ import {
 import {
   decodeEncryptedWalletBackupV2AssetIdentity,
   encryptedWalletBackupV2LocalAssetKey,
+  decodeEncryptedWalletBackupV2TerminalSeal,
+  type EncryptedWalletBackupV2TerminalSeal,
 } from "@bitcaster/client-sdk/encryptedWalletBackupV2ProofSet";
 import {
   requireRealm,
@@ -31,11 +33,19 @@ export interface BrowserLocalTerminalAuthority {
 
 export interface BrowserRemoteTerminalSealAuthority {
   kind: "remote-seal";
+  /** Older rows without the retained seal supply classification history only. */
+  terminalSeal?: EncryptedWalletBackupV2TerminalSeal;
+}
+
+export interface BrowserRemoteRefusalHistoryAuthority {
+  kind: "remote-refusal-history";
+  terminalSeal: EncryptedWalletBackupV2TerminalSeal;
 }
 
 export type BrowserProofBackupTerminalAuthority =
   | BrowserLocalTerminalAuthority
-  | BrowserRemoteTerminalSealAuthority;
+  | BrowserRemoteTerminalSealAuthority
+  | BrowserRemoteRefusalHistoryAuthority;
 
 interface BrowserProofBackupAuthorityBase {
   schemaVersion: 4;
@@ -346,6 +356,7 @@ export function createBrowserRemoteProofBackupAuthorityRow(input: {
   readonly derivationLocator: BrowserProofDerivationLocatorAuthority;
   readonly restoreProofId: string;
   readonly restoreProofCommitment: string;
+  readonly terminalSeal?: EncryptedWalletBackupV2TerminalSeal;
 }): BrowserRemoteProofBackupAuthorityRow {
   const proof = input.proof;
   requireLiveProofStateForAuthority(proof.selectability);
@@ -353,6 +364,12 @@ export function createBrowserRemoteProofBackupAuthorityRow(input: {
     throw new Error("browser restored proof authority time is stale");
   }
   requireBrowserProofDerivationLocator(input.derivationLocator);
+  if (proof.selectability === "verified-losing" && input.terminalSeal?.schemaVersion !== 2) {
+    throw new Error("browser restored losing proof requires verified oracle seal authority");
+  }
+  if (proof.selectability === "retained-unverified" && input.terminalSeal?.schemaVersion !== 1) {
+    throw new Error("browser restored refusal history requires an old seal");
+  }
   const authority = requireBrowserProofBackupAuthorityRow({
     schemaVersion: 4 as const,
     scopeId: proof.scopeId,
@@ -362,7 +379,12 @@ export function createBrowserRemoteProofBackupAuthorityRow(input: {
     proofState: proof.selectability,
     admissionOperationId: null,
     terminalOperationId: null,
-    terminalAuthority: proof.selectability === "verified-losing" ? { kind: "remote-seal" } : null,
+    terminalAuthority:
+      proof.selectability === "verified-losing"
+        ? { kind: "remote-seal", terminalSeal: input.terminalSeal }
+        : proof.selectability === "retained-unverified"
+          ? { kind: "remote-refusal-history", terminalSeal: input.terminalSeal }
+          : null,
     ...recordTimes(input.observedAtMs),
     backupState: "remote-backed",
     derivationLocator: serializeBrowserProofDerivationLocator(input.derivationLocator),
@@ -810,7 +832,7 @@ function requireTerminalAuthority(
   backupState: "local-only" | "remote-backed",
 ): BrowserProofBackupTerminalAuthority | null {
   if (value === null) {
-    if (proofState === "verified-losing") {
+    if (proofState === "verified-losing" || proofState === "retained-unverified") {
       throw new Error("browser proof backup losing classification is unbound");
     }
     if (terminalOperationId !== null) {
@@ -830,7 +852,8 @@ function requireTerminalAuthority(
       if (
         Object.keys(authority).length !== 2 ||
         !("operationId" in authority) ||
-        terminalOperationId === null
+        terminalOperationId === null ||
+        proofState === "retained-unverified"
       ) {
         throw new Error("browser proof backup terminal authority is invalid");
       }
@@ -843,9 +866,25 @@ function requireTerminalAuthority(
       }
       return { kind: "local-operation", operationId };
     }
+    case "remote-refusal-history": {
+      if (
+        Object.keys(authority).length !== 2 ||
+        !("terminalSeal" in authority) ||
+        terminalOperationId !== null ||
+        proofState !== "retained-unverified" ||
+        backupState !== "remote-backed"
+      ) {
+        throw new Error("browser proof backup refusal history is invalid");
+      }
+      const terminalSeal = decodeEncryptedWalletBackupV2TerminalSeal(authority.terminalSeal);
+      if (terminalSeal.schemaVersion !== 1)
+        throw new Error("browser proof backup refusal history is invalid");
+      return { kind: "remote-refusal-history", terminalSeal };
+    }
     case "remote-seal":
       if (
-        Object.keys(authority).length !== 1 ||
+        (Object.keys(authority).length !== 1 &&
+          !(Object.keys(authority).length === 2 && "terminalSeal" in authority)) ||
         terminalOperationId !== null ||
         (proofState !== "verified-losing" &&
           proofState !== "pending-removal" &&
@@ -854,7 +893,12 @@ function requireTerminalAuthority(
       ) {
         throw new Error("browser proof backup terminal authority is invalid");
       }
-      return { kind: "remote-seal" };
+      return {
+        kind: "remote-seal",
+        ...(authority.terminalSeal === undefined
+          ? {}
+          : { terminalSeal: decodeEncryptedWalletBackupV2TerminalSeal(authority.terminalSeal) }),
+      };
     default:
       throw new Error("browser proof backup terminal authority is invalid");
   }
@@ -941,6 +985,7 @@ function requireProofState(value: unknown): BrowserCustodyProofSelectability {
     value !== "selectable" &&
     value !== "locked" &&
     value !== "verified-losing" &&
+    value !== "retained-unverified" &&
     value !== "pending-removal" &&
     value !== "spent"
   ) {

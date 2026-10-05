@@ -1004,6 +1004,7 @@ export function usePortfolioState(): PortfolioState & {
           baseAsset: MarketBaseAsset;
           unit: string;
           amount: number;
+          retainedUnverifiedAmountSubunits: number;
           mintUrl: string;
           firstReceivedAt: number;
           allVerifiedLosing: boolean;
@@ -1028,7 +1029,12 @@ export function usePortfolioState(): PortfolioState & {
           conditionId,
           outcomeCollection,
           baseAsset,
-          amount: (current?.amount ?? 0) + proof.amount,
+          amount:
+            (current?.amount ?? 0) +
+            (proof.selectability === "retained-unverified" ? 0 : proof.amount),
+          retainedUnverifiedAmountSubunits:
+            (current?.retainedUnverifiedAmountSubunits ?? 0) +
+            (proof.selectability === "retained-unverified" ? proof.amount : 0),
           unit: proof.unit,
           mintUrl: proof.normalizedMint,
           claimRecoveryPending:
@@ -1037,7 +1043,8 @@ export function usePortfolioState(): PortfolioState & {
             (current?.removalPending ?? false) || proof.selectability === "pending-removal",
           allVerifiedLosing:
             (current?.allVerifiedLosing ?? true) &&
-            (proof.selectability === "verified-losing" ||
+            (proof.selectability === "retained-unverified" ||
+              proof.selectability === "verified-losing" ||
               proof.selectability === "pending-removal"),
           firstReceivedAt: Math.min(
             current?.firstReceivedAt ?? Number.POSITIVE_INFINITY,
@@ -1061,22 +1068,26 @@ export function usePortfolioState(): PortfolioState & {
         const market = catalogue.get(entry.conditionId);
         const divisibility = parseMarketDivisibility(market?.divisibility);
         const finalOutcome = market?.finalOutcome?.trim();
+        const historyOnly = entry.amount === 0 && entry.retainedUnverifiedAmountSubunits > 0;
         const isClosed =
+          historyOnly ||
           entry.allVerifiedLosing ||
           entry.claimRecoveryPending ||
           String(market?.state ?? "").toLowerCase() === "closed";
         // Closure alone does not prove a loss. Only mint classification or an
         // attested outcome can classify this display row.
-        const { status: winnerStatus, claimableValue } = entry.allVerifiedLosing
-          ? { status: "loser" as const, claimableValue: 0 }
-          : deriveWinner({
-              isClosed,
-              finalOutcome,
-              legs: [{ outcomeCollection: entry.outcomeCollection, amount: entry.amount }],
-            });
+        const { status: winnerStatus, claimableValue } = historyOnly
+          ? { status: "pending" as const, claimableValue: 0 }
+          : entry.allVerifiedLosing
+            ? { status: "loser" as const, claimableValue: 0 }
+            : deriveWinner({
+                isClosed,
+                finalOutcome,
+                legs: [{ outcomeCollection: entry.outcomeCollection, amount: entry.amount }],
+              });
         const isWinner = winnerStatus === "winner";
         const isLoser = winnerStatus === "loser";
-        const isPending = winnerStatus === "pending";
+        const isPending = !historyOnly && winnerStatus === "pending";
         const status = isClosed ? "closed" : "active";
         const currentValueSats = isClosed && isWinner ? claimableValue : 0;
         const position: Position = {
@@ -1092,10 +1103,12 @@ export function usePortfolioState(): PortfolioState & {
           side: "Outcome",
           outcomeId: entry.outcomeCollection,
           outcomeLabel: entry.outcomeCollection,
-          canClaimPayout: isWinner || entry.claimRecoveryPending,
+          canClaimPayout: !historyOnly && (isWinner || entry.claimRecoveryPending),
+          canSell: !historyOnly,
+          retainedUnverifiedAmountSubunits: entry.retainedUnverifiedAmountSubunits,
           claimRecoveryPending: entry.claimRecoveryPending,
           removalPending: entry.removalPending,
-          canDiscard: isLoser,
+          canDiscard: !historyOnly && isLoser,
           monitoringAssetIdentity: localMonitoringAssetIdentity(entry, market) ?? undefined,
           baseAsset: entry.baseAsset,
           divisibility: divisibility ?? undefined,
@@ -1105,7 +1118,7 @@ export function usePortfolioState(): PortfolioState & {
           // authoritative attestation or the exact display-only asset monitor
           // supplies one. Face amount is not a current value and must not enter
           // portfolio totals.
-          valueKnown: divisibility !== null && isClosed && !isPending,
+          valueKnown: !historyOnly && divisibility !== null && isClosed && !isPending,
           status,
           isWinner,
           isLoser,

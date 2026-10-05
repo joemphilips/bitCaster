@@ -1,3 +1,4 @@
+import { deserializeDurableCustodyProofArtifact } from "@bitcaster/client-sdk/durableCustodyProofMaterial";
 // @vitest-environment node
 import "fake-indexeddb/auto";
 import { afterEach, describe, expect, it } from "vitest";
@@ -16,7 +17,10 @@ import {
   digestEncryptedWalletBackupV2RemovalProofSet,
   sameEncryptedWalletBackupV2RemovalIntent,
 } from "../browser-encrypted-wallet-backup-v2-desired-asset";
-import { createEncryptedWalletBackupV2AssetIdentity } from "@bitcaster/client-sdk/encryptedWalletBackupV2ProofSet";
+import {
+  digestEncryptedWalletBackupV2TerminalProofCommitment,
+  createEncryptedWalletBackupV2AssetIdentity,
+} from "@bitcaster/client-sdk/encryptedWalletBackupV2ProofSet";
 import {
   classifyBrowserProofBackupAuthorityVerifiedLosing,
   createBrowserRemoteProofBackupAuthorityRow,
@@ -603,7 +607,7 @@ describe("browser V2 desired asset terminal CTF context", () => {
     ).rejects.toThrow(/conditional authority is missing/);
   });
 
-  it("uses an authenticated remote terminal context without a keyset", async () => {
+  it("uses persisted remote terminal context without a keyset", async () => {
     const scopeId = deriveDurableCustodyScopeId({
       scopeKind: "wallet",
       walletId: "76".repeat(32),
@@ -640,7 +644,8 @@ describe("browser V2 desired asset terminal CTF context", () => {
         observedAtMs: 1,
         derivationLocator: locator,
         restoreProofId: proof.proofId,
-        restoreProofCommitment: "aa".repeat(32),
+        restoreProofCommitment: contextSeal(proof, locator).proofCommitment,
+        terminalSeal: contextSeal(proof, locator),
       }),
     );
     const asset = createEncryptedWalletBackupV2AssetIdentity({
@@ -744,7 +749,8 @@ describe("browser V2 desired asset terminal CTF context", () => {
       observedAtMs: 1,
       derivationLocator: locator,
       restoreProofId: foreignProof.proofId,
-      restoreProofCommitment: "bb".repeat(32),
+      restoreProofCommitment: contextSeal(foreignProof, locator).proofCommitment,
+      terminalSeal: contextSeal(foreignProof, locator),
     });
     await database.custodyProofBackupAuthorities.put({
       ...foreignAuthority,
@@ -794,7 +800,8 @@ describe("browser V2 desired asset terminal CTF context", () => {
         observedAtMs: 1,
         derivationLocator: locator,
         restoreProofId: proof.proofId,
-        restoreProofCommitment: "cc".repeat(32),
+        restoreProofCommitment: contextSeal(proof, locator).proofCommitment,
+        terminalSeal: contextSeal(proof, locator),
       }),
     );
     await database.encryptedWalletBackupV2DesiredAssets.put(
@@ -840,3 +847,41 @@ describe("browser V2 desired asset terminal CTF context", () => {
     ).rejects.toThrow(/terminal context is foreign/);
   });
 });
+
+function contextSeal(
+  proof: ReturnType<typeof createBrowserCustodyProofRow>,
+  locator: { schemaVersion: 1; kind: "nut13"; keysetId: string; counter: number },
+) {
+  // This metadata-reader fixture tests structural binding, not MAC admission.
+  const proofCommitment = digestEncryptedWalletBackupV2TerminalProofCommitment({
+    proofId: proof.proofId,
+    mintUrl: proof.normalizedMint,
+    unit: proof.unit,
+    proof: deserializeDurableCustodyProofArtifact(
+      JSON.parse(new TextDecoder().decode(proof.proofBody)),
+    ),
+    locator,
+    asset: {
+      kind: "ctf",
+      conditionId: proof.conditionId!,
+      outcomeLabel: proof.outcomeCollection!,
+      outcomeCollectionId: deriveRootCtfOutcomeCollectionId({
+        conditionId: proof.conditionId!,
+        outcomeCollection: proof.outcomeCollection!,
+      }),
+      registeredAt: 1,
+      finalExpiry: 2,
+    },
+  });
+  return {
+    schemaVersion: 2 as const,
+    kind: "ctf-verified-losing-v2" as const,
+    code: 13015 as const,
+    operationIdDigest: "11".repeat(32),
+    requestDigest: "22".repeat(32),
+    classifiedAtMs: 1,
+    proofCommitment,
+    verifiedContextDigest: "33".repeat(32),
+    authenticationCode: "44".repeat(32),
+  };
+}

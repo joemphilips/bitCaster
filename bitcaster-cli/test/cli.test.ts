@@ -4606,7 +4606,7 @@ test('native creation dry runs stay local and do not trust the engine URL', asyn
   }
 })
 
-test('wallet claim sends the exact position and prints operation IDs with mocked network I/O', async () => {
+test('wallet claim sends the exact position and preserves oracle warnings and operation IDs in JSON', async () => {
   const params = { conditionId: 'ab'.repeat(32), outcomeCollection: 'Beta|Gamma' }
   const response = {
     ok: true,
@@ -4618,6 +4618,12 @@ test('wallet claim sends the exact position and prints operation IDs with mocked
           keysetId: 'historical-keyset',
           state: 'pending',
           payoutAmountSubunits: 0,
+          oracleEvidence: {
+            status: 'unverified',
+            reason: 'unavailable',
+            warning:
+              'The mint reports this outcome, but we have not verified evidence from the intended oracle.',
+          },
         },
       ],
     },

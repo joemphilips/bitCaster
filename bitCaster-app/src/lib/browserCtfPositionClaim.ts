@@ -16,6 +16,10 @@ import {
   prepareDurableCustodyAuthenticatedTerminalMintRejection,
   reconcileDurableCustodyAuthenticatedTerminalMintRejection,
 } from "@bitcaster/client-sdk/durableCustodyMintResult";
+import type {
+  ConditionOracleResolutionContext,
+  ConditionOracleEvidenceSummary,
+} from "@bitcaster/client-sdk/conditionOracleEvidence";
 import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
 import type { BrowserCtfRedeemLeg } from "./browserCtfRedeemSelection";
 import { readBrowserCanonicalCtfRedeemLegs } from "./browserCtfRedeemSelection";
@@ -34,6 +38,7 @@ import type { BrowserCustodyProofRow } from "../stores/durable-custody-types";
 import type { BitcasterDB } from "../stores/proof-db";
 import { normalizeUrl } from "./url";
 import { withWalletProfileLock } from "./walletProfileLock";
+import { requireBrowserCtfVerifiedLosingProofAuthority } from "./browserCtfRemoveCoordinator";
 
 const RECOVERABLE_PAGE_LIMIT = 256;
 /** The proof identity captured by an exclusion confirmation. */
@@ -69,6 +74,8 @@ export interface BrowserCanonicalCtfPositionClaimContext {
 export interface BrowserCanonicalCtfPositionClaimPreparation {
   readonly regularKeyset: MintKeys;
   readonly oracleWitness: string;
+  readonly oracleResolutionContext?: ConditionOracleResolutionContext;
+  readonly oracleEvidence?: ConditionOracleEvidenceSummary;
 }
 
 export interface BrowserCanonicalCtfPositionIdentity {
@@ -96,6 +103,7 @@ export type BrowserCanonicalCtfPositionClaimResult =
   | BrowserCanonicalCtfPositionClaimError;
 
 interface BrowserCanonicalCtfPositionClaimBase {
+  readonly oracleEvidence?: ConditionOracleEvidenceSummary;
   readonly committedPayoutAmount: number;
   readonly committedLegs: number;
   readonly losingLegs: number;
@@ -132,6 +140,7 @@ export interface BrowserCanonicalCtfPositionClaimError extends BrowserCanonicalC
 }
 
 interface ClaimTotals {
+  oracleEvidence?: ConditionOracleEvidenceSummary;
   committedPayoutAmount: number;
   committedLegs: number;
   losingLegs: number;
@@ -191,6 +200,10 @@ async function claimWhileLocked(
   const prepareNewLegAuthority = () => {
     newLegAuthority ??= Promise.resolve()
       .then(() => context.prepareNewLegAuthority())
+      .then((preparation) => {
+        mergeOracleEvidence(totals, preparation.oracleEvidence);
+        return preparation;
+      })
       .catch((error: unknown) => {
         throw browserCtfClaimBoundaryError(error, "keyset-authority");
       });
@@ -221,7 +234,7 @@ async function claimWhileLocked(
       processedOperationIds.add(record.operation.operationId);
       const operationProofIds = record.operation.reservation.inputs.map(({ proofId }) => proofId);
       try {
-        const outcome = await runRecovery(input, scope, record.operation.operationId);
+        const outcome = await runRecovery(input, scope, record.operation.operationId, totals);
         markTargetOutcome(exact, operationProofIds, outcome);
         await noteRecoveryOutcome({
           context,
@@ -294,11 +307,23 @@ async function claimWhileLocked(
           continue;
         }
         if (existing !== null && existing.operation.terminalMintRejection !== null) {
-          markTargetCovered(
+          const outcome = await runRecovery(input, scope, operationId, totals);
+          markTargetOutcome(
             exact,
             leg.rows.map(({ proofId }) => proofId),
+            outcome,
           );
-          totals.losingLegs += 1;
+          await mergeLegOutcome({
+            totals,
+            outcome,
+            stopOnCommittedPayout: input.stopOnCommittedPayout === true,
+            markPending: (reason) => {
+              pendingReason = pendingReason ?? reason;
+            },
+            markFailure: (claimFailure) => {
+              failure = failure ?? claimFailure;
+            },
+          });
           continue;
         }
         if (existing !== null) {
@@ -315,6 +340,7 @@ async function claimWhileLocked(
               conditionId: input.position.conditionId,
               outcomeCollection: input.position.outcomeCollection,
               oracleWitness: preparation.oracleWitness,
+              oracleResolutionContext: preparation.oracleResolutionContext,
               leg,
               regularKeyset: preparation.regularKeyset,
               counterSource: context.counterSource,
@@ -337,7 +363,7 @@ async function claimWhileLocked(
           }
         }
 
-        const outcome = await runRecovery(input, scope, operationId);
+        const outcome = await runRecovery(input, scope, operationId, totals);
         markTargetOutcome(
           exact,
           leg.rows.map(({ proofId }) => proofId),
@@ -380,7 +406,10 @@ async function claimWhileLocked(
 
   if (exact !== null && failure === null && totals.pendingLegs === 0) {
     for (const proofId of exact.targets.keys()) {
-      if (!exact.covered.has(proofId) && !isTerminalTarget(exact.rows.get(proofId))) {
+      if (
+        !exact.covered.has(proofId) &&
+        !(await isTerminalTarget(context.database, exact.rows.get(proofId), context.seed))
+      ) {
         failure = new BrowserCtfClaimBoundaryError("profile-ownership");
         break;
       }
@@ -404,6 +433,7 @@ async function runRecovery(
   input: BrowserCanonicalCtfPositionClaimInput,
   scope: DurableCustodyScope,
   operationId: string,
+  totals: ClaimTotals,
 ): Promise<BrowserCanonicalCtfRedeemRecoveryResult> {
   const context = input.context;
   const result = await recoverBrowserCanonicalCtfRedeemOperation({
@@ -417,6 +447,7 @@ async function runRecovery(
     adapter: context.adapter,
     owner: context.owner,
     observedAtMs: context.observedAtMs,
+    onOracleEvidence: (evidence) => mergeOracleEvidence(totals, evidence),
   });
   if (result.kind === "losing") {
     try {
@@ -431,6 +462,18 @@ async function runRecovery(
     }
   }
   return result;
+}
+
+function mergeOracleEvidence(
+  totals: ClaimTotals,
+  evidence: ConditionOracleEvidenceSummary | undefined,
+): void {
+  if (
+    evidence !== undefined &&
+    (totals.oracleEvidence === undefined || evidence.status === "unverified")
+  ) {
+    totals.oracleEvidence = evidence;
+  }
 }
 
 async function noteRecoveryOutcome(input: {
@@ -594,8 +637,19 @@ function markTargetCovered(exact: ExactTargetState | null, proofIds: readonly st
   }
 }
 
-function isTerminalTarget(row: BrowserCustodyProofRow | undefined): boolean {
-  return row?.selectability === "spent" || row?.selectability === "verified-losing";
+async function isTerminalTarget(
+  database: BitcasterDB,
+  row: BrowserCustodyProofRow | undefined,
+  seed: Uint8Array,
+): Promise<boolean> {
+  if (row?.selectability === "spent") return true;
+  if (row?.selectability !== "verified-losing") return false;
+  try {
+    await requireBrowserCtfVerifiedLosingProofAuthority(database, row, seed);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function requireOperationTargetSubset(

@@ -1,3 +1,9 @@
+import { verifyDurableCustodyExactMintProofResult } from '@bitcaster-market/client-sdk/durableCustodyMintResult'
+import { deserializeOutputGroups } from '@bitcaster-market/client-sdk/ctfSplit'
+import { serializeDurableCustodyOutput } from '@bitcaster-market/client-sdk/durableCustodyProofOperation'
+import { deriveDurableCustodyArtifactFingerprint } from '@bitcaster-market/client-sdk/durableCustody'
+import { requireCtfVerifiedLosingAuthority } from '@bitcaster-market/client-sdk/conditionOracleEvidence'
+import type { DurableCustodyMintKeysetAuthority } from '@bitcaster-market/client-sdk/durableCustodyMintResult'
 import { createHash } from 'node:crypto'
 import type { DatabaseSync, StatementSync } from 'node:sqlite'
 import { isDeepStrictEqual } from 'node:util'
@@ -2158,7 +2164,13 @@ export async function readPositionClaimProofPageFenced(input: {
         )
         .all(...bindings) as Array<Record<string, unknown>>
       const records = rows.map(decodeWalletProofRow)
-      return records.filter((record) => record.proof.id === records[0]?.proof.id)
+      let inputBytes = 0
+      return records
+        .filter((record) => record.proof.id === records[0]?.proof.id)
+        .filter((record) => {
+          inputBytes += Buffer.byteLength(JSON.stringify(record.proof))
+          return inputBytes <= 32 * 1024
+        })
     },
   )
 }
@@ -2220,6 +2232,28 @@ function completeConditionRedeemFromDatabase(
   }
   if (before.state !== 'prepared') {
     throw new Error('managed condition redeem is not prepared for completion')
+  }
+  if (purpose === 'managed-condition-retirement') {
+    const outputKeyset = before.metadata.regularOutputKeysetAuthority as
+      | DurableCustodyMintKeysetAuthority
+      | undefined
+    if (
+      outputKeyset === undefined ||
+      outputKeyset.canonicalMintUrl !== before.mintUrl ||
+      outputKeyset.unit !== 'msat' ||
+      outputKeyset.id !== before.metadata.regularKeysetId
+    )
+      throw new Error('retirement exact output keyset authority is absent or foreign')
+    verifyDurableCustodyExactMintProofResult({
+      outputs: Object.fromEntries(
+        Object.entries(deserializeOutputGroups(before.outputs)).map(([group, outputs]) => [
+          group,
+          outputs.map(serializeDurableCustodyOutput),
+        ]),
+      ),
+      result: completion.resultProofs,
+      keysets: [outputKeyset],
+    })
   }
   const completed = completeProofOperation(database, operationId, completion, nowMs)
   const regular = completed.resultProofs?.regular ?? []
@@ -2347,6 +2381,25 @@ function failConditionRedeemFromDatabase(
   ) {
     throw new Error('managed condition terminal redeem evidence is foreign')
   }
+  if (
+    evidence.losingAuthority === undefined ||
+    operation.metadata.oracleResolutionContext === undefined
+  )
+    throw new Error('condition redeem refusal lacks frozen verified losing authority')
+  const losing = requireCtfVerifiedLosingAuthority(evidence.losingAuthority, {
+    operationId: operation.operationId,
+    mintUrl: operation.mintUrl,
+    conditionId: operation.metadata.conditionId as string,
+    outcomeCollection: operation.metadata.outcomeSetId as string,
+    inputs: operation.inputs as Proof[],
+    inputKeysets: operation.metadata
+      .oracleInputKeysets as readonly DurableCustodyMintKeysetAuthority[],
+  })
+  if (
+    deriveDurableCustodyArtifactFingerprint(losing.resolution) !==
+    deriveDurableCustodyArtifactFingerprint(operation.metadata.oracleResolutionContext)
+  )
+    throw new Error('condition redeem losing registration differs from original intent')
   if (operation.state === 'Failed') {
     if (operation.lastError !== message || operation.failureCode !== evidence.rejectionBody.code) {
       throw new Error('managed condition redeem failed with a different result')

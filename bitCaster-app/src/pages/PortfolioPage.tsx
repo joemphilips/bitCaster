@@ -234,18 +234,28 @@ export function PortfolioPage() {
           },
         });
         if (!isCurrentWallet(walletId)) return;
-        if (result.kind === "pending") showActionMessage(t("portfolio.claimPending"));
+        const warning =
+          result.oracleEvidence?.status === "unverified"
+            ? t("portfolio.unverifiedOracleOutcome")
+            : null;
+        if (result.kind === "pending") {
+          showActionMessage([t("portfolio.claimPending"), warning].filter(Boolean).join("\n"));
+        }
         if (result.kind === "error") {
           showActionMessage(
             [
               t("portfolio.claimFailed"),
               t(CLAIM_FAILURE_TRANSLATION_KEYS[result.error.category]),
               t("portfolio.claimAttemptReference", { reference: result.error.attemptRef }),
+              ...(warning === null ? [] : [warning]),
               ...(result.error.operationRef
                 ? [t("portfolio.claimOperationReference", { reference: result.error.operationRef })]
                 : []),
             ].join("\n"),
           );
+        }
+        if ((result.kind === "completed" || result.kind === "stopped") && warning !== null) {
+          showActionMessage(warning);
         }
       } catch {
         if (isCurrentWallet(walletId)) showActionMessage(t("portfolio.claimFailed"));
@@ -314,22 +324,29 @@ export function PortfolioPage() {
           },
         });
         if (!isCurrentWallet(walletId)) return;
+        const warning =
+          result.oracleEvidence?.status === "unverified"
+            ? t("portfolio.unverifiedOracleOutcome")
+            : null;
+        const showRemoveMessage = (message: string) =>
+          showActionMessage([message, warning].filter(Boolean).join("\n"));
         switch (result.kind) {
           case "completed":
+            if (warning !== null) showActionMessage(warning);
             break;
           case "pending":
-            showActionMessage(t("portfolio.removePending"));
+            showRemoveMessage(t("portfolio.removePending"));
             break;
           case "stopped":
-            showActionMessage(t("portfolio.removePayout"));
+            showRemoveMessage(t("portfolio.removePayout"));
             break;
           case "partial":
-            showActionMessage(
+            showRemoveMessage(
               result.error ? removeFailureMessage(result.error) : t("portfolio.removePending"),
             );
             break;
           case "error":
-            showActionMessage(removeFailureMessage(result.error));
+            showRemoveMessage(removeFailureMessage(result.error));
             break;
         }
       } catch {

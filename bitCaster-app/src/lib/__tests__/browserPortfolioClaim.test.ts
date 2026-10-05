@@ -37,9 +37,11 @@ vi.mock("../browserCtfRangeOrderSource", () => ({
 }));
 vi.mock("../browserCtfPositionClaim", () => ({ claimBrowserCanonicalCtfPosition: mocks.claim }));
 vi.mock("../cashu", () => ({
-  fetchConditionAttestation: mocks.attestation,
   ensureWalletKeysetCounterReady: mocks.counterReady,
   WalletKeysetCounterReadinessError: mocks.CounterReadinessError,
+}));
+vi.mock("../browserConditionOracleEvidence", () => ({
+  resolveBrowserConditionOracleEvidence: mocks.attestation,
 }));
 vi.mock("../bip39", () => ({ toSeed: () => new Uint8Array(64) }));
 vi.mock("../walletProfileLock", () => ({ withWalletProfileLock: mocks.lock }));
@@ -57,7 +59,9 @@ beforeEach(() => {
   mocks.activeScope = "scope";
   mocks.getWallet.mockResolvedValue(mocks.wallet);
   mocks.keysetLookup.mockResolvedValue(mocks.keyset);
-  mocks.attestation.mockResolvedValue({ witnessJson: "witness" });
+  mocks.attestation.mockResolvedValue({
+    evidence: { status: "verified", canonicalOracleWitness: "witness", context: {} },
+  });
   mocks.counterReady.mockResolvedValue(undefined);
   mocks.claimScope.mockResolvedValue(mocks.owner);
   mocks.releaseScope.mockResolvedValue(undefined);
@@ -75,7 +79,12 @@ describe("Portfolio claim entry point", () => {
       expect(context.oracleWitness).toBeUndefined();
 
       const prepared = await context.prepareNewLegAuthority();
-      expect(prepared).toEqual({ regularKeyset: mocks.keyset, oracleWitness: "witness" });
+      expect(prepared).toEqual({
+        regularKeyset: mocks.keyset,
+        oracleWitness: "witness",
+        oracleEvidence: { status: "verified" },
+        oracleResolutionContext: {},
+      });
       return { kind: "completed", committedPayoutAmount: 100 };
     });
 
@@ -85,7 +94,16 @@ describe("Portfolio claim entry point", () => {
 
     expect(mocks.getWallet).toHaveBeenCalledWith(position.mintUrl, "msat", "captured wallet");
     expect(mocks.keysetLookup).toHaveBeenCalledWith(mocks.wallet, "msat");
-    expect(mocks.attestation).toHaveBeenCalledWith(position.conditionId);
+    expect(mocks.attestation).toHaveBeenCalledWith({
+      binding: {
+        scopeId: "scope",
+        normalizedMint: position.mintUrl,
+        unit: "msat",
+        conditionId: position.conditionId,
+        canonicalParentCollectionId: null,
+      },
+      wallet: mocks.wallet,
+    });
     expect(mocks.counterReady).toHaveBeenCalledWith({
       scopeId: "scope",
       mintUrl: position.mintUrl,
@@ -124,7 +142,9 @@ describe("Portfolio claim entry point", () => {
     async (step) => {
       mocks[step].mockImplementation(async () => {
         mocks.activeScope = "other-scope";
-        return step === "attestation" ? { witnessJson: "witness" } : undefined;
+        return step === "attestation"
+          ? { evidence: { status: "verified", canonicalOracleWitness: "witness", context: {} } }
+          : undefined;
       });
       mocks.claim.mockImplementation(async ({ context }) => {
         await context.prepareNewLegAuthority();
@@ -180,7 +200,6 @@ describe("Portfolio claim entry point", () => {
 
   it.each([
     ["keysetLookup", "keyset-authority", "The selected keyset could not be verified."],
-    ["attestation", "attestation-lookup", "The condition attestation could not be loaded."],
   ] as const)(
     "returns a safe %s failure without exposing upstream text",
     async (step, category, message) => {
@@ -202,6 +221,34 @@ describe("Portfolio claim entry point", () => {
       expect(mocks.releaseScope).toHaveBeenCalledOnce();
     },
   );
+
+  it("prepares Claim without a witness when oracle evidence is unavailable", async () => {
+    const evidence = {
+      status: "unverified",
+      reason: "unavailable",
+      warning:
+        "The mint reports this outcome, but we have not verified evidence from the intended oracle.",
+    };
+    mocks.attestation.mockResolvedValue({ evidence });
+    mocks.claim.mockImplementation(async ({ context }) => {
+      const prepared = await context.prepareNewLegAuthority();
+      expect(prepared.oracleWitness).toBe("");
+      expect(prepared.oracleResolutionContext).toBeUndefined();
+      expect(prepared.oracleEvidence).toEqual(evidence);
+      return {
+        kind: "completed",
+        committedPayoutAmount: 100,
+        oracleEvidence: prepared.oracleEvidence,
+      };
+    });
+    await expect(claimPortfolioPosition(position)).resolves.toMatchObject({
+      kind: "completed",
+      committedPayoutAmount: 100,
+      oracleEvidence: { status: "unverified", reason: "unavailable" },
+    });
+    expect(mocks.counterReady).toHaveBeenCalledOnce();
+    expect(mocks.releaseScope).toHaveBeenCalledOnce();
+  });
 
   it("does not recover counters when the saved claim needs no new leg", async () => {
     await expect(claimPortfolioPosition(position)).resolves.toMatchObject({

@@ -1,5 +1,8 @@
 // @vitest-environment node
+import { BROWSER_D4_CONDITION } from "../../test/browserD4OracleFixture";
 import "fake-indexeddb/auto";
+import { encodeCanonicalBackupCbor } from "@bitcaster/client-sdk/encryptedWalletBackupCbor";
+import { serializeDurableCustodyProofArtifact } from "@bitcaster/client-sdk/durableCustodyProofMaterial";
 import {
   Amount,
   createBlindSignature,
@@ -40,6 +43,8 @@ import {
   enumerateEncryptedWalletBackupV2DescriptorPages,
   issueEncryptedWalletBackupV2TerminalSeal,
   prepareEncryptedWalletBackupV2ProofSetBundle,
+  prepareEncryptedWalletBackupV2TransportBundle,
+  encodeDurableWalletProofDerivationLocatorCbor,
   type EncryptedWalletBackupV2ProofSetAsset,
   type EncryptedWalletBackupV2DescriptorPage,
   type EncryptedWalletBackupV2RemotePort,
@@ -75,7 +80,7 @@ const MINT = "https://mint.example";
 const MINT_PRIVATE_KEY = Uint8Array.from({ length: 32 }, (_, index) => (index === 31 ? 1 : 0));
 const MINT_PUBLIC_KEY = "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798";
 const KEYSET = deriveKeysetId({ 1: MINT_PUBLIC_KEY }, { unit: "msat", versionByte: 1 });
-const CONDITION_ID = "aa".repeat(32);
+const CONDITION_ID = BROWSER_D4_CONDITION;
 const OUTCOME_LABEL = "YES";
 const OUTCOME_COLLECTION_ID = deriveRootCtfOutcomeCollectionId({
   conditionId: CONDITION_ID,
@@ -258,6 +263,40 @@ describe("browser encrypted wallet backup V2 conflict recovery", () => {
     ]);
     await expect(fixture.store.readNewWritePermission()).resolves.toMatchObject({ canWrite: true });
   });
+
+  it.each(["omitted", "changed-seal"] as const)(
+    "refuses %s history during conflict recovery",
+    async (change) => {
+      const fixture = await conflictFixture({ conditionalAsset: true });
+      await installRemoteBundles(
+        fixture,
+        [{ proofAsset: fixtureProofAsset(fixture), counter: 400, custodyRevision: 2n }],
+        { terminalSealed: true, historical: true },
+      );
+      await expect(
+        recoverBrowserEncryptedWalletBackupV2Conflict(fixture.input),
+      ).resolves.toMatchObject({ kind: "completed" });
+      const before = await fixture.database.custodyProofs.toArray();
+      expect(before).toMatchObject([{ selectability: "retained-unverified" }]);
+      const authorities = await fixture.database.custodyProofBackupAuthorities.toArray();
+      const remote = await installRemoteBundles(
+        fixture,
+        change === "omitted"
+          ? []
+          : [{ proofAsset: fixtureProofAsset(fixture), counter: 400, custodyRevision: 3n }],
+        { headVersion: 2, terminalSealed: true, historical: true, historicalClassifiedAtMs: 999 },
+      );
+      await fixture.store.markCompetingHeadRecoveryRequired({
+        collectedHeadEvidence: remote.headEvidence,
+      });
+      await expect(recoverBrowserEncryptedWalletBackupV2Conflict(fixture.input)).rejects.toThrow(
+        change === "omitted" ? /retirement predecessor is invalid/ : /refusal history conflicts/,
+      );
+      expect(await fixture.database.custodyProofs.toArray()).toEqual(before);
+      expect(await fixture.database.custodyProofBackupAuthorities.toArray()).toEqual(authorities);
+      expect(await fixture.store.readNewWritePermission()).toMatchObject({ canWrite: false });
+    },
+  );
 
   it("accepts the same authenticated empty head twice and clears refusal atomically", async () => {
     const fixture = await conflictFixture();
@@ -1201,6 +1240,8 @@ async function installRemoteBundles(
   options?: {
     readonly failOnObjectRead?: number;
     readonly terminalSealed?: boolean;
+    readonly historical?: boolean;
+    readonly historicalClassifiedAtMs?: number;
     readonly headVersion?: number;
   },
 ) {
@@ -1243,7 +1284,7 @@ async function installRemoteBundles(
       const terminalSeal = options?.terminalSealed
         ? await issueRemoteTerminalSeal(fixture, proofAsset, proof, locator)
         : undefined;
-      const bundle = await prepareEncryptedWalletBackupV2ProofSetBundle({
+      let bundle = await prepareEncryptedWalletBackupV2ProofSetBundle({
         keyHandle: fixture.input.keyHandle,
         seed: fixture.input.seed,
         asset,
@@ -1263,6 +1304,46 @@ async function installRemoteBundles(
         ],
         runtime: fixture.input.runtime,
       });
+      if (options?.historical) {
+        if (!terminalSeal || proofAsset.kind !== "ctf") throw new Error("history requires seal");
+        bundle = await prepareEncryptedWalletBackupV2TransportBundle({
+          keyHandle: fixture.input.keyHandle,
+          asset,
+          custodyRevision,
+          declaredAmount: 1n,
+          canonicalPayload: encodeCanonicalBackupCbor([
+            2,
+            "encrypted-wallet-backup-v2-proof-set",
+            [
+              [
+                MINT,
+                "msat",
+                [
+                  1,
+                  proofAsset.conditionId,
+                  proofAsset.outcomeLabel,
+                  proofAsset.outcomeCollectionId,
+                  proofAsset.registeredAt,
+                  proofAsset.finalExpiry,
+                ],
+                serializeDurableCustodyProofArtifact(proof),
+                encodeDurableWalletProofDerivationLocatorCbor(locator),
+                [
+                  1,
+                  "ctf-verified-losing",
+                  terminalSeal.operationIdDigest,
+                  terminalSeal.requestDigest,
+                  13015,
+                  options.historicalClassifiedAtMs ?? terminalSeal.classifiedAtMs,
+                  terminalSeal.proofCommitment,
+                ],
+              ],
+            ],
+            [[MINT, "msat", keysetId, counter + 1]],
+          ]),
+          runtime: fixture.input.runtime,
+        });
+      }
       return { bundle, keyset, proof, proofAsset };
     }),
   );
@@ -1430,6 +1511,8 @@ async function issueRemoteTerminalSeal(
     readonly counter: number;
   },
 ) {
+  const sealDatabase = new BitcasterDB(`conflict-seal-${crypto.randomUUID()}`);
+  openDatabases.push(sealDatabase);
   if (proofAsset.kind !== "ctf") throw new Error("test terminal seal requires a CTF proof");
   const asset = createEncryptedWalletBackupV2AssetIdentity({
     mintUrl: MINT,
@@ -1441,7 +1524,7 @@ async function issueRemoteTerminalSeal(
     walletId: fixture.input.keyHandle.walletId,
     scopeId: fixture.scopeId,
   };
-  const custody = new BrowserDurableCustodyAdapter(fixture.database);
+  const custody = new BrowserDurableCustodyAdapter(sealDatabase);
   const owner = await custody.claimScope(scope, {
     incarnationId: "conflict-terminal-seal",
     observedAtMs: 10,
@@ -1459,11 +1542,11 @@ async function issueRemoteTerminalSeal(
     },
     receivedAtMs: 1,
   });
-  await fixture.database.custodyProofs.put(predecessor);
-  await fixture.database.custodyProofBackupAuthorities.put(
+  await sealDatabase.custodyProofs.put(predecessor);
+  await sealDatabase.custodyProofBackupAuthorities.put(
     createBrowserProofBackupAuthorityRow(predecessor, 10, locator, "admission:conflict-terminal"),
   );
-  await fixture.database.custodyConditionalKeysets.put({
+  await sealDatabase.custodyConditionalKeysets.put({
     schemaVersion: 1,
     scopeId: fixture.scopeId,
     normalizedMint: MINT,
@@ -1478,7 +1561,7 @@ async function issueRemoteTerminalSeal(
     finalExpiryUnixSeconds: proofAsset.finalExpiry,
     curve: "secp256k1",
   });
-  await fixture.database.encryptedWalletBackupV2DesiredAssets.put(
+  await sealDatabase.encryptedWalletBackupV2DesiredAssets.put(
     createEncryptedWalletBackupV2DesiredAssetRow({
       scopeId: fixture.scopeId,
       asset,
@@ -1495,6 +1578,7 @@ async function issueRemoteTerminalSeal(
   );
   const committed = await commitBrowserCtfTerminalOperation({
     adapter: custody,
+    database: sealDatabase,
     scope,
     owner,
     operationId: "ctf-redeem-conflict-terminal",
@@ -1511,22 +1595,27 @@ async function issueRemoteTerminalSeal(
     operationId: committed.operationId,
     store: {
       withCommittedTerminalRejection: async (_operationId, read) =>
-        read({ record, exactRejection: committed.rejection, classifiedAtMs: 20 }),
+        read({
+          record,
+          exactRejection: committed.rejection,
+          exactAuthority: committed.exactAuthority,
+          classifiedAtMs: 20,
+        }),
     },
   });
   await Promise.all([
-    fixture.database.custodyProofs.clear(),
-    fixture.database.custodyProofBackupAuthorities.clear(),
-    fixture.database.encryptedWalletBackupV2DesiredAssets.clear(),
-    fixture.database.custodyConditionalKeysets.clear(),
-    fixture.database.custodyOperations.clear(),
-    fixture.database.custodyArtifacts.clear(),
-    fixture.database.custodyReservations.clear(),
-    fixture.database.custodyActiveWork.clear(),
-    fixture.database.custodyScopes.clear(),
-    fixture.database.walletCounterCursors.clear(),
-    fixture.database.walletCounterAssociations.clear(),
-    fixture.database.proofs.clear(),
+    sealDatabase.custodyProofs.clear(),
+    sealDatabase.custodyProofBackupAuthorities.clear(),
+    sealDatabase.encryptedWalletBackupV2DesiredAssets.clear(),
+    sealDatabase.custodyConditionalKeysets.clear(),
+    sealDatabase.custodyOperations.clear(),
+    sealDatabase.custodyArtifacts.clear(),
+    sealDatabase.custodyReservations.clear(),
+    sealDatabase.custodyActiveWork.clear(),
+    sealDatabase.custodyScopes.clear(),
+    sealDatabase.walletCounterCursors.clear(),
+    sealDatabase.walletCounterAssociations.clear(),
+    sealDatabase.proofs.clear(),
   ]);
   return terminalSeal;
 }

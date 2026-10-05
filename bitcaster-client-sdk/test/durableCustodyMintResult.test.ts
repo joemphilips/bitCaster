@@ -1,3 +1,4 @@
+import { d4OracleContext, d4ConditionalKeyset, D4_CONDITION } from './support/d4OracleFixture.ts'
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { secp256k1 } from '@noble/curves/secp256k1.js'
@@ -19,6 +20,8 @@ import {
   applyDurableCustodyTransaction,
   isDurableCustodyProofReservationActive,
   deriveDurableCustodyScopeId,
+  prepareDurableCustodyExactArtifact,
+  createDurableCustodyArtifactReference,
   type DurableCustodyOwnerAuthorization,
   type DurableCustodyScopeState,
 } from '../src/durableCustody.ts'
@@ -26,7 +29,10 @@ import {
   prepareDurableCustodyAuthenticatedTerminalMintRejection,
   prepareDurableCustodyMintOperationAuthority,
   prepareDurableCustodyVerifiedMintResult,
+  verifyDurableCustodyExactMintProofResult,
   readDurableCustodyVerifiedMintResult,
+  readDurableCustodyAuthenticatedTerminalMintRejection,
+  readDurableCustodyVerifiedLosingMintRejection,
   reconcileDurableCustodyAuthenticatedTerminalMintRejection,
   stageDurableCustodyPreparedMintResult,
 } from '../src/durableCustodyMintResult.ts'
@@ -353,6 +359,108 @@ test('reconciles exact authenticated CTF redeem rejection without successors', a
     }),
   )
   assert.equal(adapter.readOperation()?.revision, revision)
+})
+
+test('raw terminal admission cannot replace the frozen intended registration', async () => {
+  const prepared = preparedCtfRedeem('redeem:frozen-authority')
+  const adapter = new FaultInjectingDurableCustodyAdapter(scopeState())
+  adapter.run((transaction) =>
+    bindDurableCustodyProofOperation(transaction, prepared.record, prepared.artifacts),
+  )
+  const record = adapter.readOperation()!
+  const rejection = prepareDurableCustodyAuthenticatedTerminalMintRejection({
+    record,
+    exactAuthority: prepared.exactAuthority,
+    evidence: await captureTerminalRedeemEvidence(prepared.operation.operationId, MINT_URL),
+  })
+  const changed = JSON.parse(JSON.stringify(rejection.authority))
+  changed.losingAuthority.resolution.registered.oracles[0].announcementIdentity = '11'.repeat(32)
+  const exactRejection = prepareDurableCustodyExactArtifact(changed)
+  assert.throws(
+    () =>
+      adapter.run((transaction) =>
+        applyDurableCustodyTransaction(
+          transaction,
+          {
+            scope: SCOPE,
+            owner: OWNER,
+            operationRows: [
+              { operationId: record.operation.operationId, expectedRevision: record.revision },
+            ],
+          },
+          (selected) =>
+            selected.reconcileAuthenticatedTerminalMintRejection!({
+              operationId: record.operation.operationId,
+              expectedRevision: record.revision,
+              authorization: OWNER,
+              rejectionHandle: 'foreign-context',
+              rejectionFingerprint: exactRejection.fingerprint,
+              exactRejection,
+              code: 13015,
+              predecessorDisposition: 'retain',
+            }),
+        ),
+      ),
+    /frozen intended registration/,
+  )
+  assert.equal(adapter.readOperation()!.operation.state, 'dispatch-intent')
+  assert.equal(isDurableCustodyProofReservationActive(adapter.readOperation()!), true)
+})
+
+test('persisted code-only refusal remains history and full losing context reverifies after reload', async () => {
+  const prepared = preparedCtfRedeem('redeem:historical-reload')
+  const adapter = new FaultInjectingDurableCustodyAdapter(scopeState())
+  adapter.run((transaction) =>
+    bindDurableCustodyProofOperation(transaction, prepared.record, prepared.artifacts),
+  )
+  const rejection = prepareDurableCustodyAuthenticatedTerminalMintRejection({
+    record: adapter.readOperation()!,
+    exactAuthority: prepared.exactAuthority,
+    evidence: await captureTerminalRedeemEvidence(prepared.operation.operationId, MINT_URL),
+  })
+  adapter.run((transaction) =>
+    reconcileDurableCustodyAuthenticatedTerminalMintRejection({
+      transaction,
+      record: adapter.readOperation()!,
+      prepared: rejection,
+      authorization: OWNER,
+    }),
+  )
+  const record = JSON.parse(JSON.stringify(adapter.readOperation()))
+  const exactRejection = prepareDurableCustodyExactArtifact(
+    JSON.parse(JSON.stringify(rejection.authority)),
+  )
+  assert.equal(
+    readDurableCustodyVerifiedLosingMintRejection({
+      record,
+      exactRejection,
+      exactAuthority: prepared.exactAuthority,
+    }).losingAuthority.resolution.evidence.resolvedOutcome,
+    'YES',
+  )
+  const { losingAuthority: _losing, ...history } = rejection.authority
+  const historical = prepareDurableCustodyExactArtifact(history)
+  const terminal = record.operation.terminalMintRejection
+  terminal.rejectionFingerprint = historical.fingerprint
+  terminal.exactRejection = createDurableCustodyArtifactReference(
+    terminal.exactRejection.artifactId,
+    historical,
+  )
+  assert.equal(
+    readDurableCustodyAuthenticatedTerminalMintRejection({ record, exactRejection: historical })
+      .code,
+    13015,
+  )
+  assert.throws(
+    () =>
+      readDurableCustodyVerifiedLosingMintRejection({
+        record,
+        exactRejection: historical,
+        exactAuthority: prepared.exactAuthority,
+      }),
+    /no verified losing authority/,
+  )
+  assert.equal(record.operation.exactRequest.inputProofIds.length, 1)
 })
 
 test('rejects foreign terminal mint rejections and leaves unknown failures active', async () => {
@@ -694,10 +802,24 @@ function preparedMelt(operationId: string, outputCount: number) {
 
 function preparedCtfRedeem(operationId: string) {
   const send = preparedSend(operationId)
-  const operation = { ...send.operation, kind: 'ctf-redeem' as const }
+  const conditional = d4ConditionalKeyset(KEYS)
+  const operation = {
+    ...send.operation,
+    kind: 'ctf-redeem' as const,
+    inputs: send.operation.inputs.map((proof) => ({ ...proof, id: conditional.id })),
+    metadata: {
+      unit: 'sat',
+      conditionId: D4_CONDITION,
+      outcome: 'NO',
+      outcomeSetId: 'NO',
+      oracleWitness: '',
+      oracleResolutionContext: d4OracleContext(),
+      oracleInputKeysets: [conditional],
+    },
+  }
   const authority = prepareDurableCustodyMintOperationAuthority({
     operation,
-    keysets: send.authority.keysets,
+    keysets: [...send.authority.keysets, conditional],
   })
   const artifacts = {
     requestBody: authority.exactRequest,
@@ -760,12 +882,15 @@ async function captureTerminalRedeemEvidence(
       },
     },
     proofOperationStore: store,
-    conditionId: 'condition-1',
-    outcome: 'losing-outcome',
+    conditionId: D4_CONDITION,
+    outcome: 'NO',
+    outcomeSetId: 'NO',
+    oracleResolutionContext: d4OracleContext('sat', mintUrl),
+    oracleInputKeysets: [d4ConditionalKeyset(KEYS, 'sat', mintUrl)],
     unit: 'sat',
-    oracleWitness: '{}',
-    proofs: [proofForOutput(OutputData.createSingleData(1, KEYSET_ID, 'capture-input', 17n))],
-    outcomeKeyset: regularKeyset,
+    oracleWitness: '',
+    proofs: preparedCtfRedeem(operationId).operation.inputs,
+    outcomeKeyset: { ...regularKeyset, id: d4ConditionalKeyset(KEYS).id },
     regularKeyset,
   })
   if (evidence === null) throw new Error('terminal redeem evidence was not captured')
@@ -827,3 +952,23 @@ function scopeState(): DurableCustodyScopeState {
     effectiveClock: { highWaterMarkMs: 0 },
   }
 }
+
+test('existing exact output owners verify received amount, keyset, secret, signature and DLEQ', () => {
+  const prepared = preparedSend('pure-output-guard')
+  const proof = proofForOutput(prepared.output)
+  const base = { outputs: prepared.operation.outputs, keysets: prepared.authority.keysets }
+  verifyDurableCustodyExactMintProofResult({ ...base, result: { keep: [proof] } })
+  for (const altered of [
+    { ...proof, amount: 2 },
+    { ...proof, id: MSAT_KEYSET_ID },
+    { ...proof, secret: 'foreign' },
+    {
+      ...proof,
+      C: bytesToHex(secp256k1.getPublicKey(Uint8Array.from([...new Uint8Array(31), 2]), true)),
+    },
+    { ...proof, dleq: undefined },
+  ])
+    assert.throws(() =>
+      verifyDurableCustodyExactMintProofResult({ ...base, result: { keep: [altered as Proof] } }),
+    )
+})

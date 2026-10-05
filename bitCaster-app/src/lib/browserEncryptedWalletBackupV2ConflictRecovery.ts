@@ -663,7 +663,13 @@ async function requireNoOrphanActiveProofs(
 ): Promise<void> {
   let activeProofCount = 0;
   const { database, scopeId } = input;
-  for (const state of ["selectable", "locked", "verified-losing", "pending-removal"] as const) {
+  for (const state of [
+    "selectable",
+    "locked",
+    "verified-losing",
+    "retained-unverified",
+    "pending-removal",
+  ] as const) {
     let afterProofId: string | null = null;
     for (;;) {
       requireCurrent(input);
@@ -749,6 +755,16 @@ function requireRemoteProofBinding(
     !sameBrowserProofDerivationLocator(authority.derivationLocator, remote.locator)
   ) {
     throw new Error("browser V2 conflict recovery proof material conflicts");
+  }
+  if (remote.selectionAuthority === "terminal-refusal-history") {
+    if (
+      local.selectability !== "retained-unverified" ||
+      authority.terminalAuthority?.kind !== "remote-refusal-history" ||
+      JSON.stringify(authority.terminalAuthority.terminalSeal) !==
+        JSON.stringify(remote.terminalSeal)
+    )
+      throw new Error("browser V2 conflict recovery refusal history conflicts");
+    return;
   }
   const live = remote.selectionAuthority === "live-verified";
   if (

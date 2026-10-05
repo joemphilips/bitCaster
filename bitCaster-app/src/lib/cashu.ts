@@ -2123,40 +2123,6 @@ function assertNeverState(s: never): never {
   throw new Error(`unhandled MintQuoteState: ${JSON.stringify(s)}`);
 }
 
-interface ConditionAttestationResponse {
-  conditionId: string;
-  attestedOutcome: string;
-  oracleWitness: unknown;
-}
-
-interface ResolvedConditionAttestation {
-  witnessJson: string;
-  attestedOutcome: string;
-}
-
-export async function fetchConditionAttestation(
-  conditionId: string,
-): Promise<ResolvedConditionAttestation> {
-  const response = await fetch(`/api/v1/conditions/${conditionId}/attestation`, {
-    headers: { accept: "application/json" },
-  });
-  if (!response.ok) {
-    const body = await response.text();
-    throw new Error(`Condition attestation lookup failed with HTTP ${response.status}: ${body}`);
-  }
-  const body = (await response.json()) as ConditionAttestationResponse;
-  if (body.conditionId.toLowerCase() !== conditionId.toLowerCase()) {
-    throw new Error("Condition attestation response did not match requested condition");
-  }
-  if (body.oracleWitness == null) {
-    throw new Error("Condition attestation response did not include an oracle witness");
-  }
-  return {
-    witnessJson: JSON.stringify(body.oracleWitness),
-    attestedOutcome: body.attestedOutcome ?? "",
-  };
-}
-
 function requireCashuProofUnit(value: string | null | undefined): CashuProofUnit {
   const unit = parseCashuProofUnit(value);
   if (!unit) throw new Error(`Unsupported Cashu proof unit '${value ?? ""}'`);

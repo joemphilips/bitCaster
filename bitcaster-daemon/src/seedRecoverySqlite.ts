@@ -1,3 +1,5 @@
+import type { Proof } from '@cashu/cashu-ts'
+import { prepareDurableCustodyVerifiedMintResult } from '@bitcaster-market/client-sdk/durableCustodyMintResult'
 // Ported-From: da98db6
 // Reauthored-Fix: b683120
 import type { DatabaseSync } from 'node:sqlite'
@@ -21,7 +23,10 @@ import {
   DurableCustodySqliteStore,
   type CustodyProofSqliteRow,
 } from './durableCustodySqliteStore.ts'
-import { decodeCustodyProofSqliteRow } from './custodyProofSqliteRow.ts'
+import {
+  createCustodyProofSqliteRowFromMaterial,
+  decodeCustodyProofSqliteRow,
+} from './custodyProofSqliteRow.ts'
 import {
   withDurableCustodyFencedRead,
   withDurableCustodyUnitOfWork,
@@ -36,7 +41,14 @@ import {
   admitRecoveredWalletProofFromDatabase,
   advanceDaemonKeysetCounterFromDatabase,
   readExactBoundCounter,
+  readDaemonProofOperationFromDatabase,
+  readDaemonWalletProofFromDatabase,
 } from './state.ts'
+
+import {
+  assertRetainedPositionClaimHistory,
+  readNativePositionClaimCustody,
+} from './nativePositionClaim.ts'
 
 export interface SeedRecoveryObservedProof {
   readonly proofY: string
@@ -90,6 +102,102 @@ export class SeedRecoverySqliteStore implements EmergencySeedRecoveryCasStore {
     this.#observedAtMs = input.observedAtMs
     this.#storage = input.storage ?? createDaemonStateSqliteSession(input.directory)
     this.#injectFault = input.injectFault
+  }
+
+  async readRetainedClaimPage(mintUrl: string, afterOperationId = '') {
+    return withDurableCustodyFencedRead(
+      this.#storage,
+      this.#fence,
+      this.#observedAtMs,
+      (database) => {
+        assertNoRecoveryOwnerBlocker(database, this.#fence.scopeId)
+        const rows = database
+          .prepare(
+            `SELECT operation_id FROM target_proof_operations
+        WHERE scope_id = ? AND normalized_mint = ? AND operation_id > ?
+          AND kind = 'ctf-redeem' AND purpose = 'position-claim' AND state = 'failed' AND failure_code = 13015
+        ORDER BY operation_id LIMIT 16`,
+          )
+          .all(this.#fence.scopeId, mintUrl, afterOperationId)
+        return rows.map((row) =>
+          readRetainedClaim(database, this.#fence.scopeId, String(row.operation_id)),
+        )
+      },
+    )
+  }
+
+  async commitRetainedClaimPayout(input: {
+    readonly operationId: string
+    readonly authorityFingerprint: string
+    readonly proofs: readonly Proof[]
+    readonly unspentProofSecrets: readonly string[]
+  }): Promise<number> {
+    return withDurableCustodyUnitOfWork(
+      this.#storage,
+      this.#fence,
+      this.#observedAtMs,
+      (database) => {
+        assertNoRecoveryOwnerBlocker(database, this.#fence.scopeId)
+        const retained = readRetainedClaim(database, this.#fence.scopeId, input.operationId)
+        if (retained.exactAuthority.fingerprint !== input.authorityFingerprint)
+          throw new Error('retained payout authority changed')
+        const verified = prepareDurableCustodyVerifiedMintResult({
+          record: retained.record,
+          exactAuthority: retained.exactAuthority,
+          result: { regular: input.proofs },
+        })
+        const unspent = new Set(input.unspentProofSecrets)
+        if (
+          unspent.size !== input.unspentProofSecrets.length ||
+          [...unspent].some((secret) => !input.proofs.some((proof) => proof.secret === secret))
+        )
+          throw new Error('retained payout state binding is foreign')
+        const store = new DurableCustodySqliteStore(database)
+        let imported = 0
+        for (const { material, dleqState } of verified.proofs) {
+          const row = createCustodyProofSqliteRowFromMaterial({
+            scopeId: this.#fence.scopeId,
+            normalizedMint: retained.target.mintUrl,
+            unit: 'msat',
+            material,
+            baseAsset: 'sat',
+            conditionId: null,
+            outcomeSetId: null,
+            productBinding: null,
+            signatureVerified: true,
+            dleqState,
+            nut07State: 'UNSPENT',
+            selectability: 'selectable',
+            reservationOperationId: null,
+            storageClass: retained.record.operation.proofStorage.storageClass,
+            revision: 0,
+            nowMs: this.#observedAtMs,
+          })
+          const decoded = decodeCustodyProofSqliteRow(row).proof
+          if (!unspent.has(decoded.secret)) continue
+          const existing = store.getProof(row.scopeId, row.proofId)
+          if (
+            existing !== null &&
+            (!sameRecoveredProofAuthority(existing, row) ||
+              existing.selectability !== 'selectable' ||
+              existing.reservationOperationId !== null)
+          )
+            throw new Error('retained payout conflicts with existing proof authority')
+          if (existing === null) {
+            store.putProofCas(row, null)
+            imported += 1
+          }
+          admitRecoveredWalletProofFromDatabase(database, {
+            mintUrl: retained.target.mintUrl,
+            proof: decoded,
+            asset: { kind: 'sats', baseAsset: 'sat', unit: 'msat' },
+            nowMs: this.#observedAtMs,
+          })
+        }
+        return imported
+      },
+      { injectFault: this.#injectFault },
+    )
   }
 
   stageBatch(
@@ -556,12 +664,26 @@ function assertExactRecoveryRoster(
   }
 }
 
+function readRetainedClaim(database: DatabaseSync, scopeId: string, operationId: string) {
+  const target = readDaemonProofOperationFromDatabase(database, operationId)
+  if (target === null) throw new Error('retained Claim is missing')
+  const rows = database
+    .prepare(
+      'SELECT proof_id FROM target_wallet_proofs WHERE scope_id = ? AND reserved_by = ? LIMIT 257',
+    )
+    .all(scopeId, operationId)
+  if (rows.length === 0 || rows.length > 256 || rows.length !== target.inputs.length)
+    throw new Error('retained Claim predecessor count is invalid')
+  for (const row of rows) {
+    const proof = readDaemonWalletProofFromDatabase(database, String(row.proof_id))
+    if (proof === null) throw new Error('retained Claim predecessor is missing')
+    assertRetainedPositionClaimHistory(database, scopeId, target, proof)
+  }
+  const { record, exactAuthority } = readNativePositionClaimCustody(database, { scopeId }, target)
+  return { target, record, exactAuthority }
+}
+
 const RECOVERY_OWNER_BLOCKERS = [
-  {
-    className: 'target-wallet-proof-reserved',
-    sql: `SELECT 1 FROM target_wallet_proofs
-          WHERE scope_id = ? AND state IN ('reserved', 'locked') LIMIT 1`,
-  },
   {
     className: 'custody-operation-nonterminal',
     sql: `SELECT 1 FROM custody_operations
@@ -607,6 +729,23 @@ const RECOVERY_OWNER_BLOCKERS = [
 ] as const
 
 function assertNoRecoveryOwnerBlocker(database: DatabaseSync, scopeId: string): void {
+  for (const row of database
+    .prepare(
+      "SELECT proof_id FROM target_wallet_proofs WHERE scope_id = ? AND state IN ('reserved', 'locked')",
+    )
+    .iterate(scopeId)) {
+    try {
+      const proof = readDaemonWalletProofFromDatabase(database, String(row.proof_id))
+      const target =
+        proof?.reservedBy === undefined
+          ? null
+          : readDaemonProofOperationFromDatabase(database, proof.reservedBy)
+      if (proof === null || target === null) throw new Error('retained Claim owner is absent')
+      assertRetainedPositionClaimHistory(database, scopeId, target, proof)
+    } catch {
+      throw new Error('seed recovery refused: durable owner blocker target-wallet-proof-reserved')
+    }
+  }
   for (const blocker of RECOVERY_OWNER_BLOCKERS) {
     if (database.prepare(blocker.sql).get(scopeId) !== undefined) {
       throw new Error(`seed recovery refused: durable owner blocker ${blocker.className}`)

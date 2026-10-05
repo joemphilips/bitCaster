@@ -21,6 +21,7 @@ import { readCanonicalPortfolioCustody } from "../../stores/portfolio-custody";
 import {
   claimBrowserCanonicalCtfPosition,
   type BrowserCanonicalCtfPositionClaimContext,
+  type BrowserCanonicalCtfPositionClaimPreparation,
 } from "../browserCtfPositionClaim";
 import {
   BrowserCtfClaimBoundaryError,
@@ -39,6 +40,7 @@ import {
   signedPayout,
   signOutputs,
 } from "./fixtures/browserCtfRedeemFixture";
+import { browserD4OracleEvidence } from "../../test/browserD4OracleFixture";
 
 const mocks = vi.hoisted(() => ({ requireNewWritePermission: vi.fn() }));
 
@@ -73,10 +75,7 @@ type ClaimFixtureState = Pick<
   "database" | "adapter" | "owner" | "counters"
 >;
 
-type NewLegAuthority = {
-  readonly regularKeyset: MintKeys;
-  readonly oracleWitness: string;
-};
+type NewLegAuthority = BrowserCanonicalCtfPositionClaimPreparation;
 
 function context(
   entry: ClaimFixtureState,
@@ -120,7 +119,11 @@ describe("browser canonical CTF position claim", () => {
       context: context(entry, winningWallet(), { prepareNewLegAuthority }),
     });
 
-    expect(result).toMatchObject({ kind: "completed", committedPayoutAmount: 1 });
+    expect(result).toMatchObject({
+      kind: "completed",
+      committedPayoutAmount: 1,
+      oracleEvidence: { status: "unverified" },
+    });
     expect(prepareNewLegAuthority).not.toHaveBeenCalled();
     expect(
       (await entry.adapter.readOperation(entry.scope, record.operation.operationId))?.operation
@@ -182,16 +185,18 @@ describe("browser canonical CTF position claim", () => {
 
   it("prepares once when several new legs need binding", async () => {
     const entry = await fixture({ amounts: [1, 2] });
+    const oracle = browserD4OracleEvidence(entry.scope.scopeId, MINT, "Alpha");
     const prepareNewLegAuthority = vi.fn(async () => ({
       regularKeyset: REGULAR_KEYSET,
-      oracleWitness: '{"oracle_sig":"prepared"}',
+      oracleWitness: oracle.canonicalOracleWitness,
+      oracleResolutionContext: oracle.context,
     }));
     let redeemCalls = 0;
     const wallet: RedeemWallet = {
       ...winningWallet(),
       redeemOutcomeProofs: async ({ inputs, outputs }) => {
         redeemCalls += 1;
-        expect(inputs[0]?.witness).toBe('{"oracle_sig":"prepared"}');
+        expect(inputs[0]?.witness).toBe(oracle.canonicalOracleWitness);
         return signOutputs(outputs as OutputData[]);
       },
     };
@@ -336,86 +341,93 @@ describe("browser canonical CTF position claim", () => {
     ).toBe("selectable");
   });
 
-  it("commits one leg, returns pending, and resumes the persisted other leg after reload", async () => {
-    const entry = await fixture({ amounts: [1, 2] });
-    let redeemCalls = 0;
-    const wallet: RedeemWallet = {
-      ...winningWallet(),
-      redeemOutcomeProofs: async ({ outputs }) => {
-        redeemCalls += 1;
-        if (redeemCalls === 2) throw new Error("request timed out");
-        return signOutputs(outputs as OutputData[]);
-      },
-    };
+  it.each(["timeout", "unverified refusal"])(
+    "commits one leg and recovers a second leg after %s and reload",
+    async (failure) => {
+      const entry = await fixture({ amounts: [1, 2] });
+      let redeemCalls = 0;
+      const wallet: RedeemWallet = {
+        ...winningWallet(),
+        redeemOutcomeProofs: async ({ outputs }) => {
+          redeemCalls += 1;
+          if (redeemCalls === 2) {
+            if (failure === "unverified refusal")
+              throw new MintOperationError(13015, "not redeemable");
+            throw new Error("request timed out");
+          }
+          return signOutputs(outputs as OutputData[]);
+        },
+      };
 
-    const first = await claimBrowserCanonicalCtfPosition({
-      position: { conditionId: CONDITION, outcomeCollection: OUTCOME },
-      context: context(entry, wallet),
-    });
-    expect(first).toMatchObject({ kind: "pending", committedLegs: 1, pendingLegs: 1 });
-    const pendingProjection = await readCanonicalPortfolioCustody(
-      entry.scope.scopeId,
-      entry.database,
-    );
-    expect(pendingProjection).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          proofId: entry.proofs[1]!.proofId,
-          claimRecoveryPending: true,
-        }),
-      ]),
-    );
+      const first = await claimBrowserCanonicalCtfPosition({
+        position: { conditionId: CONDITION, outcomeCollection: OUTCOME },
+        context: context(entry, wallet),
+      });
+      expect(first).toMatchObject({ kind: "pending", committedLegs: 1, pendingLegs: 1 });
+      const pendingProjection = await readCanonicalPortfolioCustody(
+        entry.scope.scopeId,
+        entry.database,
+      );
+      expect(pendingProjection).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            proofId: entry.proofs[1]!.proofId,
+            claimRecoveryPending: true,
+          }),
+        ]),
+      );
 
-    const databaseName = entry.database.name;
-    await entry.adapter.releaseScope(entry.scope, { ...entry.owner, observedAtMs: 6 });
-    entry.database.close();
-    const reloadedDatabase = new BitcasterDB(databaseName);
-    const reloadedAdapter = new BrowserDurableCustodyAdapter(reloadedDatabase);
-    const reloadedProjection = await readCanonicalPortfolioCustody(
-      entry.scope.scopeId,
-      reloadedDatabase,
-    );
-    expect(reloadedProjection).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          proofId: entry.proofs[1]!.proofId,
-          claimRecoveryPending: true,
+      const databaseName = entry.database.name;
+      await entry.adapter.releaseScope(entry.scope, { ...entry.owner, observedAtMs: 6 });
+      entry.database.close();
+      const reloadedDatabase = new BitcasterDB(databaseName);
+      const reloadedAdapter = new BrowserDurableCustodyAdapter(reloadedDatabase);
+      const reloadedProjection = await readCanonicalPortfolioCustody(
+        entry.scope.scopeId,
+        reloadedDatabase,
+      );
+      expect(reloadedProjection).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            proofId: entry.proofs[1]!.proofId,
+            claimRecoveryPending: true,
+          }),
+        ]),
+      );
+      const reloadedOwner = await reloadedAdapter.claimScope(entry.scope, {
+        incarnationId: "ctf-redeem-reload",
+        observedAtMs: 7,
+        leaseExpiresAtMs: 100_000,
+      });
+      let nextCounter = 0;
+      const reloadedCounters: CounterSource = {
+        reserve: async (_keysetId, count) => {
+          const start = nextCounter;
+          nextCounter += count;
+          return { start, count };
+        },
+        advanceToAtLeast: async (_keysetId, minimum) => {
+          nextCounter = Math.max(nextCounter, minimum);
+        },
+      };
+      const resumed = await claimBrowserCanonicalCtfPosition({
+        position: { conditionId: CONDITION, outcomeCollection: OUTCOME },
+        context: context({
+          database: reloadedDatabase,
+          adapter: reloadedAdapter,
+          owner: reloadedOwner,
+          counters: reloadedCounters,
         }),
-      ]),
-    );
-    const reloadedOwner = await reloadedAdapter.claimScope(entry.scope, {
-      incarnationId: "ctf-redeem-reload",
-      observedAtMs: 7,
-      leaseExpiresAtMs: 100_000,
-    });
-    let nextCounter = 0;
-    const reloadedCounters: CounterSource = {
-      reserve: async (_keysetId, count) => {
-        const start = nextCounter;
-        nextCounter += count;
-        return { start, count };
-      },
-      advanceToAtLeast: async (_keysetId, minimum) => {
-        nextCounter = Math.max(nextCounter, minimum);
-      },
-    };
-    const resumed = await claimBrowserCanonicalCtfPosition({
-      position: { conditionId: CONDITION, outcomeCollection: OUTCOME },
-      context: context({
-        database: reloadedDatabase,
-        adapter: reloadedAdapter,
-        owner: reloadedOwner,
-        counters: reloadedCounters,
-      }),
-    });
-    expect(resumed).toMatchObject({ kind: "completed", committedLegs: 1, pendingLegs: 0 });
-    expect(await reloadedDatabase.proofs.count()).toBe(2);
-    expect(
-      (await readCanonicalPortfolioCustody(entry.scope.scopeId, reloadedDatabase))?.every(
-        ({ claimRecoveryPending }) => !claimRecoveryPending,
-      ),
-    ).toBe(true);
-  });
+      });
+      expect(resumed).toMatchObject({ kind: "completed", committedLegs: 1, pendingLegs: 0 });
+      expect(await reloadedDatabase.proofs.count()).toBe(2);
+      expect(
+        (await readCanonicalPortfolioCustody(entry.scope.scopeId, reloadedDatabase))?.every(
+          ({ claimRecoveryPending }) => !claimRecoveryPending,
+        ),
+      ).toBe(true);
+    },
+  );
 
   it("does not credit an already-completed payout a second time", async () => {
     const entry = await fixture();
@@ -520,7 +532,7 @@ describe("browser canonical CTF position claim", () => {
     ).toBe("locked");
   });
 
-  it("retains proof bodies after authenticated terminal losing response", async () => {
+  it("retains locked proof bodies and reservation after an unverified refusal", async () => {
     const entry = await fixture();
     const losingWallet: RedeemWallet = {
       ...winningWallet(),
@@ -534,9 +546,70 @@ describe("browser canonical CTF position claim", () => {
       context: context(entry, losingWallet),
     });
 
-    expect(result).toMatchObject({ kind: "completed", losingLegs: 1, committedPayoutAmount: 0 });
+    expect(result).toMatchObject({
+      kind: "pending",
+      losingLegs: 0,
+      pendingLegs: 1,
+      committedPayoutAmount: 0,
+    });
     const retained = await entry.adapter.readProof(entry.scope.scopeId, entry.proof.proofId);
-    expect(retained?.selectability).toBe("verified-losing");
+    expect(retained?.selectability).toBe("locked");
     expect(retained?.proofBody).toBeInstanceOf(Uint8Array);
+    expect(await entry.database.custodyReservations.count()).toBe(1);
+    entry.database.close();
+    await entry.database.open();
+    const preparation = vi.fn(async () => {
+      throw new Error("recovery must reuse the exact request");
+    });
+    const reopened = await claimBrowserCanonicalCtfPosition({
+      position: { conditionId: CONDITION, outcomeCollection: OUTCOME },
+      context: context(entry, losingWallet, { prepareNewLegAuthority: preparation }),
+    });
+    expect(reopened).toMatchObject({
+      kind: "pending",
+      losingLegs: 0,
+      oracleEvidence: { status: "unverified" },
+    });
+    expect(preparation).not.toHaveBeenCalled();
+    expect(await entry.database.custodyReservations.count()).toBe(1);
   });
+
+  it.each(["Alpha", "Beta"])(
+    "classifies a refusal only when verified %s excludes the held Alpha collection",
+    async (outcome) => {
+      const entry = await fixture();
+      const oracle = browserD4OracleEvidence(entry.scope.scopeId, MINT, outcome);
+      const wallet: RedeemWallet = {
+        ...winningWallet(),
+        redeemOutcomeProofs: async () => {
+          throw new MintOperationError(13015, "Mint refused");
+        },
+      };
+      const input = {
+        position: { conditionId: CONDITION, outcomeCollection: OUTCOME },
+        context: context(entry, wallet, {
+          prepareNewLegAuthority: async () => ({
+            regularKeyset: REGULAR_KEYSET,
+            oracleWitness: oracle.canonicalOracleWitness,
+            oracleResolutionContext: oracle.context,
+            oracleEvidence: { status: "verified" },
+          }),
+        }),
+      };
+      const result = await claimBrowserCanonicalCtfPosition(input);
+      const isLosing = outcome === "Beta";
+      expect(result.kind).toBe(isLosing ? "completed" : "pending");
+      expect(result.losingLegs).toBe(isLosing ? 1 : 0);
+      expect(await entry.database.custodyReservations.count()).toBe(isLosing ? 0 : 1);
+      expect(
+        (await entry.adapter.readProof(entry.scope.scopeId, entry.proof.proofId))?.selectability,
+      ).toBe(isLosing ? "verified-losing" : "locked");
+      entry.database.close();
+      await entry.database.open();
+      const reopened = await claimBrowserCanonicalCtfPosition(input);
+      expect(reopened.kind).toBe(isLosing ? "completed" : "pending");
+      expect(reopened.losingLegs).toBe(0);
+      expect(await entry.database.custodyReservations.count()).toBe(isLosing ? 0 : 1);
+    },
+  );
 });

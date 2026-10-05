@@ -5,7 +5,7 @@ import {
   type DurableCustodyRecord,
   type DurableCustodyScope,
 } from "@bitcaster/client-sdk/durableCustody";
-import { readDurableCustodyAuthenticatedTerminalMintRejection } from "@bitcaster/client-sdk/durableCustodyMintResult";
+import { readDurableCustodyVerifiedLosingMintRejection } from "@bitcaster/client-sdk/durableCustodyMintResult";
 import type { EncryptedWalletBackupV2CommittedTerminalSealStore } from "@bitcaster/client-sdk/encryptedWalletBackupV2ProofSet";
 import {
   decodeBrowserProofBackupAuthorityTableRow,
@@ -48,6 +48,7 @@ export class BrowserEncryptedWalletBackupV2TerminalSealStore implements Encrypte
     read: (value: {
       readonly record: DurableCustodyRecord;
       readonly exactRejection: DurableCustodyExactArtifact;
+      readonly exactAuthority: DurableCustodyExactArtifact;
       readonly classifiedAtMs: number;
     }) => T,
   ): Promise<T> {
@@ -70,9 +71,17 @@ export class BrowserEncryptedWalletBackupV2TerminalSealStore implements Encrypte
         }
         const record = requireTerminalOperation(snapshot.record, this.#scope, operationId);
         const exactRejection = requireTerminalRejectionArtifact(record, snapshot.artifacts);
-        readDurableCustodyAuthenticatedTerminalMintRejection({ record, exactRejection });
+        const exactAuthority = snapshot.artifacts.find(
+          ({ reference }) =>
+            reference.artifactId ===
+            record.operation.privateMaterial.exactPrivateMaterial.artifactId,
+        )?.artifact;
+        if (exactAuthority === undefined) {
+          throw new Error("browser terminal seal original operation authority is missing");
+        }
+        readDurableCustodyVerifiedLosingMintRejection({ record, exactRejection, exactAuthority });
         const classifiedAtMs = await this.#readTerminalProofAuthorities(record);
-        return read({ record, exactRejection, classifiedAtMs });
+        return read({ record, exactRejection, exactAuthority, classifiedAtMs });
       },
     );
   }

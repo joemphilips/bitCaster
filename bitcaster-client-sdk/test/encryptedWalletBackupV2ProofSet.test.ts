@@ -1,13 +1,26 @@
+import { prepareDurableCustodyMintOperationAuthority } from '../src/durableCustodyMintResult.ts'
+import {
+  d4OracleContext,
+  d4ConditionalKeyset,
+  D4_CONDITION,
+  D4_COLLECTION_ID,
+} from './support/d4OracleFixture.ts'
+import { prepareCtfVerifiedLosingAuthority } from '../src/conditionOracleEvidence.ts'
 import assert from 'node:assert/strict'
-import { createCtfRangeManifest, deriveKeysetId } from '@cashu/cashu-ts'
+import { createCtfRangeManifest, deriveKeysetId, OutputData } from '@cashu/cashu-ts'
 import { webcrypto } from 'node:crypto'
 import { test } from 'node:test'
 import {
   createEncryptedWalletBackupV2AssetIdentity,
+  decodeEncryptedWalletBackupV2TerminalSeal,
+  requireEncryptedWalletBackupV2VerifiedLosingSealProofBinding,
+  requireEncryptedWalletBackupV2VerifiedTerminalSealAuthority,
   decryptEncryptedWalletBackupV2ProofSetBundle,
   discoverEncryptedWalletBackupV2ProofSetBundle,
   encryptedWalletBackupV2LocalAssetKey,
   authorizeEncryptedWalletBackupV2RemoteTerminalSealReuse,
+  authorizeEncryptedWalletBackupV2RemoteRefusalHistoryPreservation,
+  requireEncryptedWalletBackupV2RemoteRefusalHistoryAuthority,
   issueEncryptedWalletBackupV2TerminalSeal,
   prepareEncryptedWalletBackupV2ProofSetBundle,
   requireEncryptedWalletBackupV2DecryptedProofSet,
@@ -27,7 +40,10 @@ import {
   type DurableCustodyRecord,
 } from '../src/durableCustody.ts'
 import { createDurableCustodyProofOperation } from '../src/durableCustodyProofOperationRecord.ts'
-import { serializeDurableCustodyProofInput } from '../src/durableCustodyProofOperation.ts'
+import {
+  serializeDurableCustodyProofInput,
+  serializeDurableCustodyOutput,
+} from '../src/durableCustodyProofOperation.ts'
 import {
   prepareEncryptedWalletBackupV2TransportBundle,
   type EncryptedWalletBackupV2BundleRuntime,
@@ -45,10 +61,8 @@ import {
 import type { EncryptedWalletBackupV2RemotePort } from '../src/encryptedWalletBackupV2HttpAdapter.ts'
 
 const SEED = Uint8Array.from({ length: 64 }, (_value, index) => index)
-const KEYSET = deriveKeysetId(
-  { '1': '02194603ffa36356f4a56b7df9371fc3192472351453ec7398b8da8117e7c3e104' },
-  { unit: 'sat', versionByte: 1 },
-)
+const D4_KEYS = { '1': '02194603ffa36356f4a56b7df9371fc3192472351453ec7398b8da8117e7c3e104' }
+const KEYSET = d4ConditionalKeyset(D4_KEYS).id
 const MINT = 'https://mint.example'
 
 test('v2 proof-set asset identity keeps mint, unit, and verified CTF collection distinct', () => {
@@ -579,7 +593,7 @@ test('v2 restored proof verifier binds immutable nested proof evidence', async (
   ;(source.proof as { C: string; dleq: { e: string; s: string } }).C = `03${'33'.repeat(32)}`
   ;(source.proof as { dleq: { e: string; s: string } }).dleq.e = '44'.repeat(32)
   ;(source.locator as { counter: number }).counter = 99
-  ;(source.asset as { outcomeLabel: string }).outcomeLabel = 'NO'
+  ;(source.asset as { outcomeLabel: string }).outcomeLabel = 'YES'
   unverified.counterHighWaterMarks[0]!.nextCounter = 99
 
   const snapshot = requireEncryptedWalletBackupV2VerifiedProofSet(verified)
@@ -587,7 +601,7 @@ test('v2 restored proof verifier binds immutable nested proof evidence', async (
   assert.equal(snapshotProof.proof.C, `02${'11'.repeat(32)}`)
   assert.equal(snapshotProof.proof.dleq?.e, '11'.repeat(32))
   assert.equal((snapshotProof.locator as { counter: number }).counter, 1)
-  assert.equal((snapshotProof.asset as { outcomeLabel: string }).outcomeLabel, 'YES')
+  assert.equal((snapshotProof.asset as { outcomeLabel: string }).outcomeLabel, 'NO')
   assert.equal(snapshot.counterHighWaterMarks[0]!.nextCounter, 2)
   assert.equal(Object.isFrozen(snapshotProof.proof), true)
   assert.equal(Object.isFrozen(snapshotProof.locator), true)
@@ -654,6 +668,8 @@ test('v2 sealed losing CTF restores complete and non-selectable without mint acc
   assert.equal(seal.operationIdDigest.length, 64)
   assert.equal(seal.requestDigest.length, 64)
   assert.equal(seal.proofCommitment.length, 64)
+  assert.equal(seal.schemaVersion, 2)
+  assert.equal(Object.hasOwn(seal, 'losingAuthority'), false)
   const input = await restored([{ ...entry, terminalSeal: seal }])
   const unavailable: EncryptedWalletBackupV2RestoreVerificationPort = {
     resolveKeyset: async () => {
@@ -1049,10 +1065,26 @@ test('v2 proof-set rejects the old V1 payload instead of silently falling back',
   await assert.rejects(() => restore(keyHandle, prepared), /proof set CBOR is invalid/)
 })
 
+test('historical code-only rejection cannot issue a new losing seal', async () => {
+  const entry = proof(0, ctfAsset(), true)
+  const committed = committedTerminalStore(entry, 'redeem:historical', true)
+  await assert.rejects(
+    () =>
+      issueEncryptedWalletBackupV2TerminalSeal({
+        seed: SEED,
+        proof: entry,
+        operationId: committed.operationId,
+        store: committed.store,
+      }),
+    /no verified losing authority/,
+  )
+  assert.equal(entry.proof.secret.length > 0, true)
+})
+
 test('v2 proof-set rejects an unknown terminal seal version in authenticated ciphertext', async () => {
   const entry = proof(0, ctfAsset(), true)
   const seal = {
-    schemaVersion: 2 as 1,
+    schemaVersion: 3 as 1,
     kind: 'ctf-verified-losing' as const,
     operationIdDigest: '11'.repeat(32),
     requestDigest: '22'.repeat(32),
@@ -1102,39 +1134,54 @@ async function restored(proofs: readonly EncryptedWalletBackupV2ProofSetProof[])
   }
 }
 
-function committedTerminalStore(entry: EncryptedWalletBackupV2ProofSetProof, operationId: string) {
+function committedTerminalStore(
+  entry: EncryptedWalletBackupV2ProofSetProof,
+  operationId: string,
+  historical = false,
+  entries: readonly EncryptedWalletBackupV2ProofSetProof[] = [entry],
+) {
   const scopeInput = { scopeKind: 'wallet' as const, walletId: deriveDurableCustodyWalletId(SEED) }
   const scope = { ...scopeInput, scopeId: deriveDurableCustodyScopeId(scopeInput) }
   const operation = {
     operationId,
     kind: 'ctf-redeem' as const,
     mintUrl: MINT,
-    inputs: [serializeDurableCustodyProofInput(entry.proof)],
-    outputs: {},
-    metadata: { unit: 'sat' },
+    inputs: entries.map((item) => serializeDurableCustodyProofInput(item.proof)),
+    outputs: {
+      regular: [
+        serializeDurableCustodyOutput(
+          OutputData.createSingleData(
+            1,
+            deriveKeysetId(D4_KEYS, { unit: 'sat', versionByte: 1 }),
+            'terminal-output',
+            7n,
+          ),
+        ),
+      ],
+    },
+    metadata: {
+      unit: 'sat',
+      conditionId: D4_CONDITION,
+      outcomeCollection: 'NO',
+      oracleResolutionContext: d4OracleContext(),
+      oracleInputKeysets: [d4ConditionalKeyset(D4_KEYS)],
+    },
   }
-  const requestBody = prepareDurableCustodyExactArtifact(operation)
-  const output = prepareDurableCustodyExactArtifact(operation.outputs)
-  const privateMaterial = prepareDurableCustodyExactArtifact(operation)
-  const facts = createDurableProofOperationFacts({
-    unit: 'sat',
-    binding: { kind: 'wallet', activityId: operationId, stage: 'ctf-redeem' },
-    horizon: { notBeforeMs: null, notAfterMs: null, safetyMarginMs: 0 },
-    hasOutputs: false,
-    inputKeysetRequirement: 'required',
+  const mintAuthority = prepareDurableCustodyMintOperationAuthority({
+    operation,
     keysets: [
+      d4ConditionalKeyset(D4_KEYS),
       {
-        keysetId: KEYSET,
-        unit: 'sat',
-        curve: 'secp256k1',
-        publicKeys: { '1': '02194603ffa36356f4a56b7df9371fc3192472351453ec7398b8da8117e7c3e104' },
-        keysetExpiryMs: null,
-        requireDleq: true,
-        usedByInputs: true,
-        usedByOutputs: false,
+        ...d4ConditionalKeyset(D4_KEYS),
+        id: deriveKeysetId(D4_KEYS, { unit: 'sat', versionByte: 1 }),
+        identity: { kind: 'regular' },
       },
     ],
   })
+  const requestBody = mintAuthority.exactRequest
+  const output = mintAuthority.exactOutput
+  const privateMaterial = mintAuthority.exactAuthority
+  const facts = mintAuthority.facts
   const initial = createDurableCustodyProofOperation({
     scope,
     operation,
@@ -1162,8 +1209,18 @@ function committedTerminalStore(entry: EncryptedWalletBackupV2ProofSetProof, ope
     rejectionBody: { code: 13015 },
     predecessorDisposition: 'retain',
     selectedSuccessorProofIds: [],
+    losingAuthority: prepareCtfVerifiedLosingAuthority({
+      resolution: d4OracleContext(),
+      operationId,
+      mintUrl: MINT,
+      conditionId: D4_CONDITION,
+      outcomeCollection: 'NO',
+      inputs: entries.map((item) => item.proof),
+      inputKeysets: [d4ConditionalKeyset(D4_KEYS)],
+    }),
   }
-  const exactRejection = prepareDurableCustodyExactArtifact(authority)
+  const { losingAuthority: _losing, ...refusalHistory } = authority
+  const exactRejection = prepareDurableCustodyExactArtifact(historical ? refusalHistory : authority)
   const record: DurableCustodyRecord = {
     ...initial,
     operation: {
@@ -1191,11 +1248,17 @@ function committedTerminalStore(entry: EncryptedWalletBackupV2ProofSetProof, ope
         read: (value: {
           record: DurableCustodyRecord
           exactRejection: typeof exactRejection
+          exactAuthority: typeof privateMaterial
           classifiedAtMs: number
         }) => T,
       ): Promise<T> {
         assert.equal(requestedId, initial.operation.operationId)
-        return read({ record, exactRejection, classifiedAtMs: 1_700_000_000_000 })
+        return read({
+          record,
+          exactRejection,
+          exactAuthority: privateMaterial,
+          classifiedAtMs: 1_700_000_000_000,
+        })
       },
     },
   }
@@ -1415,6 +1478,12 @@ function proofSetPayload(
                   entry.terminalSeal.code,
                   entry.terminalSeal.classifiedAtMs,
                   entry.terminalSeal.proofCommitment,
+                  ...(entry.terminalSeal.schemaVersion === 2
+                    ? [
+                        entry.terminalSeal.verifiedContextDigest,
+                        entry.terminalSeal.authenticationCode,
+                      ]
+                    : []),
                 ],
           ]),
     ]),
@@ -1439,9 +1508,9 @@ function accessorDescriptor<Field extends 'assetLocator'>(
 function ctfAsset() {
   return {
     kind: 'ctf' as const,
-    conditionId: '11'.repeat(32),
-    outcomeLabel: 'YES',
-    outcomeCollectionId: '22'.repeat(32),
+    conditionId: D4_CONDITION,
+    outcomeLabel: 'NO',
+    outcomeCollectionId: D4_COLLECTION_ID,
     registeredAt: 1_700_000_000,
     finalExpiry: 1_800_000_000,
   }
@@ -1519,3 +1588,275 @@ function handle() {
     runtime: { subtle: webcrypto.subtle },
   })
 }
+
+test('retained terminal seal binding verifies MAC, wallet scope and exact proof', async () => {
+  const losing = proof(0, ctfAsset(), true)
+  const committed = committedTerminalStore(losing, 'redeem:binding')
+  const seal = await issueEncryptedWalletBackupV2TerminalSeal({
+    seed: SEED,
+    proof: losing,
+    operationId: committed.operationId,
+    store: committed.store,
+  })
+  const scopeId = deriveDurableCustodyScopeId({
+    scopeKind: 'wallet',
+    walletId: deriveDurableCustodyWalletId(SEED),
+  })
+  assert.equal(
+    requireEncryptedWalletBackupV2VerifiedLosingSealProofBinding(
+      { ...losing, terminalSeal: decodeEncryptedWalletBackupV2TerminalSeal(seal) },
+      scopeId,
+      SEED,
+    ).operationIdDigest,
+    seal.operationIdDigest,
+  )
+  const { verifiedContextDigest: omitted, authenticationCode: omittedMac, ...fields } = seal
+  const history = { ...fields, schemaVersion: 1 as const, kind: 'ctf-verified-losing' as const }
+  assert.throws(
+    () =>
+      requireEncryptedWalletBackupV2VerifiedLosingSealProofBinding(
+        { ...losing, terminalSeal: history },
+        scopeId,
+        SEED,
+      ),
+    /refusal history/,
+  )
+  assert.throws(
+    () =>
+      requireEncryptedWalletBackupV2VerifiedLosingSealProofBinding(
+        { ...losing, proof: { ...losing.proof, secret: 'foreign' }, terminalSeal: seal },
+        scopeId,
+        SEED,
+      ),
+    /proof binding/,
+  )
+})
+
+test('compact losing seals keep 256 proofs within the backup bound across bounded Claim legs', async () => {
+  const lengths: number[] = []
+  for (const count of [1, 128]) {
+    const entries = Array.from({ length: count }, (_, index) => proof(index, ctfAsset(), true))
+    const committed = committedTerminalStore(entries[0]!, `redeem:compact-${count}`, false, entries)
+    const seal = await issueEncryptedWalletBackupV2TerminalSeal({
+      seed: SEED,
+      proof: entries[0]!,
+      operationId: committed.operationId,
+      store: committed.store,
+    })
+    assert.equal(Object.hasOwn(seal, 'losingAuthority'), false)
+    lengths.push(encodeCanonicalBackupCbor(seal).byteLength)
+  }
+  assert.equal(new Set(lengths).size, 1)
+  assert.ok(lengths[0]! < 600)
+  const entries = Array.from({ length: 256 }, (_, index) => proof(index, ctfAsset(), true))
+  const sealed: EncryptedWalletBackupV2ProofSetProof[] = []
+  // Each operation stays within the existing 64 KiB custody record limit.
+  for (const offset of [0, 128]) {
+    const leg = entries.slice(offset, offset + 128)
+    const committed = committedTerminalStore(leg[0]!, `redeem:large-${offset}`, false, leg)
+    for (const entry of leg) {
+      const terminalSeal = await issueEncryptedWalletBackupV2TerminalSeal({
+        seed: SEED,
+        proof: entry,
+        operationId: committed.operationId,
+        store: committed.store,
+      })
+      sealed.push({ ...entry, terminalSeal })
+    }
+  }
+  assert.ok(proofSetPayload(sealed, [counter(256)]).byteLength < 3_931_904)
+  const keyHandle = await handle()
+  const prepared = await prepareWithRuntime(keyHandle, sealed, [counter(256)], webcrypto)
+  const unverified = await restore(keyHandle, prepared, proofSetAsset(entries[0]!))
+  const verified = await verifyEncryptedWalletBackupV2RestoredProofSet({
+    seed: SEED,
+    expectedAsset: proofSetAsset(entries[0]!),
+    unverified,
+    port: {
+      resolveKeyset: async () => {
+        throw new Error('offline mint')
+      },
+      verifyProofs: () => {
+        throw new Error('offline mint')
+      },
+      checkProofStates: async () => {
+        throw new Error('offline mint')
+      },
+    },
+  })
+  assert.equal(verified.proofs.length, 256)
+  assert.ok(
+    verified.proofs.every(
+      ({ selectionAuthority }) => selectionAuthority === 'terminal-sealed-non-selectable',
+    ),
+  )
+})
+
+test('compact losing seal rejects every authenticated field change and verifies through its key handle', async () => {
+  const entry = proof(0, ctfAsset(), true)
+  const committed = committedTerminalStore(entry, 'redeem:mac-bindings')
+  const seal = await issueEncryptedWalletBackupV2TerminalSeal({
+    seed: SEED,
+    proof: entry,
+    operationId: committed.operationId,
+    store: committed.store,
+  })
+  const keyHandle = await handle()
+  const scopeId = deriveDurableCustodyScopeId({ scopeKind: 'wallet', walletId: keyHandle.walletId })
+  const check = (terminalSeal: typeof seal) =>
+    requireEncryptedWalletBackupV2VerifiedLosingSealProofBinding(
+      { ...entry, terminalSeal },
+      scopeId,
+      keyHandle,
+    )
+  const authenticated = check(seal)
+  assert.equal(authenticated.authenticationCode, seal.authenticationCode)
+  assert.equal(
+    requireEncryptedWalletBackupV2VerifiedTerminalSealAuthority(authenticated),
+    authenticated,
+  )
+  assert.throws(
+    () => requireEncryptedWalletBackupV2VerifiedTerminalSealAuthority({ ...authenticated }),
+    /authority is invalid/,
+  )
+  for (const field of [
+    'operationIdDigest',
+    'requestDigest',
+    'proofCommitment',
+    'verifiedContextDigest',
+    'authenticationCode',
+  ] as const) {
+    assert.throws(() => check({ ...seal, [field]: 'ff'.repeat(32) }), /terminal seal/)
+  }
+  assert.throws(() => check({ ...seal, classifiedAtMs: seal.classifiedAtMs + 1 }), /authentication/)
+  assert.throws(() => check({ ...seal, schemaVersion: 1 }), /terminal seal/)
+  assert.throws(() => check({ ...seal, kind: 'ctf-verified-losing' }), /terminal seal/)
+  assert.throws(
+    () =>
+      requireEncryptedWalletBackupV2VerifiedLosingSealProofBinding(
+        { ...entry, terminalSeal: seal },
+        scopeId,
+        new Uint8Array(64).fill(99),
+      ),
+    /wallet is foreign/,
+  )
+})
+
+test('authenticated old seal retains decrypted proof history without losing or reuse authority', async () => {
+  const entry = proof(0, ctfAsset(), true)
+  const committed = committedTerminalStore(entry, 'redeem:old-wire')
+  const current = await issueEncryptedWalletBackupV2TerminalSeal({
+    seed: SEED,
+    proof: entry,
+    operationId: committed.operationId,
+    store: committed.store,
+  })
+  const { verifiedContextDigest: _context, authenticationCode: _mac, ...fields } = current
+  const terminalSeal = {
+    ...fields,
+    schemaVersion: 1 as const,
+    kind: 'ctf-verified-losing' as const,
+  }
+  const keyHandle = await handle()
+  const asset = proofSetAsset(entry)
+  const prepared = await prepareEncryptedWalletBackupV2TransportBundle({
+    keyHandle,
+    asset,
+    declaredAmount: 1n,
+    custodyRevision: 1n,
+    canonicalPayload: proofSetPayload([{ ...entry, terminalSeal }], [counter(1)]),
+    runtime: webcrypto,
+  })
+  const unverified = await restore(keyHandle, prepared, asset)
+  assert.equal(unverified.proofs[0]!.proof.secret, entry.proof.secret)
+  assert.equal(unverified.proofs[0]!.terminalSeal?.schemaVersion, 1)
+  await assert.rejects(
+    () =>
+      verifyEncryptedWalletBackupV2RestoredProofSet({
+        seed: SEED,
+        expectedAsset: asset,
+        unverified,
+        port: verificationPort(),
+      }),
+    /refusal history is not verified losing/,
+  )
+  assert.throws(
+    () => requireEncryptedWalletBackupV2VerifiedProofSet(unverified),
+    /verified proof set/,
+  )
+  await assert.rejects(
+    () =>
+      authorizeEncryptedWalletBackupV2RemoteTerminalSealReuse({
+        keyHandle,
+        seed: SEED,
+        expectedAsset: asset,
+        custodyRevision: 1n,
+        expectedEnrollmentEpoch: 1,
+        remote: remotePort(keyHandle, prepared),
+        remoteRequest: requestContext(),
+        runtime: webcrypto,
+      }),
+    /refusal history is not verified losing/,
+  )
+  const history = await authorizeEncryptedWalletBackupV2RemoteRefusalHistoryPreservation({
+    keyHandle,
+    seed: SEED,
+    expectedAsset: asset,
+    custodyRevision: 1n,
+    expectedEnrollmentEpoch: 1,
+    remote: remotePort(keyHandle, prepared),
+    remoteRequest: requestContext(),
+    runtime: webcrypto,
+  })
+  assert.equal(history.authorities.length, 1)
+  const authority = history.authorities[0]!
+  assert.equal(requireEncryptedWalletBackupV2RemoteRefusalHistoryAuthority(authority), authority)
+  assert.equal(authority.terminalSeal.schemaVersion, 1)
+  assert.equal(authority.bundleId, prepared.descriptor.bundleId)
+  assert.throws(
+    () => requireEncryptedWalletBackupV2RemoteRefusalHistoryAuthority({ ...authority }),
+    /history authority/,
+  )
+  assert.throws(
+    () => requireEncryptedWalletBackupV2RemoteTerminalSealReuseAuthority(authority),
+    /terminal seal authority/,
+  )
+  const successorInput = {
+    keyHandle,
+    seed: SEED,
+    asset,
+    proofs: history.decrypted.proofs,
+    counterHighWaterMarks: history.decrypted.counterHighWaterMarks,
+    custodyRevision: 2n,
+    runtime: webcrypto,
+    remoteRefusalHistoryPreservations: history.authorities,
+    remoteTerminalSealReuseHeadEvidence: history.currentHeadEvidence,
+  }
+  const successor = await prepareEncryptedWalletBackupV2ProofSetBundle(successorInput)
+  const retained = await decryptEncryptedWalletBackupV2ProofSetBundle({
+    keyHandle,
+    seed: SEED,
+    expectedAsset: asset,
+    custodyRevision: 2n,
+    runtime: webcrypto,
+    ...successor,
+  })
+  assert.deepEqual(retained.proofs, history.decrypted.proofs)
+  await assert.rejects(
+    () =>
+      prepareEncryptedWalletBackupV2ProofSetBundle({
+        ...successorInput,
+        remoteRefusalHistoryPreservations: [{ ...authority }],
+      }),
+    /history authority/,
+  )
+  await assert.rejects(
+    () =>
+      prepareEncryptedWalletBackupV2ProofSetBundle({
+        ...successorInput,
+        remoteTerminalSealReuseHeadEvidence: undefined,
+      }),
+    /head evidence/,
+  )
+  assert.equal(unverified.proofs[0]!.proof.secret, entry.proof.secret)
+})

@@ -36,6 +36,7 @@ export async function createMixedCtfRemoveFixture() {
   for (const [index, row] of entry.proofs.entries()) {
     await commitBrowserCtfTerminalOperation({
       adapter: entry.adapter,
+      database: entry.database,
       scope: entry.scope,
       owner: { ...entry.owner, observedAtMs: 10 + index },
       operationId: `mixed-remove-losing-${index}`,

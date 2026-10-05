@@ -1,3 +1,4 @@
+import type { authorizeEncryptedWalletBackupV2RemoteRefusalHistoryPreservation } from "@bitcaster/client-sdk/encryptedWalletBackupV2ProofSet";
 import {
   createEncryptedWalletBackupV2AssetIdentity,
   deserializeDurableCustodyProofArtifact,
@@ -39,6 +40,7 @@ export interface BrowserEncryptedWalletBackupV2AssetSnapshot {
   readonly proofs: readonly EncryptedWalletBackupV2ProofSetProof[];
   /** Losing bodies are retained, but cannot enter a bundle until sealed. */
   readonly losingProofs: readonly BrowserEncryptedWalletBackupV2LosingProof[];
+  readonly refusalHistories: readonly BrowserEncryptedWalletBackupV2LosingProof[];
   readonly counterHighWaterMarks: readonly EncryptedWalletBackupV2CounterHighWaterMark[];
 }
 
@@ -369,11 +371,25 @@ function materializeAssetSnapshot(
       }),
     ];
   });
+  const refusalHistories = raw.proofRows.flatMap((row, index) => {
+    if (row.selectability !== "retained-unverified") return [];
+    const origin = raw.authorities[index]?.terminalAuthority;
+    if (origin?.kind !== "remote-refusal-history")
+      throw new Error("browser V2 retained history origin is invalid");
+    return [
+      Object.freeze({
+        proofId: row.proofId,
+        proof: proofs[index]!,
+        origin: Object.freeze({ ...origin }),
+      }),
+    ];
+  });
   return Object.freeze({
     desired,
     asset: asset.identity,
     proofs: Object.freeze(proofs),
     losingProofs: Object.freeze(losingProofs),
+    refusalHistories: Object.freeze(refusalHistories),
     counterHighWaterMarks: Object.freeze(
       counterMarks(
         desired,
@@ -396,19 +412,35 @@ export async function prepareBrowserEncryptedWalletBackupV2AssetBundle(input: {
   readonly bundleIdExists?: (bundleId: string) => boolean | Promise<boolean>;
   readonly terminalSealStore?: EncryptedWalletBackupV2CommittedTerminalSealStore;
   readonly remoteTerminalSealReuse?: EncryptedWalletBackupV2RemoteTerminalSealReuseResult;
+  readonly remoteRefusalHistory?: Awaited<
+    ReturnType<typeof authorizeEncryptedWalletBackupV2RemoteRefusalHistoryPreservation>
+  >;
 }): Promise<EncryptedWalletBackupV2PreparedTransportBundle> {
   if (input.snapshot.desired.desiredAction !== "replace")
     throw new Error("browser V2 removal has no proof bundle");
-  const proofs = await issueLocalTerminalSeals(input);
+  const baseProofs = await issueLocalTerminalSeals(input);
+  const historyByProof = new Map(
+    input.snapshot.refusalHistories.map((history) => [history.proof, history]),
+  );
+  const proofs = baseProofs.map((proof, index) => {
+    const history = historyByProof.get(input.snapshot.proofs[index]!);
+    if (history === undefined) return proof;
+    if (
+      history.origin.kind !== "remote-refusal-history" ||
+      !input.remoteRefusalHistory?.authorities.some(({ proofId }) => proofId === history.proofId)
+    )
+      throw new Error("browser V2 history preservation authority is missing");
+    return Object.freeze({ ...proof, terminalSeal: history.origin.terminalSeal });
+  });
   const remoteAuthorities = input.remoteTerminalSealReuse?.authorities.filter((authority) =>
     input.snapshot.losingProofs.some(
       (losing) => losing.origin.kind === "remote-seal" && losing.proofId === authority.proofId,
     ),
   );
-  const counterHighWaterMarks = mergeCounterHighWaterMarks(
-    input.snapshot.counterHighWaterMarks,
-    input.remoteTerminalSealReuse?.decrypted.counterHighWaterMarks ?? [],
-  );
+  const counterHighWaterMarks = mergeCounterHighWaterMarks(input.snapshot.counterHighWaterMarks, [
+    ...(input.remoteTerminalSealReuse?.decrypted.counterHighWaterMarks ?? []),
+    ...(input.remoteRefusalHistory?.decrypted.counterHighWaterMarks ?? []),
+  ]);
   return prepareEncryptedWalletBackupV2ProofSetBundle({
     keyHandle: input.keyHandle,
     seed: input.seed,
@@ -419,7 +451,13 @@ export async function prepareBrowserEncryptedWalletBackupV2AssetBundle(input: {
     runtime: input.runtime,
     bundleIdExists: input.bundleIdExists,
     remoteTerminalSealReuses: remoteAuthorities,
-    remoteTerminalSealReuseHeadEvidence: input.remoteTerminalSealReuse?.currentHeadEvidence,
+    remoteRefusalHistoryPreservations: input.remoteRefusalHistory?.authorities.filter(
+      ({ proofId }) =>
+        input.snapshot.refusalHistories.some((history) => history.proofId === proofId),
+    ),
+    remoteTerminalSealReuseHeadEvidence:
+      input.remoteTerminalSealReuse?.currentHeadEvidence ??
+      input.remoteRefusalHistory?.currentHeadEvidence,
   });
 }
 
@@ -476,6 +514,8 @@ async function issueLocalTerminalSeals(input: {
           throw new Error("browser V2 remote terminal seal is missing");
         return Object.freeze({ ...proof, terminalSeal: restored.terminalSeal });
       }
+      if (losing.origin.kind !== "local-operation")
+        throw new Error("browser V2 refusal history cannot issue a losing seal");
       if (input.terminalSealStore === undefined)
         throw new Error("browser V2 losing proof requires a terminal seal store");
       const terminalSeal = await issueEncryptedWalletBackupV2TerminalSeal({
@@ -513,8 +553,14 @@ async function activeRows(
           "outcomeCollection" in ctf ? ctf.outcomeCollection : ctf.outcomeLabel,
         ];
   const states = includePendingRemoval
-    ? (["selectable", "locked", "verified-losing", "pending-removal"] as const)
-    : (["selectable", "locked", "verified-losing"] as const);
+    ? ([
+        "selectable",
+        "locked",
+        "verified-losing",
+        "retained-unverified",
+        "pending-removal",
+      ] as const)
+    : (["selectable", "locked", "verified-losing", "retained-unverified"] as const);
   const groups = await Promise.all(
     states.map((state) =>
       database.custodyProofs
@@ -646,7 +692,7 @@ function proofSnapshot(
     const keyset = keysets.get(row.keysetId);
     if (keyset === undefined) {
       if (
-        row.selectability !== "verified-losing" ||
+        (row.selectability !== "verified-losing" && row.selectability !== "retained-unverified") ||
         row.conditionId !== asset.conditionId ||
         row.outcomeCollection !== asset.outcomeLabel
       )
@@ -729,7 +775,11 @@ function counterMarks(
     );
   }
   const sealedOnly =
-    rows.length > 0 && rows.every(({ selectability }) => selectability === "verified-losing");
+    rows.length > 0 &&
+    rows.every(
+      ({ selectability }) =>
+        selectability === "verified-losing" || selectability === "retained-unverified",
+    );
   const allowMissingPair = allowKeysetFreeSealed && sealedOnly;
   return keysetIds.flatMap((keysetId, index) => {
     const association = associations[index];

@@ -1,5 +1,6 @@
 // @vitest-environment node
 import "fake-indexeddb/auto";
+import { browserD4OracleEvidence } from "../../test/browserD4OracleFixture";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   CheckStateEnum,
@@ -144,6 +145,14 @@ const position = {
   outcomeCollection: OUTCOME,
 };
 
+const unverifiedOracleEvidence = {
+  status: "unverified" as const,
+  reason: "unavailable" as const,
+  warning:
+    "The mint reports this outcome, but we have not verified evidence from the intended oracle.",
+};
+const verifiedOracleEvidence = { status: "verified" as const };
+
 const databases: BitcasterDB[] = [];
 const databasesToDelete = new Set<BitcasterDB>();
 
@@ -239,6 +248,7 @@ function runLosingClaim(
   owner = entry.owner,
   observedAtMs = 5,
 ) {
+  const oracle = browserD4OracleEvidence(entry.scope.scopeId, MINT);
   return claimBrowserCanonicalCtfPosition({
     position: { conditionId: CONDITION, outcomeCollection: OUTCOME },
     targets: targets as never,
@@ -249,7 +259,9 @@ function runLosingClaim(
       mintUrl: MINT,
       prepareNewLegAuthority: async () => ({
         regularKeyset: REGULAR_KEYSET,
-        oracleWitness: '{"oracle_sig":"test"}',
+        oracleWitness: oracle.canonicalOracleWitness,
+        oracleResolutionContext: oracle.context,
+        oracleEvidence: verifiedOracleEvidence,
       }),
       counterSource: entry.counters,
       database: entry.database,
@@ -397,7 +409,11 @@ describe("Portfolio remove entry point", () => {
     );
 
     const result = await removePortfolioPosition(position);
-    expect(result).toEqual({ kind: "completed", committedPayoutAmount: 0 });
+    expect(result).toEqual({
+      kind: "completed",
+      committedPayoutAmount: 0,
+      oracleEvidence: verifiedOracleEvidence,
+    });
     const retained = await entry.adapter.readProof(entry.scope.scopeId, entry.proof.proofId);
     expect(retained?.selectability).toBe("verified-losing");
     expect(retained?.revision).toBe(entry.proof.revision + 2);
@@ -599,15 +615,17 @@ describe("Portfolio remove entry point", () => {
     const entry = await useFixture([1], {
       databaseName: browserWalletDatabaseName(browserWalletScope(SEED).scopeId),
     });
-    mocks.claim.mockImplementation(async ({ targets }: { targets: readonly unknown[] }) =>
-      runLosingClaim(entry, targets),
-    );
+    mocks.claim.mockImplementation(async ({ targets }: { targets: readonly unknown[] }) => ({
+      ...(await runLosingClaim(entry, targets)),
+      oracleEvidence: verifiedOracleEvidence,
+    }));
     mocks.realCoordinatorEnabled = true;
     mocks.failNextRealCoordinatorCommit = true;
 
     const first = await removePortfolioPosition({ ...position, observedAtMs: 6 });
 
     expect(first).toMatchObject({
+      oracleEvidence: verifiedOracleEvidence,
       kind: "partial",
       reason: "local-removal-error",
       committedPayoutAmount: 0,
@@ -688,6 +706,7 @@ describe("Portfolio remove entry point", () => {
   it("retains exact proofs when canonical claim recovery is pending", async () => {
     await useFixture();
     mocks.claim.mockResolvedValue({
+      oracleEvidence: unverifiedOracleEvidence,
       kind: "pending",
       committedPayoutAmount: 0,
       committedLegs: 0,
@@ -698,6 +717,7 @@ describe("Portfolio remove entry point", () => {
     });
 
     await expect(removePortfolioPosition(position)).resolves.toEqual({
+      oracleEvidence: unverifiedOracleEvidence,
       kind: "pending",
       reason: "claim-pending",
       committedPayoutAmount: 0,
@@ -714,6 +734,7 @@ describe("Portfolio remove entry point", () => {
       attemptRef: "claim-attempt-789",
     };
     mocks.claim.mockResolvedValue({
+      oracleEvidence: unverifiedOracleEvidence,
       kind: "error",
       committedPayoutAmount: 9,
       committedLegs: 1,
@@ -724,7 +745,11 @@ describe("Portfolio remove entry point", () => {
 
     const result = await removePortfolioPosition(position);
 
-    expect(result).toMatchObject({ kind: "error", committedPayoutAmount: 9 });
+    expect(result).toMatchObject({
+      kind: "error",
+      committedPayoutAmount: 9,
+      oracleEvidence: unverifiedOracleEvidence,
+    });
     if (result.kind !== "error") throw new Error("expected a composed claim diagnostic");
     expectSafeRemoveFailure(result.error, "claim");
     expect(result.error.claimFailure).toEqual({
@@ -742,6 +767,7 @@ describe("Portfolio remove entry point", () => {
   it("stops removal after a stale display discovers a committed winning payout", async () => {
     await useFixture();
     mocks.claim.mockResolvedValue({
+      oracleEvidence: unverifiedOracleEvidence,
       kind: "stopped",
       committedPayoutAmount: 13015,
       committedLegs: 1,
@@ -752,6 +778,7 @@ describe("Portfolio remove entry point", () => {
     });
 
     await expect(removePortfolioPosition(position)).resolves.toEqual({
+      oracleEvidence: unverifiedOracleEvidence,
       kind: "stopped",
       reason: "winning-payout",
       committedPayoutAmount: 13015,
@@ -765,11 +792,13 @@ describe("Portfolio remove entry point", () => {
     mocks.driver = {
       removeManagedProofs: vi.fn().mockResolvedValue({ kind: "started", intentId: "intent" }),
     };
-    mocks.claim.mockImplementation(async ({ targets }: { targets: readonly unknown[] }) =>
-      runLosingClaim(entry, targets),
-    );
+    mocks.claim.mockImplementation(async ({ targets }: { targets: readonly unknown[] }) => ({
+      ...(await runLosingClaim(entry, targets)),
+      oracleEvidence: verifiedOracleEvidence,
+    }));
 
     await expect(removePortfolioPosition(position)).resolves.toEqual({
+      oracleEvidence: verifiedOracleEvidence,
       kind: "pending",
       reason: "managed-removal-pending",
       committedPayoutAmount: 0,
@@ -791,9 +820,10 @@ describe("Portfolio remove entry point", () => {
   it("reports managed-backup refusal without exposing the driver error", async () => {
     const entry = await useFixture([1]);
     await makeManaged(entry);
-    mocks.claim.mockImplementation(async ({ targets }: { targets: readonly unknown[] }) =>
-      runLosingClaim(entry, targets),
-    );
+    mocks.claim.mockImplementation(async ({ targets }: { targets: readonly unknown[] }) => ({
+      ...(await runLosingClaim(entry, targets)),
+      oracleEvidence: verifiedOracleEvidence,
+    }));
     const sentinel = "raw-managed-backup-body-proof-secret";
     mocks.driver = {
       removeManagedProofs: vi.fn().mockRejectedValue(new Error(sentinel)),
@@ -802,6 +832,7 @@ describe("Portfolio remove entry point", () => {
     const result = await removePortfolioPosition(position);
 
     expect(result.kind).toBe("error");
+    expect(result.oracleEvidence).toEqual(verifiedOracleEvidence);
     if (result.kind !== "error") throw new Error("expected a managed removal diagnostic");
     expectSafeRemoveFailure(result.error, "managed-backup-removal");
     expect(JSON.stringify(result)).not.toContain(sentinel);
@@ -898,6 +929,7 @@ describe("Portfolio remove entry point", () => {
       });
       return {
         kind: "completed",
+        oracleEvidence: verifiedOracleEvidence,
         committedPayoutAmount: 0,
         committedLegs: 0,
         losingLegs: 1,
@@ -906,7 +938,10 @@ describe("Portfolio remove entry point", () => {
       };
     });
 
-    await expect(removePortfolioPosition(position)).resolves.toMatchObject({ kind: "error" });
+    await expect(removePortfolioPosition(position)).resolves.toMatchObject({
+      kind: "error",
+      oracleEvidence: verifiedOracleEvidence,
+    });
     expect(mocks.remove).not.toHaveBeenCalled();
   });
 });

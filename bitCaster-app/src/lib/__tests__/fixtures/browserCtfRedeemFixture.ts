@@ -14,6 +14,7 @@ import {
   type Proof,
 } from "@cashu/cashu-ts";
 import { deriveRootCtfOutcomeCollectionId } from "@bitcaster/client-sdk/durableCtfRangeOperation";
+import { BROWSER_D4_CONDITION } from "../../../test/browserD4OracleFixture";
 import { readPreparedDurableCtfRedeemRequest } from "@bitcaster/client-sdk/ctfRedeem";
 import { assertDurableCustodyMintOperationAuthority } from "@bitcaster/client-sdk/durableCustodyMintResult";
 import { createBrowserProofBackupAuthorityRow } from "../../../stores/browser-proof-backup-authority";
@@ -35,7 +36,7 @@ import {
 } from "../../browserCtfRedeemSelection";
 
 export const MINT = "https://mint.example";
-export const CONDITION = "aa".repeat(32);
+export const CONDITION = BROWSER_D4_CONDITION;
 export const OUTCOME = "Alpha";
 export const OUTCOME_ID = deriveRootCtfOutcomeCollectionId({
   conditionId: CONDITION,

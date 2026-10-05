@@ -1,7 +1,7 @@
 // @vitest-environment node
 import "fake-indexeddb/auto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { CheckStateEnum, type Proof } from "@cashu/cashu-ts";
+import { CheckStateEnum, MintOperationError, type Proof } from "@cashu/cashu-ts";
 import {
   BrowserCtfClaimBoundaryError,
   commitBrowserCanonicalCtfRedeemResult,
@@ -264,6 +264,53 @@ describe("browser canonical CTF redeem binding", () => {
     expect(await entry.database.proofs.count()).toBe(1);
   });
 
+  it("retains an unverified refusal and restores exact outputs after reopen", async () => {
+    const entry = await fixture();
+    const record = await entry.bind();
+    const refusal = await recover(
+      entry,
+      record.operation.operationId,
+      {
+        loadMint: async () => undefined,
+        redeemOutcomeProofs: async () => {
+          throw new MintOperationError(13015, "Oracle has not attested to this outcome collection");
+        },
+      },
+      async () => {
+        throw new Error("fresh refusal must not invent outputs");
+      },
+    );
+    expect(refusal).toMatchObject({ kind: "pending" });
+    const retained = await entry.adapter.readOperation(entry.scope, record.operation.operationId);
+    expect(retained?.operation.terminalMintRejection).toBeNull();
+    expect(retained?.operation.exactRequest).toEqual(record.operation.exactRequest);
+    expect(
+      (await entry.adapter.readProof(entry.scope.scopeId, entry.proof.proofId))?.selectability,
+    ).toBe("locked");
+    expect(await entry.database.custodyReservations.count()).toBe(1);
+    expect(await entry.database.proofs.count()).toBe(0);
+    const payout = await signedPayout(entry.adapter, entry.scope, record.operation.operationId);
+    entry.database.close();
+    await entry.database.open();
+    const recovered = await recover(
+      entry,
+      record.operation.operationId,
+      {
+        loadMint: async () => undefined,
+        checkProofsStates: async () => [{ Y: INPUT_Y, state: CheckStateEnum.SPENT, witness: null }],
+        redeemOutcomeProofs: async () => {
+          throw new Error("spent inputs must restore the exact prior outputs");
+        },
+      },
+      async () => ({ regular: payout }),
+    );
+    expect(recovered.kind).toBe("redeemed");
+    expect(await entry.database.proofs.count()).toBe(1);
+    expect(
+      (await entry.adapter.readProof(entry.scope.scopeId, entry.proof.proofId))?.selectability,
+    ).toBe("spent");
+  });
+
   it("leaves exact inputs reserved when mint-state evidence is incomplete", async () => {
     const entry = await fixture();
     const record = await entry.bind();
@@ -318,7 +365,7 @@ describe("browser canonical CTF redeem binding", () => {
         ],
         redeemOutcomeProofs: async ({ inputs, outputs }) => {
           redeemCalls += 1;
-          expect(inputs[0]?.witness).toBe('{"oracle_sig":"test"}');
+          expect(inputs[0]?.witness).toBeUndefined();
           expect(outputs).toHaveLength(1);
           return payout;
         },

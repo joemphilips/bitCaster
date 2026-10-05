@@ -1,3 +1,5 @@
+import { readDurableCustodyVerifiedLosingMintRejection } from '@bitcaster-market/client-sdk/durableCustodyMintResult'
+import { readNativePositionClaimCustody } from './nativePositionClaim.ts'
 import { createHash } from 'node:crypto'
 import type { DatabaseSync } from 'node:sqlite'
 import { isDeepStrictEqual } from 'node:util'
@@ -103,7 +105,10 @@ export async function previewDaemonPositionRemove(
           operationId.length +
           (operations.has(operationId)
             ? 0
-            : Number(candidate.operation_bytes) + Number(candidate.operation_metadata_bytes) + 2048)
+            : Number(candidate.operation_bytes) +
+              Number(candidate.operation_metadata_bytes) +
+              2048 +
+              terminalAuthorityBytes(database, input.fence.scopeId, operationId))
         if (bytes + estimated > DURABLE_CUSTODY_RECOVERY_PAGE_BYTES_MAX) {
           if (targets.length === 0)
             throw new Error('removal target exceeds the bounded artifact page')
@@ -281,6 +286,25 @@ function captureTarget(
     ).length !== 1
   )
     throw new Error('removal lacks exact terminal operation authority')
+  const { record, store, exactAuthority } = readNativePositionClaimCustody(
+    database,
+    input.fence,
+    operation,
+  )
+  const reference = record.operation.terminalMintRejection?.exactRejection
+  if (reference === undefined) throw new Error('removal terminal authority is absent')
+  const rejection = store.getArtifact({
+    scopeId: record.scope.scopeId,
+    operationId: record.operation.operationId,
+    expectedOperationRevision: record.revision,
+    reference,
+  })
+  if (rejection === null) throw new Error('removal terminal artifact is absent')
+  readDurableCustodyVerifiedLosingMintRejection({
+    record,
+    exactAuthority,
+    exactRejection: rejection.artifact,
+  })
   const custodyId = canonicalId(database, input, proofId)
   const canonical = canonicalRow(database, input.fence.scopeId, custodyId)
   if (
@@ -422,7 +446,8 @@ function assertBatchBytes(
         )
         .get(input.fence.scopeId, target.operationId) as { bytes: number } | undefined
       if (operation === undefined) throw new Error('removal lacks bounded terminal evidence')
-      bytes += operation.bytes
+      bytes +=
+        operation.bytes + terminalAuthorityBytes(database, input.fence.scopeId, target.operationId)
       operations.add(target.operationId)
     }
     if (bytes > DURABLE_CUSTODY_RECOVERY_PAGE_BYTES_MAX)
@@ -545,4 +570,20 @@ function hasOtherProofs(
         ...excluded,
       ) !== undefined
   )
+}
+
+function terminalAuthorityBytes(database: DatabaseSync, scopeId: string, targetId: string): number {
+  const row = database
+    .prepare(
+      `SELECT length(original.body) + length(rejection.body) + 4096 AS bytes
+    FROM custody_position_claim_links AS link
+    JOIN custody_operations AS operation ON operation.scope_id = link.scope_id AND operation.operation_id = link.custody_operation_id
+    JOIN custody_artifacts AS original ON original.scope_id = operation.scope_id AND original.artifact_id = operation.private_artifact_id
+    JOIN custody_terminal_mint_rejections AS terminal ON terminal.scope_id = operation.scope_id AND terminal.operation_id = operation.operation_id
+    JOIN custody_artifacts AS rejection ON rejection.scope_id = terminal.scope_id AND rejection.artifact_id = terminal.rejection_artifact_id
+    WHERE link.scope_id = ? AND link.target_operation_id = ?`,
+    )
+    .get(scopeId, targetId) as { bytes: number } | undefined
+  if (row === undefined) throw new Error('removal original terminal authority is absent')
+  return row.bytes
 }

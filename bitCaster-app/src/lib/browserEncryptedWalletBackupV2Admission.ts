@@ -266,7 +266,7 @@ function prepareAcceptedRemoteAdmission(
 ): PreparedAcceptedRemoteAdmission {
   const stored = storedProofs(input, verified);
   const sealedEntries = verified.proofs.filter(
-    ({ selectionAuthority }) => selectionAuthority === "terminal-sealed-non-selectable",
+    ({ selectionAuthority }) => selectionAuthority !== "live-verified",
   );
   const sealed =
     sealedEntries.length === 0
@@ -426,6 +426,18 @@ async function inspectAcceptedRemoteAdmission(
     }
 
     const seal = requireSeal(incoming.entry.terminalSeal);
+    if (incoming.entry.selectionAuthority === "terminal-refusal-history") {
+      if (
+        local.selectability !== "retained-unverified" ||
+        authority.terminalAuthority?.kind !== "remote-refusal-history" ||
+        JSON.stringify(authority.terminalAuthority.terminalSeal) !== JSON.stringify(seal)
+      ) {
+        throw new Error("browser V2 accepted-remote refusal history conflicts");
+      }
+      continue;
+    }
+    if (local.selectability === "retained-unverified")
+      throw new Error("browser V2 refusal history cannot be promoted");
     if (local.selectability === "verified-losing") {
       if (authority.terminalAuthority === null) {
         throw new Error("browser V2 accepted-remote terminal authority is missing");
@@ -455,6 +467,7 @@ async function inspectAcceptedRemoteAdmission(
         derivationLocator: incoming.entry.locator,
         restoreProofId: incoming.entry.proofId,
         restoreProofCommitment: seal.proofCommitment,
+        terminalSeal: seal,
       }),
     });
   }
@@ -594,7 +607,7 @@ async function finishAcceptedRemoteAdmission(
   input.setTargetedRecoveryAdmissionStage?.("backup-admit-cache");
   const sealedIds = new Set(
     prepared.entries
-      .filter(({ entry }) => entry.selectionAuthority === "terminal-sealed-non-selectable")
+      .filter(({ entry }) => entry.selectionAuthority !== "live-verified")
       .map(({ entry }) => entry.proofId),
   );
   const finalProofs = await input.database.custodyProofs.bulkGet(
@@ -629,9 +642,7 @@ export async function admitBrowserEncryptedWalletBackupV2Asset(
   requireCurrent(input);
   const verified = requireEncryptedWalletBackupV2VerifiedProofSet(input.verified);
   requireAdmissionHeadBinding(input, verified);
-  if (
-    verified.proofs.some((proof) => proof.selectionAuthority === "terminal-sealed-non-selectable")
-  ) {
+  if (verified.proofs.some((proof) => proof.selectionAuthority !== "live-verified")) {
     throw new Error("browser V2 sealed losing proof needs non-selectable admission");
   }
   if (
@@ -679,12 +690,31 @@ export async function admitBrowserEncryptedWalletBackupV2MixedAsset(
     ({ selectionAuthority }) => selectionAuthority === "live-verified",
   );
   const sealedEntries = verified.proofs.filter(
-    ({ selectionAuthority }) => selectionAuthority === "terminal-sealed-non-selectable",
+    ({ selectionAuthority }) => selectionAuthority !== "live-verified",
   );
   if (selectableEntries.length === 0 || sealedEntries.length === 0) {
     throw new Error("browser V2 mixed admission requires both proof trust levels");
   }
   requireAdmissionHeadBinding(input, verified, sealedEntries.length > 0);
+  if (
+    sealedEntries.some(
+      ({ selectionAuthority }) => selectionAuthority === "terminal-refusal-history",
+    )
+  ) {
+    if (
+      input.collectedHeadEvidence === undefined ||
+      input.realm === undefined ||
+      input.enrollmentEpoch === undefined
+    )
+      throw new Error("browser V2 historical admission head authority is missing");
+    return admitBrowserEncryptedWalletBackupV2AcceptedRemoteAsset({
+      ...input,
+      collectedHeadEvidence: input.collectedHeadEvidence,
+      realm: input.realm,
+      enrollmentEpoch: input.enrollmentEpoch,
+    });
+  }
+
   if (
     verified.proofs.some(({ unit }) => unit !== "msat") ||
     verified.counterHighWaterMarks.some(({ unit }) => unit !== "msat")
@@ -792,6 +822,8 @@ async function reconcileSealedActiveProofs(
   prepared: PreparedSealedAdmission,
   localRevisionOverride?: bigint,
 ): Promise<boolean> {
+  if (prepared.proofRows.some(({ selectability }) => selectability === "retained-unverified"))
+    return false;
   const state = await loadSealedReconciliationState(input, prepared);
   if (state === null) return false;
   const unionRows = await applySealedReconciliationUnion(input, prepared, state);
@@ -945,6 +977,9 @@ async function applySealedReconciliationUnion(
         restoreProofCommitment: requireSeal(
           input.verified.proofs.find(({ proofId }) => proofId === incoming.proofId)?.terminalSeal,
         ).proofCommitment,
+        terminalSeal: requireSeal(
+          input.verified.proofs.find(({ proofId }) => proofId === incoming.proofId)?.terminalSeal,
+        ),
       }),
     );
   }
@@ -1136,7 +1171,7 @@ function prepareSealedAdmission(
         entry.mintUrl !== asset.mintUrl ||
         entry.unit !== "msat" ||
         entry.asset.kind !== "ctf" ||
-        entry.selectionAuthority !== "terminal-sealed-non-selectable" ||
+        entry.selectionAuthority === "live-verified" ||
         entry.terminalSeal === undefined,
     )
   ) {
@@ -1190,7 +1225,7 @@ function prepareSealedAdmission(
     });
     return decodeBrowserCustodyProofRow({
       ...proof,
-      selectability: "verified-losing",
+      selectability: expectedSelectability(entry.selectionAuthority),
       reservationOperationId: null,
     });
   });
@@ -1204,6 +1239,7 @@ function prepareSealedAdmission(
       derivationLocator: entry.locator,
       restoreProofId: entry.proofId,
       restoreProofCommitment: seal.proofCommitment,
+      terminalSeal: seal,
     });
   });
   const desired = createEncryptedWalletBackupV2DesiredAssetRow({
@@ -2116,8 +2152,15 @@ function isProofSubset(
 
 function expectedSelectability(
   authority: EncryptedWalletBackupV2VerifiedProofSet["proofs"][number]["selectionAuthority"],
-): "selectable" | "verified-losing" {
-  return authority === "live-verified" ? "selectable" : "verified-losing";
+): "selectable" | "verified-losing" | "retained-unverified" {
+  switch (authority) {
+    case "live-verified":
+      return "selectable";
+    case "terminal-sealed-non-selectable":
+      return "verified-losing";
+    case "terminal-refusal-history":
+      return "retained-unverified";
+  }
 }
 
 function proofConditionalAssets(

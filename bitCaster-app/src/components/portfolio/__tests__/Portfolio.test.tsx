@@ -182,6 +182,30 @@ function renderPortfolio(overrides: Partial<PortfolioProps> = {}) {
 }
 
 describe("PositionRow", () => {
+  it("shows the retained unverified amount without wallet action buttons", () => {
+    render(
+      <PositionRow
+        position={{
+          ...mockPositions[1],
+          retainedUnverifiedAmountSubunits: 1000,
+          canClaimPayout: false,
+          canDiscard: false,
+          canSell: false,
+          isWinner: false,
+          isLoser: false,
+          isPending: false,
+          valueKnown: false,
+        }}
+        onClaim={vi.fn()}
+        onDiscard={vi.fn()}
+        onSell={vi.fn()}
+      />,
+    );
+    expect(screen.getByRole("status")).toHaveTextContent("1,000 msat");
+    expect(screen.getByRole("status")).toHaveTextContent(/outcome is unverified/);
+    expect(screen.queryByRole("button", { name: /claim|remove|sell/i })).not.toBeInTheDocument();
+  });
+
   it.each([
     { side: "yes", label: "Yes Alpha", color: "text-emerald-700" },
     { side: "no", label: "No Alpha", color: "text-rose-700" },

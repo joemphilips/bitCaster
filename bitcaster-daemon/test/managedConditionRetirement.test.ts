@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -11,10 +12,17 @@ import {
   CheckStateEnum,
   MintOperationError,
   deriveKeysetId,
+  deriveConditionalKeysetId,
+  createBlindSignature,
+  createDLEQProof,
+  pointFromHex,
+  type OutputDataLike,
   hashToCurve,
   type MintKeys,
   type Proof,
 } from '@cashu/cashu-ts'
+import { deriveRootCtfOutcomeCollectionId } from '@bitcaster-market/client-sdk/durableCtfRangeOperation'
+import { openDaemonStateSqlite } from '../src/stateSqlite.ts'
 import { ORACLE_NOT_ATTESTED_OUTCOME_CODE } from '@bitcaster-market/client-sdk/ctfRedeem'
 import { createCtfProofOperationCompletion } from '@bitcaster-market/client-sdk/ctfSplit'
 import { deriveDlcConditionId } from '@bitcaster-market/client-sdk/managedConditionInventory'
@@ -26,6 +34,7 @@ import {
   completeManagedConditionRedeemFenced,
   prepareProofOperationWithExactReservation,
   readState,
+  writeState,
 } from '../src/state.ts'
 import { retireDaemonConditionInventory } from '../src/managedConditionRetirement.ts'
 import { withDurableCustodyUnitOfWork } from '../src/durableCustodyUnitOfWork.ts'
@@ -127,7 +136,9 @@ test('daemon previews then atomically retires one verified condition inventory',
             {
               oraclePublicKey,
               noncePoint: signature.slice(0, 64),
-              announcementIdentity: '44'.repeat(32),
+              announcementIdentity: createHash('sha256')
+                .update(Buffer.from([1]))
+                .digest('hex'),
             },
           ],
         },
@@ -159,18 +170,10 @@ test('daemon previews then atomically retires one verified condition inventory',
   const state = await readState()
   assert.ok(state)
   assert.equal(
-    state.wallet.proofs.some(
-      (record) => record.asset.kind === 'Outcome' && record.asset.conditionId === conditionId,
-    ),
-    false,
-  )
-  assert.equal(
-    state.wallet.proofs.some(
-      (record) =>
-        record.asset.kind === 'sats' &&
-        record.proof.secret === 'regular-result:conditional-input-000',
-    ),
-    true,
+    state.wallet.proofs
+      .filter(({ asset }) => asset.kind === 'sats')
+      .reduce((sum, { proof }) => sum + Number(proof.amount), 0),
+    65,
   )
   await assertManagedRedeemCompletionIsTerminal({ directory, fence, state })
   await assert.rejects(
@@ -190,72 +193,215 @@ test('daemon previews then atomically retires one verified condition inventory',
     outcomeCount: 2,
     oraclePublicKeys: [oraclePublicKey],
   })
-  const losingInput = proof(CTF_KEYSET_ID, 'conditional-loser', 5)
+  const winningId = deriveConditionalKeysetId({
+    keys: REGULAR_KEYS,
+    unit: 'msat',
+    conditionId: losingConditionId,
+    outcomeCollectionId: deriveRootCtfOutcomeCollectionId({
+      conditionId: losingConditionId,
+      outcomeCollection: 'YES',
+    }),
+  })
+  const losingInput = proof(winningId, 'conditional-winner-refused', 5)
   await addAvailableProofs('https://mint.example', [losingInput], {
     kind: 'Outcome',
     conditionId: losingConditionId,
-    outcomeSetId: 'NO',
+    outcomeSetId: 'YES',
     baseAsset: 'sat',
     unit: 'msat',
   })
   const losingWallet = new FakeRetirementWallet(
     new MintOperationError(ORACLE_NOT_ATTESTED_OUTCOME_CODE, 'oracle not attested'),
   )
-  await retireDaemonConditionInventory({
-    ...common,
-    conditionId: losingConditionId,
-    acknowledge: true,
-    engine: {
-      getConditionAttestation: async () => ({
-        ...(await common.engine.getConditionAttestation())!,
-        conditionId: losingConditionId,
-        registeredAuthority: {
-          ...((await common.engine.getConditionAttestation())!.registeredAuthority as object),
-          eventId: losingEventId,
+  losingWallet.conditional = { ...outcomeKeyset(), id: winningId }
+  losingWallet.conditionInfo = {
+    condition_id: losingConditionId,
+    threshold: 1,
+    collateral: 'msat',
+    announcements: ['01'],
+    attestation: {
+      status: 'attested',
+      winning_outcome: 'YES',
+      oracle_sigs: [{ oracle_pubkey: oraclePublicKey, oracle_sig: signature, outcome: 'YES' }],
+    },
+  }
+  await assert.rejects(
+    retireDaemonConditionInventory({
+      ...common,
+      conditionId: losingConditionId,
+      acknowledge: true,
+      engine: {
+        getConditionAttestation: async () => ({
+          ...(await common.engine.getConditionAttestation())!,
+          conditionId: losingConditionId,
+          registeredAuthority: {
+            ...((await common.engine.getConditionAttestation())!.registeredAuthority as object),
+            eventId: losingEventId,
+          },
+        }),
+      },
+      walletDependencies: {
+        createCashuWallet: () => losingWallet,
+        resolveInputFeePpkByKeyset: async () => ({ [winningId]: 0 }),
+      },
+    }),
+    /refusal remains pending/,
+  )
+  const afterLosing = (await readState())!
+  const retained = afterLosing.wallet.proofs.find(
+    ({ proof: held }) => held.secret === losingInput.secret,
+  )!
+  assert.equal(retained.state, 'reserved')
+  const pending = Object.values(afterLosing.proofOperations).find((operation) =>
+    operation.inputs.some(({ secret }) => secret === losingInput.secret),
+  )!
+  assert.equal(pending.state, 'prepared')
+  assert.equal(pending.failureCode, undefined)
+  assert.ok(pending.metadata.oracleResolutionContext)
+  const database = await openDaemonStateSqlite(directory)
+  database.close()
+  const reopened = (await readState())!
+  assert.deepEqual(reopened.proofOperations[pending.operationId], pending)
+  assert.equal(
+    reopened.wallet.proofs.find(({ proof: held }) => held.secret === losingInput.secret)!
+      .reservedBy,
+    pending.operationId,
+  )
+
+  for (const fault of ['signature', 'missing-dleq', 'wrong-secret', 'wrong-amount'] as const) {
+    const event = `retirement-bad-output-${fault}`
+    const badCondition = deriveDlcConditionId({
+      eventId: event,
+      outcomeCount: 2,
+      oraclePublicKeys: [oraclePublicKey],
+    })
+    const badInput = proof(CTF_KEYSET_ID, `bad-output-input-${fault}`, 4)
+    await addAvailableProofs(profile.mintUrl, [badInput], {
+      kind: 'Outcome',
+      conditionId: badCondition,
+      outcomeSetId: 'YES',
+      baseAsset: 'sat',
+      unit: 'msat',
+    })
+    const badWallet = new FakeRetirementWallet()
+    badWallet.alterResult = (proofs) =>
+      proofs.map((proof) => ({
+        ...proof,
+        ...(fault === 'signature'
+          ? { C: REGULAR_KEY }
+          : fault === 'missing-dleq'
+            ? { dleq: undefined }
+            : fault === 'wrong-secret'
+              ? { secret: 'foreign' }
+              : { amount: 3 }),
+      })) as Proof[]
+    await assert.rejects(
+      retireDaemonConditionInventory({
+        ...common,
+        conditionId: badCondition,
+        acknowledge: true,
+        engine: {
+          getConditionAttestation: async () => ({
+            ...(await common.engine.getConditionAttestation()),
+            conditionId: badCondition,
+            registeredAuthority: {
+              ...((await common.engine.getConditionAttestation()).registeredAuthority as object),
+              eventId: event,
+            },
+          }),
+        },
+        walletDependencies: {
+          createCashuWallet: () => badWallet,
+          resolveInputFeePpkByKeyset: async () => ({ [CTF_KEYSET_ID]: 0 }),
         },
       }),
-    },
-    walletDependencies: {
-      createCashuWallet: () => losingWallet,
-      resolveInputFeePpkByKeyset: async () => ({ [CTF_KEYSET_ID]: 0 }),
-    },
+    )
+    const reopenedDatabase = await openDaemonStateSqlite(directory)
+    reopenedDatabase.close()
+    const state = (await readState())!
+    const pending = Object.values(state.proofOperations).find((operation) =>
+      operation.inputs.some(({ secret }) => secret === badInput.secret),
+    )!
+    assert.equal(pending.state, 'prepared')
+    assert.equal(
+      state.wallet.proofs.find(({ proof: held }) => held.secret === badInput.secret)!.reservedBy,
+      pending.operationId,
+    )
+    assert.equal(
+      state.wallet.proofs.some(({ proof: held }) =>
+        pending.outputs.regular?.some((output) => output.secret === held.secret),
+      ),
+      false,
+    )
+  }
+
+  const legacyEvent = 'retirement-legacy-output-keys'
+  const legacyCondition = deriveDlcConditionId({
+    eventId: legacyEvent,
+    outcomeCount: 2,
+    oraclePublicKeys: [oraclePublicKey],
   })
-  const afterLosing = await readState()
-  const retained = afterLosing?.wallet.proofs.find(
-    (record) => record.proof.secret === losingInput.secret,
-  )
-  assert.equal(retained?.state, 'locked')
-  assert.equal(retained?.asset.kind, 'Outcome')
-  const failedRedeem = Object.values(afterLosing!.proofOperations).find(
-    (operation) =>
-      operation.kind === 'ctf-redeem' &&
-      operation.state === 'Failed' &&
-      operation.inputs.some(({ secret }) => secret === losingInput.secret),
-  )
-  assert.ok(failedRedeem)
+  await addAvailableProofs(profile.mintUrl, [proof(CTF_KEYSET_ID, 'legacy-original-input', 4)], {
+    kind: 'Outcome',
+    conditionId: legacyCondition,
+    outcomeSetId: 'YES',
+    baseAsset: 'sat',
+    unit: 'msat',
+  })
+  const legacyResponse = {
+    ...(await common.engine.getConditionAttestation()),
+    conditionId: legacyCondition,
+    registeredAuthority: {
+      ...((await common.engine.getConditionAttestation()).registeredAuthority as object),
+      eventId: legacyEvent,
+    },
+  }
+  const legacyCommon = {
+    ...common,
+    conditionId: legacyCondition,
+    engine: { getConditionAttestation: async () => legacyResponse },
+  }
   await assert.rejects(
-    completeManagedConditionRedeemFenced(
-      failedRedeem.operationId,
-      createCtfProofOperationCompletion('ctf-redeem', {
-        regular: [proof(REGULAR_KEYSET_ID, 'forged-failed-result', 5)],
-      }),
-      { fence, observedAtMs: Date.now() },
-    ),
-    /not prepared for completion/,
+    retireDaemonConditionInventory({
+      ...legacyCommon,
+      acknowledge: true,
+      walletDependencies: {
+        createCashuWallet: () => new FakeRetirementWallet(new Error('legacy timeout')),
+        resolveInputFeePpkByKeyset: async () => ({ [CTF_KEYSET_ID]: 0 }),
+      },
+    }),
+    /legacy timeout/,
   )
-  const afterFailedCompletion = await readState()
-  assert.equal(afterFailedCompletion?.proofOperations[failedRedeem.operationId]?.state, 'Failed')
-  assert.equal(
-    afterFailedCompletion?.wallet.proofs.find(
-      ({ proof: candidate }) => candidate.secret === losingInput.secret,
-    )?.state,
-    'locked',
+  const legacyState = (await readState())!
+  const legacyOperation = Object.values(legacyState.proofOperations).find((operation) =>
+    operation.inputs.some(({ secret }) => secret === 'legacy-original-input'),
+  )!
+  delete legacyOperation.metadata.regularOutputKeysetAuthority
+  legacyOperation.metadata.oracleWitness = JSON.stringify(legacyResponse.oracleWitness)
+  await writeState(legacyState)
+  const originalLegacy = JSON.parse(JSON.stringify(legacyOperation))
+  await assert.rejects(
+    retireDaemonConditionInventory({
+      ...legacyCommon,
+      acknowledge: true,
+      walletDependencies: {
+        createCashuWallet: () => new FakeRetirementWallet(),
+        resolveInputFeePpkByKeyset: async () => ({ [CTF_KEYSET_ID]: 0 }),
+      },
+    }),
+    /output keyset authority is absent/,
+  )
+  const legacyReopenedDatabase = await openDaemonStateSqlite(directory)
+  legacyReopenedDatabase.close()
+  const legacyReopened = (await readState())!
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(legacyReopened.proofOperations[legacyOperation.operationId])),
+    originalLegacy,
   )
   assert.equal(
-    afterFailedCompletion?.wallet.proofs.some(
-      ({ proof: candidate }) => candidate.secret === 'forged-failed-result',
-    ),
-    false,
+    legacyReopened.wallet.proofs.find(({ proof }) => proof.secret === 'legacy-original-input')!
+      .reservedBy,
+    legacyOperation.operationId,
   )
 
   const retryEventId = 'daemon-retirement-restart-test'
@@ -409,7 +555,7 @@ async function assertManagedRedeemCompletionIsTerminal(input: {
     }),
   )
   const exactCompletion = createCtfProofOperationCompletion('ctf-redeem', {
-    regular: [payout],
+    regular: operation.resultProofs!.regular as Proof[],
   })
   await completeManagedConditionRedeemFenced(operation.operationId, exactCompletion, {
     fence: input.fence,
@@ -440,10 +586,21 @@ class FakeRetirementWallet {
   constructor(error?: unknown) {
     this.error = error
   }
+  conditional?: MintKeys
+  conditionInfo?: unknown
+  alterResult?: (proofs: Proof[]) => Proof[]
   readonly mint = {
-    getKeySets: async () => ({ keysets: [regularKeyset(), outcomeKeyset()] }),
+    getCtfCondition: async () => {
+      if (this.conditionInfo === undefined) throw new Error('condition info unavailable')
+      return this.conditionInfo
+    },
+    getKeySets: async () => ({ keysets: [regularKeyset(), this.conditional ?? outcomeKeyset()] }),
     getKeys: async (keysetId?: string) => ({
-      keysets: [keysetId === CTF_KEYSET_ID ? outcomeKeyset() : regularKeyset()],
+      keysets: [
+        keysetId === (this.conditional?.id ?? CTF_KEYSET_ID)
+          ? (this.conditional ?? outcomeKeyset())
+          : regularKeyset(),
+      ],
     }),
   }
 
@@ -451,15 +608,29 @@ class FakeRetirementWallet {
 
   async redeemOutcomeProofs(options: {
     inputs: Proof[]
-    outputs: Array<{ blindedMessage: { amount: number; id: string } }>
+    outputs: OutputDataLike[]
   }): Promise<Proof[]> {
     this.redeemCalls += 1
     if (this.error !== undefined) throw this.error
-    const amount = options.outputs.reduce(
-      (sum, output) => sum + Number(output.blindedMessage.amount),
-      0,
-    )
-    return [proof(REGULAR_KEYSET_ID, `regular-result:${options.inputs[0]?.secret}`, amount)]
+    const privateKey = Uint8Array.from([...new Uint8Array(31), 1])
+    const result = options.outputs.map((output) => {
+      const signature = createBlindSignature(
+        pointFromHex(output.blindedMessage.B_),
+        privateKey,
+        output.blindedMessage.id,
+      )
+      const dleq = createDLEQProof(pointFromHex(output.blindedMessage.B_), privateKey)
+      return output.toProof(
+        {
+          id: output.blindedMessage.id,
+          amount: output.blindedMessage.amount,
+          C_: signature.C_.toHex(true),
+          dleq: { e: bytesToHex(dleq.e), s: bytesToHex(dleq.s) },
+        },
+        regularKeyset(),
+      )
+    })
+    return this.alterResult?.(result) ?? result
   }
 
   async checkProofsStates(proofs: Array<Pick<Proof, 'secret'>>) {
@@ -472,7 +643,7 @@ class FakeRetirementWallet {
 }
 
 function proof(id: string, secret: string, amount: number): Proof {
-  return { id, secret, amount, C: `C-${secret}` } as Proof
+  return { id, secret, amount, C: hashToCurve(utf8ToBytes(secret)).toHex(true) } as Proof
 }
 
 function regularKeyset(): MintKeys {

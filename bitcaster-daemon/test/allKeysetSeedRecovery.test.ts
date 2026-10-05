@@ -48,6 +48,7 @@ test('all-keyset recovery finalizes only after complete empty listings', async (
       completedChildCount: 0,
       batchesProcessed: 0,
       gapLimit: 300,
+      retainedOutputProofsImported: 0,
     })
   } finally {
     await rm(fixture.directory, { recursive: true, force: true })
@@ -192,6 +193,7 @@ test('all-keyset recovery discovers inactive CTF authority and admits exact Outc
       completedChildCount: 2,
       batchesProcessed: 3,
       gapLimit: 300,
+      retainedOutputProofsImported: 0,
     })
     await withDaemonHome(fixture.directory, async () => {
       const available = await readAvailableWalletProofsFenced({
@@ -391,6 +393,7 @@ test('a pending child consumes one attempt while another child completes', async
       completedChildCount: 1,
       batchesProcessed: 2,
       gapLimit: 300,
+      retainedOutputProofsImported: 0,
     })
   } finally {
     await rm(fixture.directory, { recursive: true, force: true })

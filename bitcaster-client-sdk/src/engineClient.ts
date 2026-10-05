@@ -881,10 +881,13 @@ export class BitcasterEngineClient {
     )
   }
 
-  async getConditionAttestation(conditionId: string): Promise<ConditionAttestationResponse | null> {
+  async getConditionAttestation(
+    conditionId: string,
+    signal?: AbortSignal,
+  ): Promise<ConditionAttestationResponse | null> {
     const response = await this.request(
       `/api/v1/conditions/${encodePathSegment(conditionId)}/attestation`,
-      {},
+      { signal },
       undefined,
       true,
     )

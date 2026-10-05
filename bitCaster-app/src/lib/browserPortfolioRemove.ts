@@ -1,3 +1,4 @@
+import type { ConditionOracleEvidenceSummary } from "@bitcaster/client-sdk/conditionOracleEvidence";
 import {
   decodeEncryptedWalletBackupV2AssetIdentity,
   type EncryptedWalletBackupV2AssetIdentity,
@@ -54,37 +55,37 @@ export type BrowserPortfolioRemoveResult =
   | BrowserPortfolioRemovePartial
   | BrowserPortfolioRemoveError;
 
-export interface BrowserPortfolioRemoveCompleted {
-  readonly kind: "completed";
+interface BrowserPortfolioRemoveResultBase {
   readonly committedPayoutAmount: number;
+  readonly oracleEvidence?: ConditionOracleEvidenceSummary;
 }
 
-export interface BrowserPortfolioRemoveStopped {
+export interface BrowserPortfolioRemoveCompleted extends BrowserPortfolioRemoveResultBase {
+  readonly kind: "completed";
+}
+
+export interface BrowserPortfolioRemoveStopped extends BrowserPortfolioRemoveResultBase {
   readonly kind: "stopped";
   readonly reason: "winning-payout";
-  readonly committedPayoutAmount: number;
 }
 
-export interface BrowserPortfolioRemovePending {
+export interface BrowserPortfolioRemovePending extends BrowserPortfolioRemoveResultBase {
   readonly kind: "pending";
   readonly reason:
     | "claim-pending"
     | "managed-removal-pending"
     | "local-removal-pending"
     | "profile-changed";
-  readonly committedPayoutAmount: number;
 }
 
-export interface BrowserPortfolioRemovePartial {
+export interface BrowserPortfolioRemovePartial extends BrowserPortfolioRemoveResultBase {
   readonly kind: "partial";
   readonly reason: "local-removal-pending" | "local-removal-error";
-  readonly committedPayoutAmount: number;
   readonly error: BrowserPortfolioRemoveFailure | null;
 }
 
-export interface BrowserPortfolioRemoveError {
+export interface BrowserPortfolioRemoveError extends BrowserPortfolioRemoveResultBase {
   readonly kind: "error";
-  readonly committedPayoutAmount: number;
   readonly error: BrowserPortfolioRemoveFailure;
 }
 
@@ -133,6 +134,7 @@ export async function removePortfolioPosition(
 ): Promise<BrowserPortfolioRemoveResult> {
   const attemptRef = createBrowserPortfolioRemoveAttemptRef();
   let committedPayoutAmount = 0;
+  let oracleEvidence: ConditionOracleEvidenceSummary | undefined;
   let stage: BrowserPortfolioRemoveFailureStage = "capture";
 
   try {
@@ -184,6 +186,7 @@ export async function removePortfolioPosition(
         onCommittedLeg: input.onCommittedLeg,
       });
       committedPayoutAmount = claim.committedPayoutAmount;
+      oracleEvidence = claim.oracleEvidence;
       const claimResult = claimOutcome(claim, attemptRef);
       if (claimResult !== null) return claimResult;
       requireProfile();
@@ -195,7 +198,12 @@ export async function removePortfolioPosition(
       return readTerminalTargets({ database, scopeId: scope.scopeId, asset, targets });
     });
     if (terminal.pending) {
-      return { kind: "pending", reason: "claim-pending", committedPayoutAmount };
+      return {
+        kind: "pending",
+        reason: "claim-pending",
+        committedPayoutAmount,
+        ...oracleEvidenceResult(oracleEvidence),
+      };
     }
 
     if (terminal.managedTargets.length > 0) {
@@ -206,6 +214,7 @@ export async function removePortfolioPosition(
           kind: "pending",
           reason: "managed-removal-pending",
           committedPayoutAmount,
+          ...oracleEvidenceResult(oracleEvidence),
         };
       }
       const managedResult = await removeManagedProofsInChunks(
@@ -215,13 +224,14 @@ export async function removePortfolioPosition(
         terminal.localTargets,
       );
       if (managedResult.kind === "error") {
-        return removeError(committedPayoutAmount, stage, attemptRef);
+        return removeError(committedPayoutAmount, stage, attemptRef, oracleEvidence);
       }
       if (managedResult.kind === "pending") {
         return {
           kind: "pending",
           reason: "managed-removal-pending",
           committedPayoutAmount,
+          ...oracleEvidenceResult(oracleEvidence),
         };
       }
 
@@ -240,16 +250,17 @@ export async function removePortfolioPosition(
           kind: "pending",
           reason: "managed-removal-pending",
           committedPayoutAmount,
+          ...oracleEvidenceResult(oracleEvidence),
         };
       }
-      return { kind: "completed", committedPayoutAmount };
+      return { kind: "completed", committedPayoutAmount, ...oracleEvidenceResult(oracleEvidence) };
     }
 
     if (terminal.localTargets.length === 0) {
-      return { kind: "completed", committedPayoutAmount };
+      return { kind: "completed", committedPayoutAmount, ...oracleEvidenceResult(oracleEvidence) };
     }
     stage = "local-commit";
-    return completeLocalRemoval({
+    const localResult = await completeLocalRemoval({
       database,
       scopeId: scope.scopeId,
       asset,
@@ -259,11 +270,17 @@ export async function removePortfolioPosition(
       observedAtMs: input.observedAtMs,
       requireProfile,
     });
+    return { ...localResult, ...oracleEvidenceResult(oracleEvidence) };
   } catch (error) {
     if (error instanceof BrowserPortfolioProfileChangedError) {
-      return { kind: "pending", reason: "profile-changed", committedPayoutAmount: 0 };
+      return {
+        kind: "pending",
+        reason: "profile-changed",
+        committedPayoutAmount: 0,
+        ...oracleEvidenceResult(oracleEvidence),
+      };
     }
-    return removeError(0, stage, attemptRef);
+    return removeError(0, stage, attemptRef, oracleEvidence);
   }
 }
 
@@ -669,17 +686,20 @@ function claimOutcome(
         kind: "stopped",
         reason: "winning-payout",
         committedPayoutAmount: claim.committedPayoutAmount,
+        ...oracleEvidenceResult(claim.oracleEvidence),
       };
     case "pending":
       return {
         kind: "pending",
         reason: "claim-pending",
         committedPayoutAmount: claim.committedPayoutAmount,
+        ...oracleEvidenceResult(claim.oracleEvidence),
       };
     case "error":
       return {
         kind: "error",
         committedPayoutAmount: claim.committedPayoutAmount,
+        ...oracleEvidenceResult(claim.oracleEvidence),
         error: removeFailure("claim", attemptRef, {
           code: claim.error.code,
           category: claim.error.category,
@@ -697,10 +717,12 @@ function removeError(
   committedPayoutAmount: number,
   stage: BrowserPortfolioRemoveFailureStage,
   attemptRef: string,
+  oracleEvidence?: ConditionOracleEvidenceSummary,
 ): BrowserPortfolioRemoveError {
   return {
     kind: "error",
     committedPayoutAmount,
+    ...oracleEvidenceResult(oracleEvidence),
     error: removeFailure(stage, attemptRef),
   };
 }
@@ -720,4 +742,10 @@ function removeFailure(
 
 function createBrowserPortfolioRemoveAttemptRef(): string {
   return globalThis.crypto.randomUUID();
+}
+
+function oracleEvidenceResult(
+  oracleEvidence: ConditionOracleEvidenceSummary | undefined,
+): Pick<BrowserPortfolioRemoveResultBase, "oracleEvidence"> {
+  return oracleEvidence === undefined ? {} : { oracleEvidence };
 }

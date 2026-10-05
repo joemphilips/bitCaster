@@ -1,4 +1,5 @@
 import { getActiveRegularKeyset } from "@bitcaster/client-sdk/ctfRedeem";
+import { summarizeConditionOracleEvidence } from "@bitcaster/client-sdk/conditionOracleEvidence";
 import { restoreOutputGroups } from "@bitcaster/client-sdk/ctfSplit";
 import { db } from "../stores/proof-db";
 import { BrowserDurableCustodyAdapter } from "../stores/durable-custody-db";
@@ -11,11 +12,7 @@ import {
   type BrowserCanonicalCtfPositionClaimContext,
   type BrowserCanonicalCtfPositionClaimTarget,
 } from "./browserCtfPositionClaim";
-import {
-  ensureWalletKeysetCounterReady,
-  fetchConditionAttestation,
-  WalletKeysetCounterReadinessError,
-} from "./cashu";
+import { ensureWalletKeysetCounterReady, WalletKeysetCounterReadinessError } from "./cashu";
 import {
   BrowserCtfClaimBoundaryError,
   browserCtfClaimBoundaryError,
@@ -25,6 +22,7 @@ import {
 import { toSeed } from "./bip39";
 import { normalizeUrl } from "./url";
 import { withWalletProfileLock } from "./walletProfileLock";
+import { resolveBrowserConditionOracleEvidence } from "./browserConditionOracleEvidence";
 
 export async function claimPortfolioPosition(input: {
   readonly mintUrl: string;
@@ -83,12 +81,19 @@ export async function claimPortfolioPosition(input: {
             observedAtMs,
             prepareNewLegAuthority: async () => {
               requireProfile();
-              const [regularKeyset, attestation] = await Promise.all([
+              const [regularKeyset, resolution] = await Promise.all([
                 getActiveRegularKeyset(wallet, "msat").catch(() => {
                   throw new BrowserCtfClaimBoundaryError("keyset-authority");
                 }),
-                fetchConditionAttestation(input.conditionId).catch(() => {
-                  throw new BrowserCtfClaimBoundaryError("attestation-lookup");
+                resolveBrowserConditionOracleEvidence({
+                  binding: {
+                    scopeId: scope.scopeId,
+                    normalizedMint: mintUrl,
+                    unit: "msat",
+                    conditionId: input.conditionId,
+                    canonicalParentCollectionId: null,
+                  },
+                  wallet,
                 }),
               ]);
               requireProfile();
@@ -117,7 +122,14 @@ export async function claimPortfolioPosition(input: {
               requireProfile();
               return {
                 regularKeyset,
-                oracleWitness: attestation.witnessJson,
+                oracleWitness:
+                  resolution.evidence.status === "verified"
+                    ? resolution.evidence.canonicalOracleWitness
+                    : "",
+                oracleEvidence: summarizeConditionOracleEvidence(resolution.evidence),
+                ...(resolution.evidence.status === "verified"
+                  ? { oracleResolutionContext: resolution.evidence.context }
+                  : {}),
               };
             },
             counterSource: createActiveBrowserWalletCounterSource(database, scope.scopeId, {
@@ -156,6 +168,9 @@ export async function claimPortfolioPosition(input: {
       committedLegs: committed.committedLegs,
       losingLegs: committed.losingLegs,
       pendingLegs: committed.pendingLegs,
+      ...(priorClaim?.oracleEvidence === undefined
+        ? {}
+        : { oracleEvidence: priorClaim.oracleEvidence }),
       error: {
         code: "claim-failed" as const,
         category: failure.category,

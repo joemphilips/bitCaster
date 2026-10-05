@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { BROWSER_D4_CONDITION } from "../../test/browserD4OracleFixture";
 import "fake-indexeddb/auto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { deriveConditionalKeysetId } from "@cashu/cashu-ts";
@@ -44,11 +45,15 @@ import {
   type BrowserCtfRemoveTarget,
 } from "../browserCtfRemoveCoordinator";
 import { commitBrowserCtfTerminalOperation } from "../../test/browserEncryptedWalletBackupV2CommittedTerminalFixture";
+import { hkdf } from "@noble/hashes/hkdf.js";
+import { hmac } from "@noble/hashes/hmac.js";
+import { sha256 } from "@noble/hashes/sha2.js";
+import { bytesToHex } from "@noble/hashes/utils.js";
 
 const REALM = "backup.example";
 const MINT = "https://mint.example";
 const PUBLIC_KEY = `02${"22".repeat(32)}`;
-const CONDITION_ID = "aa".repeat(32);
+const CONDITION_ID = BROWSER_D4_CONDITION;
 const OUTCOME = "YES";
 const OUTCOME_COLLECTION_ID = deriveRootCtfOutcomeCollectionId({
   conditionId: CONDITION_ID,
@@ -89,6 +94,58 @@ afterEach(async () => {
 });
 
 describe("browser CTF explicit removal coordinator", () => {
+  it.each(["flag-only", "code-only-seal"])(
+    "rejects persisted %s remote losing history after reopen without deleting proofs",
+    async (history) => {
+      const fixture = await createFixture(1);
+      const proof = fixture.proofs[0]!;
+      const raw = await fixture.database.custodyProofBackupAuthorities.get([
+        fixture.scopeId,
+        proof.proofId,
+      ]);
+      if (
+        raw === undefined ||
+        "recordKind" in raw ||
+        raw.terminalAuthority?.kind !== "remote-seal"
+      ) {
+        throw new Error("test remote seal authority is missing");
+      }
+      const original = raw.terminalAuthority.terminalSeal;
+      if (original === undefined) throw new Error("test full seal is missing");
+      const {
+        verifiedContextDigest: _context,
+        authenticationCode: _mac,
+        ...legacyFields
+      } = original;
+      const legacySeal = {
+        ...legacyFields,
+        schemaVersion: 1,
+        kind: "ctf-verified-losing",
+      } as const;
+      await fixture.database.custodyProofBackupAuthorities.put({
+        ...raw,
+        terminalAuthority: {
+          kind: "remote-seal",
+          ...(history === "code-only-seal" ? { terminalSeal: legacySeal } : {}),
+        },
+      });
+      fixture.database.close();
+      await fixture.database.open();
+      await expect(
+        startBrowserCtfRemove(fixture.input([fixture.target(proof.proofId)])),
+      ).rejects.toThrow();
+      expect(await fixture.database.custodyProofs.count()).toBe(1);
+      expect(
+        (await fixture.database.custodyProofs.get([fixture.scopeId, proof.proofId]))?.selectability,
+      ).toBe("verified-losing");
+      const desired = await fixture.database.encryptedWalletBackupV2DesiredAssets.get([
+        fixture.scopeId,
+        fixture.desired.localAssetKey,
+      ]);
+      expect(desired?.removalIntent).toBeNull();
+    },
+  );
+
   it.each([
     { count: 1, localClassification: false, staleExclusion: false },
     { count: 2, localClassification: false, staleExclusion: false },
@@ -505,6 +562,7 @@ describe("browser CTF explicit removal coordinator", () => {
         },
         restoreProofId: managedProof.proofId,
         restoreProofCommitment: "55".repeat(32),
+        terminalSeal: remoteSealFixture(managedProof, 1),
       }),
     );
 
@@ -532,6 +590,7 @@ describe("browser CTF explicit removal coordinator", () => {
         },
         restoreProofId: managedProof.proofId,
         restoreProofCommitment: "55".repeat(32),
+        terminalSeal: remoteSealFixture(managedProof, 1),
       }),
     );
     const desired = {
@@ -1229,6 +1288,7 @@ async function createLocalFixture(count = 1, sharedTerminalOperation = false) {
   for (const [index, group] of groups.entries()) {
     const committed = await commitBrowserCtfTerminalOperation({
       adapter,
+      database,
       scope,
       owner: { ...owner, observedAtMs: 1_500 + index * 100 },
       operationId: `ctf-redeem-local-remove-${index}`,
@@ -1336,7 +1396,7 @@ async function createFixture(count: number, localClassification = false) {
         normalizedMint: MINT,
         unit: "msat",
         proof: {
-          id: `01${(index + 1).toString(16).padStart(2, "0")}${"11".repeat(31)}`,
+          id: KEYSET,
           amount: 1 as never,
           secret: `remove-secret-${index}`,
           C: `02${"22".repeat(32)}`,
@@ -1358,6 +1418,7 @@ async function createFixture(count: number, localClassification = false) {
         derivationLocator: terminalLocator(proof, index),
         restoreProofId: proof.proofId,
         restoreProofCommitment: terminalProofCommitment(proof, index),
+        terminalSeal: remoteSealFixture(proof, index),
       });
       if (classified === null) return restored;
       const previous = requireBrowserLiveProofBackupAuthorityTableRow(localAuthorities[index], [
@@ -1528,6 +1589,50 @@ function terminalLocator(proof: ReturnType<typeof decodeBrowserCustodyProofRow>,
     keysetId: proof.keysetId,
     counter,
   };
+}
+
+function remoteSealFixture(
+  proof: ReturnType<typeof decodeBrowserCustodyProofRow>,
+  counter: number,
+) {
+  // A fixed authenticated boundary fixture; SDK tests cover committed issuance.
+  const operationId = `remote-losing:${proof.proofId}`;
+  const fields = {
+    schemaVersion: 2 as const,
+    kind: "ctf-verified-losing-v2" as const,
+    operationIdDigest: bytesToHex(sha256(new TextEncoder().encode(operationId))),
+    requestDigest: "11".repeat(32),
+    code: 13015 as const,
+    classifiedAtMs: 2_000,
+    proofCommitment: terminalProofCommitment(proof, counter),
+    verifiedContextDigest: "44".repeat(32),
+  };
+  const encoder = new TextEncoder();
+  const key = hkdf(
+    sha256,
+    SEED,
+    encoder.encode("bitcaster/encrypted-wallet-backup/hkdf-salt/v2"),
+    encoder.encode("bitcaster/encrypted-wallet-backup/verified-losing-seal/v2"),
+    32,
+  );
+  const authenticationCode = bytesToHex(
+    hmac(
+      sha256,
+      key,
+      encodeCanonicalBackupCbor([
+        "bitcaster:verified-losing-seal-authentication:v2",
+        fields.schemaVersion,
+        fields.kind,
+        fields.operationIdDigest,
+        fields.requestDigest,
+        fields.code,
+        fields.classifiedAtMs,
+        fields.proofCommitment,
+        fields.verifiedContextDigest,
+      ]),
+    ),
+  );
+  return { ...fields, authenticationCode };
 }
 
 function terminalProofCommitment(

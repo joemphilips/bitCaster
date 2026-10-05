@@ -192,7 +192,7 @@ export function decodeDurableCustodyProofOperationInput(
     throw new Error('custody proof operation metadata is invalid')
   }
   if (value.metadata !== undefined) {
-    if (Object.keys(value.metadata).length > 16) {
+    if (Object.keys(value.metadata).length > 24) {
       throw new Error('custody proof operation metadata field limit exceeded')
     }
     encodeBoundedDurableArtifact(value.metadata, DURABLE_CUSTODY_ARTIFACT_BYTES_MAX)

@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "scopeId": "1111111111111111111111111111111111111111111111111111111111111111",
+  "normalizedMint": "https://mint.example",
+  "unit": "sat",
+  "conditionId": "b7563d4ce8fc1dc815fe793fc5683e396a96549f4d4acc16c819fb0fc040f937",
+  "canonicalParentCollectionId": null,
+  "eventId": "http-evidence",
+  "outcomes": ["YES", "NO"],
+  "threshold": 1,
+  "oracles": [
+    {
+      "oraclePublicKey": "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa",
+      "noncePoint": "466d7fcae563e5cb09a0d1870bb580344804617879a14949cf22285f1bae3f27",
+      "announcementIdentity": "eb698ce80cf1e36ffbc746a7000d5e8782c5cada96b5896bf9cd8af6e818e1fb"
+    }
+  ]
+}

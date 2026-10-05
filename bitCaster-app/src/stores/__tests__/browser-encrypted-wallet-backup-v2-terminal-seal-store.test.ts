@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { BROWSER_D4_CONDITION } from "../../test/browserD4OracleFixture";
 import "fake-indexeddb/auto";
 import Dexie from "dexie";
 import { deriveConditionalKeysetId, type Proof } from "@cashu/cashu-ts";
@@ -27,7 +28,7 @@ import { BitcasterDB } from "../proof-db";
 
 const MINT = "https://mint.example";
 const PUBLIC_KEY = `02${"22".repeat(32)}`;
-const CONDITION_ID = "aa".repeat(32);
+const CONDITION_ID = BROWSER_D4_CONDITION;
 const OUTCOME_ID = deriveRootCtfOutcomeCollectionId({
   conditionId: CONDITION_ID,
   outcomeCollection: "YES",
@@ -299,6 +300,7 @@ async function terminalFixture(seedByte: number, inputCount = 1) {
   });
   const committed = await commitBrowserCtfTerminalOperation({
     adapter,
+    database,
     scope,
     owner,
     operationId: requestedOperationId,

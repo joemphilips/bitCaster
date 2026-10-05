@@ -937,7 +937,7 @@ async function requireExactActiveProofCoverage(
   eligible: readonly BrowserEncryptedWalletBackupV2CacheRemovalEligibleAsset[],
 ): Promise<void> {
   const expected = new Set(eligible.flatMap(({ proofs }) => proofs.map(({ proofId }) => proofId)));
-  const [selectable, locked] = await Promise.all([
+  const [selectable, locked, retained] = await Promise.all([
     database.custodyProofs
       .where("[scopeId+selectability]")
       .equals([scopeId, "selectable"])
@@ -948,8 +948,13 @@ async function requireExactActiveProofCoverage(
       .equals([scopeId, "locked"])
       .limit(ACTIVE_PROOF_MAX + 1)
       .toArray(),
+    database.custodyProofs
+      .where("[scopeId+selectability]")
+      .equals([scopeId, "retained-unverified"])
+      .limit(ACTIVE_PROOF_MAX + 1)
+      .toArray(),
   ]);
-  const rawRows = [...selectable, ...locked];
+  const rawRows = [...selectable, ...locked, ...retained];
   if (rawRows.length > ACTIVE_PROOF_MAX) {
     throw new BrowserEncryptedWalletBackupV2SeedHandoffRefusal(
       "active-wallet-work",

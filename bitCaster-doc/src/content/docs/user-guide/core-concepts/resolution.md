@@ -133,6 +133,18 @@ the tokens were not spent. See [settlement and recovery](/user-guide/core-concep
 
 ### Using the browser
 
+Claim checks evidence from the intended oracle when that evidence is available.
+If the evidence is missing, unavailable, or invalid, the app shows this warning:
+“The mint reports this outcome, but we have not verified evidence from the intended oracle.”
+You can still claim. The wallet must verify each received proof before it records
+the payout. A mint refusal alone does not prove that a holding lost.
+The same warning applies when Remove checks a position through Claim.
+The message stays visible until you close it.
+
+A restored refusal record can lack verified losing evidence. The wallet keeps
+these conditional tokens and shows their retained amount. You cannot claim,
+sell, or remove tokens in this retained, unverified state.
+
 Open Portfolio and select Claim for a winning position. A claim can finish
 in parts. Each completed payout stays in your wallet if another part fails.
 
@@ -155,6 +167,12 @@ the failed step and the attempt. Include that reference when you report the
 problem. Do not share your recovery phrase, private key, or ecash tokens.
 
 ### Using the CLI
+
+`wallet claim <condition-id> <outcome-collection>` returns an `oracleEvidence`
+status for each leg in its JSON output. The status is `verified` or `unverified`.
+An unverified status includes a reason and the same warning as the browser.
+A refused leg stays pending when verified evidence does not prove that its exact
+collection lost. Keep the wallet data and use the existing recovery operation.
 
 The native daemon retains resolved-condition proofs until you authorize
 redemption and inventory cleanup. Preview the action and estimated mint fee with:

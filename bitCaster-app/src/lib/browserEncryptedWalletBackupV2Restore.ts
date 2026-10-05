@@ -506,9 +506,7 @@ export async function restoreAndAdmitBrowserEncryptedWalletBackupV2TargetedAsset
   try {
     const allSealed =
       verified.proofs.length > 0 &&
-      verified.proofs.every(
-        ({ selectionAuthority }) => selectionAuthority === "terminal-sealed-non-selectable",
-      );
+      verified.proofs.every(({ selectionAuthority }) => selectionAuthority !== "live-verified");
     if (allSealed) {
       await retryBrowserEncryptedWalletBackupV2QuotaWrite({
         database: input.database,
@@ -539,7 +537,7 @@ export async function restoreAndAdmitBrowserEncryptedWalletBackupV2TargetedAsset
     }
     const wallet = await loadWallet();
     const hasSealed = verified.proofs.some(
-      ({ selectionAuthority }) => selectionAuthority === "terminal-sealed-non-selectable",
+      ({ selectionAuthority }) => selectionAuthority !== "live-verified",
     );
     await retryBrowserEncryptedWalletBackupV2QuotaWrite({
       database: input.database,
@@ -596,6 +594,7 @@ async function verifyBrowserEncryptedWalletBackupV2RestoredProofSet(
     }
     const verified = await verifyEncryptedWalletBackupV2RestoredProofSet({
       seed: input.seed,
+      preserveRefusalHistory: true,
       expectedAsset: asset,
       unverified: restored.unverified,
       port: restoreVerificationPort(input, asset, loadWallet),

@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { BROWSER_D4_CONDITION } from "../../test/browserD4OracleFixture";
 import "fake-indexeddb/auto";
 import { Amount, deriveConditionalKeysetId, type Proof } from "@cashu/cashu-ts";
 import {
@@ -12,6 +13,7 @@ import {
   enumerateEncryptedWalletBackupV2DescriptorPages,
   deriveRootCtfOutcomeCollectionId,
   deserializeDurableCustodyProofArtifact,
+  issueEncryptedWalletBackupV2TerminalSeal,
   type DurableCustodyScope,
   type EncryptedWalletBackupV2BundleRuntime,
   type EncryptedWalletBackupV2PreparedTransportBundle,
@@ -46,7 +48,7 @@ import { commitBrowserCtfTerminalOperation } from "../../test/browserEncryptedWa
 const MINT = "https://mint.example";
 const PUBLIC_KEY = `02${"22".repeat(32)}`;
 const REGULAR_KEYSET = `01${"33".repeat(32)}`;
-const CONDITION_ID = "ab".repeat(32);
+const CONDITION_ID = BROWSER_D4_CONDITION;
 const OUTCOME = "YES";
 const SEED = new Uint8Array(64).fill(17);
 const OUTCOME_ID = deriveRootCtfOutcomeCollectionId({
@@ -523,6 +525,34 @@ describe("browser V2 asset source", () => {
     const losing = rows.find(({ selectability }) => selectability === "verified-losing");
     const sibling = rows.find(({ selectability }) => selectability === "selectable");
     if (losing === undefined || sibling === undefined) throw new Error("test proof is missing");
+    const locator = {
+      schemaVersion: 1 as const,
+      kind: "nut13" as const,
+      keysetId: CONDITIONAL_KEYSET,
+      counter: 1,
+    };
+    const terminalSeal = await issueEncryptedWalletBackupV2TerminalSeal({
+      seed: SEED,
+      proof: {
+        mintUrl: MINT,
+        unit: "msat",
+        asset: {
+          kind: "ctf",
+          conditionId: CONDITION_ID,
+          outcomeLabel: OUTCOME,
+          outcomeCollectionId: OUTCOME_ID,
+          registeredAt: 0,
+          finalExpiry: 100,
+        },
+        proof: proofFromRow(losing),
+        locator,
+      },
+      operationId: fixture.operationId,
+      store: new BrowserEncryptedWalletBackupV2TerminalSealStore({
+        database: fixture.database,
+        scopeId: fixture.scopeId,
+      }),
+    });
     await fixture.database.custodyProofBackupAuthorities.put(
       createBrowserRemoteProofBackupAuthorityRow({
         proof: losing,
@@ -534,7 +564,8 @@ describe("browser V2 asset source", () => {
           counter: 1,
         },
         restoreProofId: losing.proofId,
-        restoreProofCommitment: "22".repeat(32),
+        restoreProofCommitment: terminalSeal.proofCommitment,
+        terminalSeal,
       }),
     );
     await fixture.database.custodyProofs.delete([fixture.scopeId, sibling.proofId]);
@@ -569,7 +600,14 @@ describe("browser V2 asset source", () => {
     });
     expect(snapshot.proofs).toHaveLength(1);
     expect(snapshot.proofs[0]?.proof.secret).toBe(proofSecret(losing));
-    expect(snapshot.losingProofs[0]?.origin).toEqual({ kind: "remote-seal" });
+    expect(snapshot.losingProofs[0]?.origin).toMatchObject({
+      kind: "remote-seal",
+      terminalSeal: {
+        schemaVersion: 2,
+        kind: "ctf-verified-losing-v2",
+        authenticationCode: expect.stringMatching(/^[0-9a-f]{64}$/),
+      },
+    });
     expect(snapshot.counterHighWaterMarks).toEqual([]);
     await expect(
       readBrowserEncryptedWalletBackupV2ExactLocalProofRows({
@@ -619,6 +657,7 @@ describe("browser V2 asset source", () => {
     );
     await commitBrowserCtfTerminalOperation({
       adapter: fixture.adapter,
+      database: fixture.database,
       scope: fixture.scope,
       owner: { ...fixture.owner, observedAtMs: 20 },
       operationId: "ctf-redeem-range-losing-keyset",
@@ -1363,8 +1402,9 @@ async function committedCtfFixture(losingCount: number) {
   });
   await database.encryptedWalletBackupV2DesiredAssets.put(initialDesired);
   const operationId = `ctf-redeem-source-${losingCount}`;
-  await commitBrowserCtfTerminalOperation({
+  const terminal = await commitBrowserCtfTerminalOperation({
     adapter,
+    database,
     scope,
     owner,
     operationId,
@@ -1436,6 +1476,7 @@ async function committedCtfFixture(losingCount: number) {
       database,
       scopeId: scope.scopeId,
     }),
+    operationId: terminal.operationId,
   };
 }
 

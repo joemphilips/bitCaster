@@ -10,6 +10,8 @@ import {
   digestEncryptedWalletBackupV2BundleDescriptor,
   decodeEncryptedWalletBackupV2UploadGroup,
   decodeEncryptedWalletBackupV2BundleDescriptorWire,
+  decodeEncryptedWalletBackupV2AssetIdentity,
+  encryptedWalletBackupV2LocalAssetKey,
   type EncryptedWalletBackupV2AssetIdentity,
   type EncryptedWalletBackupV2ProofSetProof,
   type EncryptedWalletBackupV2KeyHandle,
@@ -19,7 +21,8 @@ import {
   decodeDurableCustodyScopeInput,
 } from "@bitcaster/client-sdk/durableCustody";
 import { decodeDurableWalletProofDerivationLocator } from "@bitcaster/client-sdk/durableWalletProofDerivationLocator";
-import { readDurableCustodyAuthenticatedTerminalMintRejection } from "@bitcaster/client-sdk/durableCustodyMintResult";
+import { readDurableCustodyVerifiedLosingMintRejection } from "@bitcaster/client-sdk/durableCustodyMintResult";
+import { requireEncryptedWalletBackupV2VerifiedLosingSealProofBinding } from "@bitcaster/client-sdk/encryptedWalletBackupV2ProofSet";
 import type {
   DurableCustodyExactArtifact,
   DurableCustodyRecord,
@@ -949,7 +952,7 @@ async function requireRetainedRemovalSurvivors(
 }
 
 async function requireLocalTerminalAuthority(
-  input: BrowserCtfRemoveInput,
+  input: Pick<BrowserCtfRemoveInput, "database" | "scopeId">,
   proof: BrowserCustodyProofRow,
   authority: BrowserProofBackupAuthorityRow,
 ): Promise<void> {
@@ -960,8 +963,57 @@ async function requireLocalTerminalAuthority(
   await new BrowserEncryptedWalletBackupV2TerminalSealStore({
     database: input.database,
     scopeId: input.scopeId,
-  }).withCommittedTerminalRejection(terminalOperationId, ({ record, exactRejection }) =>
-    validateLocalTerminalOperation(record, exactRejection, proof, terminalOperationId),
+  }).withCommittedTerminalRejection(
+    terminalOperationId,
+    ({ record, exactRejection, exactAuthority }) =>
+      validateLocalTerminalOperation(
+        record,
+        exactRejection,
+        exactAuthority,
+        proof,
+        terminalOperationId,
+      ),
+  );
+}
+
+/** Recheck retained losing authority before treating an exact Claim target as terminal. */
+export async function requireBrowserCtfVerifiedLosingProofAuthority(
+  database: BitcasterDB,
+  proof: BrowserCustodyProofRow,
+  seed: Uint8Array,
+): Promise<void> {
+  if (proof.selectability !== "verified-losing") {
+    throw new Error("browser CTF losing proof classification is required");
+  }
+  const raw = await database.custodyProofBackupAuthorities.get([proof.scopeId, proof.proofId]);
+  const authority = requireBrowserProofBackupAuthorityForProof(raw, proof);
+  const input = { database, scopeId: proof.scopeId, seed };
+  if (authority.terminalAuthority?.kind === "local-operation") {
+    await requireLocalTerminalAuthority(input, proof, authority);
+    return;
+  }
+  if (proof.conditionId === null || proof.outcomeCollection === null) {
+    throw new Error("browser CTF losing proof asset is missing");
+  }
+  const asset = decodeEncryptedWalletBackupV2AssetIdentity({
+    mintUrl: proof.normalizedMint,
+    unit: proof.unit,
+    assetIdentity: `ctf:${proof.conditionId}:${deriveRootCtfOutcomeCollectionId({
+      conditionId: proof.conditionId,
+      outcomeCollection: proof.outcomeCollection,
+    })}`,
+  });
+  const desired = await database.encryptedWalletBackupV2DesiredAssets.get([
+    proof.scopeId,
+    // The local identity also checks the mint and unit through the shared decoder.
+    encryptedWalletBackupV2LocalAssetKey(asset),
+  ]);
+  if (desired === undefined) throw new Error("browser CTF losing proof context is missing");
+  await requireTerminalAuthority(
+    input,
+    decodeEncryptedWalletBackupV2DesiredAssetRow(desired),
+    proof,
+    authority,
   );
 }
 
@@ -1148,7 +1200,9 @@ async function requireProofReconciliationFence(
 }
 
 async function requireTerminalAuthority(
-  input: Pick<BrowserCtfRemoveInput, "database" | "scopeId" | "keyHandle">,
+  input: Pick<BrowserCtfRemoveInput, "database" | "scopeId" | "keyHandle"> & {
+    readonly seed?: Uint8Array;
+  },
   desired: EncryptedWalletBackupV2DesiredAssetRow,
   proof: BrowserCustodyProofRow,
   authority: BrowserProofBackupAuthorityRow,
@@ -1171,6 +1225,17 @@ async function requireTerminalAuthority(
     ) {
       throw new Error("browser CTF removal remote terminal authority is foreign");
     }
+    const sealAuthority = input.seed ?? input.keyHandle;
+    if (sealAuthority === undefined)
+      throw new Error("browser CTF removal seal verification authority is missing");
+    requireEncryptedWalletBackupV2VerifiedLosingSealProofBinding(
+      {
+        ...entry,
+        terminalSeal: authority.terminalAuthority.terminalSeal,
+      },
+      input.scopeId,
+      sealAuthority,
+    );
     if (proof.selectability === "verified-losing") {
       await requireBrowserV2KeysetFreeTerminalContextForProof({
         database: input.database,
@@ -1180,6 +1245,8 @@ async function requireTerminalAuthority(
     }
     return proofCommitment;
   }
+  if (authority.terminalAuthority.kind !== "local-operation")
+    throw new Error("browser CTF refusal history cannot authorize removal");
   const operationId = authority.terminalAuthority.operationId;
   // Proof origin is validated separately. A restored proof can be classified locally.
   if (authority.terminalOperationId !== operationId) {
@@ -1188,10 +1255,12 @@ async function requireTerminalAuthority(
   const validate = ({
     record,
     exactRejection,
+    exactAuthority,
   }: {
     readonly record: DurableCustodyRecord;
     readonly exactRejection: DurableCustodyExactArtifact;
-  }) => validateLocalTerminalOperation(record, exactRejection, proof, operationId);
+    readonly exactAuthority: DurableCustodyExactArtifact;
+  }) => validateLocalTerminalOperation(record, exactRejection, exactAuthority, proof, operationId);
   if (proof.selectability === "verified-losing") {
     await new BrowserEncryptedWalletBackupV2TerminalSealStore({
       database: input.database,
@@ -1212,7 +1281,15 @@ async function requireTerminalAuthority(
     if (exactRejection === undefined) {
       throw new Error("browser CTF removal terminal rejection artifact is missing");
     }
-    validate({ record: snapshot.record, exactRejection });
+    const exactAuthority = snapshot.artifacts.find(
+      ({ reference }) =>
+        reference.artifactId ===
+        snapshot.record.operation.privateMaterial.exactPrivateMaterial.artifactId,
+    )?.artifact;
+    if (exactAuthority === undefined) {
+      throw new Error("browser CTF removal original operation authority is missing");
+    }
+    validate({ record: snapshot.record, exactRejection, exactAuthority });
   }
   return proofCommitment;
 }
@@ -1255,6 +1332,7 @@ function terminalProofEntry(
 function validateLocalTerminalOperation(
   record: DurableCustodyRecord,
   exactRejection: DurableCustodyExactArtifact,
+  exactAuthority: DurableCustodyExactArtifact,
   proof: BrowserCustodyProofRow,
   operationId: string,
 ): void {
@@ -1277,9 +1355,10 @@ function validateLocalTerminalOperation(
   ) {
     throw new Error("browser CTF removal local terminal operation is foreign");
   }
-  const rejection = readDurableCustodyAuthenticatedTerminalMintRejection({
+  const rejection = readDurableCustodyVerifiedLosingMintRejection({
     record,
     exactRejection,
+    exactAuthority,
   });
   if (
     rejection.operationId !== operationId ||

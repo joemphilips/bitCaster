@@ -1,5 +1,6 @@
-import type { Proof } from '@cashu/cashu-ts'
+import type { Proof, MintKeys } from '@cashu/cashu-ts'
 import type { DatabaseSync } from 'node:sqlite'
+import { isDeepStrictEqual } from 'node:util'
 import {
   buildKeysetRedeemOperationId,
   canonicalProofOperationMintIdentity,
@@ -30,6 +31,7 @@ import {
   stageDurableCustodyPreparedMintResult,
   prepareDurableCustodyAuthenticatedTerminalMintRejection,
   reconcileDurableCustodyAuthenticatedTerminalMintRejection,
+  readDurableCustodyVerifiedLosingMintRejection,
   readDurableCustodyAuthenticatedTerminalMintRejection,
   type DurableCustodyMintKeysetAuthority,
 } from '@bitcaster-market/client-sdk/durableCustodyMintResult'
@@ -47,10 +49,7 @@ import { amountToNumber } from '@bitcaster-market/client-sdk/proofSelection'
 import { profileDir, type DaemonProfile } from './profile.ts'
 import type { CustodyScopeFence } from './profileFencing.ts'
 import type { WalletClaimPositionParams, WalletClaimPositionResult } from './protocol.ts'
-import {
-  verifyDaemonConditionAttestation,
-  type ManagedConditionRetirementEngine,
-} from './managedConditionRetirement.ts'
+import type { ManagedConditionRetirementEngine } from './managedConditionRetirement.ts'
 import {
   POSITION_CLAIM_PURPOSE,
   assertPreparedProofOperationDispatchFenced,
@@ -62,6 +61,7 @@ import {
   readProofOperationsByPurposePage,
   type ProofOperationRecord,
   type StoredProofAsset,
+  type StoredProofRecord,
 } from './state.ts'
 import {
   createWallet,
@@ -70,6 +70,14 @@ import {
   type WalletOpsSecrets,
 } from './walletOps.ts'
 import type { StartupRecoveryResult } from './startupRecovery.ts'
+import {
+  summarizeConditionOracleEvidence,
+  requireVerifiedConditionOracleEvidence,
+  UNVERIFIED_CONDITION_OUTCOME_WARNING,
+  type ConditionOracleEvidenceSummary,
+  type ConditionOracleResolutionContext,
+} from '@bitcaster-market/client-sdk/conditionOracleEvidence'
+import { resolveDaemonConditionOracleEvidence } from './nativeConditionOracleEvidence.ts'
 
 interface ClaimContext {
   readonly profile: DaemonProfile
@@ -93,7 +101,7 @@ export async function claimDaemonPosition(
   }
   if (result.legs.some((leg) => leg.state === 'pending')) return result
   const asset = positionAsset(position)
-  let authority: ReturnType<typeof verifyDaemonConditionAttestation> | undefined
+  let authority: Awaited<ReturnType<typeof resolveDaemonConditionOracleEvidence>> | undefined
   while (true) {
     const records = await readPositionClaimProofPageFenced({
       mintUrl: input.profile.mintUrl,
@@ -102,14 +110,17 @@ export async function claimDaemonPosition(
     })
     if (records.length === 0) return result
     if (authority === undefined) {
-      const response = await input.engine.getConditionAttestation(position.conditionId)
-      if (response === null) throw new Error('condition resolution attestation is not available')
-      authority = verifyDaemonConditionAttestation(
-        input.fence,
-        input.profile,
-        position.conditionId,
-        response,
-      )
+      authority = await resolveDaemonConditionOracleEvidence({
+        ...input,
+        conditionId: position.conditionId,
+        wallet: createWallet(
+          input.profile.mintUrl,
+          input.secrets,
+          input.walletDependencies ?? {},
+          'sat',
+          'msat',
+        ) as unknown as RedeemWallet,
+      })
     }
     const proofs = records.map(({ proof }) => normalizeProof(proof))
     const retainedOperationKey = buildKeysetRedeemOperationId({
@@ -131,8 +142,12 @@ export async function claimDaemonPosition(
         ...position,
         outcomeSetId: position.outcomeCollection,
         outcomeKeysetId: proofs[0]!.id,
-        outcome: authority.resolution.resolvedOutcome,
-        oracleWitness: authority.oracleWitness,
+        outcome: authority.resolvedOutcome ?? position.outcomeCollection,
+        oracleWitness:
+          authority.evidence.status === 'verified' ? authority.evidence.canonicalOracleWitness : '',
+        ...(authority.evidence.status === 'verified'
+          ? { oracleResolutionContext: authority.evidence.context }
+          : {}),
       },
     })
     result.legs.push(leg)
@@ -200,6 +215,22 @@ async function executeLeg(
   const wallet = fencedClaimWallet(input, operation.mintUrl, operation.operationId, asset)
   const store = claimOperationStore(input, operation.operationId, asset, wallet)
   try {
+    const resolution = operation.metadata.oracleResolutionContext as
+      | ConditionOracleResolutionContext
+      | undefined
+    const oracleInputKeysets =
+      resolution === undefined
+        ? undefined
+        : ((operation.metadata.oracleInputKeysets as
+            | readonly DurableCustodyMintKeysetAuthority[]
+            | undefined) ?? [
+            await readNativePositionClaimInputKeyset(
+              input.profile.mintUrl,
+              asset,
+              operation.metadata.outcomeKeysetId as string,
+              wallet,
+            ),
+          ])
     const result = await redeemOutcomeLegWithOperation({
       mintUrl: operation.mintUrl,
       operationId: operation.operationId,
@@ -210,6 +241,8 @@ async function executeLeg(
       outcomeKeysetId: operation.metadata.outcomeKeysetId as string,
       outcome: operation.metadata.outcome as string,
       oracleWitness: operation.metadata.oracleWitness as string,
+      oracleResolutionContext: resolution,
+      oracleInputKeysets,
       unit: 'msat',
       proofs: operation.inputs.map(normalizeProof),
       restoreOutputGroups: input.walletDependencies?.restoreOutputGroups ?? restoreOutputGroups,
@@ -217,7 +250,8 @@ async function executeLeg(
     return {
       operationId: operation.operationId,
       keysetId: operation.metadata.outcomeKeysetId as string,
-      state: result.losing ? 'losing' : 'completed',
+      state: result.refused ? 'pending' : result.losing ? 'losing' : 'completed',
+      oracleEvidence: operationOracleEvidence(operation),
       payoutAmountSubunits: result.proofs.reduce(
         (sum, proof) => sum + amountToNumber(proof.amount),
         0,
@@ -225,13 +259,84 @@ async function executeLeg(
     }
   } catch (error) {
     const persisted = await readProofOperationFenced(operation.operationId, mutation(input))
-    if (persisted === null || persisted.state !== 'prepared') throw error
+    if (
+      persisted === null ||
+      (persisted.state !== 'prepared' &&
+        !(persisted.state === 'Failed' && persisted.failureCode === 13015))
+    )
+      throw error
     return {
       operationId: operation.operationId,
       keysetId: operation.metadata.outcomeKeysetId as string,
       state: 'pending',
+      oracleEvidence: operationOracleEvidence(operation),
       payoutAmountSubunits: 0,
     }
+  }
+}
+
+function operationOracleEvidence(
+  operation: Pick<ProofOperationRecord, 'mintUrl' | 'metadata'>,
+): ConditionOracleEvidenceSummary {
+  try {
+    const verified = requireVerifiedConditionOracleEvidence(
+      operation.metadata.oracleResolutionContext as ConditionOracleResolutionContext,
+    )
+    if (
+      verified.context.registered.normalizedMint !== operation.mintUrl ||
+      verified.context.registered.conditionId !== operation.metadata.conditionId ||
+      verified.context.registered.unit !== 'msat'
+    )
+      throw new Error('claim evidence is foreign')
+    return summarizeConditionOracleEvidence(verified)
+  } catch {
+    return {
+      status: 'unverified',
+      reason: 'missing',
+      warning: UNVERIFIED_CONDITION_OUTCOME_WARNING,
+    }
+  }
+}
+
+export async function readNativePositionClaimInputKeyset(
+  mintUrl: string,
+  asset: Extract<StoredProofAsset, { kind: 'Outcome' }>,
+  id: string,
+  wallet: RedeemWallet,
+): Promise<DurableCustodyMintKeysetAuthority> {
+  const keyset = (await wallet.mint?.getKeys(id))?.keysets.find((candidate) => candidate.id === id)
+  if (
+    keyset === undefined ||
+    keyset.unit !== 'msat' ||
+    !Number.isSafeInteger(keyset.input_fee_ppk) ||
+    keyset.input_fee_ppk! < 0
+  )
+    throw new Error('position claim conditional keyset is foreign')
+  return conditionalClaimKeysetAuthority(mintUrl, asset, keyset, keyset.input_fee_ppk!)
+}
+
+function conditionalClaimKeysetAuthority(
+  mintUrl: string,
+  asset: Extract<StoredProofAsset, { kind: 'Outcome' }>,
+  keyset: MintKeys,
+  inputFeePpk: number,
+): DurableCustodyMintKeysetAuthority {
+  return {
+    canonicalMintUrl: mintUrl,
+    id: keyset.id,
+    unit: 'msat',
+    keys: keyset.keys,
+    inputFeePpk,
+    finalExpiry: keyset.final_expiry ?? null,
+    identity: {
+      kind: 'conditional',
+      conditionId: asset.conditionId,
+      outcomeCollection: asset.outcomeSetId,
+      outcomeCollectionId: deriveRootCtfOutcomeCollectionId({
+        conditionId: asset.conditionId,
+        outcomeCollection: asset.outcomeSetId,
+      }),
+    },
   }
 }
 
@@ -249,7 +354,7 @@ function claimOperationStore(
       if (operation.kind !== 'ctf-redeem' || operation.metadata.purpose !== POSITION_CLAIM_PURPOSE)
         throw new Error('position claim operation is foreign')
       await claimUnitOfWork(input, (database, context) => {
-        const { record, store } = readClaimCustody(database, context.fence, operation)
+        const { record, store } = readNativePositionClaimCustody(database, context.fence, operation)
         if (operation.state === 'prepared') {
           new DurableCustodyTransactionSqlite(
             database,
@@ -272,9 +377,11 @@ function claimOperationStore(
             reference,
           })
           if (artifact === null) throw new Error('position claim terminal artifact is absent')
-          readDurableCustodyAuthenticatedTerminalMintRejection({
+          readDurableCustodyVerifiedLosingMintRejection({
             record,
             exactRejection: artifact.artifact,
+            exactAuthority: readNativePositionClaimCustody(database, context.fence, operation)
+              .exactAuthority,
           })
         }
       })
@@ -355,7 +462,11 @@ function claimOperationStore(
       const target = await readProofOperationFenced(id, mutation(input))
       if (target === null) throw new Error('position claim target is absent')
       return await claimUnitOfWork(input, (database, context) => {
-        const { record, exactAuthority } = readClaimCustody(database, context.fence, target)
+        const { record, exactAuthority } = readNativePositionClaimCustody(
+          database,
+          context.fence,
+          target,
+        )
         if (record.operation.state !== 'reconciled') {
           const prepared = prepareDurableCustodyVerifiedMintResult({
             record,
@@ -430,7 +541,11 @@ function claimOperationStore(
       const target = await readProofOperationFenced(id, mutation(input))
       if (target === null) throw new Error('position claim target is absent')
       return await claimUnitOfWork(input, (database, context) => {
-        const { record, exactAuthority } = readClaimCustody(database, context.fence, target)
+        const { record, exactAuthority } = readNativePositionClaimCustody(
+          database,
+          context.fence,
+          target,
+        )
         const prepared = prepareDurableCustodyAuthenticatedTerminalMintRejection({
           record,
           exactAuthority,
@@ -534,6 +649,13 @@ async function claimKeysets(
         (id !== regularKeyset.id || keyset.active === false || keyset.conditional !== undefined)
       )
         throw new Error('position claim regular output keyset is foreign')
+      if (conditional)
+        return conditionalClaimKeysetAuthority(
+          operation.mintUrl,
+          asset,
+          keyset,
+          operation.metadata?.outcomeInputFeePpk as number,
+        )
       return {
         canonicalMintUrl: operation.mintUrl,
         id,
@@ -559,9 +681,9 @@ async function claimKeysets(
   )
 }
 
-function readClaimCustody(
+export function readNativePositionClaimCustody(
   database: DatabaseSync,
-  fence: CustodyScopeFence,
+  fence: Pick<CustodyScopeFence, 'scopeId'>,
   target: ProofOperationRecord,
 ) {
   const link = database
@@ -609,6 +731,48 @@ function readClaimCustody(
     throw new Error('position claim canonical authority differs from target')
   if (target.state === 'prepared') assertClaimPredecessors(store, record, target)
   return { store, record, exactAuthority: row.artifact }
+}
+
+export function assertRetainedPositionClaimHistory(
+  database: DatabaseSync,
+  scopeId: string,
+  target: ProofOperationRecord,
+  proof: StoredProofRecord,
+): void {
+  if (
+    target.kind !== 'ctf-redeem' ||
+    target.state !== 'Failed' ||
+    target.failureCode !== 13015 ||
+    proof.state !== 'locked' ||
+    proof.reservedBy !== target.operationId ||
+    proof.mintUrl !== target.mintUrl ||
+    proof.retirement !== undefined ||
+    proof.asset.kind !== 'Outcome' ||
+    proof.asset.unit !== 'msat' ||
+    proof.asset.conditionId !== target.metadata.conditionId ||
+    proof.asset.outcomeSetId !== target.metadata.outcomeSetId
+  )
+    throw new Error('retained Claim history binding is invalid')
+  const { store, record } = readNativePositionClaimCustody(database, { scopeId }, target)
+  if (record.operation.state !== 'aborted') throw new Error('retained Claim is not aborted')
+  const reference = record.operation.terminalMintRejection?.exactRejection
+  if (reference === undefined) throw new Error('retained Claim rejection is absent')
+  const rejection = store.getArtifact({
+    scopeId: record.scope.scopeId,
+    operationId: record.operation.operationId,
+    expectedOperationRevision: record.revision,
+    reference,
+  })
+  if (rejection === null) throw new Error('retained Claim rejection artifact is absent')
+  readDurableCustodyAuthenticatedTerminalMintRejection({
+    record,
+    exactRejection: rejection.artifact,
+  })
+  assertClaimPredecessors(store, record, target)
+  const index = target.inputs.findIndex((input) => isDeepStrictEqual(input, proof.proof))
+  const input = record.operation.reservation.inputs[index]
+  if (input === undefined || store.getProof(scopeId, input.proofId)?.selectability !== 'retained')
+    throw new Error('retained Claim predecessor is absent or foreign')
 }
 
 function assertClaimPredecessors(

@@ -21,9 +21,17 @@ import {
   assertDurableCustodyMintOperationAuthority,
   prepareDurableCustodyMintOperationAuthority,
   prepareDurableCustodyVerifiedMintResult,
+  readDurableCustodyVerifiedLosingMintRejection,
   stageDurableCustodyPreparedMintResult,
   type DurableCustodyMintKeysetAuthority,
 } from "@bitcaster/client-sdk/durableCustodyMintResult";
+import {
+  requireVerifiedConditionOracleEvidence,
+  summarizeConditionOracleEvidence,
+  UNVERIFIED_CONDITION_OUTCOME_WARNING,
+  type ConditionOracleResolutionContext,
+  type ConditionOracleEvidenceSummary,
+} from "@bitcaster/client-sdk/conditionOracleEvidence";
 import {
   bindDurableCustodyProofOperation,
   createDurableCustodyProofOperation,
@@ -136,6 +144,7 @@ export async function recoverBrowserCanonicalCtfRedeemOperation(input: {
   readonly adapter: BrowserDurableCustodyAdapter;
   readonly owner: DurableCustodyOwnerAuthorization;
   readonly observedAtMs: number;
+  readonly onOracleEvidence?: (evidence: ConditionOracleEvidenceSummary) => void;
 }): Promise<BrowserCanonicalCtfRedeemRecoveryResult> {
   const scope = browserWalletScope(input.seed);
   const snapshot = await input.adapter.readOperationSnapshot(scope, input.operationId);
@@ -164,6 +173,33 @@ export async function recoverBrowserCanonicalCtfRedeemOperation(input: {
   ) {
     throw new Error("browser CTF redeem recovery asset authority is foreign");
   }
+  let oracleEvidence: ConditionOracleEvidenceSummary = {
+    status: "unverified",
+    reason: "missing",
+    warning: UNVERIFIED_CONDITION_OUTCOME_WARNING,
+  };
+  if (metadata.oracleResolutionContext !== undefined) {
+    try {
+      const verified = requireVerifiedConditionOracleEvidence(
+        metadata.oracleResolutionContext as ConditionOracleResolutionContext,
+      );
+      if (
+        verified.context.registered.normalizedMint !== operation.mintUrl ||
+        verified.context.registered.conditionId !== input.conditionId ||
+        verified.context.registered.unit !== record.operation.custodyContext.unit
+      ) {
+        throw new Error("browser CTF resolution context is foreign");
+      }
+      oracleEvidence = summarizeConditionOracleEvidence(verified);
+    } catch {
+      oracleEvidence = {
+        status: "unverified",
+        reason: "invalid",
+        warning: UNVERIFIED_CONDITION_OUTCOME_WARNING,
+      };
+    }
+  }
+  input.onOracleEvidence?.(oracleEvidence);
   const regularKeyset = authority.keysets.find(
     (keyset) => keyset.identity.kind === "regular" && keyset.id === metadata.regularKeysetId,
   );
@@ -177,7 +213,24 @@ export async function recoverBrowserCanonicalCtfRedeemOperation(input: {
     throw new BrowserCtfClaimBoundaryError("keyset-authority", input.operationId);
   }
   if (record.operation.result.state === "applied") return { kind: "already-completed" };
-  if (record.operation.terminalMintRejection !== null) return { kind: "already-losing" };
+  if (record.operation.terminalMintRejection !== null) {
+    try {
+      readDurableCustodyVerifiedLosingMintRejection({
+        record,
+        exactRejection: requiredArtifact(
+          snapshot.artifacts,
+          record.operation.terminalMintRejection.exactRejection.artifactId,
+        ),
+        exactAuthority: requiredArtifact(
+          snapshot.artifacts,
+          record.operation.privateMaterial.exactPrivateMaterial.artifactId,
+        ),
+      });
+      return { kind: "already-losing" };
+    } catch {
+      return { kind: "pending" };
+    }
+  }
   if (record.operation.result.state !== "none") {
     throw new Error("browser CTF redeem staged result requires recovery");
   }
@@ -214,6 +267,7 @@ export async function recoverBrowserCanonicalCtfRedeemOperation(input: {
     wallet: walletWithClaimMintClassification(input.wallet, input.operationId),
   });
   if (submitted.kind === "losing") return submitted;
+  if (submitted.kind === "refused") return { kind: "pending" };
   let committed: readonly Proof[];
   try {
     committed = await commitBrowserCanonicalCtfRedeemResult({
@@ -298,6 +352,7 @@ export interface BrowserCanonicalCtfRedeemBindingInput {
   readonly conditionId: string;
   readonly outcomeCollection: string;
   readonly oracleWitness: string;
+  readonly oracleResolutionContext?: ConditionOracleResolutionContext;
   readonly leg: BrowserCtfRedeemLeg;
   readonly regularKeyset: MintKeys;
   readonly counterSource: CounterSource;
@@ -372,6 +427,8 @@ export async function bindBrowserCanonicalCtfRedeemLeg(
           regularKeyset: input.regularKeyset,
           inputs: proofs,
           oracleWitness: input.oracleWitness,
+          oracleResolutionContext: input.oracleResolutionContext,
+          oracleInputKeysets: [conditionalKeysetAuthority(normalizedMint, keyset)],
           seed: input.seed,
           counterSource: input.counterSource,
         });

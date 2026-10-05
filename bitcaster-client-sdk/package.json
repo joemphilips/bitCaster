@@ -407,6 +407,10 @@
     "./types": {
       "types": "./dist/types.d.ts",
       "import": "./dist/types.js"
+    },
+    "./conditionOracleEvidence": {
+      "types": "./dist/conditionOracleEvidence.d.ts",
+      "import": "./dist/conditionOracleEvidence.js"
     }
   },
   "scripts": {

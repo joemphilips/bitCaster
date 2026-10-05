@@ -201,16 +201,19 @@ test('BitcasterEngineClient reads one bounded condition attestation', async () =
     registeredAuthority: { eventId: 'event-1' },
     attestationEvent: { ...signed, createdAt },
   }
+  const signal = AbortSignal.timeout(5000)
   const client = new BitcasterEngineClient({
     baseUrl: 'https://engine.example',
-    fetchImpl: async () =>
-      new Response(JSON.stringify(body), {
+    fetchImpl: async (_url, init) => {
+      assert.equal(init?.signal, signal)
+      return new Response(JSON.stringify(body), {
         status: 200,
         headers: { 'content-type': 'application/json' },
-      }),
+      })
+    },
   })
   assert.deepEqual(
-    await client.getConditionAttestation(conditionId),
+    await client.getConditionAttestation(conditionId, signal),
     JSON.parse(JSON.stringify(body)),
   )
 })

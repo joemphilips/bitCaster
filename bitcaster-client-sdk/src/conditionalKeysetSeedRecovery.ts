@@ -126,6 +126,40 @@ export function bindExactSeedRecoveryResponse<T extends ExactSeedRecoveryCandida
   }
 }
 
+/** Bind retained random outputs without assigning seed counters or scan authority. */
+export function bindRetainedOutputRecoveryResponse(input: {
+  readonly outputs: readonly OutputData[]
+  readonly response: unknown
+}) {
+  const candidates = indexCandidates(
+    input.outputs.map((outputData) => ({
+      keysetId: outputData.blindedMessage.id,
+      blindedOutput: outputData.blindedMessage,
+      outputData,
+    })),
+  )
+  const response = decodeRestoreResponse(input.response, candidates.size)
+  const seen = new Set<string>()
+  const matches = new Map<OutputData, SerializedBlindedSignature>()
+  response.outputs.forEach((output, index) => {
+    const candidate = candidates.get(output.B_)
+    const signature = response.signatures[index]!
+    if (
+      candidate === undefined ||
+      seen.has(output.B_) ||
+      !matchesCandidate(candidate, output, signature) ||
+      !equalAmounts(signature.amount, candidate.blindedOutput.amount)
+    )
+      throw new Error('retained output recovery response is foreign or duplicated')
+    seen.add(output.B_)
+    matches.set(candidate.outputData, signature)
+  })
+  return input.outputs.flatMap((outputData) => {
+    const signature = matches.get(outputData)
+    return signature === undefined ? [] : [{ outputData, signature }]
+  })
+}
+
 export interface ConditionalKeysetSeedRecoveryResponseBinding {
   readonly matches: readonly ConditionalKeysetSeedRecoveryMatch[]
   readonly discoveredKeysetIds: ReadonlySet<string>
@@ -372,9 +406,9 @@ function createCandidate(
   })
 }
 
-function indexCandidates<T extends ExactSeedRecoveryCandidate>(
-  candidates: readonly T[],
-): ReadonlyMap<string, T> {
+function indexCandidates<
+  T extends Pick<ExactSeedRecoveryCandidate, 'keysetId' | 'blindedOutput' | 'outputData'>,
+>(candidates: readonly T[]): ReadonlyMap<string, T> {
   if (candidates.length === 0 || candidates.length > CONDITIONAL_KEYSET_DISCOVERY_OUTPUT_LIMIT) {
     throw new Error('conditional keyset discovery candidates are invalid')
   }
@@ -411,7 +445,7 @@ function decodeRestoreResponse(
 }
 
 function matchesCandidate(
-  candidate: ExactSeedRecoveryCandidate,
+  candidate: Pick<ExactSeedRecoveryCandidate, 'keysetId' | 'blindedOutput'>,
   output: SerializedBlindedMessage,
   signature: SerializedBlindedSignature,
 ): boolean {

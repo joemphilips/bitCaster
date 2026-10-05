@@ -14,6 +14,7 @@ const PORTFOLIO_SELECTABILITY = [
   "selectable",
   "locked",
   "verified-losing",
+  "retained-unverified",
   "pending-removal",
 ] as const satisfies readonly Exclude<BrowserCustodyProofSelectability, "spent">[];
 

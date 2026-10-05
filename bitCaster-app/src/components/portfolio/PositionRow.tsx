@@ -140,6 +140,16 @@ export function PositionRow({ position, onSell, onClaim, onDiscard, onView }: Po
       </div>
 
       {/* Position value */}
+      {(position.retainedUnverifiedAmountSubunits ?? 0) > 0 && (
+        <p
+          role="status"
+          className="w-full text-xs text-amber-700 dark:text-amber-300 max-w-xs sm:w-auto"
+        >
+          {t("portfolio.retainedUnverified", {
+            amount: position.retainedUnverifiedAmountSubunits!.toLocaleString(),
+          })}
+        </p>
+      )}
       {position.claimRecoveryPending && (
         <p
           role="status"

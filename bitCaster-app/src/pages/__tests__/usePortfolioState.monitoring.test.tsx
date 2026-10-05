@@ -334,7 +334,7 @@ function conditionIdFor(index: number): string {
 function canonicalConditionalCustody(
   conditionId: string,
   outcomeCollection = "YES",
-  selectability: "selectable" | "verified-losing" = "selectable",
+  selectability: "selectable" | "verified-losing" | "retained-unverified" = "selectable",
 ) {
   return {
     normalizedMint: "https://mint.example",
@@ -657,6 +657,76 @@ describe("usePortfolioState monitoring facade", () => {
       ).toBe(true);
     },
   );
+
+  it.each([false, true])(
+    "keeps retained history non-actionable with engine available=%s",
+    async (available) => {
+      const conditionId = conditionIdFor(0);
+      mocks.readCustody.mockResolvedValue([
+        canonicalConditionalCustody(conditionId, "YES", "retained-unverified"),
+      ]);
+      if (available) stubCatalogue({ closedConditionId: conditionId });
+      else vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("offline")));
+      const positions = await localPositionsAfterMonitoringFailure();
+      expect(positions).toHaveLength(1);
+      expect(positions[0]).toMatchObject({
+        retainedUnverifiedAmountSubunits: 1000,
+        canClaimPayout: false,
+        canDiscard: false,
+        canSell: false,
+        isWinner: false,
+        isLoser: false,
+        valueKnown: false,
+        currentValueSats: 0,
+      });
+    },
+  );
+
+  it("keeps retained history non-actionable after successful monitoring valuation", async () => {
+    const conditionId = conditionIdFor(0);
+    mocks.readCustody.mockResolvedValue([
+      canonicalConditionalCustody(conditionId, "YES", "retained-unverified"),
+    ]);
+    stubCatalogue({ closedConditionId: conditionId });
+    const response = completePortfolioResponse();
+    response.assets.assets = [conditionalMonitoringAsset(conditionId)];
+    mocks.getPortfolio.mockResolvedValue(response);
+    const { result, rerender } = renderHook(() => usePortfolioState());
+    await waitFor(() => expect(result.current.positions[0]?.currentValueSats).toBe(700));
+    mocks.positionSnapshot = (await mocks.localQueries.at(-2)!()) as PortfolioPositionSnapshot;
+    rerender();
+
+    await waitFor(() => {
+      expect(result.current.positions).toHaveLength(1);
+      expect(result.current.positions[0]).toMatchObject({
+        retainedUnverifiedAmountSubunits: 1000,
+        canClaimPayout: false,
+        canDiscard: false,
+        canSell: false,
+        isWinner: false,
+        isLoser: false,
+        valueKnown: true,
+        currentValueSats: 700,
+      });
+    });
+    expect(result.current.monitoring.error).toBeNull();
+  });
+
+  it("keeps retained amounts separate from a claimable sibling position", async () => {
+    const conditionId = conditionIdFor(0);
+    mocks.readCustody.mockResolvedValue([
+      canonicalConditionalCustody(conditionId, "YES", "retained-unverified"),
+      canonicalConditionalCustody(conditionId),
+    ]);
+    stubCatalogue({ closedConditionId: conditionId });
+    const positions = await localPositionsAfterMonitoringFailure();
+    expect(positions).toHaveLength(1);
+    expect(positions[0]).toMatchObject({
+      retainedUnverifiedAmountSubunits: 1000,
+      canClaimPayout: true,
+      currentValueSats: 1000,
+    });
+  });
 
   it("keeps unavailable canonical positions distinct from an empty wallet", async () => {
     mocks.getPortfolio.mockReturnValue(new Promise(() => {}));

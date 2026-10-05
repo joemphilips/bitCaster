@@ -1,3 +1,4 @@
+import { authorizeEncryptedWalletBackupV2RemoteRefusalHistoryPreservation } from "@bitcaster/client-sdk/encryptedWalletBackupV2ProofSet";
 import {
   applyEncryptedWalletBackupV2VerifiedReceipt,
   authorizeEncryptedWalletBackupV2RemoteTerminalSealReuse,
@@ -197,7 +198,8 @@ async function prepareAssetBundle(
     return { kind: "stale-work" } as const;
   const remoteLosers = snapshot.losingProofs.filter(({ origin }) => origin.kind === "remote-seal");
   let remoteTerminalSealReuse;
-  if (remoteLosers.length > 0) {
+  let remoteRefusalHistory;
+  if (remoteLosers.length > 0 || snapshot.refusalHistories.length > 0) {
     const currentHead = await collectHead(input);
     requireCurrent(input);
     if (!sameCollectedHead(currentHead, head)) {
@@ -212,7 +214,7 @@ async function prepareAssetBundle(
     if (input.remoteOrigin === undefined)
       throw new Error("browser V2 remote terminal reuse origin is missing");
     try {
-      remoteTerminalSealReuse = await authorizeEncryptedWalletBackupV2RemoteTerminalSealReuse({
+      const request = {
         keyHandle: input.keyHandle,
         seed: input.seed,
         expectedAsset: snapshot.asset,
@@ -227,17 +229,26 @@ async function prepareAssetBundle(
           runtime: input.runtime,
         },
         runtime: input.runtime,
-      });
+      };
+      if (remoteLosers.length > 0)
+        remoteTerminalSealReuse =
+          await authorizeEncryptedWalletBackupV2RemoteTerminalSealReuse(request);
+      if (snapshot.refusalHistories.length > 0)
+        remoteRefusalHistory =
+          await authorizeEncryptedWalletBackupV2RemoteRefusalHistoryPreservation(request);
     } catch (error) {
       await reconcileIfHeadChanged(input, store, head);
       throw error;
     }
     requireCurrent(input);
-    if (!sameCollectedHead(remoteTerminalSealReuse.currentHeadEvidence, head)) {
-      await refuseCompetingHead(input, store, remoteTerminalSealReuse.currentHeadEvidence);
-      return { kind: "recovery-required" } as const;
+    for (const authority of [remoteTerminalSealReuse, remoteRefusalHistory]) {
+      if (authority !== undefined && !sameCollectedHead(authority.currentHeadEvidence, head)) {
+        await refuseCompetingHead(input, store, authority.currentHeadEvidence);
+        return { kind: "recovery-required" } as const;
+      }
     }
   }
+
   const bundle = await source.prepare({
     snapshot,
     keyHandle: input.keyHandle,
@@ -249,10 +260,14 @@ async function prepareAssetBundle(
     }),
     bundleIdExists: (id) => head.bundles.some((item) => item.bundleId === id),
     remoteTerminalSealReuse,
+    remoteRefusalHistory,
   });
   return {
     bundle,
-    headEvidence: remoteTerminalSealReuse?.currentHeadEvidence ?? head,
+    headEvidence:
+      remoteTerminalSealReuse?.currentHeadEvidence ??
+      remoteRefusalHistory?.currentHeadEvidence ??
+      head,
   } as const;
 }
 

@@ -274,6 +274,7 @@ export interface WalletClaimPositionResult extends WalletClaimPositionParams {
     keysetId: string
     state: 'completed' | 'losing' | 'pending'
     payoutAmountSubunits: number
+    oracleEvidence?: import('@bitcaster-market/client-sdk/conditionOracleEvidence').ConditionOracleEvidenceSummary
   }>
 }
 

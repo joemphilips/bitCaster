@@ -1,9 +1,15 @@
+import {
+  prepareDurableCustodyExactArtifact,
+  deriveDurableCustodyScopeId,
+  readPreparedDurableCustodyArtifactBytes,
+} from '@bitcaster-market/client-sdk/durableCustody'
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { test } from 'node:test'
+import { test, mock } from 'node:test'
+import { SeedRecoverySqliteStore } from '../src/seedRecoverySqlite.ts'
 import { isDeepStrictEqual } from 'node:util'
 import { schnorr, secp256k1 } from '@noble/curves/secp256k1.js'
 import { sha256 } from '@noble/hashes/sha2.js'
@@ -24,13 +30,11 @@ import { deriveDlcConditionId } from '@bitcaster-market/client-sdk/managedCondit
 import { deriveRootCtfOutcomeCollectionId } from '@bitcaster-market/client-sdk/durableCtfRangeOperation'
 import { createDurableCustodyProofMaterialRecord } from '@bitcaster-market/client-sdk/durableCustodyProofMaterial'
 import { DurableWalletProofImportCoordinator } from '../src/durableWalletProofImportCoordinator.ts'
-import { claimDaemonPosition } from '../src/nativePositionClaim.ts'
+import { claimDaemonPosition, readNativePositionClaimCustody } from '../src/nativePositionClaim.ts'
 import {
-  buildKeysetRedeemOperationId,
-  redeemOutcomeLegWithOperation,
-  type RedeemWallet,
-} from '@bitcaster-market/client-sdk/ctfRedeem'
-import { deriveDurableCustodyOperationId } from '@bitcaster-market/client-sdk/durableCustody'
+  recoverAllDaemonWalletFromSeed,
+  type AllKeysetSeedRecoveryTransport,
+} from '../src/emergencySeedRecovery.ts'
 import { previewDaemonPositionRemove, removeDaemonPosition } from '../src/nativePositionRemove.ts'
 import { bootstrapFreshDaemonProfile } from '../src/profileBootstrap.ts'
 import { claimCustodyScopeLease } from '../src/profileFencing.ts'
@@ -43,22 +47,12 @@ import { dispatch } from '../src/server.ts'
 import { buildDaemonAssetMonitoringHoldings } from '../src/assetMonitoring.ts'
 import { subscribeToDaemonWalletHoldingsCommits } from '../src/stateSqlite.ts'
 import { createDurableCustodyConformancePrepared } from '../../bitcaster-client-sdk/test/support/durableCustodyAdapterConformance.ts'
-import {
-  addAvailableProofs,
-  emptyDaemonState,
-  readState,
-  writeState,
-  getProofOperation,
-  prepareProofOperationWithExactReservation,
-  failPositionClaimRedeemFenced,
-} from '../src/state.ts'
-import { canonicalTestKeysetId } from './support/canonicalKeysetId.ts'
+import { addAvailableProofs, emptyDaemonState, readState, writeState } from '../src/state.ts'
 
 test('Remove keeps raw proofs, exact journals and immutable markers through retry, save and reimport', async () => {
   const fixture = await createFixture(3)
   try {
     const canonicalDatabase = await openDaemonStateSqlite(fixture.directory)
-    new DurableCustodySqliteStore(canonicalDatabase).putProofCas(fixture.canonicalRow(), null)
     canonicalDatabase.close()
     const before = await readState()
     const preview = await previewDaemonPositionRemove(fixture.context)
@@ -141,8 +135,6 @@ for (const recovery of ['active', 'retry'] as const) {
     try {
       const database = await openDaemonStateSqlite(fixture.directory)
       const row = fixture.canonicalRow()
-      const store = new DurableCustodySqliteStore(database)
-      store.putProofCas(row, null)
       database.close()
       const preview = await previewDaemonPositionRemove(fixture.context)
       const reopened = await openDaemonStateSqlite(fixture.directory)
@@ -245,8 +237,7 @@ test('more than 256 proofs retire through fresh bounded previews and replay neve
   const fixture = await createFixture(260)
   try {
     const first = await previewDaemonPositionRemove(fixture.context)
-    assert.equal(first.targets.length, 256)
-    assert.equal(first.moreProofsRemain, true)
+    assert.ok(first.targets.length > 0 && first.targets.length < 260)
     const result = await removeDaemonPosition({
       ...fixture.context,
       preview: first,
@@ -256,11 +247,17 @@ test('more than 256 proofs retire through fresh bounded previews and replay neve
     await removeDaemonPosition({ ...fixture.context, preview: first, acknowledge: true })
     assert.equal(
       (await readState()).wallet.proofs.filter((proof) => proof.retirement !== undefined).length,
-      256,
+      first.targets.length,
     )
-    const next = await previewDaemonPositionRemove(fixture.context)
-    assert.equal(next.targets.length, 4)
-    await removeDaemonPosition({ ...fixture.context, preview: next, acknowledge: true })
+    while (true) {
+      const next = await previewDaemonPositionRemove(fixture.context)
+      if (next.targets.length === 0) break
+      assert.equal(
+        next.targets.some((target) => first.targets.some((old) => old.proofId === target.proofId)),
+        false,
+      )
+      await removeDaemonPosition({ ...fixture.context, preview: next, acknowledge: true })
+    }
     assert.equal(
       (await readState()).wallet.proofs.filter((proof) => proof.retirement !== undefined).length,
       260,
@@ -271,10 +268,10 @@ test('more than 256 proofs retire through fresh bounded previews and replay neve
 })
 
 test('byte budget shortens a batch before oversized artifacts are loaded', async () => {
-  const fixture = await createFixture(180, 12_000)
+  const fixture = await createFixture(70, 12_000)
   try {
     const preview = await previewDaemonPositionRemove(fixture.context)
-    assert.ok(preview.targets.length > 0 && preview.targets.length < 180)
+    assert.ok(preview.targets.length > 0 && preview.targets.length < 70)
     assert.equal(preview.moreProofsRemain, true)
     await removeDaemonPosition({ ...fixture.context, preview, acknowledge: true })
     const next = await previewDaemonPositionRemove(fixture.context)
@@ -330,7 +327,9 @@ for (const change of [
               )
               .run(preview.targets[0]!.operationId)
           if (change === 'canonical')
-            new DurableCustodySqliteStore(database).putProofCas(fixture.canonicalRow(), null)
+            database
+              .prepare('UPDATE custody_proofs SET revision = revision + 1 WHERE proof_id = ?')
+              .run(fixture.canonicalRow().proofId)
         } finally {
           database.close()
         }
@@ -384,7 +383,9 @@ for (const state of ['text-error', 'pending', 'wrong-asset'] as const) {
       }
       if (state === 'wrong-asset') {
         const current = await readState()
-        const operation = Object.values(current.proofOperations)[0]!
+        const operation = Object.values(current.proofOperations).find(
+          ({ metadata }) => metadata.purpose === 'position-claim',
+        )!
         operation.metadata.outcomeSetId = 'YES'
         await writeState(current)
       }
@@ -464,18 +465,10 @@ test('Remove dispatch needs readiness and acknowledgement, and privacy uses no e
   }
 })
 
-for (const canonical of [false, true]) {
-  test(`JSON transport preserves acknowledged exact Remove dispatch with canonical row ${canonical}`, async () => {
+for (const pretty of [false, true]) {
+  test(`JSON transport preserves acknowledged exact Remove dispatch with ${pretty ? 'formatted' : 'compact'} JSON`, async () => {
     const fixture = await createFixture(2)
     try {
-      if (canonical) {
-        const database = await openDaemonStateSqlite(fixture.directory)
-        try {
-          new DurableCustodySqliteStore(database).putProofCas(fixture.canonicalRow(), null)
-        } finally {
-          database.close()
-        }
-      }
       const deps = {
         getCustodyFence: () => fixture.context.fence,
         isCustodyReady: () => true,
@@ -497,7 +490,7 @@ for (const canonical of [false, true]) {
         deps as never,
       )
       assert.equal(preview.ok, true, 'the exact local preview must succeed')
-      const envelope = JSON.parse(JSON.stringify(preview, null, 2))
+      const envelope = JSON.parse(JSON.stringify(preview, null, pretty ? 2 : undefined))
       assert.equal(
         isDeepStrictEqual(envelope.result, preview.result),
         true,
@@ -716,8 +709,9 @@ test('completed conditional import with a genuine pending outbox still refuses l
 async function createFixture(
   count: number,
   extraBytes = 0,
-  imported = false,
+  imported = true,
   importFault?: StateSqliteFaultPhase,
+  initialMintResolution = false,
 ) {
   const directory = await mkdtemp(join(tmpdir(), 'native-remove-'))
   const previous = process.env.BITCASTER_DAEMON_HOME
@@ -753,15 +747,8 @@ async function createFixture(
     conditionId,
     outcomeCollection: 'NO',
   })
-  const id = imported
-    ? deriveConditionalKeysetId({ keys, unit: 'msat', conditionId, outcomeCollectionId })
-    : canonicalTestKeysetId('remove-conditional')
-  const conditionalIds =
-    extraBytes === 0
-      ? [id]
-      : Array.from({ length: count }, (_, index) =>
-          canonicalTestKeysetId(`remove-large-proof-${index}`),
-        )
+  const id = deriveConditionalKeysetId({ keys, unit: 'msat', conditionId, outcomeCollectionId })
+  const conditionalIds = [id]
   const keyset = (keysetId: string) => ({
     id: keysetId,
     unit: 'msat',
@@ -791,7 +778,11 @@ async function createFixture(
         },
         { id, keys },
       )
-      return { ...proof, amount: 8 }
+      return {
+        ...proof,
+        amount: 8,
+        ...(extraBytes === 0 ? {} : { witness: 'x'.repeat(extraBytes) }),
+      }
     }
     return {
       id: conditionalIds[extraBytes === 0 ? 0 : index]!,
@@ -842,8 +833,13 @@ async function createFixture(
               throw new Error('injected import apply boundary')
           },
     )
-    if (importFault === undefined) await importAttempt.importOutcomeProofs(importInput)
-    else {
+    if (importFault === undefined) {
+      for (let offset = 0; offset < proofs.length; offset += 64)
+        await importAttempt.importOutcomeProofs({
+          ...importInput,
+          proofs: proofs.slice(offset, offset + 64) as unknown as Proof[],
+        })
+    } else {
       await assert.rejects(
         importAttempt.importOutcomeProofs(importInput),
         /injected import apply boundary/,
@@ -888,12 +884,14 @@ async function createFixture(
     const proofsBefore = sourceDatabase.prepare('SELECT * FROM custody_proofs').all()
     const artifactsBefore = sourceDatabase.prepare('SELECT * FROM custody_artifacts').all()
     sourceDatabase.close()
-    await new DurableWalletProofImportCoordinator(directory, () => fence).importOutcomeProofs({
-      ...importInput,
-      checkProofsStates: async () => {
-        throw new Error('completed import replay mint I/O forbidden')
-      },
-    })
+    for (let offset = 0; offset < proofs.length; offset += 64)
+      await new DurableWalletProofImportCoordinator(directory, () => fence).importOutcomeProofs({
+        ...importInput,
+        proofs: proofs.slice(offset, offset + 64) as unknown as Proof[],
+        checkProofsStates: async () => {
+          throw new Error('completed import replay mint I/O forbidden')
+        },
+      })
     const replayDatabase = await openDaemonStateSqlite(directory)
     try {
       assert.equal(
@@ -955,6 +953,21 @@ async function createFixture(
         ({
           loadMint: async () => {},
           mint: {
+            getCtfCondition: async () => ({
+              condition_id: conditionId,
+              threshold: 1,
+              collateral: 'msat',
+              announcements: ['01'],
+              attestation: initialMintResolution
+                ? { status: 'pending' }
+                : {
+                    status: 'attested',
+                    winning_outcome: 'YES',
+                    oracle_sigs: [
+                      { oracle_pubkey: publicKey, oracle_sig: signature, outcome: 'YES' },
+                    ],
+                  },
+            }),
             getKeySets: async () => ({
               keysets: [keyset(regularId), ...conditionalIds.map(keyset)],
             }),
@@ -986,20 +999,21 @@ async function createFixture(
             {
               oraclePublicKey: publicKey,
               noncePoint: signature.slice(0, 64),
-              announcementIdentity: '44'.repeat(32),
+              announcementIdentity: createHash('sha256')
+                .update(Buffer.from([1]))
+                .digest('hex'),
             },
           ],
         },
       }),
     },
   }
-  // Artificial target-only rows exercise Remove guards, not native Claim admission.
-  // The imported cases below use the complete production Claim boundary.
-  const claim = imported
-    ? await claimDaemonPosition(claimInput)
-    : await seedLosingRemoveGuardAuthority(claimInput, proofs as unknown as Proof[])
+  const claim = await claimDaemonPosition(claimInput)
   if (imported) {
-    assert.equal(claim.legs.length, 1, 'real losing claim must select the imported keyset')
+    assert.ok(
+      claim.legs.length >= Math.ceil(count / 64),
+      'real losing claim must select bounded imported pages',
+    )
     assert.equal(
       claim.legs[0]!.state,
       'losing',
@@ -1013,43 +1027,28 @@ async function createFixture(
       'losing claim must retain the imported native rows',
     )
   }
+  const canonicalDatabase = await openDaemonStateSqlite(directory)
+  const canonicalProof = new DurableCustodySqliteStore(canonicalDatabase).getProof(
+    fence.scopeId,
+    createDurableCustodyProofMaterialRecord({
+      scopeId: fence.scopeId,
+      normalizedMint: profile.mintUrl,
+      unit: 'msat',
+      proof: {
+        ...proofs[0]!,
+        dleq: proofs[0]!.dleq ?? null,
+        p2pkE: null,
+        witness: proofs[0]!.witness ?? null,
+      },
+    }).proofId,
+  )!
+  canonicalDatabase.close()
   return {
     directory,
     proofs,
     asset,
     context: { profile, fence, conditionId, outcomeCollection: 'NO', isCustodyReady: () => true },
-    canonicalRow: () => {
-      const material = createDurableCustodyProofMaterialRecord({
-        scopeId: fence.scopeId,
-        normalizedMint: profile.mintUrl,
-        unit: 'msat',
-        proof: { ...proofs[0]!, dleq: null, p2pkE: null, witness: null },
-      })
-      return {
-        scopeId: fence.scopeId,
-        proofId: material.proofId,
-        normalizedMint: profile.mintUrl,
-        unit: 'msat' as const,
-        keysetId: id,
-        amount: 8,
-        baseAsset: 'sat' as const,
-        conditionId,
-        outcomeSetId: 'NO',
-        productBinding: null,
-        proofBody: material.proofBody,
-        proofFingerprint: material.proofFingerprint,
-        curve: 'secp256k1' as const,
-        signatureVerified: true,
-        dleqState: 'not-present' as const,
-        nut07State: 'UNSPENT' as const,
-        selectability: 'selectable' as const,
-        storageClass: 'terminal-replay-retained' as const,
-        reservationOperationId: null,
-        revision: 0,
-        createdAtMs: 1,
-        updatedAtMs: 1,
-      }
-    },
+    canonicalRow: () => canonicalProof,
     dispose: async () => {
       if (previous === undefined) delete process.env.BITCASTER_DAEMON_HOME
       else process.env.BITCASTER_DAEMON_HOME = previous
@@ -1058,78 +1057,616 @@ async function createFixture(
   }
 }
 
-async function seedLosingRemoveGuardAuthority(
-  input: Parameters<typeof claimDaemonPosition>[0],
-  proofs: Proof[],
-) {
-  const wallet = input.walletDependencies!.createCashuWallet!(
-    input.profile.mintUrl,
-    'msat',
-  ) as unknown as RedeemWallet
-  const response = await input.engine.getConditionAttestation(input.conditionId)
-  assert.notEqual(response, null)
-  const legs: Awaited<ReturnType<typeof claimDaemonPosition>>['legs'] = []
-  for (const keysetId of new Set(proofs.map(({ id }) => id))) {
-    const selected = proofs.filter(({ id }) => id === keysetId)
-    for (let offset = 0; offset < selected.length; offset += 64) {
-      const inputs = selected.slice(offset, offset + 64)
-      const retainedOperationKey = buildKeysetRedeemOperationId({
-        mintUrl: input.profile.mintUrl,
-        unit: 'msat',
-        conditionId: input.conditionId,
-        keysetId,
-        proofs: inputs,
-      })
-      const operationId = deriveDurableCustodyOperationId(input.fence.scopeId, {
-        retainedOperationKey,
-        binding: { kind: 'wallet', activityId: retainedOperationKey, stage: 'ctf-redeem' },
-      })
-      const asset = {
-        kind: 'Outcome' as const,
-        conditionId: input.conditionId,
-        outcomeSetId: input.outcomeCollection,
-        baseAsset: 'sat' as const,
-        unit: 'msat' as const,
+test('native Claim verifies engine evidence before the mint records its first resolution', async () => {
+  const fixture = await createFixture(1, 0, true, undefined, true)
+  try {
+    const state = (await readState())!
+    const claim = Object.values(state.proofOperations).find(({ kind }) => kind === 'ctf-redeem')!
+    assert.equal(claim.failureCode, 13015)
+    assert.ok(claim.metadata.oracleResolutionContext)
+    await assert.doesNotReject(previewDaemonPositionRemove(fixture.context))
+  } finally {
+    await fixture.dispose()
+  }
+})
+
+test('retained Claim recovery refuses a profile containing a foreign scope', async () => {
+  const fixture = await createFixture(1)
+  try {
+    const walletId = 'ab'.repeat(32)
+    const scopeId = deriveDurableCustodyScopeId({ scopeKind: 'wallet', walletId })
+    const database = await openDaemonStateSqlite(fixture.directory)
+    try {
+      database
+        .prepare('INSERT INTO custody_scopes VALUES (?, ?, ?, ?, ?)')
+        .run(scopeId, 'wallet', walletId, 'cd'.repeat(32), Date.now())
+      database.prepare('INSERT INTO custody_scope_state VALUES (?, 0, NULL, NULL, 0)').run(scopeId)
+    } finally {
+      database.close()
+    }
+    const store = new SeedRecoverySqliteStore({
+      directory: fixture.directory,
+      fence: fixture.context.fence,
+      invocationId: 'foreign-scope-refusal',
+      observedAtMs: Date.now(),
+    })
+    await assert.rejects(
+      store.readRetainedClaimPage('https://mint.example'),
+      /daemon profile SQLite schema does not match/,
+    )
+  } finally {
+    await fixture.dispose()
+  }
+})
+
+test('retained Claim SQLite cursor pages exact sorted records and filters mint', async () => {
+  const fixture = await createFixture(1025)
+  try {
+    const store = new SeedRecoverySqliteStore({
+      directory: fixture.directory,
+      fence: fixture.context.fence,
+      invocationId: 'retained-cursor-test',
+      observedAtMs: Date.now(),
+    })
+    const expected = Object.values((await readState())!.proofOperations)
+      .filter(
+        ({ kind, state, failureCode }) =>
+          kind === 'ctf-redeem' && state === 'Failed' && failureCode === 13015,
+      )
+      .map(({ operationId }) => operationId)
+      .sort()
+    assert.equal(expected.length, 17)
+    const first = await store.readRetainedClaimPage('https://mint.example')
+    assert.equal(first.length, 16)
+    const second = await store.readRetainedClaimPage(
+      'https://mint.example',
+      first.at(-1)!.target.operationId,
+    )
+    assert.equal(second.length, 1)
+    assert.deepEqual(
+      [...first, ...second].map(({ target }) => target.operationId),
+      expected,
+    )
+    assert.deepEqual(
+      await store.readRetainedClaimPage('https://mint.example', second[0]!.target.operationId),
+      [],
+    )
+    assert.deepEqual(await store.readRetainedClaimPage('https://another-mint.example'), [])
+  } finally {
+    await fixture.dispose()
+  }
+})
+
+test('historical canonical code-only terminal remains retained after reopen and cannot authorize Remove', async () => {
+  const fixture = await createFixture(3)
+  try {
+    const database = await openDaemonStateSqlite(fixture.directory)
+    try {
+      const terminal = database.prepare('SELECT * FROM custody_terminal_mint_rejections').get()!
+      const row = database
+        .prepare('SELECT body FROM custody_artifacts WHERE artifact_id = ?')
+        .get(terminal.rejection_artifact_id)!
+      const { losingAuthority: removed, ...history } = JSON.parse(
+        Buffer.from(row.body as Uint8Array).toString(),
+      )
+      const exact = prepareDurableCustodyExactArtifact(history)
+      database
+        .prepare('UPDATE custody_artifacts SET body = ?, fingerprint = ? WHERE artifact_id = ?')
+        .run(
+          readPreparedDurableCustodyArtifactBytes(exact),
+          exact.fingerprint,
+          terminal.rejection_artifact_id,
+        )
+      // Reconstruct a pre-D4 row in this disposable fixture. Restore the schema guard before reads.
+      const immutable = database
+        .prepare(
+          "SELECT sql FROM sqlite_master WHERE name = 'custody_terminal_mint_rejections_no_update'",
+        )
+        .get()!
+      database.exec('DROP TRIGGER custody_terminal_mint_rejections_no_update')
+      try {
+        database
+          .prepare(
+            'UPDATE custody_terminal_mint_rejections SET rejection_fingerprint = ? WHERE operation_id = ?',
+          )
+          .run(exact.fingerprint, terminal.operation_id)
+      } finally {
+        database.exec(String(immutable.sql))
       }
-      const mutation = { fence: input.fence, observedAtMs: Date.now() }
-      await redeemOutcomeLegWithOperation({
-        mintUrl: input.profile.mintUrl,
-        operationId,
-        wallet,
-        conditionId: input.conditionId,
-        outcomeSetId: input.outcomeCollection,
-        outcomeKeysetId: keysetId,
-        outcome: 'YES',
-        unit: 'msat',
-        proofs: inputs,
-        oracleWitness: JSON.stringify(response!.oracleWitness),
-        proofOperationStore: {
-          getProofOperation: async (id) => (await getProofOperation(id)) as never,
-          prepareProofOperation: async (operation) =>
-            (await prepareProofOperationWithExactReservation(
-              {
-                ...operation,
-                reservationId: operationId,
-                asset,
-                metadata: {
-                  ...operation.metadata,
-                  purpose: 'position-claim',
-                  reservationId: operationId,
-                  inputAsset: asset,
-                  successorAssets: { regular: { kind: 'sats', baseAsset: 'sat', unit: 'msat' } },
-                },
-              },
-              mutation,
-            )) as never,
-          markProofOperationCompleted: async () => {
-            throw new Error('Remove guard fixture must not credit a payout')
-          },
-          markProofOperationFailed: async (id, message, evidence) =>
-            (await failPositionClaimRedeemFenced(id, message, evidence!, mutation)) as never,
-        },
-      })
-      legs.push({ operationId, keysetId, state: 'losing', payoutAmountSubunits: 0 })
+    } finally {
+      database.close()
+    }
+    const original = (await readState())!
+    await assert.rejects(
+      previewDaemonPositionRemove(fixture.context),
+      /no verified losing authority/,
+    )
+    const reopened = await openDaemonStateSqlite(fixture.directory)
+    reopened.close()
+    await assert.rejects(
+      previewDaemonPositionRemove(fixture.context),
+      /no verified losing authority/,
+    )
+    assert.equal(isDeepStrictEqual(await readState(), original), true)
+    const check = await openDaemonStateSqlite(fixture.directory)
+    try {
+      assert.equal(
+        check
+          .prepare('SELECT selectability FROM custody_proofs WHERE condition_id = ?')
+          .get(fixture.asset.conditionId)!.selectability,
+        'retained',
+      )
+      assert.equal(
+        check
+          .prepare(
+            "SELECT operation_state FROM custody_operations WHERE semantic_kind = 'ctf-redeem'",
+          )
+          .get()!.operation_state,
+        'aborted',
+      )
+    } finally {
+      check.close()
+    }
+    await recoverHistoricalClaimPayout(fixture, original)
+  } finally {
+    await fixture.dispose()
+  }
+})
+
+async function recoverHistoricalClaimPayout(
+  fixture: Awaited<ReturnType<typeof createFixture>>,
+  original: NonNullable<Awaited<ReturnType<typeof readState>>>,
+) {
+  const claim = Object.values(original.proofOperations).find(({ kind }) => kind === 'ctf-redeem')!
+  assert.equal(claim.state, 'Failed')
+  const outputs = claim.outputs.regular!
+  const committed = new Map(
+    outputs.map((output) => [output.blindedMessage.B_, output.blindedMessage]),
+  )
+  const privateKey = Uint8Array.from([...new Uint8Array(31), 1])
+  const publicKey = bytesToHex(secp256k1.getPublicKey(privateKey, true))
+  const keys = Object.fromEntries(Array.from({ length: 13 }, (_, power) => [2 ** power, publicKey]))
+  const regular = {
+    id: deriveKeysetId(keys, { unit: 'msat', versionByte: 1, input_fee_ppk: 0 }),
+    unit: 'msat',
+    keys,
+  }
+  assert.ok(outputs.every(({ blindedMessage }) => blindedMessage.id === regular.id))
+  let restored = 0
+  let mode:
+    | 'valid'
+    | 'collision'
+    | 'empty'
+    | 'partial'
+    | 'bad-dleq'
+    | 'spent'
+    | 'pending'
+    | 'missing-state'
+    | 'duplicate-state'
+    | 'foreign-state'
+    | 'changed-authority'
+    | 'payout-rollback'
+    | 'late-active-work'
+    | 'takeover' = 'valid'
+  const readCounters = async () => {
+    const database = await openDaemonStateSqlite(fixture.directory)
+    try {
+      return {
+        target: database.prepare('SELECT * FROM target_keyset_counters ORDER BY keyset_id').all(),
+        canonical: database
+          .prepare('SELECT * FROM custody_keyset_counters ORDER BY keyset_id')
+          .all(),
+      }
+    } finally {
+      database.close()
     }
   }
-  return { conditionId: input.conditionId, outcomeCollection: input.outcomeCollection, legs }
+  let retainedCounters: Awaited<ReturnType<typeof readCounters>> | undefined
+  let counterChecks = 0
+  let takeover = false
+  let rollbackDatabase: Awaited<ReturnType<typeof openDaemonStateSqlite>> | undefined
+  let lateWorkOperationId: string | undefined
+  let authorityBefore: { artifactId: string; body: Uint8Array } | undefined
+  const currentFence = () =>
+    mode === 'takeover' && takeover
+      ? { ...fixture.context.fence, fencingEpoch: fixture.context.fence.fencingEpoch + 1 }
+      : fixture.context.fence
+  const transport: AllKeysetSeedRecoveryTransport = {
+    wallet: {
+      loadMint: async () => {},
+      keyChain: {
+        getKeyset: () => regular,
+        ensureKeysetKeys: async () => regular,
+      },
+      checkProofsStates: async (proofs) => {
+        const states = proofs.map((proof) => ({
+          Y: hashToCurve(utf8ToBytes(proof.secret)).toHex(true),
+          state:
+            mode === 'spent'
+              ? CheckStateEnum.SPENT
+              : mode === 'pending'
+                ? CheckStateEnum.PENDING
+                : CheckStateEnum.UNSPENT,
+          witness: null,
+        }))
+        if (mode === 'missing-state') return states.slice(1)
+        if (mode === 'duplicate-state') return states.map(() => states[0]!)
+        if (mode === 'foreign-state') return states.map((state) => ({ ...state, Y: publicKey }))
+        return states
+      },
+    },
+    listRegularKeysets: async () => ({
+      keysets: [{ id: regular.id, unit: 'msat', active: true, input_fee_ppk: 0 }],
+    }),
+    listConditionalKeysets: async () => ({ keysets: [] }),
+    getConditionalKeyset: async () => {
+      throw new Error('ordinary payout recovery must not fetch conditional keys')
+    },
+    restoreCandidates: async (candidates) => {
+      const matches = candidates.flatMap((candidate) => {
+        const planned = committed.get((candidate as { B_: string }).B_)
+        return planned === undefined ? [] : [planned]
+      })
+      if (matches.length > 0) retainedCounters = await readCounters()
+      else if (retainedCounters !== undefined) {
+        assert.deepEqual(
+          await readCounters(),
+          retainedCounters,
+          'retained-output recovery must not advance seed counters',
+        )
+        retainedCounters = undefined
+        counterChecks += 1
+      }
+      if (mode === 'empty') matches.length = 0
+      if (mode === 'partial' && matches.length > 1) matches.length = 1
+      if (mode === 'takeover' && matches.length > 0) takeover = true
+      if (mode === 'changed-authority' && matches.length > 0) {
+        const database = await openDaemonStateSqlite(fixture.directory)
+        try {
+          const { exactAuthority } = readNativePositionClaimCustody(
+            database,
+            fixture.context.fence,
+            claim,
+          )
+          const row = database
+            .prepare('SELECT artifact_id, body FROM custody_artifacts WHERE fingerprint = ?')
+            .get(exactAuthority.fingerprint)!
+          authorityBefore = {
+            artifactId: String(row.artifact_id),
+            body: Uint8Array.from(row.body as Uint8Array),
+          }
+          const changed = authorityBefore.body.slice()
+          changed[changed.length - 1] = changed[changed.length - 1]! ^ 1
+          database
+            .prepare('UPDATE custody_artifacts SET body = ? WHERE artifact_id = ?')
+            .run(changed, authorityBefore.artifactId)
+        } finally {
+          database.close()
+        }
+      }
+      if (mode === 'payout-rollback' && matches.length > 0) {
+        const database = await openDaemonStateSqlite(fixture.directory)
+        rollbackDatabase = database
+        {
+          database.exec(`CREATE TRIGGER test_retained_payout_rollback
+            BEFORE INSERT ON custody_proofs
+            WHEN NEW.condition_id IS NULL AND
+              (SELECT count(*) FROM custody_proofs WHERE condition_id IS NULL) > 0
+            BEGIN SELECT RAISE(ABORT, 'test retained payout second insert failure'); END`)
+        }
+      }
+      if (mode === 'late-active-work' && matches.length > 0) {
+        const database = await openDaemonStateSqlite(fixture.directory)
+        try {
+          lateWorkOperationId = String(
+            database
+              .prepare('SELECT operation_id FROM custody_operations WHERE scope_id = ? LIMIT 1')
+              .get(fixture.context.fence.scopeId)!.operation_id,
+          )
+          database
+            .prepare(
+              'INSERT INTO custody_active_work (scope_id, operation_id, next_attempt_at_ms, estimated_bytes) VALUES (?, ?, 0, 1)',
+            )
+            .run(fixture.context.fence.scopeId, lateWorkOperationId!)
+        } finally {
+          database.close()
+        }
+      }
+      matches.reverse()
+      if (mode === 'valid') restored += matches.length
+      return {
+        outputs: matches,
+        signatures: matches.map((output) => {
+          const point = pointFromHex(output.B_)
+          const signature = createBlindSignature(point, privateKey, regular.id)
+          const dleq = createDLEQProof(point, privateKey)
+          return {
+            id: regular.id,
+            amount: Number(output.amount),
+            C_: signature.C_.toHex(true),
+            dleq: {
+              e: mode === 'bad-dleq' ? '01'.repeat(32) : bytesToHex(dleq.e),
+              s: bytesToHex(dleq.s),
+            },
+          }
+        }),
+      }
+    },
+  }
+  const pagingDatabase = await openDaemonStateSqlite(fixture.directory)
+  const pagingAuthority = readNativePositionClaimCustody(
+    pagingDatabase,
+    fixture.context.fence,
+    claim,
+  )
+  pagingDatabase.close()
+  for (const total of [1023, 1024, 1025]) {
+    let reads = 0
+    let restoredRecords = 0
+    const pageMock = mock.method(
+      SeedRecoverySqliteStore.prototype,
+      'readRetainedClaimPage',
+      async (mintUrl: string, after = '') => {
+        assert.equal(mintUrl, 'https://mint.example')
+        const offset = after === '' ? 0 : Number(after.slice('paging-'.length)) + 1
+        assert.equal(offset, reads * 16)
+        reads += 1
+        return Array.from({ length: Math.min(16, total - offset) }, (_, index) => ({
+          target: { ...claim, operationId: `paging-${String(offset + index).padStart(4, '0')}` },
+          record: pagingAuthority.record,
+          exactAuthority: pagingAuthority.exactAuthority,
+        }))
+      },
+    )
+    try {
+      const recovery = recoverAllDaemonWalletFromSeed(
+        {
+          recoveryId: `historical-page-bound-${total}`,
+          mintUrl: 'https://mint.example',
+          unit: 'msat',
+          walletSeedHex: '11'.repeat(64),
+          disclosureAcknowledged: true,
+        },
+        {
+          directory: fixture.directory,
+          getFence: currentFence,
+          transport: {
+            ...transport,
+            restoreCandidates: async (candidates) => {
+              if (candidates.some((candidate) => committed.has((candidate as { B_: string }).B_)))
+                restoredRecords += 1
+              return { outputs: [], signatures: [] }
+            },
+          },
+        },
+      )
+      if (total === 1025)
+        await assert.rejects(recovery, /retained payout recovery record bound exceeded/)
+      else assert.equal((await recovery).state, 'completed')
+      assert.equal(restoredRecords, Math.min(total, 1024))
+      assert.equal(reads, total === 1023 ? 64 : 65)
+      assert.deepEqual((await readState())!.wallet.proofs, original.wallet.proofs)
+    } finally {
+      pageMock.mock.restore()
+    }
+  }
+  const expectedAmount = outputs.reduce(
+    (sum, { blindedMessage }) => sum + Number(blindedMessage.amount),
+    0,
+  )
+  assert.ok(expectedAmount > 0)
+  assert.ok(outputs.length > 1, 'partial and reordered replies require multiple outputs')
+  for (const scenario of [
+    'empty',
+    'partial',
+    'bad-dleq',
+    'spent',
+    'pending',
+    'missing-state',
+    'duplicate-state',
+    'foreign-state',
+    'takeover',
+    'late-active-work',
+    'payout-rollback',
+    'changed-authority',
+  ] as const) {
+    mode = scenario
+    takeover = false
+    retainedCounters = undefined
+    const recovery = recoverAllDaemonWalletFromSeed(
+      {
+        recoveryId: `historical-${scenario}`,
+        mintUrl: 'https://mint.example',
+        unit: 'msat',
+        walletSeedHex: '11'.repeat(64),
+        disclosureAcknowledged: true,
+      },
+      { directory: fixture.directory, getFence: currentFence, transport },
+    )
+    if (scenario === 'empty' || scenario === 'spent') {
+      const result = await recovery
+      assert.equal(result.state, 'completed')
+      assert.equal(result.retainedOutputProofsImported, 0)
+    } else {
+      await assert.rejects(
+        recovery,
+        scenario === 'changed-authority'
+          ? /durable owner blocker target-wallet-proof-reserved/
+          : scenario === 'payout-rollback'
+            ? /test retained payout second insert failure/
+            : /incomplete|DLEQ|Dleq|dleq|pending|proof state|owner or epoch changed|durable owner blocker custody-active-work/,
+      )
+    }
+    if (scenario === 'changed-authority') {
+      const database = await openDaemonStateSqlite(fixture.directory)
+      try {
+        database
+          .prepare('UPDATE custody_artifacts SET body = ? WHERE artifact_id = ?')
+          .run(authorityBefore!.body, authorityBefore!.artifactId)
+      } finally {
+        database.close()
+      }
+    }
+    if (scenario === 'payout-rollback') {
+      try {
+        rollbackDatabase!.exec('DROP TRIGGER test_retained_payout_rollback')
+      } finally {
+        rollbackDatabase!.close()
+        rollbackDatabase = undefined
+      }
+    }
+    if (scenario === 'late-active-work') {
+      const database = await openDaemonStateSqlite(fixture.directory)
+      try {
+        assert.equal(
+          database
+            .prepare('SELECT count(*) AS count FROM custody_active_work WHERE scope_id = ?')
+            .get(fixture.context.fence.scopeId)?.count,
+          1,
+        )
+        database
+          .prepare('DELETE FROM custody_active_work WHERE scope_id = ? AND operation_id = ?')
+          .run(fixture.context.fence.scopeId, lateWorkOperationId!)
+      } finally {
+        database.close()
+      }
+    }
+    const state = (await readState())!
+    assert.deepEqual(state.wallet.proofs, original.wallet.proofs)
+    assert.deepEqual(state.proofOperations[claim.operationId], claim)
+    const reopened = await openDaemonStateSqlite(fixture.directory)
+    try {
+      assert.equal(
+        reopened
+          .prepare('SELECT count(*) AS count FROM custody_proofs WHERE condition_id IS NULL')
+          .get()!.count,
+        0,
+      )
+    } finally {
+      reopened.close()
+    }
+  }
+  mode = 'valid'
+  for (const recoveryId of ['historical-payout-first', 'historical-payout-again']) {
+    const result = await recoverAllDaemonWalletFromSeed(
+      {
+        recoveryId,
+        mintUrl: 'https://mint.example',
+        unit: 'msat',
+        walletSeedHex: '11'.repeat(64),
+        disclosureAcknowledged: true,
+      },
+      { directory: fixture.directory, getFence: currentFence, transport },
+    )
+    assert.equal(result.state, 'completed')
+    assert.equal(
+      result.retainedOutputProofsImported,
+      recoveryId === 'historical-payout-first' ? outputs.length : 0,
+    )
+    const state = (await readState())!
+    assert.deepEqual(
+      state.wallet.proofs.filter(({ asset }) => asset.kind === 'Outcome'),
+      original.wallet.proofs.filter(({ asset }) => asset.kind === 'Outcome'),
+    )
+    assert.deepEqual(state.proofOperations[claim.operationId], claim)
+    const payouts = state.wallet.proofs.filter(({ asset }) => asset.kind === 'sats')
+    assert.equal(
+      payouts.reduce((sum, { proof }) => sum + Number(proof.amount), 0),
+      expectedAmount,
+    )
+    const database = await openDaemonStateSqlite(fixture.directory)
+    try {
+      assert.equal(
+        database
+          .prepare('SELECT selectability FROM custody_proofs WHERE condition_id = ?')
+          .get(fixture.asset.conditionId)!.selectability,
+        'retained',
+      )
+      assert.equal(
+        database
+          .prepare(
+            "SELECT operation_state FROM custody_operations WHERE semantic_kind = 'ctf-redeem'",
+          )
+          .get()!.operation_state,
+        'aborted',
+      )
+    } finally {
+      database.close()
+    }
+  }
+  mode = 'collision'
+  const beforeCollision = (await readState())!
+  const collisionDatabase = await openDaemonStateSqlite(fixture.directory)
+  const payoutRow = collisionDatabase
+    .prepare(
+      'SELECT proof_id FROM custody_proofs WHERE condition_id IS NULL ORDER BY proof_id LIMIT 1',
+    )
+    .get()!
+  collisionDatabase
+    .prepare("UPDATE custody_proofs SET selectability = 'spent' WHERE proof_id = ?")
+    .run(payoutRow.proof_id)
+  const collisionRows = collisionDatabase
+    .prepare('SELECT * FROM custody_proofs ORDER BY proof_id')
+    .all()
+  collisionDatabase.close()
+  await assert.rejects(
+    recoverAllDaemonWalletFromSeed(
+      {
+        recoveryId: 'historical-payout-collision',
+        mintUrl: 'https://mint.example',
+        unit: 'msat',
+        walletSeedHex: '11'.repeat(64),
+        disclosureAcknowledged: true,
+      },
+      { directory: fixture.directory, getFence: currentFence, transport },
+    ),
+    /retained payout conflicts with existing proof authority/,
+  )
+  const afterCollision = (await readState())!
+  assert.deepEqual(afterCollision.wallet.proofs, beforeCollision.wallet.proofs)
+  assert.deepEqual(afterCollision.proofOperations[claim.operationId], claim)
+  const collisionReopened = await openDaemonStateSqlite(fixture.directory)
+  try {
+    assert.deepEqual(
+      collisionReopened.prepare('SELECT * FROM custody_proofs ORDER BY proof_id').all(),
+      collisionRows,
+    )
+  } finally {
+    collisionReopened.close()
+  }
+  assert.equal(restored, outputs.length * 2)
+  assert.ok(
+    counterChecks >= 4,
+    'empty, spent, initial payout and retry preserve counters before seed scanning',
+  )
 }
+
+test('native Remove rechecks original frozen intended scope rather than mutable terminal metadata', async () => {
+  const fixture = await createFixture(1)
+  try {
+    const state = (await readState())!
+    const operation = Object.values(state.proofOperations).find(
+      ({ metadata }) => metadata.purpose === 'position-claim',
+    )!
+    const context = operation.metadata.oracleResolutionContext as {
+      registered: { scopeId: string }
+    }
+    context.registered.scopeId = deriveDurableCustodyScopeId({
+      scopeKind: 'wallet',
+      walletId: 'ff'.repeat(32),
+    })
+    await writeState(state)
+    const reopened = await openDaemonStateSqlite(fixture.directory)
+    reopened.close()
+    await assert.rejects(
+      previewDaemonPositionRemove(fixture.context),
+      /canonical authority differs/,
+    )
+    assert.equal(
+      (await readState())!.wallet.proofs.some(({ retirement }) => retirement !== undefined),
+      false,
+    )
+  } finally {
+    await fixture.dispose()
+  }
+})

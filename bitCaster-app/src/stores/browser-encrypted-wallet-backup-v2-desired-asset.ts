@@ -3,6 +3,8 @@ import {
   decodeEncryptedWalletBackupV2AssetIdentity,
   ENCRYPTED_WALLET_BACKUP_V2_PROOF_SET_MAX,
   encryptedWalletBackupV2LocalAssetKey,
+  decodeEncryptedWalletBackupV2TerminalSealProofBinding,
+  decodeEncryptedWalletBackupV2RefusalHistoryProofBinding,
 } from "@bitcaster/client-sdk/encryptedWalletBackupV2ProofSet";
 import { encodeCanonicalBackupCbor } from "@bitcaster/client-sdk/encryptedWalletBackupCbor";
 import { bytesToHex } from "@noble/hashes/utils.js";
@@ -29,6 +31,8 @@ import { decodeBrowserCustodyConditionalKeysetRow } from "./durable-custody-type
 import { decodeBrowserCustodyProofRow } from "./durable-custody-types";
 import type { BrowserCustodyProofRow, BrowserCustodyProofUnit } from "./durable-custody-types";
 import type { BitcasterDB } from "./proof-db";
+import { deserializeDurableCustodyProofArtifact } from "@bitcaster/client-sdk/durableCustodyProofMaterial";
+import { decodeDurableWalletProofDerivationLocator } from "@bitcaster/client-sdk/durableWalletProofDerivationLocator";
 
 export type EncryptedWalletBackupV2DesiredAction = "replace" | "remove";
 
@@ -838,7 +842,7 @@ async function firstActiveProof(
     readonly keysetId: string;
   },
 ): Promise<BrowserCustodyProofRow | null> {
-  for (const state of ["selectable", "locked", "verified-losing"] as const) {
+  for (const state of ["selectable", "locked", "verified-losing", "retained-unverified"] as const) {
     const rows = await database.custodyProofs
       .where("[scopeId+normalizedMint+unit+keysetId+selectability]")
       .equals([expected.scopeId, expected.normalizedMint, expected.unit, expected.keysetId, state])
@@ -937,6 +941,7 @@ function isActive(proof: BrowserCustodyProofRow): boolean {
   switch (proof.selectability) {
     case "selectable":
     case "locked":
+    case "retained-unverified":
     case "verified-losing":
       return true;
     case "pending-removal":
@@ -973,7 +978,11 @@ function knownAssetForProof(
   }
   if (conditionalKeysetForProof === undefined) return undefined;
   const keyset = conditionalKeysetForProof(proof);
-  if (keyset === undefined && proof.selectability !== "verified-losing") {
+  if (
+    keyset === undefined &&
+    proof.selectability !== "verified-losing" &&
+    proof.selectability !== "retained-unverified"
+  ) {
     throw new Error("browser V2 desired asset conditional authority is missing");
   }
   if (keyset === undefined) return undefined;
@@ -994,7 +1003,10 @@ async function loadConditionalAssetForProof(
     proof.unit,
     proof.keysetId,
   ]);
-  if (raw === undefined && proof.selectability === "verified-losing") {
+  if (
+    raw === undefined &&
+    (proof.selectability === "verified-losing" || proof.selectability === "retained-unverified")
+  ) {
     return loadRemoteTerminalAssetForProof(database, proof, suppliedAuthority);
   }
   if (raw === undefined) {
@@ -1038,7 +1050,8 @@ async function loadRemoteTerminalAssetForProof(
   }
   if (
     authority.backupState !== "remote-backed" ||
-    authority.terminalAuthority?.kind !== "remote-seal"
+    (authority.terminalAuthority?.kind !== "remote-seal" &&
+      authority.terminalAuthority?.kind !== "remote-refusal-history")
   ) {
     throw new Error("browser V2 desired asset remote terminal authority is foreign");
   }
@@ -1078,6 +1091,33 @@ async function loadRemoteTerminalAssetForProof(
   ) {
     throw new Error("browser V2 desired asset terminal context is foreign");
   }
+  if (authority.derivationLocator === null) {
+    throw new Error("browser V2 desired asset terminal provenance is missing");
+  }
+  const decodeBinding =
+    authority.terminalAuthority.kind === "remote-refusal-history"
+      ? decodeEncryptedWalletBackupV2RefusalHistoryProofBinding
+      : decodeEncryptedWalletBackupV2TerminalSealProofBinding;
+  decodeBinding(
+    {
+      mintUrl: proof.normalizedMint,
+      unit: proof.unit,
+      asset: {
+        kind: "ctf",
+        conditionId: context.conditionId,
+        outcomeLabel: context.outcomeLabel,
+        outcomeCollectionId: context.outcomeCollectionId,
+        registeredAt: context.registeredAt,
+        finalExpiry: context.finalExpiry,
+      },
+      proof: deserializeDurableCustodyProofArtifact(
+        JSON.parse(new TextDecoder().decode(proof.proofBody)),
+      ),
+      locator: decodeDurableWalletProofDerivationLocator(authority.derivationLocator),
+      terminalSeal: authority.terminalAuthority.terminalSeal,
+    },
+    proof.scopeId,
+  );
   return { asset, terminalCtfContext: context };
 }
 
@@ -1087,7 +1127,10 @@ export async function requireBrowserV2KeysetFreeTerminalContextForProof(input: {
   readonly proof: BrowserCustodyProofRow;
   readonly authority: unknown;
 }): Promise<void> {
-  if (input.proof.selectability !== "verified-losing") {
+  if (
+    input.proof.selectability !== "verified-losing" &&
+    input.proof.selectability !== "retained-unverified"
+  ) {
     throw new Error("browser V2 desired asset terminal proof state is invalid");
   }
   await loadRemoteTerminalAssetForProof(

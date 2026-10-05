@@ -1,3 +1,4 @@
+import { decodeBrowserCustodyProofRow } from "../durable-custody-types";
 // @vitest-environment node
 import "fake-indexeddb/auto";
 import {
@@ -41,9 +42,64 @@ const nut13 = (keysetId: string, counter: number) => ({
 });
 
 describe("browser proof backup authority", () => {
+  it("keeps retained refusal history conditional, unreserved, and distinct from losing authority", () => {
+    const proof = { ...conditionalProof(), selectability: "retained-unverified" as const };
+    expect(decodeBrowserCustodyProofRow(proof).selectability).toBe("retained-unverified");
+    expect(() =>
+      decodeBrowserCustodyProofRow({ ...proof, reservationOperationId: "claim:old" }),
+    ).toThrow();
+    expect(() =>
+      decodeBrowserCustodyProofRow({
+        ...proof,
+        assetKind: "sats",
+        conditionId: null,
+        outcomeCollection: null,
+      }),
+    ).toThrow();
+    const base = legacyRemoteAuthority({
+      proof: { ...proof, selectability: "verified-losing" },
+      observedAtMs: 2,
+      derivationLocator: nut13(DERIVATION_KEYSET, 6),
+      restoreProofId: proof.proofId,
+      restoreProofCommitment: "44".repeat(32),
+    });
+    const row = {
+      ...base,
+      proofState: "retained-unverified",
+      terminalAuthority: {
+        kind: "remote-refusal-history",
+        terminalSeal: {
+          schemaVersion: 1,
+          kind: "ctf-verified-losing",
+          code: 13015,
+          operationIdDigest: "11".repeat(32),
+          requestDigest: "22".repeat(32),
+          proofCommitment: "33".repeat(32),
+          classifiedAtMs: 1,
+        },
+      },
+    };
+    expect(requireBrowserProofBackupAuthorityRow(row).terminalAuthority?.kind).toBe(
+      "remote-refusal-history",
+    );
+    for (const state of ["selectable", "locked", "verified-losing", "pending-removal", "spent"]) {
+      expect(() => requireBrowserProofBackupAuthorityRow({ ...row, proofState: state })).toThrow();
+    }
+    expect(() =>
+      requireBrowserProofBackupAuthorityRow({ ...row, terminalAuthority: null }),
+    ).toThrow();
+    expect(() =>
+      requireBrowserProofBackupAuthorityRow({
+        ...row,
+        terminalOperationId: "claim:old",
+        terminalAuthority: { kind: "local-operation", operationId: "claim:old" },
+      }),
+    ).toThrow();
+  });
+
   it("retains a remote-seal origin after mint-spent retirement and refuses reactivation", () => {
     const proof = { ...conditionalProof(), selectability: "verified-losing" as const };
-    const authority = createBrowserRemoteProofBackupAuthorityRow({
+    const authority = legacyRemoteAuthority({
       proof,
       observedAtMs: 2,
       derivationLocator: nut13(DERIVATION_KEYSET, 6),
@@ -241,7 +297,7 @@ describe("browser proof backup authority", () => {
       revision: 1,
     };
     const locator = nut13(DERIVATION_KEYSET, 10);
-    const authority = createBrowserRemoteProofBackupAuthorityRow({
+    const authority = legacyRemoteAuthority({
       proof,
       observedAtMs: 2,
       derivationLocator: locator,
@@ -480,13 +536,13 @@ describe("browser proof backup authority", () => {
     });
   });
 
-  it("records a restored verified-losing proof as a remote-seal authority", () => {
+  it("rejects a new restored losing classification without the retained verified seal", () => {
     const proof = {
       ...custodyProof(),
       revision: 1,
       selectability: "verified-losing" as const,
     };
-    expect(
+    expect(() =>
       createBrowserRemoteProofBackupAuthorityRow({
         proof,
         observedAtMs: 2,
@@ -494,11 +550,7 @@ describe("browser proof backup authority", () => {
         restoreProofId: proof.proofId,
         restoreProofCommitment: "66".repeat(32),
       }),
-    ).toMatchObject({
-      proofState: "verified-losing",
-      terminalOperationId: null,
-      terminalAuthority: { kind: "remote-seal" },
-    });
+    ).toThrow("requires verified oracle seal authority");
   });
 
   it("advances remote-backed proof state without changing its restore authority", () => {
@@ -763,4 +815,28 @@ function walletScope() {
     walletId,
     scopeId: deriveDurableCustodyScopeId({ scopeKind: "wallet", walletId }),
   };
+}
+
+/** An old persisted flag can be read as history but cannot authorize new seal issuance. */
+function legacyRemoteAuthority(
+  input: Parameters<typeof createBrowserRemoteProofBackupAuthorityRow>[0],
+) {
+  return requireBrowserProofBackupAuthorityRow({
+    schemaVersion: 4,
+    scopeId: input.proof.scopeId,
+    proofId: input.proof.proofId,
+    proofFingerprint: input.proof.proofFingerprint,
+    proofRevision: input.proof.revision,
+    proofState: input.proof.selectability,
+    terminalOperationId: null,
+    terminalAuthority: { kind: "remote-seal" },
+    recordCreatedAtUnixSeconds: 0,
+    recordUpdatedAtUnixSeconds: 0,
+    derivationLocator: input.derivationLocator,
+    updatedAtMs: input.observedAtMs,
+    admissionOperationId: null,
+    backupState: "remote-backed",
+    backupRecordId: input.restoreProofId,
+    backupRecordCommitment: input.restoreProofCommitment,
+  });
 }

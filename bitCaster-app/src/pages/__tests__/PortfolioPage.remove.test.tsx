@@ -348,6 +348,82 @@ describe("PortfolioPage position action dialogs", () => {
     },
   );
 
+  it.each(["completed", "pending"])(
+    "shows the unverified oracle warning after a %s Claim until explicit dismissal",
+    async (kind) => {
+      mockPositions = [positionFor("claim")];
+      cashuMocks.claimPortfolioPosition.mockResolvedValue({
+        kind,
+        committedPayoutAmount: 0,
+        oracleEvidence: {
+          status: "unverified",
+          reason: "unavailable",
+          warning:
+            "The mint reports this outcome, but we have not verified evidence from the intended oracle.",
+        },
+      });
+      const view = render(<PortfolioPage />);
+      await startAction("claim");
+      expect(actionDialog()).toHaveTextContent(
+        "The mint reports this outcome, but we have not verified evidence from the intended oracle.",
+      );
+      vi.useFakeTimers();
+      try {
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(120_000);
+        });
+        view.rerender(<PortfolioPage />);
+        expect(actionDialog()).toHaveTextContent("evidence from the intended oracle");
+      } finally {
+        vi.useRealTimers();
+      }
+      await userEvent.click(within(actionDialog()).getByRole("button", { name: "Close" }));
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    },
+  );
+
+  it.each(["pending", "error", "stopped", "partial", "completed"] as const)(
+    "keeps the oracle warning and committed activity after %s Remove",
+    async (kind) => {
+      cashuMocks.removePortfolioPosition.mockImplementation(async ({ onCommittedLeg }) => {
+        await onCommittedLeg({ payoutAmount: 60, keysetId: "winner" });
+        return {
+          kind,
+          committedPayoutAmount: 60,
+          error: kind === "error" || kind === "partial" ? removeFailure : null,
+          oracleEvidence: {
+            status: "unverified",
+            reason: "unavailable",
+            warning:
+              "The mint reports this outcome, but we have not verified evidence from the intended oracle.",
+          },
+        };
+      });
+      const view = render(<PortfolioPage />);
+      await startAction("remove");
+      expectCommittedPayout(60);
+      expect(actionDialog()).toHaveTextContent("evidence from the intended oracle");
+      if (kind === "pending") expect(actionDialog()).toHaveTextContent("Removal is not finished");
+      if (kind === "stopped") expect(actionDialog()).toHaveTextContent("Removal stopped");
+      if (kind === "error" || kind === "partial")
+        expect(actionDialog()).toHaveTextContent("local-commit: remove-attempt");
+      vi.useFakeTimers();
+      try {
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(120_000);
+        });
+        view.rerender(<PortfolioPage />);
+        expect(actionDialog()).toHaveTextContent("evidence from the intended oracle");
+      } finally {
+        vi.useRealTimers();
+      }
+      await userEvent.click(within(actionDialog()).getByRole("button", { name: "Close" }));
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+      expectCommittedPayout(60);
+      expect(removeProofs).not.toHaveBeenCalled();
+    },
+  );
+
   it("records a verified payout and stops when the displayed loser was stale", async () => {
     cashuMocks.removePortfolioPosition.mockImplementation(async ({ onCommittedLeg }) => {
       await onCommittedLeg({ payoutAmount: 60, keysetId: "winner" });
@@ -376,6 +452,7 @@ describe("PortfolioPage position action dialogs", () => {
       render(<PortfolioPage />);
       await startAction("remove");
       expect(actionDialog()).toHaveTextContent(text);
+      expect(actionDialog()).not.toHaveTextContent("evidence from the intended oracle");
       expect(actionDialog()).not.toHaveTextContent("private protocol material");
       if (failed) expect(actionDialog()).toHaveTextContent("local-commit: remove-attempt");
       expect(cashuMocks.addActivity).not.toHaveBeenCalled();

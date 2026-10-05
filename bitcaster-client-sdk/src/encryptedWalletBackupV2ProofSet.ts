@@ -1,5 +1,7 @@
+import { proofOperationAuthorityDigest } from './ctfProofOperationAuthority.ts'
 import { decode } from 'cborg'
 import { sha256 } from '@noble/hashes/sha2.js'
+import { hmac } from '@noble/hashes/hmac.js'
 import { bytesToHex } from '@noble/hashes/utils.js'
 import type { Proof } from '@cashu/cashu-ts'
 import {
@@ -34,7 +36,7 @@ import {
   type DurableCustodyExactArtifact,
   type DurableCustodyRecord,
 } from './durableCustody.ts'
-import { readDurableCustodyAuthenticatedTerminalMintRejection } from './durableCustodyMintResult.ts'
+import { readDurableCustodyVerifiedLosingMintRejection } from './durableCustodyMintResult.ts'
 import {
   createDurableCustodyProofMaterialRecord,
   deserializeDurableCustodyProofArtifact,
@@ -51,7 +53,11 @@ import {
   deriveEncryptedWalletBackupV2AssetLocator,
   type EncryptedWalletBackupV2KeyHandle,
 } from './encryptedWalletBackupV2Keys.ts'
-import { requireEncryptedWalletBackupV2SeedHandleMatch } from './encryptedWalletBackupV2KeyAuthority.ts'
+import {
+  requireEncryptedWalletBackupV2SeedHandleMatch,
+  deriveEncryptedWalletBackupV2TerminalSealKey,
+  requireEncryptedWalletBackupV2KeyAuthority,
+} from './encryptedWalletBackupV2KeyAuthority.ts'
 import {
   equalBytes,
   requireLowerHex,
@@ -91,13 +97,30 @@ export interface EncryptedWalletBackupV2ProofSetProof {
 }
 
 export interface EncryptedWalletBackupV2TerminalSeal {
-  readonly schemaVersion: 1
-  readonly kind: 'ctf-verified-losing'
+  readonly schemaVersion: 1 | 2
+  readonly kind: 'ctf-verified-losing' | 'ctf-verified-losing-v2'
   readonly operationIdDigest: string
   readonly requestDigest: string
   readonly code: 13015
   readonly classifiedAtMs: number
   readonly proofCommitment: string
+  readonly verifiedContextDigest?: string
+  readonly authenticationCode?: string
+}
+
+declare const VERIFIED_TERMINAL_SEAL: unique symbol
+export type EncryptedWalletBackupV2VerifiedTerminalSeal = EncryptedWalletBackupV2TerminalSeal & {
+  readonly [VERIFIED_TERMINAL_SEAL]: true
+}
+const VERIFIED_TERMINAL_SEALS = new WeakSet<object>()
+
+/** A structural copy cannot stand in for a successful MAC verification. */
+export function requireEncryptedWalletBackupV2VerifiedTerminalSealAuthority(
+  value: unknown,
+): EncryptedWalletBackupV2VerifiedTerminalSeal {
+  if (typeof value !== 'object' || value === null || !VERIFIED_TERMINAL_SEALS.has(value))
+    throw new Error('encrypted backup verified terminal seal authority is invalid')
+  return value as EncryptedWalletBackupV2VerifiedTerminalSeal
 }
 
 export interface EncryptedWalletBackupV2CommittedTerminalSealStore {
@@ -106,6 +129,7 @@ export interface EncryptedWalletBackupV2CommittedTerminalSealStore {
     read: (value: {
       readonly record: DurableCustodyRecord
       readonly exactRejection: DurableCustodyExactArtifact
+      readonly exactAuthority: DurableCustodyExactArtifact
       readonly classifiedAtMs: number
     }) => T,
   ): Promise<T>
@@ -179,9 +203,10 @@ export async function issueEncryptedWalletBackupV2TerminalSeal(input: {
       if (!open || calls++ !== 0)
         throw new Error('encrypted backup committed terminal callback is invalid')
       const record = decodeDurableCustodyRecord(value.record)
-      const rejection = readDurableCustodyAuthenticatedTerminalMintRejection({
+      const rejection = readDurableCustodyVerifiedLosingMintRejection({
         record,
         exactRejection: value.exactRejection,
+        exactAuthority: value.exactAuthority,
       })
       if (
         record.operation.operationId !== input.operationId ||
@@ -194,14 +219,22 @@ export async function issueEncryptedWalletBackupV2TerminalSeal(input: {
           1
       )
         throw new Error('encrypted backup terminal seal operation is foreign')
-      issued = Object.freeze({
-        schemaVersion: 1,
-        kind: 'ctf-verified-losing',
-        operationIdDigest: digestText(input.operationId),
+      const fields: EncryptedWalletBackupV2TerminalSeal = {
+        schemaVersion: 2,
+        kind: 'ctf-verified-losing-v2',
+        operationIdDigest: digestText(rejection.transportOperationId),
         requestDigest: rejection.requestFingerprint,
         code: 13015,
         classifiedAtMs: requireUnixTime(value.classifiedAtMs),
         proofCommitment: proofCommitment(proof),
+        verifiedContextDigest: proofOperationAuthorityDigest(rejection.losingAuthority),
+      }
+      issued = Object.freeze({
+        ...fields,
+        authenticationCode: terminalSealMac(
+          fields,
+          deriveEncryptedWalletBackupV2TerminalSealKey(input.seed),
+        ),
       })
       return issued
     })
@@ -223,7 +256,7 @@ export async function issueEncryptedWalletBackupV2TerminalSeal(input: {
  * material, or seals as issuance evidence. It performs no mint or NUT-07
  * check on sibling entries.
  */
-export async function authorizeEncryptedWalletBackupV2RemoteTerminalSealReuse(input: {
+type RemoteTerminalMaterialInput = {
   readonly keyHandle: EncryptedWalletBackupV2KeyHandle
   readonly seed: Uint8Array
   readonly expectedAsset: EncryptedWalletBackupV2AssetIdentity
@@ -238,7 +271,9 @@ export async function authorizeEncryptedWalletBackupV2RemoteTerminalSealReuse(in
     readonly runtime?: EncryptedWalletBackupV2RequestProofRuntime
   }
   readonly runtime: EncryptedWalletBackupV2BundleRuntime
-}): Promise<EncryptedWalletBackupV2RemoteTerminalSealReuseResult> {
+}
+
+async function readAuthenticatedRemoteTerminalMaterial(input: RemoteTerminalMaterialInput) {
   const seed = await requireEncryptedWalletBackupV2SeedHandleMatch(input)
   const asset = decodeEncryptedWalletBackupV2AssetIdentity(input.expectedAsset)
   const origin = requireRemoteOrigin(input.remoteRequest.origin)
@@ -307,8 +342,16 @@ export async function authorizeEncryptedWalletBackupV2RemoteTerminalSealReuse(in
     objects,
   })
   const decoded = validateAuthenticatedDecryptedProofSet(decrypted, seed, asset)
+  return { currentHeadEvidence, currentBundle, decrypted, decoded, expectedAssetLocator }
+}
+
+export async function authorizeEncryptedWalletBackupV2RemoteTerminalSealReuse(
+  input: RemoteTerminalMaterialInput,
+): Promise<EncryptedWalletBackupV2RemoteTerminalSealReuseResult> {
+  const { currentHeadEvidence, currentBundle, decrypted, decoded, expectedAssetLocator } =
+    await readAuthenticatedRemoteTerminalMaterial(input)
   const authorities = decoded.proofs
-    .filter((proof) => proof.terminalSeal !== undefined)
+    .filter((proof) => proof.terminalSeal?.schemaVersion === 2)
     .map((proof) =>
       createRemoteTerminalSealReuseAuthority({
         currentHeadEvidence,
@@ -318,7 +361,60 @@ export async function authorizeEncryptedWalletBackupV2RemoteTerminalSealReuse(in
         proof,
       }),
     )
-  if (authorities.length === 0) throw new Error('encrypted backup remote terminal seal is missing')
+  if (authorities.length === 0) {
+    if (decoded.proofs.every((proof) => proof.terminalSeal === undefined))
+      throw new Error('encrypted backup terminal seal is missing')
+    throw new Error('encrypted backup refusal history is not verified losing seal authority')
+  }
+  return Object.freeze({
+    currentHeadEvidence,
+    descriptor: currentBundle,
+    decrypted,
+    authorities: Object.freeze(authorities),
+  })
+}
+
+/** Authenticated historical refusal material permits preservation, never losing classification. */
+export interface EncryptedWalletBackupV2RemoteRefusalHistoryAuthority extends Omit<
+  EncryptedWalletBackupV2RemoteTerminalSealReuseAuthority,
+  'kind'
+> {
+  readonly kind: 'ctf-refusal-history-preservation'
+}
+
+const REMOTE_REFUSAL_HISTORY_AUTHORITY = new WeakSet<object>()
+
+export function requireEncryptedWalletBackupV2RemoteRefusalHistoryAuthority(
+  value: unknown,
+): EncryptedWalletBackupV2RemoteRefusalHistoryAuthority {
+  if (typeof value !== 'object' || value === null || !REMOTE_REFUSAL_HISTORY_AUTHORITY.has(value))
+    throw new Error('encrypted backup refusal history authority is invalid')
+  return value as EncryptedWalletBackupV2RemoteRefusalHistoryAuthority
+}
+
+export async function authorizeEncryptedWalletBackupV2RemoteRefusalHistoryPreservation(
+  input: RemoteTerminalMaterialInput,
+) {
+  const { currentHeadEvidence, currentBundle, decrypted, decoded } =
+    await readAuthenticatedRemoteTerminalMaterial(input)
+  const authorities = decoded.proofs
+    .filter((proof) => proof.terminalSeal?.schemaVersion === 1)
+    .map((proof) => {
+      const authority: EncryptedWalletBackupV2RemoteRefusalHistoryAuthority = Object.freeze({
+        kind: 'ctf-refusal-history-preservation',
+        proofId: proof.proofId,
+        head: Object.freeze({ ...currentHeadEvidence.head }),
+        bundleId: currentBundle.bundleId,
+        descriptorDigest: digestEncryptedWalletBackupV2BundleDescriptor(currentBundle),
+        assetLocator: currentBundle.assetLocator,
+        custodyRevision: currentBundle.custodyRevision,
+        proofCommitment: proofCommitment(proof),
+        terminalSeal: Object.freeze({ ...proof.terminalSeal! }),
+      })
+      REMOTE_REFUSAL_HISTORY_AUTHORITY.add(authority)
+      return authority
+    })
+  if (authorities.length === 0) throw new Error('encrypted backup refusal history is missing')
   return Object.freeze({
     currentHeadEvidence,
     descriptor: currentBundle,
@@ -348,6 +444,7 @@ function createRemoteTerminalSealReuseAuthority(input: {
     input.proof.terminalSeal === undefined
   )
     throw new Error('encrypted backup remote terminal bundle binding is invalid')
+  requireCompactTerminalSeal(input.proof)
   const authority = Object.freeze({
     kind: 'ctf-verified-losing-remote-reuse' as const,
     proofId: input.proof.proofId,
@@ -459,7 +556,10 @@ export interface EncryptedWalletBackupV2VerifiedProofSet extends EncryptedWallet
   readonly verified: true
   readonly proofs: readonly (EncryptedWalletBackupV2ProofSetProof & {
     readonly proofId: string
-    readonly selectionAuthority: 'live-verified' | 'terminal-sealed-non-selectable'
+    readonly selectionAuthority:
+      | 'live-verified'
+      | 'terminal-sealed-non-selectable'
+      | 'terminal-refusal-history'
   })[]
 }
 
@@ -540,6 +640,7 @@ export async function verifyEncryptedWalletBackupV2RestoredProofSet(input: {
   readonly expectedAsset: EncryptedWalletBackupV2AssetIdentity
   readonly unverified: EncryptedWalletBackupV2UnverifiedProofSet
   readonly port: EncryptedWalletBackupV2RestoreVerificationPort
+  readonly preserveRefusalHistory?: true
 }): Promise<EncryptedWalletBackupV2VerifiedProofSet> {
   const asset = decodeEncryptedWalletBackupV2AssetIdentity(input.expectedAsset)
   const seed = input.seed
@@ -555,6 +656,10 @@ export async function verifyEncryptedWalletBackupV2RestoredProofSet(input: {
     DECRYPTED_PROOF_SET_AUTHORITY.get(input.unverified)?.proofSetDigest !== digestProofSet(decoded)
   )
     throw new Error('encrypted backup terminal seal needs exact authenticated decrypted material')
+  for (const proof of sealed) {
+    if (proof.terminalSeal?.schemaVersion === 1 && input.preserveRefusalHistory === true) continue
+    requireCompactTerminalSeal(proof)
+  }
   const selectable = decoded.proofs.filter((proof) => proof.terminalSeal === undefined)
   if (selectable.length > 0) {
     const keysets = await resolveRestoreKeysets(selectable, input.port)
@@ -649,8 +754,14 @@ function requireProofSetSealAuthorities(
   for (const proof of decoded.proofs) {
     const seal = proof.terminalSeal
     if (seal === undefined) continue
-    if (issuedProofIds.has(proof.proofId)) continue
     const remoteAuthority = remoteByProofId.get(proof.proofId)
+    if (remoteAuthority?.historyOnly === true) {
+      if (seal.schemaVersion !== 1)
+        throw new Error('encrypted backup refusal history cannot authorize a new seal')
+    } else {
+      requireCompactTerminalSeal(proof)
+      if (issuedProofIds.has(proof.proofId)) continue
+    }
     if (
       remoteAuthority === undefined ||
       remoteAuthority.proofId !== proof.proofId ||
@@ -720,11 +831,23 @@ export async function prepareEncryptedWalletBackupV2ProofSetBundle(input: {
   readonly runtime: EncryptedWalletBackupV2BundleRuntime
   readonly bundleIdExists?: (bundleId: string) => boolean | Promise<boolean>
   readonly remoteTerminalSealReuses?: readonly EncryptedWalletBackupV2RemoteTerminalSealReuseAuthority[]
+  readonly remoteRefusalHistoryPreservations?: readonly EncryptedWalletBackupV2RemoteRefusalHistoryAuthority[]
   readonly remoteTerminalSealReuseHeadEvidence?: EncryptedWalletBackupV2CollectedHeadEvidence
 }): Promise<EncryptedWalletBackupV2PreparedTransportBundle> {
   const seed = await requireEncryptedWalletBackupV2SeedHandleMatch(input)
   const asset = decodeEncryptedWalletBackupV2AssetIdentity(input.asset)
-  const remoteAuthorities = requireRemoteTerminalSealReuseData(input.remoteTerminalSealReuses)
+  const history = input.remoteRefusalHistoryPreservations ?? []
+  if (!Array.isArray(history) || history.length > ENCRYPTED_WALLET_BACKUP_V2_PROOF_SET_MAX)
+    throw new Error('encrypted backup refusal history authorities are invalid')
+  const remoteAuthorities: readonly RemoteTerminalSealReuseAuthorityData[] = [
+    ...requireRemoteTerminalSealReuseData(input.remoteTerminalSealReuses),
+    ...history.map((value) => ({
+      ...requireEncryptedWalletBackupV2RemoteRefusalHistoryAuthority(value),
+      historyOnly: true as const,
+    })),
+  ]
+  if (new Set(remoteAuthorities.map(({ proofId }) => proofId)).size !== remoteAuthorities.length)
+    throw new Error('encrypted backup remote proof authorities are duplicated')
   if (remoteAuthorities.length > 0) {
     const assetLocator = await deriveEncryptedWalletBackupV2AssetLocator({
       keyHandle: input.keyHandle,
@@ -967,6 +1090,8 @@ function decodeProofEntry(value: unknown, seed: Uint8Array, scopeId: string): De
     (asset.kind !== 'ctf' || terminalSeal.proofCommitment !== proofCommitment(entry))
   )
     throw new Error('encrypted backup terminal seal proof binding is invalid')
+  if (terminalSeal?.schemaVersion === 2)
+    requireTerminalSealMac(terminalSeal, deriveEncryptedWalletBackupV2TerminalSealKey(seed))
   return Object.freeze({
     ...entry,
     ...(terminalSeal === undefined ? {} : { terminalSeal }),
@@ -1084,9 +1209,96 @@ function decodeCounterWire(value: unknown): EncryptedWalletBackupV2CounterHighWa
   }
 }
 
+/** Decode retained terminal history. This alone does not establish losing authority. */
+export function decodeEncryptedWalletBackupV2TerminalSeal(
+  value: unknown,
+): EncryptedWalletBackupV2TerminalSeal {
+  return decodeTerminalSeal(value)
+}
+
+/** Structural preservation only. This does not authenticate or issue losing authority. */
+export function decodeEncryptedWalletBackupV2TerminalSealProofBinding(
+  value: EncryptedWalletBackupV2ProofSetProof,
+  scopeId: string,
+): EncryptedWalletBackupV2TerminalSeal {
+  return decodeBoundTerminalProof(value, scopeId, false)
+}
+
+/** Structural history binding only; authenticated remote preservation requires its opaque capability. */
+export function decodeEncryptedWalletBackupV2RefusalHistoryProofBinding(
+  value: EncryptedWalletBackupV2ProofSetProof,
+  scopeId: string,
+): EncryptedWalletBackupV2TerminalSeal {
+  return decodeBoundTerminalProof(value, scopeId, true)
+}
+
+function decodeBoundTerminalProof(
+  value: EncryptedWalletBackupV2ProofSetProof,
+  scopeId: string,
+  historyOnly: boolean,
+): EncryptedWalletBackupV2TerminalSeal {
+  const mintUrl = requireCanonicalMint(value.mintUrl)
+  const unit = requireUnit(value.unit)
+  const asset = decodeAsset(value.asset)
+  const locator = decodeDurableWalletProofDerivationLocator(value.locator)
+  const proof = deserializeDurableCustodyProofArtifact(
+    serializeDurableCustodyProofArtifact(value.proof),
+  )
+  const material = createDurableCustodyProofMaterialRecord({
+    scopeId,
+    normalizedMint: mintUrl,
+    unit,
+    proof: serializeDurableCustodyProofArtifact(proof),
+  })
+  const terminalSeal = decodeTerminalSeal(value.terminalSeal)
+  const entry = {
+    mintUrl,
+    unit,
+    asset,
+    proof,
+    locator,
+    proofId: material.proofId,
+    terminalSeal,
+    amount: BigInt(material.amount),
+  }
+  if (terminalSeal.proofCommitment !== proofCommitment(entry))
+    throw new Error('encrypted backup terminal seal proof binding is invalid')
+  if (historyOnly) {
+    if (asset.kind !== 'ctf' || terminalSeal.schemaVersion !== 1)
+      throw new Error('encrypted backup refusal history binding is invalid')
+    return terminalSeal
+  }
+  return requireCompactTerminalSeal(entry)
+}
+
+/** Revalidate a retained classification before Claim or Remove consumes it. */
+export function requireEncryptedWalletBackupV2VerifiedLosingSealProofBinding(
+  value: EncryptedWalletBackupV2ProofSetProof,
+  scopeId: string,
+  authority: Uint8Array | EncryptedWalletBackupV2KeyHandle,
+): EncryptedWalletBackupV2VerifiedTerminalSeal {
+  const expectedScope =
+    authority instanceof Uint8Array
+      ? walletScopeId(authority)
+      : deriveDurableCustodyScopeId({ scopeKind: 'wallet', walletId: authority.walletId })
+  if (scopeId !== expectedScope) throw new Error('encrypted backup terminal seal wallet is foreign')
+  const seal = decodeEncryptedWalletBackupV2TerminalSealProofBinding(value, scopeId)
+  const key =
+    authority instanceof Uint8Array
+      ? deriveEncryptedWalletBackupV2TerminalSealKey(authority)
+      : requireEncryptedWalletBackupV2KeyAuthority(authority).terminalSealKey
+  requireTerminalSealMac(seal, key)
+  VERIFIED_TERMINAL_SEALS.add(seal)
+  return requireEncryptedWalletBackupV2VerifiedTerminalSealAuthority(seal)
+}
+
 function decodeTerminalSeal(value: unknown): EncryptedWalletBackupV2TerminalSeal {
+  if (!isRecord(value)) throw new Error('encrypted backup terminal seal is invalid')
+  const compact = value.schemaVersion === 2 && value.kind === 'ctf-verified-losing-v2'
+  const historical = value.schemaVersion === 1 && value.kind === 'ctf-verified-losing'
   if (
-    !isRecord(value) ||
+    (!compact && !historical) ||
+    value.code !== 13015 ||
     !exactKeys(value, [
       'schemaVersion',
       'kind',
@@ -1095,26 +1307,36 @@ function decodeTerminalSeal(value: unknown): EncryptedWalletBackupV2TerminalSeal
       'code',
       'classifiedAtMs',
       'proofCommitment',
-    ]) ||
-    value.schemaVersion !== 1 ||
-    value.kind !== 'ctf-verified-losing' ||
-    value.code !== 13015
+      ...(compact ? ['verifiedContextDigest', 'authenticationCode'] : []),
+    ])
   )
     throw new Error('encrypted backup terminal seal is invalid')
-  const classifiedAtMs = requireUnixTime(value.classifiedAtMs)
   return Object.freeze({
-    schemaVersion: 1,
-    kind: 'ctf-verified-losing',
+    schemaVersion: compact ? 2 : 1,
+    kind: compact ? 'ctf-verified-losing-v2' : 'ctf-verified-losing',
     operationIdDigest: requireLowerHex(value.operationIdDigest, 32, 'terminal operation digest'),
     requestDigest: requireLowerHex(value.requestDigest, 32, 'terminal request digest'),
     code: 13015,
-    classifiedAtMs,
+    classifiedAtMs: requireUnixTime(value.classifiedAtMs),
     proofCommitment: requireLowerHex(value.proofCommitment, 32, 'terminal proof commitment'),
+    ...(compact
+      ? {
+          verifiedContextDigest: requireLowerHex(
+            value.verifiedContextDigest,
+            32,
+            'terminal context digest',
+          ),
+          authenticationCode: requireLowerHex(
+            value.authenticationCode,
+            32,
+            'terminal authentication code',
+          ),
+        }
+      : {}),
   })
 }
 
-function encodeTerminalSeal(value: EncryptedWalletBackupV2TerminalSeal): readonly unknown[] {
-  const seal = decodeTerminalSeal(value)
+function terminalSealFields(seal: EncryptedWalletBackupV2TerminalSeal): readonly unknown[] {
   return [
     seal.schemaVersion,
     seal.kind,
@@ -1123,11 +1345,46 @@ function encodeTerminalSeal(value: EncryptedWalletBackupV2TerminalSeal): readonl
     seal.code,
     seal.classifiedAtMs,
     seal.proofCommitment,
+    ...(seal.schemaVersion === 2 ? [seal.verifiedContextDigest] : []),
+  ]
+}
+
+function terminalSealMac(seal: EncryptedWalletBackupV2TerminalSeal, key: Uint8Array): string {
+  return bytesToHex(
+    hmac(
+      sha256,
+      key,
+      encodeCanonicalBackupCbor([
+        'bitcaster:verified-losing-seal-authentication:v2',
+        ...terminalSealFields(seal),
+      ]),
+    ),
+  )
+}
+
+function requireTerminalSealMac(seal: EncryptedWalletBackupV2TerminalSeal, key: Uint8Array): void {
+  if (
+    seal.schemaVersion !== 2 ||
+    seal.kind !== 'ctf-verified-losing-v2' ||
+    seal.authenticationCode === undefined ||
+    !equalBytes(
+      new TextEncoder().encode(seal.authenticationCode),
+      new TextEncoder().encode(terminalSealMac(seal, key)),
+    )
+  )
+    throw new Error('encrypted backup terminal seal authentication is invalid')
+}
+
+function encodeTerminalSeal(value: EncryptedWalletBackupV2TerminalSeal): readonly unknown[] {
+  const seal = decodeTerminalSeal(value)
+  return [
+    ...terminalSealFields(seal),
+    ...(seal.schemaVersion === 2 ? [seal.authenticationCode] : []),
   ]
 }
 
 function decodeTerminalSealWire(value: unknown): EncryptedWalletBackupV2TerminalSeal {
-  if (!Array.isArray(value) || value.length !== 7)
+  if (!Array.isArray(value) || (value.length !== 7 && value.length !== 9))
     throw new Error('encrypted backup terminal seal is invalid')
   return decodeTerminalSeal({
     schemaVersion: value[0],
@@ -1137,6 +1394,9 @@ function decodeTerminalSealWire(value: unknown): EncryptedWalletBackupV2Terminal
     code: value[4],
     classifiedAtMs: value[5],
     proofCommitment: value[6],
+    ...(value.length === 9
+      ? { verifiedContextDigest: value[7], authenticationCode: value[8] }
+      : {}),
   })
 }
 
@@ -1186,7 +1446,9 @@ function sameTerminalSeal(
     left.requestDigest === right.requestDigest &&
     left.code === right.code &&
     left.classifiedAtMs === right.classifiedAtMs &&
-    left.proofCommitment === right.proofCommitment
+    left.proofCommitment === right.proofCommitment &&
+    left.verifiedContextDigest === right.verifiedContextDigest &&
+    left.authenticationCode === right.authenticationCode
   )
 }
 
@@ -1436,7 +1698,9 @@ function freezeVerifiedProofSet(value: DecodedProofSet): EncryptedWalletBackupV2
       selectionAuthority:
         proof.terminalSeal === undefined
           ? ('live-verified' as const)
-          : ('terminal-sealed-non-selectable' as const),
+          : proof.terminalSeal.schemaVersion === 1
+            ? ('terminal-refusal-history' as const)
+            : ('terminal-sealed-non-selectable' as const),
     })),
     counterHighWaterMarks: value.counterHighWaterMarks.map((counter) => ({ ...counter })),
   })
@@ -1495,6 +1759,7 @@ interface DecryptedProofSetAuthority {
 }
 
 interface RemoteTerminalSealReuseAuthorityData {
+  readonly historyOnly?: true
   readonly proofId: string
   readonly proofCommitment: string
   readonly terminalSeal: EncryptedWalletBackupV2TerminalSeal
@@ -1601,4 +1866,15 @@ function scanArgument(bytes: Uint8Array, state: { offset: number }, additional: 
   )
     throw new Error('encrypted backup proof set CBOR is invalid')
   return Number(result)
+}
+
+function requireCompactTerminalSeal(proof: DecodedProofEntry): EncryptedWalletBackupV2TerminalSeal {
+  const seal = proof.terminalSeal
+  if (
+    seal?.schemaVersion !== 2 ||
+    seal.kind !== 'ctf-verified-losing-v2' ||
+    proof.asset.kind !== 'ctf'
+  )
+    throw new Error('encrypted backup refusal history is not verified losing seal authority')
+  return seal
 }

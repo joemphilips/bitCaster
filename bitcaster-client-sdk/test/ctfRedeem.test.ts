@@ -1,3 +1,4 @@
+import { d4OracleContext, d4ConditionalKeyset, D4_CONDITION } from './support/d4OracleFixture.ts'
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import {
@@ -107,7 +108,7 @@ test('redeemOutcomeLegWithOperation prepares, redeems, and marks completed', asy
   assert.equal(wallet.redeemCalls.length, 1)
   assert.deepEqual(
     wallet.redeemCalls[0]?.inputs.map((input) => input.witness),
-    ['{"attested":true}'],
+    [undefined],
   )
   const entry = await store.getProofOperation('redeem:success')
   assert.equal(entry?.kind, 'ctf-redeem')
@@ -180,60 +181,30 @@ test('redeemOutcomeLegWithOperation rejects an uneconomic page before persistenc
   assert.equal(wallet.redeemCalls.length, 0)
 })
 
-test('redeemOutcomeLegWithOperation terminally records losing legs', async () => {
+test('unsigned refusal retains exact operation and does not call losing callback', async () => {
   const store = new MemoryProofOperationStore()
-  const wallet = new FakeRedeemWallet({
-    error: new MintOperationError(ORACLE_NOT_ATTESTED_OUTCOME_CODE, 'oracle not attested'),
-  })
-
+  let losingCalls = 0
   const result = await redeemOutcomeLegWithOperation({
     mintUrl: 'https://mint.example',
-    operationId: 'redeem:losing',
-    wallet,
+    operationId: 'redeem:refused',
+    wallet: new FakeRedeemWallet({ error: new MintOperationError(13015, 'refused') }),
     proofOperationStore: store,
     conditionId: 'condition',
     outcome: 'NO',
     unit: 'sat',
-    oracleWitness: 'witness',
-    proofs: [proof('ctf-keyset', 'loser', 3)],
+    oracleWitness: 'invalid-signatures',
+    proofs: [proof('ctf-keyset', 'retained', 3)],
     outcomeKeyset: outcomeKeyset(),
     regularKeyset: regularKeyset(),
-    restoreOutputGroups: async () => ({}),
-  })
-
-  assert.deepEqual(result, { proofs: [], losing: true })
-  const entry = await store.getProofOperation('redeem:losing')
-  assert.equal(entry?.state, 'Failed')
-  assert.equal(entry?.failureCode, ORACLE_NOT_ATTESTED_OUTCOME_CODE)
-  assert.deepEqual(
-    readAuthenticatedCtfRedeemTerminalEvidence(store.terminalEvidence.get('redeem:losing')!),
-    {
-      transportProvenance: 'authenticated-mint-transport',
-      operationId: 'redeem:losing',
-      normalizedMint: 'https://mint.example',
-      rejectionBody: { code: ORACLE_NOT_ATTESTED_OUTCOME_CODE },
+    onLosingLeg: async () => {
+      losingCalls++
     },
-  )
-
-  const retryWallet = new FakeRedeemWallet()
-  const retry = await redeemOutcomeLegWithOperation({
-    mintUrl: 'https://mint.example',
-    operationId: 'redeem:losing',
-    wallet: retryWallet,
-    proofOperationStore: store,
-    conditionId: 'condition',
-    outcome: 'NO',
-    unit: 'sat',
-    oracleWitness: 'witness',
-    proofs: [proof('ctf-keyset', 'loser', 3)],
-    outcomeKeyset: outcomeKeyset(),
-    regularKeyset: regularKeyset(),
-    restoreOutputGroups: async () => ({}),
   })
-  assert.deepEqual(retry, { proofs: [], losing: true })
-  assert.equal(retryWallet.loadMintCalls, 0)
-  assert.equal(retryWallet.checkProofStateCalls, 0)
-  assert.equal(retryWallet.redeemCalls.length, 0)
+  assert.equal(result.losing, false)
+  assert.equal(result.refused, true)
+  assert.equal(losingCalls, 0)
+  assert.equal((await store.getProofOperation('redeem:refused'))?.state, 'prepared')
+  assert.equal(store.terminalEvidence.size, 0)
 })
 
 test('redeemOutcomeLegWithOperation returns a completed exact retry before mint I/O', async () => {
@@ -411,7 +382,7 @@ test('redeemOutcomeLegWithOperation re-executes prepared operations when inputs 
   assert.equal(wallet.redeemCalls.length, 1)
   assert.deepEqual(
     wallet.redeemCalls[0]?.inputs.map(({ witness }) => witness),
-    ['witness'],
+    [undefined],
   )
 })
 
@@ -953,8 +924,117 @@ test('redeemOutcomeLegWithOperation refuses non-losing failed records', async ()
         regularKeyset: regularKeyset(),
         restoreOutputGroups: async () => ({}),
       }),
-    /non-losing failure code 999/,
+    /non-refusal failure/,
   )
+})
+
+test('only verified exact losing evidence authorizes a refusal callback', async () => {
+  const conditional = d4ConditionalKeyset({
+    '1': '0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798',
+  })
+  const context = d4OracleContext()
+  for (const [name, resolution, held, expectedLosing] of [
+    ['missing', undefined, 'NO', false],
+    ['invalid', { ...context, evidence: { ...context.evidence, attestations: [] } }, 'NO', false],
+    [
+      'foreign',
+      {
+        ...context,
+        registered: { ...context.registered, normalizedMint: 'https://foreign.example' },
+      },
+      'NO',
+      false,
+    ],
+    ['winning', context, 'YES', false],
+    ['losing', context, 'NO', true],
+  ] as const) {
+    const store = new MemoryProofOperationStore()
+    let calls = 0
+    const request = {
+      mintUrl: 'https://mint.example',
+      operationId: `exact-refusal:${name}`,
+      wallet: new FakeRedeemWallet({ error: new MintOperationError(13015, 'refused') }),
+      proofOperationStore: store,
+      conditionId: D4_CONDITION,
+      outcome: held,
+      outcomeSetId: held,
+      unit: 'sat',
+      oracleWitness: '',
+      proofs: [proof(conditional.id, `retained-${name}`, 1)],
+      outcomeKeyset: { id: conditional.id, unit: 'sat', input_fee_ppk: 0 },
+      regularKeyset: regularKeyset(),
+      oracleResolutionContext: resolution,
+      oracleInputKeysets: [conditional],
+      onLosingLeg: async () => {
+        calls++
+      },
+    }
+    const result = await redeemOutcomeLegWithOperation(request)
+    assert.equal(result.losing, expectedLosing, name)
+    assert.equal(calls, expectedLosing ? 1 : 0, name)
+    assert.equal(
+      (await store.getProofOperation(request.operationId))?.state,
+      expectedLosing ? 'Failed' : 'prepared',
+    )
+  }
+})
+
+test('timeout then unverified refusal retains frozen outputs for later exact restoration', async () => {
+  const store = new MemoryProofOperationStore()
+  const request = {
+    mintUrl: 'https://mint.example',
+    operationId: 'timeout-refusal-restore',
+    proofOperationStore: store,
+    conditionId: 'condition',
+    outcome: 'NO',
+    outcomeSetId: 'NO',
+    unit: 'sat',
+    oracleWitness: '',
+    proofs: [proof('ctf-keyset', 'exact-uncertain-input', 1)],
+    outcomeKeyset: outcomeKeyset(),
+    regularKeyset: regularKeyset(),
+  }
+  await assert.rejects(
+    () =>
+      redeemOutcomeLegWithOperation({
+        ...request,
+        wallet: new FakeRedeemWallet({ error: new Error('timeout') }),
+      }),
+    /timeout/,
+  )
+  const frozenOutputs = JSON.stringify(
+    (await store.getProofOperation(request.operationId))!.outputs,
+  )
+  const refused = await redeemOutcomeLegWithOperation({
+    ...request,
+    wallet: new FakeRedeemWallet({
+      states: [state(CheckStateEnum.UNSPENT, 'exact-uncertain-input')],
+      error: new MintOperationError(13015, 'refused'),
+    }),
+  })
+  assert.equal(refused.losing, false)
+  assert.equal(refused.refused, true)
+  assert.equal((await store.getProofOperation(request.operationId))?.state, 'prepared')
+  assert.equal(
+    JSON.stringify((await store.getProofOperation(request.operationId))!.outputs),
+    frozenOutputs,
+  )
+  store.records.set(request.operationId, {
+    ...(await store.getProofOperation(request.operationId))!,
+    state: 'Failed',
+    failureCode: 13015,
+  })
+  const restored = [proof('regular-keyset', 'restored-exact-output', 1)]
+  const result = await redeemOutcomeLegWithOperation({
+    ...request,
+    wallet: new FakeRedeemWallet({
+      states: [state(CheckStateEnum.SPENT, 'exact-uncertain-input')],
+    }),
+    restoreOutputGroups: async () => ({ regular: restored }),
+  })
+  assert.equal(result.losing, false)
+  assert.equal(result.proofs.length, 1)
+  assert.equal((await store.getProofOperation(request.operationId))?.state, 'completed')
 })
 
 function proof(id: string, secret: string, amount: number): Proof {

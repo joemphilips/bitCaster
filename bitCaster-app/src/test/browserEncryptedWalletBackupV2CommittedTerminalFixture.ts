@@ -1,6 +1,5 @@
-import type { Proof } from "@cashu/cashu-ts";
+import { deriveKeysetId, type Proof } from "@cashu/cashu-ts";
 import {
-  createDurableProofOperationFacts,
   createDurableCustodyProofOperation,
   prepareDurableCustodyExactArtifact,
   type DurableCustodyOwnerAuthorization,
@@ -9,11 +8,22 @@ import {
 import { bindDurableCustodyProofOperation } from "@bitcaster/client-sdk/durableCustodyProofOperationRecord";
 import type { DurableCustodyProofOperationInput } from "@bitcaster/client-sdk/durableCustodyProofOperation";
 import { BrowserDurableCustodyAdapter } from "../stores/durable-custody-db";
-import type { BrowserCustodyProofRow } from "../stores/durable-custody-types";
+import {
+  decodeBrowserCustodyConditionalKeysetRow,
+  type BrowserCustodyProofRow,
+} from "../stores/durable-custody-types";
+import type { BitcasterDB } from "../stores/proof-db";
+import {
+  prepareDurableCustodyMintOperationAuthority,
+  type DurableCustodyMintKeysetAuthority,
+} from "@bitcaster/client-sdk/durableCustodyMintResult";
+import { prepareCtfVerifiedLosingAuthority } from "@bitcaster/client-sdk/conditionOracleEvidence";
+import { browserD4OracleEvidence } from "./browserD4OracleFixture";
 
 /** Commit the exact CTF operation and its authenticated terminal rejection. */
 export async function commitBrowserCtfTerminalOperation(input: {
   readonly adapter: BrowserDurableCustodyAdapter;
+  readonly database: BitcasterDB;
   readonly scope: DurableCustodyScope;
   readonly owner: DurableCustodyOwnerAuthorization;
   readonly operationId: string;
@@ -25,8 +35,45 @@ export async function commitBrowserCtfTerminalOperation(input: {
 }): Promise<{
   readonly operationId: string;
   readonly rejection: ReturnType<typeof prepareDurableCustodyExactArtifact>;
+  readonly exactAuthority: ReturnType<typeof prepareDurableCustodyExactArtifact>;
   readonly rejectionReferenceArtifactId: string;
 }> {
+  const held = input.predecessorProofs[0]!;
+  if (held.conditionId === null || held.outcomeCollection === null)
+    throw new Error("test conditional holding is missing");
+  const outcomes = held.outcomeCollection === "Alpha" ? ["Alpha", "Beta"] : ["YES", "NO"];
+  const oracle = browserD4OracleEvidence(
+    input.scope.scopeId,
+    input.mintUrl,
+    outcomes[1]!,
+    outcomes,
+  );
+  const regularId = deriveKeysetId({ "1": input.publicKey }, { unit: "msat", versionByte: 1 });
+  const keysets: DurableCustodyMintKeysetAuthority[] = [];
+  for (const id of new Set(input.proofs.map((proof) => proof.id))) {
+    const raw = await input.database.custodyConditionalKeysets.get([
+      input.scope.scopeId,
+      input.mintUrl,
+      "msat",
+      id,
+    ]);
+    if (raw === undefined) throw new Error("test conditional keyset authority is missing");
+    const keyset = decodeBrowserCustodyConditionalKeysetRow(raw);
+    keysets.push({
+      canonicalMintUrl: input.mintUrl,
+      id,
+      unit: "msat",
+      keys: keyset.denominationPublicKeys,
+      inputFeePpk: keyset.inputFeePpk,
+      finalExpiry: keyset.finalExpiryUnixSeconds,
+      identity: {
+        kind: "conditional",
+        conditionId: keyset.conditionId,
+        outcomeCollection: keyset.outcomeCollection,
+        outcomeCollectionId: keyset.outcomeCollectionId,
+      },
+    });
+  }
   const operation: DurableCustodyProofOperationInput = {
     operationId: input.operationId,
     kind: "ctf-redeem",
@@ -37,7 +84,7 @@ export async function commitBrowserCtfTerminalOperation(input: {
         {
           blindedMessage: {
             amount: 1,
-            id: input.proofs[0]!.id,
+            id: regularId,
             B_: input.publicKey,
           },
           blindingFactor: "7",
@@ -45,32 +92,42 @@ export async function commitBrowserCtfTerminalOperation(input: {
         },
       ],
     },
-    metadata: { unit: "msat" },
+    metadata: {
+      unit: "msat",
+      conditionId: held.conditionId,
+      outcomeCollection: held.outcomeCollection,
+      oracleResolutionContext: oracle.context,
+    },
   };
-  const artifacts = {
-    requestBody: prepareDurableCustodyExactArtifact(operation),
-    output: prepareDurableCustodyExactArtifact(operation.outputs),
-    privateMaterial: prepareDurableCustodyExactArtifact(operation),
-  };
-  const facts = createDurableProofOperationFacts({
-    unit: "msat",
-    binding: { kind: "wallet", activityId: input.operationId, stage: "ctf-redeem" },
-    horizon: { notBeforeMs: null, notAfterMs: null, safetyMarginMs: 0 },
-    hasOutputs: true,
-    inputKeysetRequirement: "required",
+  const prepared = prepareDurableCustodyMintOperationAuthority({
+    operation,
     keysets: [
+      ...keysets,
       {
-        keysetId: input.proofs[0]!.id!,
+        canonicalMintUrl: input.mintUrl,
+        id: regularId,
         unit: "msat",
-        curve: "secp256k1",
-        publicKeys: { "1": input.publicKey },
-        keysetExpiryMs: null,
-        requireDleq: false,
-        usedByInputs: true,
-        usedByOutputs: true,
+        keys: { "1": input.publicKey },
+        inputFeePpk: 0,
+        finalExpiry: null,
+        identity: { kind: "regular" },
       },
     ],
   });
+  const artifacts = {
+    requestBody: prepared.exactRequest,
+    output: prepared.exactOutput,
+    privateMaterial: prepared.exactAuthority,
+  };
+  const facts = {
+    ...prepared.facts,
+    binding: {
+      kind: "wallet" as const,
+      activityId: input.operationId,
+      stage: "ctf-redeem" as const,
+    },
+    horizon: { ...prepared.facts.horizon, notBeforeMs: null, notAfterMs: null, safetyMarginMs: 0 },
+  };
   const record = createDurableCustodyProofOperation({
     scope: input.scope,
     operation,
@@ -107,6 +164,15 @@ export async function commitBrowserCtfTerminalOperation(input: {
     transportProvenance: "authenticated-mint-transport",
     transportOperationId: record.operation.retainedOperationKey,
     rejectionBody: { code: 13015 },
+    losingAuthority: prepareCtfVerifiedLosingAuthority({
+      resolution: oracle.context,
+      operationId: input.operationId,
+      mintUrl: input.mintUrl,
+      conditionId: held.conditionId,
+      outcomeCollection: held.outcomeCollection,
+      inputs: input.proofs,
+      inputKeysets: keysets,
+    }),
     predecessorDisposition: "retain",
     selectedSuccessorProofIds: [],
   });
@@ -136,6 +202,7 @@ export async function commitBrowserCtfTerminalOperation(input: {
   return {
     operationId,
     rejection,
+    exactAuthority: artifacts.privateMaterial,
     rejectionReferenceArtifactId:
       committed.operation.terminalMintRejection.exactRejection.artifactId,
   };

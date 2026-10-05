@@ -2786,7 +2786,12 @@ function sameTerminalAuthority(
 ): boolean {
   if (left === null || right === null) return left === right;
   if (left.kind !== right.kind) return false;
-  if (left.kind === "remote-seal") return right.kind === "remote-seal";
+  if (left.kind === "remote-seal" || left.kind === "remote-refusal-history") {
+    return (
+      right.kind === left.kind &&
+      JSON.stringify(left.terminalSeal) === JSON.stringify(right.terminalSeal)
+    );
+  }
   return right.kind === "local-operation" && left.operationId === right.operationId;
 }
 

@@ -1,6 +1,15 @@
+import { authorizeEncryptedWalletBackupV2RemoteRefusalHistoryPreservation } from "@bitcaster/client-sdk/encryptedWalletBackupV2ProofSet";
+import {
+  prepareBrowserEncryptedWalletBackupV2AssetBundle,
+  readBrowserEncryptedWalletBackupV2AssetSnapshot,
+} from "../../stores/browser-encrypted-wallet-backup-v2-asset-source";
 // @vitest-environment node
 import "fake-indexeddb/auto";
 import Dexie from "dexie";
+import { hkdf } from "@noble/hashes/hkdf.js";
+import { hmac } from "@noble/hashes/hmac.js";
+import { sha256 } from "@noble/hashes/sha2.js";
+import { bytesToHex } from "@noble/hashes/utils.js";
 import { isDeepStrictEqual } from "node:util";
 import {
   Amount,
@@ -20,6 +29,8 @@ import {
   prepareEncryptedWalletBackupV2TransportBundle,
   verifyEncryptedWalletBackupV2RestoredProofSet,
   enumerateEncryptedWalletBackupV2DescriptorPages,
+  type EncryptedWalletBackupV2TerminalSeal,
+  type EncryptedWalletBackupV2PreparedTransportBundle,
   type EncryptedWalletBackupV2CollectedHeadEvidence,
   type EncryptedWalletBackupV2BundleDescriptor,
   type EncryptedWalletBackupV2ProofSetAsset,
@@ -47,7 +58,10 @@ import {
   createBrowserCompletedProofRemovalMarkerRow,
   requireBrowserLiveProofBackupAuthorityTableRow,
 } from "../../stores/browser-proof-backup-authority";
-import { createBrowserCustodyProofRow } from "../../stores/durable-custody-db";
+import {
+  BrowserDurableCustodyAdapter,
+  createBrowserCustodyProofRow,
+} from "../../stores/durable-custody-db";
 import { BitcasterDB, storedProofFromCustodyRow } from "../../stores/proof-db";
 import {
   admitBrowserEncryptedWalletBackupV2AcceptedRemoteAsset,
@@ -229,6 +243,224 @@ describe("browser encrypted wallet backup V2 admission", () => {
       await expectExactRemoteOrigins(database, fixture.input.verified);
     },
   );
+
+  it("admits mixed live and historical proofs without making history spendable", async () => {
+    const fixture = await createFixture(2, CTF_ASSET, {
+      sealedIndices: [0],
+      preserveRefusalHistory: true,
+    });
+    database = fixture.database;
+    await admitBrowserEncryptedWalletBackupV2MixedAsset(fixture.input);
+    const before = await canonicalAdmissionSnapshot(database);
+    const proofs = await database.custodyProofs.toArray();
+    expect(proofs.map(({ selectability }) => selectability).sort()).toEqual([
+      "retained-unverified",
+      "selectable",
+    ]);
+    expect(await database.proofs.count()).toBe(1);
+    const snapshot = await readBrowserEncryptedWalletBackupV2AssetSnapshot({
+      database,
+      scopeId: fixture.scopeId,
+      localAssetKey: encryptedWalletBackupV2LocalAssetKey(fixture.input.asset),
+    });
+    expect(snapshot.refusalHistories).toHaveLength(1);
+    expect(snapshot.losingProofs).toHaveLength(0);
+    expect(snapshot.proofs).toHaveLength(2);
+    const runtime = {
+      subtle: crypto.subtle,
+      getRandomValues: (target: Uint8Array) => crypto.getRandomValues(target),
+    };
+    const keyHandle = await createEncryptedWalletBackupV2KeyHandle({
+      seed: SEED,
+      realm: fixture.input.realm!,
+      runtime,
+    });
+    const bundle = fixture.remoteBundle!;
+    const pages = enumerateEncryptedWalletBackupV2DescriptorPages({
+      head: fixture.input.collectedHeadEvidence!.head,
+      bundles: [bundle.descriptor],
+    });
+    const history = await authorizeEncryptedWalletBackupV2RemoteRefusalHistoryPreservation({
+      seed: SEED,
+      keyHandle,
+      expectedAsset: fixture.input.asset,
+      custodyRevision: 7n,
+      expectedEnrollmentEpoch: 1,
+      runtime,
+      remoteRequest: {
+        origin: "https://backup.example",
+        issuedAtUnixSeconds: 1,
+        expiresAtUnixSeconds: 61,
+        signal: new AbortController().signal,
+        runtime,
+      },
+      remote: {
+        readDescriptorPage: async ({ afterBundleId }) =>
+          pages.find((page) => page.afterBundleId === afterBundleId)!,
+        readObject: async ({ objectId }) =>
+          bundle.objects.find((object) => object.objectId === objectId)!,
+      },
+    });
+    database.close();
+    await database.open();
+    await admitBrowserEncryptedWalletBackupV2MixedAsset(fixture.input);
+    expect(await canonicalAdmissionSnapshot(database)).toEqual(before);
+
+    const received = (await createVerified(1, { asset: CTF_ASSET, counterOffset: 2 })).proofs[0]!;
+    await receiveExistingLocalProof(fixture, received);
+    const changedSnapshot = await readBrowserEncryptedWalletBackupV2AssetSnapshot({
+      database,
+      scopeId: fixture.scopeId,
+      localAssetKey: encryptedWalletBackupV2LocalAssetKey(fixture.input.asset),
+    });
+    const spentSibling = (await database.custodyProofs.toArray()).find(
+      (proof) => proof.proofId === fixture.input.verified.proofs[1]!.proofId,
+    )!;
+    const authority = requireBrowserLiveProofBackupAuthorityTableRow(
+      await database.custodyProofBackupAuthorities.get([fixture.scopeId, spentSibling.proofId]),
+      [fixture.scopeId, spentSibling.proofId],
+    );
+    if (authority === undefined) throw new Error("test live sibling authority is missing");
+    await new BrowserDurableCustodyAdapter(database).retireExactMintSpentProofs({
+      scopeId: fixture.scopeId,
+      candidates: [{ proof: spentSibling, authority }],
+      expectedDesiredAsset: changedSnapshot.desired,
+      observedAtMs: Date.now() + 1,
+    });
+    const replacedSnapshot = await readBrowserEncryptedWalletBackupV2AssetSnapshot({
+      database,
+      scopeId: fixture.scopeId,
+      localAssetKey: encryptedWalletBackupV2LocalAssetKey(fixture.input.asset),
+    });
+    expect(replacedSnapshot.proofs).toHaveLength(2);
+    expect(replacedSnapshot.refusalHistories).toHaveLength(1);
+    expect(changedSnapshot.proofs).toHaveLength(3);
+    expect(changedSnapshot.refusalHistories).toHaveLength(1);
+    const successor = await prepareBrowserEncryptedWalletBackupV2AssetBundle({
+      snapshot: replacedSnapshot,
+      keyHandle,
+      seed: SEED,
+      runtime,
+      remoteRefusalHistory: history,
+    });
+    const recovered = await decryptEncryptedWalletBackupV2ProofSetBundle({
+      keyHandle,
+      seed: SEED,
+      expectedAsset: fixture.input.asset,
+      custodyRevision: BigInt(replacedSnapshot.desired.custodyRevision),
+      runtime,
+      ...successor,
+    });
+    expect(recovered.proofs).toHaveLength(2);
+    expect(recovered.proofs.find(({ terminalSeal }) => terminalSeal?.schemaVersion === 1)).toEqual(
+      expect.objectContaining({
+        proof: fixture.input.verified.proofs[0]!.proof,
+        terminalSeal: fixture.input.verified.proofs[0]!.terminalSeal,
+      }),
+    );
+    expect(recovered.proofs.map(({ proof }) => proof.secret).sort()).toEqual(
+      [fixture.input.verified.proofs[0]!, received].map(({ proof }) => proof.secret).sort(),
+    );
+    const changedState = await canonicalAdmissionSnapshot(database);
+    database.close();
+    await database.open();
+    expect(await canonicalAdmissionSnapshot(database)).toEqual(changedState);
+  });
+
+  it("admits authenticated old refusal history atomically and reopens without losing authority", async () => {
+    const fixture = await createFixture(2, CTF_ASSET, {
+      sealedIndices: [0, 1],
+      preserveRefusalHistory: true,
+    });
+    database = fixture.database;
+    expect(
+      fixture.input.verified.proofs.map(({ selectionAuthority }) => selectionAuthority),
+    ).toEqual(["terminal-refusal-history", "terminal-refusal-history"]);
+    await expect(
+      admitBrowserEncryptedWalletBackupV2SealedAsset({
+        ...fixture.input,
+        fault: "after-authority-before-cache",
+      }),
+    ).rejects.toThrow(/injected cache fault/);
+    expect(await database.custodyProofs.count()).toBe(0);
+    expect(await database.custodyProofBackupAuthorities.count()).toBe(0);
+    expect(await database.encryptedWalletBackupV2DesiredAssets.count()).toBe(0);
+    await admitBrowserEncryptedWalletBackupV2SealedAsset(fixture.input);
+    const snapshot = await readBrowserEncryptedWalletBackupV2AssetSnapshot({
+      database,
+      scopeId: fixture.scopeId,
+      localAssetKey: encryptedWalletBackupV2LocalAssetKey(fixture.input.asset),
+    });
+    expect(snapshot.refusalHistories).toHaveLength(2);
+    expect(snapshot.losingProofs).toHaveLength(0);
+    expect(snapshot.proofs).toHaveLength(2);
+    const before = await canonicalAdmissionSnapshot(database);
+    expect(
+      (await database.custodyProofs.toArray()).every(
+        (proof) =>
+          proof.selectability === "retained-unverified" && proof.reservationOperationId === null,
+      ),
+    ).toBe(true);
+    expect(
+      (await database.custodyProofBackupAuthorities.toArray()).every(
+        (authority) =>
+          "terminalAuthority" in authority &&
+          authority.terminalAuthority?.kind === "remote-refusal-history",
+      ),
+    ).toBe(true);
+    expect(await database.proofs.count()).toBe(0);
+    database.close();
+    await database.open();
+    await admitBrowserEncryptedWalletBackupV2SealedAsset(fixture.input);
+    expect(await canonicalAdmissionSnapshot(database)).toEqual(before);
+    const retained = (await database.custodyProofs.toArray())[0]!;
+    for (const selectability of [
+      "selectable",
+      "locked",
+      "verified-losing",
+      "pending-removal",
+      "spent",
+    ] as const) {
+      await database.custodyProofs.put({
+        ...retained,
+        selectability,
+        reservationOperationId: selectability === "locked" ? "claim:active" : null,
+      });
+      const conflict = await canonicalAdmissionSnapshot(database);
+      await expect(admitBrowserEncryptedWalletBackupV2SealedAsset(fixture.input)).rejects.toThrow();
+      expect(await canonicalAdmissionSnapshot(database)).toEqual(conflict);
+      await database.custodyProofs.put(retained);
+    }
+  });
+
+  it("refuses a changed historical seal without changing admitted custody", async () => {
+    const fixture = await createFixture(1, CTF_ASSET, {
+      sealedIndices: [0],
+      preserveRefusalHistory: true,
+    });
+    database = fixture.database;
+    await admitBrowserEncryptedWalletBackupV2SealedAsset(fixture.input);
+    const authority = (await database.custodyProofBackupAuthorities.toArray())[0]!;
+    if (
+      !("terminalAuthority" in authority) ||
+      authority.terminalAuthority?.kind !== "remote-refusal-history"
+    ) {
+      throw new Error("fixture requires retained history authority");
+    }
+    await database.custodyProofBackupAuthorities.put({
+      ...authority,
+      terminalAuthority: {
+        ...authority.terminalAuthority,
+        terminalSeal: { ...authority.terminalAuthority.terminalSeal, classifiedAtMs: 999 },
+      },
+    });
+    const before = await canonicalAdmissionSnapshot(database);
+    await expect(admitBrowserEncryptedWalletBackupV2SealedAsset(fixture.input)).rejects.toThrow();
+    expect(await canonicalAdmissionSnapshot(database)).toEqual(before);
+    database.close();
+    await database.open();
+    expect(await canonicalAdmissionSnapshot(database)).toEqual(before);
+  });
 
   it("admits paged ordinary proofs, counters, and the exact acknowledged revision atomically", async () => {
     const fixture = await createFixture(65);
@@ -1496,6 +1728,7 @@ async function createFixture(
   asset: EncryptedWalletBackupV2ProofSetAsset = { kind: "ordinary" },
   options: {
     readonly sealedIndices?: readonly number[];
+    readonly preserveRefusalHistory?: true;
     readonly proofAssets?: readonly EncryptedWalletBackupV2ProofSetAsset[];
     readonly transportRoundTrip?: boolean;
     readonly custodyRevision?: bigint;
@@ -1506,8 +1739,10 @@ async function createFixture(
   const unit: "msat" = "msat";
   let collectedHeadEvidence: EncryptedWalletBackupV2CollectedHeadEvidence | undefined;
   let realm: string | undefined;
+  let remoteBundle: EncryptedWalletBackupV2PreparedTransportBundle | undefined;
   const verified = await createVerified(count, { asset, ...options }, (captured) => {
     realm = captured.realm;
+    remoteBundle = captured.prepared;
     const head = createEncryptedWalletBackupV2CurrentHead({
       realm: captured.realm,
       walletId: captured.walletId,
@@ -1530,6 +1765,7 @@ async function createFixture(
   return {
     database,
     scopeId,
+    remoteBundle,
     input: {
       seed: SEED,
       verified,
@@ -1676,11 +1912,13 @@ async function createVerified(
     readonly counterOffset?: number;
     readonly extraCounterKeysetId?: string;
     readonly sealedIndices?: readonly number[];
+    readonly preserveRefusalHistory?: true;
     readonly proofAssets?: readonly EncryptedWalletBackupV2ProofSetAsset[];
     readonly transportRoundTrip?: boolean;
     readonly custodyRevision?: bigint;
   } = {},
   capture?: (input: {
+    readonly prepared: EncryptedWalletBackupV2PreparedTransportBundle;
     readonly descriptor: EncryptedWalletBackupV2BundleDescriptor;
     readonly realm: string;
     readonly walletId: string;
@@ -1722,15 +1960,18 @@ async function createVerified(
     if (!sealedIndices.has(index)) return entry;
     return {
       ...entry,
-      terminalSeal: {
-        schemaVersion: 1 as const,
-        kind: "ctf-verified-losing" as const,
-        operationIdDigest: `${String(index + 1).padStart(2, "0")}`.repeat(32),
-        requestDigest: `${String(index + 3).padStart(2, "0")}`.repeat(32),
-        code: 13015 as const,
-        classifiedAtMs: 1_000 + index,
-        proofCommitment: digestEncryptedWalletBackupV2TerminalProofCommitment(entry),
-      },
+      terminalSeal: admissionSealFixture(
+        {
+          schemaVersion: 1 as const,
+          kind: "ctf-verified-losing" as const,
+          operationIdDigest: `${String(index + 1).padStart(2, "0")}`.repeat(32),
+          requestDigest: `${String(index + 3).padStart(2, "0")}`.repeat(32),
+          code: 13015 as const,
+          classifiedAtMs: 1_000 + index,
+          proofCommitment: digestEncryptedWalletBackupV2TerminalProofCommitment(entry),
+        },
+        options.preserveRefusalHistory === true,
+      ),
     };
   });
   const counterHighWaterMarks = [
@@ -1786,6 +2027,12 @@ async function createVerified(
               entry.terminalSeal.code,
               entry.terminalSeal.classifiedAtMs,
               entry.terminalSeal.proofCommitment,
+              ...(entry.terminalSeal.schemaVersion === 2
+                ? [
+                    entry.terminalSeal.verifiedContextDigest!,
+                    entry.terminalSeal.authenticationCode!,
+                  ]
+                : []),
             ]
           : null,
       ]),
@@ -1809,6 +2056,7 @@ async function createVerified(
       runtime,
     });
     capture?.({
+      prepared,
       descriptor: prepared.descriptor,
       realm: keyHandle.realm,
       walletId: keyHandle.walletId,
@@ -1824,6 +2072,7 @@ async function createVerified(
   }
   return verifyEncryptedWalletBackupV2RestoredProofSet({
     seed: SEED,
+    preserveRefusalHistory: options.preserveRefusalHistory,
     expectedAsset: createEncryptedWalletBackupV2AssetIdentity({ mintUrl: MINT, unit, asset }),
     unverified,
     port: {
@@ -2009,4 +2258,44 @@ async function expectDesired(
   await expect(
     database.encryptedWalletBackupV2DesiredAssets.get([fixture.scopeId, desired.localAssetKey]),
   ).resolves.toEqual({ ...desired, syncState: "acknowledged" });
+}
+
+function admissionSealFixture(
+  old: EncryptedWalletBackupV2TerminalSeal,
+  history: boolean,
+): EncryptedWalletBackupV2TerminalSeal {
+  if (history) return old;
+  // Fixed authenticated boundary material; SDK tests cover committed issuance.
+  const fields = {
+    ...old,
+    schemaVersion: 2 as const,
+    kind: "ctf-verified-losing-v2" as const,
+    verifiedContextDigest: "44".repeat(32),
+  };
+  const encoder = new TextEncoder();
+  const key = hkdf(
+    sha256,
+    SEED,
+    encoder.encode("bitcaster/encrypted-wallet-backup/hkdf-salt/v2"),
+    encoder.encode("bitcaster/encrypted-wallet-backup/verified-losing-seal/v2"),
+    32,
+  );
+  const authenticationCode = bytesToHex(
+    hmac(
+      sha256,
+      key,
+      encodeCanonicalBackupCbor([
+        "bitcaster:verified-losing-seal-authentication:v2",
+        fields.schemaVersion,
+        fields.kind,
+        fields.operationIdDigest,
+        fields.requestDigest,
+        fields.code,
+        fields.classifiedAtMs,
+        fields.proofCommitment,
+        fields.verifiedContextDigest,
+      ]),
+    ),
+  );
+  return { ...fields, authenticationCode };
 }

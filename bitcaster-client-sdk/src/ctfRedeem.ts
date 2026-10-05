@@ -1,3 +1,11 @@
+import type { DurableCustodyMintKeysetAuthority } from './durableCustodyMintResult.ts'
+import {
+  prepareCtfVerifiedLosingAuthority,
+  requireCtfVerifiedLosingAuthority,
+  requireVerifiedConditionOracleEvidence,
+  type ConditionOracleResolutionContext,
+  type CtfVerifiedLosingAuthority,
+} from './conditionOracleEvidence.ts'
 import {
   Amount,
   CheckStateEnum,
@@ -10,6 +18,7 @@ import {
   splitAmount,
   type CounterSource,
   type MintKeys,
+  type Mint,
   type MintKeyset,
   type OutputDataLike,
   type Proof,
@@ -55,13 +64,7 @@ import {
 
 export { canonicalProofOperationMintIdentity } from './ctfProofOperationAuthority.ts'
 
-/**
- * Shared NUT-CTF redeem helpers.
- *
- * The mint is the sole authority that can condemn an outcome-token leg. The
- * terminal CDK error code below means the keyset's outcome collection does not
- * include the oracle-attested outcome.
- */
+/** Authenticated refusal is history. Exact verified oracle evidence establishes losing authority. */
 export const ORACLE_NOT_ATTESTED_OUTCOME_CODE = 13015
 
 const authenticatedCtfRedeemTerminalEvidence = new WeakSet<object>()
@@ -71,6 +74,7 @@ export interface AuthenticatedCtfRedeemTerminalEvidence {
   readonly operationId: string
   readonly normalizedMint: string
   readonly rejectionBody: { readonly code: typeof ORACLE_NOT_ATTESTED_OUTCOME_CODE }
+  readonly losingAuthority?: CtfVerifiedLosingAuthority
 }
 
 export function readAuthenticatedCtfRedeemTerminalEvidence(
@@ -80,6 +84,7 @@ export function readAuthenticatedCtfRedeemTerminalEvidence(
   operationId: string
   normalizedMint: string
   rejectionBody: { code: typeof ORACLE_NOT_ATTESTED_OUTCOME_CODE }
+  losingAuthority?: CtfVerifiedLosingAuthority
 } {
   if (
     !authenticatedCtfRedeemTerminalEvidence.has(evidence) ||
@@ -88,7 +93,7 @@ export function readAuthenticatedCtfRedeemTerminalEvidence(
     evidence.operationId.length === 0 ||
     evidence.normalizedMint !== canonicalProofOperationMintIdentity(evidence.normalizedMint) ||
     evidence.rejectionBody?.code !== ORACLE_NOT_ATTESTED_OUTCOME_CODE ||
-    Object.keys(evidence).length !== 4 ||
+    Object.keys(evidence).length !== (evidence.losingAuthority === undefined ? 4 : 5) ||
     Object.keys(evidence.rejectionBody).length !== 1
   ) {
     throw new Error('authenticated CTF redeem terminal evidence is invalid')
@@ -98,6 +103,9 @@ export function readAuthenticatedCtfRedeemTerminalEvidence(
     operationId: evidence.operationId,
     normalizedMint: evidence.normalizedMint,
     rejectionBody: { code: evidence.rejectionBody.code },
+    ...(evidence.losingAuthority === undefined
+      ? {}
+      : { losingAuthority: requireCtfVerifiedLosingAuthority(evidence.losingAuthority) }),
   }
 }
 
@@ -129,7 +137,14 @@ export async function readVerifiedCtfLosingOutcomeEvidence(input: {
       ) {
         throw new Error('CTF losing outcome evidence is invalid')
       }
-      issued = issueAuthenticatedCtfRedeemTerminalEvidence(operation.operationId, operation.mintUrl)
+      const losingAuthority = losingAuthorityForOperation(operation)
+      if (losingAuthority === undefined)
+        throw new Error('CTF refusal has no verified losing authority')
+      issued = issueAuthenticatedCtfRedeemTerminalEvidence(
+        operation.operationId,
+        operation.mintUrl,
+        losingAuthority,
+      )
       return issued
     })
   } finally {
@@ -146,6 +161,7 @@ export interface RedeemWallet {
   mint?: {
     getKeySets(): Promise<{ keysets: MintKeyset[] }>
     getKeys(keysetId?: string): Promise<{ keysets: MintKeys[] }>
+    getCtfCondition?: Mint['getCtfCondition']
   }
   redeemOutcomeProofs(options: { inputs: Proof[]; outputs: OutputDataLike[] }): Promise<Proof[]>
   checkProofsStates?(proofs: Array<Pick<Proof, 'id' | 'secret'>>): Promise<ProofState[]>
@@ -154,6 +170,7 @@ export interface RedeemWallet {
 export interface RedeemOutcomeLegResult {
   proofs: Proof[]
   losing: boolean
+  refused?: boolean
 }
 
 export interface CtfRedeemInputKeysetAuthority {
@@ -171,6 +188,8 @@ export interface PrepareDurableCtfRedeemInput {
   readonly regularKeyset: MintKeys
   readonly inputs: readonly Proof[]
   readonly oracleWitness: string
+  readonly oracleResolutionContext?: ConditionOracleResolutionContext
+  readonly oracleInputKeysets?: readonly DurableCustodyMintKeysetAuthority[]
   readonly seed: Uint8Array
   readonly counterSource: CounterSource
 }
@@ -262,6 +281,12 @@ export async function prepareDurableCtfRedeemOperation(
         netOutputSubunits,
         outcomeInputFeePpk,
         oracleWitness: witness,
+        ...(input.oracleResolutionContext === undefined
+          ? {}
+          : { oracleResolutionContext: input.oracleResolutionContext }),
+        ...(input.oracleInputKeysets === undefined
+          ? {}
+          : { oracleInputKeysets: input.oracleInputKeysets }),
         seedOutputPlan: planned.plan,
       },
     },
@@ -393,6 +418,7 @@ export async function executePreparedDurableCtfRedeem(input: {
 }): Promise<
   | { readonly kind: 'redeemed'; readonly proofs: Proof[] }
   | { readonly kind: 'losing'; readonly evidence: AuthenticatedCtfRedeemTerminalEvidence }
+  | { readonly kind: 'refused'; readonly evidence: AuthenticatedCtfRedeemTerminalEvidence }
 > {
   const request = readPreparedDurableCtfRedeemRequest(input)
   await input.wallet.loadMint()
@@ -400,18 +426,23 @@ export async function executePreparedDurableCtfRedeem(input: {
     return {
       kind: 'redeemed',
       proofs: await input.wallet.redeemOutcomeProofs({
-        inputs: withOracleWitness(request.inputs, request.oracleWitness),
+        inputs: withOracleWitness(
+          request.inputs,
+          verifiedWitness(input.operation, request.oracleWitness),
+        ),
         outputs: [...request.outputs],
       }),
     }
   } catch (error) {
     if (!isLosingLegError(error)) throw error
+    const losingAuthority = losingAuthorityForOperation(input.operation)
     return {
-      kind: 'losing',
+      kind: losingAuthority === undefined ? 'refused' : 'losing',
       evidence: captureAuthenticatedCtfRedeemTerminalEvidence(
         error,
         input.operation.operationId,
         input.operation.mintUrl,
+        losingAuthority,
       ),
     }
   }
@@ -464,6 +495,8 @@ interface RedeemOutcomeLegWithOperationParams {
   outcomeKeysetId?: string
   unit: string
   oracleWitness: string
+  oracleResolutionContext?: ConditionOracleResolutionContext
+  oracleInputKeysets?: readonly DurableCustodyMintKeysetAuthority[]
   proofs: Proof[]
   outcomeKeyset?: CtfRedeemInputKeysetAuthority
   regularKeyset?: MintKeys
@@ -588,6 +621,12 @@ async function prepareAndExecuteCtfRedeem(
       regularKeysetId: regularKeyset.id,
       unit: params.unit,
       oracleWitness: params.oracleWitness,
+      ...(params.oracleResolutionContext === undefined
+        ? {}
+        : { oracleResolutionContext: params.oracleResolutionContext }),
+      ...(params.oracleInputKeysets === undefined
+        ? {}
+        : { oracleInputKeysets: params.oracleInputKeysets }),
     },
   })
 
@@ -835,6 +874,7 @@ function requirePositiveSafeInteger(value: unknown, context: string): number {
 }
 
 function requireBoundedOracleWitness(value: unknown): string {
+  if (value === '') return ''
   const witness = requireText(value, 'CTF redeem oracle witness')
   if (new TextEncoder().encode(witness).length > DURABLE_CUSTODY_COMPOSITE_ID_LIMIT_MAX) {
     throw new Error('CTF redeem oracle witness record byte limit exceeded')
@@ -866,12 +906,12 @@ async function resumeCtfRedeem(params: {
     }
   }
   if (entry.state === 'Failed') {
-    if (entry.failureCode === ORACLE_NOT_ATTESTED_OUTCOME_CODE) {
-      return { proofs: [], losing: true }
+    if (entry.failureCode !== ORACLE_NOT_ATTESTED_OUTCOME_CODE) {
+      throw new Error(`CTF redeem ${entry.operationId} has a non-refusal failure`)
     }
-    throw new Error(
-      `CTF redeem ${entry.operationId} failed with non-losing failure code ${entry.failureCode ?? 'unknown'}; refusing to condemn proofs`,
-    )
+    const losingAuthority = losingAuthorityForOperation(entry)
+    if (losingAuthority !== undefined) return { proofs: [], losing: true }
+    // Historical code-only failures still need exact input/output recovery.
   }
   await params.wallet.loadMint()
   if (!params.wallet.checkProofsStates) {
@@ -991,10 +1031,13 @@ async function executeCtfRedeem(params: {
   oracleWitness: string
   onLosingLeg?: (inputs: Proof[]) => Promise<void>
 }): Promise<RedeemOutcomeLegResult> {
+  const operation = await params.proofOperationStore.getProofOperation(params.operationId)
+  if (operation === null || operation === undefined)
+    throw new Error('CTF redeem authority is absent')
   let settled: Proof[]
   try {
     settled = await params.wallet.redeemOutcomeProofs({
-      inputs: withOracleWitness(params.inputs, params.oracleWitness),
+      inputs: withOracleWitness(params.inputs, verifiedWitness(operation, params.oracleWitness)),
       outputs: params.outputData,
     })
   } catch (error) {
@@ -1002,13 +1045,24 @@ async function executeCtfRedeem(params: {
       if (!params.proofOperationStore.markProofOperationFailed) {
         throw new Error('proof operation store does not support terminal redeem failures')
       }
-      await params.onLosingLeg?.(params.inputs)
-      await params.proofOperationStore.markProofOperationFailed(
-        params.operationId,
-        'losing leg: mint returned OracleNotAttestedOutcome (13015)',
-        captureAuthenticatedCtfRedeemTerminalEvidence(error, params.operationId, params.mintUrl),
-      )
-      return { proofs: [], losing: true }
+      const losingAuthority = losingAuthorityForOperation(operation)
+      if (losingAuthority !== undefined) await params.onLosingLeg?.(params.inputs)
+      if (losingAuthority !== undefined)
+        await params.proofOperationStore.markProofOperationFailed(
+          params.operationId,
+          'losing leg: mint returned OracleNotAttestedOutcome (13015)',
+          captureAuthenticatedCtfRedeemTerminalEvidence(
+            error,
+            params.operationId,
+            params.mintUrl,
+            losingAuthority,
+          ),
+        )
+      return {
+        proofs: [],
+        losing: losingAuthority !== undefined,
+        ...(losingAuthority === undefined ? { refused: true } : {}),
+      }
     }
     throw error
   }
@@ -1028,27 +1082,83 @@ function captureAuthenticatedCtfRedeemTerminalEvidence(
   error: unknown,
   operationId: string,
   mintUrl: string,
+  losingAuthority?: CtfVerifiedLosingAuthority,
 ): AuthenticatedCtfRedeemTerminalEvidence {
   if (!isLosingLegError(error)) {
     throw new Error('CTF redeem error is not an authenticated terminal rejection')
   }
-  return issueAuthenticatedCtfRedeemTerminalEvidence(operationId, mintUrl)
+  return issueAuthenticatedCtfRedeemTerminalEvidence(operationId, mintUrl, losingAuthority)
 }
 
 function issueAuthenticatedCtfRedeemTerminalEvidence(
   operationId: string,
   mintUrl: string,
+  losingAuthority?: CtfVerifiedLosingAuthority,
 ): AuthenticatedCtfRedeemTerminalEvidence {
   const evidence = Object.freeze({
     transportProvenance: 'authenticated-mint-transport' as const,
     operationId,
     normalizedMint: canonicalProofOperationMintIdentity(mintUrl),
     rejectionBody: Object.freeze({ code: ORACLE_NOT_ATTESTED_OUTCOME_CODE }),
+    ...(losingAuthority === undefined
+      ? {}
+      : { losingAuthority: requireCtfVerifiedLosingAuthority(losingAuthority) }),
   })
   authenticatedCtfRedeemTerminalEvidence.add(evidence)
   return evidence
 }
 
 function withOracleWitness(proofs: Proof[], witnessJson: string): Proof[] {
-  return proofs.map((proof) => ({ ...proof, witness: witnessJson }))
+  return proofs.map(({ witness: _oldWitness, ...proof }) =>
+    witnessJson === '' ? proof : { ...proof, witness: witnessJson },
+  )
+}
+
+function verifiedWitness(
+  operation: { mintUrl: string; metadata?: Record<string, unknown> },
+  witness: string,
+): string {
+  try {
+    const metadata = operation.metadata
+    const context = metadata?.oracleResolutionContext as
+      | ConditionOracleResolutionContext
+      | undefined
+    if (context === undefined) return ''
+    const verified = requireVerifiedConditionOracleEvidence(context)
+    if (
+      verified.context.registered.normalizedMint !==
+        canonicalProofOperationMintIdentity(operation.mintUrl) ||
+      verified.context.registered.conditionId !== metadata?.conditionId ||
+      verified.context.registered.unit !== metadata?.unit
+    )
+      return ''
+    return verified.canonicalOracleWitness === witness ? witness : ''
+  } catch {
+    return ''
+  }
+}
+
+function losingAuthorityForOperation(operation: {
+  operationId: string
+  mintUrl: string
+  inputs: readonly unknown[]
+  metadata?: Record<string, unknown>
+}): CtfVerifiedLosingAuthority | undefined {
+  try {
+    const metadata = operation.metadata
+    if (metadata?.oracleResolutionContext === undefined) return undefined
+    return prepareCtfVerifiedLosingAuthority({
+      resolution: metadata.oracleResolutionContext as ConditionOracleResolutionContext,
+      operationId: operation.operationId,
+      mintUrl: operation.mintUrl,
+      conditionId: metadata.conditionId as string,
+      outcomeCollection: (metadata.outcomeCollection ??
+        metadata.outcomeSetId ??
+        metadata.outcome) as string,
+      inputs: operation.inputs as Proof[],
+      inputKeysets: metadata.oracleInputKeysets as readonly DurableCustodyMintKeysetAuthority[],
+    })
+  } catch {
+    return undefined
+  }
 }

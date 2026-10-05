@@ -140,7 +140,7 @@ test('prepared CTF redeem execution uses the persisted request and classifies on
     wallet,
   })
   assert.equal(result.kind, 'redeemed')
-  assert.equal(submittedInputWitness, '{"attestation":"witness"}')
+  assert.equal(submittedInputWitness, undefined)
   assert.equal(submittedOutput, prepared.outputData[0]?.blindedMessage.B_)
 
   const losing = await executePreparedDurableCtfRedeem({
@@ -154,8 +154,8 @@ test('prepared CTF redeem execution uses the persisted request and classifies on
       },
     },
   })
-  assert.equal(losing.kind, 'losing')
-  if (losing.kind !== 'losing') throw new Error('expected losing evidence')
+  assert.equal(losing.kind, 'refused')
+  if (losing.kind !== 'refused') throw new Error('expected refusal history')
   assert.equal(
     readAuthenticatedCtfRedeemTerminalEvidence(losing.evidence).operationId,
     prepared.operation.operationId,

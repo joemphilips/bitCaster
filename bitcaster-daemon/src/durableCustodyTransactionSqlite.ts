@@ -9,6 +9,8 @@ import {
   type DurableCustodyTransaction,
   type DurableCustodyTransition,
 } from '@bitcaster-market/client-sdk/durableCustody'
+import { assertDurableCustodyVerifiedLosingAuthority } from '@bitcaster-market/client-sdk/durableCustodyMintResult'
+import type { CtfVerifiedLosingAuthority } from '@bitcaster-market/client-sdk/conditionOracleEvidence'
 import { DurableCustodySqliteStore } from './durableCustodySqliteStore.ts'
 import type { CustodyProofSqliteRow } from './durableCustodySqliteStore.ts'
 
@@ -355,6 +357,18 @@ export class DurableCustodyTransactionSqlite implements DurableCustodyTransactio
     >[0],
   ): void => {
     const current = this.#requiredOperation(input.operationId, input.expectedRevision)
+    const original = this.#store.getArtifact({
+      scopeId: current.scope.scopeId,
+      operationId: current.operation.operationId,
+      expectedOperationRevision: current.revision,
+      reference: current.operation.privateMaterial.exactPrivateMaterial,
+    })
+    const losing = (
+      input.exactRejection.artifact as { losingAuthority?: CtfVerifiedLosingAuthority }
+    ).losingAuthority
+    if (original === null || losing === undefined)
+      throw new Error('custody terminal rejection lacks original losing authority')
+    assertDurableCustodyVerifiedLosingAuthority(current, original.artifact, losing)
     this.#database.exec('SAVEPOINT custody_terminal_mint_rejection')
     try {
       this.#applyTransition(input.operationId, input.expectedRevision, {

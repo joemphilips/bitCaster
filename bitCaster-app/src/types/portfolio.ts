@@ -84,6 +84,8 @@ export interface Position {
   /** Persisted accent for one primitive categorical outcome. */
   outcomeColor?: string;
   canClaimPayout?: boolean;
+  /** Retained conditional face amount; excluded from action and value amounts. */
+  retainedUnverifiedAmountSubunits?: number;
   claimRecoveryPending?: boolean;
   removalPending?: boolean;
   canDiscard?: boolean;
