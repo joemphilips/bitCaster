@@ -1,3 +1,4 @@
+import { installCreatorDocumentLocks, seedCreatorMarkets } from "@/test/creatorDocumentLocks";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useCreatorMarketsStore } from "@/stores/creatorMarkets";
@@ -26,10 +27,11 @@ const FAKE_PUBKEY = "a".repeat(64);
 const CONDITION_A = "c".repeat(64);
 const CONDITION_B = "d".repeat(64);
 
-beforeEach(() => {
+beforeEach(async () => {
+  installCreatorDocumentLocks();
   mockFetchCreatorMarkets.mockReset();
   mockResolveCreatorPubkey.mockReset();
-  useCreatorMarketsStore.setState({ markets: [] });
+  await seedCreatorMarkets({ markets: [] });
   useSettingsStore.setState({
     nostrSignerMode: "none",
     nsecSecret: null,
@@ -59,7 +61,7 @@ describe("useCreatorDashboardState", () => {
       nsecSecret: "11".repeat(32),
       nostrProfile: null,
     });
-    useCreatorMarketsStore.setState({
+    await seedCreatorMarkets({
       markets: [
         {
           conditionId: CONDITION_A,
@@ -122,7 +124,7 @@ describe("useCreatorDashboardState", () => {
       nsecSecret: "11".repeat(32),
       nostrProfile: null,
     });
-    useCreatorMarketsStore.setState({
+    await seedCreatorMarkets({
       markets: [
         {
           conditionId: CONDITION_A,
@@ -171,7 +173,7 @@ describe("useCreatorDashboardState", () => {
       nsecSecret: "11".repeat(32),
       nostrProfile: null,
     });
-    useCreatorMarketsStore.setState({
+    await seedCreatorMarkets({
       markets: [
         {
           conditionId: CONDITION_A,
@@ -243,7 +245,7 @@ describe("useCreatorDashboardState", () => {
         baseAsset: "sat" as const,
         divisibility: 1_000 as const,
       };
-      useCreatorMarketsStore.setState({ markets: [local] });
+      await seedCreatorMarkets({ markets: [local] });
       const closed = {
         conditionId: CONDITION_A,
         totalVolumeSubunits: 75_000,
@@ -264,8 +266,8 @@ describe("useCreatorDashboardState", () => {
               ? []
               : [{ ...closed, state: "open", totalVolumeSubunits: 1_000 }],
         });
-      act(() => {
-        useCreatorMarketsStore
+      await act(async () => {
+        await useCreatorMarketsStore
           .getState()
           .replace([{ ...local, title: "Relay-restored closed market" }]);
         result.current.refresh();
@@ -301,7 +303,7 @@ describe("useCreatorDashboardState", () => {
         baseAsset: "sat" as const,
         divisibility: 1_000 as const,
       };
-      useCreatorMarketsStore.setState({ markets: [local, { ...local, conditionId: CONDITION_B }] });
+      await seedCreatorMarkets({ markets: [local, { ...local, conditionId: CONDITION_B }] });
       const closed = {
         conditionId: CONDITION_A,
         totalVolumeSubunits: 75_000,
@@ -348,7 +350,7 @@ describe("useCreatorDashboardState", () => {
 
   it("clears old-creator closure and ignores a late old-creator response", async () => {
     useSettingsStore.setState({ nostrSignerMode: "nsec", nsecSecret: "11".repeat(32) });
-    useCreatorMarketsStore.setState({
+    await seedCreatorMarkets({
       markets: [
         {
           conditionId: CONDITION_A,
@@ -400,7 +402,7 @@ describe("useCreatorDashboardState", () => {
 
   it("does not treat a local attestation as engine lifecycle or volume", async () => {
     useSettingsStore.setState({ nostrSignerMode: "nsec", nsecSecret: "11".repeat(32) });
-    useCreatorMarketsStore.setState({
+    await seedCreatorMarkets({
       markets: [
         {
           conditionId: CONDITION_A,

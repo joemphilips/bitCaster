@@ -1,8 +1,12 @@
 import { create } from "zustand";
-import { createJSONStorage, persist, type StateStorage } from "zustand/middleware";
+import type { StateStorage } from "zustand/middleware";
+import type { OracleBackupRecord } from "@bitcaster/client-sdk";
+import { announcementContentFromTlv } from "@bitcaster/client-sdk/oracleAnnouncementEncoding";
 import type { ProductMarketDivisibility } from "@/types/market";
 import {
   snapshotOraclePublicationRecord,
+  mergeOraclePublicationRecords,
+  type OraclePublicationBinding,
   type OraclePublicationRecord,
   type OraclePublicationFailureStage,
   type OraclePublicationStore,
@@ -46,6 +50,8 @@ export interface StoredCreatorMarket {
 
 export interface StoredCreatorOracleMetadata {
   type: "self";
+  destinations?: BrowserOracleDestinations;
+  importComplete?: boolean;
   /** DLC oracle event_id passed to kormir when the announcement was created. */
   eventId: string;
   /** Nostr kind-88 event id for the announcement, used by NIP-88 kind-89 e-tags. */
@@ -56,22 +62,7 @@ export interface StoredCreatorOracleMetadata {
   engineBaseUrl?: string;
   /** Enum outcomes the oracle can attest. Numeric self-oracle markets are not supported yet. */
   outcomes: string[];
-  /**
-   * TLV-hex of the kormir DLC oracle_announcement (the kind-88 payload).
-   *
-   * Recovery durability (P22 B1b): kormir's IndexedDB holds the per-event
-   * nonce index needed to re-sign the committed-nonce attestation, but
-   * `Kormir.restore(nsec)` wipes that store, so a fresh browser profile cannot
-   * resolve a previously-created self-oracle market. The announcement carries
-   * the committed nonce point(s) `R`; combined with the (restored) oracle nsec
-   * it is sufficient material to re-derive the nonce index (deterministic
-   * BIP32 scan) and re-sign. Persisted here — and mirrored through the
-   * NIP-78 creator-markets event — so the data survives a device swap.
-   *
-   * Public protocol artifact (already broadcast as the kind-88 event), so it
-   * is NOT Secret-class. The oracle nsec it pairs with is managed by the
-   * settings/login path and is never stored here.
-   */
+  /** Exact public announcement bytes. Private per-event authority remains in Kormir. */
   announcementHex?: string;
   /** Hex-encoded oracle_attestation returned by kormir after resolution signing. */
   attestationHex?: string;
@@ -90,33 +81,65 @@ export interface StoredCreatorOracleMetadata {
   publicationFailures?: OraclePublicationFailureStage[];
 }
 
-interface CreatorMarketsState {
+export type BrowserOracleDestinations = OracleBackupRecord["destinations"];
+export interface StoredImportedOracleMetadata {
+  binding: OraclePublicationBinding;
+  announcementHex: string;
+  destinations: BrowserOracleDestinations;
+  publication: OraclePublicationRecord | null;
+  importComplete: boolean;
+  explanationDraft?: string;
+  publicationFailures?: OraclePublicationFailureStage[];
+}
+export type BrowserOracleOwner =
+  | { kind: "created"; market: StoredCreatorMarket }
+  | { kind: "imported"; oracle: StoredImportedOracleMetadata };
+export interface BrowserOracleImportMetadata {
+  binding: OraclePublicationBinding;
+  announcementHex: string;
+  destinations: BrowserOracleDestinations;
+}
+export interface BrowserOracleLockedPort {
+  readOwner(conditionId: string): Promise<BrowserOracleOwner | null>;
+  read(conditionId: string): Promise<OraclePublicationRecord | null>;
+  save(conditionId: string, publication: OraclePublicationRecord): Promise<OraclePublicationRecord>;
+  readDraft(conditionId: string): Promise<string | undefined>;
+  saveDraft(conditionId: string, text: string): Promise<void>;
+  retainImportMetadata(input: BrowserOracleImportMetadata): Promise<BrowserOracleOwner>;
+  markImportComplete(conditionId: string): Promise<void>;
+  retainPreparation(conditionId: string, oracle: StoredCreatorOracleMetadata): Promise<void>;
+}
+export interface CreatorDocument {
   markets: StoredCreatorMarket[];
-  /** Insert a market created via the wizard. Deduplicates on `conditionId`. */
-  addCreatedMarket: (market: StoredCreatorMarket) => void;
-  saveCreatedMarket: (market: StoredCreatorMarket) => Promise<void>;
-  /** Remove a market from the local record (e.g. after a user hides it). */
-  removeCreatedMarket: (conditionId: string) => void;
-  /** Replace the entire set wholesale — used by `useCreatorSync` after a NIP-78 fetch. */
-  replace: (markets: StoredCreatorMarket[]) => void;
-  /** Clear all entries. Exposed primarily for tests and logout flows. */
-  clear: () => void;
-  hasOraclePersistence: () => boolean;
-  readOraclePublication: (conditionId: string) => Promise<OraclePublicationRecord | null>;
-  readOracleExplanationDraft: (conditionId: string) => Promise<string | undefined>;
-  saveOraclePublication: (
+  importedOracles: StoredImportedOracleMetadata[];
+}
+export interface CreatorDocumentLocks {
+  request<T>(name: string, callback: () => Promise<T>): Promise<T>;
+}
+interface CreatorMarketsState extends CreatorDocument {
+  addCreatedMarket(market: StoredCreatorMarket): Promise<void>;
+  saveCreatedMarket(market: StoredCreatorMarket): Promise<void>;
+  removeCreatedMarket(conditionId: string): Promise<void>;
+  replace(markets: StoredCreatorMarket[]): Promise<void>;
+  mergeRemoteMarkets(markets: StoredCreatorMarket[]): Promise<StoredCreatorMarket[]>;
+  clear(): Promise<void>;
+  hasOraclePersistence(): boolean;
+  readOracleOwner(conditionId: string): Promise<BrowserOracleOwner | null>;
+  readOraclePublication(conditionId: string): Promise<OraclePublicationRecord | null>;
+  readOracleExplanationDraft(conditionId: string): Promise<string | undefined>;
+  saveOraclePublication(
     conditionId: string,
     publication: OraclePublicationRecord,
-  ) => Promise<OraclePublicationRecord>;
-  retainOraclePreparation: (
-    conditionId: string,
-    oracle: StoredCreatorOracleMetadata,
-  ) => Promise<void>;
-  saveOracleExplanationDraft: (conditionId: string, text: string) => Promise<void>;
-  saveOraclePublicationFailures: (
+  ): Promise<OraclePublicationRecord>;
+  retainImportedOracleMetadata(input: BrowserOracleImportMetadata): Promise<BrowserOracleOwner>;
+  markOracleImportComplete(conditionId: string): Promise<void>;
+  retainOraclePreparation(conditionId: string, oracle: StoredCreatorOracleMetadata): Promise<void>;
+  saveOracleExplanationDraft(conditionId: string, text: string): Promise<void>;
+  saveOraclePublicationFailures(
     conditionId: string,
     failures: readonly OraclePublicationFailureStage[],
-  ) => void;
+  ): Promise<void>;
+  withOracleMutation<T>(action: (locked: BrowserOracleLockedPort) => Promise<T>): Promise<T>;
 }
 
 function creatorOracleEqual(
@@ -158,39 +181,6 @@ export function creatorOraclePublication(
     explanationEventJson: oracle.explanationEventJson ?? null,
     explanationRelayPublished: oracle.explanationRelayPublished ?? false,
   });
-}
-
-function assertPublicationReplacement(
-  market: StoredCreatorMarket,
-  exact: OraclePublicationRecord,
-): void {
-  const oracle = market.oracle;
-  if (
-    !oracle ||
-    market.conditionId !== exact.binding.conditionId ||
-    oracle.eventId !== exact.binding.oracleEventId ||
-    JSON.stringify(oracle.outcomes) !== JSON.stringify(exact.binding.outcomes) ||
-    oracle.announcementEventJson !== exact.binding.announcementEventJson ||
-    (oracle.oraclePubkey && oracle.oraclePubkey !== exact.binding.oraclePubkey)
-  )
-    throw new Error("Saved oracle binding cannot change.");
-  if (oracle.attestedOutcome && oracle.attestedOutcome !== exact.chosenOutcome)
-    throw new Error("An already-signed oracle outcome cannot change.");
-  const previous = creatorOraclePublication(market);
-  if (
-    previous !== null &&
-    (JSON.stringify(previous.binding) !== JSON.stringify(exact.binding) ||
-      previous.chosenOutcome !== exact.chosenOutcome ||
-      (previous.attestation !== null &&
-        JSON.stringify(previous.attestation) !== JSON.stringify(exact.attestation)) ||
-      (previous.explanationEventJson !== null &&
-        previous.explanationEventJson !== exact.explanationEventJson) ||
-      (previous.relayPublished && !exact.relayPublished) ||
-      (previous.engineEvidence !== null &&
-        JSON.stringify(previous.engineEvidence) !== JSON.stringify(exact.engineEvidence)) ||
-      (previous.explanationRelayPublished && !exact.explanationRelayPublished))
-  )
-    throw new Error("Immutable oracle publication conflicts with saved state.");
 }
 
 function oracleWithPublication(
@@ -263,208 +253,455 @@ export function creatorMarketsEqual(
   return true;
 }
 
-/**
- * Local store of markets the user has created. Persists to localStorage under
- * `bitcaster-creator-markets`. When an nsec-backed Nostr identity is
- * available, `useCreatorSync` mirrors the set to a NIP-78 replaceable event
- * so it survives a device swap.
- *
- * The shared coordinator validates signed public events. This store adds no
- * signer or Cashu wallet authority.
- */
+const STORAGE_KEY = "bitcaster-creator-markets";
+const DOCUMENT_LOCK = "bitcaster-creator-markets";
+
+function ownerIn(document: CreatorDocument, conditionId: string): BrowserOracleOwner | null {
+  const market = document.markets.find((item) => item.conditionId === conditionId);
+  const oracle = document.importedOracles.find((item) => item.binding.conditionId === conditionId);
+  if (market && oracle) throw new Error("Duplicate oracle owner.");
+  return market ? { kind: "created", market } : oracle ? { kind: "imported", oracle } : null;
+}
+function publicationIn(owner: BrowserOracleOwner | null): OraclePublicationRecord | null {
+  return owner === null
+    ? null
+    : owner.kind === "created"
+      ? creatorOraclePublication(owner.market)
+      : owner.oracle.publication;
+}
+function requireOwner(document: CreatorDocument, conditionId: string): BrowserOracleOwner {
+  const owner = ownerIn(document, conditionId);
+  if (!owner || (owner.kind === "created" && !owner.market.oracle))
+    throw new Error("Creator oracle record is unavailable.");
+  return owner;
+}
+function oracleIn(owner: BrowserOracleOwner) {
+  return owner.kind === "created" ? owner.market.oracle! : owner.oracle;
+}
+function snapshotImport(input: BrowserOracleImportMetadata): BrowserOracleImportMetadata {
+  const binding = snapshotOraclePublicationRecord({
+    binding: input.binding,
+    chosenOutcome: input.binding.outcomes[0]!,
+    attestation: null,
+    relayPublished: false,
+    engineEvidence: null,
+    explanationEventJson: null,
+    explanationRelayPublished: false,
+  }).binding;
+  if (
+    announcementContentFromTlv(input.announcementHex) !==
+    readSignedOracleEvent(binding.announcementEventJson, 88).content
+  )
+    throw new Error("Original announcement bytes conflict with saved state.");
+  const destinations = input.destinations;
+  if (
+    !destinations ||
+    !Array.isArray(destinations.relayUrls) ||
+    typeof destinations.mintUrl !== "string" ||
+    typeof destinations.engineUrl !== "string" ||
+    !destinations.relayUrls.every((url) => typeof url === "string")
+  )
+    throw new Error("Original oracle destinations are unavailable.");
+  return {
+    binding,
+    announcementHex: input.announcementHex,
+    destinations: {
+      mintUrl: destinations.mintUrl,
+      engineUrl: destinations.engineUrl,
+      relayUrls: [...destinations.relayUrls],
+    },
+  };
+}
+function snapshotImportedOracle(
+  record: StoredImportedOracleMetadata,
+): StoredImportedOracleMetadata {
+  const metadata = snapshotImport(record);
+  const publication =
+    record.publication === null ? null : snapshotOraclePublicationRecord(record.publication);
+  if (
+    (record.importComplete !== true && record.importComplete !== false) ||
+    (publication !== null &&
+      JSON.stringify(publication.binding) !== JSON.stringify(metadata.binding)) ||
+    (record.explanationDraft !== undefined &&
+      (typeof record.explanationDraft !== "string" ||
+        new TextEncoder().encode(record.explanationDraft).length >
+          ORACLE_EXPLANATION_UTF8_BYTES_MAX))
+  )
+    throw new Error("Durable imported oracle metadata is invalid.");
+  if (
+    record.publicationFailures !== undefined &&
+    (!Array.isArray(record.publicationFailures) ||
+      record.publicationFailures.some(
+        (stage) =>
+          stage !== "explanation-preparation" &&
+          stage !== "relay" &&
+          stage !== "engine" &&
+          stage !== "explanation-relay",
+      ))
+  )
+    throw new Error("Durable imported oracle failure state is invalid.");
+  return {
+    ...metadata,
+    publication,
+    importComplete: record.importComplete,
+    ...(record.explanationDraft === undefined ? {} : { explanationDraft: record.explanationDraft }),
+    ...(record.publicationFailures === undefined
+      ? {}
+      : { publicationFailures: [...record.publicationFailures] }),
+  };
+}
+function assertPreparation(
+  current: StoredCreatorOracleMetadata,
+  incoming: StoredCreatorOracleMetadata,
+) {
+  if (
+    current.eventId !== incoming.eventId ||
+    JSON.stringify(current.outcomes) !== JSON.stringify(incoming.outcomes)
+  )
+    throw new Error("Original oracle preparation conflicts with saved state.");
+  for (const field of [
+    "announcementHex",
+    "oraclePubkey",
+    "announcementEventJson",
+    "announcementEventId",
+    "engineBaseUrl",
+    "destinations",
+  ] as const)
+    if (
+      current[field] !== undefined &&
+      JSON.stringify(current[field]) !== JSON.stringify(incoming[field])
+    )
+      throw new Error("Original oracle preparation conflicts with saved state.");
+}
+
+/** The cache has no persistence writer. Every durable write owns the complete document lock. */
 export function createCreatorMarketsStore(
   getStorage: () => StateStorage = () => window.localStorage,
+  getLockManager: () => CreatorDocumentLocks | undefined = () => globalThis.navigator?.locks,
 ) {
-  const storage = createJSONStorage<CreatorMarketsState>(getStorage);
-  async function durableMarket(conditionId: string) {
-    if (storage === undefined) throw new Error("Durable creator storage is unavailable.");
-    const saved = await storage.getItem("bitcaster-creator-markets");
-    return saved?.state.markets.find((market) => market.conditionId === conditionId) ?? null;
+  let storage: StateStorage | undefined;
+  try {
+    storage = getStorage();
+  } catch {
+    /* Durable operations refuse unavailable storage. */
   }
-  return create<CreatorMarketsState>()(
-    persist(
-      (set, get) => ({
-        markets: [],
-        hasOraclePersistence: () => storage !== undefined,
-        saveCreatedMarket: async (market) => {
-          if (storage === undefined) throw new Error("Durable creator storage is unavailable.");
-          get().addCreatedMarket(market);
-          const saved = await durableMarket(market.conditionId);
-          if (
-            saved === null ||
-            saved.oracle?.announcementEventJson !== market.oracle?.announcementEventJson ||
-            saved.title !== market.title ||
-            saved.thumbnailUrl !== market.thumbnailUrl
-          )
-            throw new Error("Created market oracle recovery was not saved.");
-        },
-        readOraclePublication: async (conditionId) => {
-          const market = await durableMarket(conditionId);
-          return market === null ? null : creatorOraclePublication(market);
-        },
-        readOracleExplanationDraft: async (conditionId) =>
-          (await durableMarket(conditionId))?.oracle?.explanationDraft,
-        saveOraclePublication: async (conditionId, publication) => {
-          const exact = snapshotOraclePublicationRecord(publication);
-          if (storage === undefined) throw new Error("Durable creator storage is unavailable.");
-          const market = get().markets.find((market) => market.conditionId === conditionId);
-          if (!market?.oracle) throw new Error("Creator oracle record is unavailable.");
-          assertPublicationReplacement(market, exact);
-          const next = oracleWithPublication(market.oracle, exact);
-          set({
-            markets: get().markets.map((item) =>
-              item.conditionId === conditionId ? { ...item, oracle: next } : item,
-            ),
-          });
-          const saved = await durableMarket(conditionId);
-          const retained = saved === null ? null : creatorOraclePublication(saved);
-          if (retained === null || JSON.stringify(retained) !== JSON.stringify(exact))
-            throw new Error("Exact oracle publication was not saved.");
-          return retained;
-        },
-        retainOraclePreparation: async (conditionId, oracle) => {
-          if (storage === undefined) throw new Error("Durable creator storage is unavailable.");
-          const current = get().markets.find((item) => item.conditionId === conditionId)?.oracle;
-          if (
-            !current ||
-            current.eventId !== oracle.eventId ||
-            JSON.stringify(current.outcomes) !== JSON.stringify(oracle.outcomes) ||
-            (current.announcementHex && current.announcementHex !== oracle.announcementHex) ||
-            (current.oraclePubkey && current.oraclePubkey !== oracle.oraclePubkey) ||
-            (current.announcementEventJson &&
-              current.announcementEventJson !== oracle.announcementEventJson) ||
-            (current.announcementEventId &&
-              current.announcementEventId !== oracle.announcementEventId) ||
-            (current.engineBaseUrl && current.engineBaseUrl !== oracle.engineBaseUrl)
-          )
-            throw new Error("Original oracle preparation conflicts with saved state.");
-          set({
-            markets: get().markets.map((item) =>
-              item.conditionId === conditionId
-                ? {
-                    ...item,
-                    oracle: {
-                      ...oracle,
-                      ...current,
-                      announcementEventJson: oracle.announcementEventJson,
-                      oraclePubkey: oracle.oraclePubkey,
-                      engineBaseUrl: oracle.engineBaseUrl,
-                    },
-                  }
-                : item,
-            ),
-          });
-          const saved = await durableMarket(conditionId);
-          if (saved?.oracle?.announcementEventJson !== oracle.announcementEventJson)
-            throw new Error("Original oracle announcement was not saved.");
-        },
-        saveOracleExplanationDraft: async (conditionId, text) => {
-          if (storage === undefined) throw new Error("Durable creator storage is unavailable.");
-          const previous = get().markets.find((item) => item.conditionId === conditionId)?.oracle;
-          if (
-            (previous?.chosenOutcome || previous?.attestedOutcome) &&
-            (previous.explanationDraft ?? "") !== text
-          )
-            throw new Error("The saved oracle explanation draft cannot change.");
-          if (new TextEncoder().encode(text).length > ORACLE_EXPLANATION_UTF8_BYTES_MAX)
-            throw new Error("Oracle explanation exceeds the shared UTF-8 limit.");
-          set({
-            markets: get().markets.map((item) =>
-              item.conditionId === conditionId && item.oracle
-                ? {
-                    ...item,
-                    oracle: { ...item.oracle, explanationDraft: text },
-                  }
-                : item,
-            ),
-          });
-          if ((await durableMarket(conditionId))?.oracle?.explanationDraft !== text)
-            throw new Error("Explanation draft was not saved.");
-        },
-        saveOraclePublicationFailures: (conditionId, failures) => {
-          set({
-            markets: get().markets.map((item) =>
-              item.conditionId === conditionId && item.oracle
-                ? {
-                    ...item,
-                    oracle: {
-                      ...item.oracle,
-                      publicationFailures: [...failures],
-                    },
-                  }
-                : item,
-            ),
-          });
-        },
-        addCreatedMarket: (market) => {
-          set((state) => {
-            const without = state.markets.filter((m) => m.conditionId !== market.conditionId);
-            // Newest first so the dashboard's most-recent rows match the user's
-            // expectation immediately after the wizard completes.
-            const existing = state.markets.find((item) => item.conditionId === market.conditionId);
-            return {
-              markets: [existing ? mergeCreatorMarket(existing, market) : market, ...without],
+  const empty = (): CreatorDocument => ({ markets: [], importedOracles: [] });
+  function decode(raw: string | null): CreatorDocument {
+    if (raw === null) return empty();
+    const saved = JSON.parse(raw).state as Partial<CreatorDocument>;
+    if (
+      !saved ||
+      !Array.isArray(saved.markets) ||
+      (saved.importedOracles !== undefined && !Array.isArray(saved.importedOracles))
+    )
+      throw new Error("Durable creator document is invalid.");
+    const document = {
+      markets: saved.markets,
+      importedOracles: (saved.importedOracles ?? []).map(snapshotImportedOracle),
+    };
+    const ids = [
+      ...document.markets.map((market) => market.conditionId),
+      ...document.importedOracles.map((oracle) => oracle.binding.conditionId),
+    ];
+    if (new Set(ids).size !== ids.length) throw new Error("Duplicate oracle owner.");
+    return document;
+  }
+  async function readDocument() {
+    if (!storage) throw new Error("Durable creator storage is unavailable.");
+    return decode(await storage.getItem(STORAGE_KEY));
+  }
+  let revision = 0;
+  let hydrated = false;
+  const store = create<CreatorMarketsState>()((set) => {
+    async function write(document: CreatorDocument) {
+      if (!storage) throw new Error("Durable creator storage is unavailable.");
+      const encoded = JSON.stringify({ state: document, version: 0 });
+      await storage.setItem(STORAGE_KEY, encoded);
+      const saved = await readDocument();
+      if (JSON.stringify(saved) !== JSON.stringify(document))
+        throw new Error("Creator document was not saved.");
+      revision++;
+      set((cached) => ({
+        markets: creatorMarketsEqual(cached.markets, saved.markets)
+          ? cached.markets
+          : saved.markets,
+        importedOracles:
+          JSON.stringify(cached.importedOracles) === JSON.stringify(saved.importedOracles)
+            ? cached.importedOracles
+            : saved.importedOracles,
+      }));
+    }
+    async function lock<T>(action: () => Promise<T>): Promise<T> {
+      if (!storage) throw new Error("Durable creator storage is unavailable.");
+      const locks = getLockManager();
+      if (!locks) throw new Error("Cross-tab creator locking is unavailable.");
+      return locks.request(DOCUMENT_LOCK, action);
+    }
+    async function withOracleMutation<T>(action: (port: BrowserOracleLockedPort) => Promise<T>) {
+      return lock(async () => {
+        let active = true;
+        const document = async () => {
+          if (!active) throw new Error("Creator mutation port has expired.");
+          return readDocument();
+        };
+        const port: BrowserOracleLockedPort = {
+          readOwner: async (id) => ownerIn(await document(), id),
+          read: async (id) => publicationIn(ownerIn(await document(), id)),
+          readDraft: async (id) => {
+            const owner = ownerIn(await document(), id);
+            return owner ? oracleIn(owner)?.explanationDraft : undefined;
+          },
+          save: async (id, input) => {
+            const doc = await document();
+            const owner = requireOwner(doc, id);
+            const exact = snapshotOraclePublicationRecord(input);
+            if (id !== exact.binding.conditionId)
+              throw new Error("Saved oracle binding cannot change.");
+            if (owner.kind === "created") {
+              const oracle = owner.market.oracle!;
+              if (
+                oracle.eventId !== exact.binding.oracleEventId ||
+                JSON.stringify(oracle.outcomes) !== JSON.stringify(exact.binding.outcomes) ||
+                oracle.announcementEventJson !== exact.binding.announcementEventJson ||
+                (oracle.oraclePubkey && oracle.oraclePubkey !== exact.binding.oraclePubkey) ||
+                (oracle.attestedOutcome && oracle.attestedOutcome !== exact.chosenOutcome)
+              )
+                throw new Error("Saved oracle binding cannot change.");
+            } else if (JSON.stringify(owner.oracle.binding) !== JSON.stringify(exact.binding))
+              throw new Error("Saved oracle binding cannot change.");
+            const merged = mergeOraclePublicationRecords(publicationIn(owner), exact)!;
+            if (owner.kind === "created")
+              owner.market.oracle = oracleWithPublication(owner.market.oracle!, merged);
+            else owner.oracle.publication = merged;
+            await write(doc);
+            return publicationIn(ownerIn(await document(), id))!;
+          },
+          saveDraft: async (id, text) => {
+            const doc = await document();
+            const owner = requireOwner(doc, id);
+            const oracle = oracleIn(owner);
+            if (
+              publicationIn(owner) !== null ||
+              (owner.kind === "created" && owner.market.oracle?.attestedOutcome)
+            ) {
+              if ((oracle.explanationDraft ?? "") !== text)
+                throw new Error("The saved oracle explanation draft cannot change.");
+            }
+            if (new TextEncoder().encode(text).length > ORACLE_EXPLANATION_UTF8_BYTES_MAX)
+              throw new Error("Oracle explanation exceeds the shared UTF-8 limit.");
+            oracle.explanationDraft = text;
+            await write(doc);
+          },
+          retainImportMetadata: async (input) => {
+            const exact = snapshotImport(input);
+            const doc = await document();
+            const owner = ownerIn(doc, exact.binding.conditionId);
+            // A previous completion cannot authorize signing after this private import fails.
+            if (owner?.kind === "created") {
+              const current = owner.market.oracle;
+              if (!current) throw new Error("Creator oracle record is unavailable.");
+              const incoming: StoredCreatorOracleMetadata = {
+                ...current,
+                type: "self",
+                eventId: exact.binding.oracleEventId,
+                outcomes: [...exact.binding.outcomes],
+                announcementHex: exact.announcementHex,
+                announcementEventJson: exact.binding.announcementEventJson,
+                announcementEventId: readSignedOracleEvent(exact.binding.announcementEventJson, 88)
+                  .id,
+                oraclePubkey: exact.binding.oraclePubkey,
+                destinations: exact.destinations,
+                engineBaseUrl: exact.destinations.engineUrl,
+              };
+              // Missing legacy fields can be filled, but retained creation facts are immutable.
+              assertPreparation(current, incoming);
+              owner.market.oracle = {
+                ...incoming,
+                importComplete: false,
+              };
+            } else if (owner) {
+              if (JSON.stringify(snapshotImport(owner.oracle)) !== JSON.stringify(exact))
+                throw new Error("Original oracle import metadata conflicts with saved state.");
+              owner.oracle.importComplete = false;
+            } else doc.importedOracles.push({ ...exact, publication: null, importComplete: false });
+            await write(doc);
+            return ownerIn(await document(), exact.binding.conditionId)!;
+          },
+          markImportComplete: async (id) => {
+            const doc = await document();
+            const owner = requireOwner(doc, id);
+            oracleIn(owner).importComplete = true;
+            await write(doc);
+          },
+          retainPreparation: async (id, oracle) => {
+            const doc = await document();
+            const owner = requireOwner(doc, id);
+            if (owner.kind !== "created")
+              throw new Error("Imported oracle preparation is immutable.");
+            const current = owner.market.oracle!;
+            assertPreparation(current, oracle);
+            owner.market.oracle = {
+              ...oracle,
+              ...current,
+              announcementEventJson: oracle.announcementEventJson,
+              oraclePubkey: oracle.oraclePubkey,
+              engineBaseUrl: oracle.engineBaseUrl,
+              destinations: oracle.destinations ?? current.destinations,
             };
-          });
-        },
-        removeCreatedMarket: (conditionId) => {
-          set((state) => ({
-            markets: state.markets.filter((m) => m.conditionId !== conditionId),
-          }));
-        },
-        replace: (markets) => {
-          if (creatorMarketsEqual(get().markets, markets)) return;
-          set({ markets: [...markets] });
-        },
-        clear: () => set({ markets: [] }),
-      }),
-      { name: "bitcaster-creator-markets", storage },
-    ),
-  );
+            await write(doc);
+          },
+        };
+        try {
+          return await action(port);
+        } finally {
+          active = false;
+        }
+      });
+    }
+    async function mutate(action: (document: CreatorDocument) => void) {
+      return lock(async () => {
+        const document = await readDocument();
+        action(document);
+        await write(document);
+      });
+    }
+    async function saveCreatedMarket(market: StoredCreatorMarket) {
+      await mutate((document) => {
+        if (
+          document.importedOracles.some(
+            (oracle) => oracle.binding.conditionId === market.conditionId,
+          )
+        )
+          throw new Error("Condition already has an imported oracle owner.");
+        const existing = document.markets.find((item) => item.conditionId === market.conditionId);
+        document.markets = [
+          existing
+            ? mergeCreatorMarket(existing, structuredClone(market))
+            : structuredClone(market),
+          ...document.markets.filter((item) => item.conditionId !== market.conditionId),
+        ];
+      });
+    }
+    async function mergeRemoteMarkets(remote: StoredCreatorMarket[]) {
+      return lock(async () => {
+        const document = await readDocument();
+        const byId = new Map(document.markets.map((market) => [market.conditionId, market]));
+        for (const incoming of remote) {
+          if (
+            document.importedOracles.some(
+              (oracle) => oracle.binding.conditionId === incoming.conditionId,
+            )
+          )
+            continue;
+          const local = byId.get(incoming.conditionId);
+          byId.set(
+            incoming.conditionId,
+            local ? mergeCreatorMarket(local, incoming) : structuredClone(incoming),
+          );
+        }
+        document.markets = [...byId.values()].sort((a, b) =>
+          b.createdAt.localeCompare(a.createdAt),
+        );
+        await write(document);
+        return document.markets;
+      });
+    }
+    return {
+      ...empty(),
+      withOracleMutation,
+      hasOraclePersistence: () => storage !== undefined && getLockManager() !== undefined,
+      readOracleOwner: async (id) => ownerIn(await readDocument(), id),
+      readOraclePublication: async (id) => publicationIn(ownerIn(await readDocument(), id)),
+      readOracleExplanationDraft: async (id) => {
+        const owner = ownerIn(await readDocument(), id);
+        return owner ? oracleIn(owner)?.explanationDraft : undefined;
+      },
+      saveOraclePublication: (id, record) => withOracleMutation((port) => port.save(id, record)),
+      retainImportedOracleMetadata: (input) =>
+        withOracleMutation((port) => port.retainImportMetadata(input)),
+      markOracleImportComplete: (id) => withOracleMutation((port) => port.markImportComplete(id)),
+      retainOraclePreparation: (id, oracle) =>
+        withOracleMutation((port) => port.retainPreparation(id, oracle)),
+      saveOracleExplanationDraft: (id, text) =>
+        withOracleMutation((port) => port.saveDraft(id, text)),
+      saveOraclePublicationFailures: (id, failures) =>
+        mutate((doc) => {
+          oracleIn(requireOwner(doc, id)).publicationFailures = [...failures];
+        }),
+      addCreatedMarket: saveCreatedMarket,
+      saveCreatedMarket,
+      removeCreatedMarket: (id) =>
+        mutate((doc) => {
+          doc.markets = doc.markets.filter((market) => market.conditionId !== id);
+        }),
+      replace: (markets) => mergeRemoteMarkets(markets).then(() => undefined),
+      mergeRemoteMarkets,
+      clear: () =>
+        mutate((doc) => {
+          doc.markets = [];
+          doc.importedOracles = [];
+        }),
+    };
+  });
+  async function rehydrate() {
+    const observed = revision;
+    try {
+      const document = await readDocument();
+      if (revision === observed) store.setState(document);
+    } finally {
+      hydrated = true;
+    }
+  }
+  // Hydration is read-only. setState is a cache operation, including in test fixtures.
+  if (storage) {
+    try {
+      const initial = storage.getItem(STORAGE_KEY);
+      if (typeof initial === "string" || initial === null) {
+        store.setState(decode(initial));
+        hydrated = true;
+      } else void rehydrate().catch(() => {});
+    } catch {
+      hydrated = true;
+    }
+  } else hydrated = true;
+  return Object.assign(store, { persist: { rehydrate, hasHydrated: () => hydrated } });
 }
 
 export const useCreatorMarketsStore = createCreatorMarketsStore();
 
-/** Adapt the existing creator row. The coordinator never owns another browser journal. */
+/** Progress mutations read and merge the latest durable publication under the document lock. */
 export function creatorOraclePublicationStore(
   store = useCreatorMarketsStore,
 ): OraclePublicationStore {
   async function update(
-    conditionId: string,
+    id: string,
     mutate: (record: OraclePublicationRecord) => OraclePublicationRecord,
   ) {
-    const record = await store.getState().readOraclePublication(conditionId);
-    if (record === null) throw new Error("Saved oracle choice is unavailable.");
-    return store.getState().saveOraclePublication(conditionId, mutate(record));
+    return store.getState().withOracleMutation(async (port) => {
+      const record = await port.read(id);
+      if (!record) throw new Error("Saved oracle choice is unavailable.");
+      return port.save(id, mutate(record));
+    });
   }
   return {
-    read: (conditionId) => store.getState().readOraclePublication(conditionId),
-    async saveChoice(binding, outcome) {
-      const retained = await store.getState().readOraclePublication(binding.conditionId);
-      if (retained !== null) {
-        if (
-          JSON.stringify(retained.binding) !== JSON.stringify(binding) ||
-          retained.chosenOutcome !== outcome
-        )
-          throw new Error("Saved oracle choice conflicts with this request.");
-        return retained;
-      }
-      return store.getState().saveOraclePublication(binding.conditionId, {
-        binding,
-        chosenOutcome: outcome,
-        attestation: null,
-        relayPublished: false,
-        engineEvidence: null,
-        explanationEventJson: null,
-        explanationRelayPublished: false,
-      });
-    },
-    saveAttestation: (conditionId, attestation) =>
-      update(conditionId, (record) => ({ ...record, attestation })),
-    saveExplanation: (conditionId, explanationEventJson) =>
-      update(conditionId, (record) => ({ ...record, explanationEventJson })),
-    confirmRelay: (conditionId, eventId) =>
-      update(conditionId, (record) => {
+    read: (id) => store.getState().readOraclePublication(id),
+    saveChoice: (binding, chosenOutcome) =>
+      store.getState().withOracleMutation((port) =>
+        port.save(binding.conditionId, {
+          binding,
+          chosenOutcome,
+          attestation: null,
+          relayPublished: false,
+          engineEvidence: null,
+          explanationEventJson: null,
+          explanationRelayPublished: false,
+        }),
+      ),
+    saveAttestation: (id, attestation) => update(id, (record) => ({ ...record, attestation })),
+    saveExplanation: (id, explanationEventJson) =>
+      update(id, (record) => ({ ...record, explanationEventJson })),
+    confirmRelay: (id, eventId) =>
+      update(id, (record) => {
         if (
           !record.attestation ||
           readSignedOracleEvent(record.attestation.eventJson, 89).id !== eventId
@@ -472,10 +709,9 @@ export function creatorOraclePublicationStore(
           throw new Error("Relay confirmation is foreign.");
         return { ...record, relayPublished: true };
       }),
-    confirmEngine: (conditionId, engineEvidence) =>
-      update(conditionId, (record) => ({ ...record, engineEvidence })),
-    confirmExplanationRelay: (conditionId, eventId) =>
-      update(conditionId, (record) => {
+    confirmEngine: (id, engineEvidence) => update(id, (record) => ({ ...record, engineEvidence })),
+    confirmExplanationRelay: (id, eventId) =>
+      update(id, (record) => {
         if (
           !record.explanationEventJson ||
           readSignedOracleEvent(record.explanationEventJson, 1111).id !== eventId

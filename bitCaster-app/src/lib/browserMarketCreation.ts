@@ -21,6 +21,7 @@ import { resolveNsecIdentity } from "./identityOps";
 import { useSettingsStore } from "@/stores/settings";
 import { BrowserMarketCreationStore } from "@/stores/market-creation-db";
 import { ensureKormirNsec, prepareEnumAnnouncement } from "./kormir";
+import { preflightBrowserOracleCreation } from "./browserOracleBackup";
 import { buildEventId } from "./slug";
 import { withTemporaryRelayNdk } from "./nostr";
 import { createPreparedMarket, fetchMarketRegistrationForRecovery } from "./markets";
@@ -161,6 +162,7 @@ export async function prepareBrowserMarketCreation(
     thumbnail,
   });
   await prepareMarketCreationRequest(preparation.metadata, preparation.thumbnail ?? undefined);
+  await preflightBrowserOracleCreation(preparation);
   session.requireBinding();
   return session.store.reserve(preparation);
 }
@@ -169,6 +171,12 @@ export async function completeBrowserMarketCreation(
   session: ReturnType<typeof browserMarketCreationSession>,
   preparation: MarketCreationPreparation,
 ) {
+  session.requireBinding();
+  const retained = await session.store.read(preparation.creationId);
+  if (!retained?.mintConfirmed) {
+    await preflightBrowserOracleCreation(preparation);
+    session.requireBinding();
+  }
   let fee: PreparedConditionRegistrationFee | null = null;
   const feeInput = (record: MarketCreationRecord) => ({
     mintUrl: record.mintUrl,

@@ -1,3 +1,4 @@
+import { installCreatorDocumentLocks } from "@/test/creatorDocumentLocks";
 import "fake-indexeddb/auto";
 import { renderHook, act, waitFor, cleanup } from "@testing-library/react";
 import Dexie from "dexie";
@@ -227,6 +228,11 @@ vi.mock("@/lib/slug", async () => {
 vi.mock("@/lib/nostr", () => ({
   withTemporaryRelayNdk: async (_options: unknown, _signer: unknown, callback: any) => callback({}),
 }));
+
+// Real WASM and the portable limit are covered by the browser creation adapter tests.
+vi.mock("@/lib/browserOracleBackup", () => ({
+  preflightBrowserOracleCreation: vi.fn(async () => {}),
+}));
 vi.mock("@nostr-dev-kit/ndk", async () => ({
   ...(await vi.importActual("@nostr-dev-kit/ndk")),
   NDKEvent: class {
@@ -295,8 +301,9 @@ const announcementEvent = finalizeEvent(
 
 beforeEach(async () => {
   vi.resetAllMocks();
+  installCreatorDocumentLocks();
   // Each independent creation fixture owns a fresh public creator record.
-  useCreatorMarketsStore.setState({ markets: [] });
+  await useCreatorMarketsStore.getState().clear();
   runtime.draftStore = null;
   vi.stubGlobal("Blob", NativeBlob);
   vi.stubGlobal("File", NativeFile);
@@ -658,7 +665,7 @@ describe("durable browser market creation", () => {
   });
 
   it("keeps the completed pointer when the creator row fails, then cold-resumes only its save", async () => {
-    useCreatorMarketsStore.setState({ markets: [] });
+    await useCreatorMarketsStore.getState().clear();
     const result = await beginPaidCreation();
     const original = Storage.prototype.setItem;
     const failure = vi.spyOn(Storage.prototype, "setItem").mockImplementation(function (
@@ -1359,7 +1366,7 @@ describe("useMarketCreationState – onCreateMarket", () => {
   });
 
   it("adopts a matching committed market after a lost create response", async () => {
-    useCreatorMarketsStore.setState({ markets: [] });
+    await useCreatorMarketsStore.getState().clear();
     const result = await setupDraftForSubmission();
     const originalError = new CreateMarketError("connection was lost", null, true);
     mockCreateMarket.mockRejectedValueOnce(originalError);
@@ -1386,7 +1393,7 @@ describe("useMarketCreationState – onCreateMarket", () => {
   });
 
   it("adopts first-committed colors when details are reordered and retry colors differ", async () => {
-    useCreatorMarketsStore.setState({ markets: [] });
+    await useCreatorMarketsStore.getState().clear();
     setCategoricalSubmissionDraft([
       { id: "alpha", label: "Alpha", description: "", color: "#111111" },
       { id: "beta", label: "Beta", description: "", color: "#222222" },
@@ -1573,7 +1580,7 @@ describe("useMarketCreationState – onCreateMarket", () => {
   it("stamps creatorFeePercent=0 (P7 §/creator: engine accrues no fees)", async () => {
     // Reset the creator-markets store so the assertion is not polluted by
     // entries from the other tests in this file.
-    useCreatorMarketsStore.setState({ markets: [] });
+    await useCreatorMarketsStore.getState().clear();
     const result = await setupDraftForSubmission();
 
     await act(async () => {
@@ -1588,7 +1595,7 @@ describe("useMarketCreationState – onCreateMarket", () => {
   });
 
   it("records self-oracle event metadata when creating as the oracle", async () => {
-    useCreatorMarketsStore.setState({ markets: [] });
+    await useCreatorMarketsStore.getState().clear();
     useSettingsStore.setState({
       nostrSignerMode: "nsec",
       nsecSecret: "11".repeat(32),

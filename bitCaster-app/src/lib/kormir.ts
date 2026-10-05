@@ -185,8 +185,7 @@ export async function ensureKormirNsec(relays: string[], nsec: string): Promise<
     if (currentPubkey === desiredPubkey) return;
   } catch {
     // If kormir cannot construct with the current browser store, restore the
-    // requested nsec below. The caller is about to create a new event, so
-    // clearing stale kormir state is acceptable here.
+    // requested nsec below. Same-key restore preserves its retained authority.
   }
   await restoreKormirWithNsec(nsec);
 }
@@ -331,13 +330,10 @@ export async function prepareEnumAttestation(
  * Re-import a previously-created enum announcement into kormir's local storage
  * so its outcome can be signed again on a fresh browser profile.
  *
- * Why this is needed (P22 B1b): `Kormir.restore(nsec)` wipes IndexedDB and
- * re-installs only the oracle signing key. The per-event nonce *index* that
- * `create_enum_event` persisted is gone, so `sign_enum_event` fails with
- * NotFound. The announcement TLV hex (a public protocol artifact, mirrored in
- * the creator-markets store + NIP-78) carries the committed nonce point(s);
- * because nonce keys are derived deterministically from the signing key,
- * kormir recovers the original index by a bounded scan and re-saves the event.
+ * Same-key restore preserves retained authority. For older deterministic
+ * announcements whose event record is missing, the public TLV carries the
+ * committed nonce point. Kormir recovers the original index by a bounded scan.
+ * New random nonce authority requires its private backup instead.
  *
  * Non-destructive and idempotent: if the event already exists in this profile
  * (created or imported here), the call is a no-op and never clobbers a stored

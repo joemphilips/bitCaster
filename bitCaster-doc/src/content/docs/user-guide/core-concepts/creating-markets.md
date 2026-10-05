@@ -17,6 +17,12 @@ you to confirm that fee before proceeding. After creation, you can fund the mark
 step. That payment is non-refundable. Creating or funding a market does not
 set its displayed price; a confirmed trade does.
 
+Before registration payment, the browser checks the complete private oracle
+record against the portable encoding limit. It also checks an unpaid creation
+when you resume it. If the record is too large, creation stops before payment,
+announcement publication, or mint registration. Shorten the announcement text
+or reduce the relay list before trying again.
+
 For a yes/no market, the wizard uses Yes and No automatically. It skips the
 outcome-entry step. For a categorical market, enter the outcome names.
 If a payment needs a wallet, choose Create wallet or Restore wallet.

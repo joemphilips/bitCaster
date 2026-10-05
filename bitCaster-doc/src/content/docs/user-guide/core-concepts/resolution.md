@@ -62,7 +62,9 @@ The browser retains the exact signed kind-89 result before delivery.
 Keep browser storage enabled. If delivery is incomplete, choose Retry saved resolution
 and confirm the dialog. Retry delivers the saved result without signing another
 kind-89 event or creating another announcement.
-An unfinished explanation uses only the original saved draft.
+Retry sends only the saved signed events. If no signed explanation was saved,
+retry does not create one. The original explanation draft stays saved.
+Delivery of the exact saved result does not require the oracle signing key.
 
 Check engine, relay, and optional explanation progress separately.
 Engine confirmed means that the exact result has verified engine evidence.

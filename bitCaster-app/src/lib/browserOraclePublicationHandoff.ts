@@ -98,18 +98,12 @@ export async function reconcileBrowserOraclePublication(input: {
     }
     await drainStage();
     const retained = await store.read(binding.conditionId);
-    const supplied = mergeOraclePublicationRecords(
+    const requested = mergeOraclePublicationRecords(
       retained,
       input.incoming === undefined ? null : requireBinding(input.incoming),
     );
-    const privateJson = await core.exportAuthority(
-      binding.oracleEventId,
-      binding.announcementEventJson,
-      supplied === null ? undefined : JSON.stringify(supplied),
-    );
-    const authority = await validatePrivate(privateJson);
-    const privatePublication =
-      authority.publicationRecordJson !== null
+    function publicationFromAuthority(authority: OraclePrivateAuthority) {
+      return authority.publicationRecordJson !== null
         ? requireBinding(JSON.parse(authority.publicationRecordJson))
         : authority.signedOutcome === null
           ? null
@@ -128,6 +122,23 @@ export async function reconcileBrowserOraclePublication(input: {
               explanationEventJson: null,
               explanationRelayPublished: false,
             });
+    }
+    // A crash can leave a public choice with no artifact after core signing completed.
+    // Merge that retained exact artifact before passing public progress back to the core.
+    const privateBefore = await validatePrivate(
+      await core.exportAuthority(binding.oracleEventId, binding.announcementEventJson),
+    );
+    const supplied = mergeOraclePublicationRecords(
+      requested,
+      publicationFromAuthority(privateBefore),
+    );
+    const privateJson = await core.exportAuthority(
+      binding.oracleEventId,
+      binding.announcementEventJson,
+      supplied === null ? undefined : JSON.stringify(supplied),
+    );
+    const authority = await validatePrivate(privateJson);
+    const privatePublication = publicationFromAuthority(authority);
     const publication = mergeOraclePublicationRecords(supplied, privatePublication);
     if (publication !== null) await save(publication);
     await drainStage();

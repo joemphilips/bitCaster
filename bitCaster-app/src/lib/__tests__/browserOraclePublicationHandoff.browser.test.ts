@@ -1,7 +1,7 @@
 import { beforeEach, expect, it } from "vitest";
 import { deriveDlcConditionId } from "@bitcaster/client-sdk";
 import type { OraclePublicationRecord } from "@bitcaster/client-sdk/oraclePublication";
-import { createCreatorMarketsStore } from "@/stores/creatorMarkets";
+import { createCreatorMarketsStore, type BrowserOracleLockedPort } from "@/stores/creatorMarkets";
 import {
   browserOracleBackupValidator,
   getKormir,
@@ -12,8 +12,18 @@ import {
 } from "../kormir";
 import {
   browserOraclePrivateAuthorityPort,
-  reconcileBrowserOraclePublication,
+  reconcileBrowserOraclePublication as reconcile,
 } from "../browserOraclePublicationHandoff";
+
+function reconcileBrowserOraclePublication(
+  input: Omit<Parameters<typeof reconcile>[0], "store"> & {
+    store: Parameters<typeof reconcile>[0]["store"] & {
+      withMutation<T>(action: (locked: BrowserOracleLockedPort) => Promise<T>): Promise<T>;
+    };
+  },
+) {
+  return input.store.withMutation((locked) => reconcile({ ...input, store: locked }));
+}
 
 beforeEach(() => {
   localStorage.clear();
@@ -58,6 +68,7 @@ async function fixture() {
     return {
       owner,
       port: {
+        withMutation: owner.getState().withOracleMutation,
         read: (conditionId: string) => owner.getState().readOraclePublication(conditionId),
         save: (conditionId: string, record: OraclePublicationRecord) =>
           owner.getState().saveOraclePublication(conditionId, record),

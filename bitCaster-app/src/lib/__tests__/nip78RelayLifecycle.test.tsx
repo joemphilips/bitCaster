@@ -1,3 +1,4 @@
+import { installCreatorDocumentLocks, seedCreatorMarkets } from "@/test/creatorDocumentLocks";
 import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import NDK, { NDKEvent } from "@nostr-dev-kit/ndk";
@@ -6,7 +7,6 @@ import { getPublicKey } from "nostr-tools/pure";
 import { FakeRelayWebSocket as Socket } from "@/test/fakeRelayWebSocket";
 import { useSettingsStore } from "@/stores/settings";
 import { useBookmarkStore } from "@/stores/bookmarks";
-import { useCreatorMarketsStore } from "@/stores/creatorMarkets";
 import { useActivityLogStore } from "@/stores/activity-log";
 import { useBookmarkSync } from "@/stores/useBookmarkSync";
 import { useCreatorSync } from "@/stores/useCreatorSync";
@@ -53,7 +53,8 @@ function captureBookmarkPublications() {
     });
   return { publish, events };
 }
-beforeEach(() => {
+beforeEach(async () => {
+  installCreatorDocumentLocks();
   vi.useFakeTimers();
   vi.stubGlobal("WebSocket", Socket);
   vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("Network I/O is not permitted")));
@@ -64,7 +65,7 @@ beforeEach(() => {
     relays: [{ url: custom, connectionStatus: "disconnected" }],
   });
   useBookmarkStore.setState({ markets: [] });
-  useCreatorMarketsStore.setState({ markets: [] });
+  await seedCreatorMarkets({ markets: [] });
   useActivityLogStore.setState({ items: [] });
 });
 
@@ -330,7 +331,7 @@ describe.each(adapters)("actual $name relay owner", ({ fetch, publish, hook }) =
 
   it("cancels live pending publication when current settings become empty", async () => {
     useBookmarkStore.setState({ markets: ["condition-Alpha"] });
-    useCreatorMarketsStore.setState({
+    await seedCreatorMarkets({
       markets: [
         {
           conditionId: "condition",

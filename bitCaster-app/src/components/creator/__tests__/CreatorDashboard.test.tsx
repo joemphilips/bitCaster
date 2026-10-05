@@ -1,3 +1,4 @@
+import { installCreatorDocumentLocks, seedCreatorMarkets } from "@/test/creatorDocumentLocks";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router";
@@ -48,12 +49,13 @@ function renderDashboard() {
   );
 }
 
-beforeEach(() => {
+beforeEach(async () => {
+  installCreatorDocumentLocks();
   mockNavigate.mockReset();
   mockUseCreatorDashboardState.mockReset();
   mockPublishOracleOutcome.mockReset();
   mockPublishOracleOutcome.mockResolvedValue({ failures: [], record: {} });
-  useCreatorMarketsStore.setState({ markets: [] });
+  await seedCreatorMarkets({ markets: [] });
   useSettingsStore.setState({
     nostrSignerMode: "none",
     nsecSecret: null,
@@ -302,7 +304,7 @@ describe("CreatorDashboard", () => {
       nsecSecret: "nsec1test",
       relays: [{ url: "ws://localhost:7777", connectionStatus: "connected" }],
     });
-    useCreatorMarketsStore.setState({
+    await seedCreatorMarkets({
       markets: [
         {
           conditionId: "a".repeat(64),

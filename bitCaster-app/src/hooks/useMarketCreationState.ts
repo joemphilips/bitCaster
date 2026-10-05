@@ -705,6 +705,11 @@ export function useMarketCreationState() {
               announcementEventJson: record.announcement.announcementNostrEventJson,
               oraclePubkey: record.creatorId,
               engineBaseUrl: record.engineBaseUrl,
+              destinations: {
+                mintUrl: record.mintUrl,
+                engineUrl: record.engineBaseUrl,
+                relayUrls: record.relayUrls,
+              },
               announcementHex: record.announcement.announcementTlvHex,
               outcomes: record.metadata.outcomes.map(({ name }) => name),
             },

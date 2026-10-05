@@ -5,34 +5,11 @@ import {
   publicCreatorMarketsEqual,
 } from "@/lib/nip78CreatorMarkets";
 import { resolveNsecIdentity } from "@/lib/identityOps";
-import {
-  mergeCreatorMarket,
-  useCreatorMarketsStore,
-  type StoredCreatorMarket,
-} from "./creatorMarkets";
+import { useCreatorMarketsStore, type StoredCreatorMarket } from "./creatorMarkets";
 import { useSettingsStore } from "./settings";
 import { effectiveRelayUrls } from "@/lib/relayDefaults";
 
 const PUBLISH_DEBOUNCE_MS = 800;
-
-/**
- * Merge two creator-market sets, keeping the most recently created copy of
- * any duplicates. Newest-first ordering matches the store's in-wizard insert
- * so the dashboard stays deterministic.
- */
-function mergeCreatorMarkets(
-  a: readonly StoredCreatorMarket[],
-  b: readonly StoredCreatorMarket[],
-): StoredCreatorMarket[] {
-  const byId = new Map<string, StoredCreatorMarket>();
-  for (const m of [...a, ...b]) {
-    const existing = byId.get(m.conditionId);
-    byId.set(m.conditionId, existing ? mergeCreatorMarket(existing, m) : m);
-  }
-  return Array.from(byId.values()).sort((x, y) =>
-    x.createdAt < y.createdAt ? 1 : x.createdAt > y.createdAt ? -1 : 0,
-  );
-}
 
 /**
  * Keep the local creator-markets store in sync with the user's NIP-78
@@ -53,7 +30,7 @@ export function useCreatorSync(): void {
   const relaySelectionKey = useSettingsStore((s) => JSON.stringify(s.relays.map(({ url }) => url)));
   const relays = effectiveRelayUrls(useSettingsStore.getState().relays);
   const markets = useCreatorMarketsStore((s) => s.markets);
-  const replace = useCreatorMarketsStore((s) => s.replace);
+  const mergeRemoteMarkets = useCreatorMarketsStore((s) => s.mergeRemoteMarkets);
   const [initialSyncDone, setInitialSyncDone] = useState(false);
   const lastPublished = useRef<StoredCreatorMarket[] | null>(null);
   const keysRef = useRef<{ privateKeyHex: string; publicKey: string } | null>(null);
@@ -76,7 +53,8 @@ export function useCreatorSync(): void {
       const remote = await fetchNip78CreatorMarkets(keys.publicKey, options).catch(() => null);
       if (cancelled) return;
 
-      const local = useCreatorMarketsStore.getState().markets;
+      const local = await mergeRemoteMarkets([]);
+      if (cancelled) return;
       if (remote === null) {
         // No remote state — seed the relay with whatever we have locally.
         lastPublished.current = [...local];
@@ -87,9 +65,9 @@ export function useCreatorSync(): void {
         return;
       }
 
-      const merged = mergeCreatorMarkets(local, remote);
+      const merged = await mergeRemoteMarkets(remote);
+      if (cancelled) return;
       lastPublished.current = merged;
-      replace(merged);
       setInitialSyncDone(true);
 
       const remoteIds = new Set(remote.map((m) => m.conditionId));
@@ -97,13 +75,15 @@ export function useCreatorSync(): void {
       if (!remoteHasAll || !publicCreatorMarketsEqual(remote, merged)) {
         await publishNip78CreatorMarkets(keys.privateKeyHex, merged, options).catch(() => {});
       }
-    })();
+    })().catch(() => {
+      if (!cancelled) setInitialSyncDone(false);
+    });
 
     return () => {
       cancelled = true;
       controller.abort();
     };
-  }, [nostrSignerMode, nsecSecret, replace, relaySelectionKey]);
+  }, [nostrSignerMode, nsecSecret, mergeRemoteMarkets, relaySelectionKey]);
 
   // Publish to relays whenever the local set changes after the initial sync.
   useEffect(() => {

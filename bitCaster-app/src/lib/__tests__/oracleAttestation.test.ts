@@ -1,3 +1,4 @@
+import { installCreatorDocumentLocks } from "@/test/creatorDocumentLocks";
 import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { NDKEvent } from "@nostr-dev-kit/ndk";
@@ -127,7 +128,8 @@ beforeAll(async () => {
     oracles: authority.oracles,
   };
 });
-beforeEach(() => {
+beforeEach(async () => {
+  installCreatorDocumentLocks();
   localStorage.clear();
   useSettingsStore.setState({ nostrSignerMode: "none", nsecSecret: null });
   fetchAnnouncement.mockReset();
@@ -305,7 +307,7 @@ describe("production creator row and shared coordinator", () => {
         ...(source === "signed public pair" ? { attestationEventJson: artifact.eventJson } : {}),
       };
       const writer = createCreatorMarketsStore(() => localStorage);
-      writer.getState().addCreatedMarket(restored);
+      await writer.getState().addCreatedMarket(restored);
       fetchAnnouncement.mockResolvedValue(
         new NDKEvent(undefined, JSON.parse(fixture.announcementEventJson)),
       );
@@ -408,7 +410,7 @@ describe("production creator row and shared coordinator", () => {
   });
   it("browser adapter reconciles a lost engine response and cold-retries exact89 without a signer", async () => {
     const writer = createCreatorMarketsStore(() => localStorage);
-    writer.getState().addCreatedMarket(market());
+    await writer.getState().addCreatedMarket(market());
     await writer.getState().saveOraclePublication(conditionId, {
       binding,
       chosenOutcome: "YES",
@@ -471,9 +473,9 @@ describe("production creator row and shared coordinator", () => {
     }
   });
 
-  it("original companion preparation failure cold-retries one1111 without another oracle signature", async () => {
+  it("retries exact resolution after optional companion preparation failed without requiring a signer", async () => {
     const writer = createCreatorMarketsStore(() => localStorage);
-    writer.getState().addCreatedMarket(market());
+    await writer.getState().addCreatedMarket(market());
     await writer.getState().saveOracleExplanationDraft(conditionId, "Original public explanation.");
     const oracleSign = vi.fn(async () => artifact);
     const evidence = await verifyRetainedOracleAttestation(binding, "YES", artifact);
@@ -490,7 +492,7 @@ describe("production creator row and shared coordinator", () => {
     };
     const first = await publishOracleOutcome(ports, binding, "YES", "Original public explanation.");
     expect(first.failures).toEqual(["explanation-preparation"]);
-    useSettingsStore.setState({ nostrSignerMode: "nsec", nsecSecret: "11".repeat(32) });
+    useSettingsStore.setState({ nostrSignerMode: "none", nsecSecret: null });
     const reader = createCreatorMarketsStore(() => localStorage);
     const network = vi.fn();
     vi.stubGlobal("fetch", network);
@@ -507,7 +509,8 @@ describe("production creator row and shared coordinator", () => {
       );
       expect(resumed.failures).toEqual([]);
       expect(resumed.record.attestation).toEqual(artifact);
-      expect(JSON.parse(resumed.record.explanationEventJson!).content).toBe(
+      expect(resumed.record.explanationEventJson).toBeNull();
+      expect(await reader.getState().readOracleExplanationDraft(conditionId)).toBe(
         "Original public explanation.",
       );
       const json = resumed.record.explanationEventJson;
@@ -522,7 +525,7 @@ describe("production creator row and shared coordinator", () => {
         (await reader.getState().readOraclePublication(conditionId))?.explanationEventJson,
       ).toBe(json);
       expect(oracleSign).toHaveBeenCalledTimes(1);
-      expect(publish).toHaveBeenCalledTimes(1);
+      expect(publish).not.toHaveBeenCalled();
       expect(network).not.toHaveBeenCalled();
     } finally {
       publish.mockRestore();
@@ -531,7 +534,7 @@ describe("production creator row and shared coordinator", () => {
   });
   it("cold-reads the exact saved event and retries only the unconfirmed destination", async () => {
     const writer = createCreatorMarketsStore(() => localStorage);
-    writer.getState().addCreatedMarket(market());
+    await writer.getState().addCreatedMarket(market());
     const prepare = vi.fn(async () => {
       const saved = JSON.parse(localStorage.getItem("bitcaster-creator-markets")!).state.markets[0]
         .oracle;
@@ -588,7 +591,7 @@ describe("production creator row and shared coordinator", () => {
 
   it("attempts the engine despite relay and optional explanation failure", async () => {
     const writer = createCreatorMarketsStore(() => localStorage);
-    writer.getState().addCreatedMarket(market());
+    await writer.getState().addCreatedMarket(market());
     const evidence = await verifyRetainedOracleAttestation(binding, "YES", artifact);
     const engine = vi.fn(async () => evidence);
     const result = await publishOracleOutcome(
@@ -634,7 +637,8 @@ describe("production creator row and shared coordinator", () => {
         if (failure === "startup getter") throw new Error("storage unavailable");
         return storage;
       });
-      store.getState().addCreatedMarket(market());
+      if (failure === "startup getter") store.setState({ markets: [market()] });
+      else await store.getState().addCreatedMarket(market());
       await expect(
         publishOracleOutcome(
           {

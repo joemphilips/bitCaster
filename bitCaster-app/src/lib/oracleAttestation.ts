@@ -14,6 +14,7 @@ import {
   type OraclePublicationBinding,
   type PreparedOracleAttestation,
   type VerifiedOraclePublicationEvidence,
+  type OraclePublicationOptions,
 } from "@bitcaster/client-sdk/oraclePublication";
 import {
   createOracleExplanationTemplate,
@@ -31,9 +32,9 @@ import { useSettingsStore } from "@/stores/settings";
 import {
   decodeOracleAnnouncement,
   decodeOracleAttestation,
-  ensureKormirNsec,
   prepareEnumAttestation,
 } from "./kormir";
+import { browserOracleOwnerAuthority, reconcileLockedBrowserOracle } from "./browserOracleBackup";
 import { resolveNsecIdentity } from "./identityOps";
 import { withTemporaryRelayNdk } from "./nostr";
 import { sha256Hex } from "./markets";
@@ -206,12 +207,13 @@ export async function verifyRetainedOracleAttestation(
 
 async function withOracleEngine<T>(
   action: (client: BitcasterEngineClient) => Promise<T>,
+  baseUrl = window.location.origin,
 ): Promise<T> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 8_000);
   try {
     const client = new BitcasterEngineClient({
-      baseUrl: window.location.origin,
+      baseUrl,
       fetchImpl: (input, init) =>
         fetch(input, {
           ...init,
@@ -328,6 +330,8 @@ function browserOracleAdapters(
   relays: string[],
   store: ReturnType<typeof creatorOraclePublicationStore>,
   read: OracleAttestationReadPort,
+  owner: typeof useCreatorMarketsStore,
+  engineUrl: string,
 ) {
   const requireSigner = () => {
     const settings = useSettingsStore.getState();
@@ -344,19 +348,27 @@ function browserOracleAdapters(
     store,
     async prepareAttestation(saved: OraclePublicationBinding, chosen: string) {
       requireSigner();
-      await ensureKormirNsec([], useSettingsStore.getState().nsecSecret!);
-      requireSigner();
-      const artifact = await prepareEnumAttestation(
-        [],
-        saved.oracleEventId,
-        chosen,
-        saved.announcementEventJson,
-        announcementHex,
-      );
-      return {
-        attestationHex: artifact.artifactHex,
-        eventJson: artifact.eventJson,
-      };
+      return owner.getState().withOracleMutation(async (locked) => {
+        const reconciled = await reconcileLockedBrowserOracle(locked, saved, announcementHex);
+        if (reconciled.publication?.chosenOutcome !== chosen)
+          throw new Error("The saved oracle outcome cannot change.");
+        if (reconciled.publication.attestation) return reconciled.publication.attestation;
+        requireSigner();
+        const artifact = await prepareEnumAttestation(
+          [],
+          saved.oracleEventId,
+          chosen,
+          saved.announcementEventJson,
+          announcementHex,
+        );
+        const exact = await reconcileLockedBrowserOracle(locked, saved, announcementHex, {
+          ...reconciled.publication,
+          attestation: { attestationHex: artifact.artifactHex, eventJson: artifact.eventJson },
+        });
+        if (!exact.publication?.attestation)
+          throw new Error("Exact oracle preparation is unavailable.");
+        return exact.publication.attestation;
+      });
     },
     verifyAttestation: (
       saved: OraclePublicationBinding,
@@ -377,8 +389,10 @@ function browserOracleAdapters(
       const outcome = (await decodeOracleAttestation(artifact.attestationHex)).outcomes[0]!;
       // A lost response is reconciled by the verified read, not by an HTTP status.
       try {
-        await withOracleEngine((client) =>
-          submitOracleAttestationViaEngine(client, binding.conditionId, oracleEventToWire(json)),
+        await withOracleEngine(
+          (client) =>
+            submitOracleAttestationViaEngine(client, binding.conditionId, oracleEventToWire(json)),
+          engineUrl,
         );
       } catch {
         return verifiedEngineOracleEvidence(saved, artifact, outcome, read, announcementHex);
@@ -403,66 +417,64 @@ export async function publishBrowserOracleOutcome(
   explanation: string | undefined,
   relays: string[],
   store = useCreatorMarketsStore,
-  read = readEngineAttestation,
+  read?: OracleAttestationReadPort,
+  options: OraclePublicationOptions = { engineDelivery: "synchronize" },
 ) {
   if (!store.getState().hasOraclePersistence())
     throw new Error("Durable creator storage is unavailable.");
-  const market = store.getState().markets.find((item) => item.conditionId === conditionId);
-  if (!market?.oracle) throw new Error("Creator oracle record is unavailable.");
-  const announcementEventJson = await recoverAnnouncement(market, relays);
+  let owner = await store.getState().readOracleOwner(conditionId);
+  if (!owner) throw new Error("Creator oracle record is unavailable.");
+  if (owner.kind === "created") {
+    const market = owner.market;
+    if (!market.oracle) throw new Error("Creator oracle record is unavailable.");
+    const announcementEventJson = await recoverAnnouncement(
+      market,
+      market.oracle.destinations ? [...market.oracle.destinations.relayUrls] : relays,
+    );
+    await store.getState().retainOraclePreparation(conditionId, {
+      ...market.oracle,
+      oraclePubkey: readSignedOracleEvent(announcementEventJson, 88).pubkey,
+      announcementEventJson,
+    });
+    owner = await store.getState().readOracleOwner(conditionId);
+    if (!owner) throw new Error("Creator oracle record is unavailable.");
+  }
+  const { binding, announcementHex, destinations } = browserOracleOwnerAuthority(owner);
+  const announcementEventJson = binding.announcementEventJson;
   const announcement = readSignedOracleEvent(announcementEventJson, 88);
-  const binding: OraclePublicationBinding = {
-    conditionId,
-    oracleEventId: market.oracle.eventId,
-    oraclePubkey: announcement.pubkey,
-    outcomes: market.oracle.outcomes,
-    announcementEventJson,
-  };
-  if (!market.oracle.announcementHex)
-    throw new Error("Original announcement bytes are unavailable.");
-  await retainedOracleAuthority(binding, { announcementTlvHex: market.oracle.announcementHex });
-  if (
-    announcement.id !== market.oracle.announcementEventId ||
-    (market.oracle.engineBaseUrl && market.oracle.engineBaseUrl !== window.location.origin)
-  )
+  await retainedOracleAuthority(binding, { announcementTlvHex: announcementHex });
+  const legacy = owner.kind === "created" ? owner.market.oracle : undefined;
+  if (legacy && announcement.id !== legacy.announcementEventId)
     throw new Error("Original oracle preparation does not match this destination.");
-  await store.getState().retainOraclePreparation(conditionId, {
-    ...market.oracle,
-    oraclePubkey: announcement.pubkey,
-    announcementEventJson,
-    engineBaseUrl: window.location.origin,
-  });
-  if (
-    market.oracle.attestationHex &&
-    (!market.oracle.attestationEventJson || !market.oracle.chosenOutcome)
-  ) {
+  const engineUrl = destinations?.engineUrl ?? legacy?.engineBaseUrl ?? window.location.origin;
+  const originalRelays = destinations ? [...destinations.relayUrls] : relays;
+  const readOriginal =
+    read ??
+    ((id: string) => withOracleEngine((client) => client.getConditionAttestation(id), engineUrl));
+  if (legacy?.attestationHex && (!legacy.attestationEventJson || !legacy.chosenOutcome)) {
     // An already-published legacy envelope must be recovered, never signed again.
-    const response = market.oracle.attestationEventJson ? null : await read(conditionId);
-    if (
-      (!market.oracle.attestationEventJson && !response?.attestationEvent) ||
-      !market.oracle.attestedOutcome
-    )
+    const response = legacy.attestationEventJson ? null : await readOriginal(conditionId);
+    if ((!legacy.attestationEventJson && !response?.attestationEvent) || !legacy.attestedOutcome)
       throw new Error("Restore the exact previously signed attestation before retrying delivery.");
     const artifact = {
-      attestationHex: market.oracle.attestationHex,
-      eventJson:
-        market.oracle.attestationEventJson ?? oracleWireEventJson(response!.attestationEvent),
+      attestationHex: legacy.attestationHex,
+      eventJson: legacy.attestationEventJson ?? oracleWireEventJson(response!.attestationEvent),
     };
-    await verifyRetainedOracleAttestation(binding, market.oracle.attestedOutcome, artifact, {
-      announcementTlvHex: market.oracle.announcementHex,
+    await verifyRetainedOracleAttestation(binding, legacy.attestedOutcome, artifact, {
+      announcementTlvHex: announcementHex,
     });
     const engineEvidence = response
       ? await verifiedEngineOracleEvidence(
           binding,
           artifact,
-          market.oracle.attestedOutcome,
+          legacy.attestedOutcome,
           async () => response,
-          market.oracle.announcementHex,
+          announcementHex,
         )
       : null;
     await store.getState().saveOraclePublication(conditionId, {
       binding,
-      chosenOutcome: market.oracle.attestedOutcome,
+      chosenOutcome: legacy.attestedOutcome,
       attestation: artifact,
       relayPublished: false,
       engineEvidence,
@@ -471,29 +483,47 @@ export async function publishBrowserOracleOutcome(
     });
   }
   const publicationStore = creatorOraclePublicationStore(store);
-  const retained = await publicationStore.read(conditionId);
+  let retained = await publicationStore.read(conditionId);
   if (retained && retained.chosenOutcome !== outcome)
     throw new Error("The saved oracle outcome cannot change.");
   if (retained === null && explanation !== undefined)
     await store.getState().saveOracleExplanationDraft(conditionId, explanation);
   const originalDraft = await store.getState().readOracleExplanationDraft(conditionId);
+  const exactRetry = retained?.attestation !== null && retained?.attestation !== undefined;
+  if (!exactRetry) {
+    await store.getState().withOracleMutation(async (locked) => {
+      await reconcileLockedBrowserOracle(locked, binding, announcementHex, {
+        binding,
+        chosenOutcome: outcome,
+        attestation: null,
+        relayPublished: false,
+        engineEvidence: null,
+        explanationEventJson: null,
+        explanationRelayPublished: false,
+      });
+    });
+    retained = await publicationStore.read(conditionId);
+  }
   const adapters = browserOracleAdapters(
     binding,
-    market.oracle.announcementHex,
-    relays,
+    announcementHex,
+    originalRelays,
     publicationStore,
-    read,
+    readOriginal,
+    store,
+    engineUrl,
   );
   const result =
-    retained?.attestation && (retained.explanationEventJson || !originalDraft?.trim())
-      ? await retryOraclePublication(adapters, binding)
+    exactRetry || retained?.attestation
+      ? await retryOraclePublication(adapters, binding, options)
       : await publishOracleOutcome(
           adapters,
           binding,
           outcome,
           originalDraft?.trim() ? originalDraft : undefined,
+          options,
         );
-  store.getState().saveOraclePublicationFailures(conditionId, result.failures);
+  await store.getState().saveOraclePublicationFailures(conditionId, result.failures);
   return result;
 }
 
