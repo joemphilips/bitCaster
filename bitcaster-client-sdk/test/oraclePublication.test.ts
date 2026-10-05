@@ -5,6 +5,7 @@ import {
   publishOracleOutcome,
   retryOraclePublication,
   snapshotOraclePublicationRecord,
+  mergeOraclePublicationRecords,
   type OraclePublicationAdapters,
   type OraclePublicationRecord,
 } from '../src/oraclePublication.ts'
@@ -14,6 +15,80 @@ import {
   otherOracleTestKey,
   signedExplanation,
 } from './fixtures/oraclePublication.ts'
+
+test('restore merges complementary delivery evidence and preserves exact artifacts', () => {
+  const fixture = oracleFixture()
+  const signed: OraclePublicationRecord = {
+    binding: fixture.binding,
+    chosenOutcome: 'YES',
+    attestation: fixture.artifact,
+    relayPublished: false,
+    engineEvidence: null,
+    explanationEventJson: null,
+    explanationRelayPublished: false,
+  }
+  const relay = { ...signed, relayPublished: true }
+  const engine = { ...signed, engineEvidence: fixture.evidence }
+  const merged = mergeOraclePublicationRecords(relay, engine)!
+  assert.equal(merged.relayPublished, true)
+  assert.deepEqual(merged.engineEvidence, fixture.evidence)
+  assert.equal(merged.attestation!.eventJson, fixture.artifact.eventJson)
+  assert.deepEqual(mergeOraclePublicationRecords(merged, signed), merged)
+  assert.deepEqual(mergeOraclePublicationRecords(merged, null), merged)
+  assert.deepEqual(mergeOraclePublicationRecords(null, merged), merged)
+  assert.equal(mergeOraclePublicationRecords(null, null), null)
+  assert.notEqual(merged, relay)
+  assert.equal(relay.engineEvidence, null)
+})
+
+test('restore retains a saved choice and artifact when the incoming record is unsigned', () => {
+  const fixture = oracleFixture()
+  const signed: OraclePublicationRecord = {
+    binding: fixture.binding,
+    chosenOutcome: 'YES',
+    attestation: fixture.artifact,
+    relayPublished: true,
+    engineEvidence: null,
+    explanationEventJson: null,
+    explanationRelayPublished: false,
+  }
+  const unsigned = { ...signed, attestation: null, relayPublished: false }
+  assert.deepEqual(mergeOraclePublicationRecords(signed, unsigned), signed)
+  assert.throws(
+    () => mergeOraclePublicationRecords(signed, { ...unsigned, chosenOutcome: 'NO' }),
+    /authority conflicts/,
+  )
+  assert.throws(
+    () =>
+      mergeOraclePublicationRecords(signed, {
+        ...signed,
+        attestation: { ...fixture.artifact, eventJson: ` ${fixture.artifact.eventJson}` },
+      }),
+    /artifact conflicts/,
+  )
+})
+
+test('restore accepts reordered metadata while retaining the exact signed event bytes', () => {
+  const fixture = oracleFixture()
+  const previous: OraclePublicationRecord = {
+    binding: fixture.binding,
+    chosenOutcome: 'YES',
+    attestation: fixture.artifact,
+    relayPublished: true,
+    engineEvidence: fixture.evidence,
+    explanationEventJson: null,
+    explanationRelayPublished: false,
+  }
+  const incoming = {
+    ...previous,
+    attestation: {
+      eventJson: fixture.artifact.eventJson,
+      attestationHex: fixture.artifact.attestationHex,
+    },
+    engineEvidence: Object.fromEntries(Object.entries(fixture.evidence).reverse()),
+  } as OraclePublicationRecord
+  assert.deepEqual(mergeOraclePublicationRecords(previous, incoming), previous)
+})
 
 function harness() {
   const fixture = oracleFixture()

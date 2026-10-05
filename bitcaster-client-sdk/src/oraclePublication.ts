@@ -114,6 +114,54 @@ export function snapshotOraclePublicationRecord(
   }
 }
 
+/** Merge identical public authority without losing an exact artifact or delivery confirmation. */
+export function mergeOraclePublicationRecords(
+  previous: OraclePublicationRecord | null,
+  incoming: OraclePublicationRecord | null,
+): OraclePublicationRecord | null {
+  const old = previous === null ? null : snapshotOraclePublicationRecord(previous)
+  const next = incoming === null ? null : snapshotOraclePublicationRecord(incoming)
+  if (old === null) return next
+  if (next === null) return old
+  if (
+    JSON.stringify(old.binding) !== JSON.stringify(next.binding) ||
+    old.chosenOutcome !== next.chosenOutcome
+  )
+    throw new Error('Oracle publication authority conflicts with saved state.')
+  function retained<T>(
+    left: T | null,
+    right: T | null,
+    equal: (left: T, right: T) => boolean,
+  ): T | null {
+    if (left !== null && right !== null && !equal(left, right))
+      throw new Error('Exact oracle publication artifact conflicts with saved state.')
+    return left ?? right
+  }
+  return snapshotOraclePublicationRecord({
+    binding: old.binding,
+    chosenOutcome: old.chosenOutcome,
+    attestation: retained(old.attestation, next.attestation, sameAttestation),
+    relayPublished: old.relayPublished || next.relayPublished,
+    engineEvidence: retained(
+      old.engineEvidence,
+      next.engineEvidence,
+      (left, right) =>
+        left.conditionId === right.conditionId &&
+        left.oracleEventId === right.oracleEventId &&
+        left.oraclePubkey === right.oraclePubkey &&
+        left.outcome === right.outcome &&
+        left.announcementEventId === right.announcementEventId &&
+        left.attestationEventId === right.attestationEventId,
+    ),
+    explanationEventJson: retained(
+      old.explanationEventJson,
+      next.explanationEventJson,
+      (left, right) => left === right,
+    ),
+    explanationRelayPublished: old.explanationRelayPublished || next.explanationRelayPublished,
+  })
+}
+
 /** Choice -> local preparation -> exact durable save -> independent delivery. */
 export async function publishOracleOutcome(
   adapters: OraclePublicationAdapters,

@@ -280,3 +280,44 @@ function isExactRecord(value: unknown, keys: readonly string[]): value is Record
       .join('\0') === [...keys].sort().join('\0')
   )
 }
+
+export interface NativeOracleNonceBinding {
+  readonly walletScopeId: string
+  readonly conditionId: string
+  readonly oraclePubkey: string
+  readonly announcementEventId: string
+}
+
+export function protectNativeOracleNonce(
+  scalarHex: string,
+  binding: NativeOracleNonceBinding,
+  passphrase?: string,
+): ProtectedSecretBody {
+  return protectBody(
+    Buffer.from(exactPrivateHex(scalarHex), 'hex'),
+    oracleNonceBinding(binding),
+    passphrase,
+  )
+}
+
+export function unlockNativeOracleNonce(
+  body: ProtectedSecretBody,
+  binding: NativeOracleNonceBinding,
+  passphrase?: string,
+): string {
+  return exactPrivateHex(
+    Buffer.from(unlockBody(body, oracleNonceBinding(binding), passphrase)).toString('hex'),
+  )
+}
+
+function oracleNonceBinding(binding: NativeOracleNonceBinding): Uint8Array {
+  return Buffer.from(
+    JSON.stringify([
+      'bitcaster-daemon/oracle-nonce/v1',
+      binding.walletScopeId,
+      binding.conditionId,
+      binding.oraclePubkey,
+      binding.announcementEventId,
+    ]),
+  )
+}

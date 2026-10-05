@@ -540,23 +540,25 @@ test('profile replacement before live token return prevents CLI command and watc
   assert.equal(calls, 0)
 })
 
-test('native custody cutover refuses schema version 10 without changing profile bytes or modes', async () => {
-  const directory = join(await freshRoot('claim-old-schema'), 'profile')
-  await bootstrap(directory)
-  const path = join(directory, DAEMON_PROFILE_DATABASE)
-  const database = new DatabaseSync(path)
-  database.exec('PRAGMA user_version = 10')
-  database.close()
-  const before = await readFile(path)
-  const mode = (await stat(path)).mode
-  await assert.rejects(
-    validateDaemonProfileSchema(directory, getFinalProfileSchemaManifest()),
-    ProfileSchemaRefusalError,
-  )
-  await assert.rejects(readBootstrappedProfileSecrets(directory), ProfileSchemaRefusalError)
-  assert.equal((await readFile(path)).equals(before), true)
-  assert.equal((await stat(path)).mode, mode)
-})
+for (const version of [10, 13]) {
+  test(`native custody cutover refuses schema version ${version} without changing profile bytes or modes`, async () => {
+    const directory = join(await freshRoot(`claim-old-schema-${version}`), 'profile')
+    await bootstrap(directory)
+    const path = join(directory, DAEMON_PROFILE_DATABASE)
+    const database = new DatabaseSync(path)
+    database.exec(`PRAGMA user_version = ${version}`)
+    database.close()
+    const before = await readFile(path)
+    const mode = (await stat(path)).mode
+    await assert.rejects(
+      validateDaemonProfileSchema(directory, getFinalProfileSchemaManifest()),
+      ProfileSchemaRefusalError,
+    )
+    await assert.rejects(readBootstrappedProfileSecrets(directory), ProfileSchemaRefusalError)
+    assert.equal((await readFile(path)).equals(before), true)
+    assert.equal((await stat(path)).mode, mode)
+  })
+}
 
 test('a missing Activity display table is refused without schema repair', async () => {
   const directory = await freshProfileDirectory('activity-schema-missing')
@@ -576,7 +578,7 @@ test('a missing Activity display table is refused without schema repair', async 
 test('production schema manifest is pinned and excludes source-only recovery authority', () => {
   assert.equal(finalProfileSchemaManifestDigest(), FINAL_PROFILE_SCHEMA_MANIFEST_DIGEST)
   const manifest = getFinalProfileSchemaManifest()
-  assert.equal(FINAL_PROFILE_SCHEMA_VERSION, 13)
+  assert.equal(FINAL_PROFILE_SCHEMA_VERSION, 14)
   assert.equal(Object.isFrozen(manifest), true)
   assert.equal(Object.isFrozen(manifest.objects), true)
   const names = new Set(manifest.objects.map((object) => object.name))
@@ -603,6 +605,7 @@ test('production schema manifest is pinned and excludes source-only recovery aut
     'daemon_activity_feed',
     'daemon_activity_feed_meta',
     'daemon_oracle_nonce_allocator',
+    'daemon_oracle_imports',
   ]) {
     assert.ok(names.has(required), required)
   }

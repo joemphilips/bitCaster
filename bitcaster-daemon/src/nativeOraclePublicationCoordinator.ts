@@ -12,6 +12,7 @@ import {
   type OraclePublicationBinding,
   type OraclePublicationRecord,
   type OraclePublicationResult,
+  type OraclePublicationOptions,
   type PreparedOracleAttestation,
   type VerifiedOraclePublicationEvidence,
 } from '@bitcaster-market/client-sdk'
@@ -19,6 +20,8 @@ import {
   nativeOraclePublicationRecord,
   type NativeOracleCreationStore,
   type NativeOracleCreationRecord,
+  type NativeImportedOracleRecord,
+  type NativeOracleAuthorityRecord,
 } from './nativeOracleCreationStore.ts'
 import type { NativeOracleHelper, NativeOracleVerifyEnumResponse } from './nativeOracleHelper.ts'
 import { assertNativeOracleCreator } from './nativeMarketOracle.ts'
@@ -34,15 +37,24 @@ export interface NativeOraclePublicationPorts {
 }
 
 export function nativeOraclePublicationBinding(
-  record: NativeOracleCreationRecord,
+  record: NativeOracleCreationRecord | NativeImportedOracleRecord,
 ): OraclePublicationBinding {
   if (record.announcement === null) throw new Error('Native oracle announcement is missing.')
-  const canonical = JSON.parse(record.canonicalInput) as { market: MarketCreationInput }
+  const outcomes =
+    'kind' in record && record.kind === 'imported'
+      ? record.outcomes
+      : normalizeMarketCreationInput(
+          (
+            JSON.parse((record as NativeOracleCreationRecord).canonicalInput) as {
+              market: MarketCreationInput
+            }
+          ).market,
+        ).outcomeLabels
   return {
     conditionId: record.announcement.conditionId,
     oracleEventId: record.eventId,
     oraclePubkey: record.creatorPublicKeyHex,
-    outcomes: normalizeMarketCreationInput(canonical.market).outcomeLabels,
+    outcomes,
     announcementEventJson: record.announcement.announcementNostrEventJson,
   }
 }
@@ -51,11 +63,11 @@ export function createNativeOraclePublicationAdapters(
   ports: NativeOraclePublicationPorts,
 ): OraclePublicationAdapters {
   const requireNative = async (conditionId: string) => {
-    const record = await ports.store.readByConditionId(conditionId)
+    const record = await ports.store.readAuthorityByConditionId(conditionId)
     if (record?.announcement == null) throw new Error('Native oracle announcement is missing.')
     return record
   }
-  const requirePublication = (record: NativeOracleCreationRecord): OraclePublicationRecord => {
+  const requirePublication = (record: NativeOracleAuthorityRecord): OraclePublicationRecord => {
     const publication = nativeOraclePublicationRecord(record)
     if (publication === null) throw new Error('Native oracle outcome is not saved.')
     return publication
@@ -89,7 +101,7 @@ export function createNativeOraclePublicationAdapters(
   return {
     store: {
       async read(conditionId) {
-        const record = await ports.store.readByConditionId(conditionId)
+        const record = await ports.store.readAuthorityByConditionId(conditionId)
         return record === null ? null : nativeOraclePublicationRecord(record)
       },
       async saveChoice(binding, outcome) {
@@ -99,13 +111,15 @@ export function createNativeOraclePublicationAdapters(
           !binding.outcomes.includes(outcome)
         )
           throw new Error('Native oracle choice conflicts with the saved announcement.')
-        return requirePublication(await ports.store.chooseOutcome(binding.conditionId, outcome))
+        return requirePublication(
+          await ports.store.chooseAuthorityOutcome(binding.conditionId, outcome),
+        )
       },
       async saveAttestation(conditionId, artifact) {
         const record = await requireNative(conditionId)
         if (record.chosenOutcome === null) throw new Error('Native oracle outcome is not saved.')
         return requirePublication(
-          await ports.store.persistAttestation(record.creationId, record.chosenOutcome, {
+          await ports.store.persistAuthorityAttestation(conditionId, record.chosenOutcome, {
             attestationHex: artifact.attestationHex,
             attestationNostrEventJson: artifact.eventJson,
           }),
@@ -113,7 +127,7 @@ export function createNativeOraclePublicationAdapters(
       },
       async saveExplanation(conditionId, eventJson) {
         return requirePublication(
-          await ports.store.persistPublicationProgress(conditionId, {
+          await ports.store.persistAuthorityPublicationProgress(conditionId, {
             kind: 'explanation',
             eventJson,
           }),
@@ -121,12 +135,15 @@ export function createNativeOraclePublicationAdapters(
       },
       async confirmRelay(conditionId, eventId) {
         return requirePublication(
-          await ports.store.persistPublicationProgress(conditionId, { kind: 'relay', eventId }),
+          await ports.store.persistAuthorityPublicationProgress(conditionId, {
+            kind: 'relay',
+            eventId,
+          }),
         )
       },
       async confirmEngine(conditionId, confirmed) {
         return requirePublication(
-          await ports.store.persistPublicationProgress(conditionId, {
+          await ports.store.persistAuthorityPublicationProgress(conditionId, {
             kind: 'engine',
             evidence: confirmed,
           }),
@@ -134,7 +151,7 @@ export function createNativeOraclePublicationAdapters(
       },
       async confirmExplanationRelay(conditionId, eventId) {
         return requirePublication(
-          await ports.store.persistPublicationProgress(conditionId, {
+          await ports.store.persistAuthorityPublicationProgress(conditionId, {
             kind: 'explanation-relay',
             eventId,
           }),
@@ -147,15 +164,24 @@ export function createNativeOraclePublicationAdapters(
         throw new Error('Native oracle preparation requires a saved unsigned choice.')
       const signer = await ports.readSigner()
       assertNativeOracleCreator(binding.oraclePubkey, signer.secretKeyHex)
-      const prepared = await ports.helper.signEnum({
-        oracleSecretKeyHex: signer.secretKeyHex,
-        nonceSeedHex: signer.nonceSeedHex,
-        reservedNonceIndex: record.nonceIndex,
-        eventId: record.eventId,
-        chosenOutcome: outcome,
-        announcementTlvHex: record.announcement!.announcementTlvHex,
-        announcementNostrEventJson: record.announcement!.announcementNostrEventJson,
-      })
+      const prepared =
+        record.kind === 'imported'
+          ? await ports.helper.signExplicitEnum({
+              oracleSecretKeyHex: signer.secretKeyHex,
+              privateDtoJson: JSON.stringify(
+                await ports.store.readImportedAuthorityForSigning(binding.conditionId),
+              ),
+              chosenOutcome: outcome,
+            })
+          : await ports.helper.signEnum({
+              oracleSecretKeyHex: signer.secretKeyHex,
+              nonceSeedHex: signer.nonceSeedHex,
+              reservedNonceIndex: record.nonceIndex,
+              eventId: record.eventId,
+              chosenOutcome: outcome,
+              announcementTlvHex: record.announcement!.announcementTlvHex,
+              announcementNostrEventJson: record.announcement!.announcementNostrEventJson,
+            })
       return {
         attestationHex: prepared.attestationHex,
         eventJson: prepared.attestationNostrEventJson,
@@ -220,27 +246,30 @@ export async function publishNativeMarketOutcome(
   conditionId: string,
   outcome: string,
   explanation?: string,
+  options?: OraclePublicationOptions,
 ) {
-  const record = await ports.store.readByConditionId(conditionId)
+  const record = await ports.store.readAuthorityByConditionId(conditionId)
   if (record === null) throw new Error('Native oracle announcement is missing.')
   if (record.chosenOutcome !== null && record.chosenOutcome !== outcome)
     throw new Error('Native oracle choice conflicts with the saved outcome.')
   // Validate signed binding and membership before committing the immutable native intent.
   nativeOraclePublicationRecord({ ...record, chosenOutcome: outcome })
-  const chosen = await ports.store.chooseOutcome(conditionId, outcome, explanation)
+  const chosen = await ports.store.chooseAuthorityOutcome(conditionId, outcome, explanation)
   return publishOracleOutcome(
     createNativeOraclePublicationAdapters(ports),
     nativeOraclePublicationBinding(chosen),
     outcome,
     chosen.explanationDraft ?? undefined,
+    options,
   )
 }
 
 export async function retryNativeMarketPublication(
   ports: NativeOraclePublicationPorts,
   conditionId: string,
+  options?: OraclePublicationOptions,
 ) {
-  const record = await ports.store.readByConditionId(conditionId)
+  const record = await ports.store.readAuthorityByConditionId(conditionId)
   if (record === null) throw new Error('Native oracle announcement is missing.')
   if (
     record.attestation !== null &&
@@ -253,10 +282,12 @@ export async function retryNativeMarketPublication(
       nativeOraclePublicationBinding(record),
       record.chosenOutcome,
       record.explanationDraft,
+      options,
     )
   return retryOraclePublication(
     createNativeOraclePublicationAdapters(ports),
     nativeOraclePublicationBinding(record),
+    options,
   )
 }
 
