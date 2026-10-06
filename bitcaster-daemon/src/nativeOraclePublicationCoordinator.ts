@@ -272,6 +272,7 @@ export async function retryNativeMarketPublication(
   const record = await ports.store.readAuthorityByConditionId(conditionId)
   if (record === null) throw new Error('Native oracle announcement is missing.')
   if (
+    options?.republishAttestation !== true &&
     record.attestation !== null &&
     record.chosenOutcome !== null &&
     record.explanationEventJson === null &&

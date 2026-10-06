@@ -40,10 +40,15 @@ import {
 } from "../oracleAttestation";
 import fixture from "./fixtures/oraclePublication.json";
 import { useSettingsStore } from "@/stores/settings";
+import { requestBrowserOracleBackup } from "../browserOracleBackupDelivery";
 
 const { fetchAnnouncement, fetchCompanions } = vi.hoisted(() => ({
   fetchAnnouncement: vi.fn(),
   fetchCompanions: vi.fn(),
+}));
+
+vi.mock("../browserOracleBackupDelivery", () => ({
+  requestBrowserOracleBackup: vi.fn(),
 }));
 
 vi.mock("../nostr", async () => {
@@ -129,6 +134,7 @@ beforeAll(async () => {
   };
 });
 beforeEach(async () => {
+  vi.mocked(requestBrowserOracleBackup).mockClear();
   installCreatorDocumentLocks();
   localStorage.clear();
   useSettingsStore.setState({ nostrSignerMode: "none", nsecSecret: null });
@@ -444,6 +450,7 @@ describe("production creator row and shared coordinator", () => {
         async () => response,
       );
       expect(first.failures).toEqual(["relay"]);
+      expect(requestBrowserOracleBackup).not.toHaveBeenCalled();
       expect(first.record.engineEvidence).not.toBeNull();
       expect(network).toHaveBeenCalledTimes(1);
       expect(JSON.parse(String(network.mock.calls[0]?.[1]?.body))).toEqual(
@@ -462,6 +469,7 @@ describe("production creator row and shared coordinator", () => {
         async () => response,
       );
       expect(resumed.failures).toEqual([]);
+      expect(requestBrowserOracleBackup).toHaveBeenCalledWith(conditionId, { store: reader });
       expect(network).toHaveBeenCalledTimes(1);
       expect(publish).toHaveBeenCalledTimes(2);
       expect((await reader.getState().readOraclePublication(conditionId))?.attestation).toEqual(

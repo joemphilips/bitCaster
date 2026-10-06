@@ -635,3 +635,46 @@ test('delivery bounds relay fanout at four and merges every exact acknowledgment
   assert.equal(sent, 9)
   assert.equal(result.state!.current!.acknowledgedRelayIndexes.join(','), '0,1,2,3,4,5,6,7,8')
 })
+
+test('shared relay reader accepts exact backup and deletion and rejects unsupported or malformed events', async () => {
+  const { readOracleBackupRelayEvent } = await import('../src/oracleBackupDelivery.ts')
+  const f = fixture()
+  const initial = await prepare(f)
+  const terminal = await prepare(f, initial, true)
+  assert.equal(readOracleBackupRelayEvent(initial.current!.eventJson).id, initial.current!.eventId)
+  assert.equal(
+    readOracleBackupRelayEvent(terminal.deletion!.eventJson).id,
+    terminal.deletion!.eventId,
+  )
+  const deletion = JSON.parse(terminal.deletion!.eventJson)
+  for (const event of [
+    JSON.parse(f.publication.attestation!.eventJson),
+    finalizeEvent({ ...deletion, content: 'forbidden' }, oracleTestKey),
+    finalizeEvent(
+      {
+        ...deletion,
+        tags: [
+          ['e', '00'.repeat(32)],
+          ['k', '88'],
+        ],
+      },
+      oracleTestKey,
+    ),
+    finalizeEvent(
+      {
+        ...deletion,
+        tags: [
+          ['e', '00'.repeat(32)],
+          ['e', '00'.repeat(32)],
+          ['k', '30078'],
+        ],
+      },
+      oracleTestKey,
+    ),
+    { ...deletion, created_at: deletion.created_at + 1 },
+  ])
+    assert.throws(
+      () => readOracleBackupRelayEvent(JSON.stringify(event)),
+      safeError('invalid-source'),
+    )
+})

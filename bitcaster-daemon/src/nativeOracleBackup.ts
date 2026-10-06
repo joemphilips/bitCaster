@@ -30,7 +30,19 @@ function deliveryPorts(ports: NativeOracleBackupPorts) {
 }
 
 /** Prepare and save under the owner CAS before any relay publication. */
-export function publishNativeOracleBackup(ports: NativeOracleBackupPorts, conditionId: string) {
+export async function publishNativeOracleBackup(
+  ports: NativeOracleBackupPorts,
+  conditionId: string,
+) {
+  const state = await ports.store.readBackupDelivery(conditionId)
+  const owner = await ports.store.readAuthorityByConditionId(conditionId)
+  const terminal = owner?.relayPublished === true && owner.attestation !== null
+  if (
+    state?.current !== null &&
+    state?.current !== undefined &&
+    (!terminal || state.current.mode === 'terminal')
+  )
+    return retryNativeOracleBackup(ports, conditionId)
   return deliverOracleBackup(deliveryPorts(ports), conditionId)
 }
 

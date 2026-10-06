@@ -13,6 +13,8 @@ export interface NativeNostrRelayOptions {
   awaitMessageCallbacks?: boolean
   maxMessageBytes?: number
   onclose?: () => void
+  /** Receiver budget check before upstream signature filtering and deduplication. */
+  acceptMessage?: (message: string) => boolean
 }
 
 export interface NativeNostrSubscriptionHandlers {
@@ -138,7 +140,9 @@ export class NativeNostrRelay {
           this.socket = socket
         },
         () => this.disposeSocket(),
-        options.awaitMessageCallbacks || options.maxMessageBytes !== undefined
+        options.awaitMessageCallbacks ||
+          options.maxMessageBytes !== undefined ||
+          options.acceptMessage !== undefined
           ? (callback, event) => this.dispatchMessage(callback, event)
           : undefined,
       ),
@@ -181,7 +185,7 @@ export class NativeNostrRelay {
   subscribe(
     filters: readonly Filter[],
     handlers: NativeNostrSubscriptionHandlers,
-  ): { close: () => void } {
+  ): { close: () => void; id: string } {
     if (!this.connected) throw new Error('Nostr relay is not connected.')
     let stopped = false
     const params: SubscriptionParams = {
@@ -215,7 +219,7 @@ export class NativeNostrRelay {
       subscription.close()
     }
     this.subscriptions.add(stop)
-    return { close: stop }
+    return { close: stop, id: subscription.id }
   }
 
   private async dispatchMessage(
@@ -229,6 +233,13 @@ export class NativeNostrRelay {
       (typeof event.data !== 'string' ||
         event.data.length > limit ||
         Buffer.byteLength(event.data) > limit)
+    ) {
+      this.close()
+      return
+    }
+    if (
+      this.options.acceptMessage &&
+      (typeof event.data !== 'string' || !this.options.acceptMessage(event.data))
     ) {
       this.close()
       return

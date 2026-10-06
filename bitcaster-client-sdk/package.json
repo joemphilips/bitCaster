@@ -419,6 +419,10 @@
     "./conditionOracleEvidence": {
       "types": "./dist/conditionOracleEvidence.d.ts",
       "import": "./dist/conditionOracleEvidence.js"
+    },
+    "./oracleBackupAccess": {
+      "types": "./dist/oracleBackupAccess.d.ts",
+      "import": "./dist/oracleBackupAccess.js"
     }
   },
   "scripts": {

@@ -95,6 +95,8 @@ export interface OraclePublicationResult {
 
 export interface OraclePublicationOptions {
   readonly engineDelivery: 'synchronize' | 'relay-only'
+  /** Send the exact saved kind-89 artifact again. Preserve all retained progress. */
+  readonly republishAttestation?: boolean
 }
 
 /** Validate a loaded port view without adding another storage owner. DLC verification remains a port. */
@@ -174,6 +176,8 @@ export async function publishOracleOutcome(
   const binding = snapshotBinding(input)
   if (!binding.outcomes.includes(outcome)) throw new Error('Oracle outcome is foreign.')
   let retained = await adapters.store.read(binding.conditionId)
+  if (options.republishAttestation === true && (retained === null || retained.attestation === null))
+    throw new Error('Signed oracle publication is unavailable.')
   if (retained !== null) assertRecord(retained, binding, outcome)
   else retained = await adapters.store.saveChoice(structuredClone(binding), outcome)
   assertRecord(retained, binding, outcome)
@@ -192,7 +196,9 @@ export async function publishOracleOutcome(
       throw new Error('Exact oracle attestation was not saved.')
     current = structuredClone(saved)
   }
-  await verifyPrepared(adapters, binding, outcome, current.attestation!)
+  // Explicit republication sends already validated durable authority without private-core work.
+  if (options.republishAttestation !== true)
+    await verifyPrepared(adapters, binding, outcome, current.attestation!)
   const failures: OraclePublicationFailureStage[] = []
   if (explanationText !== undefined) {
     try {
@@ -201,7 +207,7 @@ export async function publishOracleOutcome(
       failures.push('explanation-preparation')
     }
   }
-  current = await attemptRelay(adapters, current, failures)
+  current = await attemptRelay(adapters, current, failures, options.republishAttestation === true)
   if (synchronizeEngine) current = await attemptEngine(adapters, current, failures)
   current = await attemptExplanationRelay(adapters, current, failures)
   return { record: current, failures }
@@ -257,8 +263,9 @@ async function attemptRelay(
   adapters: OraclePublicationAdapters,
   current: OraclePublicationRecord,
   failures: OraclePublicationFailureStage[],
+  republish = false,
 ): Promise<OraclePublicationRecord> {
-  if (current.relayPublished) return current
+  if (current.relayPublished && !republish) return current
   try {
     const id = readSignedOracleEvent(current.attestation!.eventJson, 89).id
     if ((await adapters.publishRelay(current.attestation!.eventJson)).eventId !== id)

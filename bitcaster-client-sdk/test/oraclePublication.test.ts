@@ -559,3 +559,132 @@ test('companion delivery remains independent when both resolution destinations f
   assert.equal(result.record.explanationRelayPublished, true)
   assert.equal(result.record.attestation?.eventJson, h.artifact.eventJson)
 })
+
+test('explicit saved attestation republication sends identical bytes again without signing or preparation', async () => {
+  const h = harness()
+  const first = await publishOracleOutcome(h.adapters, h.binding, 'YES', undefined, {
+    engineDelivery: 'relay-only',
+  })
+  assert.equal(first.record.relayPublished, true)
+  h.calls.length = 0
+  h.sent.length = 0
+  h.adapters.prepareAttestation = async () => {
+    throw new Error('Signer unavailable.')
+  }
+  h.adapters.verifyAttestation = async () => {
+    throw new Error('Private core unavailable.')
+  }
+  h.adapters.prepareExplanation = async () => {
+    throw new Error('Preparation unavailable.')
+  }
+  h.adapters.submitEngine = async () => {
+    throw new Error('Engine must not run.')
+  }
+  for (let i = 0; i < 2; i++) {
+    const repeated = await retryOraclePublication(h.adapters, h.binding, {
+      engineDelivery: 'relay-only',
+      republishAttestation: true,
+    })
+    assert.equal(repeated.failures.length, 0)
+    assert.equal(repeated.record.relayPublished, true)
+    assert.equal(
+      repeated.record.attestation!.eventJson === first.record.attestation!.eventJson,
+      true,
+      'Exact bytes changed.',
+    )
+  }
+  assert.equal(h.sent.length, 2)
+  assert.equal(
+    h.sent.every((json) => json === h.artifact.eventJson),
+    true,
+    'Repeated event changed.',
+  )
+  assert.equal(
+    h.sent.every((json) => JSON.parse(json).id === h.attestation.id),
+    true,
+  )
+  assert.equal(h.calls.filter((call) => call === 'relay').length, 2)
+  assert.equal(h.calls.includes('prepare'), false)
+  assert.equal(h.calls.includes('engine'), false)
+  h.calls.length = 0
+  h.adapters.verifyAttestation = async () => {
+    h.calls.push('verify')
+    return h.evidence
+  }
+  await retryOraclePublication(h.adapters, h.binding, { engineDelivery: 'relay-only' })
+  assert.equal(h.calls.includes('relay'), false)
+})
+
+test('republication requires saved attestation before choice or preparation and checks binding', async () => {
+  const h = harness()
+  await assert.rejects(
+    publishOracleOutcome(h.adapters, h.binding, 'YES', undefined, {
+      engineDelivery: 'relay-only',
+      republishAttestation: true,
+    }),
+    /Signed oracle publication is unavailable/,
+  )
+  assert.equal(h.calls.length, 0)
+  h.retain({
+    binding: h.binding,
+    chosenOutcome: 'YES',
+    attestation: null,
+    relayPublished: false,
+    engineEvidence: null,
+    explanationEventJson: null,
+    explanationRelayPublished: false,
+  })
+  await assert.rejects(
+    publishOracleOutcome(h.adapters, h.binding, 'YES', undefined, {
+      engineDelivery: 'relay-only',
+      republishAttestation: true,
+    }),
+    /Signed oracle publication is unavailable/,
+  )
+  assert.equal(h.calls.length, 0)
+  h.retain({ ...h.reload()!, attestation: h.artifact, relayPublished: true })
+  await assert.rejects(
+    retryOraclePublication(
+      h.adapters,
+      { ...h.binding, oracleEventId: 'foreign' },
+      { engineDelivery: 'relay-only', republishAttestation: true },
+    ),
+  )
+  assert.equal(h.calls.length, 0)
+})
+
+test('republication failure and foreign acknowledgment retain terminal delivery and engine progress', async () => {
+  const h = harness()
+  await publishOracleOutcome(h.adapters, h.binding, 'YES')
+  const saved = h.reload()!
+  h.calls.length = 0
+  h.adapters.verifyAttestation = async () => {
+    throw new Error('Private core unavailable.')
+  }
+  for (const publishRelay of [
+    async () => {
+      throw new Error('PRIVATE TRANSPORT ERROR')
+    },
+    async () => ({ eventId: '00'.repeat(32) }),
+  ]) {
+    h.adapters.publishRelay = publishRelay
+    const repeated = await retryOraclePublication(h.adapters, h.binding, {
+      engineDelivery: 'synchronize',
+      republishAttestation: true,
+    })
+    assert.equal(repeated.failures.join(','), 'relay')
+    assert.equal(repeated.record.relayPublished, true)
+    assert.equal(
+      repeated.record.engineEvidence!.attestationEventId,
+      saved.engineEvidence!.attestationEventId,
+    )
+    assert.equal(
+      repeated.record.attestation!.eventJson === saved.attestation!.eventJson,
+      true,
+      'Saved event changed.',
+    )
+    assert.equal(JSON.stringify(repeated.failures).includes('PRIVATE'), false)
+  }
+  assert.equal(h.calls.includes('engine'), false)
+  assert.equal(h.calls.includes('save-relay'), false)
+})

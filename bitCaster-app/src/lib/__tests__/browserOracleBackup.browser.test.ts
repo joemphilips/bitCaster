@@ -12,10 +12,15 @@ import {
   browserOracleBackupValidator,
   getKormir,
   ensureKormirNsec,
+  prepareEnumAnnouncement,
   prepareEnumAttestation,
   resetKormir,
 } from "../kormir";
-import { exportBrowserOracleBackup, importBrowserOracleBackup } from "../browserOracleBackup";
+import {
+  exportBrowserOracleBackup,
+  importBrowserOracleBackup,
+  importBrowserOracleBackupEnvelope,
+} from "../browserOracleBackup";
 import {
   oracleEventToWire,
   publishBrowserOracleOutcome,
@@ -36,6 +41,10 @@ vi.mock("../kormir", async (original) => {
     ensureKormirNsec: vi.fn(actual.ensureKormirNsec),
   };
 });
+vi.mock("../browserOracleBackupDelivery", async (original) => ({
+  ...(await original<typeof import("../browserOracleBackupDelivery")>()),
+  requestBrowserOracleBackup: vi.fn(),
+}));
 beforeEach(() => {
   localStorage.clear();
   resetKormir();
@@ -44,6 +53,124 @@ beforeEach(() => {
 });
 afterEach(() => {
   vi.unstubAllGlobals();
+});
+
+it.each(["metadata-write", "private-import", "completion-write"] as const)(
+  "retains authenticated source provenance before the %s import boundary",
+  async (boundary) => {
+    const f = await fixture();
+    const event = await createOracleBackupEvent({
+      record: f.record,
+      privateKey: Uint8Array.from({ length: 32 }, () => 0x11),
+      createdAt: 1_800_000_040,
+      validator: browserOracleBackupValidator,
+    });
+    await emptyPrivateTestStore();
+    await ensureKormirNsec([], "11".repeat(32));
+    const core = await getKormir([]);
+    let fail = true;
+    const owner = createCreatorMarketsStore(() => ({
+      getItem: (key) => localStorage.getItem(key),
+      removeItem: (key) => localStorage.removeItem(key),
+      setItem: (key, value) => {
+        const imported = JSON.parse(value).state.importedOracles[0];
+        if (
+          fail &&
+          ((boundary === "metadata-write" && imported?.backupDelivery?.knownEventIds.length) ||
+            (boundary === "completion-write" && imported?.importComplete))
+        )
+          throw new Error("Private fixture diagnostic.");
+        localStorage.setItem(key, value);
+      },
+    }));
+    const privateImport =
+      boundary === "private-import"
+        ? vi
+            .spyOn(Object.getPrototypeOf(core), "import_enum_authority")
+            .mockRejectedValue(new Error("Private fixture diagnostic."))
+        : null;
+    try {
+      await expect(
+        importBrowserOracleBackupEnvelope(event, "wss://source.example", owner),
+      ).rejects.toThrow("Private oracle backup: invalid-record.");
+    } finally {
+      privateImport?.mockRestore();
+    }
+    const reloaded = createCreatorMarketsStore();
+    const saved = await reloaded.getState().readOracleOwner(f.record.conditionId);
+    if (boundary === "metadata-write") {
+      expect(saved).toBeNull();
+      await expect(
+        core.export_enum_authority(f.record.oracleEventId, f.prepared.eventJson),
+      ).rejects.toThrow();
+    } else {
+      if (saved?.kind !== "imported") throw new Error("Imported owner required.");
+      expect(saved.oracle.importComplete).toBe(false);
+      expect(saved.oracle.backupDelivery?.current).toBeNull();
+      expect(saved.oracle.backupDelivery?.knownEventIds.join(",")).toBe(event.id);
+      expect(saved.oracle.backupDelivery?.timestampHighWater).toBe(event.created_at);
+    }
+    fail = false;
+    await importBrowserOracleBackupEnvelope(event, "wss://source.example", owner);
+    const complete = await createCreatorMarketsStore()
+      .getState()
+      .readOracleOwner(f.record.conditionId);
+    if (complete?.kind !== "imported") throw new Error("Imported owner required.");
+    expect(complete.oracle.importComplete).toBe(true);
+    expect(complete.oracle.backupDelivery?.knownEventIds.join(",")).toBe(event.id);
+    const prepared = await createBrowserOracleBackupDeliveryAdapters({
+      store: owner,
+      nowSeconds: () => 1,
+    }).store.prepare(f.record.conditionId);
+    expect(JSON.parse(prepared.current!.eventJson).created_at).toBe(event.created_at + 1);
+  },
+);
+
+it("refuses a new terminal source before changing a usable owner and supports fresh terminal restore", async () => {
+  const f = await fixture();
+  const source = await createOracleBackupEvent({
+    record: f.record,
+    privateKey: Uint8Array.from({ length: 32 }, () => 0x11),
+    createdAt: 1_800_000_040,
+    validator: browserOracleBackupValidator,
+  });
+  const owner = createCreatorMarketsStore();
+  await importBrowserOracleBackupEnvelope(source, "wss://source.example", owner);
+  await createBrowserOracleBackupDeliveryAdapters({ store: owner }).store.prepare(
+    f.record.conditionId,
+  );
+  await saveRelayConfirmedResult(f, owner);
+  const staged = await createBrowserOracleBackupDeliveryAdapters({ store: owner }).store.prepare(
+    f.record.conditionId,
+  );
+  const terminal = await decryptOracleBackupEvent({
+    event: JSON.parse(staged.current!.eventJson),
+    privateKey: Uint8Array.from({ length: 32 }, () => 0x11),
+    validator: browserOracleBackupValidator,
+  });
+  const late = await createOracleBackupEvent({
+    record: terminal,
+    privateKey: Uint8Array.from({ length: 32 }, () => 0x11),
+    createdAt: JSON.parse(staged.current!.eventJson).created_at + 1,
+    validator: browserOracleBackupValidator,
+  });
+  const before = localStorage.getItem("bitcaster-creator-markets");
+  await expect(
+    importBrowserOracleBackupEnvelope(late, "wss://source.example", owner),
+  ).rejects.toThrow("terminal-backup-source-not-admitted");
+  expect(localStorage.getItem("bitcaster-creator-markets") === before).toBe(true);
+  const retained = await owner.getState().readOracleOwner(f.record.conditionId);
+  if (retained?.kind !== "imported") throw new Error("Imported owner required.");
+  expect(retained.oracle.importComplete).toBe(true);
+  await emptyPrivateTestStore();
+  await owner.getState().clear();
+  const descriptor = await importBrowserOracleBackupEnvelope(late, "wss://source.example", owner);
+  expect(descriptor.state).toBe("terminal");
+  const fresh = await owner.getState().readOracleBackupDelivery(f.record.conditionId);
+  expect(fresh?.current).toBeNull();
+  expect(fresh?.terminalAdmission).toBeNull();
+  expect(fresh?.terminalCommitPending).toBe(false);
+  expect(fresh?.knownEventIds.join(",")).toBe(late.id);
 });
 
 async function emptyPrivateTestStore() {
@@ -310,6 +437,46 @@ it("restores encrypted authority into empty IndexedDB and retains only public me
     f.record.authority.announcementEventJson,
   );
   expect(signed.artifactHex.length > 0).toBe(true);
+});
+
+it("allocates a distinct unrelated nonce after encrypted restore without changing imported authority", async () => {
+  const f = await fixture();
+  const event = await createOracleBackupEvent({
+    record: f.record,
+    privateKey: new Uint8Array(32).fill(0x11),
+    createdAt: 1_800_000_001,
+    validator: browserOracleBackupValidator,
+  });
+  await emptyPrivateTestStore();
+  const owner = createCreatorMarketsStore();
+  await importBrowserOracleBackupEnvelope(event, "wss://source.example", owner);
+  const before = await exportBrowserOracleBackup(f.record.conditionId, owner);
+  const original = await browserOracleBackupValidator.validateAuthority(
+    JSON.stringify(before.authority),
+    before.oraclePubkey,
+  );
+  const unrelatedId = `unrelated-after-restore-${crypto.randomUUID()}`;
+  const unrelated = await prepareEnumAnnouncement([], unrelatedId, ["YES", "NO"], 1_800_000_002);
+  const core = await getKormir([]);
+  const unrelatedAuthority = await core.export_enum_authority(unrelatedId, unrelated.eventJson);
+  const fresh = await browserOracleBackupValidator.validateAuthority(
+    unrelatedAuthority,
+    before.oraclePubkey,
+  );
+  expect(fresh.eventId).toBe(unrelatedId);
+  expect(fresh.noncePoint === original.noncePoint).toBe(false);
+  resetKormir();
+  const reopened = createCreatorMarketsStore();
+  const after = await exportBrowserOracleBackup(f.record.conditionId, reopened);
+  // Compare private authority without printing its contents on failure.
+  expect(JSON.stringify(after) === JSON.stringify(before)).toBe(true);
+  expect(reopened.getState().markets.length).toBe(0);
+  expect(reopened.getState().importedOracles.length).toBe(1);
+  const retained = await browserOracleBackupValidator.validateAuthority(
+    JSON.stringify(after.authority),
+    after.oraclePubkey,
+  );
+  expect(retained.noncePoint).toBe(original.noncePoint);
 });
 
 it("refuses a failed metadata write before importing any per-event private authority", async () => {

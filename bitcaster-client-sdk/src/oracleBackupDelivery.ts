@@ -103,10 +103,107 @@ export class OracleBackupDeliveryError extends Error {
     | 'preparation-key-unavailable'
     | 'invalid-acknowledgment'
     | 'terminal-not-ready'
+    | 'terminal-backup-source-not-admitted'
   constructor(reason: OracleBackupDeliveryError['reason']) {
     super(`Private oracle backup delivery: ${reason}.`)
     this.name = 'OracleBackupDeliveryError'
     this.reason = reason
+  }
+}
+
+/** Provenance from the envelope authenticated by the receiving owner. Never accept RPC metadata. */
+export interface OracleBackupSource {
+  readonly eventId: string
+  readonly createdAt: number
+  readonly sourceRelay: string
+}
+
+/** The owner checks authority conflicts and saves this state with the authenticated import. */
+export function admitOracleBackupSource(input: {
+  readonly record: OracleBackupRecord
+  readonly source: OracleBackupSource
+  readonly previous: OracleBackupDeliveryState | null
+}): OracleBackupDeliveryState {
+  try {
+    const { record, source } = input
+    if (
+      !hex(source.eventId) ||
+      !timestamp(source.createdAt) ||
+      source.sourceRelay.length > 2_048 ||
+      normalizeNostrRelayUrls([source.sourceRelay])[0] !== source.sourceRelay
+    )
+      fail('invalid-source')
+    const binding = {
+      conditionId: record.conditionId,
+      oraclePubkey: record.oraclePubkey,
+      announcementEventId: readSignedOracleEvent(record.authority.announcementEventJson, 88).id,
+    }
+    const state =
+      input.previous === null
+        ? emptyState(binding, record.destinations.relayUrls)
+        : snapshotOracleBackupDeliveryState(input.previous)
+    if (
+      !sameBinding(state.binding, binding) ||
+      JSON.stringify(state.relayUrls) !== JSON.stringify(record.destinations.relayUrls)
+    )
+      fail('conflict')
+    if (state.knownEventIds.includes(source.eventId) || state.current?.eventId === source.eventId)
+      return state
+    if (state.current?.mode === 'terminal' || state.deletion !== null)
+      fail('terminal-backup-source-not-admitted')
+    // Reserve the last predecessor slot for a locally staged initial version.
+    if (state.knownEventIds.length >= 63) fail('overflow')
+    return snapshotOracleBackupDeliveryState({
+      ...state,
+      knownEventIds: [...state.knownEventIds, source.eventId],
+      timestampHighWater: Math.max(state.timestampHighWater, source.createdAt),
+    })
+  } catch (error) {
+    if (error instanceof OracleBackupDeliveryError) throw error
+    throw new OracleBackupDeliveryError('invalid-source')
+  }
+}
+
+/** Strict backup transport reader. Keep kind-88/89 publication on its separate reader. */
+export function readOracleBackupRelayEvent(eventJson: string): Event {
+  try {
+    if (
+      typeof eventJson !== 'string' ||
+      new TextEncoder().encode(eventJson).length > ORACLE_BACKUP_DELIVERY_BYTES_MAX
+    )
+      fail('invalid-source')
+    const value: unknown = JSON.parse(eventJson)
+    if (!object(value) || !hex(value.pubkey)) fail('invalid-source')
+    if (value.kind === 30078) return readOracleBackupEnvelope(value, value.pubkey)
+    if (
+      !keys(value, 'content,created_at,id,kind,pubkey,sig,tags') ||
+      value.kind !== 5 ||
+      !hex(value.id) ||
+      typeof value.sig !== 'string' ||
+      !/^[0-9a-f]{128}$/.test(value.sig) ||
+      !timestamp(value.created_at) ||
+      value.content !== '' ||
+      !Array.isArray(value.tags) ||
+      value.tags.length < 2 ||
+      value.tags.length > ORACLE_BACKUP_DELIVERY_IDS_MAX + 1
+    )
+      fail('invalid-source')
+    const ids: string[] = []
+    for (const tag of value.tags.slice(0, -1)) {
+      if (!Array.isArray(tag) || tag.length !== 2 || tag[0] !== 'e' || !hex(tag[1]))
+        fail('invalid-source')
+      ids.push(tag[1])
+    }
+    if (
+      new Set(ids).size !== ids.length ||
+      JSON.stringify(value.tags) !== JSON.stringify(deletionTags(ids))
+    )
+      fail('invalid-source')
+    const event = JSON.parse(JSON.stringify(value)) as Event
+    if (!verifyEvent(event)) fail('invalid-source')
+    return event
+  } catch {
+    throw new OracleBackupDeliveryError('invalid-source')
   }
 }
 

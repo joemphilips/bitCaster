@@ -424,3 +424,34 @@ test('configured operation deadlines must fit finite native timer bounds', () =>
   }
   assert.equal(transport.sockets.length, 0)
 })
+
+test('receiver raw budget observes duplicate and invalid frames before upstream filtering', async () => {
+  const frames: string[] = []
+  const current = await ready({
+    acceptMessage(message) {
+      frames.push(message)
+      return frames.length <= 3
+    },
+  })
+  let accepted = 0
+  const subscription = current.relay.subscribe([{ kinds: [1] }], {
+    onevent() {
+      accepted++
+    },
+  })
+  await drain()
+  const id = JSON.parse(current.sockets[0]!.sent[0]!)[1]
+  assert.equal(subscription.id, id)
+  current.sockets[0]!.message(['EVENT', id, event])
+  await drain()
+  current.sockets[0]!.message(['EVENT', id, event])
+  current.sockets[0]!.message(['EVENT', id, { ...event, sig: '00'.repeat(64) }])
+  await drain()
+  assert.equal(frames.length, 3)
+  assert.equal(accepted, 2)
+  current.sockets[0]!.message(['NOTICE', 'Untrusted frame'])
+  await drain()
+  assert.equal(frames.length, 4)
+  assert.equal(current.relay.closed, true)
+  assert.equal(current.sockets[0]!.closeCount, 1)
+})

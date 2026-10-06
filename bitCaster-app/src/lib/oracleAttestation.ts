@@ -1,4 +1,4 @@
-import { NDKEvent, type NostrEvent, type NDKKind } from "@nostr-dev-kit/ndk";
+import { type NDKKind } from "@nostr-dev-kit/ndk";
 import { finalizeEvent } from "nostr-tools/pure";
 import { hexToBytes } from "nostr-tools/utils";
 import {
@@ -36,7 +36,12 @@ import {
 } from "./kormir";
 import { browserOracleOwnerAuthority, reconcileLockedBrowserOracle } from "./browserOracleBackup";
 import { resolveNsecIdentity } from "./identityOps";
-import { withTemporaryRelayNdk } from "./nostr";
+import {
+  boundedOracleRelay as boundedRelay,
+  publishRetainedOracleEvent,
+} from "./oracleRelayTransport";
+export { publishRetainedOracleEvent } from "./oracleRelayTransport";
+import { requestBrowserOracleBackup } from "./browserOracleBackupDelivery";
 import { sha256Hex } from "./markets";
 import { announcementContentFromTlv } from "@bitcaster/client-sdk/oracleAnnouncementEncoding";
 
@@ -269,35 +274,6 @@ export async function verifiedEngineOracleEvidence(
   };
 }
 
-async function boundedRelay<T>(
-  relays: string[],
-  action: Parameters<typeof withTemporaryRelayNdk<T>>[2],
-) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 8_000);
-  try {
-    return await withTemporaryRelayNdk({ relays, signal: controller.signal }, undefined, action);
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-export async function publishRetainedOracleEvent(
-  relays: string[],
-  eventJson: string,
-): Promise<string> {
-  const signed = JSON.parse(eventJson) as NostrEvent;
-  const acknowledged = await boundedRelay(relays, async (ndk) => {
-    const event = new NDKEvent(ndk, signed);
-    const relays = await event.publish();
-    if (event.id !== signed.id || relays.size === 0)
-      throw new Error("Oracle relay delivery is unconfirmed.");
-    return signed.id;
-  });
-  if (!acknowledged) throw new Error("Oracle relay delivery is unavailable.");
-  return acknowledged;
-}
-
 async function recoverAnnouncement(market: StoredCreatorMarket, relays: string[]) {
   const oracle = market.oracle;
   if (!oracle?.announcementEventId || !oracle.announcementHex)
@@ -524,6 +500,10 @@ export async function publishBrowserOracleOutcome(
           options,
         );
   await store.getState().saveOraclePublicationFailures(conditionId, result.failures);
+  if (result.record.relayPublished) {
+    // The signed result remains successful while its independent private backup is pending.
+    requestBrowserOracleBackup(conditionId, { store });
+  }
   return result;
 }
 

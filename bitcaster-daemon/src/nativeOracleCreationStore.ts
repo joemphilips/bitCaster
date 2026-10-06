@@ -2,6 +2,11 @@ import type { DatabaseSync } from 'node:sqlite'
 import { createHash } from 'node:crypto'
 import {
   encodeOracleBackup,
+  restoreOracleBackupEnvelope,
+  readOracleBackupEnvelope,
+  OracleBackupAccessError,
+  admitOracleBackupSource,
+  type OracleBackupSource,
   prepareOracleBackupDelivery,
   buildTerminalOracleBackupRecord,
   assertOracleBackupDeliveryOwner,
@@ -138,11 +143,216 @@ export function createNativeOracleCreationStore(
   options: {
     passphrase?: string
     terminalCommitFault?: StateSqliteTransactionOptions['injectFault']
+    importWriteFault?: StateSqliteTransactionOptions['injectFault']
     backupDeliveryWriteFault?: StateSqliteTransactionOptions['injectFault']
   } = {},
 ) {
   const session = createDaemonStateSqliteSession(directory)
-  return {
+  async function importValidatedBackup(
+    input: unknown,
+    helper: NativeOracleHelper,
+    source?: OracleBackupSource,
+  ): Promise<NativeOracleAuthorityRecord> {
+    await session.read(() => undefined)
+    // Validate the complete portable record before opening a mutation transaction.
+    const backup = JSON.parse(await encodeOracleBackup(input, helper)) as OracleBackupRecord
+    const summary = await helper.validateAuthority(
+      JSON.stringify(backup.authority),
+      backup.oraclePubkey,
+    )
+    const observed = await store.readByConditionId(backup.conditionId)
+    let createdScalar: string | null = null
+    if (observed !== null && backup.authority.nonceScalarHex !== null) {
+      const signer = await store.readCreationSigner(observed.creationId)
+      const profile = await session.read((database) =>
+        readProfileSecretAuthority(
+          database,
+          options.passphrase ?? process.env.BITCASTER_DAEMON_PASSPHRASE,
+        ),
+      )
+      const exported = JSON.parse(
+        await helper.exportEnumAuthority({
+          oracleSecretKeyHex: signer.secretKeyHex,
+          nonceSeedHex: profile.nativeOracleNonceSeedHex,
+          reservedNonceIndex: observed.nonceIndex,
+          announcementTlvHex: observed.announcement!.announcementTlvHex,
+          announcementEventJson: observed.announcement!.announcementNostrEventJson,
+          signedOutcome: null,
+          attestationHex: null,
+          attestationEventJson: null,
+          publicationRecordJson: null,
+        }),
+      ) as OraclePrivateAuthority
+      createdScalar = exported.nonceScalarHex
+    }
+    return session.transaction(
+      (database) => {
+        if (source !== undefined) {
+          const selected = database
+            .prepare('SELECT nostr_public_key_hex AS pubkey FROM daemon_profile')
+            .get() as { pubkey: string }
+          if (selected.pubkey !== backup.oraclePubkey) throw new NativeOracleStoreError('conflict')
+        }
+        const created = decodeRow(
+          database.prepare(`${SELECT_CREATION} WHERE condition_id = ?`).get(backup.conditionId),
+        )
+        if (created !== null) {
+          if (observed === null || JSON.stringify(created) !== JSON.stringify(observed))
+            throw new NativeOracleStoreError('conflict')
+          assertCreatedBackupBinding(created, backup)
+          if (created.backupTerminal && backup.authority.nonceScalarHex !== null)
+            throw new NativeOracleStoreError('conflict')
+          if (
+            backup.authority.nonceScalarHex !== null &&
+            backup.authority.nonceScalarHex !== createdScalar
+          )
+            throw new NativeOracleStoreError('conflict')
+          const admitted =
+            source === undefined
+              ? null
+              : admitOracleBackupSource({
+                  record: backup,
+                  source,
+                  previous: readBackupDelivery(database, { ...created, kind: 'created' }),
+                })
+          const publication = mergeBackupPublication(
+            nativeOraclePublicationRecord(created),
+            backup,
+            summary.outcomes,
+          )
+          if (publication !== null) writeCreatedPublication(database, created, publication)
+          if (backup.authority.nonceScalarHex === null)
+            database
+              .prepare('UPDATE daemon_oracle_creations SET backup_terminal=1 WHERE creation_id=?')
+              .run(created.creationId)
+          const saved = {
+            ...requireCreation(database, created.creationId),
+            kind: 'created' as const,
+          }
+          if (admitted !== null) writeBackupDelivery(database, saved, admitted)
+          return saved
+        }
+        if (observed !== null) throw new NativeOracleStoreError('conflict')
+        const selected = database
+          .prepare(
+            'SELECT wallet_scope_id AS scope, nostr_public_key_hex AS pubkey FROM daemon_profile',
+          )
+          .get() as { scope: string; pubkey: string }
+        if (selected.pubkey !== backup.oraclePubkey) throw new NativeOracleStoreError('conflict')
+        if (backup.authority.nonceScalarHex !== null) {
+          // An encrypted profile must not import its scalar into a plaintext row.
+          readProfileSecretAuthority(
+            database,
+            options.passphrase ?? process.env.BITCASTER_DAEMON_PASSPHRASE,
+          )
+        }
+
+        const row = database
+          .prepare(`${SELECT_IMPORT} WHERE condition_id = ?`)
+          .get(backup.conditionId) as ImportRow | undefined
+        const incoming = backupPublication(backup, summary.outcomes)
+        if (row !== undefined) {
+          const current = decodeImport(row)
+          assertImportedBackupBinding(current, backup, summary.outcomes)
+          if (!current.nonceAvailable && backup.authority.nonceScalarHex !== null)
+            throw new NativeOracleStoreError('conflict')
+          const privateCurrent = privateImportedAuthority(
+            database,
+            backup.conditionId,
+            options.passphrase ?? process.env.BITCASTER_DAEMON_PASSPHRASE,
+          )
+          if (
+            privateCurrent.nonceScalarHex !== null &&
+            backup.authority.nonceScalarHex !== null &&
+            privateCurrent.nonceScalarHex !== backup.authority.nonceScalarHex
+          )
+            throw new NativeOracleStoreError('conflict')
+          const admitted =
+            source === undefined
+              ? null
+              : admitOracleBackupSource({
+                  record: backup,
+                  source,
+                  previous: readBackupDelivery(database, current),
+                })
+          const merged = mergeBackupPublication(
+            nativeOraclePublicationRecord(current),
+            backup,
+            summary.outcomes,
+          )
+          writeImportedMerge(database, current, merged)
+          if (backup.authority.nonceScalarHex === null)
+            removeImportedNonce(database, backup.conditionId)
+          const saved = decodeImport(requireImport(database, backup.conditionId))
+          if (admitted !== null) writeBackupDelivery(database, saved, admitted)
+          return saved
+        }
+        if (
+          database
+            .prepare('SELECT 1 FROM daemon_oracle_creations WHERE event_id = ?')
+            .get(backup.oracleEventId) ||
+          database
+            .prepare('SELECT 1 FROM daemon_oracle_imports WHERE event_id = ?')
+            .get(backup.oracleEventId)
+        )
+          throw new NativeOracleStoreError('conflict')
+        const binding = {
+          walletScopeId: selected.scope,
+          conditionId: backup.conditionId,
+          oraclePubkey: backup.oraclePubkey,
+          announcementEventId: readSignedOracleEvent(backup.authority.announcementEventJson, 88).id,
+        }
+        const admitted =
+          source === undefined
+            ? null
+            : admitOracleBackupSource({
+                record: backup,
+                source,
+                previous: null,
+              })
+        const protectedNonce =
+          backup.authority.nonceScalarHex === null
+            ? null
+            : protectNativeOracleNonce(
+                backup.authority.nonceScalarHex,
+                binding,
+                options.passphrase ?? process.env.BITCASTER_DAEMON_PASSPHRASE,
+              )
+        database
+          .prepare(
+            `INSERT INTO daemon_oracle_imports (condition_id,event_id,wallet_scope_id,oracle_pubkey,announcement_hex,announcement_event_json,outcomes_json,destinations_json,publication_json,chosen_outcome,relay_published,explanation_relay_published,explanation_draft,nonce_protection,nonce_kdf,nonce_salt,nonce_iv,nonce_auth_tag,nonce_body) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+          )
+          .run(
+            backup.conditionId,
+            backup.oracleEventId,
+            selected.scope,
+            backup.oraclePubkey,
+            backup.authority.announcementTlvHex,
+            backup.authority.announcementEventJson,
+            JSON.stringify(summary.outcomes),
+            JSON.stringify(backup.destinations),
+            incoming === null ? null : JSON.stringify(incoming),
+            incoming?.chosenOutcome ?? null,
+            Number(incoming?.relayPublished ?? false),
+            Number(incoming?.explanationRelayPublished ?? false),
+            incoming?.explanationEventJson === null || incoming?.explanationEventJson === undefined
+              ? null
+              : readSignedOracleEvent(incoming.explanationEventJson, 1111).content,
+            protectedNonce?.protection ?? null,
+            protectedNonce?.kdf ?? null,
+            protectedNonce?.salt ?? null,
+            protectedNonce?.iv ?? null,
+            protectedNonce?.authTag ?? null,
+            protectedNonce?.body ?? null,
+          )
+        const saved = decodeImport(requireImport(database, backup.conditionId))
+        if (admitted !== null) writeBackupDelivery(database, saved, admitted)
+        return saved
+      },
+      { injectFault: options.importWriteFault },
+    )
+  }
+  const store = {
     /** Private delivery port. Never return encrypted envelopes in status or RPC. */
     async readBackupDelivery(conditionId: string): Promise<OracleBackupDeliveryState | null> {
       exactConditionId(conditionId)
@@ -173,7 +383,7 @@ export function createNativeOracleCreationStore(
           ? buildTerminalOracleBackupRecord({
               binding: oracleBinding(captured.record),
               announcementTlvHex: captured.record.announcement!.announcementTlvHex,
-              destinations: oracleDestinations(captured.record),
+              destinations: nativeOracleDestinations(captured.record),
               publication,
             })
           : await this.exportBackup(conditionId, helper)
@@ -383,165 +593,99 @@ export function createNativeOracleCreationStore(
       return JSON.parse(encoded) as OracleBackupRecord
     },
 
+    /** Internal portable-record import for trusted core callers and provider tests. */
     async importBackup(
       input: unknown,
       helper: NativeOracleHelper,
     ): Promise<NativeOracleAuthorityRecord> {
-      await session.read(() => undefined)
-      // Validate the complete portable record before opening a mutation transaction.
-      const backup = JSON.parse(await encodeOracleBackup(input, helper)) as OracleBackupRecord
-      const summary = await helper.validateAuthority(
-        JSON.stringify(backup.authority),
-        backup.oraclePubkey,
-      )
-      const observed = await this.readByConditionId(backup.conditionId)
-      let createdScalar: string | null = null
-      if (observed !== null && backup.authority.nonceScalarHex !== null) {
-        const signer = await this.readCreationSigner(observed.creationId)
-        const profile = await session.read((database) =>
-          readProfileSecretAuthority(
-            database,
-            options.passphrase ?? process.env.BITCASTER_DAEMON_PASSPHRASE,
-          ),
-        )
-        const exported = JSON.parse(
-          await helper.exportEnumAuthority({
-            oracleSecretKeyHex: signer.secretKeyHex,
-            nonceSeedHex: profile.nativeOracleNonceSeedHex,
-            reservedNonceIndex: observed.nonceIndex,
-            announcementTlvHex: observed.announcement!.announcementTlvHex,
-            announcementEventJson: observed.announcement!.announcementNostrEventJson,
-            signedOutcome: null,
-            attestationHex: null,
-            attestationEventJson: null,
-            publicationRecordJson: null,
-          }),
-        ) as OraclePrivateAuthority
-        createdScalar = exported.nonceScalarHex
-      }
-      return session.transaction((database) => {
-        const created = decodeRow(
-          database.prepare(`${SELECT_CREATION} WHERE condition_id = ?`).get(backup.conditionId),
-        )
-        if (created !== null) {
-          if (observed === null || JSON.stringify(created) !== JSON.stringify(observed))
-            throw new NativeOracleStoreError('conflict')
-          assertCreatedBackupBinding(created, backup)
-          if (created.backupTerminal && backup.authority.nonceScalarHex !== null)
-            throw new NativeOracleStoreError('conflict')
-          if (
-            backup.authority.nonceScalarHex !== null &&
-            backup.authority.nonceScalarHex !== createdScalar
-          )
-            throw new NativeOracleStoreError('conflict')
-          const publication = mergeBackupPublication(
-            nativeOraclePublicationRecord(created),
-            backup,
-            summary.outcomes,
-          )
-          if (publication !== null) writeCreatedPublication(database, created, publication)
-          if (backup.authority.nonceScalarHex === null)
-            database
-              .prepare('UPDATE daemon_oracle_creations SET backup_terminal=1 WHERE creation_id=?')
-              .run(created.creationId)
-          return { ...requireCreation(database, created.creationId), kind: 'created' }
-        }
-        if (observed !== null) throw new NativeOracleStoreError('conflict')
-        const selected = database
-          .prepare(
-            'SELECT wallet_scope_id AS scope, nostr_public_key_hex AS pubkey FROM daemon_profile',
-          )
-          .get() as { scope: string; pubkey: string }
-        if (selected.pubkey !== backup.oraclePubkey) throw new NativeOracleStoreError('conflict')
-        if (backup.authority.nonceScalarHex !== null) {
-          // An encrypted profile must not import its scalar into a plaintext row.
-          readProfileSecretAuthority(
-            database,
-            options.passphrase ?? process.env.BITCASTER_DAEMON_PASSPHRASE,
-          )
-        }
+      return importValidatedBackup(input, helper)
+    },
 
-        const row = database
-          .prepare(`${SELECT_IMPORT} WHERE condition_id = ?`)
-          .get(backup.conditionId) as ImportRow | undefined
-        const incoming = backupPublication(backup, summary.outcomes)
-        if (row !== undefined) {
-          const current = decodeImport(row)
-          assertImportedBackupBinding(current, backup, summary.outcomes)
-          if (!current.nonceAvailable && backup.authority.nonceScalarHex !== null)
-            throw new NativeOracleStoreError('conflict')
-          const privateCurrent = privateImportedAuthority(
+    /** Receiving-owner boundary. Source provenance is derived only after full authentication. */
+    async importBackupEnvelope(
+      event: unknown,
+      sourceRelay: string,
+      helper: NativeOracleHelper,
+    ): Promise<NativeOracleAuthorityRecord> {
+      let captured: ReturnType<typeof readOracleBackupEnvelope>
+      try {
+        const author =
+          typeof event === 'object' &&
+          event !== null &&
+          'pubkey' in event &&
+          typeof event.pubkey === 'string'
+            ? event.pubkey
+            : ''
+        // Capture outer authentication before the first asynchronous owner operation.
+        captured = readOracleBackupEnvelope(event, author)
+      } catch {
+        throw new OracleBackupAccessError('invalid-envelope')
+      }
+      const secret = await session.read(
+        (database) =>
+          readProfileSecretAuthority(
             database,
-            backup.conditionId,
             options.passphrase ?? process.env.BITCASTER_DAEMON_PASSPHRASE,
+          ).nostrSecretKeyHex,
+      )
+      const restored = await restoreOracleBackupEnvelope({
+        event: captured,
+        sourceRelay,
+        privateKey: Buffer.from(secret, 'hex'),
+        validator: helper,
+      })
+      return importValidatedBackup(restored.record, helper, restored.source)
+    },
+
+    async readAuthorityPage(input: { cursor?: string; limit?: number } = {}): Promise<{
+      readonly items: readonly {
+        owner: NativeOracleAuthorityRecord
+        delivery: OracleBackupDeliveryState | null
+      }[]
+      readonly cursor: string | null
+    }> {
+      const limit = input.limit === undefined ? 32 : input.limit
+      if (!Number.isSafeInteger(limit) || limit < 1 || limit > 128)
+        throw new NativeOracleStoreError('invalid-input')
+      if (input.cursor !== undefined) exactConditionId(input.cursor)
+      const cursor = input.cursor ?? ''
+      return session.read((database) => {
+        database.exec('BEGIN')
+        try {
+          const created = database
+            .prepare(`${SELECT_CREATION} WHERE condition_id > ? ORDER BY condition_id LIMIT ?`)
+            .all(cursor, limit + 1)
+            .map((row) => {
+              const owner = { ...decodeRow(row)!, kind: 'created' as const }
+              return {
+                owner,
+                delivery: decodeBackupDelivery(row.backupDeliveryJson as string | null, owner),
+              }
+            })
+          const imported = database
+            .prepare(`${SELECT_IMPORT} WHERE condition_id > ? ORDER BY condition_id LIMIT ?`)
+            .all(cursor, limit + 1)
+            .map((row) => {
+              const owner = decodeImport(row)
+              return {
+                owner,
+                delivery: decodeBackupDelivery(row.backupDeliveryJson as string | null, owner),
+              }
+            })
+          const merged = [...created, ...imported].sort((left, right) =>
+            left.owner.announcement!.conditionId.localeCompare(
+              right.owner.announcement!.conditionId,
+            ),
           )
-          if (
-            privateCurrent.nonceScalarHex !== null &&
-            backup.authority.nonceScalarHex !== null &&
-            privateCurrent.nonceScalarHex !== backup.authority.nonceScalarHex
-          )
-            throw new NativeOracleStoreError('conflict')
-          const merged = mergeBackupPublication(
-            nativeOraclePublicationRecord(current),
-            backup,
-            summary.outcomes,
-          )
-          writeImportedMerge(database, current, merged)
-          if (backup.authority.nonceScalarHex === null)
-            removeImportedNonce(database, backup.conditionId)
-          return decodeImport(requireImport(database, backup.conditionId))
+          const items = merged.slice(0, limit)
+          const nextCursor =
+            merged.length > limit ? items[items.length - 1].owner.announcement!.conditionId : null
+          database.exec('COMMIT')
+          return { items, cursor: nextCursor }
+        } catch (error) {
+          database.exec('ROLLBACK')
+          throw error
         }
-        if (
-          database
-            .prepare('SELECT 1 FROM daemon_oracle_creations WHERE event_id = ?')
-            .get(backup.oracleEventId) ||
-          database
-            .prepare('SELECT 1 FROM daemon_oracle_imports WHERE event_id = ?')
-            .get(backup.oracleEventId)
-        )
-          throw new NativeOracleStoreError('conflict')
-        const binding = {
-          walletScopeId: selected.scope,
-          conditionId: backup.conditionId,
-          oraclePubkey: backup.oraclePubkey,
-          announcementEventId: readSignedOracleEvent(backup.authority.announcementEventJson, 88).id,
-        }
-        const protectedNonce =
-          backup.authority.nonceScalarHex === null
-            ? null
-            : protectNativeOracleNonce(
-                backup.authority.nonceScalarHex,
-                binding,
-                options.passphrase ?? process.env.BITCASTER_DAEMON_PASSPHRASE,
-              )
-        database
-          .prepare(
-            `INSERT INTO daemon_oracle_imports (condition_id,event_id,wallet_scope_id,oracle_pubkey,announcement_hex,announcement_event_json,outcomes_json,destinations_json,publication_json,chosen_outcome,relay_published,explanation_relay_published,explanation_draft,nonce_protection,nonce_kdf,nonce_salt,nonce_iv,nonce_auth_tag,nonce_body) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-          )
-          .run(
-            backup.conditionId,
-            backup.oracleEventId,
-            selected.scope,
-            backup.oraclePubkey,
-            backup.authority.announcementTlvHex,
-            backup.authority.announcementEventJson,
-            JSON.stringify(summary.outcomes),
-            JSON.stringify(backup.destinations),
-            incoming === null ? null : JSON.stringify(incoming),
-            incoming?.chosenOutcome ?? null,
-            Number(incoming?.relayPublished ?? false),
-            Number(incoming?.explanationRelayPublished ?? false),
-            incoming?.explanationEventJson === null || incoming?.explanationEventJson === undefined
-              ? null
-              : readSignedOracleEvent(incoming.explanationEventJson, 1111).content,
-            protectedNonce?.protection ?? null,
-            protectedNonce?.kdf ?? null,
-            protectedNonce?.salt ?? null,
-            protectedNonce?.iv ?? null,
-            protectedNonce?.authTag ?? null,
-            protectedNonce?.body ?? null,
-          )
-        return decodeImport(requireImport(database, backup.conditionId))
       })
     },
 
@@ -1005,6 +1149,7 @@ export function createNativeOracleCreationStore(
       })
     },
   }
+  return store
 }
 
 export type NativeOracleCreationStore = ReturnType<typeof createNativeOracleCreationStore>
@@ -1662,12 +1807,19 @@ function readBackupDelivery(
       `SELECT backup_delivery_json AS delivery FROM ${deliveryTable(record)} WHERE condition_id=?`,
     )
     .get(record.announcement!.conditionId) as { delivery: string | null }
-  if (raw.delivery === null) return null
+  return decodeBackupDelivery(raw.delivery, record)
+}
+
+function decodeBackupDelivery(
+  raw: string | null,
+  record: NativeOracleAuthorityRecord,
+): OracleBackupDeliveryState | null {
+  if (raw === null) return null
   try {
-    const state = snapshotOracleBackupDeliveryState(JSON.parse(raw.delivery))
+    const state = snapshotOracleBackupDeliveryState(JSON.parse(raw))
     assertOracleBackupDeliveryOwner(state, {
       binding: oracleBinding(record),
-      relayUrls: oracleDestinations(record).relayUrls,
+      relayUrls: nativeOracleDestinations(record).relayUrls,
       publication: nativeOraclePublicationRecord(record),
     })
     return state
@@ -1687,7 +1839,7 @@ function writeBackupDelivery(
     .run(JSON.stringify(saved), record.announcement!.conditionId)
 }
 
-function oracleDestinations(
+export function nativeOracleDestinations(
   record: NativeOracleAuthorityRecord,
 ): OracleBackupRecord['destinations'] {
   if (record.kind === 'imported') return record.destinations

@@ -6328,3 +6328,137 @@ function writeJson(res: ServerResponse, status: number, body: unknown): void {
   res.writeHead(status, { 'content-type': 'application/json' })
   res.end(JSON.stringify(body))
 }
+
+test('oracle backup CLI invokes authenticated local RPCs with exact frozen parameter shapes', async () => {
+  const eventId = '01'.repeat(32)
+  const cursor = {
+    schemaVersion: 1,
+    author: '02'.repeat(32),
+    relayUrls: ['wss://relay.example'],
+    relayIndex: 0,
+    until: 100,
+  }
+  for (const [args, command] of [
+    [['oracle-backup-list'], { method: 'market.oracle-backup-list', params: {} }],
+    [
+      ['oracle-backup-list', '--relay', 'wss://relay.example', '--cursor', JSON.stringify(cursor)],
+      { method: 'market.oracle-backup-list', params: { relay: 'wss://relay.example', cursor } },
+    ],
+    [
+      ['oracle-backup-restore', '--event-id', eventId, '--relay', 'wss://relay.example'],
+      { method: 'market.oracle-backup-restore', params: { eventId, relay: 'wss://relay.example' } },
+    ],
+    [
+      ['oracle-backup-status', 'cond-1'],
+      { method: 'market.oracle-backup-status', params: { conditionId: 'cond-1' } },
+    ],
+    [['oracle-backup-status'], { method: 'market.oracle-backup-status', params: {} }],
+    [
+      ['oracle-backup-retry', 'cond-1'],
+      { method: 'market.oracle-backup-retry', params: { conditionId: 'cond-1' } },
+    ],
+    [
+      ['announcement-republish', 'cond-1'],
+      { method: 'market.announcement-republish', params: { conditionId: 'cond-1' } },
+    ],
+  ] as const) {
+    const result = await runCliWithEnv(['market', ...args], {
+      ...process.env,
+      BITCASTER_TEST_ENGINE_URL: 'https://unavailable.example',
+      BITCASTER_TEST_DAEMON_URL: 'http://daemon.test',
+      BITCASTER_TEST_FETCH_MODULE: daemonRpcFetchModule([
+        { command, response: { ok: true, result: { safe: true } } },
+      ]),
+    })
+    assert.deepEqual(JSON.parse(result.stdout), { ok: true, result: { safe: true } })
+  }
+})
+
+test('market close relay-only skips engine trust and preflight and forwards exact retry republication', async () => {
+  for (const [flags, command] of [
+    [
+      ['--outcome', 'Yes', '--relay-only'],
+      {
+        method: 'market.attest',
+        params: { conditionId: 'cond-1', outcome: 'Yes', relayOnly: true },
+      },
+    ],
+    [
+      ['--retry', '--relay-only'],
+      { method: 'market.attestation-retry', params: { conditionId: 'cond-1', relayOnly: true } },
+    ],
+    [
+      ['--retry', '--republish', '--relay-only'],
+      {
+        method: 'market.attestation-retry',
+        params: { conditionId: 'cond-1', relayOnly: true, republish: true },
+      },
+    ],
+    [
+      ['--retry', '--republish', '--trust-engine-url'],
+      { method: 'market.attestation-retry', params: { conditionId: 'cond-1', republish: true } },
+    ],
+  ] as const) {
+    const result = await runCliWithEnv(['market', 'close', '--condition-id', 'cond-1', ...flags], {
+      ...process.env,
+      BITCASTER_TEST_ENGINE_URL: 'https://unavailable.example',
+      BITCASTER_TEST_DAEMON_URL: 'http://daemon.test',
+      BITCASTER_TEST_FETCH_MODULE: daemonRpcFetchModule([
+        { command, response: { ok: true, result: { relayPublished: true } } },
+      ]),
+    })
+    assert.deepEqual(JSON.parse(result.stdout), { ok: true, result: { relayPublished: true } })
+  }
+})
+
+test('market close rejects unsupported relay-only and republish combinations before RPC', async () => {
+  for (const flags of [
+    ['--attestation', JSON.stringify(kind89Event()), '--relay-only'],
+    ['--outcome', 'Yes', '--republish'],
+    ['--attestation', JSON.stringify(kind89Event()), '--republish'],
+  ])
+    await assert.rejects(
+      runCliWithEnv(['market', 'close', '--condition-id', 'cond-1', ...flags], {
+        ...process.env,
+        BITCASTER_TEST_FETCH_MODULE: daemonRpcFetchModule([]),
+      }),
+      (error: unknown) => /requires --/.test(String((error as { stderr?: string }).stderr)),
+    )
+})
+
+test('oracle local status CLI maps bounded paging and rejects page options with a condition ID', async () => {
+  const cursor = '01'.repeat(32)
+  const result = await runCliWithEnv(
+    ['market', 'oracle-backup-status', '--cursor', cursor, '--limit', '2'],
+    {
+      ...process.env,
+      BITCASTER_TEST_DAEMON_URL: 'http://daemon.test',
+      BITCASTER_TEST_FETCH_MODULE: daemonRpcFetchModule([
+        {
+          command: { method: 'market.oracle-backup-status', params: { cursor, limit: 2 } },
+          response: { ok: true, result: { statuses: [], cursor: null } },
+        },
+      ]),
+    },
+  )
+  assert.deepEqual(JSON.parse(result.stdout), { ok: true, result: { statuses: [], cursor: null } })
+  for (const flags of [
+    ['cond-1', '--limit', '2'],
+    ['cond-1', '--cursor', cursor],
+    ['--limit', '0'],
+    ['--limit', '129'],
+    ['--limit', '1.5'],
+    ['--cursor', 'bad'],
+    ['--cursor', 'A'.repeat(64)],
+  ])
+    await assert.rejects(
+      runCliWithEnv(['market', 'oracle-backup-status', ...flags], {
+        ...process.env,
+        BITCASTER_TEST_FETCH_MODULE: daemonRpcFetchModule([]),
+      }),
+      (error: unknown) =>
+        /require status without|Status page limit|Status cursor|Invalid status page limit/.test(
+          String((error as { stderr?: string }).stderr),
+        ),
+    )
+})

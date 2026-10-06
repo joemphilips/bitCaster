@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useSearchParams, useNavigate } from "react-router";
 import { useTranslation } from "react-i18next";
 import { Settings } from "@/components/settings/Settings";
+import { OracleBackups } from "@/components/settings/OracleBackups";
 import { WalletSetupModal } from "@/components/shared/WalletSetupModal";
 import { useWalletStore, DEFAULT_MINT_URL } from "@/stores/wallet";
 import { useSettingsStore } from "@/stores/settings";
@@ -241,6 +242,7 @@ export function SettingsPage() {
   return (
     <>
       <Settings
+        oracleBackupPanel={<OracleBackups />}
         activeCategory={settingsStore.activeCategory}
         settings={settingsState}
         seedPhrase={walletStore.mnemonic}

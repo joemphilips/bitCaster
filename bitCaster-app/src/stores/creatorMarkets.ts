@@ -1,11 +1,16 @@
 import { create } from "zustand";
 import type { StateStorage } from "zustand/middleware";
-import { OracleBackupError, type OracleBackupRecord } from "@bitcaster/client-sdk";
+import {
+  OracleBackupError,
+  readOracleBackupEnvelope,
+  type OracleBackupRecord,
+} from "@bitcaster/client-sdk";
 import {
   assertOracleBackupDeliveryOwner,
   snapshotOracleBackupDeliveryState,
   confirmOracleBackupDelivery,
   commitOracleBackupDelivery,
+  admitOracleBackupSource,
   type OracleBackupDeliveryState,
   type OracleBackupDeliveryAcknowledgment,
   type OracleBackupTerminalAdmission,
@@ -111,13 +116,21 @@ export interface BrowserOracleImportMetadata {
   announcementHex: string;
   destinations: BrowserOracleDestinations;
 }
+interface BrowserOracleImportEnvelope {
+  record: OracleBackupRecord;
+  event: unknown;
+  sourceRelay: string;
+}
 export interface BrowserOracleLockedPort {
   readOwner(conditionId: string): Promise<BrowserOracleOwner | null>;
   read(conditionId: string): Promise<OraclePublicationRecord | null>;
   save(conditionId: string, publication: OraclePublicationRecord): Promise<OraclePublicationRecord>;
   readDraft(conditionId: string): Promise<string | undefined>;
   saveDraft(conditionId: string, text: string): Promise<void>;
-  retainImportMetadata(input: BrowserOracleImportMetadata): Promise<BrowserOracleOwner>;
+  retainImportMetadata(
+    input: BrowserOracleImportMetadata,
+    authenticatedEnvelope?: BrowserOracleImportEnvelope,
+  ): Promise<BrowserOracleOwner>;
   markImportComplete(conditionId: string): Promise<void>;
   retainPreparation(conditionId: string, oracle: StoredCreatorOracleMetadata): Promise<void>;
   readBackupDelivery(conditionId: string): Promise<OracleBackupDeliveryState | null>;
@@ -147,6 +160,7 @@ interface CreatorMarketsState extends CreatorDocument {
   clear(): Promise<void>;
   hasOraclePersistence(): boolean;
   readOracleOwner(conditionId: string): Promise<BrowserOracleOwner | null>;
+  readOracleOwners(): Promise<BrowserOracleOwner[]>;
   readOraclePublication(conditionId: string): Promise<OraclePublicationRecord | null>;
   readOracleExplanationDraft(conditionId: string): Promise<string | undefined>;
   saveOraclePublication(
@@ -616,10 +630,42 @@ export function createCreatorMarketsStore(
             oracle.explanationDraft = text;
             await write(doc);
           },
-          retainImportMetadata: async (input) => {
+          retainImportMetadata: async (input, authenticatedEnvelope) => {
             const exact = snapshotImport(input);
             const doc = await document();
             const owner = ownerIn(doc, exact.binding.conditionId);
+            // Admit the raw authenticated source before changing completion or private authority.
+            // This port is used only after full decryption and core validation by the import adapter.
+            let sourceDelivery: OracleBackupDeliveryState | undefined;
+            if (authenticatedEnvelope) {
+              const envelope = readOracleBackupEnvelope(
+                authenticatedEnvelope.event,
+                exact.binding.oraclePubkey,
+              );
+              if (
+                authenticatedEnvelope.record.conditionId !== exact.binding.conditionId ||
+                authenticatedEnvelope.record.oracleEventId !== exact.binding.oracleEventId ||
+                authenticatedEnvelope.record.authority.announcementEventJson !==
+                  exact.binding.announcementEventJson ||
+                JSON.stringify(authenticatedEnvelope.record.destinations) !==
+                  JSON.stringify(exact.destinations)
+              )
+                throw new OracleBackupError("invalid-record");
+              sourceDelivery = admitOracleBackupSource({
+                record: authenticatedEnvelope.record,
+                source: {
+                  eventId: envelope.id,
+                  createdAt: envelope.created_at,
+                  sourceRelay: authenticatedEnvelope.sourceRelay,
+                },
+                previous: owner ? backupDeliveryIn(owner) : null,
+              });
+              assertOracleBackupDeliveryOwner(sourceDelivery, {
+                binding: exact.binding,
+                relayUrls: exact.destinations.relayUrls,
+                publication: owner ? publicationIn(owner) : null,
+              });
+            }
             // A previous completion cannot authorize signing after this private import fails.
             if (owner?.kind === "created") {
               const current = owner.market.oracle;
@@ -648,6 +694,9 @@ export function createCreatorMarketsStore(
                 throw new Error("Original oracle import metadata conflicts with saved state.");
               owner.oracle.importComplete = false;
             } else doc.importedOracles.push({ ...exact, publication: null, importComplete: false });
+            if (sourceDelivery)
+              oracleIn(requireOwner(doc, exact.binding.conditionId)).backupDelivery =
+                sourceDelivery;
             await write(doc);
             return ownerIn(await document(), exact.binding.conditionId)!;
           },
@@ -741,6 +790,17 @@ export function createCreatorMarketsStore(
         withOracleMutation((port) => port.commitBackupTerminal(id, admission)),
       hasOraclePersistence: () => storage !== undefined && getLockManager() !== undefined,
       readOracleOwner: async (id) => ownerIn(await readDocument(), id),
+      readOracleOwners: async () => {
+        const saved = await readDocument();
+        return [
+          ...saved.markets
+            .filter((market) => market.oracle?.type === "self")
+            .map((market): BrowserOracleOwner => ({ kind: "created", market })),
+          ...saved.importedOracles.map(
+            (oracle): BrowserOracleOwner => ({ kind: "imported", oracle }),
+          ),
+        ];
+      },
       readOraclePublication: async (id) => publicationIn(ownerIn(await readDocument(), id)),
       readOracleExplanationDraft: async (id) => {
         const owner = ownerIn(await readDocument(), id);

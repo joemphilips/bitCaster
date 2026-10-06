@@ -12,6 +12,7 @@ import type {
 import { useSettingsStore } from "@/stores/settings";
 import { useMarketDraftStore } from "@/stores/marketDraft";
 import { useCreatorMarketsStore } from "@/stores/creatorMarkets";
+import { requestBrowserOracleBackup } from "@/lib/browserOracleBackupDelivery";
 import {
   MAX_MARKET_CREATION_OUTCOMES,
   assertMarketCreationMetadataSize,
@@ -719,6 +720,8 @@ export function useMarketCreationState() {
           throw new Error("Durable creator storage is unavailable.");
         }
         completeCreation(record.creationId);
+        // Backup progress has its own durable owner. It must not turn paid creation into failure.
+        requestBrowserOracleBackup(result.conditionId);
         setRetainedRecord(null);
         setCreatedMarketOutcomeCount(record.metadata.outcomes.length);
         setCreatedMarketBaseAsset(baseAsset);

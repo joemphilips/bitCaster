@@ -79,7 +79,7 @@ or guarantee a payout. A later verified result does not reopen trading.
 
 ## Report a result as the native oracle
 
-Use the daemon profile that created the oracle announcement.
+Use the daemon profile that created or restored the oracle announcement.
 Select one registered outcome. You can include a short plain-text explanation:
 
 ```bash
@@ -114,6 +114,43 @@ An explanation failure does not invalidate a valid resolution.
 
 The supplied-event form, `market close --condition-id <condition-id> --attestation @attestation.json`,
 remains available. It does not create a native explanation.
+
+## Resolve a restored oracle or publish while the engine is unavailable
+
+Settings lists restored oracle records separately from markets created on
+this device. An unresolved restored record can select a registered outcome
+and publish it with the original authority and destinations.
+The first saved outcome on this device cannot change.
+See [oracle backups](/user-guide/core-concepts/creating-markets/#keep-and-restore-your-oracle-backup)
+for restore and incomplete-import recovery.
+
+Ordinary retry skips an attestation with a retained relay acknowledgment.
+Choose **Republish exact resolution** in Settings to send the saved kind-89
+event again. This action uses identical bytes without fresh signing.
+A terminal restore can use this action without the signing key.
+After durable result acknowledgment, the client attempts the terminal backup.
+Backup failure does not undo successful result delivery.
+Check backup, relay, and engine progress separately.
+
+The CLI can sign or retry through the original relays without contacting
+the engine:
+
+```bash
+bitcaster-cli market close --condition-id <condition-id> --outcome Yes --relay-only
+bitcaster-cli market close --condition-id <condition-id> --retry --republish --relay-only
+```
+
+`--relay-only` performs no engine request or engine availability check.
+It applies only to `--outcome` or `--retry`.
+`--republish` requires `--retry`. It sends the exact saved attestation even
+if a relay previously acknowledged it. It does not change saved progress
+or choose another outcome. An exact retry does not require a signing key.
+Fresh signing still requires the matching key and unresolved authority.
+
+When the engine returns, run the ordinary saved retry without `--relay-only`.
+Synchronization uses the original stored engine URL and the same signed event.
+A restart or changed current configuration does not change that destination.
+Relay delivery alone does not confirm engine synchronization or mint redemption.
 
 ## If the oracle does not publish a result
 

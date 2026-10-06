@@ -93,6 +93,7 @@ export interface SettingsState {
 // =============================================================================
 
 export interface SettingsProps {
+  oracleBackupPanel?: React.ReactNode;
   /** Which category group is currently expanded */
   activeCategory: SettingsCategory;
 

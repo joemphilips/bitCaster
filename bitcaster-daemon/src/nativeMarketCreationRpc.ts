@@ -12,6 +12,8 @@ import {
 } from '@bitcaster-market/client-sdk'
 import { createAuthenticatedBitcasterEngineClient } from './engineClient.ts'
 import { DaemonDurableOutgoingCashuCoordinator } from './durableOutgoingCashuCoordinator.ts'
+import { publishNativeOracleBackup } from './nativeOracleBackup.ts'
+import { publishNativeOracleBackupEvent } from './nativeOracleBackupRelay.ts'
 import { completeNativeMarketCreation } from './nativeMarketCreation.ts'
 import {
   createNativeOracleCreationStore,
@@ -221,6 +223,26 @@ async function runNativeMarketCreationCommand(
     input,
     { thumbnail, maxWalletDebitMsat: command.params.maxWalletDebitMsat },
   )
+  // Owner installation has completed. Backup does not affect fees or the primary result.
+  try {
+    const owner = await getStore().readCreation(input.creationId)
+    if (
+      result.status === 'created' &&
+      owner?.announcement !== null &&
+      owner?.announcement !== undefined
+    )
+      await publishNativeOracleBackup(
+        {
+          store: getStore(),
+          helper: createNativeOracleHelperAdapter(),
+          nowSeconds: () => Math.floor(Date.now() / 1000),
+          publishRelay: publishNativeOracleBackupEvent,
+        },
+        owner.announcement.conditionId,
+      )
+  } catch {
+    /* Pending preparation is reconstructed from durable owner status. */
+  }
   return { ok: true, result }
 }
 

@@ -170,10 +170,27 @@ export type DaemonCommand =
   | { method: 'market.creation-quote'; params: { outcomes: string[] } }
   | { method: 'market.close'; params: MarketCloseParams }
   | {
-      method: 'market.attest'
-      params: { conditionId: string; outcome: string; explanation?: string }
+      method: 'market.oracle-backup-list'
+      params: {
+        relay?: string
+        cursor?: import('@bitcaster-market/client-sdk').OracleBackupScanCursor
+      }
     }
-  | { method: 'market.attestation-retry'; params: { conditionId: string } }
+  | { method: 'market.oracle-backup-restore'; params: { eventId: string; relay: string } }
+  | {
+      method: 'market.oracle-backup-status'
+      params: { conditionId?: string; cursor?: string; limit?: number }
+    }
+  | { method: 'market.oracle-backup-retry'; params: { conditionId: string } }
+  | { method: 'market.announcement-republish'; params: { conditionId: string } }
+  | {
+      method: 'market.attest'
+      params: { conditionId: string; outcome: string; explanation?: string; relayOnly?: boolean }
+    }
+  | {
+      method: 'market.attestation-retry'
+      params: { conditionId: string; relayOnly?: boolean; republish?: boolean }
+    }
   | { method: 'market.resolution-status'; params: { conditionId: string } }
   | { method: 'markets.query'; params: QueryMarketsParams }
   | { method: 'markets.show'; params: { conditionId: string } }

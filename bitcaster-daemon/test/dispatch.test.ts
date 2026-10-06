@@ -488,7 +488,7 @@ test('daemon dispatch rejects raw public FAK before custody or settlement work',
   assert.equal(preparationCalls, 0)
 })
 
-test('native oracle dispatch refuses unknown or differently configured creation before signing', async () => {
+test('native oracle dispatch refuses unknown or invalid owner before signing', async () => {
   const home = await mkdtemp(join(tmpdir(), 'bitcaster-oracle-dispatch-'))
   const previousHome = process.env.BITCASTER_DAEMON_HOME
   process.env.BITCASTER_DAEMON_HOME = home
@@ -506,7 +506,7 @@ test('native oracle dispatch refuses unknown or differently configured creation 
     } as const
     assert.deepEqual(await dispatch(command), {
       ok: false,
-      error: 'This profile did not create the oracle announcement.',
+      error: 'Local oracle authority is unavailable.',
     })
     const store = createNativeOracleCreationStore(home)
     await store.reserveCreation({
@@ -523,7 +523,9 @@ test('native oracle dispatch refuses unknown or differently configured creation 
     })
     assert.deepEqual(await dispatch(command), {
       ok: false,
-      error: 'Use the engine configured when this market was created.',
+      code: 'oracle-publication-incomplete',
+      error:
+        'Oracle publication did not complete. Check resolution-status and retry the exact saved operation.',
     })
     assert.equal((await store.readCreation('creation-1'))?.chosenOutcome, null)
   } finally {

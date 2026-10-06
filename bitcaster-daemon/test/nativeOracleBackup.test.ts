@@ -4,23 +4,41 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import { isDeepStrictEqual } from 'node:util'
-import { getPublicKey } from 'nostr-tools/pure'
+import { getPublicKey, finalizeEvent } from 'nostr-tools/pure'
 import {
   decryptOracleBackupEvent,
+  createOracleBackupEvent,
+  buildTerminalOracleBackupRecord,
   deriveDlcConditionId,
   type OracleBackupRecord,
   type OraclePrivateAuthority,
 } from '@bitcaster-market/client-sdk'
 import { bootstrapFreshDaemonProfile, readProfileSecretAuthority } from '../src/profileBootstrap.ts'
 import { createDaemonStateSqliteSession } from '../src/stateSqlite.ts'
-import { createNativeOracleCreationStore } from '../src/nativeOracleCreationStore.ts'
+import {
+  createNativeOracleCreationStore,
+  nativeOracleDestinations,
+  nativeOraclePublicationRecord,
+} from '../src/nativeOracleCreationStore.ts'
 import {
   createNativeOracleHelperAdapter,
   type NativeOracleHelper,
 } from '../src/nativeOracleHelper.ts'
 import { prepareNativeMarketOracle } from '../src/nativeMarketOracle.ts'
-import { publishNativeMarketOutcome } from '../src/nativeOraclePublicationCoordinator.ts'
+import {
+  publishNativeMarketOutcome,
+  retryNativeMarketPublication,
+  nativeOraclePublicationBinding,
+} from '../src/nativeOraclePublicationCoordinator.ts'
 import { publishNativeOracleBackup, retryNativeOracleBackup } from '../src/nativeOracleBackup.ts'
+import {
+  dispatchNativeOracleAccess,
+  type NativeOracleAccessRpcPorts,
+} from '../src/nativeOracleBackupRpc.ts'
+import { dispatch } from '../src/server.ts'
+import { updateNativeConfig } from '../src/nativeConfig.ts'
+import { createHash } from 'node:crypto'
+import { nativeOracleBackupStatus } from '../src/nativeOracleBackupAccess.ts'
 
 const executable = process.env.BITCASTER_TEST_NATIVE_ORACLE_HELPER
 const helper = createNativeOracleHelperAdapter({ resolveExecutable: () => executable! })
@@ -747,5 +765,835 @@ test(
         'Stage failure retired nonce authority.',
       )
     })
+  },
+)
+
+function accessPorts(
+  store: Store,
+  overrides: Partial<NativeOracleAccessRpcPorts> = {},
+): NativeOracleAccessRpcPorts {
+  return {
+    store,
+    helper,
+    relayUrls: ['wss://discovery.example'],
+    readPrivateKey: async () => Buffer.from(signer, 'hex'),
+    publishBackup: async (relayUrl, eventJson) => ({ relayUrl, eventId: JSON.parse(eventJson).id }),
+    publishAnnouncement: async () => {
+      throw new Error('Unexpected announcement publication.')
+    },
+    nowSeconds: () => 110,
+    ...overrides,
+  }
+}
+
+for (const kind of ['created', 'imported'] as const) {
+  test(
+    `real SQLite ${kind} authenticated envelope writes source provenance atomically and survives restart`,
+    realHelper,
+    async () => {
+      await withOwner(kind, async (directory, store, conditionId) => {
+        const backup = await store.exportBackup(conditionId, helper)
+        const event = await createOracleBackupEvent({
+          record: backup,
+          privateKey: Buffer.from(signer, 'hex'),
+          createdAt: 100,
+          validator: helper,
+        })
+        const before = await store.readAuthorityByConditionId(conditionId)
+        const failing = createNativeOracleCreationStore(directory, {
+          importWriteFault(phase) {
+            if (phase === 'before-commit') throw new Error('Atomic import failed.')
+          },
+        })
+        await assert.rejects(
+          failing.importBackupEnvelope(event, 'wss://source.example', helper),
+          /Atomic import failed/,
+        )
+        assert.ok(
+          isDeepStrictEqual(await store.readAuthorityByConditionId(conditionId), before),
+          'Import changed authority before commit.',
+        )
+        assert.equal(await store.readBackupDelivery(conditionId), null)
+        await store.importBackupEnvelope(event, 'wss://source.example', helper)
+        const restarted = createNativeOracleCreationStore(directory)
+        const source = (await restarted.readBackupDelivery(conditionId))!
+        assert.equal(source.current, null)
+        assert.deepEqual(source.knownEventIds, [event.id])
+        assert.equal(source.timestampHighWater, 100)
+        assert.deepEqual(source.relayUrls, destinations.relayUrls)
+        assert.equal(source.terminalAdmission, null)
+        assert.equal(source.terminalCommitPending, false)
+        assert.ok(
+          isDeepStrictEqual(await restarted.readAuthorityByConditionId(conditionId), before),
+          'Restart changed imported authority.',
+        )
+        await restarted.importBackupEnvelope(event, 'wss://other-source.example', helper)
+        assert.deepEqual(await restarted.readBackupDelivery(conditionId), source)
+        const status = await nativeOracleBackupStatus(
+          restarted,
+          (await restarted.readAuthorityByConditionId(conditionId))!,
+        )
+        assert.equal(status.preparationPending, true)
+        assert.equal(status.initial.acknowledgedRelays, 0)
+        assert.doesNotMatch(
+          JSON.stringify(status),
+          /nonceScalarHex|eventJson|cipher|privateDto|secretKey/,
+        )
+      })
+    },
+  )
+
+  test(
+    `real SQLite ${kind} terminal stage refuses an unknown authenticated source without changing authority or exact retry`,
+    realHelper,
+    async () => {
+      await withOwner(kind, async (directory, store, conditionId) => {
+        const backup = await store.exportBackup(conditionId, helper)
+        const event = await createOracleBackupEvent({
+          record: backup,
+          privateKey: Buffer.from(signer, 'hex'),
+          createdAt: 100,
+          validator: helper,
+        })
+        await store.importBackupEnvelope(event, 'wss://source.example', helper)
+        await resolve(directory, store, conditionId)
+        await store.prepareBackupDelivery(conditionId, helper, 101)
+        const frozenOwner = await store.readAuthorityByConditionId(conditionId)
+        const frozenDelivery = await store.readBackupDelivery(conditionId)
+        const unknown = await createOracleBackupEvent({
+          record: backup,
+          privateKey: Buffer.from(signer, 'hex'),
+          createdAt: 102,
+          validator: helper,
+        })
+        const result = await dispatchNativeOracleAccess(
+          {
+            method: 'market.oracle-backup-restore',
+            params: { eventId: unknown.id, relay: 'wss://source.example' },
+          },
+          accessPorts(store, {
+            queryRelay: async (input) => {
+              assert.deepEqual(input.filter.ids, [unknown.id])
+              return { events: [unknown], complete: true }
+            },
+          }),
+        )
+        assert.equal(result.ok, false)
+        assert.equal('code' in result && result.code, 'terminal-backup-source-not-admitted')
+        assert.ok(
+          isDeepStrictEqual(await store.readAuthorityByConditionId(conditionId), frozenOwner),
+          'Refused source changed owner.',
+        )
+        assert.ok(
+          isDeepStrictEqual(await store.readBackupDelivery(conditionId), frozenDelivery),
+          'Refused source changed delivery.',
+        )
+        // A retained source remains idempotent after complete authentication.
+        await store.importBackupEnvelope(event, 'wss://source.example', helper)
+        assert.ok(
+          isDeepStrictEqual(await store.readAuthorityByConditionId(conditionId), frozenOwner),
+          'Refused source changed owner.',
+        )
+        assert.ok(
+          isDeepStrictEqual(await store.readBackupDelivery(conditionId), frozenDelivery),
+          'Refused source changed delivery.',
+        )
+      })
+    },
+  )
+}
+
+test(
+  'real SQLite selected restore independently refetches; new authority and provenance commit or roll back together',
+  realHelper,
+  async () => {
+    const backup = await importedFixture('fresh-access')
+    const event = await createOracleBackupEvent({
+      record: backup,
+      privateKey: Buffer.from(signer, 'hex'),
+      createdAt: 200,
+      validator: helper,
+    })
+    await withOwner('imported', async (directory, store) => {
+      const failing = createNativeOracleCreationStore(directory, {
+        importWriteFault(phase) {
+          if (phase === 'before-commit') throw new Error('raw secret failure')
+        },
+      })
+      const refused = await dispatchNativeOracleAccess(
+        {
+          method: 'market.oracle-backup-restore',
+          params: { eventId: event.id, relay: 'wss://source.example' },
+        },
+        accessPorts(failing, { queryRelay: async () => ({ events: [event], complete: true }) }),
+      )
+      assert.equal(refused.ok, false)
+      assert.doesNotMatch(JSON.stringify(refused), /raw secret|nonceScalarHex|eventJson|cipher/)
+      assert.equal(await store.readAuthorityByConditionId(backup.conditionId), null)
+      let fetched = 0
+      const restored = await dispatchNativeOracleAccess(
+        {
+          method: 'market.oracle-backup-restore',
+          params: { eventId: event.id, relay: 'wss://source.example' },
+        },
+        accessPorts(store, {
+          queryRelay: async (input) => {
+            fetched++
+            assert.deepEqual(input.filter.ids, [event.id])
+            assert.equal(input.relayUrl, 'wss://source.example')
+            return { events: [event], complete: true }
+          },
+        }),
+      )
+      assert.equal(restored.ok, true)
+      assert.equal(fetched, 1)
+      assert.doesNotMatch(JSON.stringify(restored), /nonceScalarHex|eventJson|privateDto|secretKey/)
+      const restarted = createNativeOracleCreationStore(directory)
+      assert.equal(
+        (await restarted.readAuthorityByConditionId(backup.conditionId))!.kind,
+        'imported',
+      )
+      assert.deepEqual((await restarted.readBackupDelivery(backup.conditionId))!.knownEventIds, [
+        event.id,
+      ])
+      const exact = (await restarted.readAuthorityByConditionId(backup.conditionId))!.announcement!
+        .announcementNostrEventJson
+      const announcement = await dispatchNativeOracleAccess(
+        { method: 'market.announcement-republish', params: { conditionId: backup.conditionId } },
+        accessPorts(restarted, {
+          helper: {} as NativeOracleHelper,
+          readPrivateKey: async () => {
+            throw new Error('Announcement retry cannot access keys.')
+          },
+          publishAnnouncement: async (relays, bytes) => {
+            assert.deepEqual(relays, destinations.relayUrls)
+            assert.equal(bytes, exact)
+            return {
+              eventId: JSON.parse(bytes).id,
+              acceptedRelays: [...relays],
+              rejectedRelayCount: 0,
+            }
+          },
+        }),
+      )
+      assert.equal(announcement.ok, true)
+      const signed = await resolve(directory, restarted, backup.conditionId)
+      assert.equal(signed.record.chosenOutcome, 'Yes')
+      assert.equal(signed.record.relayPublished, true)
+      assert.ok(
+        (await restarted.readAuthorityByConditionId(backup.conditionId))!.announcement!
+          .announcementNostrEventJson === exact,
+        'Imported signing changed the original announcement.',
+      )
+    })
+  },
+)
+
+test(
+  'real SQLite fresh scalar-null terminal restore republishes exact saved89 without key, preparation, or local backup admission',
+  realHelper,
+  async () => {
+    await withOwner('imported', async (directory, store, conditionId) => {
+      await resolve(directory, store, conditionId)
+      const resolved = (await store.readAuthorityByConditionId(conditionId))!
+      const terminal = buildTerminalOracleBackupRecord({
+        binding: nativeOraclePublicationBinding(resolved),
+        announcementTlvHex: resolved.announcement!.announcementTlvHex,
+        destinations: nativeOracleDestinations(resolved),
+        publication: nativeOraclePublicationRecord(resolved)!,
+      })
+      const event = await createOracleBackupEvent({
+        record: terminal,
+        privateKey: Buffer.from(signer, 'hex'),
+        createdAt: 400,
+        validator: helper,
+      })
+      const freshDirectory = join(directory, '..', 'fresh')
+      await bootstrapFreshDaemonProfile({
+        directory: freshDirectory,
+        engineBaseUrl: destinations.engineUrl,
+        mintUrl: destinations.mintUrl,
+        walletSeedHex: '12'.repeat(64),
+        nostrSecretKeyHex: signer,
+      })
+      const fresh = createNativeOracleCreationStore(freshDirectory)
+      await fresh.importBackupEnvelope(event, 'wss://source.example', helper)
+      const delivery = (await fresh.readBackupDelivery(conditionId))!
+      assert.equal(delivery.current, null)
+      assert.equal(delivery.terminalAdmission, null)
+      const exact = resolved.attestation!.attestationNostrEventJson
+      let sends = 0
+      const result = await retryNativeMarketPublication(
+        {
+          store: createNativeOracleCreationStore(freshDirectory),
+          helper: {} as NativeOracleHelper,
+          readSigner: async () => {
+            throw new Error('No signer is available.')
+          },
+          publishRelay: async (bytes) => {
+            sends++
+            assert.equal(bytes, exact)
+            return { eventId: JSON.parse(bytes).id }
+          },
+          submitEvent: async () => {
+            throw new Error('Relay-only must not contact engine.')
+          },
+          readResolution: async () => {
+            throw new Error('Relay-only must not contact engine.')
+          },
+        },
+        conditionId,
+        { engineDelivery: 'relay-only', republishAttestation: true },
+      )
+      assert.equal(sends, 1)
+      assert.deepEqual(result.failures, [])
+      assert.ok(
+        isDeepStrictEqual(await fresh.readBackupDelivery(conditionId), delivery),
+        'Exact republication changed source delivery.',
+      )
+      assert.equal(
+        (await fresh.readAuthorityByConditionId(conditionId))!.attestation!
+          .attestationNostrEventJson,
+        exact,
+      )
+    })
+  },
+)
+
+test(
+  'native RPC imported outcome relay-only makes zero engine calls and backup failure preserves durable primary result',
+  realHelper,
+  async () => {
+    await withOwner('imported', async (directory, store, conditionId) => {
+      const previousHome = process.env.BITCASTER_DAEMON_HOME
+      process.env.BITCASTER_DAEMON_HOME = directory
+      try {
+        let engineCalls = 0,
+          publications = 0
+        const result = await dispatch(
+          { method: 'market.attest', params: { conditionId, outcome: 'Yes', relayOnly: true } },
+          {
+            nativeOraclePublicationPorts: {
+              store,
+              helper,
+              readSigner: async () => ({ secretKeyHex: signer, nonceSeedHex: '03'.repeat(32) }),
+              publishRelay: async (bytes) => {
+                publications++
+                return { eventId: JSON.parse(bytes).id }
+              },
+              submitEvent: async () => {
+                engineCalls++
+                throw new Error()
+              },
+              readResolution: async () => {
+                engineCalls++
+                throw new Error()
+              },
+            },
+            nativeOracleAccessPorts: accessPorts(store, {
+              publishBackup: async () => {
+                throw new Error('Backup relay unavailable.')
+              },
+            }),
+          },
+        )
+        assert.equal(result.ok, true)
+        assert.equal(engineCalls, 0)
+        assert.equal(publications, 1)
+        const saved =
+          (await createNativeOracleCreationStore(directory).readAuthorityByConditionId(
+            conditionId,
+          ))!
+        assert.equal(saved.chosenOutcome, 'Yes')
+        assert.equal(saved.relayPublished, true)
+        assert.equal(saved.engineEvidence, null)
+        const pending = await nativeOracleBackupStatus(store, saved)
+        assert.equal(pending.terminal.prepared, true)
+        assert.equal(pending.terminal.replacementAcknowledgedRelays, 0)
+        assert.equal(pending.terminal.localCommitPending, true)
+      } finally {
+        if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
+        else process.env.BITCASTER_DAEMON_HOME = previousHome
+      }
+    })
+  },
+)
+
+test(
+  'native RPC later exact synchronization uses original stored engine after current configuration changes',
+  realHelper,
+  async () => {
+    await withOwner('imported', async (directory, store, conditionId) => {
+      await resolve(directory, store, conditionId)
+      await publishNativeOracleBackup(
+        {
+          store,
+          helper,
+          nowSeconds: () => 100,
+          publishRelay: async (relayUrl, bytes) => ({ relayUrl, eventId: JSON.parse(bytes).id }),
+        },
+        conditionId,
+      )
+      const saved = (await store.readAuthorityByConditionId(conditionId))!
+      const exact = saved.attestation!.attestationNostrEventJson
+      const verified = await helper.verifyEnum({
+        eventId: saved.eventId,
+        oraclePublicKeyHex: saved.creatorPublicKeyHex,
+        chosenOutcome: saved.chosenOutcome!,
+        announcementTlvHex: saved.announcement!.announcementTlvHex,
+        announcementNostrEventJson: saved.announcement!.announcementNostrEventJson,
+        attestationHex: saved.attestation!.attestationHex,
+        attestationNostrEventJson: exact,
+      })
+      const { created_at, ...event } = JSON.parse(exact)
+      const observed = {
+        conditionId,
+        attestedOutcome: 'Yes',
+        attestationEvent: { ...event, createdAt: created_at },
+        registeredAuthority: {
+          eventId: saved.eventId,
+          outcomes: ['Yes', 'No'],
+          threshold: 1,
+          oracles: [
+            {
+              oraclePublicKey: publicKey,
+              noncePoint: verified.noncePointHex,
+              announcementIdentity: createHash('sha256')
+                .update(Buffer.from(saved.announcement!.announcementTlvHex, 'hex'))
+                .digest('hex'),
+            },
+          ],
+        },
+        oracleWitness: {
+          oracle_sigs: [
+            { oracle_pubkey: publicKey, oracle_sig: verified.oracleSignatureHex, outcome: 'Yes' },
+          ],
+        },
+      }
+      updateNativeConfig(
+        (config) => ({
+          ...config,
+          daemon: { ...config.daemon, engineUrl: 'https://changed.example' },
+        }),
+        { directory },
+      )
+      const previousHome = process.env.BITCASTER_DAEMON_HOME,
+        previousFetch = globalThis.fetch
+      process.env.BITCASTER_DAEMON_HOME = directory
+      const requests: string[] = []
+      globalThis.fetch = async (input, init) => {
+        const url = String(input)
+        requests.push(url)
+        assert.ok(url.startsWith(destinations.engineUrl + '/api/v1/'))
+        if (init?.method === 'POST') {
+          assert.deepEqual(JSON.parse(String(init.body)), observed.attestationEvent)
+          return new Response(JSON.stringify({ result: 'Closed' }), { status: 200 })
+        }
+        return new Response(JSON.stringify(observed), { status: 200 })
+      }
+      try {
+        const result = await dispatch(
+          { method: 'market.attestation-retry', params: { conditionId } },
+          { nativeOracleHelper: helper },
+        )
+        assert.equal(result.ok, true)
+        assert.equal(requests.length, 2)
+        const synchronized = (await store.readAuthorityByConditionId(conditionId))!
+        assert.equal(synchronized.attestation!.attestationNostrEventJson, exact)
+        assert.ok(synchronized.engineEvidence !== null)
+      } finally {
+        globalThis.fetch = previousFetch
+        if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
+        else process.env.BITCASTER_DAEMON_HOME = previousHome
+      }
+    })
+  },
+)
+
+test(
+  'native automatic delivery replays an existing stage without a preparation helper or signer',
+  realHelper,
+  async () => {
+    await withOwner('imported', async (directory, store, conditionId) => {
+      const stage = await store.prepareBackupDelivery(conditionId, helper, 100)
+      let sends = 0
+      const result = await publishNativeOracleBackup(
+        {
+          store: createNativeOracleCreationStore(directory),
+          helper: {} as NativeOracleHelper,
+          nowSeconds: () => {
+            throw new Error('Saved retry cannot prepare.')
+          },
+          publishRelay: async (relayUrl, bytes) => {
+            sends++
+            assert.ok(bytes === stage.current!.eventJson, 'Retry changed saved backup.')
+            return { relayUrl, eventId: stage.current!.eventId }
+          },
+        },
+        conditionId,
+      )
+      assert.equal(sends, 2)
+      assert.deepEqual(result.failures, [])
+      assert.equal(result.state!.current!.eventId, stage.current!.eventId)
+    })
+  },
+)
+
+test(
+  'native list RPC returns safe actual-envelope metadata and fixed restore refusals without mutation',
+  realHelper,
+  async () => {
+    await withOwner('imported', async (_directory, store, conditionId) => {
+      const backup = await store.exportBackup(conditionId, helper)
+      const event = await createOracleBackupEvent({
+        record: backup,
+        privateKey: Buffer.from(signer, 'hex'),
+        createdAt: 200,
+        validator: helper,
+      })
+      let queries = 0
+      const listed = await dispatchNativeOracleAccess(
+        { method: 'market.oracle-backup-list', params: {} },
+        accessPorts(store, {
+          queryRelay: async (input) => {
+            queries++
+            assert.equal(input.relayUrl, 'wss://discovery.example')
+            assert.deepEqual(input.filter.kinds, [30078])
+            assert.deepEqual(input.filter.authors, [publicKey])
+            assert.deepEqual(input.filter['#v'], ['1'])
+            assert.equal('#d' in input.filter, false)
+            return { events: [event], complete: true }
+          },
+        }),
+      )
+      assert.equal(listed.ok, true)
+      assert.equal(queries, 2)
+      if (listed.ok) {
+        const page = listed.result as {
+          descriptors: { backupEventId: string; conditionId: string }[]
+          discovery: string
+        }
+        assert.equal(page.descriptors.length, 1)
+        assert.equal(page.descriptors[0].backupEventId, event.id)
+        assert.equal(page.descriptors[0].conditionId, conditionId)
+        assert.equal(page.discovery, 'relay-dependent')
+      }
+      assert.doesNotMatch(
+        JSON.stringify(listed),
+        /nonceScalarHex|eventJson|cipher|privateDto|secretKey/,
+      )
+      const before = await store.readAuthorityByConditionId(conditionId)
+      const missing = await dispatchNativeOracleAccess(
+        {
+          method: 'market.oracle-backup-restore',
+          params: { eventId: event.id, relay: 'wss://source.example' },
+        },
+        accessPorts(store, { queryRelay: async () => ({ events: [], complete: true }) }),
+      )
+      assert.equal('code' in missing && missing.code, 'oracle-backup-missing-event')
+      const wrong = finalizeEvent(
+        {
+          kind: event.kind,
+          created_at: event.created_at,
+          tags: event.tags,
+          content: event.content,
+        },
+        Buffer.from('03'.repeat(32), 'hex'),
+      )
+      const foreign = await dispatchNativeOracleAccess(
+        {
+          method: 'market.oracle-backup-restore',
+          params: { eventId: wrong.id, relay: 'wss://source.example' },
+        },
+        accessPorts(store, { queryRelay: async () => ({ events: [wrong], complete: true }) }),
+      )
+      assert.equal('code' in foreign && foreign.code, 'oracle-backup-wrong-owner')
+      const invalid = await dispatchNativeOracleAccess(
+        {
+          method: 'market.oracle-backup-restore',
+          params: { eventId: event.id, relay: 'wss://source.example' },
+        },
+        accessPorts(store, {
+          queryRelay: async () => ({
+            events: [{ ...event, sig: '00'.repeat(64) }],
+            complete: true,
+          }),
+        }),
+      )
+      assert.equal('code' in invalid && invalid.code, 'oracle-backup-invalid-envelope')
+      assert.ok(
+        isDeepStrictEqual(await store.readAuthorityByConditionId(conditionId), before),
+        'Refused access changed owner.',
+      )
+      assert.equal(await store.readBackupDelivery(conditionId), null)
+    })
+  },
+)
+
+test(
+  'native receiving owner captures the authenticated envelope before its first await',
+  realHelper,
+  async () => {
+    await withOwner('imported', async (directory, store, conditionId) => {
+      const backup = await store.exportBackup(conditionId, helper)
+      const event = await createOracleBackupEvent({
+        record: backup,
+        privateKey: Buffer.from(signer, 'hex'),
+        createdAt: 550,
+        validator: helper,
+      })
+      const originalId = event.id
+      const pending = store.importBackupEnvelope(event, 'wss://source.example', helper)
+      event.id = '00'.repeat(32)
+      event.created_at = 999
+      event.content = 'caller mutated ciphertext'
+      event.tags[0][1] = 'caller mutated binding'
+      const restored = await pending
+      assert.equal(restored.announcement!.conditionId, conditionId)
+      assert.ok(
+        restored.announcement!.announcementNostrEventJson ===
+          backup.authority.announcementEventJson,
+        'Caller mutation changed restored authority.',
+      )
+      const restarted = createNativeOracleCreationStore(directory)
+      const delivery = (await restarted.readBackupDelivery(conditionId))!
+      assert.deepEqual(delivery.knownEventIds, [originalId])
+      assert.equal(delivery.timestampHighWater, 550)
+      assert.equal(delivery.current, null)
+      const retained = (await restarted.readImportedAuthorityForSigning(conditionId))!
+      assert.ok(
+        retained.nonceScalarHex === backup.authority.nonceScalarHex,
+        'Caller mutation changed private signing authority.',
+      )
+    })
+  },
+)
+
+test(
+  'native local status pages mix created and imported owners, capture delivery, and resume after restart',
+  realHelper,
+  async () => {
+    await withOwner('created', async (directory, store, createdConditionId) => {
+      const expected = [createdConditionId]
+      for (let index = 0; index < 4; index++) {
+        const backup = await importedFixture(`local-status-page-${index}`)
+        expected.push(backup.conditionId)
+        const event = await createOracleBackupEvent({
+          record: backup,
+          privateKey: Buffer.from(signer, 'hex'),
+          createdAt: 200 + index,
+          validator: helper,
+        })
+        await store.importBackupEnvelope(event, 'wss://source.example', helper)
+      }
+      expected.sort()
+      let cursor: string | undefined
+      const observed: string[] = []
+      const ownerKinds = new Set<string>()
+      do {
+        const restarted = createNativeOracleCreationStore(directory)
+        const supplied = accessPorts({
+          ...restarted,
+          readBackupDelivery: async () => {
+            throw new Error('Paged status must not reread each owner.')
+          },
+        })
+        const result = await dispatchNativeOracleAccess(
+          {
+            method: 'market.oracle-backup-status',
+            params: { limit: 2, ...(cursor === undefined ? {} : { cursor }) },
+          },
+          supplied,
+        )
+        assert.equal(result.ok, true)
+        if (!result.ok) throw new Error('Status page failed.')
+        const page = result.result as {
+          statuses: {
+            ownerKind: string
+            binding: { conditionId: string }
+            initial: { acknowledgedRelays: number }
+          }[]
+          cursor: string | null
+        }
+        assert.ok(page.statuses.length <= 2)
+        for (const status of page.statuses) {
+          observed.push(status.binding.conditionId)
+          ownerKinds.add(status.ownerKind)
+          assert.equal(status.initial.acknowledgedRelays, 0)
+        }
+        if (page.cursor !== null)
+          assert.equal(page.cursor, page.statuses[page.statuses.length - 1].binding.conditionId)
+        cursor = page.cursor ?? undefined
+        assert.doesNotMatch(
+          JSON.stringify(result),
+          /nonceScalarHex|eventJson|cipher|privateDto|secretKey/,
+        )
+      } while (cursor !== undefined)
+      assert.deepEqual(observed, expected)
+      assert.deepEqual([...ownerKinds].sort(), ['created', 'imported'])
+      assert.equal((await store.readAuthorityPage()).items.length, 5)
+      assert.equal(
+        (await store.readAuthorityPage({ cursor: 'f'.repeat(64), limit: 2 })).items.length,
+        0,
+      )
+      const single = await dispatchNativeOracleAccess(
+        { method: 'market.oracle-backup-status', params: { conditionId: createdConditionId } },
+        accessPorts(store),
+      )
+      assert.equal(single.ok, true)
+      assert.ok(single.ok && 'binding' in (single.result as object))
+    })
+  },
+)
+
+test(
+  'native local status refuses invalid page bounds and single-owner paging options without mutation',
+  realHelper,
+  async () => {
+    await withOwner('imported', async (_directory, store, conditionId) => {
+      const before = await store.readAuthorityByConditionId(conditionId)
+      for (const params of [
+        { limit: 0 },
+        { limit: 129 },
+        { limit: 1.5 },
+        { limit: null },
+        { limit: '2' },
+        { cursor: 'bad' },
+        { cursor: 'A'.repeat(64) },
+        { cursor: null },
+        { conditionId, limit: 2 },
+        { conditionId, cursor: 'f'.repeat(64) },
+      ]) {
+        const result = await dispatchNativeOracleAccess(
+          { method: 'market.oracle-backup-status', params } as never,
+          accessPorts(store),
+        )
+        assert.equal(result.ok, false)
+        assert.equal('code' in result && result.code, 'oracle-backup-local-state')
+      }
+      assert.ok(
+        isDeepStrictEqual(await store.readAuthorityByConditionId(conditionId), before),
+        'Invalid paging changed owner.',
+      )
+    })
+  },
+)
+
+test(
+  'real SQLite encrypted restore into empty authority keeps its nonce isolated from a new native announcement',
+  realHelper,
+  async () => {
+    const root = await mkdtemp(join(tmpdir(), 'oracle-restored-nonce-isolation-'))
+    const directory = join(root, 'profile')
+    const passphrase = 'native-nonce-isolation-passphrase'
+    try {
+      await bootstrapFreshDaemonProfile({
+        directory,
+        engineBaseUrl: destinations.engineUrl,
+        mintUrl: destinations.mintUrl,
+        walletSeedHex: '11'.repeat(64),
+        nostrSecretKeyHex: signer,
+        passphrase,
+      })
+      const store = createNativeOracleCreationStore(directory, { passphrase })
+      assert.equal((await store.readAuthorityPage()).items.length, 0)
+      const backup = await importedFixture('restored-nonce-isolation')
+      const event = await createOracleBackupEvent({
+        record: backup,
+        privateKey: Buffer.from(signer, 'hex'),
+        createdAt: 600,
+        validator: helper,
+      })
+      const restored = await dispatchNativeOracleAccess(
+        {
+          method: 'market.oracle-backup-restore',
+          params: { eventId: event.id, relay: 'wss://source.example' },
+        },
+        accessPorts(store, {
+          queryRelay: async (input) => {
+            assert.deepEqual(input.filter.ids, [event.id])
+            return { events: [event], complete: true }
+          },
+        }),
+      )
+      assert.equal(restored.ok, true)
+      const reopened = createNativeOracleCreationStore(directory, { passphrase })
+      const originalOwner = await reopened.readAuthorityByConditionId(backup.conditionId)
+      const originalAuthority = await reopened.readImportedAuthorityForSigning(backup.conditionId)
+      const originalProvenance = await reopened.readBackupDelivery(backup.conditionId)
+      assert.equal(originalOwner?.kind, 'imported')
+      assert.deepEqual(originalProvenance!.knownEventIds, [event.id])
+      assert.equal(originalProvenance!.timestampHighWater, 600)
+      assert.equal(originalProvenance!.current, null)
+      const secrets = await createDaemonStateSqliteSession(directory).read((database) =>
+        readProfileSecretAuthority(database, passphrase),
+      )
+      const created = await prepareNativeMarketOracle(
+        {
+          store: reopened,
+          helper,
+          oracleSecretKeyHex: signer,
+          nonceSeedHex: secrets.nativeOracleNonceSeedHex,
+        },
+        {
+          creationId: 'new-native-after-restore',
+          eventId: 'new-native-after-restore-event',
+          market: {
+            title: 'Independent announcement',
+            description: 'New native authority after an encrypted restore.',
+            outcomeType: 'yesno',
+            outcomeDetails: [{ name: 'Yes' }, { name: 'No' }],
+            maturityEpoch: 2_000_000_000,
+            categoryTags: [],
+            baseAsset: 'sat',
+          },
+          registration: { requiredFeeMsat: 0 },
+          destination: {
+            mintUrl: destinations.mintUrl,
+            engineBaseUrl: destinations.engineUrl,
+            relayUrls: destinations.relayUrls,
+          },
+        },
+      )
+      const newBackup = await reopened.exportBackup(
+        created.record.announcement!.conditionId,
+        helper,
+      )
+      const importedSummary = await helper.validateAuthority(
+        JSON.stringify(originalAuthority),
+        publicKey,
+      )
+      const newSummary = await helper.validateAuthority(
+        JSON.stringify(newBackup.authority),
+        publicKey,
+      )
+      assert.notEqual(newSummary.noncePoint, importedSummary.noncePoint)
+      assert.notEqual(created.record.announcement!.conditionId, backup.conditionId)
+      const finalStore = createNativeOracleCreationStore(directory, { passphrase })
+      assert.ok(
+        isDeepStrictEqual(
+          await finalStore.readAuthorityByConditionId(backup.conditionId),
+          originalOwner,
+        ),
+        'New announcement changed imported owner.',
+      )
+      assert.ok(
+        isDeepStrictEqual(
+          await finalStore.readImportedAuthorityForSigning(backup.conditionId),
+          originalAuthority,
+        ),
+        'New announcement changed imported private authority.',
+      )
+      assert.ok(
+        isDeepStrictEqual(
+          await finalStore.readBackupDelivery(backup.conditionId),
+          originalProvenance,
+        ),
+        'New announcement changed imported source provenance.',
+      )
+      assert.equal((await finalStore.readAuthorityPage()).items.length, 2)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
   },
 )

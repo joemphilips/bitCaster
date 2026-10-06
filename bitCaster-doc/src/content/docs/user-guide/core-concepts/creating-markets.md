@@ -87,6 +87,68 @@ your reporting: a valid signature does not prove that the result is true.
 See [Resolution](/user-guide/core-concepts/resolution/) for your reporting
 responsibilities and what happens after trading closes.
 
+## Keep and restore your oracle backup
+
+After creation finishes, the client attempts an encrypted oracle backup on
+the original relays. Backup failure does not undo creation or charge another fee.
+Keep the local oracle record until backup delivery is confirmed.
+
+Open Settings, then Oracle backups. Use the original local Nostr key to
+list backups or restore one version. The client fetches the selected event
+again and checks its signature, encryption, and oracle binding before import.
+The browser and native client use the same portable backup format.
+Restore retains the original announcement, signing authority, mint, engine,
+and relay destinations. It restores an oracle record, not a paid creation record.
+
+Discovery depends on relay retention. A page or an empty result does not
+prove that all backups were found. Try another relay or use the exact backup
+event ID and source relay URL. Settings shows one remote page at a time.
+
+Local status distinguishes incomplete import, pending preparation, initial
+delivery, terminal replacement, deletion requests, and pending local updates.
+Initial backup confirmation does not confirm the terminal replacement.
+If import is incomplete, restore the same version again before signing.
+Retry preparation with the original key. A saved exact backup retry can run
+without a signer. Retry uses the original destinations.
+
+Use one current oracle copy. An old restored copy can still sign another
+outcome. After resolution delivery, the client attempts a replacement that
+retains the exact signed result without fresh signing authority.
+It also requests deletion of retained older versions.
+A relay acknowledgment does not prove that the relay erased every old copy.
+
+If this device has frozen a terminal backup retry, another source version
+can be refused. The message says that the version was not imported.
+The local record and exact retry stay available. Completing deletion does
+not guarantee that this device can admit that source version later.
+A fresh store with the matching key can restore the valid version.
+
+### CLI backup commands
+
+Use the original oracle key in the local daemon profile. Commands return
+safe metadata and delivery progress. They do not return private signing data.
+
+```bash
+bitcaster-cli market oracle-backup-list --relay <relay-url>
+bitcaster-cli market oracle-backup-list --relay <relay-url> --cursor '<cursor-json>'
+bitcaster-cli market oracle-backup-restore --event-id <backup-event-id> --relay <relay-url>
+bitcaster-cli market oracle-backup-status <condition-id>
+bitcaster-cli market oracle-backup-status --limit 32
+bitcaster-cli market oracle-backup-status --cursor <last-condition-id> --limit 32
+bitcaster-cli market oracle-backup-retry <condition-id>
+bitcaster-cli market announcement-republish <condition-id>
+```
+
+Omit `--relay` to scan configured relays. Pass the returned discovery cursor
+unchanged with the same relay selection. It describes relay-dependent discovery.
+Local status pages return `statuses` and a condition-ID `cursor`.
+The default page size is 32. The maximum is 128.
+Do not combine local page options with a selected condition ID.
+`announcement-republish` sends the exact saved announcement to its original
+relays. It does not require a signer or create another announcement.
+See [Resolution](/user-guide/core-concepts/resolution/) for restored oracle signing
+and engine-down publication.
+
 ## Amounts and prices
 
 The app shows amounts in sats, the small units of Bitcoin. USD, JPY, and

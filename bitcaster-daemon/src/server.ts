@@ -8,8 +8,17 @@ import { readMarketThumbnail } from './marketThumbnail.ts'
 import { createAuthenticatedBitcasterEngineClient } from './engineClient.ts'
 import { activeNativeConfig } from './nativeConfig.ts'
 import { dispatchNativeMarketCreation } from './nativeMarketCreationRpc.ts'
-import { createNativeOracleCreationStore } from './nativeOracleCreationStore.ts'
-import { createNativeOracleHelperAdapter } from './nativeOracleHelper.ts'
+import {
+  dispatchNativeOracleAccess,
+  type NativeOracleAccessRpcPorts,
+} from './nativeOracleBackupRpc.ts'
+import { publishNativeOracleBackup } from './nativeOracleBackup.ts'
+import { publishNativeOracleBackupEvent } from './nativeOracleBackupRelay.ts'
+import {
+  createNativeOracleCreationStore,
+  nativeOracleDestinations,
+} from './nativeOracleCreationStore.ts'
+import { createNativeOracleHelperAdapter, type NativeOracleHelper } from './nativeOracleHelper.ts'
 import {
   publishNativeMarketOutcome,
   retryNativeMarketPublication,
@@ -291,6 +300,9 @@ class InsufficientParticipationScoreBackingError extends Error {
 }
 
 export interface DispatchDependencies extends WalletOpsDependencies {
+  nativeOracleAccessPorts?: NativeOracleAccessRpcPorts
+  nativeOraclePublicationPorts?: NativeOraclePublicationPorts
+  nativeOracleHelper?: NativeOracleHelper
   observeOrderTimeline?: OrderTimelineObserver
   nativePaymentRequests?: NativePaymentRequestService
   watch?: DaemonWatchProvider
@@ -526,6 +538,12 @@ export async function dispatch(
         },
       }
     }
+    case 'market.oracle-backup-list':
+    case 'market.oracle-backup-restore':
+    case 'market.oracle-backup-status':
+    case 'market.oracle-backup-retry':
+    case 'market.announcement-republish':
+      return dispatchNativeOracleAccess(command, deps.nativeOracleAccessPorts)
     case 'market.create-native':
     case 'market.creation-resume':
     case 'market.creation-status':
@@ -572,7 +590,7 @@ export async function dispatch(
     case 'market.resolution-status': {
       const profile = await readProfile()
       if (!profile) return { ok: false, error: 'daemon profile is not initialized' }
-      const saved = await createNativeOracleCreationStore(profileDir()).readByConditionId(
+      const saved = await createNativeOracleCreationStore(profileDir()).readAuthorityByConditionId(
         command.params.conditionId,
       )
       if (!saved)
@@ -599,67 +617,116 @@ export async function dispatch(
     }
     case 'market.attest':
     case 'market.attestation-retry': {
-      const profile = await readProfile()
-      if (!profile) return { ok: false, error: 'daemon profile is not initialized' }
-      const store = createNativeOracleCreationStore(profileDir())
-      const creation = await store.readByConditionId(command.params.conditionId)
-      if (!creation)
-        return { ok: false, error: 'This profile did not create the oracle announcement.' }
-      const { destination } = JSON.parse(creation.canonicalInput) as {
-        destination: { engineBaseUrl: string; relayUrls: string[] }
-      }
-      if (destination.engineBaseUrl !== profile.engineBaseUrl) {
-        return { ok: false, error: 'Use the engine configured when this market was created.' }
-      }
-      const validation = validateMarketCreateEngineUrl(profile.engineBaseUrl, true)
-      if (!validation.ok) return { ok: false, error: validation.error, code: validation.code }
-      const client = new BitcasterEngineClient({
-        baseUrl: profile.engineBaseUrl,
-        fetchImpl: (input, init) => fetch(input, { ...init, signal: AbortSignal.timeout(10_000) }),
-      })
-      const ports: NativeOraclePublicationPorts = {
-        store,
-        helper: createNativeOracleHelperAdapter(),
-        async readSigner() {
-          const secrets = await readSecrets()
-          if (!secrets) throw new Error('Native oracle signer is unavailable.')
-          return {
-            secretKeyHex: (await store.readCreationSigner(creation.creationId)).secretKeyHex,
-            nonceSeedHex: secrets.nativeOracleNonceSeedHex,
-          }
-        },
-        async publishRelay(eventJson) {
-          const saved = await store.readByConditionId(command.params.conditionId)
-          if (saved?.announcement == null || saved.attestation === null)
-            throw new Error('Native oracle signed publication is unavailable.')
-          return publishNativeOracleEvent(destination.relayUrls, eventJson, undefined, {
-            oraclePubkey: saved.creatorPublicKeyHex,
-            announcementEventJson: saved.announcement.announcementNostrEventJson,
-            attestationEventJson: saved.attestation.attestationNostrEventJson,
-          })
-        },
-        async submitEvent(conditionId, eventJson) {
-          const { created_at, ...event } = JSON.parse(eventJson)
-          const wireEvent = { ...event, createdAt: created_at }
-          if (!isKind89NostrEvent(wireEvent))
-            throw new Error('Native oracle attestation is invalid.')
-          return submitOracleAttestationViaEngine(client, conditionId, wireEvent)
-        },
-        // The additive public response supplies the exact signed event. The adapter fails closed without it.
-        readResolution: (conditionId) => client.getConditionAttestation(conditionId),
-      }
-      const result =
-        command.method === 'market.attestation-retry'
-          ? await retryNativeMarketPublication(ports, command.params.conditionId)
-          : await publishNativeMarketOutcome(
-              ports,
+      try {
+        if (command.method === 'market.attest' && 'republish' in command.params) throw new Error()
+        if (command.params.relayOnly !== undefined && typeof command.params.relayOnly !== 'boolean')
+          throw new Error()
+        if (
+          command.method === 'market.attestation-retry' &&
+          command.params.republish !== undefined &&
+          typeof command.params.republish !== 'boolean'
+        )
+          throw new Error()
+        const profile = await readProfile()
+        if (!profile) return { ok: false, error: 'daemon profile is not initialized' }
+        const store =
+          deps.nativeOraclePublicationPorts?.store ?? createNativeOracleCreationStore(profileDir())
+        const creation = await store.readAuthorityByConditionId(command.params.conditionId)
+        if (creation?.announcement == null)
+          return { ok: false, error: 'Local oracle authority is unavailable.' }
+        const destination = nativeOracleDestinations(creation)
+        const relayOnly = command.params.relayOnly === true
+        if (!relayOnly) {
+          const validation = validateMarketCreateEngineUrl(destination.engineUrl, true)
+          if (!validation.ok) return { ok: false, error: validation.error, code: validation.code }
+        }
+        // Constructing this adapter makes no request. Relay-only execution never calls it.
+        const client = new BitcasterEngineClient({
+          baseUrl: destination.engineUrl,
+          fetchImpl: (input, init) =>
+            fetch(input, { ...init, signal: AbortSignal.timeout(10_000) }),
+        })
+        const ports: NativeOraclePublicationPorts = deps.nativeOraclePublicationPorts ?? {
+          store,
+          helper: deps.nativeOracleHelper ?? createNativeOracleHelperAdapter(),
+          async readSigner() {
+            const secrets = await readSecrets()
+            if (!secrets) throw new Error('Native oracle signer is unavailable.')
+            return {
+              secretKeyHex:
+                creation.kind === 'created'
+                  ? (await store.readCreationSigner(creation.creationId)).secretKeyHex
+                  : secrets.nostrSecretKeyHex,
+              nonceSeedHex: secrets.nativeOracleNonceSeedHex,
+            }
+          },
+          async publishRelay(eventJson) {
+            const saved = await store.readAuthorityByConditionId(command.params.conditionId)
+            if (saved?.announcement == null || saved.attestation === null) throw new Error()
+            return publishNativeOracleEvent(destination.relayUrls, eventJson, undefined, {
+              oraclePubkey: saved.creatorPublicKeyHex,
+              announcementEventJson: saved.announcement.announcementNostrEventJson,
+              attestationEventJson: saved.attestation.attestationNostrEventJson,
+            })
+          },
+          async submitEvent(conditionId, eventJson) {
+            const { created_at, ...event } = JSON.parse(eventJson)
+            const wireEvent = { ...event, createdAt: created_at }
+            if (!isKind89NostrEvent(wireEvent)) throw new Error()
+            return submitOracleAttestationViaEngine(client, conditionId, wireEvent)
+          },
+          readResolution: (conditionId) => client.getConditionAttestation(conditionId),
+        }
+        const options = {
+          engineDelivery: relayOnly ? ('relay-only' as const) : ('synchronize' as const),
+          ...(command.method === 'market.attestation-retry' && command.params.republish === true
+            ? { republishAttestation: true }
+            : {}),
+        }
+        const result =
+          command.method === 'market.attestation-retry'
+            ? await retryNativeMarketPublication(ports, command.params.conditionId, options)
+            : await publishNativeMarketOutcome(
+                ports,
+                command.params.conditionId,
+                command.params.outcome,
+                command.params.explanation,
+                options,
+              )
+        if (result.record.relayPublished) {
+          // Backup failure cannot undo the durable resolution. Status reconstructs pending work.
+          try {
+            await publishNativeOracleBackup(
+              {
+                store,
+                helper: ports.helper,
+                nowSeconds: () => Math.floor(Date.now() / 1000),
+                publishRelay:
+                  deps.nativeOracleAccessPorts?.publishBackup ?? publishNativeOracleBackupEvent,
+              },
               command.params.conditionId,
-              command.params.outcome,
-              command.params.explanation,
             )
-      return { ok: true, result: nativeOraclePublicationRpcResult(result) }
+          } catch {
+            /* The primary result remains successful. */
+          }
+        }
+        return { ok: true, result: nativeOraclePublicationRpcResult(result) }
+      } catch {
+        return {
+          ok: false,
+          code: 'oracle-publication-incomplete',
+          error:
+            'Oracle publication did not complete. Check resolution-status and retry the exact saved operation.',
+        }
+      }
     }
     case 'market.close': {
+      if ('relayOnly' in command.params || 'republish' in command.params)
+        return {
+          ok: false,
+          code: 'invalid-oracle-publication-options',
+          error: 'Supplied wire attestations do not accept native publication options.',
+        }
       const profile = await readProfile()
       if (!profile) {
         return { ok: false, error: 'daemon profile is not initialized' }
@@ -3236,6 +3303,11 @@ function requiresApplicationSigner(method: DaemonCommand['method']): boolean {
     case 'market.funding.quote':
     case 'market.funding.head':
     case 'market.fund':
+    case 'market.oracle-backup-list':
+    case 'market.oracle-backup-restore':
+    case 'market.oracle-backup-status':
+    case 'market.oracle-backup-retry':
+    case 'market.announcement-republish':
     case 'market.creation-status':
     case 'market.creation-quote':
     case 'market.close':

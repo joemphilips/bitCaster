@@ -4,6 +4,7 @@ import {
   deliverOracleBackup,
   OracleBackupDeliveryError,
   prepareOracleBackupDelivery,
+  readOracleBackupRelayEvent,
   retryOracleBackupDelivery,
   type OracleBackupDeliveryAdapters,
 } from "@bitcaster/client-sdk/oracleBackupDelivery";
@@ -14,7 +15,7 @@ import { useSettingsStore } from "@/stores/settings";
 import { resolveNsecIdentity } from "./identityOps";
 import { browserOracleBackupValidator } from "./kormir";
 import { exportLockedBrowserOracleBackup } from "./browserOracleBackup";
-import { publishRetainedOracleEvent } from "./oracleAttestation";
+import { publishRetainedOracleEvent } from "./oracleRelayTransport";
 
 export interface BrowserOracleBackupDeliveryOptions {
   readonly store?: typeof useCreatorMarketsStore;
@@ -96,10 +97,13 @@ export function createBrowserOracleBackupDeliveryAdapters(
     },
     publishRelay:
       options.publishRelay ??
-      (async (relayUrl, eventJson) => ({
-        eventId: await publishRetainedOracleEvent([relayUrl], eventJson),
-        relayUrl,
-      })),
+      (async (relayUrl, eventJson) => {
+        readOracleBackupRelayEvent(eventJson);
+        return {
+          eventId: await publishRetainedOracleEvent([relayUrl], eventJson),
+          relayUrl,
+        };
+      }),
   };
 }
 
@@ -108,6 +112,14 @@ export function deliverBrowserOracleBackup(
   options: BrowserOracleBackupDeliveryOptions = {},
 ) {
   return deliverOracleBackup(createBrowserOracleBackupDeliveryAdapters(options), conditionId);
+}
+
+/** Primary creation and resolution do not depend on independent backup delivery. */
+export function requestBrowserOracleBackup(
+  conditionId: string,
+  options: BrowserOracleBackupDeliveryOptions = {},
+) {
+  void deliverBrowserOracleBackup(conditionId, options).catch(() => undefined);
 }
 
 export function retryBrowserOracleBackupDelivery(

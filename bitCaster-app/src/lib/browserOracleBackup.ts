@@ -1,5 +1,6 @@
 import {
   encodeOracleBackup,
+  readOracleBackupEnvelope,
   OracleBackupError,
   type OracleBackupRecord,
   type MarketCreationPreparation,
@@ -8,7 +9,12 @@ import type {
   OraclePublicationBinding,
   OraclePublicationRecord,
 } from "@bitcaster/client-sdk/oraclePublication";
-import { buildTerminalOracleBackupRecord } from "@bitcaster/client-sdk/oracleBackupDelivery";
+import {
+  buildTerminalOracleBackupRecord,
+  OracleBackupDeliveryError,
+} from "@bitcaster/client-sdk/oracleBackupDelivery";
+import { restoreOracleBackupEnvelope } from "@bitcaster/client-sdk/oracleBackupAccess";
+import { hexToBytes } from "nostr-tools/utils";
 import {
   useCreatorMarketsStore,
   type BrowserOracleLockedPort,
@@ -109,6 +115,43 @@ export async function importBrowserOracleBackup(
   input: unknown,
   store: CreatorStore = useCreatorMarketsStore,
 ) {
+  return importBrowserOracleBackupRecord(input, store);
+}
+
+/** The receiver derives provenance from the same fully authenticated envelope as authority. */
+export async function importBrowserOracleBackupEnvelope(
+  event: unknown,
+  sourceRelay: string,
+  store: CreatorStore = useCreatorMarketsStore,
+) {
+  const settings = useSettingsStore.getState();
+  const identity = resolveNsecIdentity(settings.nsecSecret);
+  if (settings.nostrSignerMode !== "nsec" || !identity)
+    throw new OracleBackupError("invalid-record");
+  const envelope = readOracleBackupEnvelope(event, identity.publicKey);
+  const restored = await restoreOracleBackupEnvelope({
+    event: envelope,
+    sourceRelay,
+    privateKey: hexToBytes(identity.privateKeyHex),
+    validator: browserOracleBackupValidator,
+  });
+  await importBrowserOracleBackupRecord(restored.record, store, {
+    record: restored.record,
+    event: envelope,
+    sourceRelay: restored.source.sourceRelay,
+  });
+  return restored.descriptor;
+}
+
+async function importBrowserOracleBackupRecord(
+  input: unknown,
+  store: CreatorStore,
+  authenticatedEnvelope?: {
+    record: OracleBackupRecord;
+    event: unknown;
+    sourceRelay: string;
+  },
+) {
   try {
     const encoded = await encodeOracleBackup(input, browserOracleBackupValidator);
     const record = JSON.parse(encoded) as OracleBackupRecord;
@@ -125,11 +168,14 @@ export async function importBrowserOracleBackup(
     };
     const core = await requireOracleCore(record.oraclePubkey);
     return await store.getState().withOracleMutation(async (locked) => {
-      await locked.retainImportMetadata({
-        binding,
-        announcementHex: record.authority.announcementTlvHex,
-        destinations: record.destinations,
-      });
+      await locked.retainImportMetadata(
+        {
+          binding,
+          announcementHex: record.authority.announcementTlvHex,
+          destinations: record.destinations,
+        },
+        authenticatedEnvelope,
+      );
       await core.import_enum_authority(JSON.stringify(record.authority));
       await reconcileBrowserOraclePublication({
         binding,
@@ -143,6 +189,7 @@ export async function importBrowserOracleBackup(
       return owner;
     });
   } catch (error) {
+    if (error instanceof OracleBackupDeliveryError) throw error;
     if (error instanceof OracleBackupError && error.reason === "oversized") throw error;
     throw new OracleBackupError("invalid-record");
   }

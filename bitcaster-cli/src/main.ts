@@ -689,6 +689,107 @@ function registerMarketCommand(program: Command): Command {
     })
 
   market
+    .command('oracle-backup-list')
+    .description(
+      'Discover safe encrypted oracle backup metadata. History depends on relay retention.',
+    )
+    .option('--relay <url>', 'Scan one selected relay instead of configured relays')
+    .option('--cursor <json>', 'Continue a bound relay discovery page')
+    .action(async (options: { relay?: string; cursor?: string }) => {
+      let cursor: import('@bitcaster-market/client-sdk').OracleBackupScanCursor | undefined
+      if (options.cursor !== undefined) {
+        try {
+          cursor = JSON.parse(options.cursor)
+        } catch {
+          throwValidation('Backup cursor must be valid JSON.')
+        }
+      }
+      await printDaemonResult(
+        callDaemon({
+          method: 'market.oracle-backup-list',
+          params: {
+            ...(options.relay === undefined ? {} : { relay: options.relay }),
+            ...(cursor === undefined ? {} : { cursor }),
+          },
+        }),
+      )
+    })
+  market
+    .command('oracle-backup-restore')
+    .description(
+      'Refetch and restore one exact encrypted oracle backup with the matching local key.',
+    )
+    .requiredOption('--event-id <id>', 'Exact encrypted backup event ID')
+    .requiredOption('--relay <url>', 'Source relay URL')
+    .action(async (options: { eventId: string; relay: string }) => {
+      await printDaemonResult(
+        callDaemon({
+          method: 'market.oracle-backup-restore',
+          params: { eventId: options.eventId, relay: options.relay },
+        }),
+      )
+    })
+  market
+    .command('oracle-backup-status [conditionId]')
+    .description(
+      'Show durable backup progress for one local oracle or a bounded page of local owners.',
+    )
+    .option(
+      '--cursor <conditionId>',
+      'Continue after the last condition ID from a local status page',
+    )
+    .option(
+      '--limit <count>',
+      'Local status page size from 1 to 128 (default 32)',
+      parseSafeIntegerOption('status page limit'),
+    )
+    .action(
+      async (conditionId: string | undefined, options: { cursor?: string; limit?: number }) => {
+        if (
+          conditionId !== undefined &&
+          (options.cursor !== undefined || options.limit !== undefined)
+        )
+          throwUsage('--cursor and --limit require status without a condition ID.')
+        if (options.cursor !== undefined && !/^[0-9a-f]{64}$/.test(options.cursor))
+          throwValidation(
+            'Status cursor must be a 64-character lowercase hexadecimal condition ID.',
+          )
+        if (options.limit !== undefined && (options.limit < 1 || options.limit > 128))
+          throwValidation('Status page limit must be from 1 to 128.')
+        await printDaemonResult(
+          callDaemon({
+            method: 'market.oracle-backup-status',
+            params:
+              conditionId === undefined
+                ? {
+                    ...(options.cursor === undefined ? {} : { cursor: options.cursor }),
+                    ...(options.limit === undefined ? {} : { limit: options.limit }),
+                  }
+                : { conditionId },
+          }),
+        )
+      },
+    )
+  market
+    .command('oracle-backup-retry <conditionId>')
+    .description(
+      'Retry saved backup bytes, or prepare a pending backup with its matching local key.',
+    )
+    .action(async (conditionId: string) => {
+      await printDaemonResult(
+        callDaemon({ method: 'market.oracle-backup-retry', params: { conditionId } }),
+      )
+    })
+  market
+    .command('announcement-republish <conditionId>')
+    .description('Republish the exact saved public oracle announcement to its original relays.')
+    .action(async (conditionId: string) => {
+      await printDaemonResult(
+        callDaemon({ method: 'market.announcement-republish', params: { conditionId } }),
+      )
+    })
+
+  market
     .command('resolution-status <conditionId>')
     .description('Show saved native oracle resolution and independent delivery progress.')
     .action(async (conditionId: string) => {
@@ -705,6 +806,8 @@ function registerMarketCommand(program: Command): Command {
     .option('--outcome <label>', 'Sign an outcome for a market created by this native profile')
     .option('--explanation <text|@file>', 'Optional plain-text explanation for a native outcome')
     .option('--retry', 'Retry the exact saved native oracle publication without signing')
+    .option('--relay-only', 'Publish a native outcome or exact retry without contacting the engine')
+    .option('--republish', 'With --retry, send the exact saved attestation again even if confirmed')
     .option('--trust-engine-url', 'Trust the configured engine URL without prompting')
     .option('--dry-run', 'Validate and print an unsigned close template without calling the daemon')
     .addHelpText(
@@ -723,9 +826,18 @@ function registerMarketCommand(program: Command): Command {
       }
       if (options.explanation !== undefined && options.outcome === undefined)
         throwUsage('--explanation requires --outcome.')
-      await ensureTrustedAuthedEngineUrl(options.trustEngineUrl === true)
+      if (options.relayOnly === true && options.attestation !== undefined)
+        throwUsage('--relay-only requires --outcome or --retry.')
+      if (options.republish === true && options.retry !== true)
+        throwUsage('--republish requires --retry.')
+      if (options.relayOnly !== true)
+        await ensureTrustedAuthedEngineUrl(options.trustEngineUrl === true)
       if (options.retry === true) {
-        const params = { conditionId: options.conditionId }
+        const params = {
+          conditionId: options.conditionId,
+          ...(options.relayOnly === true ? { relayOnly: true } : {}),
+          ...(options.republish === true ? { republish: true } : {}),
+        }
         if (isDryRun(options)) {
           printDryRun(params)
           return
@@ -738,6 +850,7 @@ function registerMarketCommand(program: Command): Command {
         const params = {
           conditionId: options.conditionId,
           outcome: options.outcome,
+          ...(options.relayOnly === true ? { relayOnly: true } : {}),
           ...(options.explanation === undefined
             ? {}
             : { explanation: await readOracleExplanationOption(options.explanation) }),
@@ -808,6 +921,8 @@ interface MarketCloseOptions {
   outcome?: string
   explanation?: string
   retry?: boolean
+  relayOnly?: boolean
+  republish?: boolean
   trustEngineUrl?: boolean
   dryRun?: boolean
 }

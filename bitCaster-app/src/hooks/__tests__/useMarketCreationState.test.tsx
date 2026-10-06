@@ -18,6 +18,7 @@ import i18n from "@/i18n";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router";
 import { useSettingsStore } from "@/stores/settings";
+import { requestBrowserOracleBackup } from "@/lib/browserOracleBackupDelivery";
 import { useMarketDraftStore, defaultDraft } from "@/stores/marketDraft";
 
 const {
@@ -230,6 +231,9 @@ vi.mock("@/lib/nostr", () => ({
 }));
 
 // Real WASM and the portable limit are covered by the browser creation adapter tests.
+vi.mock("@/lib/browserOracleBackupDelivery", () => ({
+  requestBrowserOracleBackup: vi.fn(),
+}));
 vi.mock("@/lib/browserOracleBackup", () => ({
   preflightBrowserOracleCreation: vi.fn(async () => {}),
 }));
@@ -1513,6 +1517,7 @@ describe("useMarketCreationState – onCreateMarket", () => {
     // `createdMarketConditionId`.
     expect(result.current.createdMarketConditionId).toBe(conditionId);
     expect(result.current.createdMarketDivisibility).toBe(1_000);
+    expect(requestBrowserOracleBackup).toHaveBeenCalledWith(conditionId);
     expect(mockNavigate).not.toHaveBeenCalled();
   });
 
