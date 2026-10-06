@@ -173,6 +173,8 @@ the tokens were not spent. See [settlement and recovery](/user-guide/core-concep
 ### Using the browser
 
 Claim checks evidence from the intended oracle when that evidence is available.
+The client can reuse verified evidence for the same reported outcome.
+A changed outcome needs new verification or the unverified warning below.
 If the evidence is missing, unavailable, or invalid, the app shows this warning:
 “The mint reports this outcome, but we have not verified evidence from the intended oracle.”
 You can still claim. The wallet must verify each received proof before it records

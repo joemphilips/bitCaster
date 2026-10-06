@@ -63,6 +63,12 @@ If settlement does not complete, the authorized funds can become refundable
 after the authorization expires. A timeout alone does not make them available
 to spend. The wallet must check the existing settlement and refund conditions.
 
+Expiry reclaim unlocks the original asset. Regular ecash keeps its currency unit.
+Conditional tokens keep their condition and outcome collection.
+The mint's swap fee still applies. The protocol calls this operation `refund`.
+The mint operator's discretionary compensation policy is separate.
+See [market resolution](/user-guide/core-concepts/resolution/).
+
 The web app keeps wallet alerts until you dismiss them. Use **Next** to read
 more alerts without dismissing an unresolved alert. Use **First alerts** to
 return to the start. Dismissing an alert does not stop recovery or delete funds.
