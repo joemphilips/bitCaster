@@ -1,3 +1,4 @@
+import { creditedProofAmountMsat, writeNativeCompletedActivity } from './nativeCompletedActivity.ts'
 import { isDeepStrictEqual } from 'node:util'
 import {
   CheckStateEnum,
@@ -349,11 +350,23 @@ export class DurableWalletProofImportCoordinator {
       if (!applied) await this.#stage(prepared)
       await this.#apply(prepared, source.mintUrl, source.asset, proofs, source.fingerprint, applied)
     }
+    const completedAtMs = this.#now()
     await withDurableCustodyUnitOfWork(
       this.#storage,
       this.#getFence(),
-      this.#now(),
-      (database) => new WalletProofImportSqlite(database).complete(source.scopeId, source.rootId),
+      completedAtMs,
+      (database) => {
+        if (!new WalletProofImportSqlite(database).complete(source.scopeId, source.rootId)) return
+        writeNativeCompletedActivity(database, {
+          scopeId: source.scopeId,
+          sourceKind: 'outcome-import',
+          sourceId: source.rootId,
+          type: 'deposit',
+          amountMsat: creditedProofAmountMsat(source.proofs, source.asset.unit),
+          completedAtMs,
+          txId: source.rootId,
+        })
+      },
       this.#transactionOptions(),
     )
     return true

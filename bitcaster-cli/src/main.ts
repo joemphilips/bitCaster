@@ -60,6 +60,8 @@ import {
   DAEMON_MARKET_WATCH_CONDITIONS_MAX,
   validateDaemonWatchCommand,
   validateWalletActivityParams,
+  validateWalletActivitySyncParams,
+  DAEMON_ACTIVITY_SYNC_ROWS_MAX,
 } from '@bitcaster-market/daemon/protocol'
 import { applySavedSettings, registerSettingsCommands } from './settingsCommands.ts'
 import type {
@@ -1344,6 +1346,7 @@ function registerWalletCommand(program: Command): void {
 
   registerWalletRequestCommand(wallet)
   registerWalletActivityCommand(wallet)
+  registerWalletActivitySyncCommand(wallet)
 
   wallet
     .command('watch')
@@ -1853,6 +1856,48 @@ function registerWalletCommand(program: Command): void {
     .addHelpText('after', '\nExample:\n  bitcaster-cli wallet recover')
     .action(async () => {
       await printDaemonResult(callDaemon({ method: 'wallet.recover' }))
+    })
+}
+
+function registerWalletActivitySyncCommand(wallet: Command): void {
+  wallet
+    .command('activity-sync')
+    .description(
+      'Import encrypted relay Activity for the selected wallet. Publish only with --publish.',
+    )
+    .option('--wallet-id <walletId>', 'Require the selected canonical wallet ID')
+    .option(
+      '--limit <count>',
+      `Native rows in the sync window, 1..${DAEMON_ACTIVITY_SYNC_ROWS_MAX} (default: 100)`,
+    )
+    .option('--publish', 'Publish the bounded merged snapshot as an explicit best-effort action')
+    .allowExcessArguments(false)
+    .addHelpText(
+      'after',
+      '\nExamples:\n  bitcaster-cli wallet activity-sync\n  bitcaster-cli wallet activity-sync --limit 50 --publish\n\nUses the selected enabled signer and configured relays. Default sync imports only.\nEach relay envelope contains at most 500 rows. Select at most 16 configured relays.\nNative history remains retained locally.\nPublication preserves observed other-wallet and legacy rows, or refuses an unsafe snapshot.\nThe encrypted payload is limited to 65535 bytes. Overflow refuses publication.\nThe JSON result separates imports from relay acknowledgements and reports truncation.\nPublication has a remaining read-to-publish race. Sync does not promise complete history.\nUse wallet activity for an offline local read.',
+    )
+    .action(async (options: { walletId?: string; limit?: string; publish?: boolean }) => {
+      let params: ReturnType<typeof validateWalletActivitySyncParams>
+      try {
+        params = validateWalletActivitySyncParams({
+          ...(options.walletId === undefined ? {} : { walletId: options.walletId }),
+          ...(options.limit === undefined
+            ? {}
+            : { limit: /^\d+$/.test(options.limit) ? Number(options.limit) : NaN }),
+          ...(options.publish === undefined ? {} : { publish: options.publish }),
+        })
+      } catch {
+        throwUsage('Invalid Wallet Activity sync options')
+      }
+      const command: DaemonCommand = {
+        method: 'wallet.activity-sync',
+        ...(Object.keys(params).length === 0 ? {} : { params }),
+      }
+      if (globalDryRun) {
+        printDryRun(command)
+        return
+      }
+      await printDaemonResult(callDaemon(command))
     })
 }
 

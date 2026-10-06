@@ -1,3 +1,7 @@
+import {
+  creditedProofAmountMsat,
+  writeNativeRecoveredClaimActivity,
+} from './nativeCompletedActivity.ts'
 import type { Proof } from '@cashu/cashu-ts'
 import { prepareDurableCustodyVerifiedMintResult } from '@bitcaster-market/client-sdk/durableCustodyMintResult'
 // Ported-From: da98db6
@@ -153,8 +157,8 @@ export class SeedRecoverySqliteStore implements EmergencySeedRecoveryCasStore {
         )
           throw new Error('retained payout state binding is foreign')
         const store = new DurableCustodySqliteStore(database)
-        let imported = 0
-        for (const { material, dleqState } of verified.proofs) {
+        const admitted: { proofId: string; proof: Proof }[] = []
+        for (const { material, dleqState, proof } of verified.proofs) {
           const row = createCustodyProofSqliteRowFromMaterial({
             scopeId: this.#fence.scopeId,
             normalizedMint: retained.target.mintUrl,
@@ -185,7 +189,7 @@ export class SeedRecoverySqliteStore implements EmergencySeedRecoveryCasStore {
             throw new Error('retained payout conflicts with existing proof authority')
           if (existing === null) {
             store.putProofCas(row, null)
-            imported += 1
+            admitted.push({ proofId: row.proofId, proof })
           }
           admitRecoveredWalletProofFromDatabase(database, {
             mintUrl: retained.target.mintUrl,
@@ -194,7 +198,18 @@ export class SeedRecoverySqliteStore implements EmergencySeedRecoveryCasStore {
             nowMs: this.#observedAtMs,
           })
         }
-        return imported
+        if (admitted.length > 0)
+          writeNativeRecoveredClaimActivity(database, {
+            scopeId: this.#fence.scopeId,
+            targetOperationId: retained.target.operationId,
+            admittedProofIds: admitted.map(({ proofId }) => proofId),
+            amountMsat: creditedProofAmountMsat(
+              admitted.map(({ proof }) => proof),
+              'msat',
+            ),
+            completedAtMs: this.#observedAtMs,
+          })
+        return admitted.length
       },
       { injectFault: this.#injectFault },
     )

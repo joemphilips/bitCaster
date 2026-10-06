@@ -465,6 +465,10 @@
     "payout_claimed": "Payout Claimed",
     "creator_fee_claimed": "Creator Fee"
   },
+  "activityClaimRecovery": {
+    "label": "Claim payout recovered",
+    "originalFailed": "Original Claim remains failed ({{code}})."
+  },
   "activityTrade": {
     "outcomeToken": "Outcome {{outcomeId}}",
     "complementToken": "Complement of {{outcomeId}}",

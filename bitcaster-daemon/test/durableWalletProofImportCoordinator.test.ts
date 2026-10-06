@@ -1,3 +1,4 @@
+import { readActivityRows } from './nativeActivityTestHelpers.ts'
 import assert from 'node:assert/strict'
 import { mkdtemp, rm, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -66,6 +67,7 @@ for (const later of ['spent', 'reserved', 'revised', 'retired'] as const) {
     const f = await fixture()
     try {
       await f.crashAfterFirstPage()
+      assert.equal((await readActivityRows(f.directory)).length, 0)
       const before = await f.query((db) =>
         db.prepare('SELECT * FROM custody_proofs ORDER BY proof_id').all(),
       )
@@ -134,6 +136,12 @@ for (const later of ['spent', 'reserved', 'revised', 'retired'] as const) {
       assert.equal(result.recoveredCount, 1)
       assert.equal(result.pendingCount, 0)
       assert.equal(checked, 1)
+      const activity = await readActivityRows(f.directory)
+      assert.equal(activity.length, 1)
+      assert.equal(activity[0]?.item.amountSubunits, 33)
+      assert.equal(activity[0]?.item.type, 'deposit')
+      assert.equal(activity[0]?.item.lightningInvoice, null)
+      assert.equal(activity[0]?.item.walletId, f.fence.scopeId.slice('custody:wallet:'.length))
       const after = await f.query((db) =>
         db.prepare('SELECT * FROM custody_proofs ORDER BY proof_id').all(),
       )
@@ -165,6 +173,7 @@ for (const later of ['spent', 'reserved', 'revised', 'retired'] as const) {
         await f.importAll(restarted, async () => {
           throw new Error('applied pages must not call the mint')
         })
+      assert.deepEqual(await readActivityRows(f.directory), activity)
     } finally {
       await f.close()
     }
@@ -183,6 +192,7 @@ for (const remaining of [
     const f = await fixture()
     try {
       await f.crashAfterFirstPage()
+      assert.equal((await readActivityRows(f.directory)).length, 0)
       const saved = await f.query((db) =>
         db.prepare('SELECT * FROM custody_proofs ORDER BY proof_id').all(),
       )
@@ -232,6 +242,7 @@ for (const remaining of [
       assert.equal(result.recoveredCount, 0)
       assert.equal(result.pending.length, 1)
       assert.equal(result.pendingCount, 1)
+      assert.equal((await readActivityRows(f.directory)).length, 0)
       assert.equal(
         isDeepStrictEqual(
           await f.query((db) => db.prepare('SELECT * FROM custody_proofs ORDER BY proof_id').all()),

@@ -160,6 +160,124 @@ Keep the cursor unchanged. Stop when `nextCursor` is `null`.
 Fields ending in `Sats` use sats. Fields ending in `Msat` use msat.
 Convert units before combining amounts. 1,000 msat is 1 sat.
 
+### Read Wallet Activity
+
+Read retained display history for the selected wallet:
+
+```bash
+bitcaster-cli wallet activity --page-size 25
+bitcaster-cli wallet activity --cursor <nextCursor> --page-size 25
+```
+
+This local read works offline. It does not contact the mint, engine, or relays.
+The default page size is 25. The maximum is 50.
+Pass `nextCursor` unchanged. Stop when it is `null`.
+The cursor belongs to this wallet and profile. Another profile cannot use it.
+Pages follow insertion order, newest first. The first page fixes page membership.
+Start again without a cursor to include later entries.
+An existing entry's status can change during paging.
+
+The JSON response has this shape:
+
+```json
+{
+  "ok": true,
+  "result": {
+    "items": [
+      {
+        "id": "example-deposit-id",
+        "walletId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "type": "deposit",
+        "amountSubunits": 1234,
+        "baseAsset": "sat",
+        "date": "2026-10-06T00:00:00.000Z",
+        "status": "completed",
+        "txId": null,
+        "lightningInvoice": null
+      }
+    ],
+    "nextCursor": null,
+    "hasMore": false
+  }
+}
+```
+
+`amountSubunits` is an integer in msats, including when `baseAsset` is `sat`.
+The example amount is 1.234 sats. `id` is a stable display identity.
+Types include `deposit`, `withdrawal`, `Buy`, `Sell`, and `payout_claimed`.
+Statuses are `pending`, `completed`, and `Failed`; casing is significant.
+`txId` and `lightningInvoice` are `null` when unavailable.
+Applicable optional fields include `marketId`, `marketTitle`, `positionId`,
+`failureReason`, and `tradeDetails`. Do not infer missing values.
+Confirmed trade details include `orderId` when known, `fillId`, `outcomeId`,
+`tokenSide`, `faceAmountSubunits`, and `divisibility`.
+
+Completed deposits and Claims use verified credited amounts.
+A completed Lightning withdrawal shows its paid principal, excluding fees.
+An outgoing Cashu token stays pending until all its proofs are spent or a
+reclaim completes.
+If you reclaim the whole token, its withdrawal becomes `Failed` with zero
+principal and the reason `Cancelled; funds reclaimed`.
+After a partial reclaim, the completed amount is only the principal the
+recipient spent. Reclaim fees do not increase that amount. Reclaiming your own
+funds does not create a deposit entry. Bot funding and Score transfers are
+excluded from these withdrawal rows.
+Recovery reuses the same source identity. A retry does not add another entry.
+
+`Claim payout recovered` reports only newly credited payout proofs.
+Its `claimRecovery` object contains `kind: "retained-claim-payout"`,
+`originalOperationId`, `originalStatus: "Failed"`, and
+`originalFailureCode: 13015`. The completed status describes recovery.
+The original Claim remains failed. Already retained or spent proofs do not
+create another credit entry. The verified historical payout can therefore be
+larger than the recovered-credit amount.
+When a source has no payment timestamp, `date` is the first local observation
+of its completion. It is not proof of the time the mint processed it.
+
+A custom GUI or TUI can call `wallet activity --page-size 25`, render
+`result.items` keyed by `id`, and pass `nextCursor` when the user requests more.
+Refresh from the first page to show new activity.
+Use `--wallet-id <wallet-id>` to require the selected wallet explicitly.
+The native feed has no 500-row browser-cache limit.
+Activity does not authorize spending or provide a complete lifetime audit.
+Use wallet balance and operation commands to check funds and recovery status.
+
+### Sync encrypted Activity with relays
+
+```bash
+bitcaster-cli wallet activity-sync
+bitcaster-cli wallet activity-sync --limit 50 --publish
+```
+
+The default command imports Activity for the selected wallet.
+It uses the enabled Nostr signer and configured relays.
+Use `--wallet-id <wallet-id>` to require that wallet explicitly.
+The local `wallet activity` command does not contact relays.
+
+Publication requires `--publish`. The command merges a local window with the
+observed remote snapshots. `--limit` selects 1–500 local rows; the default is 100. Local retained history is not truncated. Each remote envelope has at most
+500 rows. The command supports at most 16 configured relays.
+
+Publication preserves observed other-wallet and legacy rows, or refuses the
+snapshot. Unknown fields, incomplete relay reads, a changed remote event, a
+remote timestamp that is not older, or an oversized merged snapshot can prevent
+publication. The encrypted event contains at most 65,535 bytes of plaintext.
+The command does not discard other-wallet rows to fit that limit.
+
+Read `importedRows`, `queryComplete`, and `window` separately from `publication`.
+An import can succeed when publication is refused or fails.
+`window.localTruncated` describes the selected window, not deleted local data.
+`publication.status` is `not-requested`, `refused`, `acknowledged`, `partial`,
+or `failed`. `publication.reason` explains a refusal.
+`publication.acknowledgedRelayCount` counts relay acknowledgements.
+An acknowledgement does not prove durable storage or complete history.
+
+Another client can replace the event between the final read and publication,
+or afterward. `publication.remainingReadPublishRace` reports this limitation
+when publication is attempted. `completeHistory` is always false.
+This encrypted display history does not back up spending proofs or authorize
+funds recovery.
+
 ### Watch live market and wallet values
 
 Start the configured daemon, then run one of these commands:

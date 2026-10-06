@@ -20,6 +20,13 @@ export interface TradeActivityDetails {
   divisibility: MarketDivisibility
 }
 
+export interface ClaimRecoveryDetails {
+  readonly kind: 'retained-claim-payout'
+  readonly originalOperationId: string
+  readonly originalStatus: 'Failed'
+  readonly originalFailureCode: 13015
+}
+
 export interface ActivityItem {
   id: string
   /** Missing only on legacy history whose wallet cannot be inferred. */
@@ -38,6 +45,8 @@ export interface ActivityItem {
   positionId?: string
   /** Exact confirmed fill values. Old manually added Buy/Sell rows may omit them. */
   tradeDetails?: TradeActivityDetails
+  /** Completed recovery credit. The original Claim remains failed. */
+  claimRecovery?: ClaimRecoveryDetails
 }
 
 const ACTIVITY_TYPES = new Set<ActivityType>([
@@ -81,12 +90,36 @@ function decodeTradeDetails(value: unknown): TradeActivityDetails | null {
   }
 }
 
+function decodeClaimRecovery(value: unknown): ClaimRecoveryDetails | null {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null
+  const recovery = value as Record<string, unknown>
+  if (
+    Object.keys(recovery).length !== 4 ||
+    recovery.kind !== 'retained-claim-payout' ||
+    typeof recovery.originalOperationId !== 'string' ||
+    recovery.originalOperationId.trim() !== recovery.originalOperationId ||
+    recovery.originalOperationId.length === 0 ||
+    new TextEncoder().encode(recovery.originalOperationId).length > 1024 ||
+    recovery.originalStatus !== 'Failed' ||
+    recovery.originalFailureCode !== 13015
+  )
+    return null
+  return {
+    kind: 'retained-claim-payout',
+    originalOperationId: recovery.originalOperationId,
+    originalStatus: 'Failed',
+    originalFailureCode: 13015,
+  }
+}
+
 /** Decode current and legacy persisted items without assigning an unknown wallet. */
 export function decodeActivityItem(value: unknown): ActivityItem | null {
   if (typeof value !== 'object' || value === null) return null
   const item = value as Record<string, unknown>
   const amountValue = Object.hasOwn(item, 'amountSubunits') ? item.amountSubunits : item.amountSats
   const hasWalletId = Object.hasOwn(item, 'walletId')
+  const hasClaimRecovery = Object.hasOwn(item, 'claimRecovery')
+  const claimRecovery = hasClaimRecovery ? decodeClaimRecovery(item.claimRecovery) : undefined
   const hasTradeDetails = Object.hasOwn(item, 'tradeDetails')
   const tradeDetails = hasTradeDetails ? decodeTradeDetails(item.tradeDetails) : undefined
   if (
@@ -107,6 +140,12 @@ export function decodeActivityItem(value: unknown): ActivityItem | null {
     (item.positionId !== undefined && typeof item.positionId !== 'string') ||
     (hasWalletId &&
       (typeof item.walletId !== 'string' || !CANONICAL_WALLET_ID.test(item.walletId))) ||
+    (hasClaimRecovery &&
+      (!claimRecovery ||
+        item.type !== 'payout_claimed' ||
+        item.status !== 'completed' ||
+        amountValue <= 0 ||
+        !hasWalletId)) ||
     (hasTradeDetails &&
       (tradeDetails === undefined ||
         tradeDetails === null ||
@@ -135,6 +174,7 @@ export function decodeActivityItem(value: unknown): ActivityItem | null {
     ...(typeof item.marketTitle === 'string' ? { marketTitle: item.marketTitle } : {}),
     ...(typeof item.positionId === 'string' ? { positionId: item.positionId } : {}),
     ...(tradeDetails ? { tradeDetails } : {}),
+    ...(claimRecovery ? { claimRecovery } : {}),
   }
 }
 
@@ -166,6 +206,13 @@ function activityItemEqual(a: ActivityItem, b: ActivityItem): boolean {
     a.marketId === b.marketId &&
     a.marketTitle === b.marketTitle &&
     a.positionId === b.positionId &&
+    (a.claimRecovery === undefined
+      ? b.claimRecovery === undefined
+      : b.claimRecovery !== undefined &&
+        a.claimRecovery.kind === b.claimRecovery.kind &&
+        a.claimRecovery.originalOperationId === b.claimRecovery.originalOperationId &&
+        a.claimRecovery.originalStatus === b.claimRecovery.originalStatus &&
+        a.claimRecovery.originalFailureCode === b.claimRecovery.originalFailureCode) &&
     (a.tradeDetails === undefined
       ? b.tradeDetails === undefined
       : b.tradeDetails !== undefined &&

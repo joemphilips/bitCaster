@@ -160,3 +160,135 @@ test('a feed page uses the wallet sequence index without a temporary sort', () =
     database.close()
   }
 })
+
+test('production page reads stay bounded as sparse wallet history grows from one hundred to ten thousand rows', (t) => {
+  const { database, activity } = createStore()
+  let queries = 0
+  let returnedRows = 0
+  let observingPage = false
+  const prepare = database.prepare.bind(database)
+  t.mock.method(database, 'prepare', (sql: string) => {
+    const statement = prepare(sql)
+    if (!observingPage) return statement
+    for (const method of ['get', 'all'] as const) {
+      const execute = statement[method].bind(statement)
+      t.mock.method(statement, method, (...parameters: Parameters<typeof execute>) => {
+        queries++
+        const result = execute(...parameters)
+        returnedRows += Array.isArray(result) ? result.length : result === undefined ? 0 : 1
+        return result
+      })
+    }
+    return statement
+  })
+  const observed: { first: number; next: number }[] = []
+  let retainedRows = 0
+  try {
+    for (const target of [100, 10_000]) {
+      observingPage = false
+      while (retainedRows < target) {
+        const id = `history-${++retainedRows}`
+        activity.upsert({
+          walletId: WALLET_A,
+          item: item(WALLET_A, id),
+          origin: 'native',
+          sourceId: id,
+        })
+        for (let index = 0; index < 9; index++) {
+          const foreignId = `foreign-${retainedRows}-${index}`
+          activity.upsert({
+            walletId: WALLET_B,
+            item: item(WALLET_B, foreignId),
+            origin: 'native',
+            sourceId: foreignId,
+          })
+        }
+      }
+      observingPage = true
+      queries = returnedRows = 0
+      const first = activity.page({ walletId: WALLET_A, pageSize: 50 })
+      const firstQueries = queries
+      assert.equal(first.items.length, 50)
+      assert.equal(first.hasMore, true)
+      assert.ok(first.items.every((row) => row.walletId === WALLET_A))
+      assert.ok(firstQueries <= 4, 'one page must not issue reads for each retained item')
+      assert.ok(
+        returnedRows <= 54,
+        'one page may read only its items, lookahead, and fixed metadata',
+      )
+      queries = returnedRows = 0
+      const next = activity.page({ walletId: WALLET_A, pageSize: 50, cursor: first.nextCursor })
+      assert.equal(next.items.length, 50)
+      assert.ok(queries <= 4)
+      assert.ok(returnedRows <= 54)
+      assert.equal(next.items[0]?.id, `history-${target - 50}`)
+      observed.push({ first: firstQueries, next: queries })
+    }
+    assert.deepEqual(observed[1], observed[0], 'query count must not grow with retained history')
+    t.diagnostic(
+      `Page read counts for retained histories 100 and 10000: ${JSON.stringify(observed)}`,
+    )
+  } finally {
+    database.close()
+  }
+})
+
+test('rejects a 16 KiB plus one UTF-8 and escaped row without changing rows or sequence', () => {
+  const { database, activity } = createStore()
+  try {
+    activity.upsert({
+      walletId: WALLET_A,
+      item: item(WALLET_A, 'before'),
+      origin: 'native',
+      sourceId: 'before',
+    })
+    const before = database
+      .prepare(
+        'SELECT sequence, activity_id, item_json FROM daemon_activity_feed ORDER BY sequence',
+      )
+      .all()
+    const oversized: ActivityItem = {
+      ...item(WALLET_A, 'too-large'),
+      marketTitle: '\u0001'.repeat(1200) + '雪'.repeat(2000),
+    }
+    const oversizedBytes = 16 * 1024 + 1
+    oversized.marketTitle += 'x'.repeat(
+      oversizedBytes - Buffer.byteLength(JSON.stringify(oversized)),
+    )
+    assert.equal(Buffer.byteLength(JSON.stringify(oversized)), oversizedBytes)
+    assert.throws(
+      () =>
+        activity.upsert({
+          walletId: WALLET_A,
+          item: oversized,
+          origin: 'native',
+          sourceId: 'too-large',
+        }),
+      /exceeds the byte limit/,
+    )
+    assert.deepEqual(
+      database
+        .prepare(
+          'SELECT sequence, activity_id, item_json FROM daemon_activity_feed ORDER BY sequence',
+        )
+        .all(),
+      before,
+    )
+    activity.upsert({
+      walletId: WALLET_A,
+      item: item(WALLET_A, 'after'),
+      origin: 'native',
+      sourceId: 'after',
+    })
+    const sequence = database
+      .prepare('SELECT sequence FROM daemon_activity_feed WHERE activity_id = ?')
+      .get('after')!.sequence
+    assert.equal(sequence, Number(before[0]!.sequence) + 1)
+    assert.deepEqual(
+      activity.page({ walletId: WALLET_A }).items.map((row) => row.id),
+      ['after', 'before'],
+    )
+  } finally {
+    database.close()
+  }
+})

@@ -1,3 +1,4 @@
+import { syncNativeActivity, type NativeActivitySyncOptions } from './nativeActivitySync.ts'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { randomUUID } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
@@ -157,7 +158,7 @@ import { readDaemonAvailableRegularMsatBalance } from './walletHoldings.ts'
 import { readDaemonWalletBalance } from './walletBalance.ts'
 import { NativeActivitySqlite } from './nativeActivitySqlite.ts'
 import { createDaemonStateSqliteSession } from './stateSqlite.ts'
-import { validateWalletActivityParams } from './protocol.ts'
+import { validateWalletActivityParams, validateWalletActivitySyncParams } from './protocol.ts'
 import { deriveDurableCustodyWalletId } from '@bitcaster-market/client-sdk/durableCustody'
 import type { CustodyScopeFence } from './profileFencing.ts'
 import {
@@ -300,6 +301,7 @@ class InsufficientParticipationScoreBackingError extends Error {
 }
 
 export interface DispatchDependencies extends WalletOpsDependencies {
+  nativeActivitySyncOptions?: NativeActivitySyncOptions
   nativeOracleAccessPorts?: NativeOracleAccessRpcPorts
   nativeOraclePublicationPorts?: NativeOraclePublicationPorts
   nativeOracleHelper?: NativeOracleHelper
@@ -450,6 +452,43 @@ export async function handleRequest(
   }
   if (wantsWatch)
     return writeJson(res, 400, { ok: false, error: 'explicit daemon watch command required' })
+
+  if (command.method === 'wallet.activity-sync') {
+    const controller = new AbortController()
+    const abort = () => controller.abort()
+    const close = () => {
+      if (!res.writableEnded) abort()
+    }
+    req.once('aborted', abort)
+    res.once('close', close)
+    if (req.aborted || res.destroyed) controller.abort()
+    try {
+      const response = await dispatch(command, {
+        ...deps,
+        nativeActivitySyncOptions: {
+          ...deps.nativeActivitySyncOptions,
+          signal:
+            deps.nativeActivitySyncOptions?.signal === undefined
+              ? controller.signal
+              : AbortSignal.any([controller.signal, deps.nativeActivitySyncOptions.signal]),
+        },
+      })
+      if (!controller.signal.aborted) return writeJson(res, 200, response)
+      return
+    } catch {
+      if (!controller.signal.aborted)
+        return writeJson(res, 500, {
+          ok: false,
+          code: 'wallet-activity-sync-failed',
+          error:
+            'Wallet Activity sync failed. Check the current signer, wallet, and relay selection.',
+        })
+      return
+    } finally {
+      req.off('aborted', abort)
+      res.off('close', close)
+    }
+  }
 
   try {
     return writeJson(res, 200, await dispatch(command, deps))
@@ -1169,6 +1208,8 @@ export async function dispatch(
     }
     case 'wallet.activity':
       return dispatchWalletActivity(command.params)
+    case 'wallet.activity-sync':
+      return dispatchWalletActivitySync(command.params, deps)
     case 'markets.query': {
       const profile = await readProfile()
       if (!profile) {
@@ -2001,6 +2042,52 @@ async function dispatchProtectedOrderSubmit(
       clientOrderId,
       operationId,
       orderId,
+    }
+  }
+}
+
+async function dispatchWalletActivitySync(
+  params: unknown,
+  deps: DispatchDependencies,
+): Promise<DaemonResponse> {
+  let request: ReturnType<typeof validateWalletActivitySyncParams>
+  try {
+    request = validateWalletActivitySyncParams(params)
+  } catch {
+    return {
+      ok: false,
+      code: 'invalid-wallet-activity-sync-request',
+      error: 'Wallet Activity sync request is invalid',
+    }
+  }
+  try {
+    if (!(await readProfile())) return { ok: false, error: 'daemon profile is not initialized' }
+    if (!deps.getCustodyFence)
+      return {
+        ok: false,
+        code: 'activity-sync-unavailable',
+        error: 'Wallet Activity sync requires the current profile owner',
+      }
+    if (!(await readSelectedDaemonSigner()).enabled)
+      return {
+        ok: false,
+        code: 'signer-disconnected',
+        error: 'Application signer is disconnected.',
+      }
+    return {
+      ok: true,
+      result: await syncNativeActivity(
+        profileDir(),
+        deps.getCustodyFence,
+        request,
+        deps.nativeActivitySyncOptions,
+      ),
+    }
+  } catch {
+    return {
+      ok: false,
+      code: 'wallet-activity-sync-failed',
+      error: 'Wallet Activity sync failed. Check the current signer, wallet, and relay selection.',
     }
   }
 }
@@ -3343,6 +3430,7 @@ function requiresApplicationSigner(method: DaemonCommand['method']): boolean {
     case 'wallet.removePosition':
     case 'wallet.operations':
     case 'wallet.activity':
+    case 'wallet.activity-sync':
     case 'wallet.recover':
     case 'order.list':
     case 'order.book':

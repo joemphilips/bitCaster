@@ -1,3 +1,4 @@
+import { readActivityForWallet, readActivityRows } from './nativeActivityTestHelpers.ts'
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
@@ -75,6 +76,25 @@ test('trusted conditional import, winner Claim, and ordinary Send admit exact sp
     const claimed = await claimDaemonPosition(fixture.common)
     assert.equal(claimed.legs[0]?.state, 'completed')
     assert.equal(claimed.legs[0]?.payoutAmountSubunits, 7)
+    const payouts = (await readActivityRows(fixture.directory)).filter(
+      (row) => row.item.type === 'payout_claimed',
+    )
+    assert.equal(payouts.length, 1)
+    assert.equal(payouts[0]?.item.amountSubunits, 7)
+    assert.equal(payouts[0]?.item.txId, claimed.legs[0]?.operationId)
+    assert.equal(payouts[0]?.item.lightningInvoice, null)
+    const page = await readActivityForWallet(
+      fixture.directory,
+      fixture.common.fence.scopeId.slice('custody:wallet:'.length),
+    )
+    assert.deepEqual(
+      page.find((item) => item.type === 'payout_claimed'),
+      payouts[0]?.item,
+    )
+    assert.equal(
+      payouts[0]?.item.walletId,
+      fixture.common.fence.scopeId.slice('custody:wallet:'.length),
+    )
     const database = await openDaemonStateSqlite(fixture.directory)
     try {
       const canonical = database
@@ -481,6 +501,12 @@ test('claim entry recovers a lost response after restart with the exact witness,
     fixture.wallet.loseResponse = true
     const first = await claimDaemonPosition(fixture.common)
     assert.equal(first.legs[0]?.state, 'pending')
+    assert.equal(
+      (await readActivityRows(fixture.directory)).filter(
+        (row) => row.item.type === 'payout_claimed',
+      ).length,
+      0,
+    )
     const operationId = first.legs[0]!.operationId
     const prepared = (await getProofOperation(operationId))!
     assert.equal(prepared.state, 'prepared')
@@ -511,6 +537,11 @@ test('claim entry recovers a lost response after restart with the exact witness,
     const second = await claimDaemonPosition(restarted)
     assert.equal(second.legs[0]?.operationId, operationId)
     assert.equal(second.legs[0]?.state, 'completed')
+    const activity = await readActivityRows(fixture.directory)
+    const payouts = activity.filter((row) => row.item.type === 'payout_claimed')
+    assert.equal(payouts.length, 1)
+    assert.equal(payouts[0]?.item.amountSubunits, 5)
+    assert.equal(payouts[0]?.item.txId, operationId)
     assert.equal(fixture.wallet.requests.length, 2)
     assert.equal(fixture.wallet.requestHash(), originalRequestHash)
     const completed = (await getProofOperation(operationId))!
@@ -529,6 +560,7 @@ test('claim entry recovers a lost response after restart with the exact witness,
     )
     assert.equal((await readState())!.wallet.proofs.length, payoutCount)
     assert.equal((await recoverDaemonPositionClaims(restarted)).pending.length, 0)
+    assert.deepEqual(await readActivityRows(fixture.directory), activity)
     await sendClaimProceeds({ ...fixture, common: restarted })
   } finally {
     await fixture.dispose()

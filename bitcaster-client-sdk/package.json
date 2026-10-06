@@ -7,6 +7,14 @@
     "node": ">=22"
   },
   "exports": {
+    "./outgoingCashuActivity": {
+      "types": "./dist/outgoingCashuActivity.d.ts",
+      "import": "./dist/outgoingCashuActivity.js"
+    },
+    "./privateNip78": {
+      "types": "./dist/privateNip78.d.ts",
+      "import": "./dist/privateNip78.js"
+    },
     "./activityLog": {
       "types": "./dist/activityLog.d.ts",
       "import": "./dist/activityLog.js"

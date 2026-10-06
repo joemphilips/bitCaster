@@ -50,6 +50,66 @@ export function validateWalletActivityParams(value: unknown): WalletActivityPara
   return params as WalletActivityParams
 }
 
+export const DAEMON_ACTIVITY_SYNC_ROWS_MAX = 500
+
+export interface WalletActivitySyncParams {
+  walletId?: string
+  limit?: number
+  publish?: boolean
+}
+
+export function validateWalletActivitySyncParams(value: unknown): WalletActivitySyncParams {
+  if (value === undefined) return {}
+  if (value === null || typeof value !== 'object' || Array.isArray(value))
+    throw new Error('Wallet Activity sync request is invalid')
+  const params = value as Record<string, unknown>
+  if (
+    Object.keys(params).some((key) => !['walletId', 'limit', 'publish'].includes(key)) ||
+    (params.walletId !== undefined &&
+      (typeof params.walletId !== 'string' || !/^[0-9a-f]{64}$/.test(params.walletId))) ||
+    (params.limit !== undefined &&
+      (typeof params.limit !== 'number' ||
+        !Number.isSafeInteger(params.limit) ||
+        params.limit < 1 ||
+        params.limit > DAEMON_ACTIVITY_SYNC_ROWS_MAX)) ||
+    (params.publish !== undefined && typeof params.publish !== 'boolean')
+  )
+    throw new Error('Wallet Activity sync request is invalid')
+  return params as WalletActivitySyncParams
+}
+
+export interface WalletActivitySyncResult {
+  readonly walletId: string
+  readonly importedRows: number
+  readonly unchangedRows: number
+  readonly nativeRowsKept: number
+  readonly ignoredRows: number
+  readonly invalidEnvelopes: number
+  readonly remoteEventId: string | null
+  readonly queryComplete: boolean
+  readonly completedRelayCount: number
+  readonly selectedRelayCount: number
+  readonly completeHistory: false
+  readonly window: {
+    readonly localLimit: number
+    readonly localRows: number
+    readonly localTruncated: boolean
+    readonly remoteRowsPerEnvelopeMax: 500
+    readonly remoteObservedRows: number
+    readonly relaySnapshotsMax: 16
+  }
+  readonly publication: {
+    readonly requested: boolean
+    readonly status: 'not-requested' | 'refused' | 'acknowledged' | 'partial' | 'failed'
+    readonly reason: string | null
+    readonly eventId: string | null
+    readonly plaintextBytes: number | null
+    readonly acknowledgedRelayCount: number
+    readonly bestEffort: true
+    readonly remainingReadPublishRace: boolean
+  }
+}
+
 export type DaemonWatchCommand =
   | { method: 'market.watch'; params: { conditionIds: string[] } | { liked: true } }
   | { method: 'wallet.watch'; params?: undefined }
@@ -240,6 +300,7 @@ export type DaemonCommand =
   | { method: 'wallet.removePosition'; params: { preview: WalletRemovePreview; acknowledge: true } }
   | { method: 'wallet.operations'; params?: { kind?: string; state?: string } }
   | { method: 'wallet.activity'; params?: WalletActivityParams }
+  | { method: 'wallet.activity-sync'; params?: WalletActivitySyncParams }
   | { method: 'wallet.recover'; params?: undefined }
   | { method: 'order.submit'; params: SubmitOrderParams }
   | { method: 'order.fee-preview'; params: OrderDraftParams }

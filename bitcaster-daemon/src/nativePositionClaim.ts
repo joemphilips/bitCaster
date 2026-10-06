@@ -1,3 +1,4 @@
+import { creditedProofAmountMsat, writeNativeCompletedActivity } from './nativeCompletedActivity.ts'
 import type { Proof, MintKeys } from '@cashu/cashu-ts'
 import type { DatabaseSync } from 'node:sqlite'
 import { isDeepStrictEqual } from 'node:util'
@@ -529,12 +530,24 @@ function claimOperationStore(
             ],
           })
         }
-        return completePositionClaimRedeemFromDatabase(
+        const completed = completePositionClaimRedeemFromDatabase(
           database,
           id,
           completion,
           context.observedAtMs,
         ) as CtfProofOperationRecord
+        const regular = completed.resultProofs?.regular
+        if (regular === undefined) throw new Error('position claim exact regular payout is missing')
+        writeNativeCompletedActivity(database, {
+          scopeId: context.fence.scopeId,
+          sourceKind: 'position-claim',
+          sourceId: id,
+          type: 'payout_claimed',
+          amountMsat: creditedProofAmountMsat(regular, 'msat'),
+          completedAtMs: context.observedAtMs,
+          txId: id,
+        })
+        return completed
       })
     },
     markProofOperationFailed: async (id, message, evidence) => {

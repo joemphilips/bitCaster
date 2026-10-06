@@ -237,3 +237,35 @@ test('confirmed-fill decoder rejects false identity and invalid exact trade deta
     assert.equal(decodeActivityItem(invalid), null)
   }
 })
+
+test('recovered Claim Activity codec preserves failed history and rejects false recovery annotations', async () => {
+  const recovery = {
+    kind: 'retained-claim-payout',
+    originalOperationId: 'claim-leg-one',
+    originalStatus: 'Failed',
+    originalFailureCode: 13015,
+  } as const
+  const recovered = item({ type: 'payout_claimed', amountSubunits: 8, claimRecovery: recovery })
+  assert.deepEqual(decodeActivityLogPayload(encodeActivityLogPayload([recovered])), [recovered])
+  assert.equal(
+    activityLogsEqual([recovered], [item({ ...recovered, claimRecovery: undefined })]),
+    false,
+  )
+  for (const invalid of [
+    { ...recovered, type: 'deposit' },
+    { ...recovered, status: 'pending' },
+    { ...recovered, amountSubunits: 0 },
+    { ...recovered, walletId: undefined },
+    ...[
+      null,
+      {},
+      { ...recovery, kind: 'unknown' },
+      { ...recovery, originalOperationId: '' },
+      { ...recovery, originalOperationId: 'x'.repeat(1025) },
+      { ...recovery, originalStatus: 'completed' },
+      { ...recovery, originalFailureCode: 13000 },
+      { ...recovery, extra: true },
+    ].map((claimRecovery) => ({ ...recovered, claimRecovery })),
+  ])
+    assert.equal(decodeActivityItem(invalid), null)
+})

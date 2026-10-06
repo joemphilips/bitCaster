@@ -462,6 +462,10 @@
     "payout_claimed": "ペイアウト受取",
     "creator_fee_claimed": "作成者手数料"
   },
+  "activityClaimRecovery": {
+    "label": "請求の払戻金を復元",
+    "originalFailed": "元の請求は失敗のままです（{{code}}）。"
+  },
   "activityTrade": {
     "outcomeToken": "{{outcomeId}} のトークン",
     "complementToken": "{{outcomeId}} の補完トークン",

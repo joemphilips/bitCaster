@@ -26,6 +26,7 @@ import {
   encodeBoundedDurableArtifact,
 } from '@bitcaster-market/client-sdk/durableCustody'
 import { NativeBolt11MintQuoteCoordinator } from '../src/nativeBolt11MintQuoteCoordinator.ts'
+import { NativeActivitySqlite } from '../src/nativeActivitySqlite.ts'
 import {
   prepareDurableCustodyMintOperationAuthority,
   prepareDurableCustodyVerifiedMintResult,
@@ -195,6 +196,7 @@ test('paid response verifies exact change, retires inputs, admits once, and term
   try {
     await fixture.prepare()
     const calls: string[] = []
+    assert.deepEqual(await fixture.activity(), [])
     const result = await fixture.coordinator.execute({
       operationId: fixture.operation.operationId,
       wallet: fixture.wallet({
@@ -217,7 +219,27 @@ test('paid response verifies exact change, retires inputs, admits once, and term
     assert.equal(rows.successorCount, 1)
     assert.equal(rows.targetProofCount, 1)
     assert.deepEqual(await fixture.availableProofSecrets(), ['melt-change'])
-    const replay = await fixture.coordinator.recover({
+    const activity = await fixture.activity()
+    assert.equal(activity.length, 1)
+    assert.deepEqual(activity[0], {
+      id: `withdrawal:${fixture.walletId}:bolt11-melt:${fixture.custodyOperationId}`,
+      walletId: fixture.walletId,
+      type: 'withdrawal',
+      amountSubunits: 1_000,
+      baseAsset: 'sat',
+      date: activity[0]!.date,
+      status: 'completed',
+      txId: fixture.operation.operationId,
+      lightningInvoice: 'lnbc-test-invoice',
+    })
+    assert.ok(Number.isFinite(Date.parse(activity[0]!.date)))
+    const persisted = await fixture.activityRows()
+    const reopened = new NativeWalletMeltCoordinator(
+      fixture.directory,
+      () => fixture.fence,
+      () => Date.parse(activity[0]!.date) + 1_000,
+    )
+    const replay = await reopened.recover({
       operationId: fixture.operation.operationId,
       wallet: fixture.wallet({
         async checkMeltQuote() {
@@ -236,6 +258,9 @@ test('paid response verifies exact change, retires inputs, admits once, and term
       [fixture.changeProof.secret],
     )
     assert.deepEqual(calls, ['complete'])
+    assert.deepEqual(await fixture.activity(), activity)
+    assert.deepEqual(await fixture.activityRows(), persisted)
+    assert.deepEqual(await fixture.activity('a'.repeat(64)), [])
   } finally {
     await fixture.close()
   }
@@ -429,6 +454,7 @@ test('paid quote recovery completes the saved change output plan and admits it o
       /lost payment response/,
     )
     let restoredOutputSecret = ''
+    assert.deepEqual(await fixture.activity(), [])
     const reopened = new NativeWalletMeltCoordinator(fixture.directory, () => fixture.fence)
     const recovered = await reopened.recover({
       operationId: fixture.operation.operationId,
@@ -457,6 +483,8 @@ test('paid quote recovery completes the saved change output plan and admits it o
     assert.equal(recovered.state, 'paid')
     assert.equal(restoredOutputSecret, 'melt-change')
     assert.equal((await fixture.readRows()).successorCount, 1)
+    assert.equal((await fixture.activity())[0]?.amountSubunits, 1_000)
+    assert.equal((await fixture.activity())[0]?.status, 'completed')
   } finally {
     await fixture.close()
   }
@@ -575,6 +603,7 @@ test('UNPAID status alone and PENDING keep inputs reserved; only explicit UNPAID
       /remains pending/,
     )
     assert.equal((await fixture.readRows()).predecessorState, 'locked')
+    assert.deepEqual(await fixture.activity(), [])
     await assert.rejects(
       fixture.coordinator.recover({
         operationId: fixture.operation.operationId,
@@ -848,6 +877,18 @@ async function createFixture(selectability: 'selectable' | 'retained' = 'selecta
   return {
     directory,
     fence,
+    walletId: deriveDurableCustodyWalletId(Buffer.from(seed, 'hex')),
+    activity: (walletId = deriveDurableCustodyWalletId(Buffer.from(seed, 'hex'))) =>
+      withDaemonStateSqliteTransaction(
+        directory,
+        (database) => new NativeActivitySqlite(database).page({ walletId }).items,
+      ),
+    activityRows: () =>
+      withDaemonStateSqliteTransaction(directory, (database) =>
+        database
+          .prepare('SELECT sequence, item_json FROM daemon_activity_feed WHERE scope_id = ?')
+          .all(scopeId),
+      ),
     operation,
     custodyInput,
     keysets: [keysetAuthority],

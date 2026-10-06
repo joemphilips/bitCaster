@@ -1,3 +1,4 @@
+import { readActivityRows } from './nativeActivityTestHelpers.ts'
 import assert from 'node:assert/strict'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -141,6 +142,7 @@ test('recovers a hidden paid quote from staged custody without mint I/O or doubl
       },
     ])
     assert.equal((await fixture.counts()).proofs, 0)
+    assert.equal((await readActivityRows(fixture.directory)).length, 0)
     assert.equal((await fixture.operationResultState()).state, 'verified-staged')
     assert.equal((await interrupted.get(hidden.quoteRecordId))?.observedState, 'PAID')
 
@@ -162,6 +164,13 @@ test('recovers a hidden paid quote from staged custody without mint I/O or doubl
     })
     assert.equal(available.length, 1)
     assert.equal(Number(available[0]!.proof.amount), 1)
+    const activity = await readActivityRows(fixture.directory)
+    assert.equal(activity.length, 1)
+    assert.equal(activity[0]?.item.type, 'deposit')
+    assert.equal(activity[0]?.item.amountSubunits, 1)
+    assert.equal(activity[0]?.item.txId, hidden.quoteId)
+    assert.equal(activity[0]?.item.lightningInvoice, hidden.invoiceRequest)
+    assert.equal(activity[0]?.item.walletId, fixture.fence.scopeId.slice('custody:wallet:'.length))
     assert.equal(await fixture.counter(), 1)
     assert.deepEqual(await reopened.get(hidden.quoteRecordId), {
       ...hidden,
@@ -174,6 +183,7 @@ test('recovers a hidden paid quote from staged custody without mint I/O or doubl
       hasMore: false,
     })
     assert.equal((await fixture.counts()).proofs, 1)
+    assert.deepEqual(await readActivityRows(fixture.directory), activity)
   } finally {
     await fixture.close()
   }
@@ -339,6 +349,7 @@ async function createFixture() {
   let restoreValid = true
   let nextQuoteCreationError: string | null = null
   let nextQuoteUnit: string | null = null
+  let nextInvoice: string | null = null
   let nextPreparedQuote: string | null = null
   const quoteStates = new Map<string, 'UNPAID' | 'PAID' | 'ISSUED'>()
   const outputs = new Map<string, OutputData>()
@@ -361,7 +372,7 @@ async function createFixture() {
       nextQuoteUnit = null
       return {
         quote,
-        request: `lnbc-${quote}`,
+        request: nextInvoice ?? `lnbc-${quote}`,
         unit,
         amount: amountMsat,
         state: 'UNPAID' as const,
@@ -482,7 +493,8 @@ async function createFixture() {
     failNextQuoteCreation: (message = 'fixture quote creation failed') => {
       nextQuoteCreationError = message
     },
-    setNextQuoteOverrides: (value: { unit?: string; preparedQuote?: string }) => {
+    setNextQuoteOverrides: (value: { unit?: string; preparedQuote?: string; invoice?: string }) => {
+      nextInvoice = value.invoice ?? null
       nextQuoteUnit = value.unit ?? null
       nextPreparedQuote = value.preparedQuote ?? null
     },
@@ -640,3 +652,22 @@ async function countScoped(directory: string, sql: string): Promise<number> {
     database.close()
   }
 }
+
+test('oversize optional invoice metadata cannot prevent an exact mint credit', async () => {
+  const fixture = await createFixture()
+  try {
+    fixture.setNextQuoteOverrides({ invoice: `lnbc${'a'.repeat(8192)}` })
+    const created = await fixture.coordinator().create({ mintUrl: MINT_URL, amountMsat: 1 })
+    fixture.setState(created.quoteId, 'PAID')
+    const recovered = await fixture.coordinator().recoverActivePage({ cursor: null })
+    assert.equal(recovered.outcomes[0]?.outcome, 'recovered')
+    assert.equal((await fixture.counts()).proofs, 1)
+    const rows = await readActivityRows(fixture.directory)
+    assert.equal(rows.length, 1)
+    assert.equal(rows[0]?.item.amountSubunits, 1)
+    assert.equal(rows[0]?.item.lightningInvoice, null)
+    assert.equal(rows[0]?.item.txId, created.quoteId)
+  } finally {
+    await fixture.close()
+  }
+})

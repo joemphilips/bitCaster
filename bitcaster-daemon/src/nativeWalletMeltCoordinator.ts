@@ -58,6 +58,7 @@ import {
 } from './durableCustodyUnitOfWork.ts'
 import type { CustodyScopeFence } from './profileFencing.ts'
 import { createDaemonStateSqliteSession } from './stateSqlite.ts'
+import { writeNativeCompletedActivity } from './nativeCompletedActivity.ts'
 import {
   admitExactAvailableWalletProofsFromDatabase,
   assertExactWalletMeltReservedProofProjectionFromDatabase,
@@ -505,6 +506,7 @@ export class NativeWalletMeltCoordinator {
           nowMs: observedAtMs,
         })
       }
+      writeCompletedWithdrawal(database, loaded, observedAtMs)
     })
     const applied = await this.#requireOperation(operationId)
     return readVerifiedResult(applied.record, applied.exactAuthority, applied.exactResult)
@@ -592,6 +594,24 @@ interface LoadedMelt {
   readonly exactResult: DurableCustodyExactArtifact | null
   readonly authority: DurableCustodyMintOperationAuthority
   readonly operation: DurableWalletMeltOperation
+}
+
+function writeCompletedWithdrawal(
+  database: DatabaseSync,
+  loaded: LoadedMelt,
+  observedAtMs: number,
+): void {
+  const status = statusProjection(loaded)
+  writeNativeCompletedActivity(database, {
+    scopeId: loaded.record.scope.scopeId,
+    sourceKind: 'bolt11-melt',
+    sourceId: loaded.record.operation.operationId,
+    type: 'withdrawal',
+    amountMsat: status.amountMsat,
+    completedAtMs: observedAtMs,
+    txId: status.operationId,
+    lightningInvoice: status.invoice,
+  })
 }
 
 function statusProjection(loaded: LoadedMelt): NativeWalletMeltStatusProjection {

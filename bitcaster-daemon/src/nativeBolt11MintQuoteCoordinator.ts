@@ -1,3 +1,4 @@
+import { creditedProofAmountMsat, writeNativeCompletedActivity } from './nativeCompletedActivity.ts'
 import type { MintPreview, MintQuoteBolt11Response, Proof } from '@cashu/cashu-ts'
 import {
   applyDurableCustodyTransaction,
@@ -604,6 +605,19 @@ export class NativeBolt11MintQuoteCoordinator {
           custodyOperationId,
           expectedRevision: quote.quote.revision,
           quote: observeDurableBolt11MintQuoteState(quote.quote, 'ISSUED'),
+        })
+        writeNativeCompletedActivity(database, {
+          scopeId: current.scope.scopeId,
+          sourceKind: 'bolt11-mint',
+          sourceId: quote.quote.quoteRecordId,
+          type: 'deposit',
+          amountMsat: creditedProofAmountMsat(
+            verified.proofs.map(({ proof }) => proof),
+            mintUnitFromRecord(current),
+          ),
+          completedAtMs: observedAtMs,
+          txId: quote.quote.quoteId,
+          lightningInvoice: quote.quote.invoiceRequest,
         })
       },
       this.#transactionOptions(),

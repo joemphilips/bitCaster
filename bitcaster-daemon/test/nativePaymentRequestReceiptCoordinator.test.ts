@@ -1,3 +1,4 @@
+import { readActivityRows } from './nativeActivityTestHelpers.ts'
 import assert from 'node:assert/strict'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -147,6 +148,10 @@ test('concurrent reordered duplicate receipts replay once before fresh classific
       proofCount: 2,
     })
     assert.deepEqual(second, first)
+    const activity = await readActivityRows(f.directory)
+    assert.equal(activity.length, 1)
+    assert.equal(activity[0]?.item.type, 'deposit')
+    assert.equal(activity[0]?.item.amountSubunits, 2)
     assert.deepEqual(f.counts, { resolved: 1, prepared: 1, complete: 1, checked: 0 })
     const counters = await f.query((db) =>
       db.prepare('SELECT * FROM custody_keyset_counters').all(),
@@ -162,6 +167,7 @@ test('concurrent reordered duplicate receipts replay once before fresh classific
       counters,
     )
     assert.equal(await f.targetCount(), 0)
+    assert.deepEqual(await readActivityRows(f.directory), activity)
     await assert.rejects(f.service().receive(message([REGULAR[0]!])), /different receipt/)
     await assert.rejects(
       f.service().receive(message([REGULAR[0]!, REGULAR[0]!])),
@@ -314,6 +320,7 @@ for (const remaining of [
       assert.equal(saved.groups.length, 2)
       assert.equal(saved.pages.length, 3)
       assert.equal(saved.proofs.length, 32)
+      assert.equal((await readActivityRows(f.directory)).length, 0)
       assert.equal((await f.service().status('request')).state, 'pending')
       await f.query((db) =>
         db.exec(
@@ -343,6 +350,14 @@ for (const remaining of [
           'credited',
         )
         assert.equal(f.counts.checked, 2)
+        const activity = await readActivityRows(f.directory)
+        assert.equal(activity.length, 2)
+        assert.deepEqual(
+          activity.map((row) => row.item.amountSubunits).sort((a, b) => a - b),
+          [1, 33],
+        )
+        await f.service().recover('request')
+        assert.deepEqual(await readActivityRows(f.directory), activity)
       } else {
         await assert.rejects(f.service().recover('request'), /not spendable|state response/)
         assert.equal((await f.service().status('request')).state, 'pending')

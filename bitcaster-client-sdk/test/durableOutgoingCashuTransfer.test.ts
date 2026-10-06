@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { mapOutgoingCashuWithdrawalActivity } from '../src/outgoingCashuActivity.ts'
 import { Amount, getEncodedTokenV4, OutputData } from '@cashu/cashu-ts'
 import { deriveDurableCustodyArtifactFingerprint } from '../src/durableCustody.ts'
 import {
@@ -1306,3 +1307,127 @@ function reclaimOperation(operationId: string, inputs: readonly DurableWalletPro
     },
   })
 }
+
+test('Cashu Activity maps pending, partial, spent, and reclaimed principal without bearer material', () => {
+  const walletId = 'a'.repeat(64)
+  const createdAtMs = Date.parse('2026-10-06T01:00:00.000Z')
+  const prepared = createDurableOutgoingCashuTransfer({
+    transferId: 'activity-bearer',
+    walletScopeId: `custody:wallet:${walletId}`,
+    requestedAmount: '2',
+    walletSendOperation: { ...twoOutputWalletSendOperation(), unit: 'msat' },
+    deliveryIntent: {
+      policy: 'bearer-spend-classification',
+      tokenBytesLimit: 1024,
+      tokenProofLimit: 2,
+    },
+  })
+  const proofs = [partialFirstSendProof(), secondSendProof()]
+  const admitted = admitDurableOutgoingCashuToken({
+    transfer: prepared,
+    keepProofs: [],
+    sendProofs: proofs,
+    encodedToken: getEncodedTokenV4({
+      mint: prepared.mintUrl,
+      unit: 'msat',
+      proofs: proofs.map(hydrateDurableWalletProof),
+    }),
+    custodyRevisions: custodyRevisions(prepared.walletSendOperation, [], proofs),
+    dueAtMs: 10,
+  })
+  const states = proofs.map((proof, index) => ({
+    Y: deriveDurableWalletProofY(proof),
+    state: index === 0 ? ('SPENT' as const) : ('UNSPENT' as const),
+  }))
+  const partial = classifyDurableOutgoingBearerProofStates({
+    transfer: admitted,
+    states,
+    dueAtMs: 11,
+  }).transfer
+  const spent = classifyDurableOutgoingBearerProofStates({
+    transfer: partial,
+    states: states.map(({ Y }) => ({ Y, state: 'SPENT' as const })),
+    dueAtMs: 12,
+  }).transfer
+  const map = (transfer: typeof prepared) =>
+    mapOutgoingCashuWithdrawalActivity({ walletId, transfer, createdAtMs })!
+  const first = map(prepared)
+  for (const transfer of [prepared, admitted, partial]) {
+    const item = map(transfer)
+    assert.equal(item.status, 'pending')
+    assert.equal(item.amountSubunits, 2)
+    assert.equal(item.id, first.id)
+    assert.equal(item.date, first.date)
+  }
+  assert.equal(map(spent).status, 'completed')
+  assert.equal(map(spent).amountSubunits, 2)
+  for (const [source, reclaimProofs, expectedAmount, expectedStatus] of [
+    [admitted, proofs, 0, 'Failed'],
+    [partial, [proofs[1]], 1, 'completed'],
+  ] as const) {
+    const reclaimId = `activity-reclaim-${expectedAmount}`
+    const reclaim = prepareDurableOutgoingCashuReclaim({
+      transfer: source,
+      reclaimId,
+      states:
+        source === admitted ? states.map(({ Y }) => ({ Y, state: 'UNSPENT' as const })) : states,
+      dueAtMs: 13,
+      walletReceiveOperation: { ...reclaimOperation(reclaimId, reclaimProofs), unit: 'msat' },
+    })
+    assert.equal(map(reclaim).status, 'pending')
+    const successors = [successorProof(reclaim)]
+    const completed = completeDurableOutgoingCashuReclaim({
+      transfer: reclaim,
+      successorProofs: successors,
+      evidence: reclaimEvidence(reclaim, successors),
+    })
+    const item = map(completed)
+    assert.equal(item.status, expectedStatus)
+    assert.equal(item.amountSubunits, expectedAmount)
+    assert.equal(item.id, first.id)
+    assert.equal(item.date, first.date)
+    assert.equal(
+      item.failureReason,
+      expectedAmount === 0 ? 'Cancelled; funds reclaimed' : undefined,
+    )
+    assert.equal(JSON.stringify(item).includes(proofs[0].secret), false)
+  }
+  assert.equal(
+    mapOutgoingCashuWithdrawalActivity({
+      walletId,
+      transfer: recipientTransfer('internal'),
+      createdAtMs,
+    }),
+    null,
+  )
+  assert.throws(
+    () =>
+      mapOutgoingCashuWithdrawalActivity({
+        walletId: 'b'.repeat(64),
+        transfer: prepared,
+        createdAtMs,
+      }),
+    /context is invalid/,
+  )
+  assert.throws(
+    () =>
+      mapOutgoingCashuWithdrawalActivity({
+        walletId,
+        transfer: { ...prepared, deliveryState: 'unknown' } as never,
+        createdAtMs,
+      }),
+    /state is invalid/,
+  )
+  assert.throws(
+    () =>
+      mapOutgoingCashuWithdrawalActivity({
+        walletId,
+        transfer: prepared,
+        createdAtMs: Number.MAX_SAFE_INTEGER,
+      }),
+    /context is invalid/,
+  )
+  const longReference = map({ ...prepared, transferId: 'x'.repeat(513) })
+  assert.equal(longReference.txId, null)
+  assert.equal(longReference.id.length, 81)
+})

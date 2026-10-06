@@ -9,6 +9,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test, mock } from 'node:test'
+import { readActivityRows, readActivityForWallet } from './nativeActivityTestHelpers.ts'
 import { SeedRecoverySqliteStore } from '../src/seedRecoverySqlite.ts'
 import { isDeepStrictEqual } from 'node:util'
 import { schnorr, secp256k1 } from '@noble/curves/secp256k1.js'
@@ -1220,6 +1221,11 @@ async function recoverHistoricalClaimPayout(
   const claim = Object.values(original.proofOperations).find(({ kind }) => kind === 'ctf-redeem')!
   assert.equal(claim.state, 'Failed')
   const outputs = claim.outputs.regular!
+  assert.deepEqual(
+    outputs.map(({ blindedMessage }) => Number(blindedMessage.amount)).sort((a, b) => a - b),
+    [8, 16],
+  )
+  const activityBefore = await readActivityRows(fixture.directory)
   const committed = new Map(
     outputs.map((output) => [output.blindedMessage.B_, output.blindedMessage]),
   )
@@ -1240,12 +1246,14 @@ async function recoverHistoricalClaimPayout(
     | 'partial'
     | 'bad-dleq'
     | 'spent'
+    | 'mixed'
     | 'pending'
     | 'missing-state'
     | 'duplicate-state'
     | 'foreign-state'
     | 'changed-authority'
     | 'payout-rollback'
+    | 'activity-rollback'
     | 'late-active-work'
     | 'takeover' = 'valid'
   const readCounters = async () => {
@@ -1282,7 +1290,7 @@ async function recoverHistoricalClaimPayout(
         const states = proofs.map((proof) => ({
           Y: hashToCurve(utf8ToBytes(proof.secret)).toHex(true),
           state:
-            mode === 'spent'
+            mode === 'spent' || (mode === 'mixed' && Number(proof.amount) !== 8)
               ? CheckStateEnum.SPENT
               : mode === 'pending'
                 ? CheckStateEnum.PENDING
@@ -1354,6 +1362,12 @@ async function recoverHistoricalClaimPayout(
               (SELECT count(*) FROM custody_proofs WHERE condition_id IS NULL) > 0
             BEGIN SELECT RAISE(ABORT, 'test retained payout second insert failure'); END`)
         }
+      }
+      if (mode === 'activity-rollback' && matches.length > 0) {
+        rollbackDatabase = await openDaemonStateSqlite(fixture.directory)
+        rollbackDatabase.exec(`CREATE TRIGGER test_retained_activity_rollback
+          BEFORE INSERT ON daemon_activity_feed WHEN NEW.source_id LIKE 'retained-claim-payout:%'
+          BEGIN SELECT RAISE(ABORT, 'test retained Activity insert failure'); END`)
       }
       if (mode === 'late-active-work' && matches.length > 0) {
         const database = await openDaemonStateSqlite(fixture.directory)
@@ -1468,6 +1482,7 @@ async function recoverHistoricalClaimPayout(
     'takeover',
     'late-active-work',
     'payout-rollback',
+    'activity-rollback',
     'changed-authority',
   ] as const) {
     mode = scenario
@@ -1492,9 +1507,11 @@ async function recoverHistoricalClaimPayout(
         recovery,
         scenario === 'changed-authority'
           ? /durable owner blocker target-wallet-proof-reserved/
-          : scenario === 'payout-rollback'
-            ? /test retained payout second insert failure/
-            : /incomplete|DLEQ|Dleq|dleq|pending|proof state|owner or epoch changed|durable owner blocker custody-active-work/,
+          : scenario === 'activity-rollback'
+            ? /test retained Activity insert failure/
+            : scenario === 'payout-rollback'
+              ? /test retained payout second insert failure/
+              : /incomplete|DLEQ|Dleq|dleq|pending|proof state|owner or epoch changed|durable owner blocker custody-active-work/,
       )
     }
     if (scenario === 'changed-authority') {
@@ -1506,6 +1523,11 @@ async function recoverHistoricalClaimPayout(
       } finally {
         database.close()
       }
+    }
+    if (scenario === 'activity-rollback') {
+      rollbackDatabase!.exec('DROP TRIGGER test_retained_activity_rollback')
+      rollbackDatabase!.close()
+      rollbackDatabase = undefined
     }
     if (scenario === 'payout-rollback') {
       try {
@@ -1531,6 +1553,7 @@ async function recoverHistoricalClaimPayout(
         database.close()
       }
     }
+    assert.deepEqual(await readActivityRows(fixture.directory), activityBefore)
     const state = (await readState())!
     assert.deepEqual(state.wallet.proofs, original.wallet.proofs)
     assert.deepEqual(state.proofOperations[claim.operationId], claim)
@@ -1546,7 +1569,66 @@ async function recoverHistoricalClaimPayout(
       reopened.close()
     }
   }
+  mode = 'mixed'
+  const mixed = await recoverAllDaemonWalletFromSeed(
+    {
+      recoveryId: 'historical-mixed-first',
+      mintUrl: 'https://mint.example',
+      unit: 'msat',
+      walletSeedHex: '11'.repeat(64),
+      disclosureAcknowledged: true,
+    },
+    { directory: fixture.directory, getFence: currentFence, transport },
+  )
+  assert.equal(mixed.retainedOutputProofsImported, 1)
+  const firstCredit = (await readActivityRows(fixture.directory)).filter(
+    ({ item }) => item.claimRecovery,
+  )
+  assert.equal(firstCredit.length, 1)
+  assert.equal(firstCredit[0]!.item.amountSubunits, 8)
+  assert.equal(firstCredit[0]!.item.status, 'completed')
+  assert.deepEqual(firstCredit[0]!.item.claimRecovery, {
+    kind: 'retained-claim-payout',
+    originalOperationId: claim.operationId,
+    originalStatus: 'Failed',
+    originalFailureCode: 13015,
+  })
+  assert.deepEqual(
+    (
+      await readActivityForWallet(
+        fixture.directory,
+        fixture.context.fence.scopeId.slice('custody:wallet:'.length),
+      )
+    ).filter((item) => item.claimRecovery),
+    firstCredit.map(({ item }) => item),
+  )
+  assert.deepEqual(await readActivityForWallet(fixture.directory, 'ff'.repeat(32)), [])
+  const reopenedCredit = await openDaemonStateSqlite(fixture.directory)
+  reopenedCredit.close()
+  for (const retryMode of ['mixed', 'spent'] as const) {
+    mode = retryMode
+    const retry = await recoverAllDaemonWalletFromSeed(
+      {
+        recoveryId: `historical-mixed-${retryMode}`,
+        mintUrl: 'https://mint.example',
+        unit: 'msat',
+        walletSeedHex: '11'.repeat(64),
+        disclosureAcknowledged: true,
+      },
+      { directory: fixture.directory, getFence: currentFence, transport },
+    )
+    assert.equal(retry.retainedOutputProofsImported, 0)
+    assert.deepEqual(
+      (await readActivityRows(fixture.directory)).filter(({ item }) => item.claimRecovery),
+      firstCredit,
+    )
+  }
+  assert.equal(
+    isDeepStrictEqual((await readState())!.proofOperations[claim.operationId], claim),
+    true,
+  )
   mode = 'valid'
+  let allCredits: Awaited<ReturnType<typeof readActivityRows>> | undefined
   for (const recoveryId of ['historical-payout-first', 'historical-payout-again']) {
     const result = await recoverAllDaemonWalletFromSeed(
       {
@@ -1561,8 +1643,17 @@ async function recoverHistoricalClaimPayout(
     assert.equal(result.state, 'completed')
     assert.equal(
       result.retainedOutputProofsImported,
-      recoveryId === 'historical-payout-first' ? outputs.length : 0,
+      recoveryId === 'historical-payout-first' ? 1 : 0,
     )
+    const credits = (await readActivityRows(fixture.directory)).filter(
+      ({ item }) => item.claimRecovery,
+    )
+    assert.deepEqual(credits[0], firstCredit[0])
+    assert.equal(credits.length, 2)
+    assert.equal(credits[1]!.item.amountSubunits, 16)
+    assert.notEqual(credits[0]!.item.id, credits[1]!.item.id)
+    if (allCredits === undefined) allCredits = credits
+    else assert.deepEqual(credits, allCredits)
     const state = (await readState())!
     assert.deepEqual(
       state.wallet.proofs.filter(({ asset }) => asset.kind === 'Outcome'),
@@ -1594,6 +1685,22 @@ async function recoverHistoricalClaimPayout(
       database.close()
     }
   }
+  mode = 'spent'
+  const spentRetry = await recoverAllDaemonWalletFromSeed(
+    {
+      recoveryId: 'historical-all-spent-after-credit',
+      mintUrl: 'https://mint.example',
+      unit: 'msat',
+      walletSeedHex: '11'.repeat(64),
+      disclosureAcknowledged: true,
+    },
+    { directory: fixture.directory, getFence: currentFence, transport },
+  )
+  assert.equal(spentRetry.retainedOutputProofsImported, 0)
+  assert.deepEqual(
+    (await readActivityRows(fixture.directory)).filter(({ item }) => item.claimRecovery),
+    allCredits,
+  )
   mode = 'collision'
   const beforeCollision = (await readState())!
   const collisionDatabase = await openDaemonStateSqlite(fixture.directory)
@@ -1634,6 +1741,10 @@ async function recoverHistoricalClaimPayout(
   } finally {
     collisionReopened.close()
   }
+  assert.deepEqual(
+    (await readActivityRows(fixture.directory)).filter(({ item }) => item.claimRecovery),
+    allCredits,
+  )
   assert.equal(restored, outputs.length * 2)
   assert.ok(
     counterChecks >= 4,

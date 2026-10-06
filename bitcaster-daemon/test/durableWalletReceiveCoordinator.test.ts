@@ -1,3 +1,4 @@
+import { readActivityForWallet, readActivityRows } from './nativeActivityTestHelpers.ts'
 import assert from 'node:assert/strict'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -34,7 +35,7 @@ const KEYS = { '1': bytesToHex(secp256k1.getPublicKey(PRIVATE_KEY, true)) }
 const KEYSET_ID = deriveKeysetId(KEYS, { unit: 'sat', versionByte: 1 })
 
 test('durable receive applies a valid exact mint result to custody and target wallet rows', async () => {
-  const fixture = await createFixture()
+  const fixture = await createFixture(2)
   try {
     const result = await fixture.coordinator.execute({
       prepared: fixture.prepared,
@@ -55,6 +56,21 @@ test('durable receive applies a valid exact mint result to custody and target wa
     assert.equal(rows.custody.count, 1)
     assert.equal(rows.target.count, 1)
     assert.equal(rows.active.count, 0)
+    const activity = await readActivityRows(fixture.directory)
+    assert.equal(activity.length, 1)
+    assert.equal(activity[0]?.item.amountSubunits, 1000)
+    assert.equal(activity[0]?.item.type, 'deposit')
+    assert.equal(activity[0]?.item.lightningInvoice, null)
+    assert.equal(activity[0]?.item.txId, 'wallet-receive:fixture')
+    assert.equal(activity[0]?.item.walletId, fixture.fence.scopeId.slice('custody:wallet:'.length))
+    assert.deepEqual(
+      await readActivityForWallet(
+        fixture.directory,
+        fixture.fence.scopeId.slice('custody:wallet:'.length),
+      ),
+      [activity[0]!.item],
+    )
+    assert.equal((await readActivityForWallet(fixture.directory, '33'.repeat(32))).length, 0)
     const replay = await fixture.coordinator.recover({
       walletFor: async () => {
         throw new Error('terminal receive must not create a wallet or call the mint')
@@ -67,6 +83,7 @@ test('durable receive applies a valid exact mint result to custody and target wa
       pendingCount: 0,
       hasMore: false,
     })
+    assert.deepEqual(await readActivityRows(fixture.directory), activity)
   } finally {
     await fixture.close()
   }
@@ -83,6 +100,7 @@ test('SPENT recovery restores the exact persisted outputs without completing a n
         }),
       /mint unavailable/,
     )
+    assert.equal((await readActivityRows(fixture.directory)).length, 0)
     let restores = 0
     const coordinator = fixture.withRestore(async (_mint, outputs) => {
       restores += 1
@@ -106,6 +124,19 @@ test('SPENT recovery restores the exact persisted outputs without completing a n
     assert.equal(recovered.pending.length, 0, recovered.pending[0]?.error)
     assert.equal(recovered.recoveredCount, 1)
     assert.equal(await targetProofCount(fixture.directory), 1)
+    const activity = await readActivityRows(fixture.directory)
+    assert.equal(activity.length, 1)
+    assert.equal(activity[0]?.item.amountSubunits, 1000)
+    await fixture
+      .withRestore(async () => {
+        throw new Error('terminal restore forbidden')
+      })
+      .recover({
+        walletFor: async () => {
+          throw new Error('terminal network forbidden')
+        },
+      })
+    assert.deepEqual(await readActivityRows(fixture.directory), activity)
   } finally {
     await fixture.close()
   }
@@ -170,6 +201,7 @@ test('UNSPENT recovery completes only the persisted preview, while PENDING remai
       assert.equal(pending.pending.length, 1)
       assert.equal(completeCalls, 0)
       assert.equal(await activeWorkCount(pendingFixture.directory), 1)
+      assert.equal((await readActivityRows(pendingFixture.directory)).length, 0)
     } finally {
       await pendingFixture.close()
     }
@@ -300,7 +332,7 @@ test('recovery processes one receive-only page and advances its durable cursor',
   }
 })
 
-async function createFixture(inputCount = 1) {
+async function createFixture(inputCount = 1, operationId = 'wallet-receive:fixture') {
   const directory = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-receive-'))
   const previousHome = process.env.BITCASTER_DAEMON_HOME
   process.env.BITCASTER_DAEMON_HOME = directory
@@ -341,7 +373,7 @@ async function createFixture(inputCount = 1) {
     keepOutputs: [output],
   }
   const operation = serializeDurableWalletReceiveOperation({
-    operationId: 'wallet-receive:fixture',
+    operationId,
     mintUrl: MINT_URL,
     unit: 'sat',
     preview,
@@ -431,3 +463,20 @@ async function activeWorkCount(directory: string): Promise<number> {
 async function failMint(): Promise<{ keep: Proof[]; send: Proof[] }> {
   throw new Error('mint unavailable')
 }
+
+test('a generic receive with an outgoing reclaim identity refuses without a deposit', async () => {
+  const fixture = await createFixture(1, 'outgoing-reclaim:fixture')
+  try {
+    await assert.rejects(
+      fixture.coordinator.execute({
+        prepared: fixture.prepared,
+        wallet: wallet({ complete: async () => ({ keep: [fixture.proof], send: [] }) }),
+      }),
+      /receive authority is foreign/,
+    )
+    assert.equal(await targetProofCount(fixture.directory), 0)
+    assert.equal((await readActivityRows(fixture.directory)).length, 0)
+  } finally {
+    await fixture.close()
+  }
+})

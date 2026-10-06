@@ -53,6 +53,7 @@ import {
 } from '../src/walletOps.ts'
 import { createCustodyProofSqliteRow } from '../src/custodyProofSqliteRow.ts'
 import { DurableCustodySqliteStore } from '../src/durableCustodySqliteStore.ts'
+import { NativeActivitySqlite } from '../src/nativeActivitySqlite.ts'
 import { DurableOutgoingCashuSqliteStore } from '../src/durableOutgoingCashuSqlite.ts'
 import { bootstrapFreshDaemonProfile } from '../src/profileBootstrap.ts'
 import { claimCustodyScopeLease } from '../src/profileFencing.ts'
@@ -264,6 +265,7 @@ test('outgoing transfer persists exact authority before mint I/O and returns an 
     const wallet = fixture.wallet(async () => {
       mintCalls += 1
       assert.equal(await fixture.preMintPersisted(), true)
+      await assertWithdrawalActivity(fixture, 'pending', 5)
       return { keep: fixture.keepProofs, send: fixture.sendProofs }
     })
     const prepare = wallet.prepareSwapToSend
@@ -1469,6 +1471,8 @@ test('fresh explicit reclaim reactivates only its classified bearer proofs and a
     })
 
     assert.equal(reclaimed.deliveryState, 'reclaimed')
+    const item = await assertWithdrawalActivity(fixture, 'Failed', 0)
+    assert.equal(item.failureReason, 'Cancelled; funds reclaimed')
     assert.equal(checks, 2)
     await assert.rejects(
       () =>
@@ -1602,6 +1606,7 @@ test('bearer classification persists exact all-spent state and terminal retries 
 
     assert.equal(checks, 1)
     assert.equal(classified.deliveryState, 'bearer-spent')
+    await assertWithdrawalActivity(fixture, 'completed', 5)
     assert.equal(retry.deliveryState, 'bearer-spent')
     assert.equal(retry.tokenDigest, persistedBefore.token.sha256)
     assert.equal(Object.hasOwn(classified, 'token'), false)
@@ -1639,6 +1644,7 @@ test('bearer classification keeps an all-unspent token pending and does not prep
     assert.equal(classified.deliveryState, 'delivery-pending')
     assert.equal(persisted?.deliveryState, 'delivery-pending')
     assert.equal(persisted?.reclaim, null)
+    await assertWithdrawalActivity(fixture, 'pending', 5)
     assert.equal(persisted?.token?.unspentProofs?.length, transfer.token?.proofs.length)
   } finally {
     await fixture.close()
@@ -1679,6 +1685,7 @@ test('malformed bearer proof-state response cannot terminalize the persisted tok
     assert.equal(persisted?.deliveryState, 'delivery-pending')
     assert.ok(persisted?.token)
     assert.equal(persisted?.reclaim, null)
+    await assertWithdrawalActivity(fixture, 'pending', 5)
   } finally {
     await fixture.close()
   }
@@ -1726,6 +1733,7 @@ test('bearer classification rejects recipient-ack transfers before querying the 
       /classification is not authorized/,
     )
     assert.equal(checks, 0)
+    assert.equal((await fixture.activity()).length, 0)
     assert.equal((await fixture.transfer(transfer.transferId))?.revision, transfer.revision)
   } finally {
     await fixture.close()
@@ -1762,6 +1770,7 @@ test('recipient-spent reclaim terminalizes its linked receive operation in the s
     })
 
     assert.equal(terminal.deliveryState, 'bearer-spent')
+    await assertWithdrawalActivity(fixture, 'completed', 5)
     assert.equal(terminal.reclaim, null)
     assert.equal(await fixture.activeReclaimWorkCount(), 0)
   } finally {
@@ -1922,6 +1931,7 @@ test('outgoing insert failure rolls back the custody bind and target reservation
     assert.equal(await fixture.count('custody_operations'), 0)
     assert.equal(await fixture.count('daemon_outgoing_cashu_transfers'), 0)
     assert.equal(await fixture.count('custody_artifacts'), 0)
+    assert.equal((await fixture.activity()).length, 0)
   } finally {
     await fixture.close()
   }
@@ -1954,6 +1964,7 @@ test('outgoing post-mint update failure admits no successors and exact recovery 
     await fixture.removeOutgoingTransferAbort('update')
 
     assert.equal(prepares, 1)
+    const originalActivity = await assertWithdrawalActivity(fixture, 'pending', 5)
     assert.equal(await fixture.count('custody_proofs'), 1)
     assert.equal(await fixture.count('target_wallet_proofs'), 1)
     await fixture.removeOutgoingTransferAbort('update')
@@ -1967,6 +1978,8 @@ test('outgoing post-mint update failure admits no successors and exact recovery 
       wallet,
     })
     assert.ok(recovered.token)
+    const recoveredActivity = await assertWithdrawalActivity(fixture, 'pending', 5)
+    assert.deepEqual(recoveredActivity, originalActivity)
     assert.equal(prepares, 1)
   } finally {
     await fixture.close()
@@ -2001,6 +2014,7 @@ test('reclaim-prepared work resumes after restart without preparing a second rec
       /mint response was interrupted/,
     )
     assert.equal((await fixture.transfer(transfer.transferId))?.deliveryState, 'reclaim-prepared')
+    const originalActivity = await assertWithdrawalActivity(fixture, 'pending', 5)
     interrupted.checkProofsStates = async () => {
       throw new Error('reclaim-prepared classification must not query mint state')
     }
@@ -2035,6 +2049,9 @@ test('reclaim-prepared work resumes after restart without preparing a second rec
     assert.equal(preparations, 0)
     assert.equal((await fixture.transfer(transfer.transferId))?.deliveryState, 'reclaimed')
     assert.equal(await fixture.targetWalletHasProof(successors[0]!), true)
+    const recoveredActivity = await assertWithdrawalActivity(fixture, 'Failed', 0)
+    assert.equal(recoveredActivity.id, originalActivity.id)
+    assert.equal(recoveredActivity.date, originalActivity.date)
   } finally {
     await fixture.close()
   }
@@ -2776,6 +2793,7 @@ test('market funding stores the head with its custody operation and rejects a st
       },
     })
     assert.equal(first.deliveryState, 'delivery-pending')
+    assert.equal((await fixture.activity()).length, 0)
     assert.equal(first.recipientSequence?.predecessorTransferId, null)
     assert.equal(mintCalls, 1)
     assert.equal(
@@ -3402,6 +3420,37 @@ async function createFixture(
   return {
     directory,
     scopeId,
+    activity: (walletId = deriveDurableCustodyWalletId(TEST_SEED)) =>
+      withDurableCustodyUnitOfWork(
+        directory,
+        fence,
+        Date.now(),
+        (database) => new NativeActivitySqlite(database).page({ walletId }).items,
+      ),
+    transferCreatedAt: (transferId: string) =>
+      withDurableCustodyUnitOfWork(
+        directory,
+        fence,
+        Date.now(),
+        (database) =>
+          (
+            database
+              .prepare(
+                'SELECT created_at_ms AS createdAtMs FROM daemon_outgoing_cashu_transfers WHERE scope_id = ? AND transfer_id = ?',
+              )
+              .get(scopeId, transferId) as { createdAtMs: number }
+          ).createdAtMs,
+      ),
+    activitySequence: () =>
+      withDurableCustodyUnitOfWork(
+        directory,
+        fence,
+        Date.now(),
+        (database) =>
+          database
+            .prepare('SELECT sequence FROM daemon_activity_feed WHERE scope_id = ?')
+            .get(scopeId) as { sequence: number } | undefined,
+      ),
     coordinator,
     fence,
     inputProof,
@@ -3490,6 +3539,23 @@ async function createFixture(
           nowMs: Date.now(),
         })
       })
+    },
+    installActivityAbort: (status: 'completed' | 'Failed') => {
+      const originalExec = DatabaseSync.prototype.exec
+      DatabaseSync.prototype.exec = function (sql: string) {
+        const result = originalExec.call(this, sql)
+        if (sql === 'BEGIN IMMEDIATE')
+          originalExec.call(
+            this,
+            `CREATE TEMP TRIGGER test_activity_abort BEFORE INSERT ON daemon_activity_feed
+           WHEN json_extract(NEW.item_json, '$.status') = '${status}'
+           BEGIN SELECT RAISE(ABORT, 'Activity write fault'); END`,
+          )
+        return result
+      }
+      return () => {
+        DatabaseSync.prototype.exec = originalExec
+      }
     },
     installOutgoingTransferAbort: async (phase: 'insert' | 'update') => {
       const name = `test_outgoing_transfer_${phase}_abort`
@@ -3767,3 +3833,245 @@ function signedProof(
     witness: null,
   } as Proof
 }
+
+async function assertWithdrawalActivity(
+  fixture: Awaited<ReturnType<typeof createFixture>>,
+  status: 'pending' | 'completed' | 'Failed',
+  amountSubunits: number,
+) {
+  const items = await fixture.activity()
+  assert.equal(items.length, 1)
+  const item = items[0]!
+  assert.equal(item.type, 'withdrawal')
+  assert.equal(item.status, status)
+  assert.equal(item.amountSubunits, amountSubunits)
+  assert.equal(item.walletId, deriveDurableCustodyWalletId(TEST_SEED))
+  assert.equal(item.baseAsset, 'sat')
+  assert.equal(item.lightningInvoice, null)
+  assert.equal(item.date, new Date(await fixture.transferCreatedAt(item.txId!)).toISOString())
+  assert.equal((await fixture.activity('b'.repeat(64))).length, 0)
+  assert.equal(JSON.stringify(item).includes('send-four'), false)
+  return item
+}
+
+test('Cashu Activity keeps one dated row through partial and full redemption after database reopen', async () => {
+  const fixture = await createFixture()
+  try {
+    const transfer = await fixture.coordinator.execute({
+      transferId: 'activity-partial-spent',
+      amountMsat: 5,
+      mintUrl: MINT_URL,
+      wallet: fixture.wallet(async () => ({ keep: fixture.keepProofs, send: fixture.sendProofs })),
+    })
+    const initial = await assertWithdrawalActivity(fixture, 'pending', 5)
+    const sequence = await fixture.activitySequence()
+    const wallet = fixture.reclaimWallet({
+      successors: [],
+      successorOutputs: [],
+      proofState: () => CheckStateEnum.UNSPENT,
+    })
+    wallet.checkProofsStates = async (proofs) =>
+      proofs.map((proof, index) => ({
+        Y: hashToCurve(new TextEncoder().encode(proof.secret)).toHex(true),
+        state: index === 0 ? CheckStateEnum.SPENT : CheckStateEnum.UNSPENT,
+        witness: null,
+      }))
+    const partial = await fixture.coordinator.classifyBearerTransfer({
+      transferId: transfer.transferId,
+      wallet,
+    })
+    assert.equal(partial.deliveryState, 'bearer-partial')
+    assert.deepEqual(await assertWithdrawalActivity(fixture, 'pending', 5), initial)
+    wallet.checkProofsStates = async (proofs) =>
+      proofs.map((proof) => ({
+        Y: hashToCurve(new TextEncoder().encode(proof.secret)).toHex(true),
+        state: CheckStateEnum.SPENT,
+        witness: null,
+      }))
+    const restarted = fixture.coordinatorFor(fixture.fence, Date.now())
+    await restarted.classifyBearerTransfer({ transferId: transfer.transferId, wallet })
+    const spent = await assertWithdrawalActivity(fixture, 'completed', 5)
+    assert.equal(spent.id, initial.id)
+    assert.equal(spent.date, initial.date)
+    assert.equal(spent.txId, transfer.transferId)
+    assert.deepEqual(await fixture.activitySequence(), sequence)
+    await restarted.classifyBearerTransfer({ transferId: transfer.transferId, wallet })
+    assert.deepEqual(await assertWithdrawalActivity(fixture, 'completed', 5), spent)
+    assert.deepEqual(await fixture.activitySequence(), sequence)
+  } finally {
+    await fixture.close()
+  }
+})
+
+for (const partial of [false, true]) {
+  test(`Cashu Activity excludes reclaimed principal and fees after ${partial ? 'partial' : 'full'} reclaim`, async () => {
+    const fixture = await createFixture()
+    try {
+      await fixture.addAvailableInput(MINT_URL, 'activity-fee-input-one', FEE_KEYSET_ID, 999n)
+      await fixture.addAvailableInput(MINT_URL, 'activity-fee-input-two', FEE_KEYSET_ID, 1000n)
+      const sendOutputs = [
+        OutputData.createSingleData(4, FEE_KEYSET_ID, 'activity-fee-send-four', 40n),
+        OutputData.createSingleData(1, FEE_KEYSET_ID, 'activity-fee-send-one', 41n),
+      ]
+      const keepOutputs = [
+        OutputData.createSingleData(8, FEE_KEYSET_ID, 'activity-fee-keep-eight', 42n),
+        OutputData.createSingleData(2, FEE_KEYSET_ID, 'activity-fee-keep-two', 43n),
+      ]
+      const wallet = fixture.wallet(
+        async () => ({
+          keep: [...keepOutputs.map((output) => signedProof(output)), fixture.inputProof],
+          send: sendOutputs.map((output) => signedProof(output)),
+        }),
+        CheckStateEnum.UNSPENT,
+        { sendOutputs, keepOutputs },
+      )
+      const prepareSend = wallet.prepareSwapToSend
+      wallet.prepareSwapToSend = async (amount, proofs, config, outputConfig) => ({
+        ...(await prepareSend(amount, proofs, config, outputConfig)),
+        fees: Amount.from(1),
+        keysetId: FEE_KEYSET_ID,
+        inputs: proofs.filter((proof) => proof.id === FEE_KEYSET_ID),
+        unselectedProofs: proofs.filter((proof) => proof.id !== FEE_KEYSET_ID),
+      })
+      const keyset = (id?: string) => ({
+        id: id ?? KEYSET_ID,
+        unit: 'msat',
+        keys: KEYS,
+        fee: id === FEE_KEYSET_ID ? 500 : 0,
+        verify: () => true,
+      })
+      wallet.getKeyset = keyset
+      const transfer = await fixture.coordinator.execute({
+        transferId: `activity-fee-reclaim-${partial}`,
+        amountMsat: 5,
+        mintUrl: MINT_URL,
+        wallet,
+      })
+      const initial = await assertWithdrawalActivity(fixture, 'pending', 5)
+      const sequence = await fixture.activitySequence()
+      const successorOutputs = (partial ? [2, 1] : [4]).map((amount, index) =>
+        OutputData.createSingleData(
+          amount,
+          KEYSET_ID,
+          `activity-fee-reclaimed-${amount}`,
+          BigInt(20 + index),
+        ),
+      )
+      const successors = successorOutputs.map((output) => signedProof(output))
+      await fixture.advanceCounter(20 + successors.length)
+      const reclaimWallet = fixture.reclaimWallet({
+        successors,
+        successorOutputs,
+        proofState: () => CheckStateEnum.UNSPENT,
+      })
+      reclaimWallet.getKeyset = keyset
+      reclaimWallet.prepareSwapToReceive = async (token, config) => {
+        config?.onCountersReserved?.({ keysetId: KEYSET_ID, start: 20, count: successors.length })
+        return {
+          amount: Amount.from(partial ? 3 : 4),
+          fees: Amount.from(1),
+          keysetId: KEYSET_ID,
+          inputs: getDecodedToken(token, [FEE_KEYSET_ID]).proofs,
+          keepOutputs: successorOutputs,
+          unselectedProofs: [],
+        }
+      }
+      reclaimWallet.checkProofsStates = async (proofs) =>
+        proofs.map((proof) => ({
+          Y: hashToCurve(new TextEncoder().encode(proof.secret)).toHex(true),
+          state:
+            partial &&
+            proof.secret ===
+              transfer.token!.proofs.find((candidate) => candidate.amount === '1')!.secret
+              ? CheckStateEnum.SPENT
+              : CheckStateEnum.UNSPENT,
+          witness: null,
+        }))
+      const reclaimed = await fixture.coordinator.reclaim({
+        transferId: transfer.transferId,
+        wallet: reclaimWallet,
+      })
+      assert.equal(reclaimed.deliveryState, 'reclaimed')
+      assert.equal(reclaimed.reclaim?.walletReceiveOperation.preview.fees, '1')
+      const final = await assertWithdrawalActivity(
+        fixture,
+        partial ? 'completed' : 'Failed',
+        partial ? 1 : 0,
+      )
+      assert.equal(final.id, initial.id)
+      assert.equal(final.date, initial.date)
+      assert.deepEqual(await fixture.activitySequence(), sequence)
+      const restarted = fixture.coordinatorFor(fixture.fence, Date.now())
+      await restarted.reclaim({ transferId: transfer.transferId, wallet: reclaimWallet })
+      assert.deepEqual(
+        await assertWithdrawalActivity(fixture, partial ? 'completed' : 'Failed', partial ? 1 : 0),
+        final,
+      )
+      assert.equal(await fixture.targetWalletHasProof(successors[0]!), true)
+    } finally {
+      await fixture.close()
+    }
+  })
+}
+
+test('Cashu Activity write failure rolls back classification and reclaim admission with their source', async () => {
+  const fixture = await createFixture()
+  let removeFault = () => {}
+  try {
+    const transfer = await fixture.coordinator.execute({
+      transferId: 'activity-rollback',
+      amountMsat: 5,
+      mintUrl: MINT_URL,
+      wallet: fixture.wallet(async () => ({ keep: fixture.keepProofs, send: fixture.sendProofs })),
+    })
+    const initial = await assertWithdrawalActivity(fixture, 'pending', 5)
+    const sequence = await fixture.activitySequence()
+    const spentWallet = fixture.reclaimWallet({
+      successors: [],
+      successorOutputs: [],
+      proofState: () => CheckStateEnum.SPENT,
+    })
+    removeFault = fixture.installActivityAbort('completed')
+    await assert.rejects(
+      () =>
+        fixture.coordinator.classifyBearerTransfer({
+          transferId: transfer.transferId,
+          wallet: spentWallet,
+        }),
+      /Activity write fault/,
+    )
+    removeFault()
+    assert.equal((await fixture.transfer(transfer.transferId))?.deliveryState, 'delivery-pending')
+    assert.deepEqual(await assertWithdrawalActivity(fixture, 'pending', 5), initial)
+    const successorOutputs = [
+      OutputData.createSingleData(4, KEYSET_ID, 'activity-rollback-returned-four', 20n),
+      OutputData.createSingleData(1, KEYSET_ID, 'activity-rollback-returned-one', 21n),
+    ]
+    const successors = successorOutputs.map((output) => signedProof(output))
+    await fixture.advanceCounter(22)
+    const reclaimWallet = fixture.reclaimWallet({
+      successors,
+      successorOutputs,
+      proofState: () => CheckStateEnum.UNSPENT,
+    })
+    removeFault = fixture.installActivityAbort('Failed')
+    await assert.rejects(
+      () => fixture.coordinator.reclaim({ transferId: transfer.transferId, wallet: reclaimWallet }),
+      /Activity write fault/,
+    )
+    removeFault()
+    assert.equal((await fixture.transfer(transfer.transferId))?.deliveryState, 'reclaim-prepared')
+    assert.equal(await fixture.targetWalletHasProof(successors[0]!), false)
+    assert.deepEqual(await assertWithdrawalActivity(fixture, 'pending', 5), initial)
+    const restarted = fixture.coordinatorFor(fixture.fence, Date.now())
+    await restarted.reclaim({ transferId: transfer.transferId, wallet: reclaimWallet })
+    const final = await assertWithdrawalActivity(fixture, 'Failed', 0)
+    assert.equal(final.id, initial.id)
+    assert.equal(final.date, initial.date)
+    assert.deepEqual(await fixture.activitySequence(), sequence)
+    assert.equal(await fixture.targetWalletHasProof(successors[0]!), true)
+  } finally {
+    removeFault()
+    await fixture.close()
+  }
+})

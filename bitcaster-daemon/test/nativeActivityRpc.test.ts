@@ -8,6 +8,7 @@ import type { ActivityItem } from '@bitcaster-market/client-sdk/activityLog'
 import { NativeActivitySqlite, type NativeActivityPage } from '../src/nativeActivitySqlite.ts'
 import { bootstrapFreshDaemonProfile } from '../src/profileBootstrap.ts'
 import { dispatch } from '../src/server.ts'
+import { DAEMON_ACTIVITY_PAGE_SIZE_MAX, DAEMON_ACTIVITY_CURSOR_BYTES_MAX } from '../src/protocol.ts'
 import { openDaemonStateSqlite } from '../src/stateSqlite.ts'
 
 const WALLET_A = deriveDurableCustodyWalletId(Buffer.from('31'.repeat(64), 'hex'))
@@ -172,3 +173,69 @@ function row(walletId: string, id: string, status: ActivityItem['status']): Acti
     lightningInvoice: null,
   }
 }
+
+test('actual Activity RPC bounds serialized pages with near-limit UTF-8 and escaped rows', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'bitcaster-activity-rpc-bytes-'))
+  const previousHome = process.env.BITCASTER_DAEMON_HOME
+  process.env.BITCASTER_DAEMON_HOME = directory
+  t.mock.method(globalThis, 'fetch', () => {
+    throw new Error('Activity must remain offline')
+  })
+  // Fifty 16 KiB persisted rows plus the bounded cursor and fixed RPC framing fit below 1 MiB.
+  const rowBytesMax = 16 * 1024
+  const responseBytesMax =
+    DAEMON_ACTIVITY_PAGE_SIZE_MAX * rowBytesMax + DAEMON_ACTIVITY_CURSOR_BYTES_MAX + 1024
+  assert.ok(responseBytesMax < 1024 * 1024)
+  try {
+    await bootstrapFreshDaemonProfile({
+      directory,
+      engineBaseUrl: 'https://engine.example',
+      mintUrl: 'https://mint.example',
+      walletSeedHex: '31'.repeat(64),
+      nostrSecretKeyHex: '33'.repeat(32),
+    })
+    const database = await openDaemonStateSqlite(directory)
+    try {
+      const activity = new NativeActivitySqlite(database)
+      for (let index = 0; index < DAEMON_ACTIVITY_PAGE_SIZE_MAX + 1; index++) {
+        const id = `large-${index}`
+        const large: ActivityItem = {
+          ...row(WALLET_A, id, 'completed'),
+          marketTitle: '\u0001'.repeat(1200) + '雪'.repeat(2000),
+        }
+        large.marketTitle += 'x'.repeat(rowBytesMax - Buffer.byteLength(JSON.stringify(large)))
+        assert.equal(Buffer.byteLength(JSON.stringify(large)), rowBytesMax)
+        activity.upsert({ walletId: WALLET_A, item: large, origin: 'native', sourceId: id })
+      }
+    } finally {
+      database.close()
+    }
+    const response = await dispatch({
+      method: 'wallet.activity',
+      params: { pageSize: DAEMON_ACTIVITY_PAGE_SIZE_MAX },
+    })
+    assert.equal(response.ok, true)
+    const page = response.result as NativeActivityPage
+    assert.equal(page.items.length, DAEMON_ACTIVITY_PAGE_SIZE_MAX)
+    assert.equal(page.hasMore, true)
+    assert.ok(page.nextCursor !== null)
+    assert.ok(Buffer.byteLength(page.nextCursor) <= DAEMON_ACTIVITY_CURSOR_BYTES_MAX)
+    const bytes = Buffer.byteLength(JSON.stringify(response))
+    assert.ok(bytes > 800 * 1024, 'fixture must exercise the full-size page')
+    assert.ok(
+      bytes <= responseBytesMax,
+      `serialized RPC response exceeded its derived bound: ${bytes}`,
+    )
+    t.diagnostic(`Maximum-size RPC page: ${bytes} bytes; derived bound: ${responseBytesMax} bytes`)
+    const next = await dispatch({
+      method: 'wallet.activity',
+      params: { pageSize: DAEMON_ACTIVITY_PAGE_SIZE_MAX, cursor: page.nextCursor },
+    })
+    assert.equal((next.result as NativeActivityPage).items.length, 1)
+    assert.ok(Buffer.byteLength(JSON.stringify(next)) <= responseBytesMax)
+  } finally {
+    if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
+    else process.env.BITCASTER_DAEMON_HOME = previousHome
+    await rm(directory, { recursive: true, force: true })
+  }
+})

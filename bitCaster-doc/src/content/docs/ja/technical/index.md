@@ -162,6 +162,127 @@ bitcaster-cli wallet assets --cursor <nextCursor> --page-size 100
 名前が `Sats` で終わるフィールドの単位は sats です。`Msat` で終わるものは msat です。
 金額を合計する前に単位をそろえてください。1,000 msat は 1 sat です。
 
+### Wallet Activity を読む
+
+選択中のウォレットに保存された表示用履歴を取得します。
+
+```bash
+bitcaster-cli wallet activity --page-size 25
+bitcaster-cli wallet activity --cursor <nextCursor> --page-size 25
+```
+
+このローカル読み取りはオフラインで動作します。ミント、エンジン、リレーには接続しません。
+ページサイズの既定値は 25 件、最大値は 50 件です。
+`nextCursor` は変更せずに渡してください。`null` なら終了です。
+カーソルはこのウォレットとプロファイルに属します。別のプロファイルでは使用できません。
+ページは追加順で、新しい項目から返します。最初のページで取得対象を固定します。
+その後に追加された項目を取得するには、カーソルを指定せずに再開してください。
+ページの取得中に、既存の項目の状態が変わる場合があります。
+
+JSON レスポンスは次の形式です。
+
+```json
+{
+  "ok": true,
+  "result": {
+    "items": [
+      {
+        "id": "example-deposit-id",
+        "walletId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "type": "deposit",
+        "amountSubunits": 1234,
+        "baseAsset": "sat",
+        "date": "2026-10-06T00:00:00.000Z",
+        "status": "completed",
+        "txId": null,
+        "lightningInvoice": null
+      }
+    ],
+    "nextCursor": null,
+    "hasMore": false
+  }
+}
+```
+
+`amountSubunits` は msat 単位の整数です。`baseAsset` が `sat` の場合も同じです。
+例の金額は 1.234 sats です。`id` は変化しない表示用の識別子です。
+種類には `deposit`、`withdrawal`、`Buy`、`Sell`、`payout_claimed` があります。
+状態は `pending`、`completed`、`Failed` です。大文字と小文字を区別します。
+`txId` と `lightningInvoice` は、取得できない場合は `null` です。
+該当する場合の任意フィールドには、`marketId`、`marketTitle`、`positionId`、
+`failureReason`、`tradeDetails` があります。欠落した値を推測しないでください。
+確定した取引の詳細には、既知の場合の `orderId`、`fillId`、`outcomeId`、
+`tokenSide`、`faceAmountSubunits`、`divisibility` が含まれます。
+
+完了した入金と Claim は、検証済みの受取額を表示します。
+完了した Lightning 出金は、手数料を除いた支払い元本を表示します。
+送信した Cashu トークンは、すべての proof が使用されるか、回収が完了するまで保留状態です。
+トークン全体を回収すると、出金は元本ゼロの `Failed` になり、
+理由は `Cancelled; funds reclaimed` と表示されます。
+一部を回収した場合、完了金額は受取人が使用した元本だけです。
+回収手数料はこの金額に含めません。自分の資金の回収では入金項目を作りません。
+ボットへの資金提供と Score の送金は、この出金履歴の対象外です。
+復旧では同じ操作の識別子を再利用します。再試行で項目は増えません。
+
+「請求の払戻金を復元」は、新たにウォレットへ反映した払戻金の proof だけを表示します。
+`claimRecovery` オブジェクトには、`kind: "retained-claim-payout"`、
+`originalOperationId`、`originalStatus: "Failed"`、
+`originalFailureCode: 13015` が含まれます。完了状態は復旧を表します。
+元の Claim は失敗のままです。既に保持している proof や使用済みの proof では、
+新たな受取項目を作りません。そのため、検証済みの過去の払戻金総額が、
+復旧による受取額より大きい場合があります。
+元の記録に支払い時刻がない場合、`date` は完了をローカルで初めて確認した時刻です。
+ミントが処理した時刻の証明ではありません。
+
+独自の GUI や TUI では、`wallet activity --page-size 25` を呼び出し、
+`result.items` を `id` で識別して表示できます。
+利用者が続きを要求したら `nextCursor` を渡してください。
+新しい履歴を表示するには、最初のページから更新します。
+`--wallet-id <wallet-id>` で、選択中のウォレットを明示的に確認できます。
+ネイティブの履歴には、ブラウザーのキャッシュにある 500 件の制限はありません。
+Activity は支出を許可する情報ではなく、全期間の完全な監査履歴でもありません。
+資金や復旧状態は、ウォレット残高や操作のコマンドで確認してください。
+
+### 暗号化した Activity をリレーと同期する
+
+```bash
+bitcaster-cli wallet activity-sync
+bitcaster-cli wallet activity-sync --limit 50 --publish
+```
+
+既定のコマンドは、選択中のウォレットの Activity を取り込みます。
+有効な Nostr 署名者と設定済みのリレーを使います。
+`--wallet-id <wallet-id>` で対象のウォレットを明示的に確認できます。
+ローカルの `wallet activity` コマンドはリレーに接続しません。
+
+公開には `--publish` が必要です。ローカルの対象範囲と、
+リレーで確認したスナップショットを統合します。
+`--limit` はローカルの 1～500 件を選択します。既定値は 100 件です。
+保持済みのローカル履歴は削除しません。
+リレーの各エンベロープは最大 500 件です。設定できるリレーは最大 16 個です。
+
+公開時には、確認済みの他のウォレットや旧形式の項目を保持します。
+保持できないスナップショットは公開しません。
+不明なフィールド、不完全なリレー応答、リモートイベントの変更、
+公開時刻より古くないリモート時刻、統合後の上限超過は、公開を拒否する理由になります。
+暗号化する平文の上限は 65,535 バイトです。
+上限に収めるために他のウォレットの項目を削除しません。
+
+`importedRows`、`queryComplete`、`window` と `publication` は別々に確認してください。
+公開が拒否されたり失敗したりしても、取り込みは成功する場合があります。
+`window.localTruncated` は選択した範囲を表し、ローカルデータの削除を意味しません。
+`publication.status` は `not-requested`、`refused`、`acknowledged`、`partial`、
+`failed` のいずれかです。`publication.reason` は拒否の理由を示します。
+`publication.acknowledgedRelayCount` は受領応答を返したリレーの数です。
+受領応答は、永続保存や履歴の完全性を証明しません。
+
+最後の読み取りから公開までの間や、公開後に、別のクライアントがイベントを
+置き換える可能性があります。公開を試みた場合は、
+`publication.remainingReadPublishRace` がこの制限を示します。
+`completeHistory` は常に false です。
+この暗号化された表示用の履歴は、支出用 proof のバックアップでも、
+資金の復旧を許可する情報でもありません。
+
 ### マーケットとウォレットの値を継続して読む
 
 設定済みのデーモンを起動してから、次のいずれかを実行します。

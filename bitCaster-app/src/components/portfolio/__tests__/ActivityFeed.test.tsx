@@ -3,6 +3,10 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it } from "vitest";
 import i18n from "@/i18n";
 import type { ActivityItem } from "@/types/portfolio";
+import {
+  decodeActivityLogPayload,
+  encodeActivityLogPayload,
+} from "@bitcaster/client-sdk/activityLog";
 import { ActivityFeed } from "../ActivityFeed";
 
 function trade(overrides: Partial<ActivityItem> = {}): ActivityItem {
@@ -217,4 +221,51 @@ describe("ActivityFeed trade details", () => {
       expect(screen.getByText("Named market")).toBeInTheDocument();
     },
   );
+});
+
+describe("ActivityFeed recovered Claim credit", () => {
+  it.each([
+    ["en", "Claim payout recovered", "Original Claim remains failed (13015)."],
+    ["ja", "請求の払戻金を復元", "元の請求は失敗のままです（13015）。"],
+  ] as const)(
+    "shows completed recovery and failed original Claim in %s",
+    async (language, label, note) => {
+      await i18n.changeLanguage(language);
+      const recovered: ActivityItem = {
+        id: "recovered-credit-one",
+        walletId: "a".repeat(64),
+        type: "payout_claimed",
+        amountSubunits: 8,
+        baseAsset: "sat",
+        date: "2026-10-06T00:00:00.000Z",
+        status: "completed",
+        txId: null,
+        lightningInvoice: null,
+        claimRecovery: {
+          kind: "retained-claim-payout",
+          originalOperationId: "claim-leg-one",
+          originalStatus: "Failed",
+          originalFailureCode: 13015,
+        },
+      };
+      const restored = decodeActivityLogPayload(encodeActivityLogPayload([recovered]))!;
+      render(<ActivityFeed activity={restored} />);
+      expect(screen.getByText(label)).toBeInTheDocument();
+      expect(screen.getByText(note)).toBeInTheDocument();
+      expect(screen.getByText("completed")).toBeInTheDocument();
+      expect(screen.getByRole("article").textContent).toContain("+");
+      expect(screen.getByRole("group", { name: "0.008 sats" })).toBeInTheDocument();
+    },
+  );
+
+  it("keeps normal completed Claim labeling without a recovery annotation", () => {
+    const ordinary = trade({ type: "payout_claimed" });
+    delete ordinary.tradeDetails;
+    render(
+      <ActivityFeed activity={decodeActivityLogPayload(encodeActivityLogPayload([ordinary]))!} />,
+    );
+    expect(screen.getByText("Payout Claimed")).toBeInTheDocument();
+    expect(screen.queryByText(/Original Claim/)).not.toBeInTheDocument();
+    expect(screen.queryByText("Claim payout recovered")).not.toBeInTheDocument();
+  });
 });

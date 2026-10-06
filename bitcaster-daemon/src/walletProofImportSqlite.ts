@@ -190,12 +190,13 @@ export class WalletProofImportSqlite {
       .run(operationId, scopeId, rootId, pageIndex)
   }
 
-  complete(scopeId: string, rootId: string): void {
-    this.database
+  complete(scopeId: string, rootId: string): boolean {
+    const result = this.database
       .prepare(
         `UPDATE wallet_proof_import_roots SET state = 'complete' WHERE scope_id = ? AND root_id = ? AND state = 'active'`,
       )
       .run(scopeId, rootId)
+    return result.changes === 1
   }
 }
 

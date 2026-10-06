@@ -1,4 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite'
+import { mapOutgoingCashuWithdrawalActivity } from '@bitcaster-market/client-sdk/outgoingCashuActivity'
+import { NativeActivitySqlite } from './nativeActivitySqlite.ts'
 import {
   decodeDurableOutgoingCashuTransfer,
   DURABLE_OUTGOING_CASHU_RECOVERY_BYTES_MAX,
@@ -77,6 +79,7 @@ export class DurableOutgoingCashuSqliteStore {
       }
       this.#putArtifact(input.scopeId, fingerprint, body, input.nowMs)
       this.#insert(input, transfer, fingerprint)
+      this.#writeWithdrawalActivity(input.scopeId, transfer)
       return
     }
     if (
@@ -115,6 +118,38 @@ export class DurableOutgoingCashuSqliteStore {
     this.#putArtifact(input.scopeId, fingerprint, body, input.nowMs)
     this.#update(input, transfer, fingerprint, existing.transfer.revision)
     this.#deleteUnreferencedArtifact(input.scopeId, existing.artifactId)
+    this.#writeWithdrawalActivity(input.scopeId, transfer)
+  }
+
+  #writeWithdrawalActivity(scopeId: string, transfer: DurableOutgoingCashuTransfer): void {
+    switch (transfer.deliveryIntent.policy) {
+      case 'durable-recipient-ack':
+        return
+      case 'bearer-spend-classification':
+        break
+      default:
+        throw new Error('outgoing transfer Activity policy is invalid')
+    }
+    const row = this.#database
+      .prepare(
+        `SELECT created_at_ms AS createdAtMs FROM daemon_outgoing_cashu_transfers
+         WHERE scope_id = ? AND transfer_id = ?`,
+      )
+      .get(scopeId, transfer.transferId) as { createdAtMs: number } | undefined
+    if (row === undefined) throw new Error('outgoing transfer Activity source is missing')
+    const walletId = scopeId.slice('custody:wallet:'.length)
+    const item = mapOutgoingCashuWithdrawalActivity({
+      walletId,
+      transfer,
+      createdAtMs: row.createdAtMs,
+    })
+    if (item === null) throw new Error('outgoing transfer Activity is missing')
+    new NativeActivitySqlite(this.#database).upsert({
+      walletId,
+      item,
+      origin: 'native',
+      sourceId: item.id,
+    })
   }
 
   /** Read and validate one funding head without loading bearer material into the head. */

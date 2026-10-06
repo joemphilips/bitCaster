@@ -1,3 +1,4 @@
+import { creditedProofAmountMsat, writeNativeCompletedActivity } from './nativeCompletedActivity.ts'
 import type { Proof } from '@cashu/cashu-ts'
 import {
   applyDurableCustodyTransaction,
@@ -454,6 +455,20 @@ export class DaemonDurableWalletReceiveCoordinator {
             proofs: [proof],
             asset: { kind: 'sats', baseAsset: 'sat', unit: receiveUnitFromRecord(current) },
             nowMs: observedAtMs,
+          })
+        }
+        if (isReceiveRecord(current)) {
+          writeNativeCompletedActivity(database, {
+            scopeId: current.scope.scopeId,
+            sourceKind: 'wallet-receive',
+            sourceId: current.operation.retainedOperationKey,
+            type: 'deposit',
+            amountMsat: creditedProofAmountMsat(
+              verified.proofs.map(({ proof }) => proof),
+              receiveUnitFromRecord(current),
+            ),
+            completedAtMs: observedAtMs,
+            txId: current.operation.retainedOperationKey,
           })
         }
       },

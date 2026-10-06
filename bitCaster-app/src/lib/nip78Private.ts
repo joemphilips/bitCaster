@@ -7,28 +7,18 @@
  */
 
 import { NDKEvent, NDKPrivateKeySigner } from "@nostr-dev-kit/ndk";
-import { nip44 } from "nostr-tools";
-import { getPublicKey } from "nostr-tools/pure";
-import { hexToBytes } from "nostr-tools/utils";
+import {
+  BITCASTER_PRIVATE_STATE_KIND,
+  createPrivateNip78Content,
+  decryptSelfNip44,
+} from "@bitcaster/client-sdk/privateNip78";
 import { withTemporaryRelayNdk, type RelayOperationOptions } from "./nostr";
 
-export const BITCASTER_PRIVATE_STATE_KIND = 30078 as const;
-
-export function encryptSelfNip44(privateKeyHex: string, plaintext: string): string {
-  const privateKey = hexToBytes(privateKeyHex);
-  const publicKey = getPublicKey(privateKey);
-  const conversationKey = nip44.v2.utils.getConversationKey(privateKey, publicKey);
-  return nip44.v2.encrypt(plaintext, conversationKey);
-}
-
-export function decryptSelfNip44(
-  privateKeyHex: string,
-  publicKey: string,
-  ciphertext: string,
-): string {
-  const conversationKey = nip44.v2.utils.getConversationKey(hexToBytes(privateKeyHex), publicKey);
-  return nip44.v2.decrypt(ciphertext, conversationKey);
-}
+export {
+  BITCASTER_PRIVATE_STATE_KIND,
+  encryptSelfNip44,
+  decryptSelfNip44,
+} from "@bitcaster/client-sdk/privateNip78";
 
 export async function publishPrivateNip78(
   privateKeyHex: string,
@@ -38,12 +28,10 @@ export async function publishPrivateNip78(
 ): Promise<void> {
   await withTemporaryRelayNdk(options, new NDKPrivateKeySigner(privateKeyHex), async (ndk) => {
     const event = new NDKEvent(ndk);
-    event.kind = BITCASTER_PRIVATE_STATE_KIND;
-    event.tags = [
-      ["d", dTag],
-      ["encrypted", "nip44"],
-    ];
-    event.content = encryptSelfNip44(privateKeyHex, plaintext);
+    const payload = createPrivateNip78Content(privateKeyHex, dTag, plaintext);
+    event.kind = payload.kind;
+    event.tags = payload.tags;
+    event.content = payload.content;
 
     await event.publishReplaceable();
   });

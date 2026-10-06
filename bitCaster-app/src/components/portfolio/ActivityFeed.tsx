@@ -184,8 +184,15 @@ export function ActivityFeed({ activity }: ActivityFeedProps) {
             {/* Description */}
             <div className="flex-1 min-w-0">
               <p className="text-sm font-medium text-slate-900 dark:text-white">
-                {t(config.labelKey)}
+                {t(item.claimRecovery ? "activityClaimRecovery.label" : config.labelKey)}
               </p>
+              {item.claimRecovery && (
+                <p className="text-xs text-slate-500 dark:text-slate-400 break-words">
+                  {t("activityClaimRecovery.originalFailed", {
+                    code: item.claimRecovery.originalFailureCode,
+                  })}
+                </p>
+              )}
               {label && (
                 <p
                   className="text-xs text-slate-500 dark:text-slate-400 break-words sm:truncate"
