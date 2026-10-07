@@ -1895,8 +1895,16 @@ it("stops before work when the captured profile becomes stale", async () => {
 it("allows one tab to write and transfers leadership after cleanup", async () => {
   const fixture = await runtimeFixture();
   const leadership = queuedLeadership();
-  const firstWorker = vi.fn().mockResolvedValue({ kind: "idle" });
-  const secondWorker = vi.fn().mockResolvedValue({ kind: "idle" });
+  const firstStarted = deferred<void>();
+  const secondStarted = deferred<void>();
+  const firstWorker = vi.fn(async () => {
+    firstStarted.resolve();
+    return { kind: "idle" };
+  });
+  const secondWorker = vi.fn(async () => {
+    secondStarted.resolve();
+    return { kind: "idle" };
+  });
   const first = createRuntime(
     fixture,
     firstWorker,
@@ -1905,19 +1913,27 @@ it("allows one tab to write and transfers leadership after cleanup", async () =>
     undefined,
     leadership,
   );
-  const second = createRuntime(
-    fixture,
-    secondWorker,
-    runtimeRemote(),
-    () => true,
-    undefined,
-    leadership,
-  );
-  await vi.waitFor(() => expect(firstWorker).toHaveBeenCalled());
-  expect(secondWorker).not.toHaveBeenCalled();
-  first.stop();
-  await vi.waitFor(() => expect(secondWorker).toHaveBeenCalled());
-  second.stop();
+  let second: ReturnType<typeof createRuntime> | undefined;
+  try {
+    await firstStarted.promise;
+    second = createRuntime(
+      fixture,
+      secondWorker,
+      runtimeRemote(),
+      () => true,
+      undefined,
+      leadership,
+    );
+    await leadership.contenderQueued;
+    expect(firstWorker).toHaveBeenCalled();
+    expect(secondWorker).not.toHaveBeenCalled();
+    first.stop();
+    await secondStarted.promise;
+    expect(secondWorker).toHaveBeenCalled();
+  } finally {
+    first.stop();
+    second?.stop();
+  }
 });
 
 it("does not authorize or store enrollment after the profile becomes stale", async () => {
@@ -2740,9 +2756,15 @@ const immediateLockManager = {
 function queuedLeadership() {
   let active = false;
   const waiters: (() => void)[] = [];
+  const contenderQueued = deferred<void>();
   return {
+    contenderQueued: contenderQueued.promise,
     async hold(_name: string, signal: AbortSignal, task: () => Promise<void>) {
-      while (active && !signal.aborted) await waitForTurn(waiters, signal);
+      while (active && !signal.aborted) {
+        const turn = waitForTurn(waiters, signal);
+        contenderQueued.resolve();
+        await turn;
+      }
       if (signal.aborted) return;
       active = true;
       try {

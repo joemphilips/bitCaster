@@ -650,7 +650,7 @@ describe("browser encrypted wallet backup V2 admission", () => {
     ).resolves.toEqual({ ...desired, syncState: "acknowledged" });
   });
 
-  it("reimports an evicted acknowledged mixed asset with a fresh operation", async () => {
+  it("retires the completed reimport journal for an evicted mixed asset", async () => {
     const fixture = await createFixture(2, CTF_ASSET, { sealedIndices: [1] });
     database = fixture.database;
     await admitBrowserEncryptedWalletBackupV2MixedAsset(fixture.input);
@@ -665,8 +665,8 @@ describe("browser encrypted wallet backup V2 admission", () => {
     });
 
     const operations = await database.custodyOperations.toArray();
-    expect(operations).toHaveLength(originalOperations.length + 1);
-    expect(operations.map(({ record }) => record.operation.binding.activityId)).toContain(
+    expect(operations).toHaveLength(originalOperations.length);
+    expect(operations.map(({ record }) => record.operation.binding.activityId)).not.toContain(
       "backup-v2-restore:bundle:reimport:mixed-reimport",
     );
     expect(await database.custodyProofs.count()).toBe(2);
@@ -1094,7 +1094,7 @@ describe("browser encrypted wallet backup V2 admission", () => {
     await expectDesired(database, fixture, 2);
   });
 
-  it("uses a fresh local operation when an evicted cache is restored with different proofs", async () => {
+  it("retires a completed reimport after an evicted cache receives different proofs", async () => {
     const fixture = await createFixture(1);
     database = fixture.database;
     await admitBrowserEncryptedWalletBackupV2Asset(fixture.input);
@@ -1108,14 +1108,16 @@ describe("browser encrypted wallet backup V2 admission", () => {
       randomId: () => "different-proofs",
     });
     expect(await database.custodyProofs.count()).toBe(1);
-    expect(await database.custodyOperations.count()).toBe(2);
+    expect(await database.custodyOperations.count()).toBe(1);
     await expectDesired(database, fixture, 1);
   });
 
-  it("reimports an evicted acknowledged asset with a fresh local operation", async () => {
-    const fixture = await createFixture(1);
+  it.each([1, 65])("retires completed reimport pages for %i evicted proofs", async (count) => {
+    const fixture = await createFixture(count);
     database = fixture.database;
     await admitBrowserEncryptedWalletBackupV2Asset(fixture.input);
+    const operationCount = await database.custodyOperations.count();
+    const artifactCount = await database.custodyArtifacts.count();
     await database.custodyProofs.clear();
     await database.custodyProofBackupAuthorities.clear();
     await database.proofs.clear();
@@ -1125,12 +1127,13 @@ describe("browser encrypted wallet backup V2 admission", () => {
       randomId: () => "reimport-1",
     });
 
-    expect(await database.custodyProofs.count()).toBe(1);
-    expect(await database.custodyProofBackupAuthorities.count()).toBe(1);
+    expect(await database.custodyProofs.count()).toBe(count);
+    expect(await database.custodyProofBackupAuthorities.count()).toBe(count);
     await expectExactRemoteOrigins(database, fixture.input.verified);
-    expect(await database.proofs.count()).toBe(1);
-    expect(await database.custodyOperations.count()).toBe(2);
-    await expectDesired(database, fixture, 1);
+    expect(await database.proofs.count()).toBe(count);
+    expect(await database.custodyOperations.count()).toBe(operationCount);
+    expect(await database.custodyArtifacts.count()).toBe(artifactCount);
+    await expectDesired(database, fixture, count);
   });
 
   it("rejects a partial or same-count foreign local proof set", async () => {
@@ -1303,7 +1306,7 @@ describe("browser encrypted wallet backup V2 admission", () => {
     await admitBrowserEncryptedWalletBackupV2Asset(fixture.input);
 
     expect(await database.custodyProofs.count()).toBe(512);
-    expect(await database.custodyOperations.count()).toBe(16);
+    expect(await database.custodyOperations.count()).toBe(0);
     await expectDesired(database, fixture, 512);
   }, 30_000);
 

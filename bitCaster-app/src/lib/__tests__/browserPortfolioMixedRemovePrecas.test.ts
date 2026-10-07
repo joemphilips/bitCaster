@@ -15,6 +15,7 @@ import { BitcasterDB } from "../../stores/proof-db";
 import { decodeEncryptedWalletBackupV2DesiredAssetRow } from "../../stores/browser-encrypted-wallet-backup-v2-desired-asset";
 import { browserWalletDatabaseName } from "../browserWalletProfile";
 import {
+  CONDITION,
   conditionalKeysetIdFor,
   immediateLockManager,
   MINT,
@@ -84,7 +85,7 @@ vi.mock("../encryptedWalletBackupDriver", async () => {
 });
 
 const databases: BitcasterDB[] = [];
-const position = { mintUrl: MINT, conditionId: "aa".repeat(32), outcomeCollection: OUTCOME };
+const position = { mintUrl: MINT, conditionId: CONDITION, outcomeCollection: OUTCOME };
 
 beforeEach(() => {
   vi.clearAllMocks();

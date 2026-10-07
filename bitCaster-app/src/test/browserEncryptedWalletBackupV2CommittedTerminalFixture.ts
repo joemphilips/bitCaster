@@ -20,8 +20,8 @@ import {
 import { prepareCtfVerifiedLosingAuthority } from "@bitcaster/client-sdk/conditionOracleEvidence";
 import { browserD4OracleEvidence } from "./browserD4OracleFixture";
 
-/** Commit the exact CTF operation and its authenticated terminal rejection. */
-export async function commitBrowserCtfTerminalOperation(input: {
+/** Prepare the exact CTF operation and its authenticated rejection without committing it. */
+export async function prepareBrowserCtfTerminalOperation(input: {
   readonly adapter: BrowserDurableCustodyAdapter;
   readonly database: BitcasterDB;
   readonly scope: DurableCustodyScope;
@@ -32,12 +32,7 @@ export async function commitBrowserCtfTerminalOperation(input: {
   readonly predecessorProofs: readonly BrowserCustodyProofRow[];
   readonly publicKey: string;
   readonly classifiedAtMs?: number;
-}): Promise<{
-  readonly operationId: string;
-  readonly rejection: ReturnType<typeof prepareDurableCustodyExactArtifact>;
-  readonly exactAuthority: ReturnType<typeof prepareDurableCustodyExactArtifact>;
-  readonly rejectionReferenceArtifactId: string;
-}> {
+}) {
   const held = input.predecessorProofs[0]!;
   if (held.conditionId === null || held.outcomeCollection === null)
     throw new Error("test conditional holding is missing");
@@ -143,16 +138,6 @@ export async function commitBrowserCtfTerminalOperation(input: {
     },
   });
   const operationId = record.operation.operationId;
-  await input.adapter.transact(
-    {
-      scope: input.scope,
-      owner: input.owner,
-      operationRows: [{ operationId, expectedRevision: null }],
-    },
-    (transaction) => bindDurableCustodyProofOperation(transaction, record, artifacts),
-    { predecessorProofs: { [operationId]: [...input.predecessorProofs] } },
-  );
-
   const rejection = prepareDurableCustodyExactArtifact({
     schemaVersion: 1,
     kind: "authenticated-terminal-mint-rejection",
@@ -176,6 +161,39 @@ export async function commitBrowserCtfTerminalOperation(input: {
     predecessorDisposition: "retain",
     selectedSuccessorProofIds: [],
   });
+  return { operation, record, artifacts, rejection };
+}
+
+/** Commit the exact CTF operation and its authenticated terminal rejection. */
+export async function commitBrowserCtfTerminalOperation(input: {
+  readonly adapter: BrowserDurableCustodyAdapter;
+  readonly database: BitcasterDB;
+  readonly scope: DurableCustodyScope;
+  readonly owner: DurableCustodyOwnerAuthorization;
+  readonly operationId: string;
+  readonly mintUrl: string;
+  readonly proofs: readonly Proof[];
+  readonly predecessorProofs: readonly BrowserCustodyProofRow[];
+  readonly publicKey: string;
+  readonly classifiedAtMs?: number;
+}): Promise<{
+  readonly operationId: string;
+  readonly rejection: ReturnType<typeof prepareDurableCustodyExactArtifact>;
+  readonly exactAuthority: ReturnType<typeof prepareDurableCustodyExactArtifact>;
+  readonly rejectionReferenceArtifactId: string;
+}> {
+  const { record, artifacts, rejection } = await prepareBrowserCtfTerminalOperation(input);
+  const operationId = record.operation.operationId;
+  await input.adapter.transact(
+    {
+      scope: input.scope,
+      owner: input.owner,
+      operationRows: [{ operationId, expectedRevision: null }],
+    },
+    (transaction) => bindDurableCustodyProofOperation(transaction, record, artifacts),
+    { predecessorProofs: { [operationId]: [...input.predecessorProofs] } },
+  );
+
   const owner = { ...input.owner, observedAtMs: input.classifiedAtMs ?? 20 };
   await input.adapter.transact(
     {

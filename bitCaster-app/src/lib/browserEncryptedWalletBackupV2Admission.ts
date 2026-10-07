@@ -30,6 +30,7 @@ import { browserWalletScope } from "./browserCtfRangeOrderSource";
 import { admitBrowserReceivedProofsWithHeldProfileLock } from "./browserCustodyProofReceive";
 import { withWalletProfileLock } from "./walletProfileLock";
 import { normalizeUrl } from "./url";
+import { retireBrowserEncryptedWalletBackupV2ReimportJournals } from "./browserEncryptedWalletBackupV2ReimportCleanup";
 import type {
   EncryptedWalletBackupV2AssetIdentity,
   EncryptedWalletBackupV2TerminalSeal,
@@ -1774,7 +1775,11 @@ async function commitMixedAuthority(
           await recheckClassification();
         },
         afterPersist: async () => {
-          await bindNewlyRestoredLiveOrigins(input, liveEntries);
+          await bindNewlyRestoredLiveOrigins(
+            input,
+            liveEntries,
+            classification.kind === "evicted" ? sourceOperationId : undefined,
+          );
           await (hadExistingLocal ? reconcile() : persistFreshMixed());
         },
         legacyProofCache: {
@@ -1906,6 +1911,7 @@ async function commitAuthority(
     await bindNewlyRestoredLiveOrigins(
       input,
       selected.map(({ verified: entry }) => entry),
+      start.kind === "evicted" ? sourceOperationId : undefined,
     );
     input.setTargetedRecoveryAdmissionStage?.("backup-admit-counter");
     await restoreCountersInOwnedTransaction(input, verified);
@@ -1968,7 +1974,11 @@ async function commitAuthority(
 async function bindNewlyRestoredLiveOrigins(
   input: Pick<BrowserEncryptedWalletBackupV2AdmissionInput, "database" | "scopeId">,
   entries: readonly EncryptedWalletBackupV2VerifiedProofSet["proofs"][number][],
+  reimportSourceOperationId?: string,
 ): Promise<void> {
+  const admitted: Parameters<
+    typeof retireBrowserEncryptedWalletBackupV2ReimportJournals
+  >[0]["admitted"][number][] = [];
   const observedAtMs = Date.now();
   for (const entry of entries) {
     const key = [input.scopeId, entry.proofId] as [string, string];
@@ -2000,6 +2010,7 @@ async function bindNewlyRestoredLiveOrigins(
     ) {
       throw new Error("browser V2 newly restored live origin conflicts");
     }
+    admitted.push({ proof, operationId: authority.admissionOperationId });
     await input.database.custodyProofBackupAuthorities.put(
       createBrowserRemoteProofBackupAuthorityRow({
         proof,
@@ -2009,6 +2020,13 @@ async function bindNewlyRestoredLiveOrigins(
         restoreProofCommitment: digestEncryptedWalletBackupV2TerminalProofCommitment(entry),
       }),
     );
+  }
+  if (reimportSourceOperationId !== undefined) {
+    await retireBrowserEncryptedWalletBackupV2ReimportJournals({
+      ...input,
+      sourceOperationId: reimportSourceOperationId,
+      admitted,
+    });
   }
 }
 

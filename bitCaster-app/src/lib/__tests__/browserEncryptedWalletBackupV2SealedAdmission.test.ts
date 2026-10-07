@@ -8,7 +8,6 @@ import {
   collectEncryptedWalletBackupV2DescriptorPages,
   createDurableCustodyArtifactReference,
   decryptEncryptedWalletBackupV2ProofSetBundle,
-  digestEncryptedWalletBackupV2TerminalProofCommitment,
   encodeDurableWalletProofDerivationLocatorCbor,
   enumerateEncryptedWalletBackupV2DescriptorPages,
   prepareEncryptedWalletBackupV2TransportBundle,
@@ -52,10 +51,13 @@ import { admitBrowserEncryptedWalletBackupV2SealedAsset } from "../browserEncryp
 import { browserWalletScope } from "../browserCtfRangeOrderSource";
 import { browserWalletDatabaseName } from "../browserWalletProfile";
 
+import { BROWSER_D4_CONDITION } from "../../test/browserD4OracleFixture";
+import { issueBrowserCtfTerminalSealFixture } from "../../test/browserEncryptedWalletBackupV2TerminalSealFixture";
+
 const SEED = Uint8Array.from({ length: 64 }, (_, index) => index + 1);
 const MINT = "https://mint.example";
 const PUBLIC_KEY = "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798";
-const CONDITION_ID = "55".repeat(32);
+const CONDITION_ID = BROWSER_D4_CONDITION;
 const COLLECTION_ID = deriveRootCtfOutcomeCollectionId({
   conditionId: CONDITION_ID,
   outcomeCollection: "YES",
@@ -276,6 +278,7 @@ describe("browser V2 sealed proof admission", () => {
         derivationLocator: entry.locator,
         restoreProofId: entry.proofId,
         restoreProofCommitment: entry.terminalSeal!.proofCommitment,
+        terminalSeal: entry.terminalSeal!,
       }),
     );
     await database.custodyProofBackupAuthorities.put(
@@ -285,6 +288,7 @@ describe("browser V2 sealed proof admission", () => {
         derivationLocator: secondEntry.locator,
         restoreProofId: secondEntry.proofId,
         restoreProofCommitment: secondEntry.terminalSeal!.proofCommitment,
+        terminalSeal: secondEntry.terminalSeal!,
       }),
     );
     await database.encryptedWalletBackupV2DesiredAssets.put({
@@ -728,7 +732,8 @@ async function sealedFixture(
     if (asset.kind !== "ctf") throw new Error("test asset is not CTF");
     return asset;
   });
-  const entries = ctfAssets.map((asset, index) => {
+  const entries = [];
+  for (const [index, asset] of ctfAssets.entries()) {
     const locator = {
       schemaVersion: 1 as const,
       kind: "ctf-range-manifest" as const,
@@ -760,19 +765,17 @@ async function sealedFixture(
         secret: proof.secret,
       }),
     };
-    return {
+    const { proofId: _proofId, ...sealEntry } = entry;
+    entries.push({
       ...entry,
-      terminalSeal: {
-        schemaVersion: 1 as const,
-        kind: "ctf-verified-losing" as const,
-        operationIdDigest: `${String(index + 1).padStart(2, "0")}`.repeat(32),
-        requestDigest: `${String(index + 3).padStart(2, "0")}`.repeat(32),
-        code: 13015 as const,
-        classifiedAtMs: 1_000 + index,
-        proofCommitment: digestEncryptedWalletBackupV2TerminalProofCommitment(entry),
-      },
-    };
-  });
+      terminalSeal: await issueBrowserCtfTerminalSealFixture({
+        seed: SEED,
+        entry: sealEntry,
+        publicKey: PUBLIC_KEY,
+        keysetFinalExpiry: CTF_ASSET.finalExpiry,
+      }),
+    });
+  }
   const asset = createEncryptedWalletBackupV2AssetIdentity({
     mintUrl: MINT,
     unit: "msat",
@@ -807,6 +810,8 @@ async function sealedFixture(
         entry.terminalSeal.code,
         entry.terminalSeal.classifiedAtMs,
         entry.terminalSeal.proofCommitment,
+        entry.terminalSeal.verifiedContextDigest,
+        entry.terminalSeal.authenticationCode,
       ],
     ]),
     [[MINT, "msat", KEYSET_ID, 5]],

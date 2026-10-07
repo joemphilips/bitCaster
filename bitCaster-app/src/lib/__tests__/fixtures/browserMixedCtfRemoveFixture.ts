@@ -3,13 +3,18 @@ import {
   createEncryptedWalletBackupV2AssetIdentity,
   createEncryptedWalletBackupV2CurrentHead,
   createEncryptedWalletBackupV2KeyHandle,
-  digestEncryptedWalletBackupV2TerminalProofCommitment,
+  issueEncryptedWalletBackupV2TerminalSeal,
   enumerateEncryptedWalletBackupV2DescriptorPages,
   prepareEncryptedWalletBackupV2TransportBundle,
 } from "@bitcaster/client-sdk";
 import { encodeCanonicalBackupCbor } from "@bitcaster/client-sdk/encryptedWalletBackupCbor";
 import { deserializeDurableCustodyProofArtifact } from "@bitcaster/client-sdk/durableCustodyProofMaterial";
-import { createBrowserRemoteProofBackupAuthorityRow } from "../../../stores/browser-proof-backup-authority";
+import { deriveDurableWalletProofSecret } from "@bitcaster/client-sdk/durableWalletProofDerivationLocator";
+import { BrowserEncryptedWalletBackupV2TerminalSealStore } from "../../../stores/browser-encrypted-wallet-backup-v2-terminal-seal-store";
+import {
+  createBrowserProofBackupAuthorityRow,
+  createBrowserRemoteProofBackupAuthorityRow,
+} from "../../../stores/browser-proof-backup-authority";
 import { createBrowserCustodyProofRow } from "../../../stores/durable-custody-db";
 import { BitcasterDB } from "../../../stores/proof-db";
 import { EncryptedWalletBackupV2DexieAuthorityStore } from "../../../stores/encrypted-wallet-backup-v2-db";
@@ -32,21 +37,50 @@ const REALM = "backup.example";
 
 /** Build one committed local-only loser beside one remotely backed loser. */
 export async function createMixedCtfRemoveFixture() {
-  const entry = await fixture({ amounts: [1, 1], seed: SEED, counterSource: "browser" });
-  for (const [index, row] of entry.proofs.entries()) {
-    await commitBrowserCtfTerminalOperation({
-      adapter: entry.adapter,
-      database: entry.database,
-      scope: entry.scope,
-      owner: { ...entry.owner, observedAtMs: 10 + index },
-      operationId: `mixed-remove-losing-${index}`,
-      mintUrl: MINT,
-      proofs: [proofFromRow(row)],
-      predecessorProofs: [row],
-      publicKey: MINT_PUBLIC_KEY,
-      classifiedAtMs: 20 + index,
-    });
+  const initial = await fixture({ amounts: [1, 1], seed: SEED, counterSource: "browser" });
+  try {
+    return await buildMixedCtfRemoveFixture(initial);
+  } catch (error) {
+    initial.database.close();
+    await initial.database.delete();
+    throw error;
   }
+}
+
+async function buildMixedCtfRemoveFixture(initial: Awaited<ReturnType<typeof fixture>>) {
+  const originalManaged = initial.proofs[1]!;
+  const locator = {
+    schemaVersion: 1 as const,
+    kind: "nut13" as const,
+    keysetId: originalManaged.keysetId,
+    counter: 19,
+  };
+  const managedPredecessor = createBrowserCustodyProofRow({
+    scopeId: initial.scope.scopeId,
+    normalizedMint: MINT,
+    unit: "msat",
+    proof: {
+      ...proofFromRow(originalManaged),
+      secret: deriveDurableWalletProofSecret({
+        seed: SEED,
+        locator,
+        proofKeysetId: originalManaged.keysetId,
+        proofAmount: 1,
+      }),
+    },
+    asset: { kind: "conditional", conditionId: CONDITION, outcomeCollection: OUTCOME },
+    receivedAtMs: 1,
+  });
+  await initial.database.custodyProofs.delete([initial.scope.scopeId, originalManaged.proofId]);
+  await initial.database.custodyProofBackupAuthorities.delete([
+    initial.scope.scopeId,
+    originalManaged.proofId,
+  ]);
+  await initial.database.custodyProofs.put(managedPredecessor);
+  await initial.database.custodyProofBackupAuthorities.put(
+    createBrowserProofBackupAuthorityRow(managedPredecessor, 2, locator, "ctf-receive"),
+  );
+  const entry = { ...initial, proofs: [initial.proofs[0]!, managedPredecessor] };
 
   const keyHandle = await createEncryptedWalletBackupV2KeyHandle({
     seed: SEED,
@@ -79,6 +113,25 @@ export async function createMixedCtfRemoveFixture() {
       finalExpiry: null,
     },
   });
+  await entry.database.encryptedWalletBackupV2DesiredAssets.put(desired);
+  const committed = [];
+  for (const [index, row] of entry.proofs.entries()) {
+    committed.push(
+      await commitBrowserCtfTerminalOperation({
+        adapter: entry.adapter,
+        database: entry.database,
+        scope: entry.scope,
+        owner: { ...entry.owner, observedAtMs: 10 + index },
+        operationId: `mixed-remove-losing-${index}`,
+        mintUrl: MINT,
+        proofs: [proofFromRow(row)],
+        predecessorProofs: [row],
+        publicKey: MINT_PUBLIC_KEY,
+        classifiedAtMs: 20 + index,
+      }),
+    );
+  }
+
   const bundle = await prepareEncryptedWalletBackupV2TransportBundle({
     keyHandle,
     asset,
@@ -118,35 +171,36 @@ export async function createMixedCtfRemoveFixture() {
 
   const localProof = await readProof(entry.database, scopeId, entry.proofs[0]!.proofId);
   const managedProof = await readProof(entry.database, scopeId, entry.proofs[1]!.proofId);
-  const locator = {
-    schemaVersion: 1 as const,
-    kind: "nut13" as const,
-    keysetId: managedProof.keysetId,
-    counter: 19,
-  };
+  const terminalSeal = await issueEncryptedWalletBackupV2TerminalSeal({
+    seed: SEED,
+    proof: {
+      mintUrl: MINT,
+      unit: "msat",
+      asset: {
+        kind: "ctf",
+        conditionId: CONDITION,
+        outcomeLabel: OUTCOME,
+        outcomeCollectionId: OUTCOME_ID,
+        registeredAt: 0,
+        finalExpiry: null,
+      },
+      proof: proofFromRow(managedProof),
+      locator,
+    },
+    operationId: committed[1]!.operationId,
+    store: new BrowserEncryptedWalletBackupV2TerminalSealStore({
+      database: entry.database,
+      scopeId,
+    }),
+  });
   await entry.database.custodyProofBackupAuthorities.put(
     createBrowserRemoteProofBackupAuthorityRow({
       proof: managedProof,
       observedAtMs: 30,
       derivationLocator: locator,
       restoreProofId: managedProof.proofId,
-      restoreProofCommitment: digestEncryptedWalletBackupV2TerminalProofCommitment({
-        proofId: managedProof.proofId,
-        mintUrl: managedProof.normalizedMint,
-        unit: managedProof.unit,
-        asset: {
-          kind: "ctf",
-          conditionId: CONDITION,
-          outcomeLabel: OUTCOME,
-          outcomeCollectionId: OUTCOME_ID,
-          registeredAt: 0,
-          finalExpiry: null,
-        },
-        proof: deserializeDurableCustodyProofArtifact(
-          JSON.parse(new TextDecoder().decode(managedProof.proofBody)),
-        ),
-        locator,
-      }),
+      restoreProofCommitment: terminalSeal.proofCommitment,
+      terminalSeal,
     }),
   );
   await entry.database.encryptedWalletBackupV2DesiredAssets.put({
@@ -190,16 +244,9 @@ export async function createMixedCtfRemoveFixture() {
 }
 
 function proofFromRow(row: Awaited<ReturnType<typeof createBrowserCustodyProofRow>>) {
-  const proof = deserializeDurableCustodyProofArtifact(
+  return deserializeDurableCustodyProofArtifact(
     JSON.parse(new TextDecoder().decode(row.proofBody)),
   );
-  return {
-    id: proof.id,
-    amount: Number(proof.amount),
-    secret: proof.secret,
-    C: proof.C,
-    ...(proof.dleq === undefined ? {} : { dleq: structuredClone(proof.dleq) }),
-  } as never;
 }
 
 async function readProof(database: BitcasterDB, scopeId: string, proofId: string) {

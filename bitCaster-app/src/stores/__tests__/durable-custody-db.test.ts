@@ -58,10 +58,17 @@ import {
   type BrowserOutgoingCashuTransferRow,
 } from "../proof-db";
 
+import { BROWSER_D4_CONDITION } from "../../test/browserD4OracleFixture";
+import { prepareBrowserCtfTerminalOperation } from "../../test/browserEncryptedWalletBackupV2CommittedTerminalFixture";
+import { issueBrowserCtfTerminalSealFixture } from "../../test/browserEncryptedWalletBackupV2TerminalSealFixture";
+import { deserializeDurableCustodyProofArtifact } from "@bitcaster/client-sdk/durableCustodyProofMaterial";
+import { deriveDurableWalletProofSecret } from "@bitcaster/client-sdk/durableWalletProofDerivationLocator";
+
+const SEED = new Uint8Array(64).fill(9);
 const MINT = "https://mint.example";
 const KEYSET = `01${"11".repeat(32)}`;
 const PUBLIC_KEY = `02${"11".repeat(32)}`;
-const TERMINAL_CONDITION = "aa".repeat(32);
+const TERMINAL_CONDITION = BROWSER_D4_CONDITION;
 const TERMINAL_OUTCOME_ID = deriveRootCtfOutcomeCollectionId({
   conditionId: TERMINAL_CONDITION,
   outcomeCollection: "YES",
@@ -771,7 +778,7 @@ describe("browser durable custody adapter", () => {
       expect.objectContaining({
         backupState: "remote-backed",
         proofState: "verified-losing",
-        terminalAuthority: { kind: "remote-seal" },
+        terminalAuthority: { kind: "remote-seal", terminalSeal: fixture.terminalSeal },
         derivationLocator: REMOTE_REPLAY_LOCATOR,
       }),
     );
@@ -1702,6 +1709,41 @@ describe("browser durable custody adapter", () => {
   });
 });
 
+function remoteProofSecret(locator: typeof REMOTE_REPLAY_LOCATOR) {
+  return deriveDurableWalletProofSecret({
+    seed: SEED,
+    locator,
+    proofKeysetId: TERMINAL_KEYSET,
+    proofAmount: 1,
+  });
+}
+
+async function remoteTerminalSeal(
+  row: BrowserCustodyProofRow,
+  locator: typeof REMOTE_REPLAY_LOCATOR,
+) {
+  return issueBrowserCtfTerminalSealFixture({
+    seed: SEED,
+    publicKey: PUBLIC_KEY,
+    entry: {
+      mintUrl: MINT,
+      unit: "msat",
+      proof: deserializeDurableCustodyProofArtifact(
+        JSON.parse(new TextDecoder().decode(row.proofBody)),
+      ),
+      locator,
+      asset: {
+        kind: "ctf",
+        conditionId: TERMINAL_CONDITION,
+        outcomeLabel: "YES",
+        outcomeCollectionId: TERMINAL_OUTCOME_ID,
+        registeredAt: 1,
+        finalExpiry: 2,
+      },
+    },
+  });
+}
+
 async function mintSpentRetirementFixture(
   kind: "remote-terminal" | "local-terminal" | "selectable",
   proofCount = 1,
@@ -1720,7 +1762,11 @@ async function mintSpentRetirementFixture(
       normalizedMint: MINT,
       unit: "msat",
       proof: {
-        ...proof(`mint-spent-${kind}-${index}`),
+        ...proof(
+          kind === "remote-terminal"
+            ? remoteProofSecret({ ...REMOTE_REPLAY_LOCATOR, counter: 20 + index })
+            : `mint-spent-${kind}-${index}`,
+        ),
         id: kind === "selectable" ? KEYSET : TERMINAL_KEYSET,
       },
       asset:
@@ -1735,6 +1781,10 @@ async function mintSpentRetirementFixture(
     });
     if (kind === "remote-terminal") {
       const losing = { ...base, selectability: "verified-losing" as const };
+      const terminalSeal = await remoteTerminalSeal(losing, {
+        ...REMOTE_REPLAY_LOCATOR,
+        counter: 20 + index,
+      });
       candidates.push({
         proof: losing,
         authority: createBrowserRemoteProofBackupAuthorityRow({
@@ -1742,7 +1792,8 @@ async function mintSpentRetirementFixture(
           observedAtMs: 2,
           derivationLocator: { ...REMOTE_REPLAY_LOCATOR, counter: 20 + index },
           restoreProofId: losing.proofId,
-          restoreProofCommitment: "33".repeat(32),
+          restoreProofCommitment: terminalSeal.proofCommitment,
+          terminalSeal,
         }),
       });
       continue;
@@ -1857,7 +1908,7 @@ async function keysetFreeSuccessorReplayFixture(
     scope,
     `replay-${selectability}-${authorityKind}`,
     inputProof,
-    `replay-output-${selectability}-${authorityKind}`,
+    remoteProofSecret(REMOTE_REPLAY_LOCATOR),
   );
   const predecessor = createBrowserCustodyProofRow({
     scopeId: scope.scopeId,
@@ -1874,7 +1925,7 @@ async function keysetFreeSuccessorReplayFixture(
   );
 
   const outputProof = {
-    ...proof(`replay-output-${selectability}-${authorityKind}`),
+    ...proof(remoteProofSecret(REMOTE_REPLAY_LOCATOR)),
     id: TERMINAL_KEYSET,
   };
   const successor = createBrowserCustodyProofRow({
@@ -1895,6 +1946,10 @@ async function keysetFreeSuccessorReplayFixture(
   };
   await database.custodyProofs.put(persistedSuccessor);
 
+  const terminalSeal =
+    authorityKind === "remote-terminal"
+      ? await remoteTerminalSeal(persistedSuccessor, REMOTE_REPLAY_LOCATOR)
+      : undefined;
   if (authorityKind === "remote-terminal") {
     await database.custodyProofBackupAuthorities.put(
       createBrowserRemoteProofBackupAuthorityRow({
@@ -1902,7 +1957,8 @@ async function keysetFreeSuccessorReplayFixture(
         observedAtMs: 10,
         derivationLocator: REMOTE_REPLAY_LOCATOR,
         restoreProofId: persistedSuccessor.proofId,
-        restoreProofCommitment: "cc".repeat(32),
+        restoreProofCommitment: terminalSeal!.proofCommitment,
+        terminalSeal,
       }),
     );
   } else if (authorityKind === "wrong") {
@@ -1910,16 +1966,22 @@ async function keysetFreeSuccessorReplayFixture(
       scopeId: scope.scopeId,
       normalizedMint: MINT,
       unit: "msat",
-      proof: { ...proof("foreign-replay-authority"), id: TERMINAL_KEYSET },
+      proof: {
+        ...proof(remoteProofSecret({ ...REMOTE_REPLAY_LOCATOR, counter: 8 })),
+        id: TERMINAL_KEYSET,
+      },
       asset: { kind: "conditional", conditionId: TERMINAL_CONDITION, outcomeCollection: "YES" },
       receivedAtMs: 2,
     });
+    const foreignLocator = { ...REMOTE_REPLAY_LOCATOR, counter: 8 };
+    const foreignSeal = await remoteTerminalSeal(foreignProof, foreignLocator);
     const foreignAuthority = createBrowserRemoteProofBackupAuthorityRow({
       proof: foreignProof,
       observedAtMs: 10,
-      derivationLocator: REMOTE_REPLAY_LOCATOR,
+      derivationLocator: foreignLocator,
       restoreProofId: foreignProof.proofId,
-      restoreProofCommitment: "ee".repeat(32),
+      restoreProofCommitment: foreignSeal.proofCommitment,
+      terminalSeal: foreignSeal,
     });
     await database.custodyProofBackupAuthorities.put({
       ...foreignAuthority,
@@ -1975,6 +2037,7 @@ async function keysetFreeSuccessorReplayFixture(
     owner,
     source,
     successor: persistedSuccessor,
+    terminalSeal,
     exactResult,
     resultFingerprint,
   };
@@ -2114,18 +2177,12 @@ async function terminalFixture(
   const adapter = new BrowserDurableCustodyAdapter(database);
   const scope = walletScope();
   const owner = await claim(adapter, scope, 10);
-  const source = operationBinding(
-    scope,
-    `redeem-${suffix}`,
-    { ...proof(`terminal-${suffix}`), id: TERMINAL_KEYSET },
-    `output-${suffix}`,
-    "ctf-redeem",
-  );
+  const inputProof = { ...proof(`terminal-${suffix}`), id: TERMINAL_KEYSET };
   const predecessor = createBrowserCustodyProofRow({
     scopeId: scope.scopeId,
     normalizedMint: MINT,
     unit: "msat",
-    proof: source.operation.inputs[0] as Proof,
+    proof: inputProof,
     asset: { kind: "conditional", conditionId: TERMINAL_CONDITION, outcomeCollection: "YES" },
     receivedAtMs: 1,
   });
@@ -2157,6 +2214,17 @@ async function terminalFixture(
     registeredAtUnixSeconds: 1,
     finalExpiryUnixSeconds: 2,
     curve: "secp256k1",
+  });
+  const source = await prepareBrowserCtfTerminalOperation({
+    adapter,
+    database,
+    scope,
+    owner,
+    operationId: `redeem-${suffix}`,
+    mintUrl: MINT,
+    proofs: [inputProof],
+    predecessorProofs: [predecessor],
+    publicKey: PUBLIC_KEY,
   });
   const asset = createEncryptedWalletBackupV2AssetIdentity({
     mintUrl: MINT,
@@ -2208,21 +2276,8 @@ async function terminalFixture(
   return { database, adapter, scope, owner, source, predecessor };
 }
 
-function terminalRejection(source: ReturnType<typeof operationBinding>) {
-  return prepareDurableCustodyExactArtifact({
-    schemaVersion: 1,
-    kind: "authenticated-terminal-mint-rejection",
-    operationId: source.record.operation.operationId,
-    semanticKind: "ctf-redeem",
-    normalizedMint: MINT,
-    requestFingerprint: source.record.operation.exactRequest.requestFingerprint,
-    code: 13015,
-    transportProvenance: "authenticated-mint-transport",
-    transportOperationId: source.operation.operationId,
-    rejectionBody: { code: 13015 },
-    predecessorDisposition: "retain",
-    selectedSuccessorProofIds: [],
-  });
+function terminalRejection(source: Awaited<ReturnType<typeof prepareBrowserCtfTerminalOperation>>) {
+  return source.rejection;
 }
 
 function operationBinding(
@@ -2230,7 +2285,6 @@ function operationBinding(
   operationId: string,
   inputProof: Proof,
   outputSecret: string,
-  kind: "wallet-send" | "ctf-redeem" = "wallet-send",
 ): {
   record: DurableCustodyRecord;
   operation: DurableCustodyProofOperationInput;
@@ -2242,7 +2296,7 @@ function operationBinding(
 } {
   const operation: DurableCustodyProofOperationInput = {
     operationId,
-    kind,
+    kind: "wallet-send",
     mintUrl: MINT,
     inputs: [inputProof],
     outputs: {
@@ -2267,7 +2321,7 @@ function operationBinding(
     binding: {
       kind: "wallet",
       activityId: operationId,
-      stage: kind === "ctf-redeem" ? "ctf-redeem" : "send",
+      stage: "send",
     },
     horizon: { notBeforeMs: null, notAfterMs: null, safetyMarginMs: 0 },
     hasOutputs: true,
@@ -2295,7 +2349,7 @@ function operationBinding(
       inventoryAccountId: null,
       exactBoundary: {
         method: "POST",
-        path: kind === "ctf-redeem" ? "/v1/redeem_outcome" : "/v1/swap",
+        path: "/v1/swap",
         idempotencyKey: operationId,
         ...artifacts,
       },
@@ -2313,7 +2367,7 @@ function proof(secret: string): Proof {
 }
 
 function walletScope(): Extract<DurableCustodyScope, { scopeKind: "wallet" }> {
-  const walletId = deriveDurableCustodyWalletId(new Uint8Array(32).fill(9));
+  const walletId = deriveDurableCustodyWalletId(SEED);
   return {
     scopeKind: "wallet",
     walletId,
