@@ -490,9 +490,9 @@ bitcaster-cli order wait <market-id> <order-id> --timeout-ms 30000
 タイムアウトは監視だけを停止します。注文の取消や準備の取消は行いません。
 同じ注文 ID で再確認してください。
 
-### 解決済みポジションを償還する
+### 結果判定済みポジションを償還する
 
-解決後に、設定済みのネイティブウォレットで選択したポジションを1件償還します。
+結果判定後に、設定済みのネイティブウォレットで選択したポジションを1件償還します。
 
 ```bash
 bitcaster-cli wallet claim <condition-id> Alpha
@@ -581,7 +581,7 @@ bitcaster-cli wallet remove --preview-file "$preview_file" --acknowledge-loss
 この endpoint は最大 500 件のコメントを保持します。完全なコメント履歴ではありません。
 オラクルの結果説明は、有料の取引コメントとは別です。
 確定した約定の座標を提供しません。
-[マーケットの解決](/ja/user-guide/core-concepts/resolution/)を参照してください。
+[マーケットの結果判定](/ja/user-guide/core-concepts/resolution/)を参照してください。
 
 ### コメントと価格履歴の更新
 

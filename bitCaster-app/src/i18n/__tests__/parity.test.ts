@@ -288,3 +288,12 @@ describe("plural-aware parity helpers", () => {
     expect(getPlaceholderMismatches(english, japanese, "en", "ja")).toEqual(["welcome"]);
   });
 });
+
+it("distinguishes Japanese market resolution from trade settlement", () => {
+  expect(ja.market.resolution).toBe("結果判定");
+  expect(ja.market.resolutionCriteria).toBe("結果判定基準");
+  expect(ja.marketStatus.resolved).toBe("結果判定済み");
+  expect(ja.resolutionStatus.pending_resolution).toBe("結果判定待ち");
+  expect(ja.activityType.payout_claimed).toBe("報酬受取");
+  expect(ja.trade.estimatedSettlementFee).toBe("決済手数料（推定）");
+});

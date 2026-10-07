@@ -87,7 +87,7 @@ bitcaster-cli market creation-resume create-001
 結果が明確で、自分が報告できる質問を選んでください。
 取引する人は、あなたの報告を信頼する必要があります。
 有効な署名があっても、報告された結果が真実であるとは限りません。
-報告者の責任と取引終了後の流れは、[マーケットの結果確定](/ja/user-guide/core-concepts/resolution/)
+報告者の責任と取引終了後の流れは、[マーケットの結果判定](/ja/user-guide/core-concepts/resolution/)
 を参照してください。
 
 ## オラクルのバックアップを保持・復元する
@@ -162,7 +162,7 @@ bitcaster-cli market announcement-republish <condition-id>
 `announcement-republish` は、保存済みの同じアナウンスを元のリレーに再送します。
 署名者は不要です。別のアナウンスは作成しません。
 復元したオラクルによる署名とエンジン停止中の公開については、
-[マーケットの結果確定](/ja/user-guide/core-concepts/resolution/)を参照してください。
+[マーケットの結果判定](/ja/user-guide/core-concepts/resolution/)を参照してください。
 
 ## 金額と価格
 
@@ -219,10 +219,10 @@ sats で金額を入力します。最初の入金が承認されると、
 期限による閉鎖だけでは、勝ったトークンは決まらず、返金も保証されません。
 ミントが結果を受け付けた後にのみ、勝ったトークンをecashに償還できます。
 償還期間は、ミントの各マーケットに共通の方針です。結果がない場合と償還のルールは、
-[マーケットの結果確定](/ja/user-guide/core-concepts/resolution/)を参照してください。
+[マーケットの結果判定](/ja/user-guide/core-concepts/resolution/)を参照してください。
 
 ## さらに読む
 
 - [新しいマーケットのためのAMM流動性](/ja/technical/architecture/market-making/) — 作成後のLMSR AMM流動性が初期取引を助ける理由
-- [マーケットの結果確定](/ja/user-guide/core-concepts/resolution/) — オラクルによる結果の報告と、勝ったトークンの償還
+- [マーケットの結果判定](/ja/user-guide/core-concepts/resolution/) — オラクルによる結果の報告と、勝ったトークンの償還
 - [条件付きトークン](/ja/user-guide/core-concepts/conditional-tokens/) — マーケットのシェアの購入、売却、償還

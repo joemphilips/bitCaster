@@ -21,6 +21,7 @@ import { getMintIconUrl } from "@/lib/mints";
 import { assertNever } from "@/lib/enumDiscipline";
 import { useBookmarkStore } from "@/stores/bookmarks";
 import { useWalletStore } from "@/stores/wallet";
+import { useToastStore } from "@/stores/toast";
 
 interface MarketHeaderProps {
   market: MarketDetail;
@@ -279,8 +280,20 @@ export function MarketHeader({ market, onShare }: MarketHeaderProps) {
             {creatorNpub && (
               <button
                 type="button"
-                onClick={() => {
-                  void navigator.clipboard?.writeText(creatorNpub);
+                onClick={async () => {
+                  try {
+                    if (!navigator.clipboard?.writeText) throw new Error("Clipboard unavailable");
+                    await navigator.clipboard.writeText(creatorNpub);
+                    useToastStore.getState().addToast({
+                      type: "success",
+                      message: t("market.oraclePubkeyCopied"),
+                    });
+                  } catch {
+                    useToastStore.getState().addToast({
+                      type: "error",
+                      message: t("market.oraclePubkeyCopyFailed"),
+                    });
+                  }
                 }}
                 className={`shrink-0 rounded-full p-2 transition-colors ${market.imageUrl ? "text-slate-300 hover:bg-white/15 hover:text-white" : "text-slate-500 hover:bg-slate-200 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-slate-700 dark:hover:text-white"}`}
                 aria-label={t("market.copyOraclePubkey")}

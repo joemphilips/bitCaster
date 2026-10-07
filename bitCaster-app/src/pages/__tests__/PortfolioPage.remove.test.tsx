@@ -2,6 +2,8 @@ import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { Position } from "@/types/portfolio";
+import { I18nextProvider } from "react-i18next";
+import i18n from "@/i18n";
 
 // --- mocks -----------------------------------------------------------------
 
@@ -32,10 +34,15 @@ vi.mock("@/components/deposit-withdraw/DepositWithdrawOverlay", () => ({
   DepositWithdrawOverlay: () => null,
 }));
 
-vi.mock("@/stores/settings", () => ({
-  useSettingsStore: (selector: (s: unknown) => unknown) =>
-    selector({ nostrSignerMode: "none", nostrProfile: null }),
-}));
+vi.mock("@/stores/settings", () => {
+  const state = { nostrSignerMode: "none", nostrProfile: null, relays: [] };
+  return {
+    useSettingsStore: Object.assign((selector: (s: unknown) => unknown) => selector(state), {
+      getState: () => state,
+      subscribe: () => () => {},
+    }),
+  };
+});
 
 vi.mock("@/stores/activity-log", () => ({
   useActivityLogStore: (selector: (s: unknown) => unknown) =>
@@ -224,6 +231,21 @@ describe("PortfolioPage position action dialogs", () => {
       }),
     );
     expect(cashuMocks.addActivity).not.toHaveBeenCalled();
+  });
+
+  it("keeps the irreversible deletion warning in the Japanese confirmation", async () => {
+    render(
+      <I18nextProvider i18n={i18n.cloneInstance({ lng: "ja" })}>
+        <PortfolioPage />
+      </I18nextProvider>,
+    );
+    await userEvent.click(screen.getByLabelText(/ハズレのポジションを削除/));
+    const dialog = screen.getByRole("dialog");
+    expect(dialog).toHaveTextContent("このハズレのポジションをウォレットから削除しますか？");
+    expect(dialog).toHaveTextContent("ローカルの CTF プルーフは削除され、元に戻せません。");
+    expect(cashuMocks.removePortfolioPosition).not.toHaveBeenCalled();
+    await userEvent.click(within(dialog).getByRole("button", { name: "キャンセル" }));
+    expect(cashuMocks.removePortfolioPosition).not.toHaveBeenCalled();
   });
 
   it("passes the explicitly confirmed target to removal without deleting cached proofs", async () => {
@@ -526,7 +548,7 @@ describe("PortfolioPage position action dialogs", () => {
     render(<PortfolioPage />);
     expect(screen.queryByLabelText(/remove losing position for/i)).not.toBeInTheDocument();
     if (kind === "winner") {
-      expect(screen.getByText("Won ☺")).toBeInTheDocument();
+      expect(screen.getByText("Won")).toBeInTheDocument();
       expect(screen.getByRole("group", { name: "100 sats" })).toBeInTheDocument();
       expect(screen.getByLabelText(/claim payout for/i)).toBeInTheDocument();
     } else {

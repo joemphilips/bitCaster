@@ -76,6 +76,10 @@ prices show a below-precision label instead of zero. The price label also
 provides the exact ratio. Older records without the required amounts show no
 execution price.
 
+Positions with a confirmed result show “Won😋” or “Lost😭”. The text identifies the result;
+the emoji is decorative. Activity labels a received payout as “Payout Claimed”. Removing a losing position permanently deletes its
+local tokens. The confirmation warns that this action cannot be undone.
+
 ### Create your own market
 
 Define the question, the possible outcomes, and how the result will be decided.
@@ -96,7 +100,7 @@ In prediction markets, the value of a token depends on what actually happens in 
 Anyone can become an oracle. The oracle is designated when a market is created and cannot be changed afterward.
 A valid oracle signature identifies who signed the result. It does not prove that the result is true. bitCaster does not provide an oracle trust score. See [Resolution](../../core-concepts/resolution/) for details.
 
-When a market's oracle key is a Nostr public key, you should audit the oracle yourself before trading. Copy the market's oracle `npub` from the market detail page and check that identity's history and credibility in your preferred Nostr client.
+When a market's oracle key is a Nostr public key, you should audit the oracle yourself before trading. Copy the market's oracle `npub` from the market detail page and check that identity's history and credibility in your preferred Nostr client. The copy button shows a success notification after the clipboard write finishes. If copying fails or the clipboard is unavailable, it shows an error.
 
 ### Use the supported mint
 

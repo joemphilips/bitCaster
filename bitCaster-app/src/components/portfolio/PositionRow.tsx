@@ -98,11 +98,13 @@ export function PositionRow({ position, onSell, onClaim, onDiscard, onView }: Po
           <div className="flex flex-wrap items-center gap-2 mt-0.5">
             {isWinner ? (
               <span className="text-xs font-semibold px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-300">
-                {t("portfolio.won")} ☺
+                {t("portfolio.won")}
+                <span aria-hidden="true">😋</span>
               </span>
             ) : isLoser ? (
               <span className="text-xs font-semibold px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-300">
-                {t("portfolio.lost")} 😭
+                {t("portfolio.lost")}
+                <span aria-hidden="true">😭</span>
               </span>
             ) : isPending ? (
               <span className="text-xs font-semibold px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-300">

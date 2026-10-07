@@ -2,6 +2,8 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, it, expect, vi } from "vitest";
 import { Portfolio } from "../Portfolio";
+import { I18nextProvider } from "react-i18next";
+import i18n from "@/i18n";
 import { PositionRow } from "../PositionRow";
 import type {
   PortfolioProps,
@@ -723,6 +725,26 @@ describe("Portfolio", () => {
     it("shows empty state when no positions", () => {
       renderPortfolio({ positions: [] });
       expect(screen.getByText("No active positions")).toBeInTheDocument();
+    });
+
+    it("shows Japanese result text with decorative emoji and matching claim language", () => {
+      render(
+        <I18nextProvider i18n={i18n.cloneInstance({ lng: "ja" })}>
+          <PositionRow position={mockPositions[1]} onClaim={vi.fn()} />
+          <PositionRow position={mockPositions[2]} onDiscard={vi.fn()} />
+        </I18nextProvider>,
+      );
+      for (const [text, emoji] of [
+        ["当たり", "😋"],
+        ["ハズレ", "😭"],
+      ]) {
+        const badge = screen.getByText(text);
+        expect(badge).toHaveTextContent(text + emoji);
+        expect(badge.querySelector('[aria-hidden="true"]')).toHaveTextContent(emoji);
+      }
+      expect(
+        screen.getByRole("button", { name: "Will Ethereum merge complete? の報酬を受け取る" }),
+      ).toBeInTheDocument();
     });
 
     it("uses explicit Won and Lost text with neutral closed-position colors", () => {

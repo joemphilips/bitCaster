@@ -3,7 +3,11 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { nip19 } from "nostr-tools";
+import { I18nextProvider } from "react-i18next";
+import i18n from "@/i18n";
 import { MarketHeader } from "../MarketHeader";
+import { ToastContainer } from "@/components/ui/Toast";
+import { useToastStore } from "@/stores/toast";
 import type { YesNoMarketDetail } from "@/types/market-detail";
 
 vi.mock("@/lib/nostr", () => ({
@@ -81,6 +85,7 @@ describe("MarketHeader", () => {
 
   beforeEach(() => {
     originalClipboard = (navigator as unknown as NavigatorMutable).clipboard;
+    useToastStore.setState({ toasts: [] });
   });
 
   afterEach(() => {
@@ -100,6 +105,7 @@ describe("MarketHeader", () => {
     return render(
       <MemoryRouter>
         <MarketHeader market={market} />
+        <ToastContainer />
       </MemoryRouter>,
     );
   }
@@ -215,6 +221,70 @@ describe("MarketHeader", () => {
     await user.click(screen.getByRole("button", { name: "Copy oracle pubkey" }));
 
     expect(writeText).toHaveBeenCalledWith(creatorNpub);
+    expect(await screen.findByRole("status")).toHaveTextContent("Oracle public key copied.");
+  });
+
+  it("reports success only after the oracle clipboard write completes", async () => {
+    const user = userEvent.setup();
+    let complete!: () => void;
+    const pending = new Promise<void>((resolve) => {
+      complete = resolve;
+    });
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: vi.fn(() => pending) },
+    });
+    renderHeader(makeMarket());
+    await user.click(screen.getByRole("button", { name: "Copy oracle pubkey" }));
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    await act(async () => {
+      complete();
+      await pending;
+    });
+    expect(screen.getByRole("status")).toHaveTextContent("Oracle public key copied.");
+  });
+
+  it.each(["rejected", "unavailable"])(
+    "reports an oracle copy failure when clipboard is %s",
+    async (state) => {
+      const user = userEvent.setup();
+      Object.defineProperty(navigator, "clipboard", {
+        configurable: true,
+        value:
+          state === "unavailable"
+            ? undefined
+            : { writeText: vi.fn().mockRejectedValue(new Error("denied")) },
+      });
+      renderHeader(makeMarket());
+      await user.click(screen.getByRole("button", { name: "Copy oracle pubkey" }));
+      expect(await screen.findByRole("status")).toHaveTextContent(
+        "Could not copy the oracle public key.",
+      );
+      expect(useToastStore.getState().toasts).toEqual([
+        expect.objectContaining({
+          type: "error",
+          message: "Could not copy the oracle public key.",
+        }),
+      ]);
+    },
+  );
+
+  it("announces the oracle copy result in Japanese", async () => {
+    const user = userEvent.setup();
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: vi.fn().mockResolvedValue(undefined) },
+    });
+    render(
+      <I18nextProvider i18n={i18n.cloneInstance({ lng: "ja" })}>
+        <MemoryRouter>
+          <MarketHeader market={makeMarket()} />
+          <ToastContainer />
+        </MemoryRouter>
+      </I18nextProvider>,
+    );
+    await user.click(screen.getByRole("button", { name: "オラクル公開鍵をコピー" }));
+    expect(await screen.findByRole("status")).toHaveTextContent("オラクル公開鍵をコピーしました。");
   });
 
   it("does not render a copy button when the detail has no creator pubkey", () => {

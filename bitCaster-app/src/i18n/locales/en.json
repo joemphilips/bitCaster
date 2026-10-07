@@ -239,7 +239,9 @@
     "searchingNostr": "Searching Nostr...",
     "oraclePubkeyUnavailable": "Oracle pubkey unavailable",
     "oracleAuditHint": "Search this person in the Nostr network to make sure it's trustworthy",
-    "copyOraclePubkey": "Copy oracle pubkey"
+    "copyOraclePubkey": "Copy oracle pubkey",
+    "oraclePubkeyCopied": "Oracle public key copied.",
+    "oraclePubkeyCopyFailed": "Could not copy the oracle public key."
   },
   "orderBook": {
     "title": "Order Book",
