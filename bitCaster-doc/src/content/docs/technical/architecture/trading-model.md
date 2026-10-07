@@ -36,6 +36,25 @@ It does not reserve funds or liquidity. It does not authorize or submit an order
 Final admission checks the current book again with the user's price limit.
 The opaque `previewRevision` is display metadata, not authorization.
 
+If the preview cannot fill the order, the browser shows the reason and a
+**Refresh quote** action. The result is a snapshot. Refresh checks the current
+market without submitting an order. The browser labels a pending wallet funds
+and fee check separately from a pending market preview.
+
+The detail page separates settlement checks from wallet recovery. A saved
+result can be a partial result. It does not prove that the earlier operation
+is complete or that its outputs are still spendable. A new trade can proceed
+when current market checks and wallet funds and fee checks pass, and the user
+confirms that trade.
+
+The browser hides additional-funding advice while an operation is active,
+recovery remains pending, or estimates need refresh. Funding does not resolve
+an incomplete wallet operation. Completion and live market events invalidate
+estimates. The next response must match the current form and wallet. If an
+update is missing, use **Refresh quote** in the trade form or **Refresh market**
+beside an empty book. A visible older book does not prove that the next order
+can fill.
+
 The response reports full-fill availability and one reason: `fillable`,
 `insufficient_liquidity`, `price_limit`, `request_too_large`,
 `market_unavailable`, or `temporarily_unavailable`. Recommend a separate subsidy
@@ -62,6 +81,11 @@ The user confirms the quoted trade value and reviews fees separately.
 The order keeps that accepted total and the preview's worst execution price.
 The engine checks the complete current FOK plan before accepting fills.
 Equal or better execution can proceed. Worse execution refuses the whole order.
+
+Order acceptance keeps the selected outcome. It clears the submitted quantity
+and comment only if the user has not changed the draft. Newer input remains
+in the form. A confirmation click or a refused attempt does not clear the
+comment. The comment accompanies the signed order.
 
 Buy uses `maxQuotePaymentSubunits` as the maximum trade payment.
 Sell uses `minQuotePaymentSubunits` as the minimum gross trade proceeds.
@@ -147,6 +171,12 @@ These records survive a server restart. An intentional reuse of the same client
 order ID with the same operation facts returns the stored result.
 Changed facts return a conflict. If the result is uncertain, clients reconcile
 with the durable engine and mint authority.
+
+The browser uses completion notifications to recheck pending wallet recovery.
+If a recheck is already running, it retains one follow-up request. Work deferred
+during an active order attempt resumes when the last active attempt finishes.
+An uncertain result keeps its recovery retry. A notification or elapsed time
+alone does not make funds spendable. Recovery does not submit a new order.
 
 ## Participation Score
 

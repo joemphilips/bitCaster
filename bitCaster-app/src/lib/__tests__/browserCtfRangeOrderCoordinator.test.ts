@@ -88,6 +88,7 @@ import {
   type BrowserEncryptedWalletBackupV2TargetedRestoreInput,
 } from "../browserEncryptedWalletBackupV2Restore";
 import { browserWalletDatabaseName } from "../browserWalletProfile";
+import { readBrowserTradeRecoveryObservation } from "../browserTradeRecoveryObservation";
 import {
   BrowserWalletCounterDexieStore,
   BrowserWalletCounterSource,
@@ -2940,6 +2941,67 @@ describe("browser CTF range order coordinator", () => {
       candidates: [sourceProof(preparation.offerKeyset.id)],
     });
 
+    const trade = {
+      walletId: walletScope().walletId,
+      clientOrderId: preparation.request.clientOrderId,
+      marketId: preparation.request.marketId,
+      orderId: submitResponse().orderId,
+    };
+    expect(await readBrowserTradeRecoveryObservation(walletScope(), trade, database)).toEqual({
+      lifecycleState: "order-submitted",
+      resultState: "none",
+    });
+    expect(
+      await readBrowserTradeRecoveryObservation(
+        walletScope(),
+        {
+          ...trade,
+          clientOrderId: "unrelated-client-order",
+        },
+        database,
+      ),
+    ).toBeNull();
+    expect(
+      await readBrowserTradeRecoveryObservation(
+        walletScope(),
+        {
+          ...trade,
+          walletId: "f".repeat(64),
+        },
+        database,
+      ),
+    ).toBeNull();
+    await expect(
+      readBrowserTradeRecoveryObservation(
+        walletScope(),
+        {
+          ...trade,
+          marketId: `${CONDITION_ID}-NO`,
+        },
+        database,
+      ),
+    ).rejects.toThrow("identity is inconsistent");
+    await expect(
+      readBrowserTradeRecoveryObservation(
+        walletScope(),
+        {
+          ...trade,
+          orderId: "55555555-5555-4555-8555-555555555555",
+        },
+        database,
+      ),
+    ).rejects.toThrow("identity is inconsistent");
+    await expect(
+      readBrowserTradeRecoveryObservation(
+        {
+          ...walletScope(),
+          scopeId: deriveDurableCustodyScopeId({ scopeKind: "wallet", walletId: "f".repeat(64) }),
+        },
+        trade,
+        database,
+      ),
+    ).rejects.toThrow("scope is inconsistent");
+
     expect(await coordinator.recoverPage({ seed: SEED, limit: 8 })).toMatchObject({
       recoveredOperationIds: [],
       pending: [{ operationId: preparation.operationId, code: "recovery-pending" }],
@@ -2960,6 +3022,10 @@ describe("browser CTF range order coordinator", () => {
       (await database.proofs.toArray()).every(({ reservedBy }) => reservedBy === undefined),
     ).toBe(true);
 
+    expect(await readBrowserTradeRecoveryObservation(walletScope(), trade, database)).toEqual({
+      lifecycleState: "order-submitted",
+      resultState: "applied",
+    });
     const recovery = await coordinator.recoverPage({ seed: SEED, limit: 8 });
 
     expect(recovery.recoveredOperationIds).toEqual([preparation.operationId]);
@@ -2979,6 +3045,7 @@ describe("browser CTF range order coordinator", () => {
       (await readCtfRangePreparation(walletScopeId(), preparation.operationId, database))
         ?.lifecycleState,
     ).toBe("terminal");
+    expect(await readBrowserTradeRecoveryObservation(walletScope(), trade, database)).toBeNull();
   });
 
   it("applies a partial FOK result but keeps its journal pending and unacknowledged", async () => {

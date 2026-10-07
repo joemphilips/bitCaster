@@ -14,6 +14,7 @@ import {
   appendCtfRangePreparationConsolidationInTransaction,
   bindCtfRangePreparationCapability,
   hasSubmittedCtfRangeOrder,
+  hasActiveCtfRangePreparation,
   insertCtfRangePreparation,
   insertCtfRangePreparationInTransaction,
   pageActiveCtfRangePreparations,
@@ -34,6 +35,37 @@ afterEach(async () => {
 });
 
 describe("browser CTF range order journal", () => {
+  it("finds active work beyond a visible page without attributing it to another wallet", async () => {
+    const database = createDatabase();
+    const records = Array.from({ length: 10 }, (_, index) =>
+      identity(`range-${index}`, `client-${index}`, index + 1),
+    );
+    for (const record of records) await insertCtfRangePreparation(record, database);
+    const target = records[9]!;
+    expect(await hasActiveCtfRangePreparation(target.scopeId, database)).toBe(true);
+    expect(
+      await hasActiveCtfRangePreparation(
+        deriveDurableCustodyScopeId({
+          scopeKind: "wallet",
+          walletId: "f".repeat(64),
+        }),
+        database,
+      ),
+    ).toBe(false);
+    expect(
+      (
+        await readActiveCtfRangePreparationByClientOrderId(
+          target.scopeId,
+          target.clientOrderId,
+          database,
+        )
+      )?.rangeOperationId,
+    ).toBe(target.rangeOperationId);
+    expect(
+      await readActiveCtfRangePreparationByClientOrderId(target.scopeId, "absent-client", database),
+    ).toBeNull();
+  });
+
   it("persists an exact identity idempotently and rejects substitution", async () => {
     const database = createDatabase();
     const input = identity("range-a", "client-a", 10);

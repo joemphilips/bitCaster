@@ -1,13 +1,20 @@
+import { StrictMode, type ReactNode } from "react";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { listenForPortfolioInvalidation } from "@/lib/portfolioInvalidation";
 import { useNotificationsStore } from "@/stores/notifications";
 import { usePendingTradesStore } from "@/stores/pendingTrades";
 import { useActivityLogStore } from "@/stores/activity-log";
+import { useOrderSettlementObservations } from "@/stores/orderSettlementObservations";
 import type { OrderStatusResponse } from "@/lib/orderStatus";
 
 const walletId = "a".repeat(64);
 const otherWalletId = "b".repeat(64);
+const mockSignerState = vi.hoisted(() => ({ revision: 0 }));
+vi.mock("@/lib/nostr", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/nostr")>()),
+  getNostrSignerRevision: () => mockSignerState.revision,
+}));
 const { mockUseOrderHub, mockJoinOrder, mockRecover, mockFetchOrderStatus, mockWalletState } =
   vi.hoisted(() => ({
     mockUseOrderHub: vi.fn(),
@@ -192,6 +199,8 @@ function settlementDelta(
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mockSignerState.revision = 0;
+  useOrderSettlementObservations.setState({ byOrderId: {} });
   mockWalletState.mnemonic = recoveryInput.mnemonic;
   mockWalletState.activeScope = "scope-a";
   usePendingTradesStore.setState({ byOrderId: {} });
@@ -205,6 +214,97 @@ beforeEach(() => {
 });
 
 describe("useOrderSettlementLifecycle", () => {
+  it("keeps newer group evidence and bounds display retention to the active wallet's pending work", () => {
+    const trade = { ...unscopedTrade(), walletId };
+    usePendingTradesStore.getState().add(trade);
+    const group = settlementDelta(trade.orderId, "Confirmed").settlementGroup;
+    const status = ownedStatus(trade.orderId, trade.marketId, {
+      status: "matched",
+      fills: [],
+      activeSettlementGroup: group,
+    });
+    const observations = useOrderSettlementObservations.getState();
+    observations.publish(trade, 0, status);
+    const confirmed = useOrderSettlementObservations.getState().byOrderId[trade.orderId];
+    observations.publish(trade, 0, {
+      ...status,
+      activeSettlementGroup: { ...group, revision: 2, status: "Prepared" },
+    });
+    expect(useOrderSettlementObservations.getState().byOrderId[trade.orderId]).toBe(confirmed);
+    observations.publish(trade, 0, { ...status, orderId: "foreign-order" });
+    observations.publish(trade, 0, { ...status, marketId: "foreign-market" });
+    expect(useOrderSettlementObservations.getState().byOrderId[trade.orderId]).toBe(confirmed);
+
+    observations.retain(otherWalletId, usePendingTradesStore.getState().byOrderId);
+    expect(useOrderSettlementObservations.getState().byOrderId).toEqual({});
+    usePendingTradesStore.getState().remove(trade.orderId, walletId);
+    observations.publish(trade, 0, status);
+    expect(useOrderSettlementObservations.getState().byOrderId).toEqual({});
+  });
+
+  it("shares authenticated display observations without another read and removes completed work", async () => {
+    const trade = { ...unscopedTrade(), walletId };
+    usePendingTradesStore.getState().add(trade);
+    const group = settlementDelta(trade.orderId, "Prepared").settlementGroup;
+    mockFetchOrderStatus.mockResolvedValue(
+      ownedStatus(trade.orderId, trade.marketId, {
+        status: "matched",
+        fills: [],
+        activeSettlementGroup: group,
+      }),
+    );
+    renderHook(() => useOrderSettlementLifecycle(true, recoveryInput));
+
+    await waitFor(() =>
+      expect(useOrderSettlementObservations.getState().byOrderId[trade.orderId]).toEqual({
+        walletId,
+        signerRevision: 0,
+        marketId: trade.marketId,
+        orderId: trade.orderId,
+        status: "matched",
+        group,
+      }),
+    );
+    expect(mockFetchOrderStatus).toHaveBeenCalledOnce();
+    expect(mockRecover).not.toHaveBeenCalled();
+
+    act(() => usePendingTradesStore.getState().remove(trade.orderId, walletId));
+    await waitFor(() => expect(useOrderSettlementObservations.getState().byOrderId).toEqual({}));
+    expect(mockFetchOrderStatus).toHaveBeenCalledOnce();
+  });
+
+  it.each(["signer change", "disposal"] as const)(
+    "does not publish a delayed display observation after %s",
+    async (change) => {
+      const trade = { ...unscopedTrade(), walletId };
+      usePendingTradesStore.getState().add(trade);
+      let resolve!: (status: OrderStatusResponse) => void;
+      mockFetchOrderStatus.mockImplementation(
+        () =>
+          new Promise<OrderStatusResponse>((done) => {
+            resolve = done;
+          }),
+      );
+      const { unmount } = renderHook(() => useOrderSettlementLifecycle(true, recoveryInput));
+      await waitFor(() => expect(mockFetchOrderStatus).toHaveBeenCalledOnce());
+      if (change === "signer change") mockSignerState.revision++;
+      else unmount();
+      await act(async () =>
+        resolve(
+          ownedStatus(trade.orderId, trade.marketId, {
+            status: "matched",
+            fills: [],
+            activeSettlementGroup: settlementDelta(trade.orderId, "Prepared").settlementGroup,
+          }),
+        ),
+      );
+
+      expect(useOrderSettlementObservations.getState().byOrderId).toEqual({});
+      expect(mockFetchOrderStatus).toHaveBeenCalledOnce();
+      expect(mockRecover).not.toHaveBeenCalled();
+    },
+  );
+
   it.each(["cancelled", "expired", "evicted_capacity", "rejected_capacity", "failed"] as const)(
     "clears an unscoped order after an authenticated zero-fill %s result",
     async (status) => {
@@ -720,11 +820,208 @@ describe("useOrderSettlementLifecycle", () => {
     renderHook(() => useOrderSettlementLifecycle(true, recoveryInput));
     const callbacks = mockUseOrderHub.mock.calls.at(-1)?.[1];
 
-    callbacks.onSettlementGroupStateChanged(settlementDelta(orderId, "Confirmed"));
+    await act(async () => {});
+    expect(mockRecover).toHaveBeenCalledOnce();
+    await act(async () =>
+      callbacks.onSettlementGroupStateChanged(settlementDelta(orderId, "Confirmed")),
+    );
 
-    await waitFor(() => expect(mockRecover).toHaveBeenCalledOnce());
+    expect(mockRecover).toHaveBeenCalledTimes(2);
     await waitFor(() => expect(useActivityLogStore.getState().items).toHaveLength(1));
     expect(usePendingTradesStore.getState().byOrderId[orderId]).toBeDefined();
+  });
+
+  it("rechecks recovery immediately when confirmation arrives during an older recovery pass", async () => {
+    vi.useFakeTimers();
+    const orderId = "11111111-1111-4111-8111-111111111111";
+    const startedAt = Date.now();
+    mockFetchOrderStatus.mockResolvedValue(ownedStatus(orderId));
+    let finishOlderRecovery!: (value: {
+      recovered: number;
+      pending: Array<{ operationId: string; revision: number; code: string }>;
+    }) => void;
+    mockRecover
+      .mockReturnValueOnce(
+        new Promise((resolve) => {
+          finishOlderRecovery = resolve;
+        }),
+      )
+      .mockResolvedValue({ recovered: 1, pending: [] });
+    usePendingTradesStore.getState().add({
+      orderId,
+      walletId,
+      clientOrderId: "client-order-1",
+      marketId: "condition-YES",
+      baseAsset: "sat",
+      divisibility: 1_000,
+      submittedAt: startedAt,
+    });
+    const { unmount } = renderHook(() => useOrderSettlementLifecycle(true, recoveryInput));
+    try {
+      await act(async () => {});
+      expect(mockRecover).toHaveBeenCalledOnce();
+      const callbacks = mockUseOrderHub.mock.calls.at(-1)?.[1];
+
+      await act(async () => {
+        callbacks.onSettlementGroupStateChanged(settlementDelta(orderId, "Confirmed"));
+      });
+      expect(mockFetchOrderStatus).toHaveBeenCalledTimes(2);
+      expect(mockRecover).toHaveBeenCalledOnce();
+
+      await act(async () => {
+        finishOlderRecovery({
+          recovered: 0,
+          pending: [{ operationId: "operation-1", revision: 1, code: "recovery-pending" }],
+        });
+      });
+
+      expect(Date.now()).toBe(startedAt);
+      expect(mockRecover).toHaveBeenCalledTimes(2);
+      expect(usePendingTradesStore.getState().byOrderId[orderId]).toBeUndefined();
+    } finally {
+      unmount();
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(["pending", "failed"] as const)(
+    "coalesces confirmation bursts after a %s pass and cancels stale fallback timers",
+    async (firstResult) => {
+      vi.useFakeTimers();
+      const startedAt = Date.now();
+      const first = recoveryBarrier();
+      const followup = recoveryBarrier();
+      const last = recoveryBarrier();
+      let inFlight = 0;
+      let maxInFlight = 0;
+      for (const barrier of [first, followup, last]) {
+        mockRecover.mockImplementationOnce(async () => {
+          maxInFlight = Math.max(maxInFlight, ++inFlight);
+          try {
+            return await barrier.promise;
+          } finally {
+            inFlight -= 1;
+          }
+        });
+      }
+      const { orderId, unmount } = mountRecoveringOrder();
+      try {
+        await act(async () => {});
+        const callbacks = mockUseOrderHub.mock.calls.at(-1)?.[1];
+        for (let index = 0; index < 20; index += 1) {
+          await act(async () =>
+            callbacks.onSettlementGroupStateChanged(settlementDelta(orderId, "Confirmed")),
+          );
+        }
+        expect(mockRecover).toHaveBeenCalledOnce();
+        await act(async () => {
+          if (firstResult === "pending") first.resolve(pendingRecovery);
+          else first.reject(new Error("mint unavailable"));
+        });
+        expect(mockRecover).toHaveBeenCalledTimes(2);
+        await act(async () => followup.reject(new Error("mint unavailable")));
+        expect(Date.now()).toBe(startedAt);
+        expect(usePendingTradesStore.getState().byOrderId[orderId]).toBeDefined();
+        await act(async () => vi.advanceTimersByTimeAsync(14_999));
+        expect(mockRecover).toHaveBeenCalledTimes(2);
+        await act(async () =>
+          callbacks.onSettlementGroupStateChanged(settlementDelta(orderId, "Confirmed")),
+        );
+        expect(mockRecover).toHaveBeenCalledTimes(3);
+        await act(async () => last.resolve({ recovered: 1, pending: [] }));
+        expect(usePendingTradesStore.getState().byOrderId[orderId]).toBeUndefined();
+        await act(async () => vi.advanceTimersByTimeAsync(15_000));
+        expect(mockRecover).toHaveBeenCalledTimes(3);
+        expect(maxInFlight).toBe(1);
+      } finally {
+        unmount();
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it("uses the fallback after an immediate follow-up fails without another wake", async () => {
+    vi.useFakeTimers();
+    const first = recoveryBarrier();
+    mockRecover
+      .mockReturnValueOnce(first.promise)
+      .mockRejectedValueOnce(new Error("mint unavailable"))
+      .mockResolvedValue({ recovered: 1, pending: [] });
+    const { orderId, unmount } = mountRecoveringOrder();
+    try {
+      await act(async () => {});
+      const callbacks = mockUseOrderHub.mock.calls.at(-1)?.[1];
+      await act(async () =>
+        callbacks.onSettlementGroupStateChanged(settlementDelta(orderId, "Confirmed")),
+      );
+      await act(async () => first.resolve(pendingRecovery));
+      expect(mockRecover).toHaveBeenCalledTimes(2);
+      expect(usePendingTradesStore.getState().byOrderId[orderId]).toBeDefined();
+      await act(async () => vi.advanceTimersByTimeAsync(14_999));
+      expect(mockRecover).toHaveBeenCalledTimes(2);
+      await act(async () => vi.advanceTimersByTimeAsync(1));
+      expect(mockRecover).toHaveBeenCalledTimes(3);
+      expect(usePendingTradesStore.getState().byOrderId[orderId]).toBeUndefined();
+      await act(async () => vi.advanceTimersByTimeAsync(15_000));
+      expect(mockRecover).toHaveBeenCalledTimes(3);
+    } finally {
+      unmount();
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(["dispose", "handoff", "remove"] as const)(
+    "drops queued recovery after %s without deleting uncertain wallet work",
+    async (action) => {
+      vi.useFakeTimers();
+      const first = recoveryBarrier();
+      mockRecover.mockReturnValueOnce(first.promise);
+      const { orderId, unmount } = mountRecoveringOrder();
+      try {
+        await act(async () => {});
+        const callbacks = mockUseOrderHub.mock.calls.at(-1)?.[1];
+        await act(async () =>
+          callbacks.onSettlementGroupStateChanged(settlementDelta(orderId, "Confirmed")),
+        );
+        if (action === "dispose") unmount();
+        if (action === "handoff") mockWalletState.activeScope = null;
+        if (action === "remove")
+          act(() => usePendingTradesStore.getState().remove(orderId, walletId));
+        await act(async () => first.resolve(pendingRecovery));
+        await act(async () => vi.advanceTimersByTimeAsync(15_000));
+        expect(mockRecover).toHaveBeenCalledOnce();
+        if (action !== "remove")
+          expect(usePendingTradesStore.getState().byOrderId[orderId]).toBeDefined();
+      } finally {
+        unmount();
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it("does not start recovery from a status response that arrives after disposal", async () => {
+    const status = deferredStatus();
+    mockFetchOrderStatus.mockReturnValueOnce(status.promise);
+    const { orderId, unmount } = mountRecoveringOrder(false);
+    await act(async () => {});
+    unmount();
+    await act(async () => status.resolve(ownedStatus(orderId)));
+    expect(mockRecover).not.toHaveBeenCalled();
+    expect(usePendingTradesStore.getState().byOrderId[orderId]).toBeDefined();
+  });
+
+  it("recovers once after StrictMode effect cleanup while an authenticated read is pending", async () => {
+    const status = deferredStatus();
+    mockFetchOrderStatus.mockReturnValueOnce(status.promise);
+    const { orderId, unmount } = mountRecoveringOrder(false, true);
+    mockFetchOrderStatus.mockResolvedValue(ownedStatus(orderId));
+    try {
+      await act(async () => status.resolve(ownedStatus(orderId)));
+      expect(mockRecover).toHaveBeenCalledOnce();
+      expect(usePendingTradesStore.getState().byOrderId[orderId]).toBeUndefined();
+    } finally {
+      unmount();
+    }
   });
 
   it("rejoins retained orders after reconnect", async () => {
@@ -851,3 +1148,47 @@ describe("useOrderSettlementLifecycle", () => {
     await waitFor(() => expect(mockRecover).toHaveBeenCalledOnce());
   });
 });
+
+const pendingRecovery = {
+  recovered: 0,
+  pending: [{ operationId: "operation-1", revision: 1, code: "recovery-pending" }],
+};
+
+function recoveryBarrier() {
+  let resolve!: (value: typeof pendingRecovery) => void;
+  let reject!: (error: Error) => void;
+  const promise = new Promise<typeof pendingRecovery>((settle, fail) => {
+    resolve = settle;
+    reject = fail;
+  });
+  return { promise, resolve, reject };
+}
+
+function deferredStatus() {
+  let resolve!: (value: OrderStatusResponse) => void;
+  const promise = new Promise<OrderStatusResponse>((settle) => {
+    resolve = settle;
+  });
+  return { promise, resolve };
+}
+
+function mountRecoveringOrder(setStatus = true, strict = false) {
+  const orderId = "11111111-1111-4111-8111-111111111111";
+  if (setStatus) mockFetchOrderStatus.mockResolvedValue(ownedStatus(orderId));
+  usePendingTradesStore.getState().add({
+    orderId,
+    walletId,
+    clientOrderId: "client-order-1",
+    marketId: "condition-YES",
+    baseAsset: "sat",
+    divisibility: 1_000,
+    submittedAt: Date.now(),
+  });
+  const { unmount } = renderHook(
+    () => useOrderSettlementLifecycle(true, recoveryInput),
+    strict
+      ? { wrapper: ({ children }: { children: ReactNode }) => <StrictMode>{children}</StrictMode> }
+      : undefined,
+  );
+  return { orderId, unmount };
+}

@@ -60,6 +60,7 @@ import {
   resolveOutcomeSets,
 } from "@/lib/outcomeSets";
 import { useMarketStatusLive } from "@/hooks/useMarketStatusLive";
+import { useMarketTradeRecovery } from "@/hooks/useMarketTradeRecovery";
 import { useMarketDetailSnapshots } from "@/hooks/useMarketDetailSnapshots";
 import { mergeMarketFundingObservation } from "@/lib/marketFunding";
 import {
@@ -143,6 +144,7 @@ export interface PendingTopUpOrderIntent {
   required: number;
   protectedTicket: TradeTicket | null;
   previewIdentityKey: string | null;
+  inputGeneration?: number;
 }
 
 type DistributiveOmit<T, K extends PropertyKey> = T extends unknown
@@ -246,6 +248,7 @@ export function buildPendingTopUpOrderIntent(input: {
   required: number;
   protectedTicket?: TradeTicket | null;
   previewIdentityKey?: string | null;
+  inputGeneration?: number;
 }): PendingTopUpOrderIntent | null {
   if (!input.market || !input.tradeSelection || input.tradeAmount <= 0) return null;
   if (!Number.isFinite(input.required) || input.required < 0) return null;
@@ -259,6 +262,7 @@ export function buildPendingTopUpOrderIntent(input: {
     required: Math.ceil(input.required),
     protectedTicket: input.protectedTicket ?? null,
     previewIdentityKey: input.previewIdentityKey ?? null,
+    inputGeneration: input.inputGeneration,
   };
 }
 
@@ -1106,6 +1110,17 @@ export function composeMarketDetail(
   return base as MarketDetailType;
 }
 
+function tradeFeeConsentKey(input: {
+  conditionId: string | undefined;
+  mintUrl: string;
+  ticket: TradeTicket;
+  previewIdentityKey: string;
+  selectedSellHoldingVersion: string;
+  recoveryInvalidationKey: string;
+}): string {
+  return JSON.stringify(input);
+}
+
 export function MarketDetailPage() {
   const { id } = useParams();
   const navigate = useNavigate();
@@ -1115,7 +1130,7 @@ export function MarketDetailPage() {
   const routeGenerationRef = useRef(0);
   const marketLoadRequestTokenRef = useRef(0);
   const marketDetailRequestRef = useRef<MarketDetailRequest | null>(null);
-  const previewMarketRevisionRef = useRef(0);
+  const [previewMarketRevision, setPreviewMarketRevision] = useState(0);
   // Update this during render so a promise that resolves between route render
   // and the route effect cannot write the previous condition into state.
   activeRouteIdRef.current = currentRouteId;
@@ -1125,7 +1140,7 @@ export function MarketDetailPage() {
     [],
   );
   const invalidatePreviewForMarket = useCallback(() => {
-    previewMarketRevisionRef.current += 1;
+    setPreviewMarketRevision((revision) => revision + 1);
   }, []);
   const setupComplete = useWalletStore((s) => s.setupComplete);
   const activeMintUrl = useWalletStore((s) => s.activeMintUrl);
@@ -1135,6 +1150,13 @@ export function MarketDetailPage() {
     getNostrSignerRevision,
     getNostrSignerRevision,
   );
+  const tradeRecovery = useMarketTradeRecovery({
+    mnemonic: walletMnemonic,
+    conditionId: currentRouteId,
+    signerRevision,
+  });
+  const recoveryInvalidationKeyRef = useRef(tradeRecovery.invalidationKey);
+  recoveryInvalidationKeyRef.current = tradeRecovery.invalidationKey;
   const addPendingTrade = usePendingTradesStore((s) => s.add);
   const nostrSignerMode = useSettingsStore((s) => s.nostrSignerMode);
   const nostrProfilePubkey = useSettingsStore((s) => s.nostrProfile?.pubkey ?? null);
@@ -1182,6 +1204,8 @@ export function MarketDetailPage() {
   const marketBaseAsset = market ? normalizeMarketBaseAsset(market.baseAsset) : "sat";
   const [tradeSelection, setTradeSelection] = useState<TradeSelection | null>(null);
   const [tradeAmount, setTradeAmount] = useState(0);
+  const [tradeComment, setTradeComment] = useState("");
+  const tradeInputGenerationRef = useRef(0);
   const [tradeSide, setTradeSide] = useState<TradeSide>("Buy");
   const [tradeSubmitStatus, setTradeSubmitStatus] = useState<{
     kind: "info" | "success" | "error";
@@ -1423,6 +1447,8 @@ export function MarketDetailPage() {
     // after the user has moved to B.
     setTradeSelection(null);
     setTradeAmount(0);
+    setTradeComment("");
+    tradeInputGenerationRef.current += 1;
     setTradeSubmitStatus(null);
     setTradeFeasibility(null);
     setIsTradeSubmitting(false);
@@ -1697,7 +1723,6 @@ export function MarketDetailPage() {
     marketDivisibility,
   );
 
-  const previewMarketRevision = previewMarketRevisionRef.current;
   const previewClient = useMemo(
     () =>
       nostrSignerMode === "none"
@@ -1722,8 +1747,8 @@ export function MarketDetailPage() {
     return request;
   }, [market, tradeSelection, tradeSide, discoveryPrice]);
   const capacityInvalidationKey = useMemo(
-    () => [previewIdentityKey, previewMarketRevision].join("\u0000"),
-    [previewIdentityKey, previewMarketRevision],
+    () => [previewIdentityKey, previewMarketRevision, tradeRecovery.invalidationKey].join("\u0000"),
+    [previewIdentityKey, previewMarketRevision, tradeRecovery.invalidationKey],
   );
   const capacityPreview = useFokOrderCapacityPreview({
     client: previewClient,
@@ -1798,6 +1823,7 @@ export function MarketDetailPage() {
     return [
       previewIdentityKey,
       previewMarketRevision,
+      tradeRecovery.invalidationKey,
       selectedSellHoldingVersion,
       market?.latestConfirmedTradesValid === true ? "valid" : "invalid",
       confirmedTradeFacts,
@@ -1807,6 +1833,7 @@ export function MarketDetailPage() {
     market?.latestConfirmedTradesValid,
     previewIdentityKey,
     previewMarketRevision,
+    tradeRecovery.invalidationKey,
     selectedSellHoldingVersion,
   ]);
   const previewIdentityRef = useRef<string | null>(null);
@@ -1850,12 +1877,13 @@ export function MarketDetailPage() {
   const rangeFeePreviewKey = useMemo(
     () =>
       protectedTradeTicket && activeMintUrl
-        ? JSON.stringify({
+        ? tradeFeeConsentKey({
             conditionId: market?.id,
             mintUrl: activeMintUrl,
             ticket: protectedTradeTicket,
             previewIdentityKey,
             selectedSellHoldingVersion,
+            recoveryInvalidationKey: tradeRecovery.invalidationKey,
           })
         : null,
     [
@@ -1864,6 +1892,7 @@ export function MarketDetailPage() {
       protectedTradeTicket,
       previewIdentityKey,
       selectedSellHoldingVersion,
+      tradeRecovery.invalidationKey,
     ],
   );
   const displayedTradeFeeFacts =
@@ -1957,7 +1986,7 @@ export function MarketDetailPage() {
   // Reuse consent only for the same ticket and wallet. A new fee calculation
   // needs confirmation; it must not silently authorize a changed cost.
   const placeOrder = useCallback(
-    async (comment?: string, capturedTicket?: TradeTicket) => {
+    async (comment?: string, capturedTicket?: TradeTicket, capturedInputGeneration?: number) => {
       if (!market || !tradeSelection || !tradeAmount) return;
       const ticket = capturedTicket ?? protectedTradeTicket;
       if (ticket === null || ticket === undefined) {
@@ -1971,9 +2000,18 @@ export function MarketDetailPage() {
       const generation = routeGenerationRef.current;
       const routeStillActive = () => isCurrentRoute(routeId, generation);
       const capturedPreviewIdentityKey = previewIdentityKey;
+      const capturedRecoveryInvalidationKey = tradeRecovery.invalidationKey;
+      const inputGeneration = capturedInputGeneration ?? tradeInputGenerationRef.current;
       const abortIfAttemptStale = () => {
         if (!routeStillActive()) return true;
-        if (currentTradePreviewIdentityKey(routeId) === capturedPreviewIdentityKey) return false;
+        const previewIdentityIsCurrent =
+          currentTradePreviewIdentityKey(routeId) === capturedPreviewIdentityKey;
+        const recoveryIdentityIsCurrent =
+          recoveryInvalidationKeyRef.current === capturedRecoveryInvalidationKey;
+        if (previewIdentityIsCurrent && recoveryIdentityIsCurrent) return false;
+        if (previewIdentityIsCurrent) {
+          setTradeSubmitStatus({ kind: "info", message: t("trade.recoveryConsentChanged") });
+        }
         tradeSubmitInFlightRef.current = false;
         setIsTradeSubmitting(false);
         return true;
@@ -2093,12 +2131,13 @@ export function MarketDetailPage() {
         const submittedWalletId = browserWalletIdFromMnemonic(walletState.mnemonic);
         if (submittedWalletId === null) throw new Error("The active wallet is unavailable.");
         if (!activeMintUrl) throw new Error("The active mint is unavailable.");
-        const exactFeePreviewKey = JSON.stringify({
+        const exactFeePreviewKey = tradeFeeConsentKey({
           conditionId: latestMarket.id,
           mintUrl: activeMintUrl,
           ticket,
           previewIdentityKey: capturedPreviewIdentityKey,
           selectedSellHoldingVersion,
+          recoveryInvalidationKey: capturedRecoveryInvalidationKey,
         });
         let consentedFeeFacts =
           rangeFeePreview?.key === exactFeePreviewKey ? rangeFeePreview.feeFacts : null;
@@ -2147,6 +2186,7 @@ export function MarketDetailPage() {
               required: requiredSats,
               protectedTicket: ticket,
               previewIdentityKey,
+              inputGeneration,
             });
             if (intent === null) {
               throw new BrowserCtfRangeScoreTopUpCancelledError();
@@ -2191,6 +2231,7 @@ export function MarketDetailPage() {
         });
         if (
           !routeStillActive() ||
+          currentTradePreviewIdentityKey(routeId) !== capturedPreviewIdentityKey ||
           browserWalletIdFromMnemonic(useWalletStore.getState().mnemonic) !== submittedWalletId
         ) {
           return;
@@ -2204,8 +2245,12 @@ export function MarketDetailPage() {
           fillCount: response.fills?.length ?? 0,
           status: response.status,
         });
-        setTradeSelection(null);
-        setTradeAmount(0);
+        // Acceptance consumes only the draft that supplied this ticket. The
+        // selected outcome remains available for the next order.
+        if (tradeInputGenerationRef.current === inputGeneration) {
+          setTradeAmount(0);
+          setTradeComment("");
+        }
         setTradeSubmitStatus({
           kind: "success",
           message:
@@ -2218,7 +2263,11 @@ export function MarketDetailPage() {
         }
         loadMarket({ showLoading: false });
       } catch (e) {
-        if (!routeStillActive()) return;
+        if (
+          !routeStillActive() ||
+          currentTradePreviewIdentityKey(routeId) !== capturedPreviewIdentityKey
+        )
+          return;
         if (e instanceof BrowserCtfRangeScoreTopUpCancelledError) {
           setTradeSubmitStatus({
             kind: "info",
@@ -2258,6 +2307,7 @@ export function MarketDetailPage() {
       tradeSide,
       protectedTradeTicket,
       previewIdentityKey,
+      tradeRecovery.invalidationKey,
       activeMintUrl,
       loadMarket,
       addPendingTrade,
@@ -2274,7 +2324,7 @@ export function MarketDetailPage() {
   // Do not gate Buy on share payout or Sell on pooled collections. The source
   // planner rechecks the selected asset and its fees when submission starts.
   const handleTradeConfirm = useCallback(
-    async (comment?: string, capturedTicket?: TradeTicket) => {
+    async (comment?: string, capturedTicket?: TradeTicket, capturedInputGeneration?: number) => {
       if (!market || !tradeSelection || !tradeAmount) return;
       const ticket = capturedTicket ?? protectedTradeTicket;
       if (ticket === null || ticket === undefined) {
@@ -2310,13 +2360,18 @@ export function MarketDetailPage() {
       }
       if (tradeSubmitInFlightRef.current) return;
       if (abortIfAttemptStale()) return;
-      await placeOrder(comment, ticket);
+      await placeOrder(
+        capturedTicket ? comment : (comment ?? (tradeComment.trim() || undefined)),
+        ticket,
+        capturedInputGeneration,
+      );
     },
     [
       market,
       marketBaseAsset,
       tradeSelection,
       tradeAmount,
+      tradeComment,
       tradeFaceAmountSubunits,
       tradeSide,
       activeMintUrl,
@@ -2520,6 +2575,7 @@ export function MarketDetailPage() {
     await handleTradeConfirm(
       intent.comment ?? pendingTopUpComment,
       intent.protectedTicket ?? undefined,
+      intent.inputGeneration,
     );
   }, [
     activeMintUrl,
@@ -2599,23 +2655,25 @@ export function MarketDetailPage() {
   const handleTradingPanelTopUp = useCallback(
     (comment?: string) => {
       if (!market || !tradeSelection || tradeAmount <= 0) return;
+      const capturedComment = comment ?? (tradeComment.trim() || undefined);
       setBalanceAtCheck(0);
       // New proofs change input fees. Do not invent an exact shortfall from
       // the share payout; normal preparation checks the received funds.
       const required = 0;
       const baseAsset = marketBaseAsset;
-      setPendingTopUpComment(comment?.trim() || undefined);
+      setPendingTopUpComment(capturedComment);
       setPendingTopUpIntent(
         buildPendingTopUpOrderIntent({
           market,
           tradeSelection,
           tradeAmount,
           tradeSide,
-          comment,
+          comment: capturedComment,
           baseAsset,
           required,
           protectedTicket: protectedTradeTicket,
           previewIdentityKey,
+          inputGeneration: tradeInputGenerationRef.current,
         }),
       );
       setTopUpReason({
@@ -2631,6 +2689,7 @@ export function MarketDetailPage() {
       previewIdentityKey,
       protectedTradeTicket,
       tradeAmount,
+      tradeComment,
       tradeFaceAmountSubunits,
       tradeSelection,
       tradeSide,
@@ -2682,6 +2741,12 @@ export function MarketDetailPage() {
         chartTimeframe={chartTimeframe}
         tradeSelection={tradeSelection}
         tradeAmount={tradeAmount}
+        tradeComment={tradeComment}
+        onTradeCommentChange={(comment) => {
+          tradeInputGenerationRef.current += 1;
+          clearCompletedTradeNotice();
+          setTradeComment(comment);
+        }}
         sellHoldings={sellHoldings}
         tradePreview={tradePreview}
         tradeFeeFacts={displayedTradeFeeFacts}
@@ -2689,17 +2754,26 @@ export function MarketDetailPage() {
         tradeSide={tradeSide}
         tradeCapacityPreview={capacityPreview}
         isFullyEmptyBook={isFullyEmptyBook}
+        tradeRecovery={tradeRecovery}
+        suppressFundingHint={
+          isTradeSubmitting ||
+          tradeRecovery.suppressFundingHint ||
+          (capacityRequest !== null && capacityPreview.status !== "ready")
+        }
         onTimeframeChange={handleTimeframeChange}
         onTradeSelect={(selection) => {
+          tradeInputGenerationRef.current += 1;
           clearCompletedTradeNotice();
           setTradeSelection(selection);
         }}
         onTradeClear={() => {
+          tradeInputGenerationRef.current += 1;
           clearCompletedTradeNotice();
           setTradeSelection(null);
           setTradeAmount(0);
         }}
         onAmountChange={(amount) => {
+          tradeInputGenerationRef.current += 1;
           clearCompletedTradeNotice();
           setTradeAmount(amount);
         }}
@@ -2711,6 +2785,7 @@ export function MarketDetailPage() {
         isTradeSubmitting={isTradeSubmitting}
         onShare={handleShare}
         onTradeSideChange={(side) => {
+          tradeInputGenerationRef.current += 1;
           clearCompletedTradeNotice();
           setTradeSide(side);
         }}
@@ -2719,6 +2794,7 @@ export function MarketDetailPage() {
         onWalletRequired={handleWalletRequired}
         onTopUpRequired={handleTradingPanelTopUp}
         onFundingCredited={handleFundingCredited}
+        onTradeMarketRefresh={() => loadMarket({ showLoading: false })}
       />
       {topUpStage === "modal" && (
         <InsufficientBalanceModal

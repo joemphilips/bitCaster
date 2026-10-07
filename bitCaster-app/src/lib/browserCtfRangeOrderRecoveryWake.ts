@@ -23,8 +23,11 @@ export function beginBrowserCtfRangeOrderAttempt(input: {
   activeAttempts.set(input.scopeId, state);
 }
 
-export function hasActiveBrowserCtfRangeOrderAttempt(scopeId: string): boolean {
-  return (activeAttempts.get(scopeId)?.operationIds.size ?? 0) > 0;
+export function deferBrowserCtfRangeOrderRecovery(scopeId: string): boolean {
+  const state = activeAttempts.get(scopeId);
+  if (state === undefined || state.operationIds.size === 0) return false;
+  state.wakePending = true;
+  return true;
 }
 
 export function endBrowserCtfRangeOrderAttempt(input: {

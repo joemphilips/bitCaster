@@ -1,3 +1,4 @@
+import { StrictMode } from "react";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -14,6 +15,7 @@ const mocks = vi.hoisted(() => ({
   recoverPendingTokenReceives: vi.fn(),
   recoverPendingWalletMints: vi.fn(),
   resumeBackupAfterRecovery: vi.fn(),
+  activeScope: "wallet-scope-a" as string | null,
 }));
 
 vi.mock("@/lib/cashu", () => ({
@@ -33,14 +35,17 @@ vi.mock("@/lib/encryptedWalletBackupDriver", () => ({
 }));
 
 vi.mock("@/lib/browserWalletProfile", () => ({
-  browserWalletScopeIdFromMnemonic: () => "wallet-scope-a",
+  browserWalletScopeIdFromMnemonic: (mnemonic: string) =>
+    mnemonic === "wallet B mnemonic" ? "wallet-scope-b" : "wallet-scope-a",
+  activeBrowserWalletScopeId: () => mocks.activeScope,
 }));
 
 describe("useBrowserCtfRangeOrderRecovery", () => {
   let unmount: (() => void) | undefined;
 
   beforeEach(() => {
-    vi.clearAllMocks();
+    vi.resetAllMocks();
+    mocks.activeScope = "wallet-scope-a";
     mocks.recoverPendingTokenReceives.mockResolvedValue({
       pending: 0,
       lastAttemptedOperationId: null,
@@ -114,8 +119,9 @@ describe("useBrowserCtfRangeOrderRecovery", () => {
     expect(mocks.recoverBrowserCtfRangeOrders).toHaveBeenCalledTimes(2);
   });
 
-  it("resumes deferred recovery after a successful active attempt releases", async () => {
+  it("resumes deferred recovery immediately after a successful active attempt releases", async () => {
     vi.useFakeTimers();
+    const startedAt = Date.now();
     beginBrowserCtfRangeOrderAttempt({
       scopeId: "wallet-scope-a",
       operationId: "app-recovery-attempt",
@@ -138,10 +144,222 @@ describe("useBrowserCtfRangeOrderRecovery", () => {
       retainedRecoveryWork: false,
     });
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(15_000);
+      await Promise.resolve();
     });
+    expect(Date.now()).toBe(startedAt);
+    expect(mocks.recoverBrowserCtfRangeOrders).toHaveBeenCalledOnce();
+    await act(async () => vi.advanceTimersByTimeAsync(15_000));
     expect(mocks.recoverBrowserCtfRangeOrders).toHaveBeenCalledOnce();
   });
+
+  it("coalesces burst wakes into one single-flight follow-up and clears the fallback", async () => {
+    vi.useFakeTimers();
+    const blocked = deferred<{ recovered: number; pending: never[] }>();
+    let inFlight = 0;
+    let maxInFlight = 0;
+    mocks.recoverBrowserCtfRangeOrders
+      .mockImplementationOnce(async () => {
+        maxInFlight = Math.max(maxInFlight, ++inFlight);
+        const result = await blocked.promise;
+        inFlight -= 1;
+        return result;
+      })
+      .mockImplementation(async () => {
+        maxInFlight = Math.max(maxInFlight, ++inFlight);
+        inFlight -= 1;
+        return { recovered: 1, pending: [] };
+      });
+    mountRecovery();
+    await flush();
+    expect(mocks.recoverBrowserCtfRangeOrders).toHaveBeenCalledOnce();
+    for (let index = 0; index < 20; index += 1) {
+      publishBrowserCtfRangeRecoveryWake({ scopeId: "wallet-scope-a" });
+    }
+    expect(mocks.recoverBrowserCtfRangeOrders).toHaveBeenCalledOnce();
+    blocked.resolve({ recovered: 0, pending: [] });
+    await flush();
+    expect(mocks.recoverBrowserCtfRangeOrders).toHaveBeenCalledTimes(2);
+    expect(maxInFlight).toBe(1);
+    await act(async () => vi.advanceTimersByTimeAsync(15_000));
+    expect(mocks.recoverBrowserCtfRangeOrders).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps the fallback after a failed wake pass and cancels it on a successful wake", async () => {
+    vi.useFakeTimers();
+    const blocked = deferred<{ recovered: number; pending: { operationId: string }[] }>();
+    mocks.recoverBrowserCtfRangeOrders
+      .mockReturnValueOnce(blocked.promise)
+      .mockRejectedValueOnce(new Error("mint unavailable"));
+    mountRecovery();
+    await flush();
+    publishBrowserCtfRangeRecoveryWake({ scopeId: "wallet-scope-a" });
+    blocked.resolve({ recovered: 0, pending: [{ operationId: "pending" }] });
+    await flush();
+    expect(mocks.recoverBrowserCtfRangeOrders).toHaveBeenCalledTimes(2);
+    await act(async () => vi.advanceTimersByTimeAsync(14_999));
+    expect(mocks.recoverBrowserCtfRangeOrders).toHaveBeenCalledTimes(2);
+    await act(async () => vi.advanceTimersByTimeAsync(1));
+    expect(mocks.recoverBrowserCtfRangeOrders).toHaveBeenCalledTimes(3);
+    await act(async () => vi.advanceTimersByTimeAsync(15_000));
+    expect(mocks.recoverBrowserCtfRangeOrders).toHaveBeenCalledTimes(3);
+  });
+
+  it("waits for the last of two successful attempts before recovering deferred work", async () => {
+    vi.useFakeTimers();
+    beginBrowserCtfRangeOrderAttempt({
+      scopeId: "wallet-scope-a",
+      operationId: "app-recovery-attempt",
+    });
+    beginBrowserCtfRangeOrderAttempt({ scopeId: "wallet-scope-a", operationId: "second" });
+    mountRecovery();
+    await flush();
+    endBrowserCtfRangeOrderAttempt({
+      scopeId: "wallet-scope-a",
+      operationId: "second",
+      retainedRecoveryWork: false,
+    });
+    await flush();
+    expect(mocks.recoverBrowserCtfRangeOrders).not.toHaveBeenCalled();
+    endBrowserCtfRangeOrderAttempt({
+      scopeId: "wallet-scope-a",
+      operationId: "app-recovery-attempt",
+      retainedRecoveryWork: false,
+    });
+    await flush();
+    expect(mocks.recoverBrowserCtfRangeOrders).toHaveBeenCalledOnce();
+    await act(async () => vi.advanceTimersByTimeAsync(15_000));
+    expect(mocks.recoverBrowserCtfRangeOrders).toHaveBeenCalledOnce();
+  });
+
+  it("ignores a wake from another scope and success without deferred work", async () => {
+    mountRecovery();
+    await flush();
+    beginBrowserCtfRangeOrderAttempt({
+      scopeId: "wallet-scope-a",
+      operationId: "app-recovery-attempt",
+    });
+    endBrowserCtfRangeOrderAttempt({
+      scopeId: "wallet-scope-a",
+      operationId: "app-recovery-attempt",
+      retainedRecoveryWork: false,
+    });
+    publishBrowserCtfRangeRecoveryWake({ scopeId: "wallet-scope-b" });
+    await flush();
+    expect(mocks.recoverBrowserCtfRangeOrders).toHaveBeenCalledOnce();
+  });
+
+  it.each(["receive", "mint", "range", "outgoing", "counter"] as const)(
+    "does not start subsequent wallet helpers after disposal during %s recovery",
+    async (stage) => {
+      const blocked = deferred<ReturnType<typeof recoveryResult>>();
+      const helpers = [
+        mocks.recoverPendingTokenReceives,
+        mocks.recoverPendingWalletMints,
+        mocks.recoverBrowserCtfRangeOrders,
+        mocks.recoverBrowserDurableOutgoingCashuTransfersInPass,
+        mocks.recoverKeysetCountersForMint,
+      ];
+      const index = ["receive", "mint", "range", "outgoing", "counter"].indexOf(stage);
+      helpers[index]!.mockReturnValueOnce(blocked.promise);
+      mountRecovery("https://mint.example\nhttps://second.example");
+      await flush();
+      expect(helpers[index]).toHaveBeenCalledOnce();
+      publishBrowserCtfRangeRecoveryWake({ scopeId: "wallet-scope-a" });
+      unmount?.();
+      unmount = undefined;
+      blocked.resolve(recoveryResult(stage));
+      await flush();
+      for (const helper of helpers.slice(index + 1)) expect(helper).not.toHaveBeenCalled();
+      if (stage === "counter") expect(mocks.recoverKeysetCountersForMint).toHaveBeenCalledOnce();
+      expect(mocks.resumeBackupAfterRecovery).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["range", "outgoing", "counter"] as const)(
+    "does not resume active-wallet helpers after profile invalidation during %s recovery",
+    async (stage) => {
+      const blocked = deferred<ReturnType<typeof recoveryResult>>();
+      const helper =
+        stage === "range"
+          ? mocks.recoverBrowserCtfRangeOrders
+          : stage === "outgoing"
+            ? mocks.recoverBrowserDurableOutgoingCashuTransfersInPass
+            : mocks.recoverKeysetCountersForMint;
+      helper.mockReturnValueOnce(blocked.promise);
+      mountRecovery("https://mint.example\nhttps://second.example");
+      await flush();
+      expect(helper).toHaveBeenCalledOnce();
+      mocks.activeScope = null;
+      blocked.resolve(recoveryResult(stage));
+      await flush();
+      if (stage === "range")
+        expect(mocks.recoverBrowserDurableOutgoingCashuTransfersInPass).not.toHaveBeenCalled();
+      if (stage !== "counter") expect(mocks.recoverKeysetCountersForMint).not.toHaveBeenCalled();
+      else expect(mocks.recoverKeysetCountersForMint).toHaveBeenCalledOnce();
+      expect(mocks.resumeBackupAfterRecovery).not.toHaveBeenCalled();
+    },
+  );
+
+  it("drops queued old-wallet recovery on handoff while the new wallet completes", async () => {
+    const blocked = deferred<{ recovered: number; pending: never[] }>();
+    mocks.recoverBrowserCtfRangeOrders.mockReturnValueOnce(blocked.promise);
+    const mounted = renderHook(
+      ({ mnemonic }) =>
+        useBrowserCtfRangeOrderRecovery({
+          nostrSignerReady: true,
+          walletMnemonic: mnemonic,
+          walletMintUrls: "https://mint.example",
+        }),
+      { initialProps: { mnemonic: "wallet mnemonic" } },
+    );
+    unmount = mounted.unmount;
+    await flush();
+    publishBrowserCtfRangeRecoveryWake({ scopeId: "wallet-scope-a" });
+    mocks.activeScope = "wallet-scope-b";
+    mounted.rerender({ mnemonic: "wallet B mnemonic" });
+    await flush();
+    blocked.resolve({ recovered: 0, pending: [] });
+    await flush();
+    expect(mocks.recoverBrowserCtfRangeOrders).toHaveBeenCalledTimes(2);
+    expect(mocks.recoverBrowserDurableOutgoingCashuTransfersInPass).toHaveBeenCalledOnce();
+    expect(mocks.resumeBackupAfterRecovery).toHaveBeenCalledExactlyOnceWith("wallet-scope-b");
+  });
+
+  it("does not resume a cancelled StrictMode pass after its replacement completes", async () => {
+    const blocked = deferred<{ pending: number; lastAttemptedOperationId: null }>();
+    mocks.recoverPendingTokenReceives.mockReturnValueOnce(blocked.promise);
+    unmount = renderHook(
+      () =>
+        useBrowserCtfRangeOrderRecovery({
+          nostrSignerReady: true,
+          walletMnemonic: "wallet mnemonic",
+          walletMintUrls: "https://mint.example",
+        }),
+      { wrapper: StrictMode },
+    ).unmount;
+    await flush();
+    expect(mocks.recoverBrowserCtfRangeOrders).toHaveBeenCalledOnce();
+    blocked.resolve({ pending: 0, lastAttemptedOperationId: null });
+    await flush();
+    expect(mocks.recoverPendingWalletMints).toHaveBeenCalledOnce();
+    expect(mocks.recoverBrowserCtfRangeOrders).toHaveBeenCalledOnce();
+    expect(mocks.recoverBrowserDurableOutgoingCashuTransfersInPass).toHaveBeenCalledOnce();
+    expect(mocks.recoverKeysetCountersForMint).toHaveBeenCalledOnce();
+  });
+
+  function mountRecovery(walletMintUrls = "https://mint.example") {
+    unmount = renderHook(() =>
+      useBrowserCtfRangeOrderRecovery({
+        nostrSignerReady: true,
+        walletMnemonic: "wallet mnemonic",
+        walletMintUrls,
+      }),
+    ).unmount;
+  }
+
+  async function flush() {
+    await act(async () => {});
+  }
 
   async function completeInitialPass(): Promise<void> {
     const countersDone = deferred<{ complete: true }>();
@@ -168,4 +386,10 @@ function deferred<T>(): {
     resolve = settle;
   });
   return { promise, resolve };
+}
+
+function recoveryResult(stage: string) {
+  return stage === "range"
+    ? { recovered: 0, pending: [] }
+    : { pending: 0, lastAttemptedOperationId: null, complete: true, hasMore: false };
 }

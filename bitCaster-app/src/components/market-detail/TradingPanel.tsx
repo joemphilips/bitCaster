@@ -1,3 +1,4 @@
+import type { MarketTradeRecoveryDisplay } from "@/hooks/useMarketTradeRecovery";
 import React, { useState, useRef, useEffect } from "react";
 import { X, ChevronUp, ChevronDown, Loader2 } from "lucide-react";
 import type {
@@ -45,12 +46,16 @@ interface TradingPanelProps {
   market: MarketDetail;
   tradeSelection: TradeSelection | null;
   tradeAmount: number;
+  tradeComment?: string;
+  onTradeCommentChange?: (comment: string) => void;
   tradePreview: FokOrderPreviewState | null;
   tradeFeeFacts?: TradeFeeFacts | null;
   feeConsentCurrent?: boolean;
   tradeSide: TradeSide;
   tradeCapacityPreview?: UseFokOrderCapacityPreviewResult | null;
   isFullyEmptyBook?: boolean;
+  tradeRecovery?: MarketTradeRecoveryDisplay;
+  suppressFundingHint?: boolean;
   sellHoldings?: SellHoldingsState;
   tradeSubmitStatus?: {
     kind: "info" | "success" | "error";
@@ -68,7 +73,6 @@ interface TradingPanelProps {
   onTradeClear?: () => void;
   onAmountChange?: (amount: number) => void;
   onTradeConfirm?: (comment?: string) => void;
-  onCommentPost?: (content: string) => void;
   onTradeSideChange?: (side: TradeSide) => void;
   tradeTab?: TradeTab;
   onTradeTabChange?: (tab: TradeTab) => void;
@@ -76,6 +80,7 @@ interface TradingPanelProps {
   onWalletRequired?: (comment?: string) => void;
   onTopUpRequired?: (comment?: string) => void;
   onFundingCredited?: () => void;
+  onTradeMarketRefresh?: () => void;
   disabled?: boolean;
 }
 
@@ -559,6 +564,7 @@ function FokOrderPreviewSection({
   feeFacts,
   feeConsentCurrent,
   feeCheckFailed,
+  suppressFundingHint,
   isSell,
   isComplement,
 }: {
@@ -569,6 +575,7 @@ function FokOrderPreviewSection({
   feeFacts: TradeFeeFacts | null | undefined;
   feeConsentCurrent: boolean;
   feeCheckFailed: boolean;
+  suppressFundingHint: boolean;
   isSell: boolean;
   isComplement: boolean;
 }) {
@@ -646,6 +653,7 @@ function FokOrderPreviewSection({
             defaultValue: t("trade.previewNotFillable"),
           })}
         </p>
+        <p className="mt-2 text-xs">{t("trade.previewSnapshot")}</p>
         {priceLimitFacts !== null && (
           <div data-testid="fok-preview-price-limit-details" className="mt-2 space-y-1">
             <p data-testid="fok-preview-current-executable-price">
@@ -665,21 +673,21 @@ function FokOrderPreviewSection({
             </p>
           </div>
         )}
-        {response.reason === "insufficient_liquidity" && response.subsidyMayHelp === true && (
-          <p data-testid="fok-preview-subsidy" className="mt-2">
-            {t("trade.previewSubsidyMayHelp")}
-          </p>
-        )}
-        {response.reason === "temporarily_unavailable" && (
-          <button
-            type="button"
-            data-testid="fok-preview-response-retry"
-            className="mt-3 underline"
-            onClick={preview.refresh}
-          >
-            {t("trade.previewRetry")}
-          </button>
-        )}
+        {!suppressFundingHint &&
+          response.reason === "insufficient_liquidity" &&
+          response.subsidyMayHelp === true && (
+            <p data-testid="fok-preview-subsidy" className="mt-2">
+              {t("trade.previewSubsidyMayHelp")}
+            </p>
+          )}
+        <button
+          type="button"
+          data-testid="fok-preview-response-retry"
+          className="mt-3 underline"
+          onClick={preview.refresh}
+        >
+          {t("trade.refreshQuote")}
+        </button>
       </div>
     );
   }
@@ -891,17 +899,20 @@ export function TradingPanel({
   market,
   tradeSelection,
   tradeAmount,
+  tradeComment: controlledTradeComment,
+  onTradeCommentChange,
   tradePreview,
   tradeFeeFacts,
   feeConsentCurrent = false,
   tradeSide,
   tradeCapacityPreview = null,
   isFullyEmptyBook = false,
+  tradeRecovery,
+  suppressFundingHint = false,
   onTradeSelect,
   onTradeClear,
   onAmountChange,
   onTradeConfirm,
-  onCommentPost,
   sellHoldings,
   tradeSubmitStatus,
   onTradeSubmitStatusDismiss,
@@ -915,10 +926,12 @@ export function TradingPanel({
   onWalletRequired,
   onTopUpRequired,
   onFundingCredited,
+  onTradeMarketRefresh,
   disabled = false,
 }: TradingPanelProps) {
   const { t } = useTranslation();
-  const [tradeComment, setTradeComment] = useState("");
+  const [localTradeComment, setLocalTradeComment] = useState("");
+  const tradeComment = controlledTradeComment ?? localTradeComment;
   const [localActiveTab, setLocalActiveTab] = useState<TradingTab>(tradeSide);
   const activeTab = controlledTradeTab ?? localActiveTab;
   const activeTradeSide: TradeSide = activeTab === "Sell" ? "Sell" : "Buy";
@@ -1045,6 +1058,13 @@ export function TradingPanel({
     if (previewNeedsAttention && previewResponse?.fullFillAvailable === false) {
       return t("trade.previewNotFillable");
     }
+    if (
+      tradePreview?.status === "ready" &&
+      previewResponse?.fullFillAvailable &&
+      !feeConsentCurrent
+    ) {
+      return t("trade.feesLoading");
+    }
     if (previewNeedsAttention && !buyNeedsTopUp) return t("trade.previewLoading");
     const sideLabel = tradeSelection?.side.toUpperCase() ?? "";
     const amountLabel = shareCountLabel(tradeAmount);
@@ -1117,6 +1137,18 @@ export function TradingPanel({
         </div>
       )}
 
+      {activeTab !== "Liquidity" && tradeRecovery && tradeRecovery.stages.length > 0 && (
+        <div
+          role="status"
+          data-testid="trade-recovery-status"
+          className="mb-4 text-sm text-slate-600 dark:text-slate-300"
+        >
+          {tradeRecovery.stages.map((stage) => (
+            <p key={stage}>{t(`trade.recovery.${stage}`)}</p>
+          ))}
+        </div>
+      )}
+
       {tradingDisabled ? (
         <div data-testid="closed-trade-liquidity" className="space-y-3 py-4">
           <p className="text-sm text-slate-500 dark:text-slate-400">
@@ -1145,15 +1177,29 @@ export function TradingPanel({
       ) : isFullyEmptyBook ? (
         <div data-testid="empty-trade-liquidity" className="space-y-3 py-4">
           <p className="text-sm text-slate-500 dark:text-slate-400">
-            {t("trade.emptyBookDescription")}
+            {t(
+              suppressFundingHint || isTradeSubmitting
+                ? "trade.emptyBookSnapshot"
+                : "trade.emptyBookDescription",
+            )}
           </p>
+          {!(suppressFundingHint || isTradeSubmitting) && (
+            <button
+              type="button"
+              data-testid="open-liquidity-tab"
+              onClick={selectLiquidityTab}
+              className="text-sm text-blue-600 underline dark:text-blue-400"
+            >
+              {t("market.liquidity")}
+            </button>
+          )}
           <button
             type="button"
-            data-testid="open-liquidity-tab"
-            onClick={selectLiquidityTab}
+            data-testid="empty-book-refresh"
+            onClick={onTradeMarketRefresh ?? tradePreview?.refresh ?? tradeCapacityPreview?.refresh}
             className="text-sm text-blue-600 underline dark:text-blue-400"
           >
-            {t("market.liquidity")}
+            {t("trade.refreshMarket")}
           </button>
         </div>
       ) : (
@@ -1299,6 +1345,7 @@ export function TradingPanel({
               feeFacts={tradeFeeFacts}
               feeConsentCurrent={feeConsentCurrent}
               feeCheckFailed={tradeFeasibility?.canBack === false}
+              suppressFundingHint={suppressFundingHint || isTradeSubmitting}
               isSell={isSell}
               isComplement={selectedTokenIsComplement}
             />
@@ -1357,7 +1404,11 @@ export function TradingPanel({
             <textarea
               value={tradeComment}
               disabled={tradingDisabled}
-              onChange={(e) => setTradeComment(e.target.value.slice(0, 280))}
+              onChange={(e) => {
+                const comment = e.target.value.slice(0, 280);
+                if (controlledTradeComment === undefined) setLocalTradeComment(comment);
+                onTradeCommentChange?.(comment);
+              }}
               placeholder={t("trade.commentPlaceholder")}
               rows={2}
               className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-900 dark:text-white placeholder:text-slate-400 dark:placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
@@ -1383,10 +1434,6 @@ export function TradingPanel({
               }
               const comment = tradeComment.trim();
               onTradeConfirm?.(comment || undefined);
-              if (comment) {
-                onCommentPost?.(comment);
-                setTradeComment("");
-              }
             }}
             disabled={
               isTradeSubmitting ||

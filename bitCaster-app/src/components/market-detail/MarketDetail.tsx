@@ -74,12 +74,16 @@ export function MarketDetail({
   chartTimeframe,
   tradeSelection,
   tradeAmount,
+  tradeComment,
+  onTradeCommentChange,
   tradePreview,
   tradeFeeFacts,
   feeConsentCurrent,
   tradeSide,
   tradeCapacityPreview,
   isFullyEmptyBook,
+  tradeRecovery,
+  suppressFundingHint,
   onTimeframeChange,
   onTradeSelect,
   onTradeClear,
@@ -91,7 +95,6 @@ export function MarketDetail({
   onTradeFeasibilityRetry,
   isTradeSubmitting,
   onShare,
-  onCommentPost,
   onLoadMoreComments,
   onRelatedMarketClick,
   onTradeSideChange,
@@ -102,6 +105,7 @@ export function MarketDetail({
   onWalletRequired,
   onTopUpRequired,
   onFundingCredited,
+  onTradeMarketRefresh,
 }: MarketDetailProps) {
   const { t } = useTranslation();
   const [localTradeTab, setLocalTradeTab] = useState<TradeTab>(tradeSide);
@@ -170,12 +174,16 @@ export function MarketDetail({
       market={market}
       tradeSelection={tradeSelection}
       tradeAmount={tradeAmount}
+      tradeComment={tradeComment}
+      onTradeCommentChange={onTradeCommentChange}
       tradePreview={tradePreview}
       tradeFeeFacts={tradeFeeFacts}
       feeConsentCurrent={feeConsentCurrent}
       tradeSide={tradeSide}
       tradeCapacityPreview={tradeCapacityPreview}
       isFullyEmptyBook={isFullyEmptyBook}
+      tradeRecovery={tradeRecovery}
+      suppressFundingHint={suppressFundingHint}
       onTradeSelect={onTradeSelect}
       onTradeClear={onTradeClear}
       onAmountChange={onAmountChange}
@@ -185,7 +193,6 @@ export function MarketDetail({
       tradeFeasibility={tradeFeasibility}
       onTradeFeasibilityRetry={onTradeFeasibilityRetry}
       isTradeSubmitting={isTradeSubmitting}
-      onCommentPost={onCommentPost}
       onTradeSideChange={onTradeSideChange}
       tradeTab={activeTradeTab}
       onTradeTabChange={handleTradeTabChange}
@@ -194,6 +201,7 @@ export function MarketDetail({
       onWalletRequired={onWalletRequired}
       onTopUpRequired={onTopUpRequired}
       onFundingCredited={onFundingCredited}
+      onTradeMarketRefresh={onTradeMarketRefresh}
       disabled={isTradingDisabled}
     />
   );

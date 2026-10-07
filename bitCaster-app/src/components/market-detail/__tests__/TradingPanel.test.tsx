@@ -197,6 +197,133 @@ function sellHoldings(
 }
 
 describe("TradingPanel", () => {
+  it.each(["wallet-recovery", "result-saved", "refresh"] as const)(
+    "does not recommend funding an empty snapshot during %s",
+    (state) => {
+      const refresh = vi.fn();
+      const props = {
+        market: makeEmptyBookMarket(),
+        tradeSelection: null,
+        tradeAmount: 0,
+        tradePreview: loadingPreview(),
+        tradeSide: "Buy" as const,
+        isFullyEmptyBook: true,
+        suppressFundingHint: true,
+        onTradeMarketRefresh: refresh,
+        tradeRecovery: {
+          stages: state === "refresh" ? [] : [state],
+          suppressFundingHint: true,
+          invalidationKey: state,
+        },
+      };
+      render(<TradingPanel {...props} />);
+      expect(screen.getByTestId("empty-trade-liquidity")).not.toHaveTextContent("Add liquidity");
+      expect(screen.queryByTestId("open-liquidity-tab")).not.toBeInTheDocument();
+      if (state !== "refresh")
+        expect(screen.getByTestId("trade-recovery-status")).toBeInTheDocument();
+      expect(screen.getByTestId("empty-book-refresh")).toBeEnabled();
+      fireEvent.click(screen.getByTestId("empty-book-refresh"));
+      expect(refresh).toHaveBeenCalledTimes(1);
+      fireEvent.click(screen.getByTestId("trade-tab-liquidity"));
+      expect(screen.getByTestId("detail-deposit-step")).toBeInTheDocument();
+    },
+  );
+
+  it.each([
+    "order-pending",
+    "settlement-pending",
+    "wallet-recovery",
+    "result-saved",
+    "unavailable",
+  ] as const)(
+    "suppresses funding advice during %s without blocking an independently funded trade",
+    (stage) => {
+      const confirm = vi.fn();
+      const recovery = { stages: [stage], suppressFundingHint: true, invalidationKey: "recovery" };
+      const props = {
+        market: makeMarket(),
+        tradeSelection: { side: "yes" as const },
+        tradeAmount: 5,
+        tradeSide: "Buy" as const,
+        tradeFeeFacts: feeFacts(),
+        feeConsentCurrent: true,
+        tradeRecovery: recovery,
+        suppressFundingHint: true,
+        onTradeConfirm: confirm,
+      };
+      const { rerender } = render(<TradingPanel {...props} tradePreview={nonfillablePreview()} />);
+      expect(screen.getByTestId("trade-recovery-status")).toBeInTheDocument();
+      expect(screen.queryByTestId("fok-preview-subsidy")).not.toBeInTheDocument();
+      expect(screen.getByTestId("fok-preview-response-retry")).toBeEnabled();
+      if (stage === "result-saved") {
+        expect(screen.getByTestId("trade-recovery-status")).toHaveTextContent("partial result");
+        expect(screen.getByTestId("trade-recovery-status")).not.toHaveTextContent(
+          /complete|acknowledgement/i,
+        );
+      }
+      rerender(<TradingPanel {...props} tradePreview={readyPreview()} />);
+      expect(screen.getByTestId("trade-confirm")).toBeEnabled();
+      fireEvent.click(screen.getByTestId("trade-confirm"));
+      expect(confirm).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("suppresses a stale funding hint while the active attempt is running", () => {
+    render(
+      <TradingPanel
+        market={makeMarket()}
+        tradeSelection={{ side: "yes" }}
+        tradeAmount={5}
+        tradeSide="Buy"
+        tradePreview={nonfillablePreview()}
+        isTradeSubmitting
+      />,
+    );
+    expect(screen.queryByTestId("fok-preview-subsidy")).not.toBeInTheDocument();
+  });
+
+  it.each([
+    ["wallet", readyPreview, "Checking wallet funds and fees..."],
+    ["market", loadingPreview, "Checking the current market preview..."],
+  ] as const)("names the pending %s check accurately", (_kind, preview, message) => {
+    render(
+      <TradingPanel
+        market={makeMarket()}
+        tradeSelection={{ side: "yes" }}
+        tradeAmount={5}
+        tradePreview={preview()}
+        tradeFeeFacts={null}
+        feeConsentCurrent={false}
+        walletReady
+        tradeSide="Buy"
+      />,
+    );
+    expect(screen.getByTestId("trade-confirm")).toHaveTextContent(message);
+    expect(screen.getByTestId("trade-confirm")).toBeDisabled();
+    expect(screen.queryByTestId("fok-preview-subsidy")).not.toBeInTheDocument();
+  });
+
+  it("retains the draft at confirmation and passes its comment to the order callback once", () => {
+    const confirm = vi.fn();
+    render(
+      <TradingPanel
+        market={makeMarket()}
+        tradeSelection={{ side: "yes" }}
+        tradeAmount={5}
+        tradePreview={readyPreview()}
+        tradeFeeFacts={feeFacts()}
+        feeConsentCurrent
+        tradeSide="Buy"
+        onTradeConfirm={confirm}
+      />,
+    );
+    const comment = screen.getByPlaceholderText("Share your reasoning...");
+    fireEvent.change(comment, { target: { value: "  My reasoning  " } });
+    fireEvent.click(screen.getByTestId("trade-confirm"));
+    expect(confirm).toHaveBeenCalledExactlyOnceWith("My reasoning");
+    expect(comment).toHaveValue("  My reasoning  ");
+  });
+
   it.each(["funds", "outcome-tokens", "unavailable"] as const)(
     "ends the fee loading message after a %s refusal",
     (reason) => {
@@ -1401,9 +1528,15 @@ describe("TradingPanel", () => {
     expect(screen.getByTestId("fok-preview-nonfillable")).toHaveTextContent(message);
   });
 
-  it("offers a retry for a temporarily unavailable response", () => {
+  it.each([
+    "insufficient_liquidity",
+    "price_limit",
+    "request_too_large",
+    "market_unavailable",
+    "temporarily_unavailable",
+  ] as const)("offers explicit refresh for a ready %s response", (reason) => {
     const refresh = vi.fn();
-    const preview = nonfillablePreview("temporarily_unavailable", false);
+    const preview = nonfillablePreview(reason, false);
     preview.refresh = refresh;
     render(
       <TradingPanel

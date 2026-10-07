@@ -10,6 +10,7 @@ import type {
   ProductMarketDivisibility,
   LatestConfirmedTrade,
 } from "./market";
+import type { MarketTradeRecoveryDisplay } from "@/hooks/useMarketTradeRecovery";
 import type { MarketState } from "@/hooks/useMarketState";
 import type { UseFokOrderPreviewResult } from "@/hooks/useFokOrderPreview";
 import type { UseFokOrderCapacityPreviewResult } from "@/hooks/useFokOrderCapacityPreview";
@@ -312,6 +313,10 @@ export interface MarketDetailProps {
   /** Trade amount entered by user, in display shares (1 share = market divisibility face units) */
   tradeAmount: number;
 
+  /** Draft comment included with the next confirmed order. */
+  tradeComment?: string;
+  onTradeCommentChange?: (comment: string) => void;
+
   /** Preview of trade outcome (null if no valid selection) */
   tradePreview: FokOrderPreviewState | null;
 
@@ -360,9 +365,6 @@ export interface MarketDetailProps {
   /** Called when user shares the market */
   onShare?: () => void;
 
-  /** Called when user posts a comment */
-  onCommentPost?: (content: string) => void;
-
   /** Called when user scrolls to load more trades */
   onLoadMoreTrades?: () => void;
 
@@ -387,6 +389,8 @@ export interface MarketDetailProps {
   /** Read-only capacity across the full legal discovery range. */
   tradeCapacityPreview?: UseFokOrderCapacityPreviewResult | null;
   isFullyEmptyBook?: boolean;
+  tradeRecovery?: MarketTradeRecoveryDisplay;
+  suppressFundingHint?: boolean;
 
   /** Canonical selectable and reserved conditional holdings for each outcome set. */
   sellHoldings?: SellHoldingsState;
@@ -402,4 +406,7 @@ export interface MarketDetailProps {
 
   /** Refresh live market snapshots after a funding credit completes in this session. */
   onFundingCredited?: () => void;
+
+  /** Explicitly refresh the existing market snapshot owner. */
+  onTradeMarketRefresh?: () => void;
 }

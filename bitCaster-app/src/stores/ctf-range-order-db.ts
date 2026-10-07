@@ -28,6 +28,23 @@ const ACTIVE_PREPARATION_STATES = [
   "submission-rejected",
 ] as const satisfies readonly CtfRangeOrderPreparationLifecycle[];
 
+/** An existence check cannot attribute pre-admission work to a displayed market. */
+export async function hasActiveCtfRangePreparation(
+  scopeId: string,
+  database: BitcasterDB = db,
+): Promise<boolean> {
+  const keys = await Promise.all(
+    ACTIVE_PREPARATION_STATES.map((state) =>
+      database.ctfRangePreparations
+        .where("[scopeId+lifecycleState+createdAtMs+rangeOperationId]")
+        .between([scopeId, state], [scopeId, state, []], true, true)
+        .limit(1)
+        .primaryKeys(),
+    ),
+  );
+  return keys.some((matches) => matches.length > 0);
+}
+
 export async function insertCtfRangePreparation(
   input: CtfRangeOrderPreparationIdentity,
   database: BitcasterDB = db,

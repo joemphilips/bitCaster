@@ -20,6 +20,8 @@ import { usePendingTradesStore, type PendingTrade } from "@/stores/pendingTrades
 import { useNotificationsStore } from "@/stores/notifications";
 import { useToastStore } from "@/stores/toast";
 import { useWalletStore } from "@/stores/wallet";
+import { getNostrSignerRevision } from "@/lib/nostr";
+import { useOrderSettlementObservations } from "@/stores/orderSettlementObservations";
 
 const JOIN_RETRY_MS = 1_000;
 const RECOVERY_RETRY_MS = 15_000;
@@ -27,6 +29,10 @@ const RECOVERY_RETRY_MS = 15_000;
 export interface OrderSettlementRecoveryInput {
   readonly mnemonic: string | null;
   readonly mintUrls: readonly string[];
+}
+
+interface RecoverySession {
+  cancelled: boolean;
 }
 
 function isConfirmed(status: SettlementGroupStatus): boolean {
@@ -56,6 +62,8 @@ export function useOrderSettlementLifecycle(
   );
   const recoveryInputRef = useRef(recoveryInput);
   const recoveringOrderIdsRef = useRef(new Set<string>());
+  const recoveryRerunOrderIdsRef = useRef(new Set<string>());
+  const recoverySessionRef = useRef<RecoverySession>({ cancelled: false });
   const recoveryRetryTimersRef = useRef(new Map<string, ReturnType<typeof setTimeout>>());
   const invalidationQueuedRef = useRef(new Set<string>());
   const joinRetryTimersRef = useRef(new Map<string, ReturnType<typeof setTimeout>>());
@@ -68,23 +76,34 @@ export function useOrderSettlementLifecycle(
   const [legacyReconciliationRevision, setLegacyReconciliationRevision] = useState(0);
   recoveryInputRef.current = recoveryInput;
 
+  useEffect(() => {
+    useOrderSettlementObservations.getState().retain(activeWalletId, pendingOrdersById);
+  }, [activeWalletId, pendingOrdersById]);
+
   const drainOrderStatusQueue = () => {
     if (orderStatusQueueRunningRef.current) return;
     orderStatusQueueRunningRef.current = true;
+    const session = recoverySessionRef.current;
     void (async () => {
-      while (true) {
+      while (!session.cancelled) {
         const next = orderStatusQueueRef.current.values().next().value;
         if (!next) return;
         const key = `${next.walletId}:${next.trade.orderId}`;
         orderStatusQueueRef.current.delete(key);
-        const response = await reconcileOrderStatus(next.trade, next.walletId);
-        if (response && hasCommittedFillForOrder(response, next.trade.orderId)) {
+        const response = await reconcileOrderStatus(next.trade, next.walletId, session);
+        if (
+          !session.cancelled &&
+          response &&
+          hasCommittedFillForOrder(response, next.trade.orderId)
+        ) {
           recoverConfirmedOrder(
             next.trade.orderId,
             next.walletId,
             recoveryInputRef,
             recoveringOrderIdsRef,
             recoveryRetryTimersRef,
+            recoveryRerunOrderIdsRef,
+            recoverySessionRef,
           );
         }
       }
@@ -98,6 +117,7 @@ export function useOrderSettlementLifecycle(
 
   const enqueueOrderStatusRead = (trade: PendingTrade, walletId: string): boolean => {
     if (
+      recoverySessionRef.current.cancelled ||
       !canAuthenticateOrderHub ||
       trade.walletId !== walletId ||
       currentActiveWalletId() !== walletId
@@ -163,6 +183,18 @@ export function useOrderSettlementLifecycle(
       }
     },
   });
+
+  useEffect(() => {
+    const session: RecoverySession = { cancelled: false };
+    recoverySessionRef.current = session;
+    return () => {
+      session.cancelled = true;
+      recoveryRerunOrderIdsRef.current.clear();
+      orderStatusQueueRef.current.clear();
+      for (const timer of recoveryRetryTimersRef.current.values()) clearTimeout(timer);
+      recoveryRetryTimersRef.current.clear();
+    };
+  }, [activeWalletId]);
 
   useEffect(() => {
     const joinedOrderKeys = new Set<string>();
@@ -241,14 +273,6 @@ export function useOrderSettlementLifecycle(
     legacyReconciliationRevision,
     unscopedPendingOrders,
   ]);
-
-  useEffect(
-    () => () => {
-      for (const timer of recoveryRetryTimersRef.current.values()) clearTimeout(timer);
-      recoveryRetryTimersRef.current.clear();
-    },
-    [],
-  );
 }
 
 function isDiscardableTerminalStatus(status: OrderLifecycleStatus): boolean {
@@ -289,6 +313,7 @@ function requiresStatusReconciliation(status: SettlementGroupStatus): boolean {
 async function reconcileOrderStatus(
   trade: PendingTrade,
   walletId: string,
+  session: RecoverySession,
 ): Promise<OrderStatusResponse | null> {
   if (
     trade.walletId !== walletId ||
@@ -298,6 +323,7 @@ async function reconcileOrderStatus(
     return null;
   }
   try {
+    const signerRevision = getNostrSignerRevision();
     const status = await fetchOrderStatus(trade.marketId, trade.orderId);
     if (!status || status.orderId !== trade.orderId || status.marketId !== trade.marketId) {
       return null;
@@ -322,6 +348,10 @@ async function reconcileOrderStatus(
       currentActiveWalletId() !== walletId
     ) {
       return status;
+    }
+
+    if (!session.cancelled && getNostrSignerRevision() === signerRevision) {
+      useOrderSettlementObservations.getState().publish(latest, signerRevision, status);
     }
 
     for (const notification of buildOrderStatusNotifications(status, latest)) {
@@ -389,10 +419,14 @@ function recoverConfirmedOrder(
   recoveryInputRef: RefObject<OrderSettlementRecoveryInput>,
   recoveringOrderIdsRef: RefObject<Set<string>>,
   recoveryRetryTimersRef: RefObject<Map<string, ReturnType<typeof setTimeout>>>,
+  recoveryRerunOrderIdsRef: RefObject<Set<string>>,
+  recoverySessionRef: RefObject<RecoverySession>,
 ): void {
   const order = usePendingTradesStore.getState().byOrderId[orderId];
   const recoveryInput = recoveryInputRef.current;
+  const session = recoverySessionRef.current;
   if (
+    session.cancelled ||
     !order?.clientOrderId ||
     order.walletId !== walletId ||
     currentWalletId(recoveryInput) !== walletId ||
@@ -403,12 +437,15 @@ function recoverConfirmedOrder(
     return;
   }
   const recoveryKey = `${walletId}:${orderId}`;
-  if (recoveringOrderIdsRef.current.has(recoveryKey)) return;
-
   const priorRetry = recoveryRetryTimersRef.current.get(recoveryKey);
   if (priorRetry !== undefined) {
     clearTimeout(priorRetry);
     recoveryRetryTimersRef.current.delete(recoveryKey);
+  }
+
+  if (recoveringOrderIdsRef.current.has(recoveryKey)) {
+    recoveryRerunOrderIdsRef.current.add(recoveryKey);
+    return;
   }
 
   recoveringOrderIdsRef.current.add(recoveryKey);
@@ -421,6 +458,7 @@ function recoverConfirmedOrder(
     .then((result) => {
       const latest = usePendingTradesStore.getState().byOrderId[orderId];
       if (
+        !session.cancelled &&
         latest?.walletId === walletId &&
         currentActiveWalletId() === walletId &&
         result.pending.length === 0
@@ -436,18 +474,34 @@ function recoverConfirmedOrder(
     .finally(() => {
       recoveringOrderIdsRef.current.delete(recoveryKey);
       const latest = usePendingTradesStore.getState().byOrderId[orderId];
-      if (!retryRequired || latest?.walletId !== walletId || currentActiveWalletId() !== walletId) {
+      const rerunRequested = recoveryRerunOrderIdsRef.current.delete(recoveryKey);
+      if (
+        !retryRequired ||
+        recoverySessionRef.current.cancelled ||
+        latest?.walletId !== walletId ||
+        currentWalletId(recoveryInputRef.current) !== walletId ||
+        currentActiveWalletId() !== walletId
+      ) {
         return;
       }
-      const timer = setTimeout(() => {
-        recoveryRetryTimersRef.current.delete(recoveryKey);
+      const retry = () =>
         recoverConfirmedOrder(
           orderId,
           walletId,
           recoveryInputRef,
           recoveringOrderIdsRef,
           recoveryRetryTimersRef,
+          recoveryRerunOrderIdsRef,
+          recoverySessionRef,
         );
+      if (rerunRequested) {
+        retry();
+        return;
+      }
+      if (session.cancelled) return;
+      const timer = setTimeout(() => {
+        recoveryRetryTimersRef.current.delete(recoveryKey);
+        retry();
       }, RECOVERY_RETRY_MS);
       recoveryRetryTimersRef.current.set(recoveryKey, timer);
     });
