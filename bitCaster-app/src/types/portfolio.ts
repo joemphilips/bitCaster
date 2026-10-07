@@ -158,7 +158,12 @@ export type {
   TradeActivityDetails,
   ActivityItem,
 } from "@bitcaster/client-sdk/activityLog";
-import type { ActivityItem } from "@bitcaster/client-sdk/activityLog";
+import type { ActivityItem as RecordedActivityItem } from "@bitcaster/client-sdk/activityLog";
+
+/** Catalogue display metadata. Never persist this projection as activity facts. */
+export interface ActivityDisplayItem extends RecordedActivityItem {
+  activityMarket?: { title: string | null; outcomes: readonly string[] };
+}
 
 // =============================================================================
 // Created Market Types
@@ -212,7 +217,7 @@ export interface PortfolioProps {
   positions: Position[];
 
   /** Activity feed (deposits, withdrawals, trades, payouts, fees) */
-  activity: ActivityItem[];
+  activity: ActivityDisplayItem[];
 
   /** Base ecash fund balances */
   funds: Fund[];

@@ -490,7 +490,13 @@
     "shares": "{{amount}} shares",
     "tradeValueBeforeFees": "Trade value before fees",
     "recordedFills": "{{count}} recorded fills",
-    "marketReference": "Market {{id}}"
+    "marketReference": "Market {{id}}",
+    "executedPrice": "Executed price: {{price}} sats/share",
+    "averagePrice": "Weighted execution price: {{price}} sats/share",
+    "approximate": "approximate",
+    "belowPrecision": "below display precision; less than 0.000001 sats/share",
+    "exactPriceRatio": "Exact execution price: {{numerator}}/{{denominator}} sats/share",
+    "otherOutcomes": "All outcomes except {{outcomeId}}"
   },
   "marketStatus": {
     "active": "Active",

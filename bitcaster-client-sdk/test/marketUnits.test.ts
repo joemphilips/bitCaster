@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import {
+  recordedTradePricePerShare,
   conditionalShareWinningPayoutSubunits,
   formatConditionalShareAmount,
   CTF_COLLATERAL_UNIT,
@@ -298,4 +299,54 @@ test('conditional share fees retain fractional units and registered denomination
   assert.equal(formatConditionalShareAmount(0n, 1_000), '0')
   assert.equal(formatConditionalShareAmount(1_000_000n, 1_000_000), '1')
   assert.throws(() => formatConditionalShareAmount(-1n, 1_000))
+})
+
+// Expected fractions are independent recorded quote/face vectors.
+test('recorded execution prices keep exact tiny, zero and large rational inputs', () => {
+  for (const [quote, face, divisibility, numerator, denominator, decimal, approximate, below] of [
+    [1003, 2500, 1000, 1003n, 2500n, '0.4012', false, false],
+    [1, 2000, 1000, 1n, 2000n, '0.0005', false, false],
+    [1, 2000000, 1000, 1n, 2000000n, '0.000001', true, true],
+    [0, 2500, 1000, 0n, 1n, '0', false, false],
+    [1, 3000, 1000, 1n, 3000n, '0.000333', true, false],
+    [1250, 2500000, 1000000, 1n, 2n, '0.5', false, false],
+    [Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER, 1000000, 1000n, 1n, '1000', false, false],
+    [
+      Number.MAX_SAFE_INTEGER - 1,
+      Number.MAX_SAFE_INTEGER,
+      1000,
+      9007199254740990n,
+      9007199254740991n,
+      '1',
+      true,
+      false,
+    ],
+    [1, Number.MAX_SAFE_INTEGER, 1000000, 1000n, 9007199254740991n, '0.000001', true, true],
+  ] as const) {
+    const actual = recordedTradePricePerShare({
+      quotePaymentSubunits: quote,
+      faceAmountSubunits: face,
+      divisibility,
+    })
+    assert.equal(actual.numerator, numerator)
+    assert.equal(actual.denominator, denominator)
+    assert.equal(actual.decimal, decimal)
+    assert.equal(actual.approximate, approximate)
+    assert.equal(actual.belowDisplayPrecision, below)
+  }
+  for (const [quote, face, divisibility] of [
+    [-1, 1, 1000],
+    [1, 0, 1000],
+    [1, 1.5, 1000],
+    [Number.MAX_SAFE_INTEGER + 1, 1, 1000],
+    [1, 1, 1],
+  ]) {
+    assert.throws(() =>
+      recordedTradePricePerShare({
+        quotePaymentSubunits: quote,
+        faceAmountSubunits: face,
+        divisibility,
+      }),
+    )
+  }
 })

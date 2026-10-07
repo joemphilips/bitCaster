@@ -41,7 +41,7 @@ import type {
   UserProfile,
   Position,
   Fund,
-  ActivityItem,
+  ActivityDisplayItem,
   CreatedMarket,
   PortfolioMonitoringState,
 } from "@/types/portfolio";
@@ -64,6 +64,7 @@ import {
 } from "@/lib/portfolioInvalidation";
 import { observePortfolioValuations } from "@/lib/marketHub";
 import { getNostrSignerRevision, subscribeToNostrSignerRevision } from "@/lib/nostr";
+import { useActivityCatalogue } from "@/hooks/useActivityCatalogue";
 
 const automaticPortfolioRefreshDelayMs = 10_000;
 const maximumBuildingPortfolioExtraReads = 3;
@@ -83,7 +84,7 @@ interface PortfolioState {
   stats: PortfolioStats;
   positions: Position[];
   funds: Fund[];
-  activity: ActivityItem[];
+  activity: ActivityDisplayItem[];
   createdMarkets: CreatedMarket[];
   positionsTab: "active" | "closed";
   monitoring: PortfolioMonitoringState;
@@ -1137,6 +1138,11 @@ export function usePortfolioState(): PortfolioState & {
   );
   const currentLocalPositions =
     positionsFromDb?.scopeId === walletScopeId ? positionsFromDb : undefined;
+  const displayedActivity = useActivityCatalogue(
+    activity,
+    walletId,
+    currentLocalPositions?.marketCatalogue ?? EMPTY_MARKET_CATALOGUE,
+  );
   const positions: Position[] = currentLocalPositions?.positions ?? [];
   const localPositionsUnavailable = currentLocalPositions === undefined;
   const fundsFromDb = useLiveQuery(
@@ -1260,7 +1266,7 @@ export function usePortfolioState(): PortfolioState & {
     stats,
     positions: visiblePositions,
     funds,
-    activity,
+    activity: displayedActivity,
     createdMarkets,
     positionsTab,
     monitoring,

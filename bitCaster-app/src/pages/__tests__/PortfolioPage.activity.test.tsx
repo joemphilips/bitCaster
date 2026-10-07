@@ -67,7 +67,7 @@ function fill(fillId: string, amountSubunits: number, faceAmountSubunits: number
     status: "completed",
     txId: null,
     lightningInvoice: null,
-    marketId: "condition-YES",
+    marketId: `${"c".repeat(64)}-YES`,
     marketTitle: "Recorded market",
     tradeDetails: {
       orderId: "submitted-order",
@@ -93,6 +93,7 @@ describe("Portfolio route Activity records", () => {
         <MemoryRouter initialEntries={["/portfolio"]}>
           <Routes>
             <Route path="/portfolio" element={<PortfolioPage />} />
+            <Route path="/markets/:id" element={<h1>Activity market destination</h1>} />
           </Routes>
         </MemoryRouter>,
       );
@@ -114,11 +115,35 @@ describe("Portfolio route Activity records", () => {
         expect(record.getByText(`${token} · ${shares} ${shareUnit}`)).toBeVisible();
         expect(record.getByRole("group", { name: amount })).toBeVisible();
         expect(record.getByText(qualifier)).toBeVisible();
+        expect(record.getByTestId("activity-execution-price")).toHaveAttribute(
+          "data-price-numerator",
+          index === 0 ? "1003" : "5",
+        );
+        expect(record.getByTestId("activity-execution-price")).toHaveAttribute(
+          "data-price-denominator",
+          index === 0 ? "2500" : "12",
+        );
         expect(records[index].textContent).toContain("+");
         expect(records[index]).not.toHaveAttribute("tabindex");
       }
       expect(within(panel).queryByRole("button")).not.toBeInTheDocument();
-      expect(within(panel).queryByRole("link")).not.toBeInTheDocument();
+      expect(within(panel).getAllByRole("link", { name: "Recorded market" })).toHaveLength(3);
+      expect(within(panel).getByTestId("activity-average-price")).toHaveAttribute(
+        "data-price-numerator",
+        "2253",
+      );
+      expect(within(panel).getByTestId("activity-average-price")).toHaveAttribute(
+        "data-price-denominator",
+        "5500",
+      );
+      expect(within(panel).getByTestId("activity-average-price")).toHaveTextContent(
+        language === "ja"
+          ? "加重平均約定単価：0.409636 sats/口 (概算)"
+          : "Weighted execution price: 0.409636 sats/share (approximate)",
+      );
+      expect(groups[0].querySelector("summary a")).toBeNull();
+      await userEvent.click(within(panel).getAllByRole("link", { name: "Recorded market" })[0]);
+      expect(screen.getByRole("heading", { name: "Activity market destination" })).toBeVisible();
     },
   );
 });

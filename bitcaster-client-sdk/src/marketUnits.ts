@@ -288,3 +288,42 @@ export function formatConditionalShareAmount(
   if (separator === undefined) throw new Error('Locale decimal separator is unavailable')
   return `${whole.toLocaleString()}${fractional ? `${separator}${fractional}` : ''}`
 }
+
+/** Historical sats per share. All arithmetic stays exact until display rounding. */
+export function recordedTradePricePerShare(input: {
+  quotePaymentSubunits: number
+  faceAmountSubunits: number
+  divisibility: unknown
+}): {
+  numerator: bigint
+  denominator: bigint
+  decimal: string
+  approximate: boolean
+  belowDisplayPrecision: boolean
+} {
+  const divisibility = requireMarketDivisibility(input.divisibility)
+  if (
+    !Number.isSafeInteger(input.quotePaymentSubunits) ||
+    input.quotePaymentSubunits < 0 ||
+    !Number.isSafeInteger(input.faceAmountSubunits) ||
+    input.faceAmountSubunits <= 0
+  ) {
+    throw new Error('Recorded trade amounts are invalid')
+  }
+  const numerator = BigInt(input.quotePaymentSubunits) * BigInt(divisibility)
+  const denominator = BigInt(input.faceAmountSubunits) * 1_000n
+  const scale = 1_000_000n
+  const belowDisplayPrecision = numerator > 0n && numerator * scale < denominator
+  const scaled = belowDisplayPrecision ? 1n : (numerator * scale + denominator / 2n) / denominator
+  const fraction = (scaled % scale).toString().padStart(6, '0').replace(/0+$/, '')
+  let divisor = numerator
+  let remainder = denominator
+  while (remainder !== 0n) [divisor, remainder] = [remainder, divisor % remainder]
+  return {
+    numerator: numerator / divisor,
+    denominator: denominator / divisor,
+    decimal: `${scaled / scale}${fraction ? `.${fraction}` : ''}`,
+    approximate: (numerator * scale) % denominator !== 0n,
+    belowDisplayPrecision,
+  }
+}

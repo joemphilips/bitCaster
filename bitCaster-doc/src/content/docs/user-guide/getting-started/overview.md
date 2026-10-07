@@ -67,6 +67,15 @@ fees. This value is not the net change in your wallet balance. A group does not
 mean that the whole order has completed. Fills without a known order stay
 separate. A pending or failed order does not appear as a completed trade.
 
+Activity links to the market and shows its title when available. If the title
+cannot load, the row shows a short market reference. Each fill shows its
+historical price per share. An order group shows the average price weighted by
+the number of shares. These prices use recorded trade values, not the current
+market price. Rounded prices have an approximate label. Very small positive
+prices show a below-precision label instead of zero. The price label also
+provides the exact ratio. Older records without the required amounts show no
+execution price.
+
 ### Create your own market
 
 Define the question, the possible outcomes, and how the result will be decided.

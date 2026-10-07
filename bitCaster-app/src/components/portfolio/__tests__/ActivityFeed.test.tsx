@@ -1,13 +1,17 @@
-import { render, screen, within } from "@testing-library/react";
+import { render as testingRender, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it } from "vitest";
 import i18n from "@/i18n";
-import type { ActivityItem } from "@/types/portfolio";
+import type { ActivityDisplayItem as ActivityItem } from "@/types/portfolio";
 import {
   decodeActivityLogPayload,
   encodeActivityLogPayload,
 } from "@bitcaster/client-sdk/activityLog";
 import { ActivityFeed } from "../ActivityFeed";
+import { MemoryRouter } from "react-router";
+import type { ReactElement } from "react";
+
+const render = (ui: ReactElement) => testingRender(ui, { wrapper: MemoryRouter });
 
 function trade(overrides: Partial<ActivityItem> = {}): ActivityItem {
   const fillId = "11111111-1111-4111-8111-111111111111";
@@ -64,6 +68,7 @@ describe("ActivityFeed trade details", () => {
     "outcome",
     "divisibility",
     "overflow",
+    "face-overflow",
     "duplicate",
   ])("keeps %s membership or conflicting metadata separate", (difference) => {
     const first = trade();
@@ -104,6 +109,9 @@ describe("ActivityFeed trade details", () => {
         break;
       case "overflow":
         second.amountSubunits = Number.MAX_SAFE_INTEGER;
+        break;
+      case "face-overflow":
+        second.tradeDetails!.faceAmountSubunits = Number.MAX_SAFE_INTEGER;
         break;
       case "duplicate":
         second.tradeDetails!.fillId = first.tradeDetails!.fillId;
@@ -214,7 +222,8 @@ describe("ActivityFeed trade details", () => {
       expect(screen.queryByText(marketId)).not.toBeInTheDocument();
 
       rerender(<ActivityFeed activity={[groupedFirst, groupedSecond]} />);
-      expect(container.querySelector("summary")?.textContent).toContain(label);
+      expect(screen.getAllByRole("link", { name: label })).toHaveLength(3);
+      expect(container.querySelector("summary")?.querySelector("a")).toBeNull();
       expect(screen.queryByText(marketId)).not.toBeInTheDocument();
 
       rerender(<ActivityFeed activity={[trade({ marketId, marketTitle: "Named market" })]} />);
@@ -267,5 +276,96 @@ describe("ActivityFeed recovered Claim credit", () => {
     expect(screen.getByText("Payout Claimed")).toBeInTheDocument();
     expect(screen.queryByText(/Original Claim/)).not.toBeInTheDocument();
     expect(screen.queryByText("Claim payout recovered")).not.toBeInTheDocument();
+  });
+});
+
+describe("historical activity presentation", () => {
+  it.each([
+    ["Outcome", "YES", ["YES", "NO"], "Outcome YES"],
+    ["Complement", "YES", ["YES", "NO"], "Outcome NO"],
+    ["Outcome", "Blue-team", ["Blue-team", "Red", "Green"], "Outcome Blue-team"],
+    ["Complement", "Blue-team", ["Blue-team", "Red", "Green"], "All outcomes except Blue-team"],
+  ] as const)(
+    "labels %s %s from the catalogue universe",
+    (tokenSide, outcomeId, outcomes, label) => {
+      const item = trade({
+        marketId: `${"c".repeat(64)}-Blue-team`,
+        activityMarket: { title: "A long market title ".repeat(15), outcomes },
+      });
+      Object.assign(item.tradeDetails!, { tokenSide, outcomeId });
+      render(<ActivityFeed activity={[item]} />);
+      const link = screen.getByRole("link");
+      expect(link).toHaveAttribute("href", `/markets/${"c".repeat(64)}`);
+      expect(link).toHaveAttribute("title", item.activityMarket!.title!.trim());
+      expect(link).toHaveClass("truncate");
+      expect(screen.getByText(`${label} · 2.5 shares`)).toBeVisible();
+      expect(screen.getByTestId("activity-execution-price")).toHaveTextContent(
+        "Executed price: 0.4012 sats/share",
+      );
+      expect(screen.getByTestId("activity-execution-price")).toHaveAttribute(
+        "title",
+        "Exact execution price: 1003/2500 sats/share",
+      );
+    },
+  );
+
+  it("shows weighted historical price outside independent market navigation", async () => {
+    const first = trade({ marketId: `${"c".repeat(64)}-YES`, marketTitle: "Market title" });
+    const second = trade({ id: "second", marketId: first.marketId, amountSubunits: 1250 });
+    Object.assign(first.tradeDetails!, { orderId: "one" });
+    Object.assign(second.tradeDetails!, {
+      orderId: "one",
+      fillId: "two",
+      faceAmountSubunits: 3000,
+    });
+    const { container } = render(<ActivityFeed activity={[first, second]} />);
+    const average = screen.getByTestId("activity-average-price");
+    expect(average).toHaveTextContent(
+      "Weighted execution price: 0.409636 sats/share (approximate)",
+    );
+    expect(average).toHaveAttribute("title", "Exact execution price: 2253/5500 sats/share");
+    expect(container.querySelector("summary a")).toBeNull();
+    await userEvent.click(screen.getByText(/2 recorded fills/));
+    const children = screen.getAllByTestId("activity-execution-price");
+    expect(children[0]).toHaveAttribute("title", "Exact execution price: 1003/2500 sats/share");
+    expect(children[1]).toHaveAttribute("title", "Exact execution price: 5/12 sats/share");
+    expect(screen.getAllByRole("link")).toHaveLength(3);
+  });
+
+  it.each([
+    [1, 2000, "0.0005", "1/2000"],
+    [1, 2000000, "<0.000001", "1/2000000"],
+    [0, 2000, "0", "0/1"],
+    [
+      Number.MAX_SAFE_INTEGER - 1,
+      Number.MAX_SAFE_INTEGER,
+      "1",
+      "9007199254740990/9007199254740991",
+    ],
+  ] as const)(
+    "keeps %s / %s visible with an accessible exact ratio",
+    (amountSubunits, faceAmountSubunits, price, ratio) => {
+      const item = trade({ amountSubunits });
+      item.tradeDetails!.faceAmountSubunits = faceAmountSubunits;
+      render(<ActivityFeed activity={[item]} />);
+      const row = screen.getByTestId("activity-execution-price");
+      expect(row).toHaveTextContent(`Executed price: ${price} sats/share`);
+      expect(row).toHaveAttribute("title", `Exact execution price: ${ratio} sats/share`);
+      expect(within(row).getByText(`Exact execution price: ${ratio} sats/share`)).toHaveClass(
+        "sr-only",
+      );
+      if (faceAmountSubunits === 2000000) expect(row).toHaveTextContent("below display precision");
+      if (amountSubunits === Number.MAX_SAFE_INTEGER - 1)
+        expect(row).toHaveTextContent("approximate");
+    },
+  );
+
+  it("keeps invalid identifiers and legacy facts readable without invented links or prices", () => {
+    const legacy = trade({ marketId: "../other-YES", marketTitle: "Legacy market" });
+    delete legacy.tradeDetails;
+    render(<ActivityFeed activity={[legacy]} />);
+    expect(screen.getByText("Legacy market")).toBeVisible();
+    expect(screen.queryByRole("link")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("activity-execution-price")).not.toBeInTheDocument();
   });
 });

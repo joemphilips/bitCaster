@@ -487,7 +487,13 @@
     "shares": "{{amount}} 口",
     "tradeValueBeforeFees": "手数料適用前の取引額",
     "recordedFills": "記録された約定 {{count}} 件",
-    "marketReference": "市場 {{id}}"
+    "marketReference": "市場 {{id}}",
+    "executedPrice": "約定単価：{{price}} sats/口",
+    "averagePrice": "加重平均約定単価：{{price}} sats/口",
+    "approximate": "概算",
+    "belowPrecision": "表示精度未満：0.000001 sats/口未満",
+    "exactPriceRatio": "正確な約定単価：{{numerator}}/{{denominator}} sats/口",
+    "otherOutcomes": "{{outcomeId}} 以外のすべての結果"
   },
   "marketStatus": {
     "active": "アクティブ",

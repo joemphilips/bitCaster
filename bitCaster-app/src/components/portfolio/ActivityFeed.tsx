@@ -1,6 +1,11 @@
 import { useTranslation } from "react-i18next";
-import type { ActivityItem, ActivityType } from "@/types/portfolio";
-import { normalizeMarketBaseAsset } from "@bitcaster/client-sdk/marketUnits";
+import type { ActivityDisplayItem as ActivityItem, ActivityType } from "@/types/portfolio";
+import {
+  normalizeMarketBaseAsset,
+  recordedTradePricePerShare,
+} from "@bitcaster/client-sdk/marketUnits";
+import { Link } from "react-router";
+import { activityConditionId } from "@/hooks/useActivityCatalogue";
 import { InlineAmount } from "@/components/shared/InlineAmount";
 import { ArrowDownLeft, ArrowUpRight, ShoppingCart, Tag, Trophy, Coins } from "lucide-react";
 import { assertNever } from "@/lib/enumDiscipline";
@@ -106,13 +111,6 @@ function groupRecordedFills(activity: ActivityItem[]): ActivityItem[][] {
 
 export function ActivityFeed({ activity }: ActivityFeedProps) {
   const { t, i18n } = useTranslation();
-  const marketLabel = (item: ActivityItem) => {
-    const shortId = item.marketId?.match(/^([0-9a-f]{12})[0-9a-f]{52}(?:-|$)/)?.[1];
-    return (
-      item.marketTitle?.trim() ||
-      (shortId ? t("activityTrade.marketReference", { id: shortId }) : item.marketId)
-    );
-  };
   if (activity.length === 0) {
     return (
       <div className="py-8 text-center text-sm text-slate-400 dark:text-slate-500">
@@ -127,36 +125,54 @@ export function ActivityFeed({ activity }: ActivityFeedProps) {
         const item = members[0];
         if (members.length > 1) {
           return (
-            <details key={JSON.stringify([item.walletId, item.tradeDetails!.orderId])}>
-              <summary className="p-3 rounded-lg cursor-pointer text-sm text-slate-900 dark:text-white">
-                {t(TYPE_META[item.type].labelKey)} · {marketLabel(item)} ·{" "}
-                {t("activityTrade.recordedFills", { count: members.length })}
-                <div className="font-mono">
-                  {activityAmountPrefix(item.type)}
-                  <InlineAmount
-                    amountSubunits={members.reduce((sum, member) => sum + member.amountSubunits, 0)}
-                    baseAsset={normalizeMarketBaseAsset(item.baseAsset)}
+            <div
+              key={JSON.stringify([item.walletId, item.tradeDetails!.orderId])}
+              className="min-w-0 rounded-lg p-3"
+            >
+              <ActivityMarketLabel item={item} />
+              <details>
+                <summary className="p-3 rounded-lg cursor-pointer text-sm text-slate-900 dark:text-white">
+                  {t(TYPE_META[item.type].labelKey)} · {tradeTokenLabel(item, t)} ·{" "}
+                  {t("activityTrade.recordedFills", { count: members.length })}
+                  <ActivityExecutionPrice
+                    item={item}
+                    quotePaymentSubunits={members.reduce(
+                      (sum, member) => sum + member.amountSubunits,
+                      0,
+                    )}
+                    faceAmountSubunits={members.reduce(
+                      (sum, member) => sum + member.tradeDetails!.faceAmountSubunits,
+                      0,
+                    )}
+                    average
                   />
-                </div>
-                <p className="text-xs text-slate-500">{t("activityTrade.tradeValueBeforeFees")}</p>
-              </summary>
-              {members.map((member) => (
-                <ActivityFeed
-                  key={JSON.stringify([member.walletId, member.id])}
-                  activity={[member]}
-                />
-              ))}
-            </details>
+                  <div className="font-mono">
+                    {activityAmountPrefix(item.type)}
+                    <InlineAmount
+                      amountSubunits={members.reduce(
+                        (sum, member) => sum + member.amountSubunits,
+                        0,
+                      )}
+                      baseAsset={normalizeMarketBaseAsset(item.baseAsset)}
+                    />
+                  </div>
+                  <p className="text-xs text-slate-500">
+                    {t("activityTrade.tradeValueBeforeFees")}
+                  </p>
+                </summary>
+                {members.map((member) => (
+                  <ActivityFeed
+                    key={JSON.stringify([member.walletId, member.id])}
+                    activity={[member]}
+                  />
+                ))}
+              </details>
+            </div>
           );
         }
         const config = TYPE_META[item.type];
         const Icon = config.icon;
-        const label = marketLabel(item);
-        const tradeToken = item.tradeDetails
-          ? t(tradeTokenLabelKey(item.tradeDetails.tokenSide), {
-              outcomeId: item.tradeDetails.outcomeId,
-            })
-          : null;
+        const tradeToken = item.tradeDetails ? tradeTokenLabel(item, t) : null;
         const tradeShares = item.tradeDetails
           ? new Intl.NumberFormat(i18n.language, {
               maximumFractionDigits: shareFractionDigits(item.tradeDetails.divisibility),
@@ -193,18 +209,18 @@ export function ActivityFeed({ activity }: ActivityFeedProps) {
                   })}
                 </p>
               )}
-              {label && (
-                <p
-                  className="text-xs text-slate-500 dark:text-slate-400 break-words sm:truncate"
-                  title={item.marketTitle ? undefined : item.marketId}
-                >
-                  {label}
-                </p>
-              )}
+              <ActivityMarketLabel item={item} />
               {tradeToken && tradeShares && (
                 <p className="text-xs text-slate-500 dark:text-slate-400 break-words">
                   {tradeToken} · {t("activityTrade.shares", { amount: tradeShares })}
                 </p>
+              )}
+              {item.tradeDetails && item.status === "completed" && (
+                <ActivityExecutionPrice
+                  item={item}
+                  quotePaymentSubunits={item.amountSubunits}
+                  faceAmountSubunits={item.tradeDetails.faceAmountSubunits}
+                />
               )}
               {item.txId && (
                 <p className="text-xs text-slate-400 dark:text-slate-500 font-mono truncate">
@@ -249,6 +265,103 @@ export function ActivityFeed({ activity }: ActivityFeedProps) {
       })}
     </div>
   );
+}
+
+function ActivityMarketLabel({ item }: { item: ActivityItem }) {
+  const { t } = useTranslation();
+  const conditionId = activityConditionId(item.marketId);
+  const title = item.activityMarket?.title?.trim() || item.marketTitle?.trim();
+  const label =
+    title ||
+    (conditionId
+      ? t("activityTrade.marketReference", { id: conditionId.slice(0, 12) })
+      : item.marketId);
+  if (!label) return null;
+  const className = "block min-w-0 truncate text-xs text-slate-500 dark:text-slate-400";
+  return conditionId ? (
+    <Link
+      to={`/markets/${conditionId}`}
+      title={title || item.marketId}
+      className={`${className} underline`}
+    >
+      {label}
+    </Link>
+  ) : (
+    <p title={title || item.marketId} className={className}>
+      {label}
+    </p>
+  );
+}
+
+function ActivityExecutionPrice({
+  item,
+  quotePaymentSubunits,
+  faceAmountSubunits,
+  average = false,
+}: {
+  item: ActivityItem;
+  quotePaymentSubunits: number;
+  faceAmountSubunits: number;
+  average?: boolean;
+}) {
+  const { t } = useTranslation();
+  let price: ReturnType<typeof recordedTradePricePerShare>;
+  try {
+    price = recordedTradePricePerShare({
+      quotePaymentSubunits,
+      faceAmountSubunits,
+      divisibility: item.tradeDetails?.divisibility,
+    });
+  } catch {
+    return null;
+  }
+  const exact = t("activityTrade.exactPriceRatio", {
+    numerator: price.numerator.toString(),
+    denominator: price.denominator.toString(),
+  });
+  return (
+    <p
+      data-testid={average ? "activity-average-price" : "activity-execution-price"}
+      data-price-numerator={price.numerator.toString()}
+      data-price-denominator={price.denominator.toString()}
+      title={exact}
+      className="text-xs text-slate-500 dark:text-slate-400 break-words"
+    >
+      {t(average ? "activityTrade.averagePrice" : "activityTrade.executedPrice", {
+        price: `${price.belowDisplayPrecision ? "<" : ""}${price.decimal}`,
+      })}
+      {price.belowDisplayPrecision
+        ? ` (${t("activityTrade.belowPrecision")})`
+        : price.approximate
+          ? ` (${t("activityTrade.approximate")})`
+          : ""}
+      <span className="sr-only"> {exact}</span>
+    </p>
+  );
+}
+
+function tradeTokenLabel(item: ActivityItem, t: ReturnType<typeof useTranslation>["t"]): string {
+  const details = item.tradeDetails!;
+  const outcomes = item.activityMarket?.outcomes;
+  if (
+    details.tokenSide === "Complement" &&
+    outcomes?.length === 2 &&
+    outcomes.some((outcome) => outcome.toUpperCase() === "YES") &&
+    outcomes.some((outcome) => outcome.toUpperCase() === "NO") &&
+    outcomes.includes(details.outcomeId)
+  ) {
+    const opposite = outcomes.find((outcome) => outcome !== details.outcomeId)!;
+    return t("activityTrade.outcomeToken", { outcomeId: opposite });
+  }
+  if (
+    details.tokenSide === "Complement" &&
+    outcomes &&
+    outcomes.length >= 2 &&
+    outcomes.includes(details.outcomeId)
+  ) {
+    return t("activityTrade.otherOutcomes", { outcomeId: details.outcomeId });
+  }
+  return t(tradeTokenLabelKey(details.tokenSide), { outcomeId: details.outcomeId });
 }
 
 function tradeTokenLabelKey(
