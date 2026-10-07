@@ -333,6 +333,14 @@ async function sendDaemonCommand<T = unknown>(
   signal?.throwIfAborted()
   const token = await readDaemonRpcToken()
   signal?.throwIfAborted()
+  return sendAuthenticatedDaemonCommand(command, token, signal)
+}
+
+async function sendAuthenticatedDaemonCommand<T = unknown>(
+  command: DaemonCommand,
+  token: string | null,
+  signal?: AbortSignal,
+): Promise<DaemonResponse<T>> {
   const socketPath = daemonSocketPath()
   if (socketPath) {
     return sendDaemonCommandOverSocket(command, socketPath, token, signal)
@@ -350,7 +358,13 @@ async function sendDaemonCommand<T = unknown>(
 }
 
 function readDaemonRpcToken(): Promise<string | null> {
-  rpcTokenPromise ??= readLiveRpcToken()
+  if (rpcTokenPromise === undefined) {
+    const pending = readLiveRpcToken().catch((error: unknown) => {
+      if (rpcTokenPromise === pending) rpcTokenPromise = undefined
+      throw error
+    })
+    rpcTokenPromise = pending
+  }
   return rpcTokenPromise
 }
 
@@ -493,11 +507,14 @@ export function daemonLogPath(): string {
 
 export async function waitForDaemon(signal?: AbortSignal): Promise<void> {
   const deadline = Date.now() + DAEMON_STARTUP_TIMEOUT_MS
+  signal?.throwIfAborted()
+  const token = await readDaemonRpcToken()
+  signal?.throwIfAborted()
   let lastErr: unknown
   while (Date.now() < deadline) {
     signal?.throwIfAborted()
     try {
-      await sendDaemonCommand({ method: 'health' }, signal)
+      await sendAuthenticatedDaemonCommand({ method: 'health' }, token, signal)
       return
     } catch (err) {
       if (signal?.aborted) throw signal.reason ?? err

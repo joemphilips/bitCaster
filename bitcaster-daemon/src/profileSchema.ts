@@ -1,4 +1,5 @@
 import { lstat, readdir, realpath } from 'node:fs/promises'
+import type { BigIntStats } from 'node:fs'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { DatabaseSync } from 'node:sqlite'
@@ -323,6 +324,18 @@ export async function inventoryDaemonProfile(directory: string): Promise<DaemonP
     }
   }
 
+  try {
+    return await inventoryPlainDaemonProfile(directory, directoryStat)
+  } catch (error) {
+    if (isNotFound(error)) throw new ProfileSchemaRefusalError('profile-identity-changed')
+    throw error
+  }
+}
+
+async function inventoryPlainDaemonProfile(
+  directory: string,
+  directoryStat: BigIntStats,
+): Promise<DaemonProfileInventory> {
   const directoryRealPath = await realpath(directory)
   const directoryIdentity = pathIdentity(directoryStat, directoryRealPath)
   const entries = await readdir(directory, { withFileTypes: true })

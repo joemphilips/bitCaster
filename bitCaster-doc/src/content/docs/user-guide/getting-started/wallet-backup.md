@@ -204,6 +204,11 @@ browser can resume wallet actions.
 
 ## CLI privacy and emergency recovery
 
+CLI profile inspection can stop before a command is sent. If you see
+`daemon profile identity changed during inspection`, let current wallet work
+finish. Then run the command again. The CLI does not repair the profile or
+replay the refused command.
+
 The command-line wallet can use complete-local privacy mode. This mode can
 omit both encrypted backup and asset monitoring. It keeps complete wallet
 state in its local durable store.

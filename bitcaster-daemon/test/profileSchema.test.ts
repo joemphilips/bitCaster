@@ -17,7 +17,9 @@ import {
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import test, { type TestContext } from 'node:test'
+import test, { mock, type TestContext } from 'node:test'
+import files from 'node:fs/promises'
+import { syncBuiltinESMExports } from 'node:module'
 import { DatabaseSync } from 'node:sqlite'
 import {
   DAEMON_PROFILE_DATABASE,
@@ -239,6 +241,83 @@ const fixtureManifest: ProfileSchemaManifest = {
     },
   ],
 }
+
+for (const name of ['daemon-state.sqlite-wal', 'unknown.private']) {
+  for (const boundary of ['enumeration', 'stat'] as const) {
+    test(`refuses ${name} disappearance after ${boundary} without omitting the entry`, async (t) => {
+      const directory = await temporaryProfile(t)
+      await createFixtureDatabase(directory)
+      const databasePath = join(directory, DAEMON_PROFILE_DATABASE)
+      const before = await lstat(databasePath, { bigint: true })
+      const path = join(directory, name)
+      await writeFile(path, 'controlled entry', { mode: 0o600 })
+      const operation = boundary === 'enumeration' ? 'readdir' : 'lstat'
+      const original = files[operation]
+      let removed = false
+      const observation = mock.method(files, operation, async (...args: unknown[]) => {
+        const value = await Reflect.apply(original, files, args)
+        if (!removed && args[0] === (boundary === 'enumeration' ? directory : path)) {
+          removed = true
+          await unlink(path)
+        }
+        return value
+      })
+      syncBuiltinESMExports()
+      t.after(() => {
+        observation.mock.restore()
+        syncBuiltinESMExports()
+      })
+      await assert.rejects(
+        inventoryDaemonProfile(directory),
+        (error) =>
+          error instanceof ProfileSchemaRefusalError && error.reason === 'profile-identity-changed',
+      )
+      assert.equal(removed, true)
+      const after = await lstat(databasePath, { bigint: true })
+      assert.equal(before.dev === after.dev && before.ino === after.ino, true)
+    })
+  }
+}
+
+for (const operation of ['realpath', 'readdir'] as const) {
+  test(`refuses directory disappearance during ${operation}`, async (t) => {
+    const directory = await temporaryProfile(t)
+    const original = files[operation]
+    let removed = false
+    const observation = mock.method(files, operation, async (...args: unknown[]) => {
+      if (!removed && args[0] === directory) {
+        removed = true
+        await rm(directory, { recursive: true })
+      }
+      return Reflect.apply(original, files, args)
+    })
+    syncBuiltinESMExports()
+    t.after(() => {
+      observation.mock.restore()
+      syncBuiltinESMExports()
+    })
+    await assert.rejects(
+      inventoryDaemonProfile(directory),
+      (error) =>
+        error instanceof ProfileSchemaRefusalError && error.reason === 'profile-identity-changed',
+    )
+    assert.equal(removed, true)
+  })
+}
+
+test('inventory propagates a non-ENOENT error with its original identity', async (t) => {
+  const directory = await temporaryProfile(t)
+  const error = Object.assign(new Error('controlled filesystem failure'), { code: 'EIO' })
+  const observation = mock.method(files, 'realpath', async () => {
+    throw error
+  })
+  syncBuiltinESMExports()
+  t.after(() => {
+    observation.mock.restore()
+    syncBuiltinESMExports()
+  })
+  await assert.rejects(inventoryDaemonProfile(directory), (observed) => observed === error)
+})
 
 test('inventory identifies every legacy artifact and SQLite candidate without mutation', async (t) => {
   const directory = await temporaryProfile(t)

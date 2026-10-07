@@ -17,7 +17,7 @@ import { renameSync, unlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-import { after, mock, test } from 'node:test'
+import { after, mock, test, type TestContext } from 'node:test'
 import {
   deriveDurableCustodyOperationId,
   deriveDurableCustodyScopeId,
@@ -53,6 +53,13 @@ import {
 } from '../src/profileSchemaManifest.ts'
 import { createNativeConfig, defaultNativeConfig } from '../src/nativeConfig.ts'
 import { ProfileSecretProtectionError } from '../src/profileSecretProtection.ts'
+import files from 'node:fs/promises'
+import http from 'node:http'
+import childProcess from 'node:child_process'
+import { syncBuiltinESMExports } from 'node:module'
+import { EventEmitter } from 'node:events'
+import { Readable } from 'node:stream'
+import { configureDaemonStateSqlite } from '../src/stateSqlite.ts'
 import { configureDataDirForTest as configureSourceDataDirForTest } from '../src/dataDir.ts'
 import { configureDataDirForTest as configurePackageDataDirForTest } from '@bitcaster-market/daemon/dataDir'
 import { readRpcToken, readLiveRpcToken } from '../src/rpcAuth.ts'
@@ -492,53 +499,241 @@ test('live RPC token refusals prevent CLI command and watch dispatch', async (t)
   assert.equal(await readLiveRpcToken(), null)
 })
 
-test('profile replacement before live token return prevents CLI command and watch dispatch', async (t) => {
-  const directory = await freshProfileDirectory('rpc-replaced-profile')
-  const replacement = await freshProfileDirectory('rpc-replacement-source')
+for (const kind of ['command', 'watch', 'wait'] as const) {
+  test(`real last-WAL-close refusal stops normal Unix ${kind} without autostart and permits a later explicit call`, async (t) => {
+    const directory = await freshProfileDirectory(`rpc-wal-close-${kind}`)
+    await bootstrap(directory)
+    configureDataDirForTest(() => directory)
+    t.after(() => configureDataDirForTest(() => process.env.BITCASTER_DAEMON_HOME))
+    const path = join(directory, DAEMON_PROFILE_DATABASE)
+    const before = await stat(path, { bigint: true })
+    const writer = new DatabaseSync(path)
+    configureDaemonStateSqlite(writer)
+    writer.exec('UPDATE daemon_profile SET initialized_at_ms = initialized_at_ms')
+    let closed = false
+    t.after(() => {
+      if (!closed) writer.close()
+    })
+    const readdirOriginal = files.readdir
+    let inspections = 0
+    const enumeration = mock.method(files, 'readdir', async (...args: unknown[]) => {
+      const entries = await Reflect.apply(readdirOriginal, files, args)
+      if (args[0] === directory) {
+        inspections += 1
+        if (!closed) {
+          assert.equal(
+            entries.some(
+              (entry: { name: string }) => entry.name === `${DAEMON_PROFILE_DATABASE}-wal`,
+            ),
+            true,
+          )
+          assert.equal(
+            entries.some(
+              (entry: { name: string }) => entry.name === `${DAEMON_PROFILE_DATABASE}-shm`,
+            ),
+            true,
+          )
+          writer.close()
+          closed = true
+        }
+      }
+      return entries
+    })
+    const transport = installUnixRpcMock(t)
+    syncBuiltinESMExports()
+    t.after(() => {
+      enumeration.mock.restore()
+      syncBuiltinESMExports()
+    })
+    const url = new URL('../../bitcaster-cli/src/rpc.ts', import.meta.url)
+    url.searchParams.set('fixture', `wal-close-${kind}`)
+    const rpc = await import(url.href)
+    const invoke = async () => {
+      if (kind === 'command') return rpc.callDaemon({ method: 'health' })
+      if (kind === 'wait') return rpc.waitForDaemon()
+      const watch = rpc.watchDaemon({ method: 'wallet.watch' })
+      try {
+        return await watch.next()
+      } finally {
+        await watch.return(undefined)
+      }
+    }
+    await assert.rejects(invoke(), schemaError('profile-identity-changed'))
+    assert.equal(inspections, 1, 'refusal must not repeat preflight')
+    assert.equal(transport.requests, 0)
+    assert.equal(transport.spawns, 0)
+    const after = await stat(path, { bigint: true })
+    assert.equal(before.dev === after.dev && before.ino === after.ino, true)
+    assert.equal(
+      (await readdir(directory)).some(
+        (name) => name === 'daemon-autostart.pid' || name === 'daemon.log',
+      ),
+      false,
+    )
+    await invoke()
+    assert.equal(transport.requests, 1)
+    assert.equal(transport.spawns, 0)
+    const completedInspections = inspections
+    await invoke()
+    assert.equal(inspections, completedInspections, 'successful token must stay cached')
+    assert.equal(transport.requests, 2)
+  })
+}
+
+test('concurrent CLI callers share a refusal and a later explicit call revalidates', async (t) => {
+  const directory = await freshProfileDirectory('rpc-coalesced-refusal')
   await bootstrap(directory)
-  await bootstrapFreshDaemonProfile({ ...bootstrapInput(replacement), rpcToken: 'Z'.repeat(43) })
   configureDataDirForTest(() => directory)
   t.after(() => configureDataDirForTest(() => process.env.BITCASTER_DAEMON_HOME))
-  const prepare = DatabaseSync.prototype.prepare
-  const prepareMock = mock.method(
-    DatabaseSync.prototype,
-    'prepare',
-    function (this: DatabaseSync, sql: string) {
-      const statement = prepare.call(this, sql)
-      if (sql === 'SELECT token FROM daemon_rpc_token WHERE singleton = 1') {
-        renameSync(
-          join(replacement, DAEMON_PROFILE_DATABASE),
-          join(directory, DAEMON_PROFILE_DATABASE),
-        )
-      }
-      return statement
-    },
-  )
-  t.after(() => prepareMock.mock.restore())
-  let calls = 0
-  const fetchMock = mock.method(globalThis, 'fetch', async () => {
-    calls += 1
-    throw new Error('replaced profile reached RPC dispatch')
+  const original = files.realpath
+  const error = Object.assign(new Error('controlled filesystem failure'), { code: 'EIO' })
+  let fail = true
+  let reads = 0
+  const preflight = mock.method(files, 'realpath', async (...args: unknown[]) => {
+    if (args[0] === directory && fail) {
+      reads += 1
+      throw error
+    }
+    return Reflect.apply(original, files, args)
   })
-  t.after(() => fetchMock.mock.restore())
-  const globals = globalThis as Record<symbol, unknown>
-  const symbol = Symbol.for('bitcaster.test.daemon-url')
-  const previous = globals[symbol]
-  globals[symbol] = 'http://daemon.test'
+  const transport = installUnixRpcMock(t)
+  syncBuiltinESMExports()
   t.after(() => {
-    if (previous === undefined) delete globals[symbol]
-    else globals[symbol] = previous
+    preflight.mock.restore()
+    syncBuiltinESMExports()
   })
   const url = new URL('../../bitcaster-cli/src/rpc.ts', import.meta.url)
-  url.searchParams.set('fixture', 'profile-replacement')
+  url.searchParams.set('fixture', 'coalesced-refusal')
   const rpc = await import(url.href)
-  const refused = schemaError('profile-identity-changed')
-  await assert.rejects(rpc.callDaemon({ method: 'health' }), refused)
-  const watch = rpc.watchDaemon({ method: 'wallet.watch' })
-  await assert.rejects(watch.next(), refused)
-  await watch.return(undefined)
-  assert.equal(calls, 0)
+  const outcomes = await Promise.allSettled([
+    rpc.callDaemon({ method: 'health' }),
+    rpc.callDaemon({ method: 'health' }),
+  ])
+  assert.equal(reads, 1)
+  for (const outcome of outcomes)
+    assert.equal(outcome.status === 'rejected' && outcome.reason === error, true)
+  assert.equal(transport.requests, 0)
+  assert.equal(transport.spawns, 0)
+  fail = false
+  await rpc.callDaemon({ method: 'health' })
+  assert.equal(transport.requests, 1)
 })
+
+test('startup cancellation surrounds token preflight and its deadline includes preflight time', async (t) => {
+  const directory = await freshProfileDirectory('rpc-startup-boundary')
+  await bootstrap(directory)
+  configureDataDirForTest(() => directory)
+  t.after(() => configureDataDirForTest(() => process.env.BITCASTER_DAEMON_HOME))
+  const original = files.realpath
+  const controller = new AbortController()
+  const reason = new Error('controlled cancellation')
+  let inspect = () => {}
+  let reads = 0
+  const preflight = mock.method(files, 'realpath', async (...args: unknown[]) => {
+    if (args[0] === directory) {
+      reads += 1
+      inspect()
+    }
+    return Reflect.apply(original, files, args)
+  })
+  const transport = installUnixRpcMock(t)
+  syncBuiltinESMExports()
+  t.after(() => {
+    preflight.mock.restore()
+    syncBuiltinESMExports()
+  })
+  const load = async (fixture: string) => {
+    const url = new URL('../../bitcaster-cli/src/rpc.ts', import.meta.url)
+    url.searchParams.set('fixture', fixture)
+    return import(url.href)
+  }
+  const before = await load('cancel-before-preflight')
+  controller.abort(reason)
+  await assert.rejects(before.waitForDaemon(controller.signal), (error) => error === reason)
+  assert.equal(reads, 0)
+  const afterController = new AbortController()
+  inspect = () => afterController.abort(reason)
+  const after = await load('cancel-after-preflight')
+  await assert.rejects(after.waitForDaemon(afterController.signal), (error) => error === reason)
+  assert.equal(transport.requests, 0)
+  let clock = 1000
+  const now = mock.method(Date, 'now', () => clock)
+  t.after(() => now.mock.restore())
+  inspect = () => {
+    clock = 11001
+  }
+  const expired = await load('preflight-consumes-deadline')
+  await assert.rejects(expired.waitForDaemon(), /timed out waiting for bitcaster-daemon to start/)
+  assert.equal(transport.requests, 0)
+})
+
+for (const code of ['ENOENT', 'ECONNREFUSED']) {
+  test(`startup continues Unix health polling after transport ${code}`, async (t) => {
+    const directory = await freshProfileDirectory(`rpc-startup-${code}`)
+    await bootstrap(directory)
+    configureDataDirForTest(() => directory)
+    t.after(() => configureDataDirForTest(() => process.env.BITCASTER_DAEMON_HOME))
+    const transport = installUnixRpcMock(t, code)
+    const url = new URL('../../bitcaster-cli/src/rpc.ts', import.meta.url)
+    url.searchParams.set('fixture', `startup-${code}`)
+    const rpc = await import(url.href)
+    await rpc.waitForDaemon()
+    assert.equal(transport.requests, 2)
+    assert.equal(transport.spawns, 0)
+  })
+}
+
+for (const kind of ['command', 'watch'] as const) {
+  test(`profile replacement before live token return prevents CLI ${kind} dispatch`, async (t) => {
+    const directory = await freshProfileDirectory('rpc-replaced-profile')
+    const replacement = await freshProfileDirectory('rpc-replacement-source')
+    await bootstrap(directory)
+    await bootstrapFreshDaemonProfile({ ...bootstrapInput(replacement), rpcToken: 'Z'.repeat(43) })
+    configureDataDirForTest(() => directory)
+    t.after(() => configureDataDirForTest(() => process.env.BITCASTER_DAEMON_HOME))
+    const prepare = DatabaseSync.prototype.prepare
+    const prepareMock = mock.method(
+      DatabaseSync.prototype,
+      'prepare',
+      function (this: DatabaseSync, sql: string) {
+        const statement = prepare.call(this, sql)
+        if (sql === 'SELECT token FROM daemon_rpc_token WHERE singleton = 1') {
+          renameSync(
+            join(replacement, DAEMON_PROFILE_DATABASE),
+            join(directory, DAEMON_PROFILE_DATABASE),
+          )
+        }
+        return statement
+      },
+    )
+    t.after(() => prepareMock.mock.restore())
+    let calls = 0
+    const fetchMock = mock.method(globalThis, 'fetch', async () => {
+      calls += 1
+      throw new Error('replaced profile reached RPC dispatch')
+    })
+    t.after(() => fetchMock.mock.restore())
+    const globals = globalThis as Record<symbol, unknown>
+    const symbol = Symbol.for('bitcaster.test.daemon-url')
+    const previous = globals[symbol]
+    globals[symbol] = 'http://daemon.test'
+    t.after(() => {
+      if (previous === undefined) delete globals[symbol]
+      else globals[symbol] = previous
+    })
+    const url = new URL('../../bitcaster-cli/src/rpc.ts', import.meta.url)
+    url.searchParams.set('fixture', `profile-replacement-${kind}`)
+    const rpc = await import(url.href)
+    const refused = schemaError('profile-identity-changed')
+    if (kind === 'command') await assert.rejects(rpc.callDaemon({ method: 'health' }), refused)
+    else {
+      const watch = rpc.watchDaemon({ method: 'wallet.watch' })
+      await assert.rejects(watch.next(), refused)
+      await watch.return(undefined)
+    }
+    assert.equal(calls, 0)
+  })
+}
 
 for (const version of [10, 13, 14]) {
   test(`native custody cutover refuses schema version ${version} without changing profile bytes or modes`, async () => {
@@ -1367,4 +1562,55 @@ function missingFile(error: unknown): boolean {
   return (
     error instanceof Error && 'code' in error && (error as NodeJS.ErrnoException).code === 'ENOENT'
   )
+}
+
+function installUnixRpcMock(t: TestContext, firstErrorCode?: string) {
+  const observed = { requests: 0, spawns: 0 }
+  const request = mock.method(
+    http,
+    'request',
+    (
+      options: { socketPath: string; headers?: Record<string, string> },
+      callback: (response: Readable) => void,
+    ) => {
+      observed.requests += 1
+      assert.equal(options.socketPath.endsWith('/daemon.sock'), true)
+      const pending = new EventEmitter() as EventEmitter & { end(): void; destroy(): void }
+      pending.destroy = () => {}
+      pending.end = () =>
+        queueMicrotask(() => {
+          if (firstErrorCode && observed.requests === 1) {
+            pending.emit(
+              'error',
+              Object.assign(new Error('controlled transport failure'), { code: firstErrorCode }),
+            )
+            return
+          }
+          const watch = options.headers?.accept === 'application/x-ndjson'
+          const response = Readable.from([
+            Buffer.from(watch ? '{"type":"complete"}\n' : '{"ok":true,"result":{}}'),
+          ]) as Readable & { statusCode: number; headers: Record<string, string> }
+          response.statusCode = 200
+          response.headers = { 'content-type': watch ? 'application/x-ndjson' : 'application/json' }
+          callback(response)
+        })
+      return pending
+    },
+  )
+  const spawn = mock.method(childProcess, 'spawn', () => {
+    observed.spawns += 1
+    throw new Error('unexpected daemon autostart')
+  })
+  const globals = globalThis as Record<symbol, unknown>
+  const symbol = Symbol.for('bitcaster.test.daemon-url')
+  const prior = globals[symbol]
+  delete globals[symbol]
+  syncBuiltinESMExports()
+  t.after(() => {
+    request.mock.restore()
+    spawn.mock.restore()
+    syncBuiltinESMExports()
+    if (prior !== undefined) globals[symbol] = prior
+  })
+  return observed
 }
