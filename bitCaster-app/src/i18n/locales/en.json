@@ -1005,6 +1005,12 @@
     "new": "New"
   },
   "oracleBackup": {
+    "authorityReady": "Local signing data is ready.",
+    "authorityUnavailable": "Local signing data is unavailable. Keep the saved oracle records and use the original key where available.",
+    "createdBackupHeading": "Backup delivery for created markets",
+    "creatorHeading": "Oracle recovery",
+    "advanced": "Advanced oracle recovery",
+    "needsRestore": "Local signing data needs restoration. Restore the original backup before choosing an outcome.",
     "heading": "Oracle backups",
     "description": "List and restore encrypted oracle backups with the original local Nostr key. Retry uses the saved original destinations.",
     "staleRisk": "An older restored copy can sign another outcome. Use one current copy. Relays may retain older encrypted versions after a deletion request.",
@@ -1035,7 +1041,7 @@
     "list": "List oracle backups",
     "next": "Next page",
     "previous": "Previous page",
-    "keyRequired": "Listing and restore require the original local Nostr key. Saved exact retries do not require a signer.",
+    "keyRequired": "Listing and restore require the original local Nostr key. NIP-07 extensions cannot decrypt these private backups. Saved exact retries do not require a signer.",
     "discoveryLimit": "Discovery depends on each relay. A page or an empty result cannot prove that all backups were found. Try another relay or restore an exact event ID.",
     "incompleteDiscovery": "This page is incomplete. Refresh, try another relay, or use exact-ID restore.",
     "empty": "No valid backup was returned on this page.",

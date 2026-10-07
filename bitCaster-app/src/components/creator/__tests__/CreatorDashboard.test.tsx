@@ -1,15 +1,21 @@
 import { installCreatorDocumentLocks, seedCreatorMarkets } from "@/test/creatorDocumentLocks";
-import { render, screen, within } from "@testing-library/react";
+import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { CreatedMarket } from "@/types/portfolio";
 import type { DashboardStats } from "@/types/market-management";
 
-const { mockUseCreatorDashboardState, mockNavigate, mockPublishOracleOutcome } = vi.hoisted(() => ({
-  mockUseCreatorDashboardState: vi.fn(),
-  mockNavigate: vi.fn(),
-  mockPublishOracleOutcome: vi.fn(),
+const { mockUseCreatorDashboardState, mockNavigate, mockPublishOracleOutcome, mockLocalStatuses } =
+  vi.hoisted(() => ({
+    mockUseCreatorDashboardState: vi.fn(),
+    mockNavigate: vi.fn(),
+    mockLocalStatuses: vi.fn(),
+    mockPublishOracleOutcome: vi.fn(),
+  }));
+
+vi.mock("@/lib/browserOracleBackupAccess", () => ({
+  localBrowserOracleBackupStatuses: (...args: unknown[]) => mockLocalStatuses(...args),
 }));
 
 vi.mock("@/hooks/useCreatorDashboardState", () => ({
@@ -51,6 +57,8 @@ function renderDashboard() {
 
 beforeEach(async () => {
   installCreatorDocumentLocks();
+  mockLocalStatuses.mockReset();
+  mockLocalStatuses.mockResolvedValue({ rows: [], nextOffset: null });
   mockNavigate.mockReset();
   mockUseCreatorDashboardState.mockReset();
   mockPublishOracleOutcome.mockReset();
@@ -352,9 +360,166 @@ describe("CreatorDashboard", () => {
       "Yes",
       "Official final result.",
       ["ws://localhost:7777"],
+      useCreatorMarketsStore,
+      undefined,
+      { engineDelivery: "synchronize", requireCurrent: expect.any(Function) },
     );
     expect(useCreatorMarketsStore.getState().markets[0].oracle?.explanationDraft).toBe(
       "Official final result.",
     );
   });
+});
+
+describe("saved oracle confirmation", () => {
+  function importedRow(chosenOutcome: string | null = "YES") {
+    return {
+      conditionId: "e".repeat(64),
+      available: true,
+      readiness: "needs-restore",
+      kind: "imported",
+      title: "Imported oracle event",
+      outcomes: ["YES", "NO"],
+      chosenOutcome,
+      status: {
+        importComplete: true,
+        preparationPending: false,
+        noRelays: false,
+        destinations: {
+          mintUrl: "https://original.mint",
+          engineUrl: "https://original.engine",
+          relayUrls: ["wss://original.relay"],
+        },
+        initial: { prepared: true, acknowledgedRelays: 1, totalRelays: 1 },
+        terminal: { prepared: false, deletionRequired: false, localCommitPending: false },
+        publication: { relayPublished: true, engineSynchronized: false },
+      },
+    };
+  }
+  function setup(ownerKind: "created" | "imported" = "imported") {
+    mockUseCreatorDashboardState.mockReturnValue({
+      pubkey: "f".repeat(64),
+      stats: emptyStats(),
+      markets: [],
+      isLoading: false,
+      error: null,
+      engineDataStatus: "current",
+      refresh: vi.fn(),
+    });
+    mockLocalStatuses.mockImplementation(async ({ kind }) => ({
+      rows:
+        kind === ownerKind
+          ? [
+              {
+                ...importedRow(),
+                kind: ownerKind,
+                status: {
+                  ...importedRow().status,
+                  publication: { relayPublished: true, engineSynchronized: true },
+                },
+              },
+            ]
+          : [],
+      nextOffset: null,
+    }));
+  }
+  it.each([
+    ["imported", "Retry saved resolution", false],
+    ["imported", "Republish exact resolution", true],
+    ["created", "Retry saved resolution", false],
+    ["created", "Republish exact resolution", true],
+  ] as const)(
+    "requires shared confirmation for %s %s with no signer",
+    async (kind, label, republish) => {
+      setup(kind);
+      const user = userEvent.setup();
+      renderDashboard();
+      await user.click(await screen.findByRole("button", { name: label }));
+      const dialog = screen.getByRole("dialog", { name: "Resolve this market" });
+      expect(mockPublishOracleOutcome).not.toHaveBeenCalled();
+      expect(
+        within(dialog).getByRole("textbox", { name: "Public explanation (optional)" }),
+      ).toBeDisabled();
+      await user.click(within(dialog).getByTestId("creator-oracle-confirm"));
+      await screen.findByText("Resolution YES is confirmed by the engine and relay.");
+      expect(mockPublishOracleOutcome).toHaveBeenCalledWith(
+        "e".repeat(64),
+        "YES",
+        undefined,
+        ["wss://original.relay"],
+        useCreatorMarketsStore,
+        undefined,
+        {
+          engineDelivery: "synchronize",
+          republishAttestation: republish,
+          requireCurrent: expect.any(Function),
+        },
+      );
+    },
+  );
+  it.each(["created", "imported"] as const)(
+    "cancels %s confirmation without starting publication",
+    async (kind) => {
+      setup(kind);
+      const user = userEvent.setup();
+      renderDashboard();
+      await user.click(await screen.findByRole("button", { name: "Retry saved resolution" }));
+      await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Cancel" }));
+      expect(screen.queryByRole("dialog")).toBeNull();
+      expect(mockPublishOracleOutcome).not.toHaveBeenCalled();
+    },
+  );
+  it.each(["created", "imported"] as const)(
+    "discards %s late completion after a rapid identity change back",
+    async (kind) => {
+      setup(kind);
+      let complete!: (result: unknown) => void;
+      mockPublishOracleOutcome.mockReturnValueOnce(
+        new Promise((resolve) => {
+          complete = resolve;
+        }),
+      );
+      const user = userEvent.setup();
+      renderDashboard();
+      await user.click(await screen.findByRole("button", { name: "Retry saved resolution" }));
+      await user.click(within(screen.getByRole("dialog")).getByTestId("creator-oracle-confirm"));
+      act(() => {
+        useSettingsStore.setState({ nostrSignerMode: "nip07" });
+        useSettingsStore.setState({ nostrSignerMode: "none" });
+      });
+      await act(async () => {
+        complete({ failures: [] });
+        await Promise.resolve();
+      });
+      expect(screen.queryByRole("dialog")).toBeNull();
+      expect(screen.queryByText("Resolution YES is confirmed by the engine and relay.")).toBeNull();
+    },
+  );
+  it.each(["created", "imported"] as const)(
+    "invalidates %s publication guard when the dashboard unmounts",
+    async (kind) => {
+      setup(kind);
+      let proceed!: () => void;
+      const nextStage = vi.fn();
+      mockPublishOracleOutcome.mockImplementationOnce(
+        async (_id, _outcome, _text, _relays, _store, _read, { requireCurrent }) => {
+          await new Promise<void>((resolve) => {
+            proceed = resolve;
+          });
+          requireCurrent();
+          nextStage();
+          return { failures: [] };
+        },
+      );
+      const user = userEvent.setup();
+      const view = renderDashboard();
+      await user.click(await screen.findByRole("button", { name: "Retry saved resolution" }));
+      await user.click(within(screen.getByRole("dialog")).getByTestId("creator-oracle-confirm"));
+      view.unmount();
+      await act(async () => {
+        proceed();
+        await Promise.resolve();
+      });
+      expect(nextStage.mock.calls.length === 0).toBe(true);
+    },
+  );
 });

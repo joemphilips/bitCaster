@@ -98,16 +98,25 @@ If a different key owns that data, private oracle preparation and recovery
 refuse the key change. Keep the data and return to its original key.
 Saved public artifacts remain available for exact delivery retry without a signer.
 
-Open Settings, then Oracle backups. Use the original local Nostr key to
-list backups or restore one version. The client fetches the selected event
-again and checks its signature, encryption, and oracle binding before import.
+Use the original local Nostr key. When that identity becomes ready, the browser
+resumes pending backup delivery and searches configured relays for missing
+oracle records. It also retries when relay settings change or connectivity
+returns. Discovery uses bounded pages. Recovery never selects or publishes
+an outcome automatically.
+
+Open Creator to see restored oracle records below your created markets.
+The client fetches each selected backup event again and checks its signature,
+encryption, and oracle binding before import.
 The browser and native client use the same portable backup format.
 Restore retains the original announcement, signing authority, mint, engine,
 and relay destinations. It restores an oracle record, not a paid creation record.
+NIP-07 extension signing does not support this private recovery path. It needs
+the matching local Nostr key.
 
 Discovery depends on relay retention. A page or an empty result does not
-prove that all backups were found. Try another relay or use the exact backup
-event ID and source relay URL. Settings shows one remote page at a time.
+prove that all backups were found. Try another relay or open advanced recovery
+in Creator. Enter the exact backup event ID and source relay URL there.
+This explicit recovery also works when no discovery relays are configured.
 
 Local status distinguishes incomplete import, pending preparation, initial
 delivery, terminal replacement, deletion requests, and pending local updates.

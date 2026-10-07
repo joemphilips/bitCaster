@@ -41,6 +41,7 @@ import {
   type EncryptedWalletBackupDriverState,
 } from "@/hooks/useEncryptedWalletBackupDriver";
 import { useAssetMonitoringReporter } from "@/hooks/useAssetMonitoringReporter";
+import { useBrowserOracleRecovery } from "@/hooks/useBrowserOracleRecovery";
 import { useBrowserCtfRangeOrderRecovery } from "@/hooks/useBrowserCtfRangeOrderRecovery";
 import { DEFAULT_MARKET_BASE_ASSET } from "@bitcaster/client-sdk/marketUnits";
 import { browserWalletScopeIdFromMnemonic } from "@/lib/browserWalletProfile";
@@ -155,6 +156,7 @@ function AppRoutes() {
   const walletMnemonic = useWalletStore((s) => s.mnemonic);
   const walletMintUrls = useWalletStore((s) => s.mints.map(({ url }) => url).join("\n"));
   const [nostrSignerReady, setNostrSignerReady] = useState(false);
+  useBrowserOracleRecovery(nostrSignerReady);
   useOrderSettlementLifecycle(nostrSignerReady && nostrSignerMode !== "none", {
     mnemonic: walletMnemonic,
     mintUrls: walletMintUrls.split("\n").filter(Boolean),

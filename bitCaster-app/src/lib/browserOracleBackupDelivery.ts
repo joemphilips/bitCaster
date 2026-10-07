@@ -23,6 +23,7 @@ export interface BrowserOracleBackupDeliveryOptions {
   readonly store?: typeof useCreatorMarketsStore;
   readonly nowSeconds?: () => number;
   readonly observedEvents?: readonly unknown[];
+  readonly requireCurrent?: () => void;
   readonly publishRelay?: OracleBackupDeliveryAdapters["publishRelay"];
 }
 
@@ -43,6 +44,7 @@ export function createBrowserOracleBackupDeliveryAdapters(
     store: {
       read: (id) => owner.getState().readOracleBackupDelivery(id),
       async prepare(id) {
+        options.requireCurrent?.();
         try {
           const retained = await owner.getState().withOracleMutation(async (locked) => {
             const previous = await locked.readBackupDelivery(id);
@@ -55,14 +57,16 @@ export function createBrowserOracleBackupDeliveryAdapters(
               : null;
           });
           if (retained) return retained;
+          options.requireCurrent?.();
           const savedOwner = await owner.getState().readOracleOwner(id);
           if (!savedOwner) throw new OracleBackupDeliveryError("invalid-source");
           const admission = await prepareBrowserOracleMutation(
             browserOracleOwnerAuthority(savedOwner).binding.oraclePubkey,
           );
           preparationAdmission = admission;
-          const result = await owner.getState().withOracleMutation((locked) =>
-            admission.withCoreLocked(async (core, privateKey) => {
+          const result = await owner.getState().withOracleMutation((locked) => {
+            options.requireCurrent?.();
+            return admission.withCoreLocked(async (core, privateKey) => {
               const savedOwner = await locked.readOwner(id);
               if (!savedOwner) throw new OracleBackupDeliveryError("invalid-source");
               const { binding, announcementHex, destinations } =
@@ -100,9 +104,10 @@ export function createBrowserOracleBackupDeliveryAdapters(
               });
               await locked.saveBackupPreparation(id, state);
               return (await locked.readBackupDelivery(id))!;
-            }),
-          );
+            });
+          });
           admission.requireCurrent();
+          options.requireCurrent?.();
           return result;
         } catch (error) {
           if (error instanceof OracleBackupDeliveryError) throw error;
@@ -115,6 +120,7 @@ export function createBrowserOracleBackupDeliveryAdapters(
       commitTerminal: (id, admission) => owner.getState().commitOracleBackupTerminal(id, admission),
     },
     publishRelay: async (relayUrl, eventJson) => {
+      options.requireCurrent?.();
       preparationAdmission?.requireCurrent();
       if (options.publishRelay) return options.publishRelay(relayUrl, eventJson);
       readOracleBackupRelayEvent(eventJson);

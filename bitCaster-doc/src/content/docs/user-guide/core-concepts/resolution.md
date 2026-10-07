@@ -117,16 +117,18 @@ remains available. It does not create a native explanation.
 
 ## Resolve a restored oracle or publish while the engine is unavailable
 
-Settings lists restored oracle records separately from markets created on
+Creator lists restored oracle records separately from markets created on
 this device. An unresolved restored record can select a registered outcome
 and publish it with the original authority and destinations.
+Review and confirm the action in the resolution dialog. Opening or cancelling
+the dialog does not publish an outcome. Automatic recovery does not publish it.
 The first saved outcome on this device cannot change.
 See [oracle backups](/user-guide/core-concepts/creating-markets/#keep-and-restore-your-oracle-backup)
 for restore and incomplete-import recovery.
 
 Ordinary retry skips an attestation with a retained relay acknowledgment.
-Choose **Republish exact resolution** in Settings to send the saved kind-89
-event again. This action uses identical bytes without fresh signing.
+Choose **Republish exact resolution** in Creator and confirm the action to send
+the saved kind-89 event again. This action uses identical bytes without fresh signing.
 A terminal restore can use this action without the signing key.
 After durable result acknowledgment, the client attempts the terminal backup.
 Backup failure does not undo successful result delivery.

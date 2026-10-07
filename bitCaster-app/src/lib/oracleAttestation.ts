@@ -311,7 +311,12 @@ function browserOracleAdapters(
   owner: typeof useCreatorMarketsStore,
   engineUrl: string,
   privateAdmission?: BrowserOracleMutation,
+  requireOperationCurrent?: () => void,
 ) {
+  const requireCurrent = () => {
+    requireOperationCurrent?.();
+    privateAdmission?.requireCurrent();
+  };
   const requireSigner = () => {
     const settings = useSettingsStore.getState();
     const identity = resolveNsecIdentity(settings.nsecSecret);
@@ -326,11 +331,12 @@ function browserOracleAdapters(
   return {
     store,
     async prepareAttestation(saved: OraclePublicationBinding, chosen: string) {
-      privateAdmission?.requireCurrent();
+      requireCurrent();
       requireSigner();
       const admission = await prepareBrowserOracleMutation(saved.oraclePubkey);
-      const result = await owner.getState().withOracleMutation((locked) =>
-        admission.withCoreLocked(async (core) => {
+      const result = await owner.getState().withOracleMutation((locked) => {
+        requireCurrent();
+        return admission.withCoreLocked(async (core) => {
           const reconciled = await reconcileLockedBrowserOracle(
             locked,
             saved,
@@ -354,10 +360,10 @@ function browserOracleAdapters(
           if (!exact.publication?.attestation)
             throw new Error("Exact oracle preparation is unavailable.");
           return exact.publication.attestation;
-        }),
-      );
+        });
+      });
       admission.requireCurrent();
-      privateAdmission?.requireCurrent();
+      requireCurrent();
       return result;
     },
     verifyAttestation: (
@@ -369,17 +375,17 @@ function browserOracleAdapters(
         announcementTlvHex: announcementHex,
       }),
     publishRelay: async (json: string) => {
-      privateAdmission?.requireCurrent();
+      requireCurrent();
       return { eventId: await publishRetainedOracleEvent(relays, json) };
     },
     async submitEngine(saved: OraclePublicationBinding, json: string) {
-      privateAdmission?.requireCurrent();
+      requireCurrent();
       const artifact = {
         attestationHex: artifactHex(readSignedOracleEvent(json, 89).content),
         eventJson: json,
       };
       const outcome = (await decodeOracleAttestation(artifact.attestationHex)).outcomes[0]!;
-      privateAdmission?.requireCurrent();
+      requireCurrent();
       // A lost response is reconciled by the verified read, not by an HTTP status.
       try {
         await withOracleEngine(
@@ -388,14 +394,14 @@ function browserOracleAdapters(
           engineUrl,
         );
       } catch {
-        privateAdmission?.requireCurrent();
+        requireCurrent();
         return verifiedEngineOracleEvidence(saved, artifact, outcome, read, announcementHex);
       }
-      privateAdmission?.requireCurrent();
+      requireCurrent();
       return verifiedEngineOracleEvidence(saved, artifact, outcome, read, announcementHex);
     },
     async prepareExplanation(context: OracleExplanationContext, text: string) {
-      privateAdmission?.requireCurrent();
+      requireCurrent();
       const signer = requireSigner();
       return JSON.stringify(
         finalizeEvent(
@@ -414,12 +420,16 @@ export async function publishBrowserOracleOutcome(
   relays: string[],
   store = useCreatorMarketsStore,
   read?: OracleAttestationReadPort,
-  options: OraclePublicationOptions = { engineDelivery: "synchronize" },
+  options: OraclePublicationOptions & { requireCurrent?: () => void } = {
+    engineDelivery: "synchronize",
+  },
 ) {
+  options.requireCurrent?.();
   if (!store.getState().hasOraclePersistence())
     throw new Error("Durable creator storage is unavailable.");
   let owner = await store.getState().readOracleOwner(conditionId);
   if (!owner) throw new Error("Creator oracle record is unavailable.");
+  options.requireCurrent?.();
   if (owner.kind === "created") {
     const market = owner.market;
     if (!market.oracle) throw new Error("Creator oracle record is unavailable.");
@@ -427,6 +437,7 @@ export async function publishBrowserOracleOutcome(
       market,
       market.oracle.destinations ? [...market.oracle.destinations.relayUrls] : relays,
     );
+    options.requireCurrent?.();
     await store.getState().retainOraclePreparation(conditionId, {
       ...market.oracle,
       oraclePubkey: readSignedOracleEvent(announcementEventJson, 88).pubkey,
@@ -444,9 +455,12 @@ export async function publishBrowserOracleOutcome(
     throw new Error("Original oracle preparation does not match this destination.");
   const engineUrl = destinations?.engineUrl ?? legacy?.engineBaseUrl ?? window.location.origin;
   const originalRelays = destinations ? [...destinations.relayUrls] : relays;
-  const readOriginal =
-    read ??
-    ((id: string) => withOracleEngine((client) => client.getConditionAttestation(id), engineUrl));
+  const readOriginal = (id: string) => {
+    options.requireCurrent?.();
+    return read
+      ? read(id)
+      : withOracleEngine((client) => client.getConditionAttestation(id), engineUrl);
+  };
   if (legacy?.attestationHex && (!legacy.attestationEventJson || !legacy.chosenOutcome)) {
     // An already-published legacy envelope must be recovered, never signed again.
     const response = legacy.attestationEventJson ? null : await readOriginal(conditionId);
@@ -487,11 +501,13 @@ export async function publishBrowserOracleOutcome(
   const originalDraft = await store.getState().readOracleExplanationDraft(conditionId);
   const exactRetry = retained?.attestation !== null && retained?.attestation !== undefined;
   let privateAdmission: BrowserOracleMutation | undefined;
+  options.requireCurrent?.();
   if (!exactRetry) {
     privateAdmission = await prepareBrowserOracleMutation(binding.oraclePubkey);
     const admission = privateAdmission;
-    await store.getState().withOracleMutation((locked) =>
-      admission.withCoreLocked(async (core) => {
+    await store.getState().withOracleMutation((locked) => {
+      options.requireCurrent?.();
+      return admission.withCoreLocked(async (core) => {
         await reconcileLockedBrowserOracle(locked, binding, announcementHex, core, {
           binding,
           chosenOutcome: outcome,
@@ -501,8 +517,8 @@ export async function publishBrowserOracleOutcome(
           explanationEventJson: null,
           explanationRelayPublished: false,
         });
-      }),
-    );
+      });
+    });
     admission.requireCurrent();
     retained = await publicationStore.read(conditionId);
   }
@@ -515,6 +531,7 @@ export async function publishBrowserOracleOutcome(
     store,
     engineUrl,
     privateAdmission,
+    options.requireCurrent,
   );
   const result =
     exactRetry || retained?.attestation
@@ -526,12 +543,14 @@ export async function publishBrowserOracleOutcome(
           originalDraft?.trim() ? originalDraft : undefined,
           options,
         );
+  options.requireCurrent?.();
   privateAdmission?.requireCurrent();
   await store.getState().saveOraclePublicationFailures(conditionId, result.failures);
+  options.requireCurrent?.();
   privateAdmission?.requireCurrent();
   if (result.record.relayPublished) {
     // The signed result remains successful while its independent private backup is pending.
-    requestBrowserOracleBackup(conditionId, { store });
+    requestBrowserOracleBackup(conditionId, { store, requireCurrent: options.requireCurrent });
   }
   return result;
 }

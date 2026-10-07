@@ -147,7 +147,6 @@ export function Settings({
   onRetryNostrProfile,
   onAddRelay,
   onRemoveRelay,
-  oracleBackupPanel,
 }: SettingsProps) {
   const { t } = useTranslation();
   const { general, cashu, nostr } = settings;
@@ -626,7 +625,6 @@ export function Settings({
         activeCategory={activeCategory}
         onToggle={onCategoryToggle}
       >
-        {oracleBackupPanel}
         {/* Nostr Connection — only show connect buttons if not already connected */}
         {nostr.signerMode === "none" && (
           <div>

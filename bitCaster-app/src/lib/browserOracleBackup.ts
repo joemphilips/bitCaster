@@ -21,6 +21,7 @@ import {
   browserOracleOwnerAuthority,
 } from "@/stores/creatorMarkets";
 import { useSettingsStore } from "@/stores/settings";
+import { assertNever } from "./enumDiscipline";
 import { resolveNsecIdentity } from "./identityOps";
 import {
   browserOracleBackupValidator,
@@ -121,12 +122,15 @@ export async function importBrowserOracleBackupEnvelope(
   event: unknown,
   sourceRelay: string,
   store: CreatorStore = useCreatorMarketsStore,
+  capturedAdmission?: BrowserOracleMutation,
+  requireCurrent?: () => void,
 ) {
   const settings = useSettingsStore.getState();
   const identity = resolveNsecIdentity(settings.nsecSecret);
   if (settings.nostrSignerMode !== "nsec" || !identity)
     throw new OracleBackupError("invalid-record");
-  const admission = await prepareBrowserOracleMutation(identity.publicKey);
+  const admission = capturedAdmission ?? (await prepareBrowserOracleMutation(identity.publicKey));
+  admission.requireCurrent();
   const envelope = readOracleBackupEnvelope(event, identity.publicKey);
   const restored = await restoreOracleBackupEnvelope({
     event: envelope,
@@ -143,7 +147,10 @@ export async function importBrowserOracleBackupEnvelope(
       sourceRelay: restored.source.sourceRelay,
     },
     admission,
+    requireCurrent,
   );
+  admission.requireCurrent();
+  requireCurrent?.();
   return restored.descriptor;
 }
 
@@ -156,6 +163,7 @@ async function importBrowserOracleBackupRecord(
     sourceRelay: string;
   },
   capturedAdmission?: BrowserOracleMutation,
+  requireCurrent?: () => void,
 ) {
   try {
     const admission = capturedAdmission ?? (await prepareBrowserOracleMutation());
@@ -173,8 +181,9 @@ async function importBrowserOracleBackupRecord(
       announcementEventJson: record.authority.announcementEventJson,
     };
     if (admission.publicKey !== record.oraclePubkey) throw new OracleBackupError("invalid-record");
-    const result = await store.getState().withOracleMutation((locked) =>
-      admission.withCoreLocked(async (core) => {
+    const result = await store.getState().withOracleMutation((locked) => {
+      requireCurrent?.();
+      return admission.withCoreLocked(async (core) => {
         await locked.retainImportMetadata(
           {
             binding,
@@ -194,9 +203,10 @@ async function importBrowserOracleBackupRecord(
         const owner = await locked.readOwner(record.conditionId);
         if (!owner) throw new OracleBackupError("invalid-record");
         return owner;
-      }),
-    );
+      });
+    });
     admission.requireCurrent();
+    requireCurrent?.();
     return result;
   } catch (error) {
     if (error instanceof BrowserOracleMutationError && error.reason !== "authority-unavailable")
@@ -299,5 +309,74 @@ export async function exportBrowserOracleBackup(
       throw error;
     if (error instanceof OracleBackupError && error.reason === "oversized") throw error;
     throw new OracleBackupError("invalid-record");
+  }
+}
+
+/** Private DTOs stay within this adapter. A metadata flag is never signing authority. */
+export type BrowserOracleAuthorityReadiness = "ready" | "needs-restore" | "unavailable";
+export async function browserOracleAuthorityReadiness(
+  conditionId: string,
+  store: CreatorStore = useCreatorMarketsStore,
+  requireCurrent?: () => void,
+): Promise<BrowserOracleAuthorityReadiness> {
+  try {
+    const admission = await prepareBrowserOracleMutation();
+    const readiness = await store.getState().withOracleMutation((locked) => {
+      requireCurrent?.();
+      return admission.withCoreLocked(async (core): Promise<BrowserOracleAuthorityReadiness> => {
+        const owner = await locked.readOwner(conditionId);
+        if (!owner) return "needs-restore";
+        const { binding, announcementHex, destinations } = browserOracleOwnerAuthority(owner);
+        if (binding.oraclePubkey !== admission.publicKey || !destinations) return "unavailable";
+        // This exact event lookup distinguishes absence from a corrupt nonce or invalid export.
+        // JsError.NotFound (2) here means the event is absent, not a validation failure.
+        try {
+          await core.staged_enum_publication(binding.oracleEventId);
+        } catch (error) {
+          return error === 2 ? "needs-restore" : "unavailable";
+        }
+        const publication = await locked.read(conditionId);
+        const dto = await core.export_enum_authority(
+          binding.oracleEventId,
+          binding.announcementEventJson,
+          publication ? JSON.stringify(publication) : undefined,
+        );
+        const authority = JSON.parse(dto);
+        await encodeOracleBackup(
+          {
+            schemaVersion: 1,
+            conditionId,
+            oraclePubkey: binding.oraclePubkey,
+            oracleEventId: binding.oracleEventId,
+            authority,
+            destinations,
+          },
+          browserOracleBackupValidator,
+        );
+        const summary = await browserOracleBackupValidator.validateAuthority(
+          dto,
+          binding.oraclePubkey,
+        );
+        if (
+          authority.announcementTlvHex !== announcementHex ||
+          summary.outcomes.length !== binding.outcomes.length ||
+          summary.outcomes.some((value, index) => value !== binding.outcomes[index])
+        )
+          return "unavailable";
+        switch (owner.kind) {
+          case "imported":
+            return owner.oracle.importComplete ? "ready" : "needs-restore";
+          case "created":
+            return owner.market.oracle?.importComplete === false ? "needs-restore" : "ready";
+          default:
+            return assertNever(owner);
+        }
+      });
+    });
+    admission.requireCurrent();
+    requireCurrent?.();
+    return readiness;
+  } catch {
+    return "unavailable";
   }
 }

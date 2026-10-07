@@ -14,8 +14,13 @@ import {
 import { assertNever } from "./enumDiscipline";
 import { resolveNsecIdentity } from "./identityOps";
 import { effectiveRelayUrls } from "./relayDefaults";
-import { browserOracleBackupValidator } from "./kormir";
-import { importBrowserOracleBackupEnvelope } from "./browserOracleBackup";
+import { browserOracleBackupValidator, prepareBrowserOracleMutation } from "./kormir";
+import {
+  importBrowserOracleBackupEnvelope,
+  browserOracleAuthorityReadiness,
+} from "./browserOracleBackup";
+
+type BrowserOracleOwnerKind = "created" | "imported";
 
 type QueryRelay = Parameters<typeof listOracleBackups>[0]["queryRelay"];
 export type BrowserOracleBackupList = Awaited<ReturnType<typeof listOracleBackups>>;
@@ -26,6 +31,9 @@ export interface BrowserOracleBackupAccessOptions {
   queryRelay?: QueryRelay;
   relayUrls?: readonly string[];
   localOffset?: number;
+  kind?: BrowserOracleOwnerKind;
+  signal?: AbortSignal;
+  requireCurrent?: () => void;
 }
 
 function selectedBackupIdentity() {
@@ -121,18 +129,25 @@ export const queryBrowserOracleBackupRelay: QueryRelay = ({
     };
   });
 
-export function listBrowserOracleBackups(
+export async function listBrowserOracleBackups(
   cursor?: OracleBackupScanCursor | null,
   options: BrowserOracleBackupAccessOptions = {},
 ) {
   const identity = selectedBackupIdentity();
-  return listOracleBackups({
+  const admission = await prepareBrowserOracleMutation(identity.publicKey);
+  admission.requireCurrent();
+  options.requireCurrent?.();
+  const result = await listOracleBackups({
     privateKey: hexToBytes(identity.privateKeyHex),
     validator: browserOracleBackupValidator,
     relayUrls: options.relayUrls ?? effectiveRelayUrls(useSettingsStore.getState().relays),
     cursor,
+    signal: options.signal,
     queryRelay: options.queryRelay ?? queryBrowserOracleBackupRelay,
   });
+  admission.requireCurrent();
+  options.requireCurrent?.();
+  return result;
 }
 
 /** A list row never supplies authority. Fetch and validate its selected exact ID again. */
@@ -143,6 +158,9 @@ export async function restoreBrowserOracleBackup(
 ) {
   if (!/^[0-9a-f]{64}$/.test(eventId)) throw new Error("Oracle backup event ID is invalid.");
   const identity = selectedBackupIdentity();
+  const admission = await prepareBrowserOracleMutation(identity.publicKey);
+  admission.requireCurrent();
+  options.requireCurrent?.();
   const relayUrl = normalizeNostrRelayUrl(sourceRelay);
   const result = await (options.queryRelay ?? queryBrowserOracleBackupRelay)({
     relayUrl,
@@ -153,10 +171,14 @@ export async function restoreBrowserOracleBackup(
       "#v": ["1"],
       limit: 2,
     },
-    signal: AbortSignal.timeout(8_000),
+    signal: options.signal
+      ? AbortSignal.any([options.signal, AbortSignal.timeout(8_000)])
+      : AbortSignal.timeout(8_000),
     maxEvents: 2,
     maxBytes: 256 * 1024,
   });
+  admission.requireCurrent();
+  options.requireCurrent?.();
   if (!result.complete) throw new Error("Oracle backup relay query is incomplete.");
   const selected = result.events.find(
     (event) => typeof event === "object" && event !== null && "id" in event && event.id === eventId,
@@ -166,6 +188,8 @@ export async function restoreBrowserOracleBackup(
     selected,
     relayUrl,
     options.store ?? useCreatorMarketsStore,
+    admission,
+    options.requireCurrent,
   );
 }
 
@@ -176,56 +200,65 @@ export async function localBrowserOracleBackupStatuses(
   const offset = options.localOffset ?? 0;
   if (!Number.isSafeInteger(offset) || offset < 0)
     throw new Error("Oracle backup status page is invalid.");
-  const owners = await store.getState().readOracleOwners();
-  const rows = owners.slice(offset, offset + 20).map((owner) => {
-    let authority: ReturnType<typeof browserOracleOwnerAuthority>;
-    try {
-      authority = browserOracleOwnerAuthority(owner);
-    } catch {
+  const owners = (await store.getState().readOracleOwners()).filter(
+    (owner) => !options.kind || owner.kind === options.kind,
+  );
+  const rows = await Promise.all(
+    owners.slice(offset, offset + 20).map(async (owner) => {
+      let authority: ReturnType<typeof browserOracleOwnerAuthority>;
+      try {
+        authority = browserOracleOwnerAuthority(owner);
+      } catch {
+        switch (owner.kind) {
+          case "created":
+            return { conditionId: owner.market.conditionId, available: false as const };
+          case "imported":
+            return { conditionId: owner.oracle.binding.conditionId, available: false as const };
+          default:
+            return assertNever(owner);
+        }
+      }
+      const { binding, destinations } = authority;
+      if (!destinations) return { conditionId: binding.conditionId, available: false as const };
+      let title: string;
+      let oracle;
+      let publication;
       switch (owner.kind) {
         case "created":
-          return { conditionId: owner.market.conditionId, available: false as const };
+          title = owner.market.title;
+          oracle = owner.market.oracle!;
+          publication = creatorOraclePublication(owner.market);
+          break;
         case "imported":
-          return { conditionId: owner.oracle.binding.conditionId, available: false as const };
+          title = binding.oracleEventId;
+          oracle = owner.oracle;
+          publication = oracle.publication;
+          break;
         default:
           return assertNever(owner);
       }
-    }
-    const { binding, destinations } = authority;
-    if (!destinations) return { conditionId: binding.conditionId, available: false as const };
-    let title: string;
-    let oracle;
-    let publication;
-    switch (owner.kind) {
-      case "created":
-        title = owner.market.title;
-        oracle = owner.market.oracle!;
-        publication = creatorOraclePublication(owner.market);
-        break;
-      case "imported":
-        title = binding.oracleEventId;
-        oracle = owner.oracle;
-        publication = oracle.publication;
-        break;
-      default:
-        return assertNever(owner);
-    }
-    return {
-      conditionId: binding.conditionId,
-      available: true as const,
-      title,
-      kind: owner.kind,
-      outcomes: binding.outcomes,
-      chosenOutcome: publication?.chosenOutcome ?? null,
-      status: oracleBackupStatus({
-        binding,
-        destinations,
-        publication,
-        importComplete: oracle.importComplete !== false,
-        delivery: oracle.backupDelivery ?? null,
-      }),
-    };
-  });
+      return {
+        conditionId: binding.conditionId,
+        available: true as const,
+        title,
+        kind: owner.kind,
+        readiness: await browserOracleAuthorityReadiness(
+          binding.conditionId,
+          store,
+          options.requireCurrent,
+        ),
+        outcomes: binding.outcomes,
+        chosenOutcome: publication?.chosenOutcome ?? null,
+        status: oracleBackupStatus({
+          binding,
+          destinations,
+          publication,
+          importComplete: oracle.importComplete !== false,
+          delivery: oracle.backupDelivery ?? null,
+        }),
+      };
+    }),
+  );
   return {
     rows,
     nextOffset: offset + 20 < owners.length ? offset + 20 : null,

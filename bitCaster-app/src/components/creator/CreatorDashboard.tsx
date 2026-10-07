@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router";
 import { useTranslation } from "react-i18next";
 import { Plus, TrendingUp, CheckCircle2, BarChart3, Coins, AlertCircle } from "lucide-react";
@@ -13,6 +13,8 @@ import { MyMarkets } from "@/components/portfolio/MyMarkets";
 import { PrimaryGradientButton } from "@/components/shared/PrimaryGradientButton";
 import { useCreatorMarketsStore } from "@/stores/creatorMarkets";
 import { useSettingsStore } from "@/stores/settings";
+import { getNostrSignerRevision, subscribeToNostrSignerRevision } from "@/lib/nostrSignerRevision";
+import { CreatorOracleRecovery, type OracleRecoveryPublish } from "./CreatorOracleRecovery";
 import { AnalyticsComingSoon } from "./AnalyticsComingSoon";
 import type { CreatorEngineDataStatus } from "@/types/portfolio";
 
@@ -65,10 +67,41 @@ export function CreatorDashboard() {
   const [resolutionSuccess, setResolutionSuccess] = useState<string | null>(null);
   const { stats, markets, isLoading, error, pubkey, refresh, engineDataStatus } =
     useCreatorDashboardState();
+  const generation = useRef(0);
+  const signerMode = useSettingsStore((s) => s.nostrSignerMode);
+  const signerKey = useSettingsStore((s) => s.nsecSecret);
+  useEffect(() => {
+    const clear = () => {
+      generation.current++;
+      setResolutionDialog(null);
+      setResolutionError(null);
+      setResolutionSuccess(null);
+      setResolvingMarketId(null);
+    };
+    clear();
+    const unsubscribe = subscribeToNostrSignerRevision(clear);
+    const unsubscribeSettings = useSettingsStore.subscribe((current, previous) => {
+      if (
+        current.nostrSignerMode !== previous.nostrSignerMode ||
+        current.nsecSecret !== previous.nsecSecret ||
+        current.nostrProfile?.pubkey !== previous.nostrProfile?.pubkey
+      )
+        clear();
+    });
+    return () => {
+      generation.current++;
+      unsubscribeSettings();
+      unsubscribe();
+    };
+  }, [signerMode, signerKey, pubkey]);
   const relays = useSettingsStore((s) => s.relays);
   const [resolutionDialog, setResolutionDialog] = useState<{
     marketId: string;
     outcome: string;
+    recovery?: boolean;
+    chosen?: boolean;
+    republish?: boolean;
+    relayUrls?: string[];
   } | null>(null);
   const [explanation, setExplanation] = useState("");
   const handleCreateMarket = () => navigate("/creator/new");
@@ -76,6 +109,7 @@ export function CreatorDashboard() {
   const handlePublishOracleAttestation = (marketId: string, outcome: string) => {
     const market = markets.find((m) => m.id === marketId);
     if (!market?.oracle || !market.oracle.outcomes.includes(outcome)) return;
+    generation.current++;
     setResolutionError(null);
     setResolutionSuccess(null);
     setExplanation(market.oracle.explanationDraft ?? "");
@@ -84,18 +118,67 @@ export function CreatorDashboard() {
       outcome: market.oracle.chosenOutcome ?? market.oracle.attestedOutcome ?? outcome,
     });
   };
+  const handleRecoveryPublication: OracleRecoveryPublish = (
+    marketId,
+    outcome,
+    republish,
+    relayUrls,
+    chosen,
+  ) => {
+    generation.current++;
+    setResolutionError(null);
+    setResolutionSuccess(null);
+    const state = useCreatorMarketsStore.getState();
+    const imported = state.importedOracles.find((row) => row.binding.conditionId === marketId);
+    const created = state.markets.find((row) => row.conditionId === marketId);
+    setExplanation(imported?.explanationDraft ?? created?.oracle?.explanationDraft ?? "");
+    setResolutionDialog({ marketId, outcome, recovery: true, chosen, republish, relayUrls });
+  };
+  const dismissResolution = () => {
+    generation.current++;
+    setResolutionDialog(null);
+    setResolutionError(null);
+  };
   const confirmResolution = async () => {
     if (!resolutionDialog) return;
-    const { marketId, outcome } = resolutionDialog;
+    const { marketId, outcome, recovery, chosen, republish, relayUrls } = resolutionDialog;
+    const captured = generation.current;
+    const revision = getNostrSignerRevision();
+    const isCurrent = () =>
+      captured === generation.current && revision === getNostrSignerRevision();
+    const requireCurrent = () => {
+      if (!isCurrent()) throw new Error("The oracle publication action has expired.");
+    };
     setResolvingMarketId(marketId);
     try {
-      await useCreatorMarketsStore.getState().saveOracleExplanationDraft(marketId, explanation);
-      const result = await publishBrowserOracleOutcome(
-        marketId,
-        outcome,
-        explanation,
-        effectiveRelayUrls(relays),
-      );
+      requireCurrent();
+      if (!chosen)
+        await useCreatorMarketsStore.getState().saveOracleExplanationDraft(marketId, explanation);
+      if (!isCurrent()) return;
+      const result = recovery
+        ? await publishBrowserOracleOutcome(
+            marketId,
+            outcome,
+            chosen ? undefined : explanation,
+            relayUrls ?? [],
+            useCreatorMarketsStore,
+            undefined,
+            {
+              engineDelivery: "synchronize",
+              republishAttestation: republish ?? false,
+              requireCurrent,
+            },
+          )
+        : await publishBrowserOracleOutcome(
+            marketId,
+            outcome,
+            explanation,
+            effectiveRelayUrls(relays),
+            useCreatorMarketsStore,
+            undefined,
+            { engineDelivery: "synchronize", requireCurrent },
+          );
+      if (!isCurrent()) return;
       setResolutionSuccess(
         t(
           result.failures.length
@@ -107,9 +190,9 @@ export function CreatorDashboard() {
       setResolutionDialog(null);
       refresh();
     } catch {
-      setResolutionError(t("creator.oracleRecoveryRequired"));
+      if (isCurrent()) setResolutionError(t("creator.oracleRecoveryRequired"));
     } finally {
-      setResolvingMarketId(null);
+      if (isCurrent()) setResolvingMarketId(null);
     }
   };
   return (
@@ -205,7 +288,13 @@ export function CreatorDashboard() {
                 <AlertCircle className="mt-0.5 h-5 w-5 flex-shrink-0" />
                 <div>
                   <p className="font-semibold">{t("creator.attestationErrorTitle")}</p>
-                  <p className="mt-0.5 text-xs opacity-80">{resolutionError}</p>
+                  <p className="mt-0.5 select-text text-xs opacity-80">{resolutionError}</p>
+                  <button
+                    onClick={() => setResolutionError(null)}
+                    aria-label={t("oracleBackup.dismiss")}
+                  >
+                    {t("oracleBackup.dismiss")}
+                  </button>
                 </div>
               </div>
             )}
@@ -229,6 +318,10 @@ export function CreatorDashboard() {
                 />
               )}
             </div>
+            <CreatorOracleRecovery
+              onPublish={handleRecoveryPublication}
+              publicationBusy={resolvingMarketId !== null}
+            />
           </div>
         )}
 
@@ -237,7 +330,7 @@ export function CreatorDashboard() {
           <NativeDialog
             ariaLabel={t("creator.resolveDialogTitle")}
             canDismiss={resolvingMarketId === null}
-            onDismiss={() => setResolutionDialog(null)}
+            onDismiss={dismissResolution}
           >
             {(dismiss) => (
               <div className="mx-auto mt-16 w-[calc(100%-2rem)] max-w-lg rounded-2xl bg-white p-6 text-slate-900 shadow-xl dark:bg-slate-900 dark:text-slate-100">
@@ -259,6 +352,7 @@ export function CreatorDashboard() {
                   id="oracle-explanation"
                   value={explanation}
                   disabled={
+                    !!resolutionDialog.chosen ||
                     !!markets.find((m) => m.id === resolutionDialog.marketId)?.oracle
                       ?.chosenOutcome ||
                     !!markets.find((m) => m.id === resolutionDialog.marketId)?.oracle
@@ -279,6 +373,7 @@ export function CreatorDashboard() {
                   </button>
                   <button
                     type="button"
+                    data-testid="creator-oracle-confirm"
                     onClick={() => void confirmResolution()}
                     disabled={
                       resolvingMarketId !== null ||

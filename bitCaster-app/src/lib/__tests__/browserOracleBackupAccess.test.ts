@@ -1,10 +1,28 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import {
+  listBrowserOracleBackups,
+  restoreBrowserOracleBackup,
   localBrowserOracleBackupStatuses,
   queryBrowserOracleBackupRelay,
 } from "../browserOracleBackupAccess";
+import { useSettingsStore } from "@/stores/settings";
+import { generateSecretKey } from "nostr-tools/pure";
+import { nip19 } from "nostr-tools";
 import { useCreatorMarketsStore, type BrowserOracleOwner } from "@/stores/creatorMarkets";
 
+const admission = vi.hoisted(() => ({ current: true, imported: vi.fn() }));
+vi.mock("../kormir", () => ({
+  browserOracleBackupValidator: { validateAuthority: vi.fn() },
+  prepareBrowserOracleMutation: async () => ({
+    requireCurrent() {
+      if (!admission.current) throw new Error("Oracle identity changed.");
+    },
+  }),
+}));
+vi.mock("../browserOracleBackup", () => ({
+  importBrowserOracleBackupEnvelope: (...args: unknown[]) => admission.imported(...args),
+  browserOracleAuthorityReadiness: async () => "unavailable",
+}));
 class QuerySocket {
   static readonly OPEN = 1;
   static sockets: QuerySocket[] = [];
@@ -163,3 +181,26 @@ it("projects only the selected bounded local page from one owner snapshot", asyn
   );
   expect(read).toHaveBeenCalledTimes(2);
 });
+
+it.each(["discovery", "exact restore"] as const)(
+  "refuses stale %s after the relay response without private import",
+  async (operation) => {
+    admission.current = true;
+    admission.imported.mockClear();
+    useSettingsStore.setState({
+      nostrSignerMode: "nsec",
+      nsecSecret: nip19.nsecEncode(generateSecretKey()),
+    });
+    const eventId = "ab".repeat(32);
+    const queryRelay = async () => {
+      admission.current = false;
+      return { events: [{ id: eventId }], complete: true };
+    };
+    const action =
+      operation === "discovery"
+        ? listBrowserOracleBackups(null, { queryRelay, relayUrls: ["wss://relay.example"] })
+        : restoreBrowserOracleBackup(eventId, "wss://relay.example", { queryRelay });
+    await expect(action).rejects.toThrow("Oracle identity changed.");
+    expect(admission.imported).not.toHaveBeenCalled();
+  },
+);
