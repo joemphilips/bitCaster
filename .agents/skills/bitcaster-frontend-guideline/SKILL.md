@@ -1,6 +1,6 @@
 ---
 name: bitcaster-frontend-guideline
-description: Apply bitCaster GUI behavior rules. Use this skill when you change React components, Zustand stores, routes, toasts, notifications, dialogs, browser persistence, order progress, recovery progress, or user-visible error handling in bitCaster-app.
+description: Apply bitCaster browser state, durable error, and recovery UX rules when those behaviors change.
 ---
 
 # bitCaster Frontend Guideline
@@ -37,6 +37,9 @@ description: Apply bitCaster GUI behavior rules. Use this skill when you change 
 - Require a new user action and a new order-book observation for a new order attempt.
 
 ## Tests
+
+Apply these checks to the changed behavior. Reuse valid evidence for unchanged
+paths; do not run every listed scenario for a presentation-only edit.
 
 - Mock network calls in `bitCaster-app` unit tests.
 - Test that errors do not expire.
